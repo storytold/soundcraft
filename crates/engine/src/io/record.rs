@@ -135,6 +135,27 @@ mod record_tests {
     }
 
     #[test]
+    fn named_input_remaps_the_complete_recording_range_and_never_wraps() {
+        let mut e = Engine::default();
+        let dir = Path::new("unused");
+        let track = armed(&mut e, "Keys", "stereo", "In 1-2");
+        e.execute("setup.io", &json!({"action": "create_input", "name": "Keys pair", "format": "stereo", "first_channel": 30})).unwrap();
+        assert!(e.is_dirty());
+        e.execute("track.input", &json!({"track": track.0, "input": "keys pair"})).unwrap();
+        assert_eq!(plan_takes(&e, dir, 32)[0].1, [30, 31]);
+        assert!(plan_takes(&e, dir, 31).is_empty());
+        e.execute("setup.io", &json!({"action": "rename_input", "name": "Keys pair", "new_name": "Piano"})).unwrap();
+        e.execute("setup.io", &json!({"action": "set_input", "name": "Piano", "first_channel": 62})).unwrap();
+        assert_eq!(e.session().track(track).unwrap().mixer.input, soundcraft_model::Route::Input("Piano".into()));
+        assert_eq!(plan_takes(&e, dir, 64)[0].1, [62, 63]);
+        assert!(plan_takes(&e, dir, 32).is_empty());
+        e.execute("setup.io", &json!({"action": "delete_input", "name": "Piano"})).unwrap();
+        assert!(plan_takes(&e, dir, 64).is_empty());
+        e.execute("edit.undo", &json!({})).unwrap();
+        assert_eq!(plan_takes(&e, dir, 64)[0].1, [62, 63]);
+    }
+
+    #[test]
     fn armed_tracks_get_new_take_files_used_in_place() {
         let dir = std::env::temp_dir().join(format!("soundcraft-takes-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);

@@ -1093,7 +1093,7 @@ fn read_bundle(bytes: &[u8], limits: BundleLimits) -> Result<(String, std::colle
 }
 
 /// The record-enabled audio tracks, each with the input channels it records (those its input
-/// route names, "In 3" → 2, wrapped to the device's `input_channels`) and a new take file
+/// route names, with legacy numbered routes wrapped to the device width) and a new take file
 /// `<track>_<NN>.wav` in the `Audio Files` of the session's folder (`unsaved_dir` until it is saved).
 pub fn plan_takes(e: &Engine, unsaved_dir: &Path, input_channels: usize) -> Vec<(TrackId, Vec<usize>, PathBuf)> {
     let dir = e.path.as_deref().and_then(|p| Path::new(p).parent()).unwrap_or(unsaved_dir);
@@ -1102,17 +1102,12 @@ pub fn plan_takes(e: &Engine, unsaved_dir: &Path, input_channels: usize) -> Vec<
     s.tracks
         .iter()
         .filter(|t| t.mixer.record_arm && t.kind == TrackKind::Audio && !t.inactive)
-        .map(|t| {
-            let first = match &t.mixer.input {
-                soundcraft_model::Route::Hardware(h) => {
-                    h.trim_start_matches("In ").split(['-', ' ']).next().and_then(|n| n.parse::<usize>().ok()).map_or(0, |n| n.saturating_sub(1))
-                }
-                _ => 0,
-            };
+        .filter_map(|t| {
+            let first = soundcraft_model::hardware_input_start(s, t, input_channels)?;
             let inputs = (0..t.channels()).map(|k| first.saturating_add(k) % input_channels.max(1)).collect();
             let file = |n: usize| dir.join("Audio Files").join(format!("{}_{n:02}.wav", sanitize_name(&t.name)));
             let path = (take_no..take_no + 1_000).map(file).find(|p| !p.exists()).unwrap_or_else(|| file(take_no));
-            (t.id, inputs, path)
+            Some((t.id, inputs, path))
         })
         .collect()
 }

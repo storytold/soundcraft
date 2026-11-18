@@ -1,6 +1,6 @@
 # Where SoundCraft falls short of Pro Tools
 
-> **Last reviewed:** 2026-11-18 · **Last updated:** 2026-11-18 · **Change:** G-01 ASIO hardware output paths and wide input/output selectors · **Target:** Avid Pro Tools Ultimate 2026.4.1
+> **Last reviewed:** 2026-11-18 · **Last updated:** 2026-11-18 · **Change:** G-01 named hardware input paths · **Target:** Avid Pro Tools Ultimate 2026.4.1
 
 Every known shortfall, one entry each, ranked by how much it stops a Pro Tools user from doing
 real work in SoundCraft. This is the work list: pick from the top. Rows marked **alpha blocker**
@@ -57,7 +57,9 @@ When you close a gap, delete its entry (or shrink it) in the same PR, and bump t
   USB outputs 1–10 at 48 kHz on the TASCAM Model 12.
 - **Done (2026-11-18):** Track input selectors use the selected device's usable recording width.
   Track input and output lists scroll in the existing Edit and Mix selectors.
-- **Missing:** full hardware input mapping in I/O Setup, one duplex stream on one clock (input and
+- **Done (2026-11-18):** Setup › I/O stores named inputs with a contiguous hardware range and
+  format. Audio tracks select them by name for recording and input monitoring.
+- **Missing:** hardware input sub-paths and noncontiguous mappings, one duplex stream on one clock (input and
   output are still separate cpal streams), latency reporting and record-offset compensation, ASIO
   in official builds (owner decision: Steinberg's SDK is proprietary or GPLv3), JACK, and
   verification on macOS and Linux. The mix still runs in fixed 512-sample blocks.
@@ -248,6 +250,7 @@ missing. Out of scope unless the owner decides otherwise.
 | 2026-11-04 | trivial | G-04: track and master volume automation read at every sample, so breakpoints act on their own sample in any block size (#1354); estimates unchanged |
 | 2026-10-30 | minor | G-05: VST3 and embedded CLAP editors on Linux/X11 (#527) |
 | 2026-10-25 | trivial | G-04: Clip Looping (#1030) lacks the loop crossfade option, and Number of Loops stops at 512 while length and fill make up to 1000 loops |
+| 2026-11-18 | minor | G-01: named hardware input paths for recording and monitoring |
 | 2026-10-25 | trivial | G-01: `setup.playback_engine` and `setup.hardware` apply the device and buffer in the desktop app; headless returns `applied: false` |
 | 2026-10-24 | trivial | G-08: 27 processors + 3 instruments, as the plugin registry holds; G-20: the sampler shipped (#108), so it is no longer listed as missing |
 | 2026-10-19 | trivial | G-04: Float32 encoding retains finite headroom (#791); integer clipping and non-finite handling retained |

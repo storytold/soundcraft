@@ -5,7 +5,7 @@ use super::{CommandSpec, always, bad, command_specs, i64_or, str_param, track_pa
 use super::more_util::{set_text, store_value, text, toggle_flag, values_with_prefix};
 use crate::{Engine, EngineError, Result, cmd};
 use serde_json::{Value, json};
-use soundcraft_model::{BusId, ChannelFormat, ClipContent, OutputPath, Route, Session, SourceId, TrackId, TrackKind};
+use soundcraft_model::{BusId, ChannelFormat, ClipContent, InputPath, OutputPath, Route, Session, SourceId, TrackId, TrackKind};
 use soundcraft_time::Timecode;
 use std::path::Path;
 
@@ -67,7 +67,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "I/O...",
             ["Setup"],
             None,
-            "{action?: list|create_bus|rename_bus|delete_bus|create_output|set_output|rename_output|delete_output, name?, new_name?, format?: stereo, first_channel?: 0}",
+            "{action?: list|create_bus|rename_bus|delete_bus|create_input|set_input|rename_input|delete_input|create_output|set_output|rename_output|delete_output, name?, new_name?, format?: stereo, first_channel?: 0}",
             always,
             io_setup
         ),
@@ -280,7 +280,7 @@ fn peripherals(e: &mut Engine, p: &Value) -> Result<Value> {
 }
 
 fn io_state(s: &Session) -> Value {
-    json!({"busses": s.busses, "outputs": s.outputs})
+    json!({"busses": s.busses, "inputs": s.inputs, "outputs": s.outputs})
 }
 
 /// Disconnect every track input, output and send that used bus `bid`.
@@ -314,6 +314,9 @@ fn io_setup(e: &mut Engine, p: &Value) -> Result<Value> {
     };
     let s = e.session_mut();
     match action {
+        "create_input" | "set_input" | "rename_input" | "delete_input" => {
+            edit_input_path(s, p, action, &name, new_name, format)?;
+        }
         "create_bus" => {
             if s.bus_by_name(&name).is_some() {
                 return Err(bad(id, format!("a bus named `{name}` exists")));
@@ -384,6 +387,64 @@ fn io_setup(e: &mut Engine, p: &Value) -> Result<Value> {
         other => return Err(bad(id, format!("unknown action `{other}`"))),
     }
     Ok(io_state(s))
+}
+
+fn edit_input_path(s: &mut Session, p: &Value, action: &str, name: &str, new_name: Option<String>, format: ChannelFormat) -> Result<()> {
+    let id = "setup.io";
+    let index = s.inputs.iter().position(|path| path.name.eq_ignore_ascii_case(name));
+    if action == "rename_input" || action == "create_input" {
+        let proposed = if action == "create_input" { name } else { new_name.as_deref().ok_or_else(|| bad(id, "`new_name` required"))? };
+        if proposed.chars().count() > soundcraft_model::MAX_NAME_CHARS
+            || matches!(proposed.to_ascii_lowercase().as_str(), "none" | "no input" | "no output" | "main" | "master" | "out 1-2")
+            || proposed.to_ascii_lowercase().starts_with("in ")
+        {
+            return Err(bad(id, "choose a distinct input path name"));
+        }
+        if s.inputs.iter().enumerate().any(|(i, path)| (action == "create_input" || Some(i) != index) && path.name.eq_ignore_ascii_case(proposed)) {
+            return Err(bad(id, format!("an input named `{proposed}` exists")));
+        }
+    }
+    if action == "create_input" {
+        let first_channel = input_channel(p, 0, format)?;
+        s.inputs.push(InputPath { name: name.into(), first_channel, format });
+        return Ok(());
+    }
+    let index = index.ok_or_else(|| bad(id, format!("no input `{name}`")))?;
+    match action {
+        "set_input" => {
+            let input = s.inputs.get_mut(index).ok_or_else(|| bad(id, "input path is missing"))?;
+            let format = if p.get("format").is_some() { format } else { input.format };
+            input.first_channel = input_channel(p, input.first_channel, format)?;
+            input.format = format;
+        }
+        "rename_input" => {
+            let to = new_name.ok_or_else(|| bad(id, "`new_name` required"))?;
+            let input = s.inputs.get_mut(index).ok_or_else(|| bad(id, "input path is missing"))?;
+            let old = std::mem::replace(&mut input.name, to.clone());
+            for track in &mut s.tracks {
+                if matches!(&track.mixer.input, Route::Input(path) if path.eq_ignore_ascii_case(&old)) {
+                    track.mixer.input = Route::Input(to.clone());
+                }
+            }
+        }
+        // Tracks keep their name so a deleted mapping stays unavailable instead of recording channel 1.
+        _ => {
+            s.inputs.remove(index);
+        }
+    }
+    Ok(())
+}
+
+fn input_channel(p: &Value, default: u16, format: ChannelFormat) -> Result<u16> {
+    let first = i64_or(p, "first_channel", i64::from(default));
+    let width = format.channels();
+    if first < 0
+        || !(1..=soundcraft_mix::MAX_CHANNELS).contains(&width)
+        || first.saturating_add(width as i64) > soundcraft_mix::MAX_HARDWARE_CHANNELS as i64
+    {
+        return Err(bad("setup.io", "input path is outside the supported channel range"));
+    }
+    Ok(first as u16)
 }
 
 fn current_timecode(e: &mut Engine, p: &Value) -> Result<Value> {

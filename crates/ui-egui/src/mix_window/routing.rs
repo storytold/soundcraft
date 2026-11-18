@@ -6,7 +6,7 @@ pub(crate) fn route_name(app: &SoundApp, r: &Route) -> String {
         Route::None => crate::localization::text("no output").to_string(),
         Route::Main => app.engine.session().outputs.first().map_or_else(|| crate::localization::text("Out 1-2").to_string(), |o| o.name.clone()),
         Route::Bus(b) => app.engine.session().bus(*b).map_or_else(|| "bus?".into(), |b| b.name.clone()),
-        Route::Hardware(h) => h.clone(),
+        Route::Hardware(h) | Route::Input(h) => h.clone(),
     }
 }
 
@@ -53,7 +53,19 @@ fn route_menu(app: &mut SoundApp, ui: &mut Ui, id: TrackId, input: bool, inputs:
     // (label, the route the command is given)
     let mut fixed = vec![(crate::localization::text(if input { "no input" } else { "no output" }).to_string(), "none".to_string())];
     if input {
-        let width = app.engine.session().track(id).map_or(1, |track| track.channels().max(1));
+        let session = app.engine.session();
+        let track = session.track(id);
+        if let Some(track) = track.filter(|track| track.kind == soundcraft_model::TrackKind::Audio) {
+            fixed.extend(
+                session
+                    .inputs
+                    .iter()
+                    .filter(|path| path.format == track.format)
+                    .filter(|path| inputs == 0 || usize::from(path.first_channel) + path.format.channels() <= inputs)
+                    .map(|path| (path.name.clone(), path.name.clone())),
+            );
+        }
+        let width = track.map_or(1, |track| track.channels().max(1));
         fixed.extend((width..=inputs).map(|last| {
             let first = last + 1 - width;
             if width == 1 {
@@ -141,6 +153,9 @@ mod tests {
                 }
             }
             let id = engine.session().tracks.first().unwrap().id;
+            engine
+                .execute("setup.io", &json!({"action": "create_input", "name": "Named last", "first_channel": ports - 1, "format": "mono"}))
+                .unwrap();
             let app = SoundApp::new(engine, None, Services::default());
             let mut ready = false;
             let mut h = Harness::builder().with_size(egui::vec2(360.0, 290.0)).with_max_steps(32).build_ui_state(
@@ -160,6 +175,11 @@ mod tests {
                 app,
             );
             h.run();
+            h.get_by_label("Choose input").click();
+            h.run();
+            h.get_by_label("Named last").click();
+            h.run();
+            assert_eq!(h.state().engine.session().track(id).unwrap().mixer.input, super::Route::Input("Named last".into()));
             for (button, first, last, input) in
                 [("Choose input", "In 1", format!("In {ports}"), true), ("Choose output", "USB 01", format!("USB {ports}"), false)]
             {

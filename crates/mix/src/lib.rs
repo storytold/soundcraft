@@ -675,7 +675,7 @@ impl MixEngine {
                 let Some(dst) = self.physical.get_mut(first..first + width) else { return };
                 (dst, path.format)
             }
-            Route::None => return,
+            Route::None | Route::Input(_) => return,
         };
         let mut start = 0;
         while start < frames {
