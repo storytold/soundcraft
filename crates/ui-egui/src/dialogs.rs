@@ -85,6 +85,10 @@ pub struct Dialogs {
     strip_rectangles: StripRectangles,
     /// True while a dialog was drawn on the previous frame.
     shown: bool,
+    /// Counts the dialogs opened. A file dialog asked for by one is tagged with it
+    /// ([`Self::file_tag`]), so its answer reaches only that dialog, never one that replaced it or
+    /// a later one opened for the same command.
+    instance: u64,
 }
 
 impl Dialogs {
@@ -161,6 +165,14 @@ impl Dialogs {
     pub(crate) fn set(&mut self, d: Dialog) {
         self.open = Some(d);
         self.shown = false;
+        self.instance = self.instance.wrapping_add(1);
+    }
+
+    /// The [`crate::services::Services`] tag for a file dialog `what` the open dialog asks for:
+    /// unique to this dialog, so an answer that arrives after it was replaced or closed is taken
+    /// by no one.
+    pub(crate) fn file_tag(&self, what: &str) -> String {
+        format!("{what}#{}", self.instance)
     }
 
     /// Clip List › Auto Rename: the clips' naming scheme, filled in from the first clip's. False
@@ -326,9 +338,10 @@ fn bounce_file_row(app: &mut SoundApp, ui: &mut egui::Ui, path: &mut String, for
         crate::widgets::named_text_field(ui.add(egui::TextEdit::singleline(path).desired_width(420.0)), crate::localization::text("File"));
         if app.services.pick_save.is_some() && ui.button(crate::localization::text("Browse…")).clicked() {
             let start = std::path::PathBuf::from(path.as_str());
-            app.services.ask("bounce", Pick::Save("file.bounce_mix".into(), start));
+            let tag = app.dialogs.file_tag("bounce");
+            app.services.ask(&tag, Pick::Save("file.bounce_mix".into(), start));
         }
-        if let Some(p) = app.services.take("bounce") {
+        if let Some(p) = app.services.take(&app.dialogs.file_tag("bounce")) {
             match unicode(&p) {
                 Ok(text) => {
                     *path = text.to_owned();
@@ -348,8 +361,9 @@ fn path_prompt_form(app: &mut SoundApp, ui: &mut egui::Ui, cmd: &str, path: &mut
     let start = std::path::PathBuf::from(path.as_str());
     // Import Audio picks several files at once; every other open dialog takes one.
     let multi = cmd == "file.import_audio" && app.services.pick_open_many.is_some();
+    let tag = app.dialogs.file_tag("prompt");
     if multi && ui.button(crate::localization::text("Browse…")).clicked() {
-        app.services.ask("prompt", Pick::OpenMany(cmd.to_string()));
+        app.services.ask(&tag, Pick::OpenMany(cmd.to_string()));
     }
     if app.services.pick_open.is_some()
         && !multi
@@ -358,18 +372,18 @@ fn path_prompt_form(app: &mut SoundApp, ui: &mut egui::Ui, cmd: &str, path: &mut
         && key != "dir"
         && ui.button(crate::localization::text("Browse…")).clicked()
     {
-        app.services.ask("prompt", Pick::Open(cmd.to_string()));
+        app.services.ask(&tag, Pick::Open(cmd.to_string()));
     }
     if app.services.pick_folder.is_some() && key == "dir" && ui.button(crate::localization::text("Browse…")).clicked() {
-        app.services.ask("prompt", Pick::Folder(start.clone()));
+        app.services.ask(&tag, Pick::Folder(start.clone()));
     }
     if app.services.pick_save.is_some()
         && (cmd == "session.save_as" || cmd == "session.save_copy")
         && ui.button(crate::localization::text("Browse…")).clicked()
     {
-        app.services.ask("prompt", Pick::Save(cmd.to_string(), start));
+        app.services.ask(&tag, Pick::Save(cmd.to_string(), start));
     }
-    let mut files = app.services.take_many("prompt");
+    let mut files = app.services.take_many(&tag);
     let picked = if files.len() > 1 {
         let texts: Result<Vec<&str>, _> = files.iter().map(|f| unicode(f)).collect();
         match texts {
@@ -470,8 +484,6 @@ pub fn show(app: &mut SoundApp, ctx: &egui::Context) {
     let first_frame = !std::mem::replace(&mut app.dialogs.shown, true);
     if first_frame {
         ctx.memory_mut(|m| m.stop_text_input());
-        // A path an earlier path prompt asked for must not fill this dialog
-        app.services.discard("prompt");
     }
     let mut keep = true;
     let mut action: Option<(String, Value)> = None;
@@ -1120,7 +1132,7 @@ mod tests {
         let mut app = SoundApp::new(Engine::default(), None, services);
         assert!(app.dialogs.open_for_command(&app.engine, "session.save_as"));
         dialog_frame(&ctx, &mut app, vec![]);
-        app.services.ask("prompt", Pick::Save("session.save_as".into(), "/tmp/a.scraft".into()));
+        app.services.ask(&app.dialogs.file_tag("prompt"), Pick::Save("session.save_as".into(), "/tmp/a.scraft".into()));
         // A menu item opens another path prompt while the sheet is still up.
         assert!(app.dialogs.open_for_command(&app.engine, "session.open"));
         let before = match &app.dialogs.open {
@@ -1137,6 +1149,119 @@ mod tests {
             Some(Dialog::PathPrompt { cmd, path, .. }) => assert_eq!((cmd.as_str(), path), ("session.open", &before)),
             other => panic!("{other:?}"),
         }
+    }
+
+    /// An app whose file dialogs answer through the returned sender, as a sheet does.
+    fn sheet_app(engine: Engine) -> (SoundApp, std::sync::mpsc::Sender<Vec<std::path::PathBuf>>) {
+        let (tx, rx) = std::sync::mpsc::channel();
+        let rx = std::rc::Rc::new(std::cell::Cell::new(Some(rx)));
+        let services = crate::Services { start_pick: Some(Box::new(move |_| rx.take())), ..Default::default() };
+        (SoundApp::new(engine, None, services), tx)
+    }
+
+    /// Delivers a sheet's answer and draws the frames that would take it.
+    fn answer_sheet(ctx: &egui::Context, app: &mut SoundApp, tx: &std::sync::mpsc::Sender<Vec<std::path::PathBuf>>, path: &str) {
+        tx.send(vec![path.into()]).unwrap();
+        for _ in 0..2 {
+            app.services.poll();
+            dialog_frame(ctx, app, vec![]);
+        }
+    }
+
+    /// The open Bounce dialog's path.
+    fn bounce_form_path(app: &SoundApp) -> String {
+        match &app.dialogs.open {
+            Some(Dialog::Bounce { path, .. }) => path.clone(),
+            other => panic!("{other:?}"),
+        }
+    }
+
+    /// The open path prompt's command and path.
+    fn prompt_form(app: &SoundApp) -> (String, String) {
+        match &app.dialogs.open {
+            Some(Dialog::PathPrompt { cmd, path, .. }) => (cmd.clone(), path.clone()),
+            other => panic!("{other:?}"),
+        }
+    }
+
+    /// A path prompt fills in the answer of the file dialog it asked for itself.
+    #[test]
+    fn a_path_prompt_takes_the_answer_of_its_own_file_dialog() {
+        let ctx = egui::Context::default();
+        crate::fonts::install(&ctx, true);
+        let (mut app, tx) = sheet_app(Engine::default());
+        assert!(app.dialogs.open_for_command(&app.engine, "session.save_as"));
+        dialog_frame(&ctx, &mut app, vec![]);
+        app.services.ask(&app.dialogs.file_tag("prompt"), Pick::Save("session.save_as".into(), "/tmp/a.scraft".into()));
+        answer_sheet(&ctx, &mut app, &tx, "/tmp/mine.scraft");
+        assert_eq!(prompt_form(&app), ("session.save_as".into(), "/tmp/mine.scraft".into()));
+    }
+
+    /// A path prompt reopened for the same command while the first one's file dialog is open does
+    /// not take that dialog's answer.
+    #[test]
+    fn a_reopened_path_prompt_drops_the_answer_of_the_one_before() {
+        let ctx = egui::Context::default();
+        crate::fonts::install(&ctx, true);
+        let (mut app, tx) = sheet_app(Engine::default());
+        assert!(app.dialogs.open_for_command(&app.engine, "session.save_as"));
+        dialog_frame(&ctx, &mut app, vec![]);
+        app.services.ask(&app.dialogs.file_tag("prompt"), Pick::Save("session.save_as".into(), "/tmp/a.scraft".into()));
+        assert!(app.dialogs.open_for_command(&app.engine, "session.save_as"));
+        let before = prompt_form(&app);
+        dialog_frame(&ctx, &mut app, vec![]);
+        answer_sheet(&ctx, &mut app, &tx, "/tmp/stale.scraft");
+        assert_eq!(prompt_form(&app), before);
+    }
+
+    /// A file dialog that answers after its path prompt was closed fills no later prompt.
+    #[test]
+    fn a_late_answer_to_a_closed_path_prompt_fills_no_later_one() {
+        let ctx = egui::Context::default();
+        crate::fonts::install(&ctx, true);
+        let (mut app, tx) = sheet_app(Engine::default());
+        assert!(app.dialogs.open_for_command(&app.engine, "session.open"));
+        dialog_frame(&ctx, &mut app, vec![]);
+        app.services.ask(&app.dialogs.file_tag("prompt"), Pick::Open("session.open".into()));
+        app.dialogs.open = None;
+        answer_sheet(&ctx, &mut app, &tx, "/tmp/stale.scraft");
+        assert!(app.dialogs.open.is_none());
+        assert!(app.dialogs.open_for_command(&app.engine, "session.open"));
+        let before = prompt_form(&app);
+        for _ in 0..2 {
+            app.services.poll();
+            dialog_frame(&ctx, &mut app, vec![]);
+        }
+        assert_eq!(prompt_form(&app), before);
+    }
+
+    /// A Bounce dialog reopened while the first one's save dialog is open keeps its own path.
+    #[test]
+    fn a_reopened_bounce_dialog_drops_the_answer_of_the_one_before() {
+        let ctx = egui::Context::default();
+        crate::fonts::install(&ctx, true);
+        let (mut app, tx) = sheet_app(soundcraft_engine::demo::demo_engine());
+        assert!(app.dialogs.open_for_command(&app.engine, "file.bounce_mix"));
+        dialog_frame(&ctx, &mut app, vec![]);
+        app.services.ask(&app.dialogs.file_tag("bounce"), Pick::Save("file.bounce_mix".into(), "/tmp/a.wav".into()));
+        assert!(app.dialogs.open_for_command(&app.engine, "file.bounce_mix"));
+        let before = bounce_form_path(&app);
+        dialog_frame(&ctx, &mut app, vec![]);
+        answer_sheet(&ctx, &mut app, &tx, "/tmp/stale.aiff");
+        assert_eq!(bounce_form_path(&app), before);
+    }
+
+    /// A Bounce dialog fills in the answer of the save dialog it asked for itself.
+    #[test]
+    fn a_bounce_dialog_takes_the_answer_of_its_own_save_dialog() {
+        let ctx = egui::Context::default();
+        crate::fonts::install(&ctx, true);
+        let (mut app, tx) = sheet_app(soundcraft_engine::demo::demo_engine());
+        assert!(app.dialogs.open_for_command(&app.engine, "file.bounce_mix"));
+        dialog_frame(&ctx, &mut app, vec![]);
+        app.services.ask(&app.dialogs.file_tag("bounce"), Pick::Save("file.bounce_mix".into(), "/tmp/a.wav".into()));
+        answer_sheet(&ctx, &mut app, &tx, "/tmp/mine.wav");
+        assert_eq!(bounce_form_path(&app), "/tmp/mine.wav");
     }
 
     /// Escape prevents a simultaneous Enter from starting a background bounce.
