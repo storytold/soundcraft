@@ -178,6 +178,7 @@ pub(super) fn translate(source: &str) -> Option<&'static str> {
         "Original Time Stamp" => "Registro de data e hora original",
         "Output" => "Saída",
         "Output device" => "Dispositivo de saída",
+        "Output window" => "Janela de saída",
         "OK" => "OK",
         "Outputs" => "Saídas",
         "Pan" => "Panorama",
