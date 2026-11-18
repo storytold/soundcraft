@@ -1,6 +1,6 @@
 # SoundCraft roadmap: milestones and what's next
 
-> **Last reviewed:** 2026-11-05 · **Last updated:** 2026-11-18 · **Change:** minor (MIDI input landed, the gate row needs checking on macOS and Windows; previously trivial: G-05 estimate after Linux/X11 plugin editors; previously trivial: M15: partial pt-BR catalog in PR #1346) · **Target:** Avid Pro Tools Ultimate 2026.4.1
+> **Last reviewed:** 2026-11-05 · **Last updated:** 2026-11-18 · **Change:** minor (MIDI input landed, the gate row needs checking on macOS and Windows; previously trivial: 28 built-in processors with the Frequency Shifter; previously trivial: G-05 estimate after Linux/X11 plugin editors; previously trivial: M15: partial pt-BR catalog in PR #1346) · **Target:** Avid Pro Tools Ultimate 2026.4.1
 
 Forward-looking plan. Status and numbers: [`../ROADMAP.md`](../ROADMAP.md) and
 [`target-app-parity.md`](target-app-parity.md); the ranked work list: [`gaps.md`](gaps.md).
@@ -25,7 +25,7 @@ main platform). Any **no** keeps SoundCraft **pre-alpha**, and those rows are th
 | Record audio from a chosen interface at a chosen buffer size, monitor, punch, keep the takes | **no** | Device, rate and buffer are chosen in the Playback Engine window and, in the desktop app, by `setup.playback_engine` (headless returns `applied: false`). The mix still runs in fixed 512-sample blocks. Separate input and output streams. Takes held in RAM until stop (PR #84). | 35–55 |
 | Record MIDI from a controller and play it back through an instrument | **unverified** | Built: keyboards play record-enabled instrument tracks live and are recorded into MIDI clips. On Linux, live play was checked with a hardware keyboard (Akai MPK mini 3) and recording with a virtual one; the row passes once it is checked on macOS and Windows too (G-02). | 2–4 |
 | Edit: select, trim, fade, comp playlists, Slip/Shuffle/Grid | yes (rough) | Every Edit menu command; property-tested with undo; open bugs #3, #5, #140 don't block the workflow | — |
-| Mix with built-in and third-party plugins, sends, busses, automation | partial (passes on CLAP/AU) | 27 built-in processors; CLAP and AU host on the signed macOS build, but its missing entitlement blocks third-party VST3 (#153). No AU plugin windows yet; VST3 windows on macOS, Windows and Linux/X11 | 1–2 (entitlement) |
+| Mix with built-in and third-party plugins, sends, busses, automation | partial (passes on CLAP/AU) | 28 built-in processors; CLAP and AU host on the signed macOS build, but its missing entitlement blocks third-party VST3 (#153). No AU plugin windows yet; VST3 windows on macOS, Windows and Linux/X11 | 1–2 (entitlement) |
 | Bounce mix and stems; save and reopen the session | yes (rough) | WAV/BWF/AIFF/FLAC bounce, stems, `.scraft` save/reopen with plugin state; bugs #59, #103 in bus bounce and aux latency (PRs open) | — |
 | Exchange a session with Pro Tools or a picture editor | **no** | No `.ptx`, AAF or OMF import or export (#40, G-03) | 50–90 |
 
@@ -89,6 +89,7 @@ There is no `cargo xtask scorecard` in this repo; the measured number is `cargo 
 | Date | Change | Summary |
 |---|---|---|
 | 2026-11-18 | minor | MIDI input devices landed (G-02 shrunk); the MIDI gate row is unverified until checked on macOS and Windows |
+| 2026-11-09 | trivial | 28 built-in processors with the Frequency Shifter |
 | 2026-11-05 | trivial | M15: a pt-BR catalog covers menus and `text`/`localized_format!` strings; remains native review, CJK/RTL and the other languages. Estimates unchanged |
 | 2026-10-30 | trivial | G-05 down to 10–15 h and the mix row's VST3 windows updated: VST3 and embedded CLAP editors are hosted on Linux/X11 (#527) |
 | 2026-10-25 | trivial | Record-workflow evidence: `setup.playback_engine` applies the device and buffer in the desktop app; headless returns `applied: false` |
