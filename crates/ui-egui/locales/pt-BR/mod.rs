@@ -879,6 +879,7 @@ fn menu_translate(source: &str) -> Option<&'static str> {
         "Bus" => "Bus",
         "Search buses…" => "Pesquisar buses…",
         "In {}" => "Entrada {}",
+        "In {}-{}" => "Entradas {}-{}",
         "Read" => "Leitura",
         "Write" => "Gravação",
         "Touch" => "Toque",

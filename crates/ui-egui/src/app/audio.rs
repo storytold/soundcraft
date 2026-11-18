@@ -1,6 +1,12 @@
 use super::{MeterDisplay, OutputTrouble, Player, SoundApp, Trouble};
 
 impl SoundApp {
+    pub(crate) fn available_input_channels(&self) -> usize {
+        self.recorder
+            .as_ref()
+            .map_or_else(|| self.player.as_ref().map_or(0, |player| player.input_channels(&self.ui.audio)), |recorder| recorder.channels)
+    }
+
     /// Whether the meters are live: while playing, and while armed or input-monitored tracks are heard.
     pub(crate) fn meters_live(&self) -> bool {
         self.engine.transport.playing

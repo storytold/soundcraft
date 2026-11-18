@@ -193,13 +193,32 @@ impl Player {
     /// Open recording and monitoring on the configured input. Reuse the active ASIO device
     /// when it is the selected input. Enumerating other drivers can fail with an active stream.
     pub fn open_input(&self, cfg: &AudioConfig) -> Result<record::Recorder, String> {
+        #[cfg(not(target_os = "freebsd"))]
+        return record::Recorder::open_on_device(&self.input_device(cfg)?, cfg);
+        #[cfg(target_os = "freebsd")]
+        record::Recorder::open_with(cfg)
+    }
+
+    /// Input width at the selected rate without opening a recording stream.
+    pub fn input_channels(&self, cfg: &AudioConfig) -> usize {
+        #[cfg(not(target_os = "freebsd"))]
+        return self.input_device(cfg).and_then(|device| record::input_config(&device, cfg)).map_or(0, |config| usize::from(config.channels()));
+        #[cfg(target_os = "freebsd")]
+        {
+            let _ = cfg;
+            0
+        }
+    }
+
+    #[cfg(not(target_os = "freebsd"))]
+    fn input_device(&self, cfg: &AudioConfig) -> Result<cpal::Device, String> {
         #[cfg(all(windows, feature = "asio"))]
         if let Some(device) = &self.asio_device
             && cfg.input.as_deref().is_none_or(|name| name == self.device_name)
         {
-            return record::Recorder::open_on_device(device, cfg);
+            return Ok(device.clone());
         }
-        record::Recorder::open_with(cfg)
+        record::input_device(cfg)
     }
 
     /// What stopped the audio output, once: a bug in the engine, or the device went away or
