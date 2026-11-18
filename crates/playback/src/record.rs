@@ -662,6 +662,8 @@ pub struct InputRing {
     underruns: AtomicUsize,
     /// The input found the ring full and dropped a block: what is buffered is stale.
     overflowed: AtomicBool,
+    /// Where the samples written stood (`head`) when the last block was dropped.
+    dropped_at: AtomicUsize,
     /// Peak of each input channel since [`InputRing::take_peaks`] (bits of a non-negative f32).
     peaks: Box<[AtomicU32]>,
     /// Only the reader locks this (`try_lock`, never contended in normal running).
@@ -699,6 +701,7 @@ impl InputRing {
             push_block: AtomicUsize::new(0),
             underruns: AtomicUsize::new(0),
             overflowed: AtomicBool::new(false),
+            dropped_at: AtomicUsize::new(0),
             peaks: (0..ch.min(64)).map(|_| AtomicU32::new(0)).collect(),
             reader: Mutex::new(Reader { phase: 0.0, primed: false, extra: 0, low: usize::MAX, window: 0, target: 0, trim: 0.0, drift: 0.0 }),
         })
@@ -734,6 +737,7 @@ impl InputRing {
         let head = self.head.load(Ordering::Relaxed);
         let free = self.slots.len().saturating_sub(head.wrapping_sub(self.tail.load(Ordering::Acquire)));
         if samples.len() > free {
+            self.dropped_at.store(head, Ordering::Relaxed);
             self.overflowed.store(true, Ordering::Release);
             return;
         }
@@ -753,6 +757,10 @@ impl InputRing {
     /// from before the pause is not what is heard when reading resumes; the input that arrives
     /// during the pause is kept.
     pub fn pause(&self) {
+        // A block dropped before now belongs to the input given up here, not to what comes
+        // next: its notice is taken back. One the input callback raises this instant is told by
+        // where it was dropped (see `pop_into`).
+        self.overflowed.store(false, Ordering::Release);
         // Only the output callback moves `tail`, and this is the output callback.
         self.tail.store(self.head.load(Ordering::Acquire), Ordering::Release);
         self.resync();
@@ -782,6 +790,9 @@ impl InputRing {
         let overflowed = self.overflowed.swap(false, Ordering::Acquire);
         let head = self.head.load(Ordering::Acquire);
         let mut tail = self.tail.load(Ordering::Relaxed);
+        // A block dropped where reading now starts was dropped for input that [`InputRing::pause`]
+        // has given up since: what was written after it is fresh.
+        let overflowed = overflowed && self.dropped_at.load(Ordering::Relaxed) != tail;
         let mut avail = head.wrapping_sub(tail) / ch;
         // What the whole output callback takes (not only this read of it), the input's own block,
         // and the reserve beyond the callback: a callback of the longer side and a little more,
@@ -790,20 +801,25 @@ impl InputRing {
         let push = self.push_block.load(Ordering::Relaxed).max(1);
         // No more than the ring can hold, so that a ring filled by fresh input starts reading.
         let room = self.slots.len() / ch;
-        // Nor more of the callback than fits twice (the callback and its reserve) beside the
-        // input blocks around them: a callback too long for the ring is then heard as well as
-        // the ring allows, where waiting for a start the ring cannot hold is never heard.
+        // A callback too long for the ring (with an input block beside it) counts for what fits
+        // twice, itself and its reserve, beside the input blocks around them: it is then heard
+        // as well as the ring allows, where waiting for a start the ring cannot hold is never
+        // heard. A callback the ring holds counts whole: reading that starts on less runs dry
+        // at the end of every callback.
         let fits = room.saturating_sub(push.saturating_mul(2)).saturating_sub(r.extra).saturating_sub(64) / 2;
         let demand = ((frames.max(callback) as f64 * ratio).ceil() as usize).saturating_add(2);
-        let need = demand.min(fits).max(read);
-        let wanted = need.max(push.saturating_add(2)).saturating_add(16).saturating_add(r.extra);
-        // Reading starts once the input covers this callback and the reserve. The ring is sized
-        // by the input's callback, not the output's: the start leaves room for the input of one
-        // more output callback (and a block), or a long output callback would overflow the ring
-        // while it waits, drop it all and wait again, and never be heard. The reserve is what
-        // the start then leaves beyond the callback.
-        let start = need.saturating_add(wanted).min(room.saturating_sub(demand.max(push)).saturating_sub(push)).max(need);
-        let reserve = start.saturating_sub(need);
+        let need = if demand.saturating_add(push) <= room { demand } else { demand.min(fits).max(read) };
+        // The ring is sized by the input's callback, not the output's. What is buffered before a
+        // read (the start) or left after one (the reserve) leaves room for the input of one more
+        // output callback and two blocks (one that comes early, one of headroom): a long output
+        // callback would otherwise overflow the ring while it waits to start, drop it all and
+        // wait again, and never be heard.
+        let beside = room.saturating_sub(demand.max(push)).saturating_sub(push.saturating_mul(2));
+        let reserve = need.max(push.saturating_add(2)).saturating_add(16).saturating_add(r.extra).min(beside);
+        // Reading starts once the input covers this callback and the reserve, or as much of the
+        // two as leaves that room; never less than the callback itself. What it then keeps is
+        // the callback and the whole reserve, when that much is there.
+        let start = need.saturating_add(reserve).min(beside).max(need);
         // The input side dropped a block: reading stood still and all of it is old. A ring that
         // is merely full holds fresh input that has not been read yet.
         if overflowed {
@@ -818,7 +834,7 @@ impl InputRing {
                 self.tail.store(tail, Ordering::Release);
                 return;
             }
-            let keep = start.saturating_add(push).min(avail);
+            let keep = need.saturating_add(reserve).saturating_add(push).min(need.saturating_add(beside)).min(avail);
             tail = head.wrapping_sub(keep * ch);
             avail = keep;
             *r = Reader { primed: true, extra: r.extra, phase: 0.0, low: usize::MAX, window: 0, target: 0, trim: r.drift, drift: r.drift };
@@ -969,6 +985,42 @@ mod ring_tests {
         assert!(out.iter().any(|v| v.abs() > 0.9), "the input is never heard");
         assert_eq!(dry, 0);
         assert!(roughness(&out) < 0.14, "{}", roughness(&out));
+    }
+
+    /// An output callback of half the ring (16 384 frames, 32 768 slots): the limit on the start
+    /// does not go below the callback itself, or every callback would run dry at its end.
+    #[test]
+    fn an_output_callback_of_half_the_ring_does_not_run_dry() {
+        let ring = InputRing::sized(1, 48_000, 64);
+        assert_eq!(ring.slots.len(), 32_768);
+        let (out, dry) = run_ring(&ring, 48_000, 64, 16_384, 4.0, 0.0);
+        assert!(out.iter().any(|v| v.abs() > 0.9), "the input is never heard");
+        assert_eq!(dry, 0);
+        assert!(roughness(&out) < 0.14, "{}", roughness(&out));
+    }
+
+    /// A block dropped before a pause says the input from before it is stale. That input is
+    /// given up at the pause; the input since is fresh and is heard. A block dropped during the
+    /// pause still means what is buffered is stale.
+    #[test]
+    fn a_block_dropped_before_a_pause_does_not_drop_the_input_since() {
+        let ring = InputRing::new(1, 48_000);
+        let mut out = vec![vec![0.0f32; 64]];
+        for _ in 0..ring.slots.len() / 64 + 2 {
+            ring.push(&[0.5; 64]);
+        }
+        ring.pause();
+        for _ in 0..4 {
+            ring.push(&[-0.5; 64]);
+        }
+        ring.pop_into(&mut out, 64, 64, 48_000);
+        assert!(out[0].iter().all(|v| *v == -0.5), "the input since the pause is dropped: {:?}", out[0]);
+        ring.pause();
+        for _ in 0..ring.slots.len() / 64 + 2 {
+            ring.push(&[0.25; 64]);
+        }
+        ring.pop_into(&mut out, 64, 64, 48_000);
+        assert!(out[0].iter().all(|v| *v == 0.0), "input left to overflow during the pause is stale");
     }
 
     /// Input from before a pause in reading is not heard after it: one new block is not enough
