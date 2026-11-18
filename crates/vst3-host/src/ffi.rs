@@ -235,7 +235,7 @@ mod tests {
 
     #[test]
     fn param_queues_keep_points_in_offset_order_and_the_later_call_at_one_offset() {
-        let pc = ParamChanges::new(1);
+        let pc = ParamChanges::new(1, process::QUEUE_POINTS);
         pc.set(5, 40, 0.4, 3);
         pc.set(5, 0, 0.1, 2);
         pc.set(5, 0, 0.9, 1);
@@ -271,7 +271,7 @@ mod tests {
 
     #[test]
     fn host_objects_behave() {
-        let pc = ParamChanges::new(2);
+        let pc = ParamChanges::new(2, 1);
         pc.set(5, 0, 0.25, 1);
         pc.set(5, 0, 0.5, 2);
         pc.set(6, 0, 1.0, 3);

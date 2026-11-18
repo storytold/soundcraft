@@ -1,7 +1,7 @@
 use super::editor::{EditorInner, EditorLink};
 use super::host::HostContext;
 use super::instance::Instance;
-use super::process::{EventList, ParamChanges};
+use super::process::{EventList, ParamChanges, QUEUE_POINTS};
 use super::{
     Arc, AtomicBool, AtomicUsize, ComPtr, ComWrapper, Duration, EVENT_CAP, FUnknown, IComponentTrait, IConnectionPointTrait, IEditControllerTrait,
     IPluginBaseTrait, IPluginFactory2Trait, IPluginFactoryTrait, Interface, MAX_CLASSES, ManuallyDrop, Mutex, OnceLock, Ordering, PARAM_QUEUE_CAP,
@@ -460,8 +460,9 @@ impl Bundle {
             processing: false,
             max_frames: 0,
             process_mode: sv::ProcessModes_::kRealtime as i32,
-            in_params: ComWrapper::new(ParamChanges::new(PARAM_QUEUE_CAP)),
-            out_params: ComWrapper::new(ParamChanges::new(PARAM_QUEUE_CAP)),
+            in_params: ComWrapper::new(ParamChanges::new(PARAM_QUEUE_CAP, QUEUE_POINTS)),
+            // The host reads back only the last output point.
+            out_params: ComWrapper::new(ParamChanges::new(PARAM_QUEUE_CAP, 1)),
             in_events: ComWrapper::new(EventList::new(EVENT_CAP)),
             out_events: ComWrapper::new(EventList::new(EVENT_CAP)),
             // SAFETY: `ProcessContext` is plain data (numbers and small structs); all-zero is valid.

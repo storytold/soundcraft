@@ -5,25 +5,36 @@ use super::{
 
 /// Points one input queue holds per block. Host values and controller points for one parameter
 /// rarely number more than a few per block; a fuller queue keeps the latest state (see
-/// [`ParamChanges::set`]).
-pub(crate) const QUEUE_POINTS: usize = 16;
+/// [`ParamChanges::set`]). Every instance holds `PARAM_QUEUE_CAP` input queues, so this sets
+/// most of its parameter memory (24 bytes a point).
+pub(crate) const QUEUE_POINTS: usize = 8;
 
-/// One parameter's points for one block, sorted by offset (fixed storage, never allocates).
-/// The host may add several (a host value and controller points); a plugin writing output
-/// changes keeps only its last.
-#[derive(Default)]
+/// One parameter's points for one block, sorted by offset. The storage is sized when the queue
+/// is made and never grows. The host may add several points (a host value and controller
+/// points); a plugin writing output changes keeps only its last, so output queues hold one.
 pub(crate) struct ParamQueue {
     id: AtomicU32,
-    offsets: [AtomicI32; QUEUE_POINTS],
-    values: [AtomicU64; QUEUE_POINTS],
+    offsets: Box<[AtomicI32]>,
+    values: Box<[AtomicU64]>,
     /// Call order of each point, so the later call wins at a shared offset.
-    seqs: [AtomicU64; QUEUE_POINTS],
+    seqs: Box<[AtomicU64]>,
     points: AtomicI32,
 }
 
 impl ParamQueue {
+    fn new(cap: usize) -> ParamQueue {
+        let cap = cap.max(1);
+        ParamQueue {
+            id: AtomicU32::new(0),
+            offsets: (0..cap).map(|_| AtomicI32::new(0)).collect(),
+            values: (0..cap).map(|_| AtomicU64::new(0)).collect(),
+            seqs: (0..cap).map(|_| AtomicU64::new(0)).collect(),
+            points: AtomicI32::new(0),
+        }
+    }
+
     fn len(&self) -> usize {
-        usize::try_from(self.points.load(Ordering::Relaxed)).unwrap_or(0).min(QUEUE_POINTS)
+        usize::try_from(self.points.load(Ordering::Relaxed)).unwrap_or(0).min(self.offsets.len())
     }
 
     fn point(&self, i: usize) -> Option<(i32, u64, u64)> {
@@ -52,7 +63,7 @@ impl ParamQueue {
             if seq >= s {
                 self.write(k, new);
             }
-        } else if n < QUEUE_POINTS {
+        } else if n < self.offsets.len() {
             for i in (k..n).rev() {
                 if let Some(p) = self.point(i) {
                     self.write(i + 1, p);
@@ -113,8 +124,9 @@ impl Class for ParamChanges {
 }
 
 impl ParamChanges {
-    pub(super) fn new(cap: usize) -> ParamChanges {
-        ParamChanges { queues: (0..cap).map(|_| ComWrapper::new(ParamQueue::default())).collect(), count: AtomicI32::new(0) }
+    /// `cap` queues of `points` points each (at least one).
+    pub(super) fn new(cap: usize, points: usize) -> ParamChanges {
+        ParamChanges { queues: (0..cap).map(|_| ComWrapper::new(ParamQueue::new(points))).collect(), count: AtomicI32::new(0) }
     }
 
     pub(super) fn clear(&self) {
