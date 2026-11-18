@@ -517,13 +517,14 @@ impl Player {
     /// Take the meters accumulated since the last call into reusable UI storage and start a new
     /// period: `out` gets the highest peak of every block rendered in between. If no block was
     /// rendered since (a large device buffer renders several blocks per callback), `out` keeps
-    /// the previous values rather than dropping to silence. Call it from one place only (two
-    /// readers would split the peaks between them). Once track/channel counts are stable this
-    /// performs no allocation. The audio thread only ever `try_lock`s, so holding the lock here
-    /// never blocks it; blocks rendered meanwhile reach the next call.
-    pub fn take_meters(&self, out: &mut MeterSnapshot) {
+    /// the previous values rather than dropping to silence, and the call returns `false`: a caller
+    /// that sees no block for long enough knows the readings are stale. Call it from one place
+    /// only (two readers would split the peaks between them). Once track/channel counts are stable
+    /// this performs no allocation. The audio thread only ever `try_lock`s, so holding the lock
+    /// here never blocks it; blocks rendered meanwhile reach the next call.
+    pub fn take_meters(&self, out: &mut MeterSnapshot) -> bool {
         let mut source = self.shared.meters.lock().unwrap_or_else(PoisonError::into_inner);
-        take_meter_snapshot(&mut source, out);
+        take_meter_snapshot(&mut source, out)
     }
 }
 

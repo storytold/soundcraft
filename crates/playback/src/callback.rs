@@ -426,14 +426,15 @@ impl Side {
     }
 }
 
-pub(crate) fn take_meter_snapshot(source: &mut MeterSnapshot, out: &mut MeterSnapshot) {
+pub(crate) fn take_meter_snapshot(source: &mut MeterSnapshot, out: &mut MeterSnapshot) -> bool {
     if !source.fresh {
         // No block since the last take: keep the readings, but not those of deleted tracks.
         out.tracks.retain(|id, _| source.tracks.contains_key(id));
-        return;
+        return false;
     }
     copy_meter_snapshot(source, out);
     source.reset_levels();
+    true
 }
 
 pub(crate) fn copy_meter_snapshot(source: &MeterSnapshot, out: &mut MeterSnapshot) {
