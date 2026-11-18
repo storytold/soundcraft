@@ -1744,12 +1744,13 @@ fn live_controllers_bend_aftertouch_and_program_reach_the_instrument_at_their_of
     ];
     assert_eq!(std::mem::take(&mut *heard.lock().unwrap()), want);
     // Out of record: the controllers go back to what the clips say (a reset; there are none).
+    // The reset leaves the volume the device set, so that goes back to MIDI's default.
     eng.midi.clear();
     s.track_mut(t).unwrap().mixer.record_arm = false;
     render_block(&mut eng, &s, 512);
     assert!(heard.lock().unwrap().is_empty());
     render_block(&mut eng, &s, 1024);
-    assert_eq!(std::mem::take(&mut *heard.lock().unwrap()), vec![(0, [0xB0, 121, 0])]);
+    assert_eq!(std::mem::take(&mut *heard.lock().unwrap()), vec![(0, [0xB0, 121, 0]), (0, [0xB0, 7, 100])]);
     render_block(&mut eng, &s, 1536);
     assert!(heard.lock().unwrap().is_empty(), "once");
 }
@@ -2020,4 +2021,56 @@ fn the_clips_sustain_pedal_is_not_put_down_again_when_a_device_goes_away_while_s
     stopped(&mut eng, 0, &[ev(1, 0x80, 64, 0)]);
     let tail = (0..200).map(|_| stopped(&mut eng, 0, &[])).last().unwrap();
     assert!(tail < 1e-4, "the clips' pedal held the live note: {tail}");
+}
+
+#[test]
+fn a_volume_or_pan_left_by_a_device_that_went_away_goes_back_to_the_midi_default() {
+    use soundcraft_midi::{CtrlEvent, CtrlKind, Sequence};
+    let ev = |port, status, data1, data2| LiveMidi { offset: 0, port, status, data1, data2 };
+    let lost = |eng: &mut MixEngine, s: &Session, pos: i64, bits: u64| {
+        eng.midi.clear();
+        eng.midi_lost = bits;
+        render_block(eng, s, pos);
+        eng.midi_lost = 0;
+    };
+    // Port 0 turns the volume down to nothing and the pan hard left, and is unplugged. The
+    // reset of the controllers does not touch those two: they are set to MIDI's defaults.
+    let (s, _, mut eng, heard) = ears_session();
+    eng.midi.extend([ev(0, 0xB0, 7, 0), ev(0, 0xB0, 10, 0), ev(0, 0xB0, 1, 50)]);
+    render_block(&mut eng, &s, 0);
+    heard.lock().unwrap().clear();
+    lost(&mut eng, &s, 512, midi_port_bit(0));
+    assert_eq!(std::mem::take(&mut *heard.lock().unwrap()), vec![(0, [0xB0, 121, 0]), (0, [0xB0, 7, 100]), (0, [0xB0, 10, 64])]);
+    lost(&mut eng, &s, 1024, midi_port_bit(0));
+    assert!(heard.lock().unwrap().is_empty(), "once");
+    // A device that is still there has the say: its volume is sent again, no default.
+    let (s, _, mut eng, heard) = ears_session();
+    eng.midi.extend([ev(1, 0xB0, 7, 90), ev(0, 0xB0, 7, 0)]);
+    render_block(&mut eng, &s, 0);
+    heard.lock().unwrap().clear();
+    lost(&mut eng, &s, 512, midi_port_bit(0));
+    assert_eq!(std::mem::take(&mut *heard.lock().unwrap()), vec![(0, [0xB0, 121, 0]), (0, [0xB0, 7, 90])]);
+    // So have the clips: their volume at this position, no default.
+    let (mut s, t, mut eng, heard) = ears_session();
+    let mut seq = Sequence::default();
+    seq.ctrls.push(CtrlEvent { tick: 0, channel: 0, kind: CtrlKind::Cc(7), value: 80 });
+    let cid = s.new_clip_id();
+    s.track_mut(t).unwrap().playlist_mut().unwrap().clips.push(Clip::midi(cid, "c", 0, 24_000, seq));
+    render_block(&mut eng, &s, 0);
+    eng.midi.push(ev(0, 0xB0, 7, 0));
+    render_block(&mut eng, &s, 512);
+    heard.lock().unwrap().clear();
+    lost(&mut eng, &s, 1024, midi_port_bit(0));
+    assert_eq!(std::mem::take(&mut *heard.lock().unwrap()), vec![(0, [0xB0, 121, 0]), (0, [0xB0, 7, 80])]);
+    // The track leaves record with the volume down: the next block's reset is followed by the
+    // default as well.
+    let (mut s, t, mut eng, heard) = ears_session();
+    eng.midi.push(ev(0, 0xB0, 7, 0));
+    render_block(&mut eng, &s, 0);
+    eng.midi.clear();
+    s.track_mut(t).unwrap().mixer.record_arm = false;
+    render_block(&mut eng, &s, 512);
+    heard.lock().unwrap().clear();
+    render_block(&mut eng, &s, 1024);
+    assert_eq!(std::mem::take(&mut *heard.lock().unwrap()), vec![(0, [0xB0, 121, 0]), (0, [0xB0, 7, 100])]);
 }

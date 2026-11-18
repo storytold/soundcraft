@@ -115,14 +115,16 @@ fn ctrl_message(kind: CtrlKind, value: i32, transpose: i64) -> [u8; 3] {
 }
 
 /// Before an instrument plays from `pos`: reset its controllers, then send each one the last value
-/// it had on this track before `pos`.
-pub(crate) fn chase_controllers(s: &Session, t: &Track, pos: Samples, inst: &mut PluginSlot) {
+/// it had on this track before `pos`. Returns the control changes that were given a value, bit
+/// `n` for CC `n`.
+pub(crate) fn chase_controllers(s: &Session, t: &Track, pos: Samples, inst: &mut PluginSlot) -> u128 {
     inst.plugin.midi(0, [0xB0, 121, 0]);
     let pos = pos.saturating_sub(midi_offset(s, t));
     const BEND: usize = 128;
     const PRESSURE: usize = 129;
     const PROGRAM: usize = 130;
     let mut last = [(i64::MIN, 0i32); 131];
+    let mut sent = 0u128;
     let sr = s.sample_rate;
     for clip in t.clips() {
         let ClipContent::Midi { sequence } = &clip.content else { continue };
@@ -157,8 +159,12 @@ pub(crate) fn chase_controllers(s: &Session, t: &Track, pos: Samples, inst: &mut
         };
         if at != i64::MIN {
             inst.plugin.midi(0, ctrl_message(kind, value, 0));
+            if slot < 128 {
+                sent |= 1u128 << slot;
+            }
         }
     }
+    sent
 }
 
 /// Session audio shared with a sample-playing instrument.

@@ -321,7 +321,8 @@ fn render_instrument(s: &Session, t: &Track, strip: &mut Strip, live: &LiveInput
         // Whether the clips' controller values were sent to the instrument for this block.
         let mut chased = std::mem::take(&mut strip.chase);
         if chased {
-            chase_controllers(s, t, pos, inst);
+            let from_clips = chase_controllers(s, t, pos, inst);
+            strip.live.restore_defaults(from_clips, inst.plugin.as_mut());
         }
         // Live sources that went away (a port that lost input, an input the track no longer
         // listens to) let go first, before anything of this block reaches the instrument. The
@@ -332,7 +333,8 @@ fn render_instrument(s: &Session, t: &Track, strip: &mut Strip, live: &LiveInput
         // events of this block come after that, so a controller a clip changes right at the
         // start of the block keeps its new value.
         if midi_thru(t) && strip.live.reconcile(t, live.midi_lost, live.ports, inst.plugin.as_mut()) {
-            chase_controllers(s, t, pos, inst);
+            let from_clips = chase_controllers(s, t, pos, inst);
+            strip.live.restore_defaults(from_clips, inst.plugin.as_mut());
             strip.live.resend_controllers(inst.plugin.as_mut());
             chased = true;
         }

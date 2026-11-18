@@ -36,6 +36,13 @@
 //! detune what another device plays, and a controller two devices had set goes back to the
 //! value of the one that stays.
 //!
+//! That reset is MIDI's Reset All Controllers, which leaves the channel volume (CC 7) and the pan
+//! (CC 10) as they are. So when the source that went away had set one of those two, and neither
+//! the clips nor a source that is still there gives it a value, the instrument is sent the value
+//! MIDI names as the default (volume 100, pan in the middle): a device that turned the volume
+//! down to nothing and was unplugged does not leave the track silent. Other controllers the
+//! reset leaves alone have no default to go back to, and stay.
+//!
 //! [`MAX_LIVE_CTRLS`] such values are kept; past that the oldest is forgotten. The strip still
 //! knows which ports and channels it forgot a value of: when one of them goes away the
 //! controllers are set again all the same, and the forgotten one falls back to the clips' value.
@@ -243,6 +250,18 @@ impl LiveCtrl {
     }
 }
 
+/// The controllers that Reset All Controllers leaves alone and that have a default in MIDI:
+/// `(controller, default, bit in [`LiveNotes::defaults_owed`])`.
+const KEPT_BY_RESET: [(u8, u8, u8); 2] = [(7, 100, 1), (10, 64, 2)];
+
+/// The bit of `msg` in [`LiveNotes::defaults_owed`], when it sets one of [`KEPT_BY_RESET`].
+fn kept_by_reset(msg: &LiveMidi) -> u8 {
+    if msg.status & 0xF0 != 0xB0 {
+        return 0;
+    }
+    KEPT_BY_RESET.iter().find(|(cc, ..)| *cc == msg.data1).map_or(0, |(.., bit)| *bit)
+}
+
 /// Per-strip state of the live notes, by owner.
 #[derive(Debug)]
 pub(crate) struct LiveNotes {
@@ -257,6 +276,11 @@ pub(crate) struct LiveNotes {
     /// full table forgot: the instrument may still have a value of theirs.
     forgotten_ports: u64,
     forgotten_channels: u16,
+    /// Which of [`KEPT_BY_RESET`] the full table forgot a value of.
+    forgotten_kept: u8,
+    /// Which of [`KEPT_BY_RESET`] a live source that is gone had set: the next reset of the
+    /// instrument's controllers does not undo that ([`Self::restore_defaults`]).
+    defaults_owed: u8,
     /// Pitches the track's clips hold on the same instrument right now ([`Self::set_clip_notes`]).
     clip: NoteSet,
 }
@@ -270,6 +294,8 @@ impl Default for LiveNotes {
             ctrl_order: 0,
             forgotten_ports: 0,
             forgotten_channels: 0,
+            forgotten_kept: 0,
+            defaults_owed: 0,
             clip: NoteSet::default(),
         }
     }
@@ -278,7 +304,29 @@ impl Default for LiveNotes {
 impl LiveNotes {
     /// Forget everything (the instrument was told `all_notes_off`).
     pub(crate) fn clear(&mut self) {
+        // What live input did to the volume and the pan is still on the instrument.
+        let owed = self.kept_set();
         *self = LiveNotes::default();
+        self.defaults_owed = owed;
+    }
+
+    /// Which of [`KEPT_BY_RESET`] live input has set on the instrument, as far as is known.
+    fn kept_set(&self) -> u8 {
+        self.ctrls.iter().filter(|c| c.msg.status != 0).fold(self.defaults_owed | self.forgotten_kept, |m, c| m | kept_by_reset(&c.msg))
+    }
+
+    /// After the instrument's controllers were reset and set from the clips (`from_clips`: the
+    /// controllers the clips gave a value, bit `n` for CC `n`): the volume and the pan that a
+    /// live source which is gone had set go back to MIDI's defaults, unless the clips or a live
+    /// source that is still there say otherwise. See "Controllers" in the module text.
+    pub(crate) fn restore_defaults(&mut self, from_clips: u128, inst: &mut dyn Plugin) {
+        let owed = std::mem::take(&mut self.defaults_owed);
+        let live = self.ctrls.iter().filter(|c| c.msg.status != 0).fold(0, |m, c| m | kept_by_reset(&c.msg));
+        for (cc, default, bit) in KEPT_BY_RESET {
+            if owed & bit != 0 && live & bit == 0 && from_clips & (1u128 << cc) == 0 {
+                inst.midi(0, [0xB0, cc, default]);
+            }
+        }
     }
 
     /// Whether a live note may still sound, or a pedal is down.
@@ -332,6 +380,7 @@ impl LiveNotes {
     fn forget_controllers(&mut self, gone: impl Fn(&LiveMidi) -> bool) -> bool {
         let mut any = false;
         for c in self.ctrls.iter_mut().filter(|c| c.msg.status != 0 && gone(&c.msg)) {
+            self.defaults_owed |= kept_by_reset(&c.msg);
             *c = LiveCtrl::default();
             any = true;
         }
@@ -351,6 +400,7 @@ impl LiveNotes {
             let (i, oldest) = self.ctrls.iter().enumerate().min_by_key(|(_, c)| c.order)?;
             self.forgotten_ports |= midi_port_bit(oldest.msg.port);
             self.forgotten_channels |= 1u16 << oldest.msg.channel();
+            self.forgotten_kept |= kept_by_reset(&oldest.msg);
             Some(i)
         });
         if let Some(c) = at.and_then(|i| self.ctrls.get_mut(i)) {
@@ -377,9 +427,11 @@ impl LiveNotes {
         let lost = self.release_ports(lost, inst);
         let stale = self.drop_unaccepted(&MidiInput::of(&t.mixer.input), ports, inst) || lost;
         if stale {
-            // The caller resets the instrument's controllers: no forgotten value is left on it.
+            // The caller resets the instrument's controllers: no forgotten value is left on it,
+            // but for the volume and the pan, which the reset does not touch.
             self.forgotten_ports = 0;
             self.forgotten_channels = 0;
+            self.defaults_owed |= std::mem::take(&mut self.forgotten_kept);
         }
         stale
     }
@@ -440,9 +492,11 @@ impl LiveNotes {
     /// also moved the instrument's controllers: the caller chases them back to the clips' values.
     pub(crate) fn release(&mut self, inst: &mut dyn Plugin) -> bool {
         self.drop_owners(inst, 0, |_| true);
+        self.defaults_owed = self.kept_set();
         self.ctrls = [LiveCtrl::default(); MAX_LIVE_CTRLS];
         self.forgotten_ports = 0;
         self.forgotten_channels = 0;
+        self.forgotten_kept = 0;
         std::mem::take(&mut self.controllers)
     }
 
