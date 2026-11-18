@@ -312,7 +312,10 @@ mod save_tests {
         let mut second = with_take(-0.25);
         let track = second.session().tracks[0].id.0;
         for id in ["session.save", "session.save_as", "session.save_copy", "session.save_template", "file.export_selected_tracks_as_session"] {
-            let err = second.execute(id, &json!({"path": path, "tracks": [track]})).unwrap_err();
+            // Only the export takes `tracks`; the others refuse it as an unknown key.
+            let params =
+                if id == "file.export_selected_tracks_as_session" { json!({"path": path, "tracks": [track]}) } else { json!({"path": path}) };
+            let err = second.execute(id, &params).unwrap_err();
             assert!(err.to_string().contains("`replace: true`"), "{id}: {err}");
         }
         assert_eq!(std::fs::read_dir(dir.join("Audio Files")).unwrap().count(), 1);

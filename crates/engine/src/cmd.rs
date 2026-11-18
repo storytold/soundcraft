@@ -20,6 +20,7 @@ mod event_more;
 mod file;
 mod health;
 mod instrument;
+pub(crate) mod keys;
 mod midi;
 mod mix;
 mod more_util;
@@ -46,7 +47,7 @@ mod panic_probe {
     use crate::cmd;
 
     pub fn specs() -> Vec<CommandSpec> {
-        vec![cmd!(noundo "test.panic_probe", "Panic Probe", [], None, "{}", always, probe)]
+        vec![cmd!(noundo "test.panic_probe", "Panic Probe", [], None, "{panic?}", always, probe)]
     }
 
     fn probe(e: &mut Engine, p: &Value) -> Result<Value> {

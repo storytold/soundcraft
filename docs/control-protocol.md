@@ -33,7 +33,7 @@ Newline-delimited JSON over TCP on `127.0.0.1`. One request per line, one reply 
 {"id": 1, "ok": true, "result": {"tracks": [12, 13]}}
 ```
 
-Errors: `{"id": 1, "ok": false, "error": "bad parameters for `mix.volume`: no track named `Nope`"}`. A line that is not a JSON object with a string `method` gets one error reply, and the connection is closed.
+Errors: `{"id": 1, "ok": false, "error": "bad parameters for `mix.volume`: no track named `Nope`"}`. A command takes only the keys its params doc (`engine.commands`) names, so a misspelt or misplaced key is an error rather than ignored: `mix.send {"track": "Vox", "bus": "Rev", "db": -6}` answers `bad parameters for `mix.send`: unknown parameter `db` (did you mean `level_db`?); it takes track, slot, bus, level_db, pre_fader`. Where a doc names `track` or `tracks`, the other spelling is taken too (likewise `clip` and `clips`), and `start` with `end` also takes `length`, unless the command reads only the documented key. A line that is not a JSON object with a string `method` gets one error reply, and the connection is closed.
 
 ## Methods
 

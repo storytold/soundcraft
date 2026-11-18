@@ -56,7 +56,7 @@ pub fn specs() -> Vec<CommandSpec> {
             z.scroll = to.unwrap_or(z.scroll.saturating_add(by)).clamp(0, MAX_POSITION);
             Ok(json!({"scroll": z.scroll}))
         }),
-        cmd!(view "view.waveform_zoom", "Waveform Zoom", [], Some("Cmd+Alt+[ / ]"), "{factor?: 2 | value}", always, |e, p| {
+        cmd!(view "view.waveform_zoom", "Waveform Zoom", [], Some("Cmd+Alt+[ / ]"), "{factor?: 2, value?: zoom (instead of factor)}", always, |e, p| {
             let z = e.zoom_mut();
             let w = if let Some(v) = p.get("value").and_then(Value::as_f64) { v as f32 } else { z.waveform_zoom * f32_or(p, "factor", 2.0) };
             z.waveform_zoom = if w.is_finite() { w.clamp(0.25, 64.0) } else { 1.0 };
