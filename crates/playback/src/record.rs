@@ -235,7 +235,10 @@ impl Recorder {
             let rates: Vec<u32> = audio.sample_rate.into_iter().chain(device.default_input_config().ok().map(|d| d.sample_rate())).collect();
             crate::devices::port_group_config(&configs, &rates, ports)
         });
-        let at_rate = grouped.or_else(|| audio.sample_rate.and_then(|r| pick_input_config(&configs, r)));
+        // JACK offers every channel count at its one rate: "the most channels" would be all 64
+        // of them, so without an interface chosen its default (two, on the system ports) is kept.
+        let jack = host.id().to_string() == "jack";
+        let at_rate = grouped.or_else(|| audio.sample_rate.filter(|_| !jack).and_then(|r| pick_input_config(&configs, r)));
         let cfg = match at_rate {
             Some(c) => c,
             None => {

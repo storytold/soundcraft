@@ -106,8 +106,8 @@ pub struct AudioSystem {
     pub is_default: bool,
     /// The system the automatic order opens the input on.
     pub is_default_input: bool,
-    /// Whether "Default" opens an output here. It need not be one of `outputs`: PipeWire follows
-    /// the desktop's default sink and JACK connects to the system ports.
+    /// Whether "Default" has an output to open here. It need not be one of `outputs`: PipeWire
+    /// follows the desktop's default sink and JACK connects to the system ports.
     pub has_output: bool,
     /// Whether "Default" opens an input here.
     pub has_input: bool,
@@ -164,8 +164,7 @@ fn describe(listed: crate::host::Listed, default_id: Option<&str>) -> DeviceInfo
 /// settings window opens, not every frame.
 pub fn audio_systems() -> Vec<AudioSystem> {
     use crate::host::Direction;
-    // (the system, whether the automatic order would open its output, its input)
-    let mut systems: Vec<(AudioSystem, bool, bool)> = crate::host::host_ids()
+    let mut systems: Vec<AudioSystem> = crate::host::host_ids()
         .into_iter()
         .filter_map(|id| {
             let host = cpal::host_from_id(id).ok()?;
@@ -175,27 +174,27 @@ pub fn audio_systems() -> Vec<AudioSystem> {
                 crate::host::listed(&host, direction).into_iter().map(|entry| describe(entry, default)).collect()
             };
             let (outputs, inputs) = (list(Direction::Output, def_out.as_deref()), list(Direction::Input, def_in.as_deref()));
-            let system = AudioSystem {
+            Some(AudioSystem {
                 id: id.to_string(),
                 name: id.name().to_string(),
                 is_default: false,
                 is_default_input: false,
-                has_output: def_out.is_some(),
-                has_input: def_in.is_some(),
+                // The same test the automatic order makes when it opens a stream: PipeWire with
+                // a microphone and no sink has a default output that plays to nothing.
+                has_output: crate::host::has_default(&host, Direction::Output, true),
+                has_input: crate::host::has_default(&host, Direction::Input, true),
                 outputs,
                 inputs,
-            };
-            // The same test the automatic order makes when it opens a stream.
-            Some((system, crate::host::has_default(&host, Direction::Output, true), crate::host::has_default(&host, Direction::Input, true)))
+            })
         })
         .collect();
-    if let Some((system, ..)) = systems.iter_mut().find(|(_, output, _)| *output) {
+    if let Some(system) = systems.iter_mut().find(|s| s.has_output) {
         system.is_default = true;
     }
-    if let Some((system, ..)) = systems.iter_mut().find(|(_, _, input)| *input) {
+    if let Some(system) = systems.iter_mut().find(|s| s.has_input) {
         system.is_default_input = true;
     }
-    systems.into_iter().map(|(system, ..)| system).collect()
+    systems
 }
 
 /// The configuration for a stream that is wired to a JACK interface afterwards: `channels` wide
