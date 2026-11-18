@@ -45,6 +45,7 @@ impl SoundApp {
             midi_take: Vec::new(),
             midi_take_lost: 0,
             midi_take_inputs: Vec::new(),
+            midi_pass_unconfirmed: None,
             lost_shown: 0,
             take_plan: None,
             ui: UiState::default(),

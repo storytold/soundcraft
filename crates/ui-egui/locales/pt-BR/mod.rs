@@ -1537,6 +1537,9 @@ fn menu_translate(source: &str) -> Option<&'static str> {
         "The audio engine did not answer when the pass ended: the last MIDI notes played may be missing from the take" => {
             "O mecanismo de áudio não respondeu quando a passagem terminou: as últimas notas MIDI tocadas podem estar faltando no take"
         }
+        "Cannot record: the audio engine has not finished the previous record pass yet (is the audio device running?)" => {
+            "Não foi possível gravar: o mecanismo de áudio ainda não concluiu a passagem de gravação anterior (o dispositivo de áudio está funcionando?)"
+        }
         "All MIDI" => "Todo MIDI",
         "Channel" => "Canal",
         "MIDI input" => "Entrada MIDI",

@@ -89,7 +89,7 @@ same happens when a device is unplugged with keys down.
 If that happens during a record pass, the status line says the take is incomplete, and the notes
 that were held end at that point in the clip. The status line also says so when the audio engine
 did not answer at the end of the pass (an audio device that stopped): the last notes played may
-then be missing. The MIDI inputs section of Setup › Playback Engine
+then be missing, and a new pass that records MIDI does not start until the audio engine answers. The MIDI inputs section of Setup › Playback Engine
 shows how many messages were dropped.
 
 ## For agents

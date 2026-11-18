@@ -1,7 +1,7 @@
 //! MIDI input devices: opening them, following hotplug, and turning what is played during a
 //! record pass into MIDI clips.
 
-use super::{Range, SoundApp, json};
+use super::{Range, Samples, SoundApp, json};
 use soundcraft_engine::io::MidiTakeEvent;
 use soundcraft_playback::midi::MidiInputs;
 
@@ -12,10 +12,28 @@ impl SoundApp {
     }
 
     /// Hand the MIDI inputs to a (new) audio engine.
-    pub(crate) fn attach_midi(&self, player: &soundcraft_playback::Player) {
+    pub(crate) fn attach_midi(&mut self, player: &soundcraft_playback::Player) {
         if let Some(m) = &self.midi_inputs {
             player.set_midi(std::sync::Arc::clone(m.feed()));
         }
+        // A pass the old engine never confirmed is not this one's to answer: it starts idle.
+        self.midi_pass_unconfirmed = None;
+    }
+
+    /// Whether the audio engine still owes the confirmation of an earlier record pass
+    /// ([`Self::await_midi_capture`] gave up on it). It takes the MIDI that arrived since its
+    /// last callback in one go, with the state of the pass it knows about: a new pass started
+    /// and stopped before it runs again would have its notes written at the old pass's
+    /// position. So a pass that records MIDI waits for it.
+    pub(crate) fn midi_pass_pending(&mut self) -> bool {
+        let pending = match (self.midi_pass_unconfirmed, &self.midi_inputs) {
+            (Some(pass), Some(m)) => !m.feed().captured(pass),
+            _ => false,
+        };
+        if !pending {
+            self.midi_pass_unconfirmed = None;
+        }
+        pending
     }
 
     /// A record pass starts: whatever was played before is not part of it.
@@ -63,16 +81,17 @@ impl SoundApp {
     /// Turn the MIDI played during the pass into clips on the MIDI and instrument tracks that
     /// were record-enabled when it started. `with_audio`: audio takes of this pass already made
     /// its undo step. `confirmed`: the audio engine said it had written down everything played
-    /// up to the stop ([`Self::await_midi_capture`]). Returns how many clips, and what to tell
-    /// the user when the take is not complete.
-    pub(crate) fn finish_midi_take(&mut self, range: Range, with_audio: bool, confirmed: bool) -> (usize, Option<String>) {
+    /// up to the stop ([`Self::await_midi_capture`]). `stopped`: where a loop pass stopped
+    /// inside the loop; keys still down end there. Returns how many clips, and what to tell the
+    /// user when the take is not complete.
+    pub(crate) fn finish_midi_take(&mut self, range: Range, with_audio: bool, confirmed: bool, stopped: Option<Samples>) -> (usize, Option<String>) {
         let Some(m) = &self.midi_inputs else { return (0, None) };
         let feed = m.feed();
         feed.take_recorded(&mut self.midi_take);
         // Events the audio thread could not hand over (this thread fell behind).
         let uncollected = self.midi_take_lost.saturating_add(u64::from(feed.take_recorded_lost()));
         self.midi_take_lost = 0;
-        let events: Vec<MidiTakeEvent> = self
+        let mut events: Vec<MidiTakeEvent> = self
             .midi_take
             .drain(..)
             .map(|e| MidiTakeEvent {
@@ -89,6 +108,9 @@ impl SoundApp {
                 data2: e.data2,
             })
             .collect();
+        if let Some(at) = stopped {
+            events.push(MidiTakeEvent { at, device: u8::MAX, status: MidiTakeEvent::END, data1: 0, data2: 0 });
+        }
         let devices: Vec<String> = (0..soundcraft_mix::MAX_MIDI_PORTS)
             .map(|i| u8::try_from(i).ok().and_then(|i| feed.ports().name(i)).unwrap_or_default().to_string())
             .collect();

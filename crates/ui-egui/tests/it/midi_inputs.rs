@@ -185,6 +185,35 @@ fn an_inactive_record_enabled_audio_track_does_not_stop_a_midi_pass() {
 }
 
 #[test]
+fn a_midi_pass_does_not_start_while_the_previous_one_is_unconfirmed() {
+    let (mut h, synth, vox) = recording_harness();
+    arm(&mut h, synth, true);
+    // The audio engine never confirmed the end of the last pass (it stopped calling back). It
+    // would write the notes of a new pass down with the old pass's state.
+    let feed = std::sync::Arc::clone(h.state().midi_inputs.as_ref().unwrap().feed());
+    let pass = feed.end_pass();
+    h.state_mut().midi_pass_unconfirmed = Some(pass);
+    h.get_by_label("transport.record").click();
+    h.run_steps(3);
+    assert!(!h.state().engine.transport.recording);
+    assert!(h.state().ui.status.contains("has not finished the previous record pass"), "{}", h.state().ui.status);
+    assert_eq!(h.state().midi_pass_unconfirmed, Some(pass), "still waiting");
+    // A pass without MIDI tracks does not wait for it (here it is refused for its own reason).
+    arm(&mut h, synth, false);
+    arm(&mut h, vox, true);
+    h.get_by_label("transport.record").click();
+    h.run_steps(3);
+    assert!(!h.state().ui.status.contains("previous record pass"), "{}", h.state().ui.status);
+    // Once nothing is owed, the MIDI pass starts.
+    arm(&mut h, vox, false);
+    arm(&mut h, synth, true);
+    h.state_mut().midi_pass_unconfirmed = None;
+    h.get_by_label("transport.record").click();
+    h.run_steps(3);
+    assert!(h.state().engine.transport.recording, "{}", h.state().ui.status);
+}
+
+#[test]
 fn a_midi_pass_without_a_connected_device_says_so() {
     let (mut h, synth, _) = recording_harness();
     arm(&mut h, synth, true);

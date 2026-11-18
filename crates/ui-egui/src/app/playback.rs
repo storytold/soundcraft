@@ -106,6 +106,13 @@ impl SoundApp {
         let audio_tracks = self.engine.session().tracks.iter().any(|t| t.mixer.record_arm && !t.inactive && !t.kind.is_midi());
         let midi_tracks = soundcraft_engine::io::records_midi(&self.engine);
         let midi_ready = midi_tracks && self.midi_connected();
+        if midi_tracks && self.midi_pass_pending() {
+            self.ui.status = crate::localization::text(
+                "Cannot record: the audio engine has not finished the previous record pass yet (is the audio device running?)",
+            )
+            .into();
+            return;
+        }
         if audio_tracks {
             self.ensure_input();
         }
@@ -228,6 +235,9 @@ impl SoundApp {
         }
         // The audio thread writes down what was played up to the stop; the clips wait for that.
         let midi_confirmed = self.await_midi_capture(midi_pass);
+        if !midi_confirmed {
+            self.midi_pass_unconfirmed = midi_pass;
+        }
         // Where the pass ended: the audio engine's own position is the freshest.
         let stopped_at = self.player.as_ref().map_or(self.engine.transport.position, |p| p.position().max(self.engine.transport.position));
         let plan = self.take_plan.take();
@@ -249,7 +259,7 @@ impl SoundApp {
             Some(len) => Range::new(plan.start, plan.start.saturating_add(len)),
             None => plan.punch.unwrap_or(Range::new(self.record_start, stopped_at)),
         };
-        let (midi_clips, midi_problem) = self.finish_midi_take(midi_range, !ids.is_empty(), midi_confirmed);
+        let (midi_clips, midi_problem) = self.finish_midi_take(midi_range, !ids.is_empty(), midi_confirmed, plan.pass.map(|_| stopped_at));
         self.ui.status = if plan.pass.is_some() && midi_clips == 0 {
             crate::localized_format!("Loop-recorded {} take(s)", ids.len() / tracks)
         } else if ids.is_empty() && midi_clips == 0 {

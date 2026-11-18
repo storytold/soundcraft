@@ -1111,3 +1111,35 @@ fn the_late_answer_to_an_earlier_pass_does_not_end_the_wait_for_a_later_one() {
     st.fill(&mut out, 2);
     assert!(!feed.captured(third));
 }
+
+#[test]
+fn one_ports_loss_does_not_take_along_what_another_port_sent_before_it() {
+    let (mut st, tx, feed, ..) = keyboard_session();
+    tx.send(Cmd::Recording(true, 0)).unwrap();
+    tx.send(Cmd::Play { from: 0, end: None, looped: None }).unwrap();
+    heard(&mut st, 1);
+    let pause = || std::thread::sleep(std::time::Duration::from_millis(2));
+    // Port 0 loses its input and then plays a new key. After that port 1 loses its input, with
+    // a key down. All within one callback.
+    feed.receive(0, &[0x90, 60, 100]);
+    pause();
+    feed.port_lost(0);
+    pause();
+    feed.receive(0, &[0x90, 64, 100]);
+    feed.receive(1, &[0x90, 72, 100]);
+    pause();
+    feed.port_lost(1);
+    assert!(heard(&mut st, 60), "port 0's key from after its own loss plays: port 1's later loss is not its loss");
+    let mut rec = Vec::new();
+    feed.take_recorded(&mut rec);
+    let lost = midi::RecordedMidi::LOST;
+    assert_eq!(
+        rec.iter().map(|e| (e.port, e.status, e.data1)).collect::<Vec<_>>(),
+        [(0, 0x90, 60), (0, lost, 0), (0, 0x90, 64), (1, 0x90, 72), (1, lost, 0)],
+        "each port's mark is where that port lost its input"
+    );
+    assert!(rec.windows(2).all(|w| w[0].at <= w[1].at), "{rec:?}");
+    // Only port 0's second key sounds: its release leaves nothing.
+    feed.receive(0, &[0x80, 64, 0]);
+    assert!(!heard(&mut st, 60));
+}

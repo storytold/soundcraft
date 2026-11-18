@@ -17,7 +17,7 @@
 //!   ([`MidiFeed::port_lost`]; a port that closes does the same, as its releases will not come).
 //!   The audio thread then releases every note and pedal that port holds on every track, and
 //!   drops what it had from that port from before the loss, so no note can be left sounding.
-//!   The time of the loss is kept with the mark ([`MidiFeed::lost_at`]): what the port sends
+//!   The time of the loss is kept with the mark, for each port ([`MidiFeed::lost_at`]): what the port sends
 //!   after it (a replugged device, a queue that has room again) is played and recorded as usual,
 //!   after the release.
 //! - While recording, that point goes into the take as a [`RecordedMidi::LOST`] entry: the notes
@@ -128,6 +128,12 @@ impl RecordedMidi {
     }
 }
 
+/// The place of the bit of `port` in the lost-ports mask ([`midi_port_bit`]): ports without an
+/// index of their own share the last one.
+fn lost_bit(port: u8) -> usize {
+    usize::from(port).min(63)
+}
+
 /// The recorded entry for events dropped on `port`.
 fn lost_entry(port: u8) -> u32 {
     pack(&LiveMidi { offset: 0, port, status: RecordedMidi::LOST, data1: 0, data2: 0 })
@@ -150,8 +156,9 @@ pub struct MidiFeed {
     activity: AtomicU64,
     /// Ports ([`midi_port_bit`]) whose events did not all reach the audio thread, until it asks.
     lost: AtomicU64,
-    /// When input was last lost ([`Self::now`]); `i64::MIN` before the first time.
-    lost_at: AtomicI64,
+    /// When each port last lost input ([`Self::now`]), by the place of its bit in `lost`;
+    /// `i64::MIN` before the first time.
+    lost_at: Vec<AtomicI64>,
     /// Events dropped on the way to the audio thread so far.
     dropped: AtomicU64,
     /// Recorded events the UI thread never got, until it asks.
@@ -177,7 +184,7 @@ impl Default for MidiFeed {
             connected: AtomicUsize::new(0),
             activity: AtomicU64::new(0),
             lost: AtomicU64::new(0),
-            lost_at: AtomicI64::new(i64::MIN),
+            lost_at: (0..64).map(|_| AtomicI64::new(i64::MIN)).collect(),
             dropped: AtomicU64::new(0),
             recorded_lost: AtomicU32::new(0),
             record_gap: AtomicBool::new(false),
@@ -242,7 +249,9 @@ impl MidiFeed {
     /// holds. Called when the queue is full and when a port closes.
     pub fn port_lost(&self, port: u8) {
         // The time first: whoever sees the port's bit also sees a time that covers this loss.
-        self.lost_at.fetch_max(self.now(), Ordering::AcqRel);
+        if let Some(at) = self.lost_at.get(lost_bit(port)) {
+            at.fetch_max(self.now(), Ordering::AcqRel);
+        }
         self.lost.fetch_or(midi_port_bit(port), Ordering::Release);
     }
 
@@ -254,12 +263,13 @@ impl MidiFeed {
         self.lost.swap(0, Ordering::AcqRel)
     }
 
-    /// Audio thread: when input was last lost, on the clock of the events' stamps. An event of
-    /// a lost port with a later stamp arrived after the loss. One with the same stamp counts as
-    /// before it: dropping a fresh event is safe, playing a note-on from before the release is
-    /// not.
-    pub(crate) fn lost_at(&self) -> i64 {
-        self.lost_at.load(Ordering::Acquire)
+    /// Audio thread: when `port` last lost input, on the clock of the events' stamps. Each port
+    /// has its own time: a loss on one port says nothing about what another sent before it. An
+    /// event of a lost port with a later stamp arrived after the loss. One with the same stamp
+    /// counts as before it: dropping a fresh event is safe, playing a note-on from before the
+    /// release is not.
+    pub(crate) fn lost_at(&self, port: u8) -> i64 {
+        self.lost_at.get(lost_bit(port)).map_or(i64::MIN, |at| at.load(Ordering::Acquire))
     }
 
     /// Events dropped on the way to the audio thread so far (a full queue).
@@ -528,15 +538,19 @@ fn tidy_port_name(raw: &str) -> String {
 /// ports lost its input ([`MidiFeed::port_lost`]): the keys held through it have no release
 /// coming. That is by connection, not by name: a port that went away and came back with another
 /// identity keeps its name, and the list of open port names never shows it was gone.
+///
+/// Each connection is closed before its port is marked. Closing waits for the connection's
+/// callback, so nothing more arrives through it afterwards; marked first, a note-on delivered
+/// while it closes would carry a later time than the loss and be played after the release.
 #[cfg(any(test, target_os = "linux", target_os = "macos", target_os = "windows"))]
 fn retire<C>(open: &mut Vec<(String, String, C)>, listed: &[(String, String)], disabled: &[String], feed: &MidiFeed) {
-    open.retain(|(id, name, _)| {
-        let keep = listed.iter().any(|(l, _)| l == id) && !disabled.contains(name);
-        if !keep {
-            feed.port_lost(feed.ports().assign(name));
-        }
-        keep
-    });
+    let (keep, gone): (Vec<_>, Vec<_>) =
+        std::mem::take(open).into_iter().partition(|(id, name, _)| listed.iter().any(|(l, _)| l == id) && !disabled.contains(name));
+    *open = keep;
+    for (_, name, connection) in gone {
+        drop(connection);
+        feed.port_lost(feed.ports().assign(&name));
+    }
 }
 
 /// The number of an ALSA loopback port ("Midi Through Port-0").
@@ -858,6 +872,28 @@ mod tests {
         // The lists of open ports before and after both show an open "Keys": nothing to see there.
         let port = |name: &str| MidiPort { name: name.to_string(), enabled: true, open: true };
         assert_eq!(closed_ports(&[port("Keys"), port("Pad")], &[port("Keys"), port("Pad")]).count(), 0);
+    }
+
+    #[test]
+    fn what_arrives_while_a_connection_closes_counts_as_before_the_loss() {
+        /// A connection whose device delivers one more note-on while it is being closed.
+        struct Closing(Arc<MidiFeed>, u8);
+        impl Drop for Closing {
+            fn drop(&mut self) {
+                std::thread::sleep(std::time::Duration::from_millis(2));
+                self.0.receive(self.1, &[0x90, 60, 100]);
+                std::thread::sleep(std::time::Duration::from_millis(2));
+            }
+        }
+        let feed = Arc::new(MidiFeed::default());
+        let keys = feed.ports().assign("Keys");
+        let mut open = vec![("20:0".to_string(), "Keys".to_string(), Closing(Arc::clone(&feed), keys))];
+        retire(&mut open, &[], &[], &feed);
+        assert_eq!(feed.take_lost(), midi_port_bit(keys));
+        let (stamp, e) = feed.next().unwrap();
+        assert_eq!((e.status, e.data1), (0x90, 60));
+        assert!(stamp <= feed.lost_at(keys), "the late note-on is from before the loss: it is dropped with it, not played after the release");
+        assert_eq!(feed.lost_at(keys + 1), i64::MIN, "another port has no loss");
     }
 
     #[test]

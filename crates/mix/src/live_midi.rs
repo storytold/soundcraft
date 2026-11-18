@@ -26,11 +26,16 @@
 //!
 //! # Controllers
 //!
-//! The strip remembers which owner last set each controller, the pitch bend, the channel pressure
-//! and the program. When that owner goes away (its port lost input, or the track stopped
-//! listening to it) while the track keeps playing live input, the instrument's controllers are
-//! set again from the clips and from the owners that are still there: a bend left by a device
-//! that was unplugged does not detune what another device plays.
+//! The strip remembers the last value every owner gave each controller, the pitch bend, the
+//! channel pressure and the program, and the order they came in. When an owner goes away (its
+//! port lost input, or the track stopped listening to it) while the track keeps playing live
+//! input, the instrument's controllers are set again from the clips and then from the owners
+//! that are still there, oldest first: a bend left by a device that was unplugged does not
+//! detune what another device plays, and a controller two devices had set goes back to the
+//! value of the one that stays.
+//!
+//! [`MAX_LIVE_CTRLS`] such values are kept; past that the oldest is forgotten, and that
+//! controller falls back to the clips' value when its owner goes away.
 //!
 //! # Lost events
 //!
@@ -204,11 +209,25 @@ impl Owner {
     }
 }
 
-/// Places in [`LiveNotes::ctrls`]: controllers 0..=119 by number, then these.
-const CTRL_BEND: usize = 120;
-const CTRL_PRESSURE: usize = 121;
-const CTRL_PROGRAM: usize = 122;
-const CTRLS: usize = 123;
+/// Controller values a strip remembers (one for each owner and controller); see the module text.
+pub const MAX_LIVE_CTRLS: usize = 64;
+
+/// The last value an owner gave a controller.
+#[derive(Debug, Clone, Copy, Default)]
+struct LiveCtrl {
+    /// The message as it arrived: its port, and its channel in `status`. `status` 0: free.
+    msg: LiveMidi,
+    /// When it arrived, among the others ([`LiveNotes::ctrl_order`]).
+    order: u64,
+}
+
+impl LiveCtrl {
+    /// Whether this is the value `e` replaces: the same owner and the same controller (the
+    /// controller number counts for control changes only).
+    fn is(&self, e: &LiveMidi, data1: u8) -> bool {
+        self.msg.status != 0 && self.msg.port == e.port && self.msg.status == e.status && (e.status & 0xF0 != 0xB0 || self.msg.data1 == data1)
+    }
+}
 
 /// Per-strip state of the live notes, by owner.
 #[derive(Debug)]
@@ -216,16 +235,23 @@ pub(crate) struct LiveNotes {
     owners: [Owner; MAX_OWNERS],
     /// Controllers, pitch bend, aftertouch or a program change were passed to the instrument.
     controllers: bool,
-    /// The last message live input sent for each controller, with the port it came from and its
-    /// channel (in `status`); `status` 0: none. See "Controllers" in the module text.
-    ctrls: [LiveMidi; CTRLS],
+    /// The last value each owner gave each controller. See "Controllers" in the module text.
+    ctrls: [LiveCtrl; MAX_LIVE_CTRLS],
+    /// Counts the controller messages kept, to tell their order.
+    ctrl_order: u64,
     /// Pitches the track's clips hold on the same instrument right now ([`Self::set_clip_notes`]).
     clip: NoteSet,
 }
 
 impl Default for LiveNotes {
     fn default() -> Self {
-        LiveNotes { owners: [Owner::default(); MAX_OWNERS], controllers: false, ctrls: [LiveMidi::default(); CTRLS], clip: NoteSet::default() }
+        LiveNotes {
+            owners: [Owner::default(); MAX_OWNERS],
+            controllers: false,
+            ctrls: [LiveCtrl::default(); MAX_LIVE_CTRLS],
+            ctrl_order: 0,
+            clip: NoteSet::default(),
+        }
     }
 }
 
@@ -283,18 +309,39 @@ impl LiveNotes {
     /// (from the clips, then [`Self::resend_controllers`]).
     fn forget_controllers(&mut self, gone: impl Fn(&LiveMidi) -> bool) -> bool {
         let mut any = false;
-        for c in self.ctrls.iter_mut().filter(|c| c.status != 0 && gone(c)) {
-            *c = LiveMidi::default();
+        for c in self.ctrls.iter_mut().filter(|c| c.msg.status != 0 && gone(&c.msg)) {
+            *c = LiveCtrl::default();
             any = true;
         }
         any
     }
 
-    /// Send the instrument the controllers the remaining live sources last set, after its
-    /// controllers were reset to what the clips say.
+    /// Keep `e` (a controller, bend, channel pressure or program message with masked data
+    /// `d1`, `d2`) as the last value its owner gave that controller. When the table is full
+    /// the oldest value goes.
+    fn keep_controller(&mut self, e: &LiveMidi, d1: u8, d2: u8) {
+        self.ctrl_order = self.ctrl_order.saturating_add(1);
+        let order = self.ctrl_order;
+        let at = self
+            .ctrls
+            .iter()
+            .position(|c| c.is(e, d1))
+            .or_else(|| self.ctrls.iter().position(|c| c.msg.status == 0))
+            .or_else(|| self.ctrls.iter().enumerate().min_by_key(|(_, c)| c.order).map(|(i, _)| i));
+        if let Some(c) = at.and_then(|i| self.ctrls.get_mut(i)) {
+            *c = LiveCtrl { msg: LiveMidi { offset: 0, data1: d1, data2: d2, ..*e }, order };
+        }
+    }
+
+    /// Send the instrument the controller values of the live sources that are left, after its
+    /// controllers were reset to what the clips say: in the order they arrived, so that a
+    /// controller several sources set ends at the newest of their values.
     pub(crate) fn resend_controllers(&self, inst: &mut dyn Plugin) {
-        for c in self.ctrls.iter().filter(|c| c.status != 0) {
-            inst.midi(0, [c.status & 0xF0, c.data1, c.data2]);
+        let mut after = 0u64;
+        // The table is small: take the next oldest each time instead of sorting a copy.
+        while let Some(c) = self.ctrls.iter().filter(|c| c.msg.status != 0 && c.order > after).min_by_key(|c| c.order) {
+            inst.midi(0, [c.msg.status & 0xF0, c.msg.data1, c.msg.data2]);
+            after = c.order;
         }
     }
 
@@ -357,7 +404,7 @@ impl LiveNotes {
     /// also moved the instrument's controllers: the caller chases them back to the clips' values.
     pub(crate) fn release(&mut self, inst: &mut dyn Plugin) -> bool {
         self.drop_owners(inst, 0, |_| true);
-        self.ctrls = [LiveMidi::default(); CTRLS];
+        self.ctrls = [LiveCtrl::default(); MAX_LIVE_CTRLS];
         std::mem::take(&mut self.controllers)
     }
 
@@ -438,16 +485,9 @@ impl LiveNotes {
                     let d2 = if matches!(status, 0xC0 | 0xD0) { 0 } else { d2 };
                     inst.midi(at, [status, d1, d2]);
                     self.controllers = true;
-                    // Who set it last (poly aftertouch belongs to a key and is not kept).
-                    let slot = match status {
-                        0xB0 => Some(usize::from(d1)),
-                        0xE0 => Some(CTRL_BEND),
-                        0xD0 => Some(CTRL_PRESSURE),
-                        0xC0 => Some(CTRL_PROGRAM),
-                        _ => None,
-                    };
-                    if let Some(c) = slot.and_then(|i| self.ctrls.get_mut(i)) {
-                        *c = LiveMidi { offset: 0, port: e.port, status: status | channel, data1: d1, data2: d2 };
+                    // Poly aftertouch belongs to a key and is not kept.
+                    if status != 0xA0 {
+                        self.keep_controller(e, d1, d2);
                     }
                 }
                 _ => {}
@@ -695,20 +735,50 @@ mod tests {
         let events = [ev(keys, 0xE0, 0, 0x7F), ev(keys, 0xB0, 1, 20), ev(pad, 0xB1, 1, 90), ev(pad, 0xB1, 7, 100), ev(pad, 0xA1, 60, 9)];
         live.play(s.track(id).unwrap(), &mut log, &events, Some(&ports), 512);
         assert_eq!(log.1.len(), 5);
-        // Pad lost input: Keys' bend is all that is left. The strip resets the instrument's
-        // controllers and sends that again.
+        // Pad lost input: Keys' bend and its mod wheel value are left. The strip resets the
+        // instrument's controllers and sends those again.
         assert!(!live.reconcile(s.track(id).unwrap(), 0, Some(&ports), &mut log), "nothing went away");
         assert!(live.reconcile(s.track(id).unwrap(), midi_port_bit(pad), Some(&ports), &mut log));
         let mut log = Log::default();
         live.resend_controllers(&mut log);
-        assert_eq!(log.1, [[0xE0, 0, 0x7F]]);
+        assert_eq!(log.1, [[0xE0, 0, 0x7F], [0xB0, 1, 20]], "the wheel goes back to the value Keys gave it");
         assert!(!live.reconcile(s.track(id).unwrap(), midi_port_bit(pad), Some(&ports), &mut log), "once");
-        // The track stops listening to Keys: its bend goes too.
+        // Both set the mod wheel, Pad last. When Pad goes, the wheel is Keys' again; while
+        // both are there, what is sent again ends at the newer value.
+        let mut log = Log::default();
+        live.play(s.track(id).unwrap(), &mut log, &[ev(keys, 0xB0, 1, 20), ev(pad, 0xB1, 1, 90)], Some(&ports), 512);
+        let mut log = Log::default();
+        live.resend_controllers(&mut log);
+        assert_eq!(log.1, [[0xE0, 0, 0x7F], [0xB0, 1, 20], [0xB0, 1, 90]], "oldest first");
+        assert!(live.reconcile(s.track(id).unwrap(), midi_port_bit(pad), Some(&ports), &mut log));
+        let mut log = Log::default();
+        live.resend_controllers(&mut log);
+        assert_eq!(log.1, [[0xE0, 0, 0x7F], [0xB0, 1, 20]], "the value of the source that stays");
+        // The track stops listening to Keys: its bend and its wheel go too.
         s.track_mut(id).unwrap().mixer.input = MidiInput { device: Some("Pad"), channel: None }.route();
         assert!(live.reconcile(s.track(id).unwrap(), 0, Some(&ports), &mut log));
         let mut log = Log::default();
         live.resend_controllers(&mut log);
         assert!(log.1.is_empty());
+    }
+
+    #[test]
+    fn more_controller_values_than_the_table_holds_forget_the_oldest() {
+        let mut live = LiveNotes::default();
+        let mut log = Log::default();
+        let mut s = soundcraft_model::Session::default();
+        let id = s.add_track(soundcraft_model::TrackKind::Instrument, soundcraft_model::ChannelFormat::Stereo, None);
+        // One more controller than fits (64, the sustain pedal, is not one of them: the host
+        // handles it), then one of them again: it is kept once.
+        let mut events: Vec<LiveMidi> = (0..=MAX_LIVE_CTRLS + 1).map(|n| ev(0, 0xB0, n as u8, 1)).collect();
+        events.push(ev(0, 0xB0, 5, 99));
+        live.play(s.track(id).unwrap(), &mut log, &events, None, 512);
+        let mut log = Log::default();
+        live.resend_controllers(&mut log);
+        assert_eq!(log.1.len(), MAX_LIVE_CTRLS);
+        assert!(!log.1.contains(&[0xB0, 0, 1]), "the oldest value went");
+        assert_eq!(log.1.last(), Some(&[0xB0, 5, 99]), "the newest is sent last, and replaced its earlier value");
+        assert!(!log.1.contains(&[0xB0, 5, 1]));
     }
 
     #[test]

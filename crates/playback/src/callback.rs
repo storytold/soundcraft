@@ -297,7 +297,8 @@ impl AudioState {
     /// Lost input has its place in that order. The events of a lost port that arrived before
     /// the loss are written to the take but not played (their releases may be missing); the mark
     /// follows them in the take; what arrived after the loss comes after the mark and is played,
-    /// after the engine let go of the port's notes at the start of its next block.
+    /// after the engine let go of the port's notes at the start of its next block. Every port
+    /// has its own time of loss, so one port's loss does not take along what another sent.
     fn capture_midi(&mut self, device_frames: usize) {
         let callback = self.callback_frames(device_frames).max(0);
         let now_speed = self.speed();
@@ -306,7 +307,6 @@ impl AudioState {
         // The loss flags first, then the time they stand for: see `MidiFeed::take_lost`.
         let input_lost = feed.take_lost();
         let now = feed.clock();
-        let lost_at = feed.lost_at();
         let per_us = self.session.sample_rate.as_f64() / 1e6 * speed;
         let frames = |since: i64| (now.saturating_sub(since).max(0) as f64 * per_us) as i64;
         let record = self.playing && self.recording;
@@ -327,19 +327,21 @@ impl AudioState {
             take.wraps = take.wraps.saturating_add(1).min(2);
             self.midi_wrap_counted = true;
         }
-        // The mark in the take for the lost input: not older than this callback's own events.
-        let mut loss = (record && input_lost != 0).then(|| frames(lost_at).min(callback));
+        // The lost ports whose mark is not in the take yet. Each goes in where its loss was.
+        let mut marks = if record { input_lost } else { 0 };
         let mut unplayed = 0u64;
         while let Some((stamp, e)) = feed.next() {
             let age = frames(stamp);
-            let after_loss = stamp > lost_at;
             if record {
-                if after_loss && let Some(lost_age) = loss.take() {
-                    feed.record_lost(take.at(lost_age.max(age)), input_lost);
+                while let Some((bit, at)) = next_mark(feed, marks, stamp) {
+                    // Not older than this callback's own events, nor newer than this one.
+                    feed.record_lost(take.at(frames(at).min(callback).max(age)), bit);
+                    marks &= !bit;
                 }
                 feed.record(take.at(age), &e);
             }
-            if !after_loss && input_lost & midi_port_bit(e.port) != 0 {
+            // From before its port's loss: its release may be among what was lost.
+            if input_lost & midi_port_bit(e.port) != 0 && stamp <= feed.lost_at(e.port) {
                 continue;
             }
             if self.midi_pending.len() < self.midi_pending.capacity() {
@@ -351,9 +353,10 @@ impl AudioState {
             }
         }
         if record {
-            // Nothing arrived after the loss: its mark closes the callback's events.
-            if let Some(lost_age) = loss {
-                feed.record_lost(take.at(lost_age), input_lost);
+            // Nothing arrived after these losses: their marks close the callback's events.
+            while let Some((bit, at)) = next_mark(feed, marks, i64::MAX) {
+                feed.record_lost(take.at(frames(at).min(callback)), bit);
+                marks &= !bit;
             }
             take.flush();
         }
@@ -516,6 +519,17 @@ impl AudioState {
             self.read += step;
         }
     }
+}
+
+/// Of the lost ports in `marks` ([`midi_port_bit`]), the one that lost its input first, if that
+/// was before `before` (or at any time, for `i64::MAX`): its bit and the time.
+fn next_mark(feed: &midi::MidiFeed, marks: u64, before: i64) -> Option<(u64, i64)> {
+    (0..64u8)
+        .filter(|b| marks & (1u64 << b) != 0)
+        // Bit 63 stands for the ports without an index: `u8::MAX` reads their shared time.
+        .map(|b| (1u64 << b, feed.lost_at(if b == 63 { u8::MAX } else { b })))
+        .filter(|(_, at)| *at < before || before == i64::MAX)
+        .min_by_key(|(_, at)| *at)
 }
 
 /// Writes one callback's MIDI into the take: gives each entry its timeline position and says
