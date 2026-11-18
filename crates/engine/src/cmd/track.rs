@@ -201,7 +201,15 @@ pub fn specs() -> Vec<CommandSpec> {
                 Ok(json!({"clips": ids}))
             }
         ),
-        cmd!("track.input", "Track Input", [], None, "{tracks?, input: none|bus name|hardware name}", has_selection, |e, p| route(e, p, true)),
+        cmd!(
+            "track.input",
+            "Track Input",
+            [],
+            None,
+            "{tracks?, input: none|bus name|hardware name|inst:<track>:<bus>}",
+            has_selection,
+            |e, p| route(e, p, true)
+        ),
         cmd!("track.output", "Track Output", [], None, "{tracks?, output: main|none|bus name}", has_selection, |e, p| route(e, p, false)),
         cmd!("track.timebase", "Track Timebase", [], None, "{tracks?, ticks: bool}", has_selection, |e, p| flag(
             e,
@@ -1010,7 +1018,28 @@ pub(crate) fn parse_route(s: &soundcraft_model::Session, v: &str) -> Route {
     match v.to_ascii_lowercase().as_str() {
         "" | "none" | "no input" | "no output" => Route::None,
         "main" | "out 1-2" | "master" => Route::Main,
-        _ => s.bus_by_name(v).map_or_else(|| Route::Hardware(v.to_string()), |b| Route::Bus(b.id)),
+        _ => {
+            // "inst:<track name or id>:<output bus>" — a multi-out instrument's auxiliary
+            // output picked as an input (soundcraft#1549).
+            if let Some(rest) = v.strip_prefix("inst:") {
+                return match rest.rsplit_once(':') {
+                    Some((name, bus)) => {
+                        let track = name
+                            .parse::<u64>()
+                            .ok()
+                            .map(soundcraft_model::TrackId)
+                            .filter(|id| s.track(*id).is_some())
+                            .or_else(|| s.track_by_name(name).map(|t| t.id));
+                        match (track, bus.parse::<u8>()) {
+                            (Some(track), Ok(bus)) => Route::Instrument { track, bus },
+                            _ => Route::None,
+                        }
+                    }
+                    None => Route::None,
+                };
+            }
+            s.bus_by_name(v).map_or_else(|| Route::Hardware(v.to_string()), |b| Route::Bus(b.id))
+        }
     }
 }
 
@@ -1021,6 +1050,19 @@ fn route(e: &mut Engine, p: &Value, input: bool) -> Result<Value> {
     let create_bus = bool_or(p, "create_bus", true);
     let s = e.session_mut();
     let mut r = parse_route(s, &v);
+    if v.starts_with("inst:") && !matches!(r, Route::Instrument { .. }) {
+        return Err(bad("track.route", format!("`{v}` is not an instrument output (inst:<track>:<bus>)")));
+    }
+    // An instrument's output bus can only be read as an aux or folder input: regular
+    // strips render before consumers are known, and it is never an output or send target.
+    if matches!(r, Route::Instrument { .. })
+        && (!input
+            || tracks
+                .iter()
+                .any(|t| s.track(*t).is_none_or(|tr| !matches!(tr.kind, soundcraft_model::TrackKind::Aux | soundcraft_model::TrackKind::Folder))))
+    {
+        return Err(bad("track.route", "an instrument output can only feed an aux or folder input"));
+    }
     if let Route::Hardware(name) = &r
         && create_bus
         && !name.to_ascii_lowercase().starts_with("in ")
@@ -1195,6 +1237,28 @@ mod tests {
         assert_eq!(aux.mixer.input, Route::Bus(verb), "the aux input must keep the bus");
         let snare = e.session().track_by_name("Snare").unwrap();
         assert!(snare.mixer.sends.iter().flatten().any(|send| send.target == Route::Bus(verb)), "sends to the shared bus must survive");
+    }
+
+    #[test]
+    fn an_instrument_output_routes_to_an_aux_input_only() {
+        // #1549: `inst:<track>:<bus>` picks a multi-out instrument's auxiliary output as an
+        // aux/folder input; it is rejected on audio tracks, outputs and sends.
+        let mut e = crate::demo::demo_engine();
+        let inst = e.execute("track.new", &json!({"kind": "instrument", "name": "Kit"})).unwrap();
+        let inst = TrackId(inst["tracks"][0].as_u64().unwrap());
+        let aux = e.execute("track.new", &json!({"kind": "aux", "name": "KickAux"})).unwrap();
+        let aux = TrackId(aux["tracks"][0].as_u64().unwrap());
+
+        e.execute("track.input", &json!({"tracks": [aux.0], "input": format!("inst:{}:1", inst.0)})).unwrap();
+        assert_eq!(e.session().track(aux).unwrap().mixer.input, Route::Instrument { track: inst, bus: 1 });
+        // The source can be named instead of numbered.
+        e.execute("track.input", &json!({"tracks": [aux.0], "input": "inst:Kit:2"})).unwrap();
+        assert_eq!(e.session().track(aux).unwrap().mixer.input, Route::Instrument { track: inst, bus: 2 });
+
+        let kick = e.session().track_by_name("Kick").unwrap().id;
+        assert!(e.execute("track.input", &json!({"tracks": [kick.0], "input": format!("inst:{}:1", inst.0)})).is_err());
+        assert!(e.execute("track.output", &json!({"tracks": [aux.0], "output": format!("inst:{}:1", inst.0)})).is_err());
+        assert!(e.execute("track.input", &json!({"tracks": [aux.0], "input": "inst:nosuch:1"})).is_err());
     }
 
     #[test]

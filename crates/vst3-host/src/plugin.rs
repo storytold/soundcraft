@@ -1,7 +1,7 @@
 //! `Vst3Plugin`: a loaded VST3 instance behind the safe `soundcraft_dsp::Plugin` trait.
 
 use crate::ffi::{AFTERTOUCH, BusBuffers, EVENT_CAP, EditorLink, HostContext, Instance, NoteEvent, PARAM_QUEUE_CAP, PITCH_BEND, ProcessInput};
-use soundcraft_dsp::{Plugin, PluginEditor, PluginInfo, Transport, Unit};
+use soundcraft_dsp::{OutputBus, Plugin, PluginEditor, PluginInfo, Transport, Unit};
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -48,6 +48,8 @@ pub struct Vst3Plugin {
     controls: Vec<(u32, u32, f64)>,
     inputs: BusBuffers,
     outputs: BusBuffers,
+    /// Every output bus the plugin reports, for multi-out routing (`[0]` is the main out).
+    out_buses: Vec<OutputBus>,
     has_input: bool,
     has_output: bool,
     event_input: bool,
@@ -94,6 +96,7 @@ impl Vst3Plugin {
             controls: Vec::with_capacity(EVENT_CAP),
             inputs: BusBuffers::new(&[], 0),
             outputs: BusBuffers::new(&[], 0),
+            out_buses: Vec::new(),
             has_input: false,
             has_output: false,
             event_input: false,
@@ -237,6 +240,16 @@ impl Plugin for Vst3Plugin {
             Ok(layout) => {
                 self.inputs = BusBuffers::new(&layout.inputs, mb);
                 self.outputs = BusBuffers::new(&layout.outputs, mb);
+                let dout = vst3::Steinberg::Vst::BusDirections_::kOutput;
+                self.out_buses = layout
+                    .outputs
+                    .iter()
+                    .enumerate()
+                    .map(|(i, &c)| OutputBus {
+                        name: self.inst.audio_bus_name(dout, i as i32).unwrap_or_else(|| format!("Out {}", i + 1)),
+                        channels: c as usize,
+                    })
+                    .collect();
                 self.has_input = layout.inputs.first().is_some_and(|&c| c > 0);
                 self.has_output = layout.outputs.first().is_some_and(|&c| c > 0);
                 self.event_input = layout.event_input;
@@ -262,6 +275,28 @@ impl Plugin for Vst3Plugin {
     fn set_offline(&mut self, offline: bool) {
         // `processMode`, set up by the next `prepare`.
         self.inst.set_offline(offline);
+    }
+
+    fn output_buses(&self) -> &[OutputBus] {
+        &self.out_buses
+    }
+
+    fn set_output_bus_active(&mut self, bus: usize, active: bool) {
+        let dout = vst3::Steinberg::Vst::BusDirections_::kOutput;
+        if let Ok(i) = i32::try_from(bus) {
+            self.inst.set_audio_bus_active(dout, i, active);
+        }
+    }
+
+    fn tap_output(&self, bus: usize, dst: &mut [Vec<f32>], frames: usize) {
+        let oc = self.outputs.channels(bus);
+        for (c, d) in dst.iter_mut().enumerate() {
+            let Some(d) = d.get_mut(..frames) else { continue };
+            match self.outputs.channel(bus, c.min(oc.saturating_sub(1))).and_then(|s| s.get(..frames)) {
+                Some(src) => d.copy_from_slice(src),
+                None => d.fill(0.0),
+            }
+        }
     }
 
     fn reset(&mut self) {

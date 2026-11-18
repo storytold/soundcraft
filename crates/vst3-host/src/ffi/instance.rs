@@ -304,6 +304,27 @@ impl Instance {
         Ok(channels)
     }
 
+    /// Turns audio bus `index` on or off. An inactive bus still gets buffers but the plugin
+    /// renders it as silence; the host activates a bus while a route reads it.
+    pub fn set_audio_bus_active(&mut self, dir: sv::BusDirections, index: i32, active: bool) {
+        if index < 0 || index >= self.bus_count(sv::MediaTypes_::kAudio, dir) {
+            return;
+        }
+        let audio = sv::MediaTypes_::kAudio;
+        // SAFETY: valid component; index is below the bus count.
+        unsafe { self.component.activateBus(audio as sv::MediaType, dir as sv::BusDirection, index, u8::from(active)) };
+    }
+
+    /// The plugin's name for one audio bus ("Out 2", "Kick"…), when it gives one.
+    pub fn audio_bus_name(&self, dir: sv::BusDirections, index: i32) -> Option<String> {
+        // SAFETY: plain data; all-zero is valid.
+        let mut info: sv::BusInfo = unsafe { std::mem::zeroed() };
+        // SAFETY: valid component; index below the bus count; `info` is writable.
+        let r = unsafe { self.component.getBusInfo(sv::MediaTypes_::kAudio as sv::MediaType, dir as sv::BusDirection, index, &mut info) };
+        let name = ok(r).then(|| read_c16(&info.name))?;
+        (!name.is_empty()).then_some(name)
+    }
+
     /// Stops processing, deactivates, negotiates the bus layout (main buses mono or stereo as
     /// asked, falling back to stereo and then to the plugin's own choice), activates the main
     /// buses, sets up 32-bit processing and activates the component. A layout beyond

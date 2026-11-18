@@ -51,7 +51,7 @@
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
 
 use soundcraft_dsp::pan::{PanLaw, SpeakerPos, SurroundParams, gains};
-use soundcraft_dsp::{Plugin, SampleSource, Transport, db_to_gain};
+use soundcraft_dsp::{OutputBus, Plugin, SampleSource, Transport, db_to_gain};
 use soundcraft_midi::CtrlKind;
 use soundcraft_model::{
     AutoParam, BusId, ChannelFormat, Clip, ClipContent, Route, Session, SourceAudio, Speaker, SurroundPan, Track, TrackId, TrackKind,
@@ -151,6 +151,9 @@ pub struct MixEngine {
     adopt: HashMap<(TrackId, usize), PreparedInstance>,
     /// Instances `sync` took out of service, for the host to drop (see [`MixEngine::take_retired`]).
     retired: Vec<Box<dyn Plugin>>,
+    /// Each track's instrument output buses, rebuilt on `sync`, for the input picker
+    /// (`Route::Instrument` targets).
+    pub instrument_outs: Vec<(TrackId, Vec<OutputBus>)>,
     /// Ownership workspace reused for parallel strip processing.
     work: Vec<(usize, Strip)>,
 }
@@ -183,6 +186,7 @@ impl MixEngine {
             offline: false,
             adopt: HashMap::new(),
             retired: Vec::new(),
+            instrument_outs: Vec::new(),
             work: Vec::new(),
         }
     }
@@ -348,6 +352,14 @@ impl MixEngine {
             }
         }
         self.busses.retain(|id, _| s.bus(*id).is_some());
+        self.instrument_outs = self
+            .strips
+            .iter()
+            .filter_map(|(id, st)| {
+                let buses = st.instrument.as_ref().filter(|i| !i.failed)?.plugin.output_buses();
+                (!buses.is_empty()).then(|| (*id, buses.to_vec()))
+            })
+            .collect();
     }
 
     /// Re-syncs plugin instances and the routing order when the session's structure changed
@@ -386,7 +398,7 @@ impl MixEngine {
         let live_in = LiveInput { input: &self.input, monitor_only: self.monitor_only, recording: self.recording };
         run_strips(&mut work, |(i, st)| {
             if let Some(t) = s.tracks.get(*i) {
-                process_strip(s, t, st, &busses, &live_in, blk);
+                process_strip(s, t, st, &busses, None, &live_in, blk);
             }
         });
         self.busses = busses;
@@ -470,6 +482,11 @@ impl MixEngine {
             let ch = st.buf.len();
             st.align.set(lmax_t.saturating_sub(st.latency), ch);
             st.align.process(&mut st.buf, frames);
+            // Routed instrument outs wait the same delay so they land in step with the main out.
+            for tap in &mut st.tapped {
+                tap.align.set(lmax_t.saturating_sub(st.latency), tap.buf.len());
+                tap.align.process(&mut tap.buf, frames);
+            }
             if t.mixer.sends.iter().flatten().any(|x| x.pre_fader) {
                 st.align_pre.set(lmax_t.saturating_sub(st.latency), ch);
                 st.align_pre.process(&mut st.pre, frames);
@@ -504,7 +521,7 @@ impl MixEngine {
                 st.scratch.resize(self.max_block, 0.0);
             }
             let live_in = LiveInput { input: &self.input, monitor_only: self.monitor_only, recording: self.recording };
-            process_strip(s, t, &mut st, &self.busses, &live_in, blk);
+            process_strip(s, t, &mut st, &self.busses, Some(&self.strips), &live_in, blk);
             let ch = st.buf.len();
             st.align.set(if pdc { lmax_a.saturating_sub(st.latency) } else { 0 }, ch);
             st.align.process(&mut st.buf, frames);

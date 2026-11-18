@@ -1606,3 +1606,120 @@ fn consolidate_many_tiny_effect_clips_stays_fast() {
     assert!((out[0][1000] - 0.5 * db_to_gain(-6.0)).abs() < 1e-6);
     assert_eq!(out[0][1001], 0.0);
 }
+
+struct MultiOut {
+    inner: Box<dyn Plugin>,
+    buses: Vec<soundcraft_dsp::OutputBus>,
+    outs: Vec<Vec<Vec<f32>>>,
+    active: Vec<bool>,
+}
+impl Plugin for MultiOut {
+    fn info(&self) -> &'static soundcraft_dsp::PluginInfo {
+        self.inner.info()
+    }
+    fn prepare(&mut self, sr: f32, mb: usize, ch: usize) {
+        self.inner.prepare(sr, mb, ch);
+        self.outs = self.buses.iter().map(|b| vec![vec![0.0; mb]; b.channels]).collect();
+        self.active = vec![false; self.buses.len()];
+        self.active[0] = true;
+    }
+    fn reset(&mut self) {
+        self.inner.reset();
+    }
+    fn set_param(&mut self, id: &str, v: f32) -> bool {
+        self.inner.set_param(id, v)
+    }
+    fn param(&self, id: &str) -> Option<f32> {
+        self.inner.param(id)
+    }
+    fn process(&mut self, io: &mut [Vec<f32>], frames: usize) {
+        for c in io.iter_mut() {
+            c.iter_mut().take(frames).for_each(|x| *x = 0.25);
+        }
+        for (b, outs) in self.outs.iter_mut().enumerate() {
+            let v = if self.active.get(b).copied().unwrap_or(false) { 0.5 } else { 0.0 };
+            for c in outs.iter_mut() {
+                c.iter_mut().take(frames).for_each(|x| *x = v);
+            }
+        }
+    }
+    fn output_buses(&self) -> &[soundcraft_dsp::OutputBus] {
+        &self.buses
+    }
+    fn set_output_bus_active(&mut self, bus: usize, on: bool) {
+        if let Some(a) = self.active.get_mut(bus) {
+            *a = on;
+        }
+    }
+    fn tap_output(&self, bus: usize, dst: &mut [Vec<f32>], frames: usize) {
+        for (c, src) in self.outs.get(bus).into_iter().flatten().enumerate() {
+            if let Some(d) = dst.get_mut(c) {
+                for (d, s) in d.iter_mut().zip(src.iter()).take(frames) {
+                    *d = *s;
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn an_aux_reads_an_instruments_routed_auxiliary_output() {
+    // #1549: a multi-out instrument's routed bus reaches the aux track that picked it as
+    // its input — the incumbent's plugin-output routing for drum samplers etc.
+    let mut s = Session::default();
+    let inst = s.add_track(TrackKind::Instrument, ChannelFormat::Stereo, None);
+    s.track_mut(inst).unwrap().instrument = Some(Insert::new("clap:test.multiout"));
+    let aux = s.add_track(TrackKind::Aux, ChannelFormat::Stereo, None);
+    s.track_mut(aux).unwrap().mixer.input = Route::Instrument { track: inst, bus: 1 };
+    // Adopted instances arrive prepared by their host (the mix engine does not call
+    // `prepare` on adoption), so prepare the fake here like the real hosts do.
+    let mut plugin = MultiOut {
+        inner: soundcraft_dsp::create("gain").unwrap(),
+        buses: vec![soundcraft_dsp::OutputBus { name: "Main".into(), channels: 2 }, soundcraft_dsp::OutputBus { name: "Kick".into(), channels: 2 }],
+        outs: Vec::new(),
+        active: Vec::new(),
+    };
+    plugin.prepare(48_000.0, 512, 2);
+    let mut eng = MixEngine::new(48_000.0, 512);
+    eng.set_external_instances(true);
+    eng.adopt(vec![PreparedInstance { track: inst, slot: INSTRUMENT_SLOT, id: "clap:test.multiout".into(), ch: 2, plugin: Box::new(plugin) }]);
+    // The first block activates the routed bus after the plugin already processed; the
+    // auxiliary out is heard from the next block on.
+    assert_eq!(render_block(&mut eng, &s, 0), 0.25);
+    let main_plus_aux = render_block(&mut eng, &s, 512);
+    assert!((main_plus_aux - 0.75).abs() < 1e-6, "main (0.25) + tapped bus (0.5): got {main_plus_aux}");
+}
+
+#[test]
+fn an_unrouted_auxiliary_output_renders_nothing_on_the_aux() {
+    // The route name must match the bus index: an aux pointing at bus 2 hears only what
+    // bus 2 renders (silence until routed), not the instrument's other outs.
+    let mut s = Session::default();
+    let inst = s.add_track(TrackKind::Instrument, ChannelFormat::Stereo, None);
+    s.track_mut(inst).unwrap().instrument = Some(Insert::new("clap:test.multiout"));
+    let aux = s.add_track(TrackKind::Aux, ChannelFormat::Stereo, None);
+    s.track_mut(aux).unwrap().mixer.input = Route::Instrument { track: inst, bus: 7 };
+    let mut eng = MixEngine::new(48_000.0, 512);
+    eng.set_external_instances(true);
+    eng.adopt(vec![PreparedInstance {
+        track: inst,
+        slot: INSTRUMENT_SLOT,
+        id: "clap:test.multiout".into(),
+        ch: 2,
+        plugin: {
+            let mut p = MultiOut {
+                inner: soundcraft_dsp::create("gain").unwrap(),
+                buses: vec![
+                    soundcraft_dsp::OutputBus { name: "Main".into(), channels: 2 },
+                    soundcraft_dsp::OutputBus { name: "Kick".into(), channels: 2 },
+                ],
+                outs: Vec::new(),
+                active: Vec::new(),
+            };
+            p.prepare(48_000.0, 512, 2);
+            Box::new(p)
+        },
+    }]);
+    assert_eq!(render_block(&mut eng, &s, 0), 0.25, "only the instrument's main out should sound");
+    assert_eq!(render_block(&mut eng, &s, 512), 0.25, "bus 7 does not exist: the aux stays silent");
+}
