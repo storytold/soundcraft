@@ -164,6 +164,28 @@ fn a_held_enter_does_not_press_remove_until_it_is_pressed_again() {
 }
 
 #[test]
+fn unloop_dialog_is_shown_in_brazilian_portuguese() {
+    let (mut app, track, looped) = unloop_app();
+    app.ui.language = soundcraft_ui_egui::localization::Language::PortugueseBrazil;
+    let mut h = Harness::builder().with_size(vec2(1600.0, 1000.0)).build_ui_state(
+        |ui, app: &mut SoundApp| {
+            let ctx = ui.ctx().clone();
+            app.logic(&ctx);
+            app.ui(ui);
+        },
+        app,
+    );
+    h.run_steps(3);
+    h.get_by_label("Desativar loop");
+    h.get_by_label("Remover exclui as iterações do loop e mantém o clipe de origem. Consolidar mantém cada iteração do loop como um clipe próprio.");
+    h.get_by_role_and_label(Role::Button, "Remover");
+    h.get_by_role_and_label(Role::Button, "Consolidar").click();
+    h.run_steps(2);
+    assert_eq!(h.state().dialogs.open_name(), None);
+    assert_eq!(clips(&h, track), vec![None; looped]);
+}
+
+#[test]
 fn unloop_dialogs_remove_keeps_only_the_source_clip() {
     let (mut h, track, looped) = unloop_dialog();
     h.get_by_role_and_label(Role::Button, "Remove").click();

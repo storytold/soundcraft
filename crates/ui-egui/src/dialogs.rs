@@ -619,10 +619,12 @@ pub fn show(app: &mut SoundApp, ctx: &egui::Context) {
                 }
                 Dialog::Unloop { clips } => {
                     ui.set_max_width(340.0);
-                    ui.label("Remove deletes the loop iterations and keeps the source clip. Flatten keeps each loop iteration as its own clip.");
+                    ui.label(crate::localization::text(
+                        "Remove deletes the loop iterations and keeps the source clip. Flatten keeps each loop iteration as its own clip.",
+                    ));
                     ui.separator();
                     ui.horizontal(|ui| {
-                        if ui.button("Flatten").clicked() {
+                        if ui.button(crate::localization::text("Flatten")).clicked() {
                             action = Some(unloop_action(clips, false));
                         }
                         // A Flatten click in the same frame as Enter wins.
