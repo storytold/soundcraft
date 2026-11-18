@@ -69,3 +69,7 @@ sync_github_name = true
 [people.kk376]
 real_name = "Kushagra Kumar"
 sync_github_name = true
+
+[people.JonRC]
+real_name = "Jonathan Cardoso"
+display_name = "Jonathan Cardoso"

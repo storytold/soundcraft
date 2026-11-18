@@ -359,6 +359,15 @@ impl Plugin for Vst3Plugin {
         self.latency
     }
 
+    fn idle(&mut self) {
+        // A new latency is announced with `restartComponent(kLatencyChanged)`, which some plugins
+        // send from a timer of their own, long after they started using it (LSP): ask instead.
+        if self.inst.is_active() {
+            self.inst.host().latency_changed.store(false, Ordering::Relaxed);
+            self.latency = self.inst.latency() as usize;
+        }
+    }
+
     fn set_transport(&mut self, transport: &Transport) {
         self.transport = Some(*transport);
     }

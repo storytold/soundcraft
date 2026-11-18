@@ -1,6 +1,6 @@
 # Plugin parity: built-in processors and plugin hosting
 
-> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-25 · **Change:** trivial (Auto Pan stereo balance; previously minor: AudioSuite speed ramps (speed_ramp); Auto Pan; Subharmonic; previously minor: Ring Modulator; VST3 host messages: IMessage and IAttributeList; previously trivial: Sampler ping-pong loop phase (#463); previously trivial: mix.instrument sets built-in instrument parameters in params (#265); previously minor: plugin editors on Windows) · **Target:** Avid Pro Tools Ultimate 2026.4.1
+> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-11-02 · **Change:** minor (bounces follow a hosted plugin's latency reported after it starts, #1287; previously trivial: Auto Pan stereo balance; previously minor: AudioSuite speed ramps (speed_ramp); Auto Pan; Subharmonic; previously minor: Ring Modulator; VST3 host messages: IMessage and IAttributeList; previously trivial: Sampler ping-pong loop phase (#463); previously trivial: mix.instrument sets built-in instrument parameters in params (#265); previously minor: plugin editors on Windows) · **Target:** Avid Pro Tools Ultimate 2026.4.1
 
 Pro Tools users live in plugins: the bundled set covers everyday mixing, and third-party plugins
 cover the rest. This doc tracks both. Our plugins have our own names and are written from
@@ -52,12 +52,13 @@ User report #152: a saved instrument level does not reach the bounce.
 | Sidechain / key input | ✅ | ❌ | All three hosts |
 | ARA 2 (pitch/time editors in the timeline) | ✅ | ❌ | Menu leaves Track/Clip/Window ▸ ARA still missing |
 | Crash isolation | in-process (DSP on HDX) | in-process | Out-of-process hosting would beat Pro Tools |
-| Plugin delay reporting changes on the fly | ✅ | 🟡 | Aux insert latency bug #103 (PR #133) |
+| Plugin delay reporting changes on the fly | ✅ | 🟡 | Aux insert latency bug #103 (PR #133). Offline renders follow a latency a hosted plugin finds once it runs (CLAP restart, VST3 asked between blocks, #1287); realtime playback doesn't follow it yet |
 
 ## Revision history
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-11-02 | minor | Offline renders give hosted plugins main-thread time between blocks: CLAP callbacks and restarts, VST3 latency read again; a latency found on the first block restarts the render (#1287) |
 | 2026-10-25 | trivial | Auto Pan: constant-power balance of the left and right channels; stereo passes unchanged at the center |
 | 2026-10-24 | minor | AudioSuite speed ramps (`speed_ramp`): down to a stop and up from one, Fit To or Extend, fades on or off |
 | 2026-10-24 | minor | Auto Pan: LFO and envelope panning of stereo tracks; built-in count 27 processors + 3 instruments |
