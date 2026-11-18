@@ -181,10 +181,17 @@ fn param_info(inst: &Instance, p: &RawParam) -> ParamInfo {
     }
 }
 
+/// A param is user-facing unless hidden, read-only or bypass — or unless it is really a
+/// MIDI-controller target (`IMidiMapping`), which a host must not restore: re-sending a stored
+/// default mutes instruments — a mapped CC volume lands at 0 (#1445).
+fn user_param(p: &RawParam, midi_targets: &HashSet<u32>) -> bool {
+    !midi_targets.contains(&p.id) && p.flags & (PARAM_HIDDEN | PARAM_READ_ONLY | PARAM_BYPASS) == 0
+}
+
 /// Builds and leaks the `PluginInfo` for one plugin type. Called at most once per id (cached).
 fn build_info(d: &Vst3Descriptor, inst: &Instance) -> &'static PluginInfo {
-    let params: Vec<ParamInfo> =
-        inst.params().iter().filter(|p| p.flags & (PARAM_HIDDEN | PARAM_READ_ONLY | PARAM_BYPASS) == 0).map(|p| param_info(inst, p)).collect();
+    let midi_targets: HashSet<u32> = inst.midi_mapped_param_ids().into_iter().collect();
+    let params: Vec<ParamInfo> = inst.params().iter().filter(|p| user_param(p, &midi_targets)).map(|p| param_info(inst, p)).collect();
     let short: String = d.name.chars().take(8).collect();
     Box::leak(Box::new(PluginInfo {
         id: leak(d.id.clone()),
@@ -257,6 +264,21 @@ pub fn plugin_info(id: &str) -> Option<&'static PluginInfo> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn midi_mapped_params_are_not_session_params() {
+        // Ids the plugin reports through `IMidiMapping` are not session parameters: restoring
+        // their stored defaults silences instruments (#1445). Ordinary parameters keep any legal
+        // id — including values at or above `0x4000_0000`, which the spec does not reserve.
+        let param = |id, flags| RawParam { id, title: String::new(), units: String::new(), step_count: 0, default_normalized: 0.0, flags };
+        let mapped: HashSet<u32> = [0x4000_0007].into_iter().collect();
+        assert!(!user_param(&param(0x4000_0007, 0), &mapped), "a mapped CC id");
+        assert!(user_param(&param(0x4000_0000, 0), &mapped), "an unmapped high id stays");
+        assert!(user_param(&param(7, 0), &mapped));
+        assert!(!user_param(&param(7, PARAM_HIDDEN), &mapped));
+        assert!(!user_param(&param(7, PARAM_READ_ONLY), &mapped));
+        assert!(!user_param(&param(7, PARAM_BYPASS), &mapped));
+    }
 
     #[test]
     fn unit_labels_map() {
