@@ -1606,3 +1606,49 @@ fn consolidate_many_tiny_effect_clips_stays_fast() {
     assert!((out[0][1000] - 0.5 * db_to_gain(-6.0)).abs() < 1e-6);
     assert_eq!(out[0][1001], 0.0);
 }
+
+#[test]
+fn a_fader_move_between_blocks_ramps_across_the_next_block() {
+    let (mut s, t) = session_with_dc(0.5, 4800);
+    let mut mixer = MixEngine::new(48_000.0, 512);
+    let mut out = vec![vec![0.0; 512]; 2];
+    mixer.render(&s, 0, 512, &mut out);
+    let unity = out[0][511];
+    assert!(unity > 0.1);
+    s.track_mut(t).unwrap().mixer.volume_db = -12.0;
+    mixer.render(&s, 512, 512, &mut out);
+    let quiet = unity * db_to_gain(-12.0);
+    // The block starts at the previous level and ends at the new one, falling steadily.
+    assert!((out[0][0] - unity).abs() < 1e-5, "{}", out[0][0]);
+    assert!((out[0][511] - quiet).abs() < 1e-5, "{}", out[0][511]);
+    assert!(out[0].windows(2).all(|w| w[1] <= w[0]));
+    // The level holds once it is reached.
+    mixer.render(&s, 1024, 512, &mut out);
+    assert!(out[0].iter().all(|x| (x - quiet).abs() < 1e-5));
+}
+
+#[test]
+fn an_empty_block_keeps_a_pending_fader_ramp() {
+    let (mut s, t) = session_with_dc(0.5, 4800);
+    let mut mixer = MixEngine::new(48_000.0, 512);
+    let mut out = vec![vec![0.0; 512]; 2];
+    mixer.render(&s, 0, 512, &mut out);
+    let unity = out[0][511];
+    s.track_mut(t).unwrap().mixer.volume_db = -12.0;
+    mixer.render(&s, 512, 0, &mut out);
+    mixer.render(&s, 512, 512, &mut out);
+    assert!((out[0][0] - unity).abs() < 1e-5, "{}", out[0][0]);
+    assert!((out[0][511] - unity * db_to_gain(-12.0)).abs() < 1e-5, "{}", out[0][511]);
+}
+
+#[test]
+fn a_fader_moved_before_a_seek_starts_at_its_new_level() {
+    let (mut s, t) = session_with_dc(0.5, 4800);
+    let mut mixer = MixEngine::new(48_000.0, 512);
+    let mut out = vec![vec![0.0; 512]; 2];
+    mixer.render(&s, 0, 512, &mut out);
+    let quiet = out[0][511] * db_to_gain(-12.0);
+    s.track_mut(t).unwrap().mixer.volume_db = -12.0;
+    mixer.render(&s, 2048, 512, &mut out);
+    assert!(out[0].iter().all(|x| (x - quiet).abs() < 1e-5), "{}", out[0][0]);
+}
