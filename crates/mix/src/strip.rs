@@ -332,6 +332,7 @@ fn render_instrument(s: &Session, t: &Track, strip: &mut Strip, live: &LiveInput
         // start of the block, then those of the devices that are still there. The clips' own
         // events of this block come after that, so a controller a clip changes right at the
         // start of the block keeps its new value.
+        strip.live.begin_block();
         if midi_thru(t) && strip.live.reconcile(t, live.midi_lost, live.ports, inst.plugin.as_mut()) {
             let from_clips = chase_controllers(s, t, pos, inst);
             strip.live.restore_defaults(from_clips, inst.plugin.as_mut());
@@ -339,7 +340,7 @@ fn render_instrument(s: &Session, t: &Track, strip: &mut Strip, live: &LiveInput
             chased = true;
         }
         if !live.monitor_only {
-            schedule_notes(s, t, pos, frames, inst, &mut strip.held, &strip.live);
+            schedule_notes(s, t, pos, frames, inst, &mut strip.held, &mut strip.live);
             strip.clips_played = true;
         } else {
             // Stopped: the clips are silent, only live MIDI input plays. Playback that ran to its

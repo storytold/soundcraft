@@ -107,10 +107,12 @@ pub(crate) struct AudioState {
     /// The record pass a command of this callback ended, to be confirmed once the MIDI that
     /// arrived up to that command is written down.
     midi_ended: Option<u64>,
-    /// The transport was stopped while a record pass ran. The pass goes on until the command
-    /// that ends it (the UI sends the two one after the other, and they may reach two
-    /// callbacks): what arrived before the stop is still written down.
-    midi_stopped: bool,
+    /// The transport stopped while a record pass ran. The pass goes on until the command that
+    /// ends it (the UI sends the two one after the other, and they may reach two callbacks):
+    /// what arrived before the stop is still written down. The value is the time up to which
+    /// that holds: when playback ran to its end by itself, the time it did (the UI ends the
+    /// pass only when it notices); `i64::MAX` for a Stop, whose time the UI gives.
+    midi_stopped: Option<i64>,
     /// Called between taking the MIDI in and reading the commands, for tests of what arrives
     /// right there.
     #[cfg(test)]
@@ -174,7 +176,7 @@ impl AudioState {
             midi_speed: 1.0,
             midi_wraps: 0,
             midi_ended: None,
-            midi_stopped: false,
+            midi_stopped: None,
             #[cfg(test)]
             before_commands: None,
             unsent: MeterSnapshot::default(),
@@ -209,7 +211,7 @@ impl AudioState {
                 Cmd::Recording(r, pass) => {
                     self.recording = r;
                     self.midi_wraps = 0;
-                    self.midi_stopped = false;
+                    self.midi_stopped = None;
                     // The pass has begun here: its start is no longer waited for.
                     if r && let Some(feed) = &self.midi {
                         feed.pass_begun();
@@ -248,21 +250,21 @@ impl AudioState {
                     self.end = end;
                     self.looped = looped.filter(|r| super::loops(*r));
                     self.midi_wraps = 0;
-                    self.midi_stopped = false;
+                    self.midi_stopped = None;
                     self.playing = true;
                     self.pending_len = 0;
                     self.read = 0.0;
                     self.mix.reset();
                 }
                 Cmd::Stop => {
-                    self.midi_stopped = self.playing && self.recording;
+                    self.midi_stopped = (self.playing && self.recording).then_some(i64::MAX);
                     self.playing = false;
                     self.end = None;
                     self.looped = None;
                     self.mix.reset();
                 }
                 Cmd::Locate(at) => {
-                    self.midi_stopped = false;
+                    self.midi_stopped = None;
                     self.pos = at;
                     self.pending_len = 0;
                     self.read = 0.0;
@@ -380,10 +382,6 @@ impl AudioState {
             if let Some(t) = lost_time.get_mut(usize::from(bit)) {
                 *t = at;
             }
-            if !record {
-                // No take to write it to: its mark in the queue, if one follows, is not news.
-                flag_seen(&mut self.midi_flag_seen, 1u64 << bit, at);
-            }
         }
         let per_us = self.session.sample_rate.as_f64() / 1e6 * speed;
         let frames = |since: i64| (now.saturating_sub(since).max(0) as f64 * per_us) as i64;
@@ -393,7 +391,15 @@ impl AudioState {
             self.midi_pending.retain(|(_, e)| input_lost & midi_port_bit(e.port) == 0);
             self.midi_lost |= input_lost;
         }
-        let mut take = TakeWriter { feed, pos: pass.pos, looped: pass.looped, wraps: std::mem::take(&mut self.midi_wraps), from: pass.from };
+        let mut take = TakeWriter {
+            feed,
+            pos: pass.pos,
+            looped: pass.looped,
+            wraps: std::mem::take(&mut self.midi_wraps),
+            from: pass.from,
+            until: pass.until,
+            stopped: pass.stopped,
+        };
         // The lost ports whose mark is not in the take yet. Each goes in where its loss was.
         let mut marks = if record { input_lost } else { 0 };
         let mut unplayed = 0u64;
@@ -413,13 +419,12 @@ impl AudioState {
                 let again = feed.lost_at(e.port);
                 if again <= stamp {
                     marks &= !bit;
-                } else if input_lost & bit != 0 {
-                    if let Some(t) = lost_time.get_mut(place) {
-                        *t = again;
-                    }
-                    // Dealt with here (what the port sent up to it is not played, see below):
-                    // the flag of that loss, if it comes later, is not news.
-                    flag_seen(&mut self.midi_flag_seen, bit, again);
+                } else if input_lost & bit != 0
+                    && let Some(t) = lost_time.get_mut(place)
+                {
+                    // Dealt with in this callback (what the port sent up to it is not played,
+                    // see below), at its own mark in the queue if it has one, else at the end.
+                    *t = again;
                 }
                 if record && !told {
                     while let Some((other, at)) = next_mark(&lost_time, marks, stamp) {
@@ -469,6 +474,12 @@ impl AudioState {
                 marks &= !bit;
             }
             take.flush();
+        }
+        // Every loss a flag told of was dealt with here, up to its time: the same loss told
+        // again (by its mark in the queue, or by a flag raised while the queue was read) is
+        // not news.
+        for bit in (0..64u8).filter(|b| input_lost & (1u64 << b) != 0) {
+            flag_seen(&mut self.midi_flag_seen, 1u64 << bit, lost_time.get(usize::from(bit)).copied().unwrap_or(i64::MIN));
         }
         self.midi_lost(unplayed);
     }
@@ -521,6 +532,11 @@ impl AudioState {
             n = n.min(usize::try_from((l.end - self.pos).max(1)).unwrap_or(BLOCK));
         } else if let Some(e) = self.end {
             if self.pos >= e {
+                // A record pass is not over yet: the UI ends it. What was played up to here
+                // still belongs to it.
+                if self.playing && self.recording {
+                    self.midi_stopped = Some(self.midi.as_ref().map_or(i64::MAX, |f| f.clock()));
+                }
                 self.playing = false;
                 self.end = None;
                 self.shared.playing.store(false, Ordering::Relaxed);
@@ -590,9 +606,19 @@ impl AudioState {
         // A pass runs while playing and recording, and on through a transport stop until the
         // command that ends it. One the UI has begun during playback counts from when it began,
         // though the command that starts it is only read below.
-        let running = self.recording && (self.playing || self.midi_stopped);
-        let (from, begun) = self.midi.as_ref().map_or((i64::MIN, false), |f| (f.record_from(), f.begin_pending()));
-        let pass = Pass { record: running || (self.playing && begun), from, pos: self.pos, looped: self.looped };
+        let running = self.recording && (self.playing || self.midi_stopped.is_some());
+        // Whether a pass was begun first, then when: the time is stored before the pass counts
+        // as begun, so a pass seen as begun here has its own start time.
+        let begun = self.midi.as_ref().is_some_and(|f| f.begin_pending());
+        let from = self.midi.as_ref().map_or(i64::MIN, |f| f.record_from());
+        let pass = Pass {
+            record: running || (self.playing && begun),
+            from,
+            until: self.midi_stopped.unwrap_or(i64::MAX),
+            stopped: self.midi_stopped.is_some(),
+            pos: self.pos,
+            looped: self.looped,
+        };
         self.capture_midi(callback, age_speed, pass);
         #[cfg(test)]
         if let Some(hook) = &mut self.before_commands {
@@ -603,10 +629,17 @@ impl AudioState {
             // A command ended the pass. What arrived after the queue was read above and before
             // that command belongs to the pass too: take it in as well, with the pass as it was,
             // and only then say that everything up to the stop is written down.
+            // The device threads are kept out of the queue meanwhile, so that a message one
+            // of them stamped before the Stop is in the queue by now and not put in after the
+            // answer. (When one is in there this very moment and does not come out at once,
+            // the answer is given without that: the audio thread does not wait.)
+            let feed = self.midi.clone();
+            let quiet = feed.as_ref().and_then(|f| f.hold_writers());
             self.capture_midi(callback, age_speed, pass);
-            if let Some(feed) = &self.midi {
+            if let Some(feed) = &feed {
                 feed.capture_done(ended, pass.pos);
             }
+            drop(quiet);
         }
         // A command may have installed a session at another sample rate: the audio is rendered
         // at the rate that is there now, at the same speed.
@@ -692,6 +725,10 @@ struct Pass {
     record: bool,
     /// Entries stamped earlier than this are from before the pass began.
     from: i64,
+    /// Entries stamped later than this are from after the transport stopped by itself.
+    until: i64,
+    /// The transport has stopped: the playhead stands where the pass ends.
+    stopped: bool,
     /// The playhead at the start of the callback.
     pos: Samples,
     looped: Option<Range>,
@@ -708,6 +745,10 @@ struct TakeWriter<'a> {
     wraps: u8,
     /// Entries stamped earlier than this are not part of the take (the pass began then).
     from: i64,
+    /// Entries stamped later than this are not part of it either (the transport stopped then).
+    until: i64,
+    /// The playhead stands where the pass ends.
+    stopped: bool,
 }
 
 impl TakeWriter<'_> {
@@ -715,7 +756,7 @@ impl TakeWriter<'_> {
     /// from after it was ended. The end is asked for every entry: a Stop may come while the
     /// queue is being read.
     fn within(&self, stamp: i64) -> bool {
-        stamp >= self.from && stamp <= self.feed.record_until()
+        stamp >= self.from && stamp <= self.until.min(self.feed.record_until())
     }
 
     /// Write down the event `e`, stamped `stamp`, that arrived `age` session frames ago.
@@ -749,7 +790,7 @@ impl TakeWriter<'_> {
             // A pass that is being ended stops at the playhead, and its range ends there: what
             // was played just before the Stop is the last thing inside it, not the first thing
             // outside.
-            let ending = self.feed.record_until() != i64::MAX;
+            let ending = self.stopped || self.feed.record_until() != i64::MAX;
             return if ending { at.min(self.pos.saturating_sub(1)) } else { at };
         };
         let len = l.len().max(1);

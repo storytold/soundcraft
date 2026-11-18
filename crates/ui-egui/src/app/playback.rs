@@ -153,7 +153,9 @@ impl SoundApp {
         }
         let e = self.engine.session().edit.clone();
         let sel = e.selection;
-        if e.loop_record && !sel.is_empty() {
+        // Loop recording needs a selection the transport will loop: one too short for that is
+        // recorded as a punch, like any other selection.
+        if e.loop_record && !sel.is_empty() && soundcraft_playback::loops(sel) {
             self.record_start = sel.start;
             self.punch = None;
             self.start_play(sel.start, None, Some(sel));

@@ -267,6 +267,10 @@ fn kept_by_reset(msg: &LiveMidi) -> u8 {
     KEPT_BY_RESET.iter().find(|(cc, ..)| *cc == msg.data1).map_or(0, |(.., bit)| *bit)
 }
 
+/// Clip note-offs a strip can hold back in one block ([`LiveNotes::clip_off_held_back`]); past
+/// that a live release in the same block ends the note where the key went up.
+const MAX_CLIP_OFFS: usize = 16;
+
 /// Per-strip state of the live notes, by owner.
 #[derive(Debug)]
 pub(crate) struct LiveNotes {
@@ -281,10 +285,15 @@ pub(crate) struct LiveNotes {
     /// full table forgot: the instrument may still have a value of theirs.
     forgotten_ports: u64,
     forgotten_channels: u16,
-    /// For each of [`KEPT_BY_RESET`], the ports ([`midi_port_bit`]) and channels of the values
-    /// of it that the full table forgot: the default is owed when one of those sources goes,
-    /// not when another does.
-    forgotten_kept: [(u64, u16); 2],
+    /// For each of [`KEPT_BY_RESET`], the port and channel that set it last: that is the value
+    /// the instrument has. The default is owed when that source goes, not when another does
+    /// (one that set it earlier, or one whose value the full table forgot).
+    kept_last: [Option<(u8, u8)>; 2],
+    /// Note-offs of the clips that were held back in this block because a live key held the
+    /// pitch: `(pitch, sample offset)`. A live release earlier in the block does not end the
+    /// note before the clip would have ([`Self::end_note`]).
+    clip_offs: [(u8, usize); MAX_CLIP_OFFS],
+    clip_offs_len: usize,
     /// Which of [`KEPT_BY_RESET`] a live source that is gone had set: the next reset of the
     /// instrument's controllers does not undo that ([`Self::restore_defaults`]).
     defaults_owed: u8,
@@ -301,7 +310,9 @@ impl Default for LiveNotes {
             ctrl_order: 0,
             forgotten_ports: 0,
             forgotten_channels: 0,
-            forgotten_kept: [(0, 0); 2],
+            kept_last: [None; 2],
+            clip_offs: [(0, 0); MAX_CLIP_OFFS],
+            clip_offs_len: 0,
             defaults_owed: 0,
             clip: NoteSet::default(),
         }
@@ -319,23 +330,62 @@ impl LiveNotes {
 
     /// Which of [`KEPT_BY_RESET`] live input has set on the instrument, as far as is known.
     fn kept_set(&self) -> u8 {
-        let forgotten = KEPT_BY_RESET.iter().zip(&self.forgotten_kept).filter(|(_, (ports, _))| *ports != 0).fold(0, |m, ((.., bit), _)| m | bit);
-        self.ctrls.iter().filter(|c| c.msg.status != 0).fold(self.defaults_owed | forgotten, |m, c| m | kept_by_reset(&c.msg))
+        let last = KEPT_BY_RESET.iter().zip(&self.kept_last).filter(|(_, last)| last.is_some()).fold(0, |m, ((.., bit), _)| m | bit);
+        self.ctrls.iter().filter(|c| c.msg.status != 0).fold(self.defaults_owed | last, |m, c| m | kept_by_reset(&c.msg))
     }
 
-    /// The sources picked by `gone` (the ports and channels a forgotten value came from) went
-    /// away: the defaults of the volume and the pan they had set are owed. True when there were
-    /// any, so that the caller resets the controllers.
-    fn forgotten_kept_gone(&mut self, gone: impl Fn(u64, u16) -> bool) -> bool {
+    /// The sources picked by `gone` (a port and a channel) went away: where one of them had set
+    /// the volume or the pan last, the default of that controller is owed. True when there was
+    /// one, so that the caller resets the controllers.
+    fn kept_last_gone(&mut self, gone: impl Fn(u8, u8) -> bool) -> bool {
         let mut any = false;
-        for ((.., bit), from) in KEPT_BY_RESET.iter().zip(self.forgotten_kept.iter_mut()) {
-            if from.0 != 0 && gone(from.0, from.1) {
+        for ((.., bit), last) in KEPT_BY_RESET.iter().zip(self.kept_last.iter_mut()) {
+            if last.is_some_and(|(port, channel)| gone(port, channel)) {
                 self.defaults_owed |= bit;
-                *from = (0, 0);
+                *last = None;
                 any = true;
             }
         }
         any
+    }
+
+    /// A new block starts: no clip note-off is held back yet.
+    pub(crate) fn begin_block(&mut self) {
+        self.clip_offs_len = 0;
+    }
+
+    /// The clips' note-off for `pitch` at sample `offset` of this block was not sent, as a live
+    /// key holds the pitch.
+    pub(crate) fn clip_off_held_back(&mut self, pitch: u8, offset: usize) {
+        if let Some(slot) = self.clip_offs.get_mut(self.clip_offs_len) {
+            *slot = (pitch, offset);
+            self.clip_offs_len += 1;
+        }
+    }
+
+    /// The last live owner let go of `note` at sample `at`: the note ends, unless a clip still
+    /// holds it. When the clips' own note-off for it was held back in this block, the note ends
+    /// at the later of the two: a key let go early in the block does not cut the clip's note
+    /// short.
+    fn end_note(&mut self, inst: &mut dyn Plugin, at: usize, note: u8) {
+        if self.sounding(note) {
+            return;
+        }
+        let held_back = self.clip_offs.iter().take(self.clip_offs_len).position(|(pitch, _)| *pitch == note);
+        let at = match held_back.and_then(|i| self.clip_offs.get(i).copied().map(|(_, off)| (i, off))) {
+            Some((i, off)) => {
+                // Taken: the last entry moves into its place.
+                self.clip_offs_len -= 1;
+                if let Some(last) = self.clip_offs.get(self.clip_offs_len).copied()
+                    && let Some(slot) = self.clip_offs.get_mut(i)
+                {
+                    *slot = last;
+                }
+                off.max(at)
+            }
+            None => at,
+        };
+        inst.note_off(at, note);
     }
 
     /// After the instrument's controllers were reset and set from the clips (`from_clips`: the
@@ -394,7 +444,7 @@ impl LiveNotes {
         }
         // A source whose value the full table forgot may be among those the input dropped.
         let forgotten = self.forgotten_ports != 0 && !all_accepted(self.forgotten_ports, self.forgotten_channels, input, ports);
-        let forgotten = self.forgotten_kept_gone(|from, channels| !all_accepted(from, channels, input, ports)) || forgotten;
+        let forgotten = self.kept_last_gone(|port, channel| !input.accepts(ports.and_then(|p| p.name(port)), channel)) || forgotten;
         self.forget_controllers(|c| !input.accepts(ports.and_then(|p| p.name(c.port)), c.channel())) || forgotten
     }
 
@@ -404,7 +454,6 @@ impl LiveNotes {
     fn forget_controllers(&mut self, gone: impl Fn(&LiveMidi) -> bool) -> bool {
         let mut any = false;
         for c in self.ctrls.iter_mut().filter(|c| c.msg.status != 0 && gone(&c.msg)) {
-            self.defaults_owed |= kept_by_reset(&c.msg);
             *c = LiveCtrl::default();
             any = true;
         }
@@ -415,6 +464,9 @@ impl LiveNotes {
     /// `d1`, `d2`) as the last value its owner gave that controller. When the table is full
     /// the oldest value goes.
     fn keep_controller(&mut self, e: &LiveMidi, d1: u8, d2: u8) {
+        if let Some(last) = kept_index(&LiveMidi { data1: d1, ..*e }).and_then(|i| self.kept_last.get_mut(i)) {
+            *last = Some((e.port, e.channel()));
+        }
         self.ctrl_order = self.ctrl_order.saturating_add(1);
         let order = self.ctrl_order;
         let free = self.ctrls.iter().position(|c| c.is(e, d1)).or_else(|| self.ctrls.iter().position(|c| c.msg.status == 0));
@@ -424,10 +476,6 @@ impl LiveNotes {
             let (i, oldest) = self.ctrls.iter().enumerate().min_by_key(|(_, c)| c.order)?;
             self.forgotten_ports |= midi_port_bit(oldest.msg.port);
             self.forgotten_channels |= 1u16 << oldest.msg.channel();
-            if let Some(from) = kept_index(&oldest.msg).and_then(|i| self.forgotten_kept.get_mut(i)) {
-                from.0 |= midi_port_bit(oldest.msg.port);
-                from.1 |= 1u16 << oldest.msg.channel();
-            }
             Some(i)
         });
         if let Some(c) = at.and_then(|i| self.ctrls.get_mut(i)) {
@@ -455,8 +503,8 @@ impl LiveNotes {
         let stale = self.drop_unaccepted(&MidiInput::of(&t.mixer.input), ports, inst) || lost;
         if stale {
             // The caller resets the instrument's controllers: no forgotten value is left on it,
-            // but for the volume and the pan, which the reset does not touch (`forgotten_kept`
-            // goes on saying whose they are).
+            // but for the volume and the pan, which the reset does not touch (`kept_last` goes
+            // on saying whose they are).
             self.forgotten_ports = 0;
             self.forgotten_channels = 0;
         }
@@ -509,9 +557,7 @@ impl LiveNotes {
             *o = Owner::default();
         }
         for note in freed.notes() {
-            if !self.sounding(note) {
-                inst.note_off(at, note);
-            }
+            self.end_note(inst, at, note);
         }
     }
 
@@ -523,7 +569,7 @@ impl LiveNotes {
         self.ctrls = [LiveCtrl::default(); MAX_LIVE_CTRLS];
         self.forgotten_ports = 0;
         self.forgotten_channels = 0;
-        self.forgotten_kept = [(0, 0); 2];
+        self.kept_last = [None; 2];
         std::mem::take(&mut self.controllers)
     }
 
@@ -541,7 +587,7 @@ impl LiveNotes {
         }
         // The port may have set a controller whose value the full table forgot.
         let forgotten = lost & self.forgotten_ports != 0;
-        let forgotten = self.forgotten_kept_gone(|from, _| lost & from != 0) || forgotten;
+        let forgotten = self.kept_last_gone(|port, _| lost & midi_port_bit(port) != 0) || forgotten;
         self.forget_controllers(|c| lost & midi_port_bit(c.port) != 0) || forgotten
     }
 
@@ -573,9 +619,7 @@ impl LiveNotes {
                         continue;
                     }
                     o.settle();
-                    if !self.sounding(d1) {
-                        inst.note_off(at, d1);
-                    }
+                    self.end_note(inst, at, d1);
                 }
                 // Sustain pedal down: the owner needs a place to keep it.
                 0xB0 if d1 == 64 && d2 >= 64 => {
@@ -590,9 +634,7 @@ impl LiveNotes {
                     o.pedal = false;
                     o.settle();
                     for note in freed.notes() {
-                        if !self.sounding(note) {
-                            inst.note_off(at, note);
-                        }
+                        self.end_note(inst, at, note);
                     }
                 }
                 // All Sound Off, All Notes Off: channel messages, so for this owner.
@@ -627,7 +669,7 @@ mod tests {
 
     /// An instrument that writes down the notes it is sent, `(on, pitch)`, and the other messages.
     #[derive(Default)]
-    struct Log(Vec<(bool, u8)>, Vec<[u8; 3]>);
+    struct Log(Vec<(bool, u8)>, Vec<[u8; 3]>, Vec<usize>);
 
     impl Plugin for Log {
         fn info(&self) -> &'static PluginInfo {
@@ -645,8 +687,9 @@ mod tests {
         fn note_on(&mut self, _: usize, note: u8, _: u8) {
             self.0.push((true, note));
         }
-        fn note_off(&mut self, _: usize, note: u8) {
+        fn note_off(&mut self, at: usize, note: u8) {
             self.0.push((false, note));
+            self.2.push(at);
         }
         fn midi(&mut self, _: usize, msg: [u8; 3]) {
             self.1.push(msg);
@@ -723,6 +766,37 @@ mod tests {
         // Once the clip's note is over, a live release ends the pitch as usual.
         live.set_clip_notes(&[]);
         assert_eq!(play(&mut live, &[ev(0, 0x90, 60, 100), ev(0, 0x80, 60, 0)]), [(true, 60), (false, 60)]);
+    }
+
+    #[test]
+    fn a_live_release_does_not_end_a_note_before_the_clips_held_back_note_off() {
+        let at = |offset, status| LiveMidi { offset, ..ev(0, status, 60, 100) };
+        let s = {
+            let mut s = soundcraft_model::Session::default();
+            s.add_track(soundcraft_model::TrackKind::Instrument, soundcraft_model::ChannelFormat::Stereo, None);
+            s
+        };
+        let t = &s.tracks[0];
+        // A key holds pitch 60, which a clip plays too. In this block the clip's note ends at
+        // sample 400 (its note-off is held back, as the key is down) and the key goes up at
+        // sample 32, or at sample 450: the note ends at the later of the two.
+        for (release, ends) in [(32, 400), (450, 450)] {
+            let (mut live, mut log) = (LiveNotes::default(), Log::default());
+            live.set_clip_notes(&[60]);
+            live.play(t, &mut log, &[at(0, 0x90)], None, 512);
+            live.begin_block();
+            live.clip_off_held_back(60, 400);
+            live.set_clip_notes(&[]);
+            live.play(t, &mut log, &[at(release, 0x80)], None, 512);
+            assert_eq!((log.0.last(), log.2.as_slice()), (Some(&(false, 60)), &[ends][..]), "key up at {release}");
+        }
+        // Nothing is carried into the next block: a release there ends the note where it is.
+        let (mut live, mut log) = (LiveNotes::default(), Log::default());
+        live.play(t, &mut log, &[at(0, 0x90)], None, 512);
+        live.clip_off_held_back(60, 400);
+        live.begin_block();
+        live.play(t, &mut log, &[at(32, 0x80)], None, 512);
+        assert_eq!(log.2, [32]);
     }
 
     #[test]

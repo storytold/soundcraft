@@ -483,6 +483,22 @@ impl MidiFeed {
         self.pass_end.load(Ordering::Acquire)
     }
 
+    /// Audio thread: keep the device threads from putting anything into the queue until the
+    /// guard is dropped, so that the queue as it is read next holds everything that was stamped
+    /// so far (a device thread stamps a message and puts it in under this lock). Does not wait:
+    /// when a device thread is in there right now it tries a few times, and gives up (`None`)
+    /// rather than hold the audio thread up.
+    pub(crate) fn hold_writers(&self) -> Option<std::sync::MutexGuard<'_, u64>> {
+        for _ in 0..256 {
+            match self.writers.try_lock() {
+                Ok(guard) => return Some(guard),
+                Err(std::sync::TryLockError::Poisoned(p)) => return Some(p.into_inner()),
+                Err(std::sync::TryLockError::WouldBlock) => std::hint::spin_loop(),
+            }
+        }
+        None
+    }
+
     /// Audio thread: recording was switched off for `pass`, and everything played before that is
     /// recorded. `at` is where the playhead stood then: the positions in the take, and the marks
     /// of the loop going round, are all from before it.

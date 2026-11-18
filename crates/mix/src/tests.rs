@@ -2102,6 +2102,13 @@ fn a_volume_the_full_controller_table_forgot_is_reset_only_when_its_own_device_g
     assert_eq!(lost(&mut eng, 1024, 1), [[0xB0, 121, 0]]);
     // Keys goes: now the volume goes back to the default.
     assert_eq!(lost(&mut eng, 1536, 0), [[0xB0, 121, 0], [0xB0, 7, 100]]);
+    // Two devices set the volume one after the other, and the table forgets both values. The
+    // instrument has the later one: when the earlier setter goes, it stays.
+    eng.midi.extend([ev(0, 0xB0, 7, 20), ev(3, 0xB0, 7, 30), ev(0, 0xE0, 0, 0x7F)]);
+    eng.midi.extend((0..crate::live_midi::MAX_LIVE_CTRLS as u8).map(|n| ev(2, 0xB0, 20 + n, 2)));
+    render_block(&mut eng, &s, 2048);
+    assert_eq!(lost(&mut eng, 2560, 0), [[0xB0, 121, 0]], "the later setter is still there");
+    assert_eq!(lost(&mut eng, 3072, 3), [[0xB0, 121, 0], [0xB0, 7, 100]]);
 }
 
 #[test]

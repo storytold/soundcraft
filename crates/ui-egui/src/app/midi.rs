@@ -119,6 +119,7 @@ impl SoundApp {
         let devices: Vec<String> = (0..soundcraft_mix::MAX_MIDI_PORTS)
             .map(|i| u8::try_from(i).ok().and_then(|i| feed.ports().name(i)).unwrap_or_default().to_string())
             .collect();
+        let pass = pass_with_known_stop(pass, uncollected);
         let inputs = std::mem::take(&mut self.midi_take_inputs);
         let take = soundcraft_engine::io::add_midi_recording_from(&mut self.engine, range, pass, &events, &devices, &inputs, with_audio);
         (take.clips.len(), midi_take_problem(take.gaps, uncollected, confirmed))
@@ -172,6 +173,17 @@ fn midi_pass_waits(engine: bool, tracks: usize) -> bool {
     engine && tracks > 0
 }
 
+/// `pass` without the stop position of a loop pass when `uncollected` recorded entries never
+/// reached the take. One of them may be the mark of the loop going round: the stop position
+/// would then be read in the wrong round, and a key held to the stop would end early. Without
+/// it the keys still down are held to the end of the loop.
+fn pass_with_known_stop(pass: MidiPass, uncollected: u64) -> MidiPass {
+    match pass {
+        MidiPass::Loop { marked, .. } if uncollected > 0 => MidiPass::Loop { stopped: None, marked },
+        pass => pass,
+    }
+}
+
 /// Where the MIDI of a record pass goes and how the pass ran over that range. `looped` is the
 /// loop the pass recorded over: the loop of loop recording, or the loop that was playing when
 /// recording was punched in (the playhead goes on round it, so the take is a loop take though
@@ -219,7 +231,17 @@ fn midi_take_problem(gaps: usize, uncollected: u64, confirmed: bool) -> Option<S
 
 #[cfg(test)]
 mod tests {
-    use super::{MidiPass, Range, midi_pass_waits, midi_take_problem, midi_take_span, pass_stop};
+    use super::{MidiPass, Range, midi_pass_waits, midi_take_problem, midi_take_span, pass_stop, pass_with_known_stop};
+
+    #[test]
+    fn the_stop_of_a_loop_pass_is_not_used_when_entries_of_the_take_went_missing() {
+        let pass = MidiPass::Loop { stopped: Some(24_000), marked: true };
+        assert_eq!(pass_with_known_stop(pass, 0), pass, "a whole take keeps its stop");
+        // One entry never arrived: it may be the mark of a round, so the round of the stop is
+        // not known.
+        assert_eq!(pass_with_known_stop(pass, 1), MidiPass::Loop { stopped: None, marked: true });
+        assert_eq!(pass_with_known_stop(MidiPass::Linear, 3), MidiPass::Linear);
+    }
 
     #[test]
     fn a_pass_punched_in_while_a_loop_plays_is_a_loop_take_over_that_loop() {

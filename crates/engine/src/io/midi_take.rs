@@ -107,17 +107,18 @@ fn midi_take_sequence(s: &Session, input: &MidiInput<'_>, range: Range, pass: Mi
     let mut seq = Sequence::default();
     // The round of the loop being played: it goes up at every `WRAP`.
     let mut round = 0u32;
-    // Keys down: (device, channel, pitch) -> (start tick, velocity, round, the tick the key was
-    // pressed at). The two ticks differ only for a press in the last samples of the range, whose
-    // note starts a tick earlier so that it plays; where the loop went round is judged by the
-    // press as it was played.
-    let mut down: HashMap<(u8, u8, u8), (i64, u8, u32, i64)> = HashMap::new();
+    // Keys down: (device, channel, pitch) -> (start tick, velocity, round, the sample the key was
+    // pressed at). Whether the loop went round between a press and its release is judged by
+    // their samples: two positions a few samples apart may share a tick, and a press in the
+    // last samples of the range starts its note a tick earlier so that it plays.
+    let mut down: HashMap<(u8, u8, u8), (i64, u8, u32, Samples)> = HashMap::new();
     let close = |seq: &mut Sequence,
                  (_, channel, pitch): (u8, u8, u8),
-                 (start, velocity, since, pressed): (i64, u8, u32, i64),
+                 (start, velocity, since, pressed): (i64, u8, u32, Samples),
                  end: i64,
                  release: u8,
-                 round: u32| {
+                 round: u32,
+                 end_at: Samples| {
         let note = |start: i64, end: i64, release: u8| Note {
             pitch,
             velocity,
@@ -130,7 +131,7 @@ fn midi_take_sequence(s: &Session, input: &MidiInput<'_>, range: Range, pass: Mi
         // A pass in a line never goes round, and neither does a loop pass between two
         // entries of one round when its rounds are marked: a release stamped before its
         // press ends the note at the press (a note is at least a tick long).
-        if !looped || (rounds == 0 && (end >= pressed || !inferred)) {
+        if !looped || (rounds == 0 && (end_at >= pressed || !inferred)) {
             seq.notes.push(note(start, end, release));
             return;
         }
@@ -140,7 +141,7 @@ fn midi_take_sequence(s: &Session, input: &MidiInput<'_>, range: Range, pass: Mi
         // it was played. Held for a whole round or more, it covers the loop: the second note
         // then ends where the first begins, so the two do not overlap.
         seq.notes.push(note(start, end_tick, 64));
-        let end = if rounds > 1 || (rounds == 1 && end >= pressed) { start } else { end };
+        let end = if rounds > 1 || (rounds == 1 && end_at >= pressed) { start } else { end };
         if end > 0 {
             seq.notes.push(note(0, end, release));
         }
@@ -159,7 +160,7 @@ fn midi_take_sequence(s: &Session, input: &MidiInput<'_>, range: Range, pass: Mi
             let ended: Vec<(u8, u8, u8)> = down.keys().copied().filter(|k| lost_covers(e.device, k.0)).collect();
             for key in ended {
                 if let Some(open) = down.remove(&key) {
-                    close(&mut seq, key, open, at, 64, round);
+                    close(&mut seq, key, open, at, 64, round, e.at);
                 }
             }
             continue;
@@ -174,13 +175,13 @@ fn midi_take_sequence(s: &Session, input: &MidiInput<'_>, range: Range, pass: Mi
         match e.status & 0xF0 {
             0x90 if d2 > 0 => {
                 // The same key again without a release: the first note ends here.
-                if let Some(open) = down.insert(key, (at.min(last_start), d2, round, at)) {
-                    close(&mut seq, key, open, at, 64, round);
+                if let Some(open) = down.insert(key, (at.min(last_start), d2, round, e.at)) {
+                    close(&mut seq, key, open, at, 64, round, e.at);
                 }
             }
             0x80 | 0x90 => {
                 if let Some(open) = down.remove(&key) {
-                    close(&mut seq, key, open, at, if e.status & 0xF0 == 0x80 { d2 } else { 64 }, round);
+                    close(&mut seq, key, open, at, if e.status & 0xF0 == 0x80 { d2 } else { 64 }, round, e.at);
                 }
             }
             0xA0 => seq.ctrls.push(ctrl(CtrlKind::PolyPressure(d1), i32::from(d2))),
@@ -197,12 +198,12 @@ fn midi_take_sequence(s: &Session, input: &MidiInput<'_>, range: Range, pass: Mi
     // that is the whole loop).
     // A take cut at the event cap may have lost the marks of its last rounds: the stop position
     // belongs to a round the entries that are left do not reach, and is not used.
-    let stop = match pass {
-        MidiPass::Loop { stopped: Some(at), .. } if events.len() <= MAX_MIDI_TAKE_EVENTS => tick(at.clamp(range.start, range.end)),
-        _ => end_tick,
+    let stop_at = match pass {
+        MidiPass::Loop { stopped: Some(at), .. } if events.len() <= MAX_MIDI_TAKE_EVENTS => Some(at.clamp(range.start, range.end)),
+        _ => None,
     };
     for (key, open) in down {
-        close(&mut seq, key, open, stop, 64, round);
+        close(&mut seq, key, open, stop_at.map_or(end_tick, tick), 64, round, stop_at.unwrap_or(range.end));
     }
     seq.sort();
     seq
@@ -530,6 +531,14 @@ mod tests {
         let round = [ev(95_999, 0, 0x90, 60, 100), ev(95_975, 0, 0x80, 60, 0)];
         let got = notes_of(&midi_take_sequence(&s, &MidiInput::default(), range, unmarked, &round, &[]));
         assert_eq!(got.iter().map(|n| (n.2, n.3)).collect::<Vec<_>>(), [(0, 3839), (3839, 1)], "the tail and the round after it");
+        // Two positions within one tick: a release 22 samples before the press went round too,
+        // and a release 22 samples after it is one short note.
+        let near = [ev(24_011, 0, 0x90, 60, 100), ev(23_989, 0, 0x80, 60, 0)];
+        let got = notes_of(&midi_take_sequence(&s, &MidiInput::default(), range, unmarked, &near, &[]));
+        assert_eq!(got.iter().map(|n| (n.2, n.3)).collect::<Vec<_>>(), [(0, 960), (960, 2880)]);
+        let forward = [ev(23_989, 0, 0x90, 60, 100), ev(24_011, 0, 0x80, 60, 0)];
+        let got = notes_of(&midi_take_sequence(&s, &MidiInput::default(), range, unmarked, &forward, &[]));
+        assert_eq!(got.iter().map(|n| (n.2, n.3)).collect::<Vec<_>>(), [(960, 1)]);
         // A controller there stays inside the clip too.
         let cc = [ev(95_999, 0, 0xB0, 7, 90)];
         let seq = midi_take_sequence(&s, &MidiInput::default(), range, MidiPass::Linear, &cc, &[]);
