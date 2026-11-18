@@ -1558,3 +1558,30 @@ fn a_session_at_another_sample_rate_is_rendered_at_that_rate_from_the_callback_t
     st.fill(&mut out, 2);
     assert_eq!(st.shared.position.load(Ordering::Relaxed), 2048, "1024 device frames");
 }
+
+#[test]
+fn a_speed_change_during_a_callback_does_not_split_what_it_renders_at_from_what_it_keeps() {
+    let (mut st, tx, feed, ..) = keyboard_session();
+    feed.set_clock(0);
+    tx.send(Cmd::Recording(true, 0)).unwrap();
+    tx.send(Cmd::Play { from: 0, end: None, looped: None }).unwrap();
+    let mut out = vec![0.0f32; 2048];
+    st.fill(&mut out, 2);
+    assert_eq!(st.shared.position.load(Ordering::Relaxed), 1024);
+    // Half speed is asked for while the callback runs, after it has read the speed.
+    let shared = Arc::clone(&st.shared);
+    st.before_commands = Some(Box::new(move || shared.speed.store(500, Ordering::Relaxed)));
+    st.fill(&mut out, 2);
+    st.before_commands = None;
+    // It rendered at full speed, the speed it read...
+    assert_eq!(st.shared.position.load(Ordering::Relaxed), 2048);
+    // ...and that is the speed the next callback counts the age of an event at: 10 ms is 480
+    // frames at full speed, though half speed is in force by then.
+    feed.receive(0, &[0x90, 60, 100]);
+    feed.set_clock(10_000);
+    st.fill(&mut out, 2);
+    let mut rec = Vec::new();
+    feed.take_recorded(&mut rec);
+    assert_eq!(rec.iter().map(|e| e.at).collect::<Vec<_>>(), [2048 - 480]);
+    assert_eq!(st.shared.position.load(Ordering::Relaxed), 2048 + 512, "half speed from the callback after");
+}
