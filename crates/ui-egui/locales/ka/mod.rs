@@ -174,6 +174,7 @@ pub(super) fn translate(source: &str) -> Option<&'static str> {
         "Original Time Stamp" => "თავდაპირველი დროის შტამპი",
         "Output" => "გამოსასვლელი",
         "Output device" => "გამოსასვლელი მოწყობილობა",
+        "Output window" => "გამოსასვლელის ფანჯარა",
         "OK" => "OK",
         "Outputs" => "გამოსასვლელები",
         "Pan" => "პანორამა",
