@@ -1534,6 +1534,9 @@ fn menu_translate(source: &str) -> Option<&'static str> {
         "MIDI input was dropped during the take: it is incomplete, and notes held at that point end there" => {
             "Parte da entrada MIDI foi perdida durante o take: ele está incompleto, e as notas que estavam pressionadas terminam nesse ponto"
         }
+        "The audio engine did not answer when the pass ended: the last MIDI notes played may be missing from the take" => {
+            "O mecanismo de áudio não respondeu quando a passagem terminou: as últimas notas MIDI tocadas podem estar faltando no take"
+        }
         "All MIDI" => "Todo MIDI",
         "Channel" => "Canal",
         "MIDI input" => "Entrada MIDI",

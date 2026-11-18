@@ -16,7 +16,10 @@
 //! - An event that does not reach the audio thread marks its port as having lost events
 //!   ([`MidiFeed::port_lost`]; a port that closes does the same, as its releases will not come).
 //!   The audio thread then releases every note and pedal that port holds on every track, and
-//!   drops what it still had queued from it, so no note can be left sounding.
+//!   drops what it had from that port from before the loss, so no note can be left sounding.
+//!   The time of the loss is kept with the mark ([`MidiFeed::lost_at`]): what the port sends
+//!   after it (a replugged device, a queue that has room again) is played and recorded as usual,
+//!   after the release.
 //! - While recording, that point goes into the take as a [`RecordedMidi::LOST`] entry: the notes
 //!   the port held end there. Recorded events that do not fit the queue to the UI thread are
 //!   counted ([`MidiFeed::take_recorded_lost`]) and followed by such an entry for all ports.
@@ -109,9 +112,19 @@ impl RecordedMidi {
     /// there, and the take is incomplete.
     pub const LOST: u8 = 0xFF;
 
+    /// The `status` of an entry that says loop recording went back to the start of the loop
+    /// here: what follows was played in the next round. Without it, a key pressed in one round
+    /// and released later in the next would look like one short note.
+    pub const WRAP: u8 = 0xFE;
+
     /// Whether this entry marks dropped events.
     pub fn is_lost(&self) -> bool {
         self.status == Self::LOST
+    }
+
+    /// Whether this entry marks the loop going round.
+    pub fn is_wrap(&self) -> bool {
+        self.status == Self::WRAP
     }
 }
 
@@ -137,14 +150,19 @@ pub struct MidiFeed {
     activity: AtomicU64,
     /// Ports ([`midi_port_bit`]) whose events did not all reach the audio thread, until it asks.
     lost: AtomicU64,
+    /// When input was last lost ([`Self::now`]); `i64::MIN` before the first time.
+    lost_at: AtomicI64,
     /// Events dropped on the way to the audio thread so far.
     dropped: AtomicU64,
     /// Recorded events the UI thread never got, until it asks.
     recorded_lost: AtomicU32,
     /// The last recorded event was dropped: the next one is preceded by a [`RecordedMidi::LOST`].
     record_gap: AtomicBool,
-    /// Record passes whose MIDI the audio thread has finished writing down.
+    /// The last record pass ([`Self::end_pass`]) whose MIDI the audio thread has finished writing
+    /// down.
     captures_done: AtomicU64,
+    /// Record passes ended so far: the number of the last one.
+    passes: AtomicU64,
 }
 
 impl Default for MidiFeed {
@@ -159,10 +177,12 @@ impl Default for MidiFeed {
             connected: AtomicUsize::new(0),
             activity: AtomicU64::new(0),
             lost: AtomicU64::new(0),
+            lost_at: AtomicI64::new(i64::MIN),
             dropped: AtomicU64::new(0),
             recorded_lost: AtomicU32::new(0),
             record_gap: AtomicBool::new(false),
             captures_done: AtomicU64::new(0),
+            passes: AtomicU64::new(0),
         }
     }
 }
@@ -221,14 +241,25 @@ impl MidiFeed {
     /// Events of `port` did not (or will not) reach the audio thread: it releases what the port
     /// holds. Called when the queue is full and when a port closes.
     pub fn port_lost(&self, port: u8) {
+        // The time first: whoever sees the port's bit also sees a time that covers this loss.
+        self.lost_at.fetch_max(self.now(), Ordering::AcqRel);
         self.lost.fetch_or(midi_port_bit(port), Ordering::Release);
     }
 
     /// Audio thread: the ports that lost events since the last call ([`midi_port_bit`]). Ask
-    /// before taking events with [`Self::next`]: what preceded a loss is then already taken, or
-    /// is taken right after, and can be dropped with it.
+    /// before taking events with [`Self::next`], then read [`Self::lost_at`]: the events of
+    /// those ports stamped up to that time preceded the loss and are dropped with it, later ones
+    /// came after it.
     pub(crate) fn take_lost(&self) -> u64 {
         self.lost.swap(0, Ordering::AcqRel)
+    }
+
+    /// Audio thread: when input was last lost, on the clock of the events' stamps. An event of
+    /// a lost port with a later stamp arrived after the loss. One with the same stamp counts as
+    /// before it: dropping a fresh event is safe, playing a note-on from before the release is
+    /// not.
+    pub(crate) fn lost_at(&self) -> i64 {
+        self.lost_at.load(Ordering::Acquire)
     }
 
     /// Events dropped on the way to the audio thread so far (a full queue).
@@ -243,9 +274,9 @@ impl MidiFeed {
         (count, (count > 0).then(|| unpack(u32::try_from(a & 0xFFFF_FFFF).unwrap_or(0))))
     }
 
-    /// Audio thread: the next event and how long ago it arrived (microseconds).
-    pub(crate) fn next(&self, now: i64) -> Option<(i64, LiveMidi)> {
-        self.incoming.pop().map(|(stamp, e)| (now.saturating_sub(stamp).max(0), unpack(e)))
+    /// Audio thread: the next event and when it arrived ([`Self::clock`], microseconds).
+    pub(crate) fn next(&self) -> Option<(i64, LiveMidi)> {
+        self.incoming.pop().map(|(stamp, e)| (stamp, unpack(e)))
     }
 
     pub(crate) fn clock(&self) -> i64 {
@@ -269,6 +300,11 @@ impl MidiFeed {
         }
     }
 
+    /// Audio thread: loop recording went back to the start of the loop, which ends at `at`.
+    pub(crate) fn record_wrap(&self, at: Samples) {
+        self.record_entry(at, pack(&LiveMidi { offset: 0, port: u8::MAX, status: RecordedMidi::WRAP, data1: 0, data2: 0 }));
+    }
+
     /// Put a recorded entry in the queue to the UI thread. One that does not fit is counted, and
     /// the next that fits is preceded by a [`RecordedMidi::LOST`] for all ports.
     fn record_entry(&self, at: Samples, entry: u32) {
@@ -285,17 +321,24 @@ impl MidiFeed {
         }
     }
 
-    /// Audio thread: recording was switched off, and everything played before that is recorded.
-    pub(crate) fn capture_done(&self) {
-        self.captures_done.fetch_add(1, Ordering::Release);
+    /// UI thread: a record pass ends. Returns its number, to stop the recording with
+    /// ([`crate::Player::end_recording`]) and to wait for ([`Self::captured`]). Numbers only go
+    /// up, so the late answer to an earlier pass is never taken for this one.
+    pub fn end_pass(&self) -> u64 {
+        self.passes.fetch_add(1, Ordering::AcqRel).saturating_add(1)
     }
 
-    /// How many record passes the audio thread has finished capturing. It goes up by one when
-    /// the audio thread has seen the end of a pass and has written down all that was played up
-    /// to it: read it before stopping the recording, and collect the take
-    /// ([`Self::take_recorded`]) once it has changed.
-    pub fn captures_done(&self) -> u64 {
-        self.captures_done.load(Ordering::Acquire)
+    /// Audio thread: recording was switched off for `pass`, and everything played before that is
+    /// recorded.
+    pub(crate) fn capture_done(&self, pass: u64) {
+        self.captures_done.fetch_max(pass, Ordering::AcqRel);
+    }
+
+    /// Whether the audio thread has seen the end of `pass` ([`Self::end_pass`]) and has written
+    /// down all that was played up to it: collect the take ([`Self::take_recorded`]) once this
+    /// is true.
+    pub fn captured(&self, pass: u64) -> bool {
+        self.captures_done.load(Ordering::Acquire) >= pass
     }
 
     /// UI thread: how many recorded events were dropped since the last call (the UI did not
@@ -480,6 +523,22 @@ fn tidy_port_name(raw: &str) -> String {
     if s.is_empty() { "MIDI input".to_string() } else { s.to_string() }
 }
 
+/// Close the connections in `open` (`(identity, name, connection)`) whose port is not in `listed`
+/// (`(identity, system name)`) any more or was switched off, and tell `feed` that each of those
+/// ports lost its input ([`MidiFeed::port_lost`]): the keys held through it have no release
+/// coming. That is by connection, not by name: a port that went away and came back with another
+/// identity keeps its name, and the list of open port names never shows it was gone.
+#[cfg(any(test, target_os = "linux", target_os = "macos", target_os = "windows"))]
+fn retire<C>(open: &mut Vec<(String, String, C)>, listed: &[(String, String)], disabled: &[String], feed: &MidiFeed) {
+    open.retain(|(id, name, _)| {
+        let keep = listed.iter().any(|(l, _)| l == id) && !disabled.contains(name);
+        if !keep {
+            feed.port_lost(feed.ports().assign(name));
+        }
+        keep
+    });
+}
+
 /// The number of an ALSA loopback port ("Midi Through Port-0").
 #[cfg(any(test, target_os = "linux", target_os = "macos", target_os = "windows"))]
 fn through_number(name: &str) -> Option<&str> {
@@ -580,7 +639,10 @@ mod backend {
             self.scanner = Some(scanner);
             // A connection belongs to its port, not to a name: it stays while that port is there
             // and switched on, and no other port takes it over.
-            self.open.retain(|(id, name, _)| listed.iter().any(|(l, _)| l == id) && !disabled.contains(name));
+            // One that goes says so, before anything is opened: a device replugged between two
+            // scans comes back under the same name, and its old connection's releases never
+            // come. What the new connection sends is stamped after this and is kept.
+            super::retire(&mut self.open, &listed, disabled, feed);
             let mut out = Vec::with_capacity(names.len());
             for ((name, port), (id, _)) in names.into_iter().zip(found.iter()).zip(listed.iter()) {
                 let enabled = !disabled.contains(&name);
@@ -678,8 +740,7 @@ mod tests {
         f.receive(3, &[]);
         f.receive(1, &[0xC5, 7]);
         f.receive(3, &[0x80, 60, 0xFF]);
-        let now = f.clock();
-        let got: Vec<LiveMidi> = std::iter::from_fn(|| f.next(now))
+        let got: Vec<LiveMidi> = std::iter::from_fn(|| f.next())
             .map(|(age, e)| {
                 assert!(age >= 0);
                 e
@@ -705,8 +766,7 @@ mod tests {
         f.receive(0, &[0x9F, 0xFF, 0x80, 0x55, 0x66]);
         f.receive(0, &[0xC2, 0x85, 0x99]);
         f.receive(0, &[0xD0, 0x40]);
-        let now = f.clock();
-        let got: Vec<(u8, u8, u8)> = std::iter::from_fn(|| f.next(now)).map(|(_, e)| (e.status, e.data1, e.data2)).collect();
+        let got: Vec<(u8, u8, u8)> = std::iter::from_fn(|| f.next()).map(|(_, e)| (e.status, e.data1, e.data2)).collect();
         assert_eq!(got, [(0x9F, 0x7F, 0x00), (0xC2, 0x05, 0x19), (0xD0, 0x40, 0x00)]);
     }
 
@@ -780,6 +840,27 @@ mod tests {
     }
 
     #[test]
+    fn a_connection_that_is_closed_marks_its_port_even_when_the_name_stays() {
+        let feed = MidiFeed::default();
+        let (keys, pad, off) = (feed.ports().assign("Keys"), feed.ports().assign("Pad"), feed.ports().assign("Off"));
+        let id = |a: &str, b: &str| (a.to_string(), b.to_string());
+        let mut open = vec![
+            ("20:0".to_string(), "Keys".to_string(), ()),
+            ("24:0".to_string(), "Pad".to_string(), ()),
+            ("28:0".to_string(), "Off".to_string(), ()),
+        ];
+        // Keys was unplugged and plugged in again between two scans: the same name at another
+        // address. Pad is as before. Off was switched off.
+        let listed = [id("32:0", "Keys"), id("24:0", "Pad"), id("28:0", "Off")];
+        retire(&mut open, &listed, &["Off".to_string()], &feed);
+        assert_eq!(open.iter().map(|(id, ..)| id.as_str()).collect::<Vec<_>>(), ["24:0"], "the old Keys connection is closed");
+        assert_eq!(feed.take_lost(), midi_port_bit(keys) | midi_port_bit(off), "and what it held is released; Pad ({pad}) keeps its notes");
+        // The lists of open ports before and after both show an open "Keys": nothing to see there.
+        let port = |name: &str| MidiPort { name: name.to_string(), enabled: true, open: true };
+        assert_eq!(closed_ports(&[port("Keys"), port("Pad")], &[port("Keys"), port("Pad")]).count(), 0);
+    }
+
+    #[test]
     fn a_full_ring_drops_new_events_and_recovers() {
         let r = Ring::new(4);
         assert!((0..4).all(|i| r.push(i, 1)));
@@ -806,8 +887,7 @@ mod tests {
         assert_eq!(f.dropped(), 3, "system messages are not counted");
         assert_eq!(f.take_lost(), midi_port_bit(2) | midi_port_bit(u8::MAX));
         assert_eq!(f.take_lost(), 0, "told once");
-        let now = f.clock();
-        assert_eq!(std::iter::from_fn(|| f.next(now)).count(), INCOMING);
+        assert_eq!(std::iter::from_fn(|| f.next()).count(), INCOMING);
         f.receive(2, &[0x90, 61, 100]);
         assert_eq!((f.dropped(), f.take_lost()), (3, 0), "the queue works again");
     }

@@ -168,6 +168,23 @@ fn a_mixed_pass_whose_audio_cannot_be_recorded_is_refused_with_the_reason() {
 }
 
 #[test]
+fn an_inactive_record_enabled_audio_track_does_not_stop_a_midi_pass() {
+    let (mut h, synth, vox) = recording_harness();
+    arm(&mut h, synth, true);
+    arm(&mut h, vox, true);
+    // The audio track keeps its record button when it is made inactive, but records nothing:
+    // the pass is a MIDI one and needs no audio input.
+    h.state_mut().run("track.make_inactive", serde_json::json!({"tracks": [vox], "inactive": true})).unwrap();
+    h.run_steps(2);
+    let s = h.state().engine.session();
+    assert!(s.tracks.iter().any(|t| t.id.0 == vox && t.inactive && t.mixer.record_arm), "inactive and still record-enabled");
+    h.get_by_label("transport.record").click();
+    h.run_steps(3);
+    assert!(h.state().engine.transport.recording, "{}", h.state().ui.status);
+    assert!(h.state().recorder.is_none());
+}
+
+#[test]
 fn a_midi_pass_without_a_connected_device_says_so() {
     let (mut h, synth, _) = recording_harness();
     arm(&mut h, synth, true);

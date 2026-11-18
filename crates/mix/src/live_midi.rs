@@ -20,7 +20,17 @@
 //!
 //! A strip follows [`MAX_OWNERS`] owners at a time (an owner takes a place only while it holds a
 //! key or its pedal). Further owners share the last place and act as one there: the first
-//! release of a pitch among them ends it. That bound keeps the state a fixed size.
+//! release of a pitch among them ends it. That bound keeps the state a fixed size. While the
+//! shared place is in use, an owner without a place of its own joins it even when another place
+//! has come free, so an owner never holds keys in two places and its releases always find them.
+//!
+//! # Controllers
+//!
+//! The strip remembers which owner last set each controller, the pitch bend, the channel pressure
+//! and the program. When that owner goes away (its port lost input, or the track stopped
+//! listening to it) while the track keeps playing live input, the instrument's controllers are
+//! set again from the clips and from the owners that are still there: a bend left by a device
+//! that was unplugged does not detune what another device plays.
 //!
 //! # Lost events
 //!
@@ -140,6 +150,10 @@ struct Owner {
     shared: bool,
     port: u8,
     channel: u8,
+    /// Every port ([`midi_port_bit`]) and channel (bit `n` for channel `n`) that put something
+    /// in this place: one of each, unless the place is shared.
+    ports: u64,
+    channels: u16,
     /// Keys held down.
     down: NoteSet,
     /// Keys released while the sustain pedal was down.
@@ -147,7 +161,33 @@ struct Owner {
     pedal: bool,
 }
 
+/// The port index a bit of [`midi_port_bit`] stands for.
+fn bit_port(bit: u8) -> u8 {
+    if bit >= 63 { u8::MAX } else { bit }
+}
+
 impl Owner {
+    fn new(port: u8, channel: u8) -> Owner {
+        let mut o = Owner { used: true, port, channel, ..Owner::default() };
+        o.join(port, channel);
+        o
+    }
+
+    /// `port` and `channel` keep something in this place.
+    fn join(&mut self, port: u8, channel: u8) {
+        self.ports |= midi_port_bit(port);
+        self.channels |= 1u16 << (channel & 0x0F);
+    }
+
+    /// Whether `input` takes every owner that may hold something in this place. A shared place
+    /// does not know which of its ports played on which of its channels, so each pairing counts.
+    fn accepted(&self, input: &MidiInput<'_>, ports: Option<&MidiPorts>) -> bool {
+        (0..64u8).filter(|b| self.ports & (1u64 << b) != 0).all(|b| {
+            let name = ports.and_then(|p| p.name(bit_port(b)));
+            (0..16u8).filter(|c| self.channels & (1u16 << c) != 0).all(|c| input.accepts(name, c))
+        })
+    }
+
     fn holds(&self, note: u8) -> bool {
         self.used && (self.down.has(note) || self.sustained.has(note))
     }
@@ -164,14 +204,29 @@ impl Owner {
     }
 }
 
+/// Places in [`LiveNotes::ctrls`]: controllers 0..=119 by number, then these.
+const CTRL_BEND: usize = 120;
+const CTRL_PRESSURE: usize = 121;
+const CTRL_PROGRAM: usize = 122;
+const CTRLS: usize = 123;
+
 /// Per-strip state of the live notes, by owner.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub(crate) struct LiveNotes {
     owners: [Owner; MAX_OWNERS],
     /// Controllers, pitch bend, aftertouch or a program change were passed to the instrument.
     controllers: bool,
+    /// The last message live input sent for each controller, with the port it came from and its
+    /// channel (in `status`); `status` 0: none. See "Controllers" in the module text.
+    ctrls: [LiveMidi; CTRLS],
     /// Pitches the track's clips hold on the same instrument right now ([`Self::set_clip_notes`]).
     clip: NoteSet,
+}
+
+impl Default for LiveNotes {
+    fn default() -> Self {
+        LiveNotes { owners: [Owner::default(); MAX_OWNERS], controllers: false, ctrls: [LiveMidi::default(); CTRLS], clip: NoteSet::default() }
+    }
 }
 
 impl LiveNotes {
@@ -213,31 +268,73 @@ impl LiveNotes {
     }
 
     /// The track's input changed: owners it no longer takes would never be heard releasing, so
-    /// what they hold ends now. Owners it still takes stay.
-    fn drop_unaccepted(&mut self, input: &MidiInput<'_>, ports: Option<&MidiPorts>, inst: &mut dyn Plugin) {
+    /// what they hold ends now. Owners it still takes stay. The shared place goes when the input
+    /// no longer takes any one of the owners in it. True when a controller one of them set was
+    /// forgotten ([`Self::forget_controllers`]).
+    fn drop_unaccepted(&mut self, input: &MidiInput<'_>, ports: Option<&MidiPorts>, inst: &mut dyn Plugin) -> bool {
         if self.active() {
-            self.drop_owners(inst, 0, |o| !input.accepts(ports.and_then(|p| p.name(o.port)), o.channel));
+            self.drop_owners(inst, 0, |o| !o.accepted(input, ports));
         }
+        self.forget_controllers(|c| !input.accepts(ports.and_then(|p| p.name(c.port)), c.channel()))
+    }
+
+    /// Forget the controllers last set by the sources picked by `gone`. True when there were
+    /// any: the instrument still has their values, and the caller sets its controllers again
+    /// (from the clips, then [`Self::resend_controllers`]).
+    fn forget_controllers(&mut self, gone: impl Fn(&LiveMidi) -> bool) -> bool {
+        let mut any = false;
+        for c in self.ctrls.iter_mut().filter(|c| c.status != 0 && gone(c)) {
+            *c = LiveMidi::default();
+            any = true;
+        }
+        any
+    }
+
+    /// Send the instrument the controllers the remaining live sources last set, after its
+    /// controllers were reset to what the clips say.
+    pub(crate) fn resend_controllers(&self, inst: &mut dyn Plugin) {
+        for c in self.ctrls.iter().filter(|c| c.status != 0) {
+            inst.midi(0, [c.status & 0xF0, c.data1, c.data2]);
+        }
+    }
+
+    /// Before the block's events are played: let go of what the ports in `lost` hold
+    /// ([`Self::release_ports`]) and of the owners `t` no longer listens to. True when the
+    /// instrument's controllers have to be set again, as one of those sources had set some.
+    pub(crate) fn reconcile(&mut self, t: &Track, lost: u64, ports: Option<&MidiPorts>, inst: &mut dyn Plugin) -> bool {
+        let lost = self.release_ports(lost, inst);
+        self.drop_unaccepted(&MidiInput::of(&t.mixer.input), ports, inst) || lost
+    }
+
+    fn shared_place(&self) -> Option<usize> {
+        self.owners.iter().position(|o| o.used && o.shared)
     }
 
     /// The place of an owner: its own, else the shared one when it exists.
     fn find(&self, port: u8, channel: u8) -> Option<usize> {
-        self.owners.iter().position(|o| o.is(port, channel)).or_else(|| self.owners.iter().position(|o| o.used && o.shared))
+        self.owners.iter().position(|o| o.is(port, channel)).or_else(|| self.shared_place())
     }
 
-    /// The place of an owner that has something to hold: its own, a free one, or the last one,
-    /// shared from then on.
+    /// The place of an owner that has something to hold: its own; else the shared one while it
+    /// is in use (the owner may hold keys there already, and must not get a second place); else
+    /// a free one, or the last one, shared from then on.
     fn place(&mut self, port: u8, channel: u8) -> Option<usize> {
         if let Some(i) = self.owners.iter().position(|o| o.is(port, channel)) {
             return Some(i);
         }
-        if let Some(i) = self.owners.iter().position(|o| !o.used) {
-            let o = self.owners.get_mut(i)?;
-            *o = Owner { used: true, port, channel, ..Owner::default() };
-            return Some(i);
-        }
-        let i = self.owners.len().checked_sub(1)?;
-        self.owners.get_mut(i)?.shared = true;
+        let i = match self.shared_place() {
+            Some(i) => i,
+            None => {
+                if let Some(i) = self.owners.iter().position(|o| !o.used) {
+                    *self.owners.get_mut(i)? = Owner::new(port, channel);
+                    return Some(i);
+                }
+                self.owners.len().checked_sub(1)?
+            }
+        };
+        let o = self.owners.get_mut(i)?;
+        o.shared = true;
+        o.join(port, channel);
         Some(i)
     }
 
@@ -260,21 +357,26 @@ impl LiveNotes {
     /// also moved the instrument's controllers: the caller chases them back to the clips' values.
     pub(crate) fn release(&mut self, inst: &mut dyn Plugin) -> bool {
         self.drop_owners(inst, 0, |_| true);
+        self.ctrls = [LiveMidi::default(); CTRLS];
         std::mem::take(&mut self.controllers)
     }
 
     /// Events of the ports in `lost` ([`midi_port_bit`]) were dropped: release what those ports
-    /// hold. The shared place goes too, as it may hold their notes.
-    pub(crate) fn release_ports(&mut self, lost: u64, inst: &mut dyn Plugin) {
-        if lost != 0 && self.active() {
+    /// hold. The shared place goes too, as it may hold their notes. True when a controller one
+    /// of those ports set was forgotten ([`Self::forget_controllers`]).
+    pub(crate) fn release_ports(&mut self, lost: u64, inst: &mut dyn Plugin) -> bool {
+        if lost == 0 {
+            return false;
+        }
+        if self.active() {
             self.drop_owners(inst, 0, |o| o.shared || lost & midi_port_bit(o.port) != 0);
         }
+        self.forget_controllers(|c| lost & midi_port_bit(c.port) != 0)
     }
 
-    /// Play the block's events that `t` listens to.
+    /// Play the block's events that `t` listens to, after [`Self::reconcile`].
     pub(crate) fn play(&mut self, t: &Track, inst: &mut dyn Plugin, events: &[LiveMidi], ports: Option<&MidiPorts>, frames: usize) {
         let input = MidiInput::of(&t.mixer.input);
-        self.drop_unaccepted(&input, ports, inst);
         for e in events {
             let channel = e.channel();
             if !input.accepts(ports.and_then(|p| p.name(e.port)), channel) {
@@ -336,6 +438,17 @@ impl LiveNotes {
                     let d2 = if matches!(status, 0xC0 | 0xD0) { 0 } else { d2 };
                     inst.midi(at, [status, d1, d2]);
                     self.controllers = true;
+                    // Who set it last (poly aftertouch belongs to a key and is not kept).
+                    let slot = match status {
+                        0xB0 => Some(usize::from(d1)),
+                        0xE0 => Some(CTRL_BEND),
+                        0xD0 => Some(CTRL_PRESSURE),
+                        0xC0 => Some(CTRL_PROGRAM),
+                        _ => None,
+                    };
+                    if let Some(c) = slot.and_then(|i| self.ctrls.get_mut(i)) {
+                        *c = LiveMidi { offset: 0, port: e.port, status: status | channel, data1: d1, data2: d2 };
+                    }
                 }
                 _ => {}
             }
@@ -348,9 +461,9 @@ mod tests {
     use super::*;
     use soundcraft_dsp::PluginInfo;
 
-    /// An instrument that writes down the notes it is sent: `(on, pitch)`.
+    /// An instrument that writes down the notes it is sent, `(on, pitch)`, and the other messages.
     #[derive(Default)]
-    struct Log(Vec<(bool, u8)>);
+    struct Log(Vec<(bool, u8)>, Vec<[u8; 3]>);
 
     impl Plugin for Log {
         fn info(&self) -> &'static PluginInfo {
@@ -370,6 +483,9 @@ mod tests {
         }
         fn note_off(&mut self, _: usize, note: u8) {
             self.0.push((false, note));
+        }
+        fn midi(&mut self, _: usize, msg: [u8; 3]) {
+            self.1.push(msg);
         }
     }
 
@@ -395,6 +511,7 @@ mod tests {
         let mut live = LiveNotes::default();
         let mut step = |s: &soundcraft_model::Session, events: &[LiveMidi]| {
             let mut log = Log::default();
+            live.reconcile(s.track(id).unwrap(), 0, Some(&ports), &mut log);
             live.play(s.track(id).unwrap(), &mut log, events, Some(&ports), 512);
             log.0
         };
@@ -511,6 +628,87 @@ mod tests {
         assert!(!live.active(), "every place is free again");
         // Places are reused: a new owner gets its own.
         assert_eq!(play(&mut live, &[ev(5, 0x90, 50, 1), ev(6, 0x90, 50, 1), ev(5, 0x80, 50, 0)]), [(true, 50), (true, 50)]);
+    }
+
+    #[test]
+    fn an_owner_in_the_shared_place_gets_no_second_place_and_its_releases_are_found() {
+        let mut live = LiveNotes::default();
+        // Port 0 holds one key on each of its 16 channels: the table is full.
+        let ons: Vec<LiveMidi> = (0..16u8).map(|ch| ev(0, 0x90 | ch, 60 + ch, 100)).collect();
+        assert_eq!(play(&mut live, &ons).len(), 16);
+        // Port 1 presses 100: the shared place. Port 0 then frees a place, and port 1 presses 101.
+        assert_eq!(play(&mut live, &[ev(1, 0x90, 100, 100), ev(0, 0x80, 60, 0), ev(1, 0x90, 101, 100)]), [(true, 100), (false, 60), (true, 101)]);
+        // Both of port 1's keys end with their releases.
+        assert_eq!(play(&mut live, &[ev(1, 0x80, 100, 0)]), [(false, 100)]);
+        assert_eq!(play(&mut live, &[ev(1, 0x80, 101, 0)]), [(false, 101)]);
+        // The same for the pedal: down in the shared place, a place comes free, up.
+        assert_eq!(play(&mut live, &[ev(0, 0x90, 60, 100), ev(1, 0xB0, 64, 127), ev(1, 0x90, 100, 100), ev(1, 0x80, 100, 0)]).len(), 2);
+        // (Port 0's new key is in the shared place as well, which is in use: that pedal holds it.)
+        assert_eq!(play(&mut live, &[ev(0, 0x80, 60, 0), ev(1, 0x90, 101, 100), ev(1, 0x80, 101, 0)]), [(true, 101)]);
+        assert_eq!(play(&mut live, &[ev(1, 0xB0, 64, 0)]), [(false, 60), (false, 100), (false, 101)]);
+        // Once nothing is shared any more, a new owner gets a place of its own again.
+        let offs: Vec<LiveMidi> = (1..16u8).map(|ch| ev(0, 0x80 | ch, 60 + ch, 0)).collect();
+        assert_eq!(play(&mut live, &offs).len(), 15);
+        assert!(!live.active());
+        assert_eq!(play(&mut live, &[ev(1, 0x90, 50, 1), ev(2, 0x90, 50, 1), ev(1, 0x80, 50, 0)]), [(true, 50), (true, 50)]);
+    }
+
+    #[test]
+    fn an_input_change_releases_the_shared_place_when_it_drops_any_owner_in_it() {
+        let ports = MidiPorts::default();
+        let (keys, pad, wind) = (ports.assign("Keys"), ports.assign("Pad"), ports.assign("Wind"));
+        let mut s = soundcraft_model::Session::default();
+        let id = s.add_track(soundcraft_model::TrackKind::Instrument, soundcraft_model::ChannelFormat::Stereo, None);
+        let mut live = LiveNotes::default();
+        let mut step = |s: &soundcraft_model::Session, events: &[LiveMidi]| {
+            let mut log = Log::default();
+            live.reconcile(s.track(id).unwrap(), 0, Some(&ports), &mut log);
+            live.play(s.track(id).unwrap(), &mut log, events, Some(&ports), 512);
+            log.0
+        };
+        // Keys fills the table; the last place is its channel 16, and Pad then Wind share it.
+        let ons: Vec<LiveMidi> =
+            (0..16u8).map(|ch| ev(keys, 0x90 | ch, 40 + ch, 100)).chain([ev(pad, 0x9F, 100, 100), ev(wind, 0x9F, 101, 100)]).collect();
+        assert_eq!(step(&s, &ons).len(), 18);
+        // The same input again: the shared place stays.
+        assert_eq!(step(&s, &[]), []);
+        // Keys only, channel 16: the place's first owner is still taken, Pad and Wind are not.
+        // Their releases would no longer be heard, so everything in the shared place ends now.
+        s.track_mut(id).unwrap().mixer.input = MidiInput { device: Some("Keys"), channel: Some(15) }.route();
+        let mut ended = step(&s, &[]);
+        ended.sort_unstable();
+        let mut want: Vec<(bool, u8)> = (40..56u8).chain([100, 101]).map(|n| (false, n)).collect();
+        want.sort_unstable();
+        assert_eq!(ended, want);
+        assert!(!live.active());
+    }
+
+    #[test]
+    fn controllers_of_a_source_that_went_away_are_forgotten_and_the_others_kept() {
+        let ports = MidiPorts::default();
+        let (keys, pad) = (ports.assign("Keys"), ports.assign("Pad"));
+        let mut s = soundcraft_model::Session::default();
+        let id = s.add_track(soundcraft_model::TrackKind::Instrument, soundcraft_model::ChannelFormat::Stereo, None);
+        let mut live = LiveNotes::default();
+        let mut log = Log::default();
+        // Keys bends and moves the mod wheel; Pad then takes the mod wheel over and sets the volume.
+        let events = [ev(keys, 0xE0, 0, 0x7F), ev(keys, 0xB0, 1, 20), ev(pad, 0xB1, 1, 90), ev(pad, 0xB1, 7, 100), ev(pad, 0xA1, 60, 9)];
+        live.play(s.track(id).unwrap(), &mut log, &events, Some(&ports), 512);
+        assert_eq!(log.1.len(), 5);
+        // Pad lost input: Keys' bend is all that is left. The strip resets the instrument's
+        // controllers and sends that again.
+        assert!(!live.reconcile(s.track(id).unwrap(), 0, Some(&ports), &mut log), "nothing went away");
+        assert!(live.reconcile(s.track(id).unwrap(), midi_port_bit(pad), Some(&ports), &mut log));
+        let mut log = Log::default();
+        live.resend_controllers(&mut log);
+        assert_eq!(log.1, [[0xE0, 0, 0x7F]]);
+        assert!(!live.reconcile(s.track(id).unwrap(), midi_port_bit(pad), Some(&ports), &mut log), "once");
+        // The track stops listening to Keys: its bend goes too.
+        s.track_mut(id).unwrap().mixer.input = MidiInput { device: Some("Pad"), channel: None }.route();
+        assert!(live.reconcile(s.track(id).unwrap(), 0, Some(&ports), &mut log));
+        let mut log = Log::default();
+        live.resend_controllers(&mut log);
+        assert!(log.1.is_empty());
     }
 
     #[test]

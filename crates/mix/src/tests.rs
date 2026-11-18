@@ -1910,3 +1910,58 @@ fn clip_notes_end_when_playback_runs_out_while_the_track_is_still_monitored() {
     let released = (0..200).map(|_| stopped(&mut eng, &mut out, &[])).last().unwrap();
     assert!(released < 1e-4, "{released}");
 }
+
+#[test]
+fn the_clips_sustain_pedal_goes_up_when_playback_runs_out_under_monitoring() {
+    use soundcraft_midi::{CtrlEvent, CtrlKind};
+    // The clip holds the pedal down from its start and never lifts it before playback ends.
+    let mut s = synth_session(-6.0);
+    s.tracks[0].mixer.record_arm = true;
+    let ClipContent::Midi { sequence } = &mut s.tracks[0].playlist_mut().unwrap().clips[0].content else { panic!("a MIDI clip") };
+    sequence.ctrls.push(CtrlEvent { tick: 0, channel: 0, kind: CtrlKind::Cc(64), value: 127 });
+    let mut out = vec![vec![0.0f32; 512]; 2];
+    let stopped = |eng: &mut MixEngine, out: &mut Vec<Vec<f32>>, live: &[LiveMidi]| {
+        eng.monitor_only = true;
+        eng.midi.clear();
+        eng.midi.extend_from_slice(live);
+        eng.render(&s, 5_120, 512, out);
+        eng.midi.clear();
+        peak(&out[0])
+    };
+    // Playback stops by itself in the middle of the note (no reset): the note-off alone would
+    // leave the instrument sustaining it for as long as the track is monitored.
+    let mut eng = MixEngine::new(48_000.0, 512);
+    assert!(live_levels(&mut eng, &s, 0, 10, -1, &[])[9] > 0.01);
+    let tail = (0..200).map(|_| stopped(&mut eng, &mut out, &[])).last().unwrap();
+    assert!(tail < 1e-4, "the clip's pedal kept its note on: {tail}");
+    // A key held live on the same pitch stays, and ends with its own release.
+    let mut eng = MixEngine::new(48_000.0, 512);
+    live_levels(&mut eng, &s, 0, 10, 5, &[(0, 0x90, 60, 100)]);
+    let held = (0..200).map(|_| stopped(&mut eng, &mut out, &[])).last().unwrap();
+    assert!(held > 0.01, "{held}");
+    stopped(&mut eng, &mut out, &[LiveMidi { offset: 0, port: 0, status: 0x80, data1: 60, data2: 0 }]);
+    let released = (0..200).map(|_| stopped(&mut eng, &mut out, &[])).last().unwrap();
+    assert!(released < 1e-4, "{released}");
+}
+
+#[test]
+fn a_lost_ports_controllers_are_reset_and_the_other_ports_kept() {
+    let (s, _, mut eng, heard) = ears_session();
+    let ev = |port, status, data1, data2| LiveMidi { offset: 0, port, status, data1, data2 };
+    // Port 0 bends the pitch; port 1 sets the volume.
+    eng.midi.extend([ev(0, 0xE0, 0, 0x7F), ev(1, 0xB0, 7, 100)]);
+    render_block(&mut eng, &s, 0);
+    eng.midi.clear();
+    heard.lock().unwrap().clear();
+    // Port 0 is unplugged while the track goes on playing port 1: the bend must not stay. The
+    // controllers are reset (to the clips' values: there are none) and port 1's volume is sent
+    // again.
+    eng.midi_lost = midi_port_bit(0);
+    render_block(&mut eng, &s, 512);
+    eng.midi_lost = 0;
+    assert_eq!(std::mem::take(&mut *heard.lock().unwrap()), vec![(0, [0xB0, 121, 0]), (0, [0xB0, 7, 100])]);
+    // A port that set no controller changes nothing; neither does the same port again.
+    eng.midi_lost = midi_port_bit(5) | midi_port_bit(0);
+    render_block(&mut eng, &s, 1024);
+    assert!(heard.lock().unwrap().is_empty());
+}

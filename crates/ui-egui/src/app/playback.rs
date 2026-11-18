@@ -101,8 +101,9 @@ impl SoundApp {
             return;
         }
         // A pass records audio, MIDI or both: it needs one of them ready. The audio input is
-        // only opened for audio tracks.
-        let audio_tracks = self.engine.session().tracks.iter().any(|t| t.mixer.record_arm && !t.kind.is_midi());
+        // only opened for audio tracks. An inactive track keeps its record button but takes no
+        // part (`plan_takes` leaves it out too), so it must not make the pass an audio one.
+        let audio_tracks = self.engine.session().tracks.iter().any(|t| t.mixer.record_arm && !t.inactive && !t.kind.is_midi());
         let midi_tracks = soundcraft_engine::io::records_midi(&self.engine);
         let midi_ready = midi_tracks && self.midi_connected();
         if audio_tracks {
@@ -218,12 +219,15 @@ impl SoundApp {
 
     fn finish_recording(&mut self) {
         self.engine.transport.recording = false;
-        let midi_pass = self.midi_pass_mark();
+        let midi_pass = self.end_midi_pass();
         if let Some(p) = &self.player {
-            p.set_recording(false);
+            match midi_pass {
+                Some(pass) => p.end_recording(pass),
+                None => p.set_recording(false),
+            }
         }
         // The audio thread writes down what was played up to the stop; the clips wait for that.
-        self.await_midi_capture(midi_pass);
+        let midi_confirmed = self.await_midi_capture(midi_pass);
         // Where the pass ended: the audio engine's own position is the freshest.
         let stopped_at = self.player.as_ref().map_or(self.engine.transport.position, |p| p.position().max(self.engine.transport.position));
         let plan = self.take_plan.take();
@@ -245,7 +249,7 @@ impl SoundApp {
             Some(len) => Range::new(plan.start, plan.start.saturating_add(len)),
             None => plan.punch.unwrap_or(Range::new(self.record_start, stopped_at)),
         };
-        let (midi_clips, midi_problem) = self.finish_midi_take(midi_range, !ids.is_empty());
+        let (midi_clips, midi_problem) = self.finish_midi_take(midi_range, !ids.is_empty(), midi_confirmed);
         self.ui.status = if plan.pass.is_some() && midi_clips == 0 {
             crate::localized_format!("Loop-recorded {} take(s)", ids.len() / tracks)
         } else if ids.is_empty() && midi_clips == 0 {
@@ -253,7 +257,7 @@ impl SoundApp {
         } else {
             crate::localized_format!("Recorded {} clip(s)", ids.len() + midi_clips)
         };
-        // A take that lost MIDI input is not reported as a complete one.
+        // A take that lost MIDI input, or whose end was not confirmed, is not reported as complete.
         if let Some(p) = midi_problem {
             self.ui.status = format!("{} ({p})", self.ui.status);
         }

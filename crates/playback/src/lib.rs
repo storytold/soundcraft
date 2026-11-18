@@ -120,7 +120,9 @@ enum Cmd {
     OldSessions(SyncSender<Arc<Session>>),
     Input(Arc<record::InputRing>),
     Midi(Arc<midi::MidiFeed>),
-    Recording(bool),
+    /// Recording on or off. Switching it off carries the number of the pass that ends
+    /// (`MidiFeed::end_pass`; 0: nobody waits for it), which the callback acknowledges.
+    Recording(bool, u64),
     Play {
         from: Samples,
         end: Option<Samples>,
@@ -484,7 +486,14 @@ impl Player {
     }
 
     pub fn set_recording(&self, on: bool) {
-        let _ = self.tx.send(Cmd::Recording(on));
+        let _ = self.tx.send(Cmd::Recording(on, 0));
+    }
+
+    /// Switch recording off at the end of record pass `pass` ([`midi::MidiFeed::end_pass`]). The
+    /// audio thread answers on the feed once the MIDI played up to here is written down
+    /// ([`midi::MidiFeed::captured`]).
+    pub fn end_recording(&self, pass: u64) {
+        let _ = self.tx.send(Cmd::Recording(false, pass));
     }
 
     pub fn stop(&self) {

@@ -762,7 +762,7 @@ fn a_midi_keyboard_plays_and_records_through_a_record_enabled_instrument() {
     feed.take_recorded(&mut rec);
     assert!(rec.is_empty(), "nothing is recorded while stopped");
     // Recording: the events come back with the position they were played at.
-    tx.send(Cmd::Recording(true)).unwrap();
+    tx.send(Cmd::Recording(true, 0)).unwrap();
     tx.send(Cmd::Play { from: 48_000, end: None, looped: None }).unwrap();
     let mut out = vec![0.0f32; 2048];
     st.fill(&mut out, 2);
@@ -843,7 +843,7 @@ fn keys_held_while_nothing_listens_or_the_port_closes_do_not_stay_on() {
 #[test]
 fn lost_midi_input_is_written_into_the_take() {
     let (mut st, tx, feed, ..) = keyboard_session();
-    tx.send(Cmd::Recording(true)).unwrap();
+    tx.send(Cmd::Recording(true, 0)).unwrap();
     tx.send(Cmd::Play { from: 0, end: None, looped: None }).unwrap();
     feed.receive(0, &[0x90, 60, 100]);
     heard(&mut st, 2);
@@ -877,7 +877,7 @@ fn live_midi_keeps_its_order_and_its_time_at_another_device_rate() {
     drop(tx);
     let mut st = AudioState::new(rx, shared, Arc::new(s), 96_000.0, channel().0);
     tx2.send(Cmd::Midi(Arc::clone(&feed))).unwrap();
-    tx2.send(Cmd::Recording(true)).unwrap();
+    tx2.send(Cmd::Recording(true, 0)).unwrap();
     tx2.send(Cmd::Play { from: 10_000, end: None, looped: None }).unwrap();
     let mut out = vec![0.0f32; 2048];
     st.fill(&mut out, 2);
@@ -900,7 +900,7 @@ fn live_midi_keeps_its_order_and_its_time_at_another_device_rate() {
 #[test]
 fn the_last_device_going_away_during_a_record_pass_is_written_into_the_take() {
     let (mut st, tx, feed, ..) = keyboard_session();
-    tx.send(Cmd::Recording(true)).unwrap();
+    tx.send(Cmd::Recording(true, 0)).unwrap();
     tx.send(Cmd::Play { from: 0, end: None, looped: None }).unwrap();
     feed.receive(0, &[0xB0, 64, 127]);
     feed.receive(0, &[0x90, 60, 100]);
@@ -924,21 +924,21 @@ fn the_last_device_going_away_during_a_record_pass_is_written_into_the_take() {
 #[test]
 fn a_note_played_just_before_stop_is_in_the_take_and_the_end_of_the_pass_is_acknowledged() {
     let (mut st, tx, feed, ..) = keyboard_session();
-    tx.send(Cmd::Recording(true)).unwrap();
+    tx.send(Cmd::Recording(true, 0)).unwrap();
     tx.send(Cmd::Play { from: 0, end: None, looped: None }).unwrap();
     let mut out = vec![0.0f32; 2048];
     st.fill(&mut out, 2);
-    let done = feed.captures_done();
     // The key goes down, and Stop arrives before the audio thread runs again: the note has not
     // been played yet (it waits out its delay), but it belongs to the pass.
     feed.receive(0, &[0x90, 60, 100]);
+    let pass = feed.end_pass();
     tx.send(Cmd::Stop).unwrap();
-    tx.send(Cmd::Recording(false)).unwrap();
+    tx.send(Cmd::Recording(false, pass)).unwrap();
     let mut rec = Vec::new();
     feed.take_recorded(&mut rec);
-    assert!(rec.is_empty() && feed.captures_done() == done, "the audio thread has not seen the stop yet");
+    assert!(rec.is_empty() && !feed.captured(pass), "the audio thread has not seen the stop yet");
     st.fill(&mut out, 2);
-    assert_eq!(feed.captures_done(), done + 1, "it says when everything up to the stop is written down");
+    assert!(feed.captured(pass), "it says when everything up to the stop is written down");
     feed.take_recorded(&mut rec);
     assert_eq!(rec.iter().map(|e| (e.status, e.data1)).collect::<Vec<_>>(), [(0x90, 60)]);
     assert!((1024 - 64..=1024).contains(&rec[0].at), "{}", rec[0].at);
@@ -953,7 +953,7 @@ fn a_note_played_just_before_stop_is_in_the_take_and_the_end_of_the_pass_is_ackn
 #[test]
 fn the_recorded_position_does_not_move_with_the_size_of_later_callbacks() {
     let (mut st, tx, feed, ..) = keyboard_session();
-    tx.send(Cmd::Recording(true)).unwrap();
+    tx.send(Cmd::Recording(true, 0)).unwrap();
     tx.send(Cmd::Play { from: 0, end: None, looped: None }).unwrap();
     let (mut long, mut short) = (vec![0.0f32; 2048], vec![0.0f32; 256]);
     st.fill(&mut long, 2);
@@ -978,7 +978,7 @@ fn the_recorded_position_does_not_move_with_the_size_of_later_callbacks() {
 #[test]
 fn more_events_than_a_callback_can_play_are_still_all_recorded() {
     let (mut st, tx, feed, ..) = keyboard_session();
-    tx.send(Cmd::Recording(true)).unwrap();
+    tx.send(Cmd::Recording(true, 0)).unwrap();
     tx.send(Cmd::Play { from: 0, end: None, looped: None }).unwrap();
     let mut out = vec![0.0f32; 2048];
     st.fill(&mut out, 2);
@@ -994,4 +994,120 @@ fn more_events_than_a_callback_can_play_are_still_all_recorded() {
     assert!(!rec.iter().any(|e| e.is_lost()), "nothing is missing from it, so it is not marked incomplete");
     assert_eq!((rec[0].status, rec.last().unwrap().status), (0x90, 0x80));
     assert!(!heard(&mut st, 60), "what could not be played ended the port's notes");
+}
+
+#[test]
+fn what_a_port_sends_after_it_lost_input_is_kept_and_follows_the_loss_in_the_take() {
+    let (mut st, tx, feed, ..) = keyboard_session();
+    tx.send(Cmd::Recording(true, 0)).unwrap();
+    tx.send(Cmd::Play { from: 0, end: None, looped: None }).unwrap();
+    heard(&mut st, 1);
+    // A key goes down, the port loses its input (the device is replugged: the key's release
+    // will not come), and the device then plays another key. All before the next callback.
+    feed.receive(0, &[0x90, 60, 100]);
+    std::thread::sleep(std::time::Duration::from_millis(2));
+    feed.port_lost(0);
+    std::thread::sleep(std::time::Duration::from_millis(2));
+    feed.receive(0, &[0x90, 64, 100]);
+    assert!(heard(&mut st, 60), "the key pressed after the loss plays, and is still held");
+    let mut rec = Vec::new();
+    feed.take_recorded(&mut rec);
+    assert_eq!(
+        rec.iter().map(|e| (e.status, e.data1)).collect::<Vec<_>>(),
+        [(0x90, 60), (midi::RecordedMidi::LOST, 0), (0x90, 64)],
+        "the loss ends the first note in the take, not the one played after it"
+    );
+    assert!(rec.windows(2).all(|w| w[0].at <= w[1].at), "{rec:?}");
+    // Only that second key is down: its release leaves nothing sounding.
+    feed.receive(0, &[0x80, 64, 0]);
+    assert!(!heard(&mut st, 60), "the key from before the loss was not played after the release");
+}
+
+#[test]
+fn the_age_of_a_midi_event_is_counted_at_the_transport_speed() {
+    let (_, tx, feed, s, _) = keyboard_session();
+    drop(tx);
+    // Half speed: the playhead covers 24 000 session frames a second.
+    let shared = Arc::new(Shared {
+        position: AtomicI64::new(0),
+        playing: AtomicBool::new(false),
+        speed: AtomicU32::new(500),
+        meters: Mutex::new(MeterSnapshot::default()),
+    });
+    let (tx, rx) = channel();
+    let mut st = AudioState::new(rx, shared, Arc::new(s), 48_000.0, channel().0);
+    tx.send(Cmd::Midi(Arc::clone(&feed))).unwrap();
+    tx.send(Cmd::Recording(true, 0)).unwrap();
+    tx.send(Cmd::Play { from: 48_000, end: None, looped: None }).unwrap();
+    let mut out = vec![0.0f32; 2048];
+    st.fill(&mut out, 2);
+    // The event waits 20 ms for its callback: 480 session frames at half speed, not 960.
+    let before = std::time::Instant::now();
+    feed.receive(0, &[0x90, 60, 100]);
+    std::thread::sleep(std::time::Duration::from_millis(20));
+    st.fill(&mut out, 2);
+    let waited = before.elapsed().as_secs_f64();
+    let mut rec = Vec::new();
+    feed.take_recorded(&mut rec);
+    assert_eq!(rec.len(), 1);
+    // The second callback starts at 48 000 + 512 (1024 device frames at half speed).
+    let at = 48_000 + 512;
+    let oldest = at - (waited * 24_000.0).ceil() as i64 - 1;
+    assert!((oldest..=at - 480).contains(&rec[0].at), "{} is not within {oldest}..={}", rec[0].at, at - 480);
+}
+
+#[test]
+fn loop_recording_says_in_the_take_where_the_loop_went_round() {
+    let (mut st, tx, feed, ..) = keyboard_session();
+    // The loop is four callbacks long.
+    tx.send(Cmd::Recording(true, 0)).unwrap();
+    tx.send(Cmd::Play { from: 0, end: None, looped: Some(Range::new(0, 4096)) }).unwrap();
+    let mut out = vec![0.0f32; 2048];
+    st.fill(&mut out, 2);
+    // A key goes down at about 1024 in the first round and up at about 2048 in the second: later
+    // on the timeline, but a round apart.
+    feed.receive(0, &[0x90, 60, 100]);
+    for _ in 0..5 {
+        st.fill(&mut out, 2);
+    }
+    feed.receive(0, &[0x80, 60, 0]);
+    st.fill(&mut out, 2);
+    let mut rec = Vec::new();
+    feed.take_recorded(&mut rec);
+    assert_eq!(rec.iter().map(|e| e.status).collect::<Vec<_>>(), [0x90, midi::RecordedMidi::WRAP, 0x80]);
+    assert!(rec[1].is_wrap() && !rec[1].is_lost());
+    assert!((1024 - 64..=1024).contains(&rec[0].at) && (2048 - 64..=2048).contains(&rec[2].at), "{rec:?}");
+    // A key pressed while the playhead stands at the end of the loop stays inside the loop: just
+    // before its end, in the round that is ending, or at its start, after the mark. Never at
+    // the end itself, where the take would leave it out.
+    st.fill(&mut out, 2);
+    feed.receive(0, &[0x90, 62, 100]);
+    st.fill(&mut out, 2);
+    st.fill(&mut out, 2);
+    rec.clear();
+    feed.take_recorded(&mut rec);
+    assert_eq!(rec.iter().filter(|e| e.is_wrap()).count(), 1, "the loop went round once: {rec:?}");
+    let key = rec.iter().position(|e| e.status == 0x90).unwrap();
+    let before_the_mark = key == 0;
+    assert_eq!(rec.len(), 2, "{rec:?}");
+    assert!(if before_the_mark { (4096 - 64..4096).contains(&rec[key].at) } else { rec[key].at == 0 }, "{rec:?}");
+}
+
+#[test]
+fn the_late_answer_to_an_earlier_pass_does_not_end_the_wait_for_a_later_one() {
+    let (mut st, tx, feed, ..) = keyboard_session();
+    let mut out = vec![0.0f32; 2048];
+    // Two passes end before the audio thread runs; it then sees only the first Stop.
+    let (first, second) = (feed.end_pass(), feed.end_pass());
+    tx.send(Cmd::Recording(false, first)).unwrap();
+    st.fill(&mut out, 2);
+    assert!(feed.captured(first) && !feed.captured(second), "the second pass is not written down yet");
+    tx.send(Cmd::Recording(false, second)).unwrap();
+    st.fill(&mut out, 2);
+    assert!(feed.captured(second));
+    // Switching recording off without a pass (a session reset) answers nobody.
+    let third = feed.end_pass();
+    tx.send(Cmd::Recording(false, 0)).unwrap();
+    st.fill(&mut out, 2);
+    assert!(!feed.captured(third));
 }

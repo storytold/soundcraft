@@ -22,6 +22,9 @@ window.
 - **Test** shows the last message that arrived from the device, to check that a keyboard gets
   through. Press a key and it reads, for example, *note C3 on, velocity 100, channel 1*.
 
+On Windows many MIDI drivers let only one program use a device at a time. While SoundCraft has
+a device open, another program may not be able to use it: untick the device here to give it up.
+
 The switches are app preferences: they are kept on this computer, for every session, and a
 device that was switched off stays off the next time it is plugged in. They are not part of the
 session file.
@@ -84,7 +87,9 @@ note that device is holding, so nothing is left sounding. Press the keys again t
 same happens when a device is unplugged with keys down.
 
 If that happens during a record pass, the status line says the take is incomplete, and the notes
-that were held end at that point in the clip. The MIDI inputs section of Setup › Playback Engine
+that were held end at that point in the clip. The status line also says so when the audio engine
+did not answer at the end of the pass (an audio device that stopped): the last notes played may
+then be missing. The MIDI inputs section of Setup › Playback Engine
 shows how many messages were dropped.
 
 ## For agents

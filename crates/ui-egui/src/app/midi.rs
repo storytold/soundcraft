@@ -29,38 +29,43 @@ impl SoundApp {
         self.midi_take_inputs = soundcraft_engine::io::midi_record_inputs(&self.engine);
     }
 
-    /// Before a record pass is stopped: how many passes the audio thread has finished capturing
-    /// so far, when there is MIDI to wait for ([`Self::await_midi_capture`]).
-    pub(crate) fn midi_pass_mark(&self) -> Option<u64> {
+    /// A record pass is about to be stopped: its number on the MIDI feed, when there is MIDI to
+    /// wait for. The audio engine is told to stop recording with it
+    /// (`Player::end_recording`) and answers for that pass alone ([`Self::await_midi_capture`]).
+    pub(crate) fn end_midi_pass(&self) -> Option<u64> {
         let feed = self.midi_inputs.as_ref()?.feed();
-        (self.player.is_some() && feed.connected() > 0 && !self.midi_take_inputs.is_empty()).then(|| feed.captures_done())
+        (self.player.is_some() && feed.connected() > 0 && !self.midi_take_inputs.is_empty()).then(|| feed.end_pass())
     }
 
     /// After the audio engine was told to stop recording: wait until it has written down the MIDI
-    /// played up to the stop, so that a note pressed just before Stop is in the clip. That takes
-    /// one audio callback (milliseconds). An audio device that has stopped calling back never
-    /// answers; the wait gives up after a tenth of a second and the take is built from what is
-    /// there.
-    pub(crate) fn await_midi_capture(&self, mark: Option<u64>) {
-        let (Some(mark), Some(m)) = (mark, &self.midi_inputs) else { return };
+    /// played up to the stop of `pass`, so that a note pressed just before Stop is in the clip.
+    /// That takes one audio callback (milliseconds). An audio device that has stopped calling
+    /// back never answers; the wait gives up after a tenth of a second and the take is built
+    /// from what is there. False when it gave up: the take may lack its last notes. The answer
+    /// to an earlier pass that comes in late does not count for this one.
+    pub(crate) fn await_midi_capture(&self, pass: Option<u64>) -> bool {
+        let (Some(pass), Some(m)) = (pass, &self.midi_inputs) else { return true };
         #[cfg(not(target_arch = "wasm32"))]
         {
             let start = std::time::Instant::now();
-            while m.feed().captures_done() == mark && start.elapsed() < std::time::Duration::from_millis(100) {
+            while !m.feed().captured(pass) && start.elapsed() < std::time::Duration::from_millis(100) {
                 std::thread::sleep(std::time::Duration::from_millis(1));
             }
-            if m.feed().captures_done() == mark {
-                log::warn!("MIDI recording: the audio engine did not confirm the end of the pass; the last notes may be missing");
-            }
+            m.feed().captured(pass)
         }
         #[cfg(target_arch = "wasm32")]
-        let _ = (mark, m);
+        {
+            let _ = (pass, m);
+            true
+        }
     }
 
-    /// Turn the MIDI played during the pass into clips on the record-enabled MIDI and instrument
-    /// tracks. `with_audio`: audio takes of this pass already made its undo step. Returns how
-    /// many clips, and what to tell the user when input was dropped during the pass.
-    pub(crate) fn finish_midi_take(&mut self, range: Range, with_audio: bool) -> (usize, Option<String>) {
+    /// Turn the MIDI played during the pass into clips on the MIDI and instrument tracks that
+    /// were record-enabled when it started. `with_audio`: audio takes of this pass already made
+    /// its undo step. `confirmed`: the audio engine said it had written down everything played
+    /// up to the stop ([`Self::await_midi_capture`]). Returns how many clips, and what to tell
+    /// the user when the take is not complete.
+    pub(crate) fn finish_midi_take(&mut self, range: Range, with_audio: bool, confirmed: bool) -> (usize, Option<String>) {
         let Some(m) = &self.midi_inputs else { return (0, None) };
         let feed = m.feed();
         feed.take_recorded(&mut self.midi_take);
@@ -73,7 +78,13 @@ impl SoundApp {
             .map(|e| MidiTakeEvent {
                 at: e.at,
                 device: e.port,
-                status: if e.is_lost() { MidiTakeEvent::LOST } else { e.status },
+                status: if e.is_lost() {
+                    MidiTakeEvent::LOST
+                } else if e.is_wrap() {
+                    MidiTakeEvent::WRAP
+                } else {
+                    e.status
+                },
                 data1: e.data1,
                 data2: e.data2,
             })
@@ -83,11 +94,7 @@ impl SoundApp {
             .collect();
         let inputs = std::mem::take(&mut self.midi_take_inputs);
         let take = soundcraft_engine::io::add_midi_recording_from(&mut self.engine, range, &events, &devices, &inputs, with_audio);
-        let problem = (take.gaps > 0 || uncollected > 0).then(|| {
-            log::warn!("MIDI recording: input was dropped at {} place(s); {uncollected} recorded event(s) were not collected", take.gaps);
-            crate::localization::text("MIDI input was dropped during the take: it is incomplete, and notes held at that point end there").to_string()
-        });
-        (take.clips.len(), problem)
+        (take.clips.len(), midi_take_problem(take.gaps, uncollected, confirmed))
     }
 
     /// Open the MIDI inputs once, hand them to the audio engine, and keep following devices that
@@ -128,5 +135,41 @@ impl SoundApp {
         }
         // The session's own record of the devices in use follows the switch.
         let _ = self.run("setup.midi_input_devices", json!({ if on { "enable" } else { "disable" }: [name] }));
+    }
+}
+
+/// What to tell the user about a MIDI take that is not complete: input was dropped at `gaps`
+/// places, `uncollected` recorded events never reached this thread, or the audio engine did not
+/// confirm the end of the pass (`confirmed` false). `None` for a complete take.
+fn midi_take_problem(gaps: usize, uncollected: u64, confirmed: bool) -> Option<String> {
+    let mut problems = Vec::new();
+    if gaps > 0 || uncollected > 0 {
+        log::warn!("MIDI recording: input was dropped at {gaps} place(s); {uncollected} recorded event(s) were not collected");
+        problems.push(crate::localization::text("MIDI input was dropped during the take: it is incomplete, and notes held at that point end there"));
+    }
+    if !confirmed {
+        log::warn!("MIDI recording: the audio engine did not confirm the end of the pass; the last notes may be missing");
+        problems.push(crate::localization::text(
+            "The audio engine did not answer when the pass ended: the last MIDI notes played may be missing from the take",
+        ));
+    }
+    (!problems.is_empty()).then(|| problems.join("; "))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::midi_take_problem;
+
+    #[test]
+    fn a_take_whose_end_was_not_confirmed_is_reported_as_incomplete() {
+        assert_eq!(midi_take_problem(0, 0, true), None, "a complete take has nothing to report");
+        // The audio engine never answered: no loss was counted, but the last notes may be missing.
+        let unconfirmed = midi_take_problem(0, 0, false).unwrap();
+        assert!(unconfirmed.contains("did not answer") && unconfirmed.contains("may be missing"), "{unconfirmed}");
+        let dropped = midi_take_problem(1, 0, true).unwrap();
+        assert!(dropped.contains("was dropped") && !dropped.contains("did not answer"), "{dropped}");
+        assert!(midi_take_problem(0, 3, true).is_some());
+        let both = midi_take_problem(2, 0, false).unwrap();
+        assert!(both.contains("was dropped") && both.contains("did not answer"), "{both}");
     }
 }

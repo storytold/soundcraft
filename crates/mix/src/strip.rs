@@ -46,6 +46,8 @@ pub(crate) struct Strip {
     pub(crate) live: LiveNotes,
     /// The instrument's next block starts somewhere new: send it the controllers in effect there.
     pub(crate) chase: bool,
+    /// The last block played the clips: stopped monitoring has their sustain pedal to let go of.
+    pub(crate) clips_played: bool,
     pub(crate) muted: bool,
     pub(crate) gr: f32,
     /// Per-clip effect chains (Clip Effects) and a scratch buffer to render clips into.
@@ -145,6 +147,7 @@ impl Strip {
             held: Vec::new(),
             live: LiveNotes::default(),
             chase: true,
+            clips_played: false,
             muted: false,
             gr: 0.0,
             clip_fx: HashMap::new(),
@@ -320,6 +323,7 @@ fn render_instrument(s: &Session, t: &Track, strip: &mut Strip, live: &LiveInput
         }
         if !live.monitor_only {
             schedule_notes(s, t, pos, frames, inst, &mut strip.held, &strip.live);
+            strip.clips_played = true;
         } else {
             // Stopped: the clips are silent, only live MIDI input plays. Playback that ran to its
             // end left the clips' notes without their note-offs: end them here, except a pitch a
@@ -329,10 +333,23 @@ fn render_instrument(s: &Session, t: &Track, strip: &mut Strip, live: &LiveInput
                     inst.plugin.note_off(0, note);
                 }
             }
+            // The clips' sustain pedal goes up too (its own pedal-up will not be played), or the
+            // instrument would hold those notes for good. Live input keeps its pedal in
+            // `strip.live`, not on the instrument, so keys held live are not released by this.
+            if std::mem::take(&mut strip.clips_played) {
+                inst.plugin.midi(0, [0xB0, 64, 0]);
+            }
         }
         strip.live.set_clip_notes(&strip.held);
         if midi_thru(t) {
-            strip.live.release_ports(live.midi_lost, inst.plugin.as_mut());
+            if strip.live.reconcile(t, live.midi_lost, live.ports, inst.plugin.as_mut()) {
+                // A device that went away (or that the track no longer listens to) had moved the
+                // instrument's controllers, and the track still plays live input, so nothing
+                // else would set them back: the clips' values, then those of the devices that
+                // are still there.
+                chase_controllers(s, t, pos, inst);
+                strip.live.resend_controllers(inst.plugin.as_mut());
+            }
             strip.live.play(t, inst.plugin.as_mut(), live.midi, live.ports, frames);
         } else if strip.live.touched() && strip.live.release(inst.plugin.as_mut()) {
             // Live controllers moved the instrument: the next block sets them from the clips.

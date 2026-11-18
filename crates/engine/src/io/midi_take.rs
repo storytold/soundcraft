@@ -6,7 +6,9 @@ use soundcraft_model::{ClipId, MidiInput, Route};
 use std::collections::HashMap;
 
 /// A MIDI message played during a record pass, at its timeline position; or, with the status
-/// [`MidiTakeEvent::LOST`], the point where the input queues dropped events.
+/// [`MidiTakeEvent::LOST`], the point where the input queues dropped events; or, with
+/// [`MidiTakeEvent::WRAP`], the point where loop recording went back to the start of the loop.
+/// Entries are in the order they were played.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct MidiTakeEvent {
     pub at: Samples,
@@ -22,6 +24,11 @@ impl MidiTakeEvent {
     /// when it is `u8::MAX`) were lost at `at`. Their note-offs may be among them, so the notes
     /// that device held end there.
     pub const LOST: u8 = 0xFF;
+
+    /// The `status` of an entry that says loop recording went round: the entries after it were
+    /// played in the next round of the loop. A key held across it sounds to the end of the loop
+    /// and on from its start, also when its release is later on the timeline than its press.
+    pub const WRAP: u8 = 0xFE;
 }
 
 /// What a record pass made of the MIDI that was played.
@@ -65,37 +72,50 @@ fn lost_covers(lost: u8, device: u8) -> bool {
 /// What `track` recorded of `events` over `range`, in ticks from the start of the range. A key
 /// already down when the range starts is left out; one still down at its end ends there, and one
 /// whose device lost input ends where that happened. Keys are told apart by device, channel and
-/// pitch: the same pitch held on two devices gives two notes.
+/// pitch: the same pitch held on two devices gives two notes. A key held while loop recording
+/// goes round ([`MidiTakeEvent::WRAP`]) is two notes: to the end of the loop, and from its start.
 fn midi_take_sequence(s: &Session, input: &MidiInput<'_>, range: Range, events: &[MidiTakeEvent], devices: &[String]) -> Sequence {
     let sr = s.sample_rate;
     let base = s.tempo.samples_to_ticks(range.start, sr);
     let tick = |at: Samples| s.tempo.samples_to_ticks(at, sr).saturating_sub(base).max(0);
     let end_tick = tick(range.end).max(1);
     let mut seq = Sequence::default();
-    // Keys down: (device, channel, pitch) -> (start tick, velocity).
-    let mut down: HashMap<(u8, u8, u8), (i64, u8)> = HashMap::new();
-    let close = |seq: &mut Sequence, (_, channel, pitch): (u8, u8, u8), (start, velocity): (i64, u8), end: i64, release: u8| {
-        let note = |start: i64, end: i64, release: u8| Note {
-            pitch,
-            velocity,
-            release_velocity: release,
-            channel,
-            start,
-            length: end.saturating_sub(start).max(1),
+    // The round of the loop being played: it goes up at every `WRAP`.
+    let mut round = 0u32;
+    // Keys down: (device, channel, pitch) -> (start tick, velocity, round).
+    let mut down: HashMap<(u8, u8, u8), (i64, u8, u32)> = HashMap::new();
+    let close =
+        |seq: &mut Sequence, (_, channel, pitch): (u8, u8, u8), (start, velocity, since): (i64, u8, u32), end: i64, release: u8, round: u32| {
+            let note = |start: i64, end: i64, release: u8| Note {
+                pitch,
+                velocity,
+                release_velocity: release,
+                channel,
+                start,
+                length: end.saturating_sub(start).max(1),
+            };
+            let rounds = round.saturating_sub(since);
+            if rounds == 0 && end >= start {
+                seq.notes.push(note(start, end, release));
+                return;
+            }
+            // The pass went round between the key press and the release (loop recording goes back to
+            // the start of the loop): the capture said so, or the release is earlier on the timeline
+            // than the press. The note is held to the end of the pass and goes on from its start, as
+            // it was played. Held for a whole round or more, it covers the loop: the second note
+            // then ends where the first begins, so the two do not overlap.
+            seq.notes.push(note(start, end_tick, 64));
+            let end = if rounds > 1 || (rounds == 1 && end >= start) { start } else { end };
+            if end > 0 {
+                seq.notes.push(note(0, end, release));
+            }
         };
-        if end >= start {
-            seq.notes.push(note(start, end, release));
-            return;
-        }
-        // The release is earlier on the timeline than the key press: the pass wrapped in between
-        // (loop recording goes back to the start of the loop). The note is held to the end of the
-        // pass and goes on from its start, as it was played.
-        seq.notes.push(note(start, end_tick, 64));
-        if end > 0 {
-            seq.notes.push(note(0, end, release));
-        }
-    };
     for e in events.iter().take(MAX_MIDI_TAKE_EVENTS) {
+        // The mark sits at the end of the loop, which is the end of the range.
+        if e.status == MidiTakeEvent::WRAP {
+            round = round.saturating_add(1);
+            continue;
+        }
         if e.at < range.start || e.at >= range.end {
             continue;
         }
@@ -104,7 +124,7 @@ fn midi_take_sequence(s: &Session, input: &MidiInput<'_>, range: Range, events: 
             let ended: Vec<(u8, u8, u8)> = down.keys().copied().filter(|k| lost_covers(e.device, k.0)).collect();
             for key in ended {
                 if let Some(open) = down.remove(&key) {
-                    close(&mut seq, key, open, at, 64);
+                    close(&mut seq, key, open, at, 64, round);
                 }
             }
             continue;
@@ -118,13 +138,13 @@ fn midi_take_sequence(s: &Session, input: &MidiInput<'_>, range: Range, events: 
         match e.status & 0xF0 {
             0x90 if d2 > 0 => {
                 // The same key again without a release: the first note ends here.
-                if let Some(open) = down.insert(key, (at, d2)) {
-                    close(&mut seq, key, open, at, 64);
+                if let Some(open) = down.insert(key, (at, d2, round)) {
+                    close(&mut seq, key, open, at, 64, round);
                 }
             }
             0x80 | 0x90 => {
                 if let Some(open) = down.remove(&key) {
-                    close(&mut seq, key, open, at, if e.status & 0xF0 == 0x80 { d2 } else { 64 });
+                    close(&mut seq, key, open, at, if e.status & 0xF0 == 0x80 { d2 } else { 64 }, round);
                 }
             }
             0xA0 => seq.ctrls.push(ctrl(CtrlKind::PolyPressure(d1), i32::from(d2))),
@@ -136,7 +156,9 @@ fn midi_take_sequence(s: &Session, input: &MidiInput<'_>, range: Range, events: 
         }
     }
     for (key, open) in down {
-        close(&mut seq, key, open, end_tick, 64);
+        // Still down at the end: the note ends there, in the round it began in.
+        let since = open.2;
+        close(&mut seq, key, open, end_tick, 64, since);
     }
     seq.sort();
     seq
@@ -163,7 +185,10 @@ pub fn midi_record_inputs(e: &Engine) -> Vec<(TrackId, Route)> {
 /// [`add_midi_recording`] with the MIDI inputs the tracks had when the pass started (`inputs`,
 /// from [`midi_record_inputs`]). A track listed there takes the events of that input for the whole
 /// pass, so changing its device or channel while recording does not throw away what it already
-/// recorded; the change applies from the next pass. A track not listed uses its current input.
+/// recorded; the change applies from the next pass. Taking it out of record during the pass does
+/// not throw that away either: a track listed there gets its clip whether or not it is still
+/// record-enabled. A track not listed is recorded when it is record-enabled now, with its current
+/// input.
 pub fn add_midi_recording_from(
     e: &mut Engine,
     range: Range,
@@ -184,7 +209,7 @@ pub fn add_midi_recording_from(
         let s = e.session();
         s.tracks
             .iter()
-            .filter(|t| records_midi_on(t))
+            .filter(|t| records_midi_on(t) || inputs.iter().any(|(id, _)| *id == t.id))
             .map(|t| {
                 let route = inputs.iter().find(|(id, _)| *id == t.id).map_or(&t.mixer.input, |(_, route)| route);
                 (t.id, t.name.clone(), midi_take_sequence(s, &MidiInput::of(route), range, events, devices))
@@ -370,6 +395,61 @@ mod tests {
         ];
         assert_eq!(got, want);
         assert!(seq.notes.iter().all(|n| n.start >= 0 && n.start + n.length <= 3840), "every note is inside the loop");
+    }
+
+    #[test]
+    fn a_note_held_into_the_next_round_is_split_even_when_its_release_is_later_on_the_timeline() {
+        // The same loop. The capture says where it went round; positions alone cannot.
+        let s = Session::default();
+        let (q, range) = (24_000, Range::new(0, 96_000));
+        let wrap = ev(4 * q, u8::MAX, MidiTakeEvent::WRAP, 0, 0);
+        let events = [
+            ev(q / 2, 0, 0x90, 60, 100), // pressed at half a quarter in the first round…
+            ev(q, 0, 0x90, 64, 100),     // (an ordinary note within the first round)
+            ev(2 * q, 0, 0x80, 64, 0),
+            ev(3 * q, 0, 0x90, 67, 100), // (held over two rounds)
+            wrap,
+            ev(q, 0, 0x80, 60, 40),      // …released at one quarter in the second
+            ev(2 * q, 0, 0x90, 72, 100), // an ordinary note within the second round
+            ev(3 * q, 0, 0x80, 72, 0),
+            wrap,
+            ev(q, 0, 0x80, 67, 0),
+            ev(2 * q, 0, 0x90, 48, 100), // still down when the pass ends: to the end of the loop
+        ];
+        let seq = midi_take_sequence(&s, &MidiInput::default(), range, &events, &[]);
+        let mut got = notes_of(&seq);
+        got.sort_by_key(|n| (n.1, n.2));
+        let want = [
+            (0, 48, 1920, 1920, 100, 64),
+            (0, 60, 0, 480, 100, 40),    // from the loop start: up to its own start, so the two
+            (0, 60, 480, 3360, 100, 64), // parts cover what was held and do not overlap
+            (0, 64, 960, 960, 100, 0),
+            (0, 67, 0, 2880, 100, 0), // held for more than a round: the whole loop
+            (0, 67, 2880, 960, 100, 64),
+            (0, 72, 1920, 960, 100, 0),
+        ];
+        assert_eq!(got, want);
+        assert!(seq.notes.iter().all(|n| n.start >= 0 && n.start + n.length <= 3840), "every note is inside the loop");
+        // The marks are not gaps: the take is complete.
+        let mut e = Engine::default();
+        armed(&mut e, "Keys", "none");
+        assert_eq!(add_midi_recording(&mut e, range, &events, &[], false).gaps, 0);
+    }
+
+    #[test]
+    fn a_track_taken_out_of_record_during_the_pass_keeps_what_it_recorded() {
+        let mut e = Engine::default();
+        let t = armed(&mut e, "Keys", "none");
+        let range = Range::new(0, 48_000);
+        let events = [ev(100, 0, 0x90, 60, 100), ev(200, 0, 0x80, 60, 0)];
+        let inputs = midi_record_inputs(&e);
+        e.execute("mix.record_arm", &json!({"tracks": [t.0], "value": false})).unwrap();
+        let take = add_midi_recording_from(&mut e, range, &events, &[], &inputs, false);
+        assert_eq!(take.clips.len(), 1, "it was record-enabled when the pass started");
+        assert_eq!(notes_of(&sequence(&e, t, range)).iter().map(|n| n.1).collect::<Vec<_>>(), [60]);
+        // A track that was not record-enabled at the start, and is not now, records nothing.
+        e.run("edit.undo").unwrap();
+        assert!(add_midi_recording_from(&mut e, range, &events, &[], &[], false).clips.is_empty());
     }
 
     #[test]
