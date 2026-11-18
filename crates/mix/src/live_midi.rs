@@ -34,8 +34,9 @@
 //! detune what another device plays, and a controller two devices had set goes back to the
 //! value of the one that stays.
 //!
-//! [`MAX_LIVE_CTRLS`] such values are kept; past that the oldest is forgotten, and that
-//! controller falls back to the clips' value when its owner goes away.
+//! [`MAX_LIVE_CTRLS`] such values are kept; past that the oldest is forgotten. The strip still
+//! knows which ports and channels it forgot a value of: when one of them goes away the
+//! controllers are set again all the same, and the forgotten one falls back to the clips' value.
 //!
 //! # Lost events
 //!
@@ -171,6 +172,15 @@ fn bit_port(bit: u8) -> u8 {
     if bit >= 63 { u8::MAX } else { bit }
 }
 
+/// Whether `input` takes every pairing of the ports in `port_bits` ([`midi_port_bit`]) with the
+/// channels in `channel_bits` (bit `n` for channel `n`).
+fn all_accepted(port_bits: u64, channel_bits: u16, input: &MidiInput<'_>, ports: Option<&MidiPorts>) -> bool {
+    (0..64u8).filter(|b| port_bits & (1u64 << b) != 0).all(|b| {
+        let name = ports.and_then(|p| p.name(bit_port(b)));
+        (0..16u8).filter(|c| channel_bits & (1u16 << c) != 0).all(|c| input.accepts(name, c))
+    })
+}
+
 impl Owner {
     fn new(port: u8, channel: u8) -> Owner {
         let mut o = Owner { used: true, port, channel, ..Owner::default() };
@@ -187,10 +197,7 @@ impl Owner {
     /// Whether `input` takes every owner that may hold something in this place. A shared place
     /// does not know which of its ports played on which of its channels, so each pairing counts.
     fn accepted(&self, input: &MidiInput<'_>, ports: Option<&MidiPorts>) -> bool {
-        (0..64u8).filter(|b| self.ports & (1u64 << b) != 0).all(|b| {
-            let name = ports.and_then(|p| p.name(bit_port(b)));
-            (0..16u8).filter(|c| self.channels & (1u16 << c) != 0).all(|c| input.accepts(name, c))
-        })
+        all_accepted(self.ports, self.channels, input, ports)
     }
 
     fn holds(&self, note: u8) -> bool {
@@ -239,6 +246,10 @@ pub(crate) struct LiveNotes {
     ctrls: [LiveCtrl; MAX_LIVE_CTRLS],
     /// Counts the controller messages kept, to tell their order.
     ctrl_order: u64,
+    /// The ports ([`midi_port_bit`]) and channels (bit `n` for channel `n`) of the values the
+    /// full table forgot: the instrument may still have a value of theirs.
+    forgotten_ports: u64,
+    forgotten_channels: u16,
     /// Pitches the track's clips hold on the same instrument right now ([`Self::set_clip_notes`]).
     clip: NoteSet,
 }
@@ -250,6 +261,8 @@ impl Default for LiveNotes {
             controllers: false,
             ctrls: [LiveCtrl::default(); MAX_LIVE_CTRLS],
             ctrl_order: 0,
+            forgotten_ports: 0,
+            forgotten_channels: 0,
             clip: NoteSet::default(),
         }
     }
@@ -301,7 +314,9 @@ impl LiveNotes {
         if self.active() {
             self.drop_owners(inst, 0, |o| !o.accepted(input, ports));
         }
-        self.forget_controllers(|c| !input.accepts(ports.and_then(|p| p.name(c.port)), c.channel()))
+        // A source whose value the full table forgot may be among those the input dropped.
+        let forgotten = self.forgotten_ports != 0 && !all_accepted(self.forgotten_ports, self.forgotten_channels, input, ports);
+        self.forget_controllers(|c| !input.accepts(ports.and_then(|p| p.name(c.port)), c.channel())) || forgotten
     }
 
     /// Forget the controllers last set by the sources picked by `gone`. True when there were
@@ -322,12 +337,15 @@ impl LiveNotes {
     fn keep_controller(&mut self, e: &LiveMidi, d1: u8, d2: u8) {
         self.ctrl_order = self.ctrl_order.saturating_add(1);
         let order = self.ctrl_order;
-        let at = self
-            .ctrls
-            .iter()
-            .position(|c| c.is(e, d1))
-            .or_else(|| self.ctrls.iter().position(|c| c.msg.status == 0))
-            .or_else(|| self.ctrls.iter().enumerate().min_by_key(|(_, c)| c.order).map(|(i, _)| i));
+        let free = self.ctrls.iter().position(|c| c.is(e, d1)).or_else(|| self.ctrls.iter().position(|c| c.msg.status == 0));
+        let at = free.or_else(|| {
+            // Full: the oldest value goes. Its source is remembered, so that the controllers are
+            // still set again when that source goes away.
+            let (i, oldest) = self.ctrls.iter().enumerate().min_by_key(|(_, c)| c.order)?;
+            self.forgotten_ports |= midi_port_bit(oldest.msg.port);
+            self.forgotten_channels |= 1u16 << oldest.msg.channel();
+            Some(i)
+        });
         if let Some(c) = at.and_then(|i| self.ctrls.get_mut(i)) {
             *c = LiveCtrl { msg: LiveMidi { offset: 0, data1: d1, data2: d2, ..*e }, order };
         }
@@ -350,7 +368,13 @@ impl LiveNotes {
     /// instrument's controllers have to be set again, as one of those sources had set some.
     pub(crate) fn reconcile(&mut self, t: &Track, lost: u64, ports: Option<&MidiPorts>, inst: &mut dyn Plugin) -> bool {
         let lost = self.release_ports(lost, inst);
-        self.drop_unaccepted(&MidiInput::of(&t.mixer.input), ports, inst) || lost
+        let stale = self.drop_unaccepted(&MidiInput::of(&t.mixer.input), ports, inst) || lost;
+        if stale {
+            // The caller resets the instrument's controllers: no forgotten value is left on it.
+            self.forgotten_ports = 0;
+            self.forgotten_channels = 0;
+        }
+        stale
     }
 
     fn shared_place(&self) -> Option<usize> {
@@ -405,6 +429,8 @@ impl LiveNotes {
     pub(crate) fn release(&mut self, inst: &mut dyn Plugin) -> bool {
         self.drop_owners(inst, 0, |_| true);
         self.ctrls = [LiveCtrl::default(); MAX_LIVE_CTRLS];
+        self.forgotten_ports = 0;
+        self.forgotten_channels = 0;
         std::mem::take(&mut self.controllers)
     }
 
@@ -418,7 +444,9 @@ impl LiveNotes {
         if self.active() {
             self.drop_owners(inst, 0, |o| o.shared || lost & midi_port_bit(o.port) != 0);
         }
-        self.forget_controllers(|c| lost & midi_port_bit(c.port) != 0)
+        // The port may have set a controller whose value the full table forgot.
+        let forgotten = lost & self.forgotten_ports != 0;
+        self.forget_controllers(|c| lost & midi_port_bit(c.port) != 0) || forgotten
     }
 
     /// Play the block's events that `t` listens to, after [`Self::reconcile`].
@@ -779,6 +807,37 @@ mod tests {
         assert!(!log.1.contains(&[0xB0, 0, 1]), "the oldest value went");
         assert_eq!(log.1.last(), Some(&[0xB0, 5, 99]), "the newest is sent last, and replaced its earlier value");
         assert!(!log.1.contains(&[0xB0, 5, 1]));
+    }
+
+    #[test]
+    fn a_source_whose_controller_value_was_forgotten_still_has_the_controllers_reset_when_it_goes() {
+        let ports = MidiPorts::default();
+        let (keys, pad) = (ports.assign("Keys"), ports.assign("Pad"));
+        let mut s = soundcraft_model::Session::default();
+        let id = s.add_track(soundcraft_model::TrackKind::Instrument, soundcraft_model::ChannelFormat::Stereo, None);
+        // Keys bends the pitch; Pad then sets enough controllers to push that value out.
+        let filled = |live: &mut LiveNotes| {
+            let mut events = vec![ev(keys, 0xE0, 0, 0x7F)];
+            events.extend((0..MAX_LIVE_CTRLS).map(|n| ev(pad, 0xB1, n as u8, 1)));
+            live.play(s.track(id).unwrap(), &mut Log::default(), &events, Some(&ports), 512);
+        };
+        let mut live = LiveNotes::default();
+        filled(&mut live);
+        let mut log = Log::default();
+        live.resend_controllers(&mut log);
+        assert!(!log.1.iter().any(|m| m[0] == 0xE0), "the bend is no longer in the table");
+        // Keys is unplugged: the instrument still has its bend, so the controllers are reset.
+        assert!(!live.reconcile(s.track(id).unwrap(), midi_port_bit(7), Some(&ports), &mut log), "another port: nothing to do");
+        assert!(live.reconcile(s.track(id).unwrap(), midi_port_bit(keys), Some(&ports), &mut log));
+        assert!(!live.reconcile(s.track(id).unwrap(), midi_port_bit(keys), Some(&ports), &mut log), "once");
+        // The same when the track stops listening to Keys.
+        let mut live = LiveNotes::default();
+        filled(&mut live);
+        let mut pad_only = s.clone();
+        pad_only.track_mut(id).unwrap().mixer.input = MidiInput { device: Some("Pad"), channel: None }.route();
+        assert!(!live.reconcile(s.track(id).unwrap(), 0, Some(&ports), &mut log), "the input still takes Keys");
+        assert!(live.reconcile(pad_only.track(id).unwrap(), 0, Some(&ports), &mut log));
+        assert!(!live.reconcile(pad_only.track(id).unwrap(), 0, Some(&ports), &mut log), "once");
     }
 
     #[test]

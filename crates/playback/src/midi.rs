@@ -19,7 +19,12 @@
 //!   drops what it had from that port from before the loss, so no note can be left sounding.
 //!   The time of the loss is kept with the mark, for each port ([`MidiFeed::lost_at`]): what the port sends
 //!   after it (a replugged device, a queue that has room again) is played and recorded as usual,
-//!   after the release.
+//!   after the release. A loss from a full queue is also written into the queue itself, ahead of
+//!   the next event that fits: the audio thread meets it at its exact place, also when it had
+//!   already looked at the marks for this callback.
+//! - A connection that is closed is shut off first ([`MidiFeed::close_port`]): what its device
+//!   thread still delivers after that is discarded, whether or not the system waits for that
+//!   thread when a connection is dropped.
 //! - While recording, that point goes into the take as a [`RecordedMidi::LOST`] entry: the notes
 //!   the port held end there. Recorded events that do not fit the queue to the UI thread are
 //!   counted ([`MidiFeed::take_recorded_lost`]) and followed by such an entry for all ports.
@@ -144,8 +149,9 @@ fn lost_entry(port: u8) -> u32 {
 pub struct MidiFeed {
     ports: Arc<MidiPorts>,
     incoming: Ring,
-    /// Device threads write one at a time.
-    writers: Mutex<()>,
+    /// Device threads write one at a time. Holds the ports ([`midi_port_bit`]) whose loss from
+    /// a full queue is not written into the queue yet.
+    writers: Mutex<u64>,
     recorded: Ring,
     /// When the feed was made. Not on the web: there is no MIDI input there, and no clock in std.
     #[cfg(not(target_arch = "wasm32"))]
@@ -177,7 +183,7 @@ impl Default for MidiFeed {
         MidiFeed {
             ports: Arc::new(MidiPorts::default()),
             incoming: Ring::new(INCOMING),
-            writers: Mutex::new(()),
+            writers: Mutex::new(0),
             recorded: Ring::new(RECORDED),
             #[cfg(not(target_arch = "wasm32"))]
             epoch: Instant::now(),
@@ -225,6 +231,16 @@ impl MidiFeed {
     /// bytes are masked to 7 bits, and bytes past the message are ignored. Nothing downstream
     /// (the engine, instruments, the recorded take) sees anything else.
     pub fn receive(&self, port: u8, bytes: &[u8]) {
+        self.receive_from(None, port, bytes);
+    }
+
+    /// [`Self::receive`] for a connection that can be shut off: once `open` is false
+    /// ([`Self::close_port`]) the message is discarded.
+    pub fn receive_while_open(&self, open: &AtomicBool, port: u8, bytes: &[u8]) {
+        self.receive_from(Some(open), port, bytes);
+    }
+
+    fn receive_from(&self, open: Option<&AtomicBool>, port: u8, bytes: &[u8]) {
         let Some(&status) = bytes.first().filter(|s| (0x80..0xF0).contains(*s)) else { return };
         // Program change and channel pressure have one data byte, the rest two.
         let needs = if matches!(status & 0xF0, 0xC0 | 0xD0) { 2 } else { 3 };
@@ -234,15 +250,42 @@ impl MidiFeed {
         let data = |i: usize| bytes.get(i).copied().unwrap_or(0) & 0x7F;
         let e = pack(&LiveMidi { offset: 0, port, status, data1: data(1), data2: data(2) });
         {
-            let _one = self.writers.lock().unwrap_or_else(PoisonError::into_inner);
-            if !self.incoming.push(self.now(), e) {
+            let mut owed = self.writers.lock().unwrap_or_else(PoisonError::into_inner);
+            // Shut off under the same lock that `close_port` holds: a message is either in the
+            // queue before the port's loss is marked, or it is discarded here.
+            if open.is_some_and(|o| !o.load(Ordering::Acquire)) {
+                return;
+            }
+            let now = self.now();
+            // Losses from a full queue go into the queue first, where they happened: ahead of
+            // the first event that fits again.
+            let announce = *owed;
+            for bit in (0..64u8).filter(|b| announce & (1u64 << b) != 0) {
+                if !self.incoming.push(now, lost_entry(if bit == 63 { u8::MAX } else { bit })) {
+                    break;
+                }
+                *owed &= !(1u64 << bit);
+            }
+            if *owed != 0 || !self.incoming.push(now, e) {
                 // The queue is full. This may be a release, so the port's notes have to go.
                 self.dropped.fetch_add(1, Ordering::Relaxed);
                 self.port_lost(port);
+                *owed |= midi_port_bit(port);
             }
         }
         let count = (self.activity.load(Ordering::Relaxed) >> 32).wrapping_add(1) & 0xFFFF_FFFF;
         self.activity.store(count << 32 | u64::from(e), Ordering::Relaxed);
+    }
+
+    /// The connection of `port` that delivers through `open` ([`Self::receive_while_open`]) is
+    /// being closed: shut it off and mark the port as having lost its input, in one step. What
+    /// the connection delivered before is in the queue with an earlier time than the loss; what
+    /// its device thread delivers from now on is discarded. Dropping the connection afterwards
+    /// may or may not wait for that thread (the system decides): it no longer matters.
+    pub fn close_port(&self, open: &AtomicBool, port: u8) {
+        let _writers = self.writers.lock().unwrap_or_else(PoisonError::into_inner);
+        open.store(false, Ordering::Release);
+        self.port_lost(port);
     }
 
     /// Events of `port` did not (or will not) reach the audio thread: it releases what the port
@@ -261,6 +304,13 @@ impl MidiFeed {
     /// came after it.
     pub(crate) fn take_lost(&self) -> u64 {
         self.lost.swap(0, Ordering::AcqRel)
+    }
+
+    /// Mark `lost` again, as [`Self::take_lost`] returned it: for tests that play out a loss
+    /// the audio thread learns of one callback late.
+    #[cfg(test)]
+    pub(crate) fn put_back_lost(&self, lost: u64) {
+        self.lost.fetch_or(lost, Ordering::Release);
     }
 
     /// Audio thread: when `port` last lost input, on the clock of the events' stamps. Each port
@@ -284,7 +334,9 @@ impl MidiFeed {
         (count, (count > 0).then(|| unpack(u32::try_from(a & 0xFFFF_FFFF).unwrap_or(0))))
     }
 
-    /// Audio thread: the next event and when it arrived ([`Self::clock`], microseconds).
+    /// Audio thread: the next event and when it arrived ([`Self::clock`], microseconds). An entry
+    /// with the status [`RecordedMidi::LOST`] is not an event: events of its port (of the ports
+    /// without an index, for `u8::MAX`) were dropped at this place in the queue.
     pub(crate) fn next(&self) -> Option<(i64, LiveMidi)> {
         self.incoming.pop().map(|(stamp, e)| (stamp, unpack(e)))
     }
@@ -497,6 +549,7 @@ impl MidiInputs {
         // Close first: once the old connections are gone, nothing more arrives through them.
         // Only then say that their ports lost input, so that no note-on can slip in after the
         // release it stands for; then open them again.
+        self.backend.close_all(&self.feed);
         self.backend = backend::Backend::default();
         for p in self.ports.iter().filter(|p| p.open) {
             self.feed.port_lost(self.feed.ports().assign(&p.name));
@@ -539,19 +592,25 @@ fn tidy_port_name(raw: &str) -> String {
 /// coming. That is by connection, not by name: a port that went away and came back with another
 /// identity keeps its name, and the list of open port names never shows it was gone.
 ///
-/// Each connection is closed before its port is marked. Closing waits for the connection's
-/// callback, so nothing more arrives through it afterwards; marked first, a note-on delivered
-/// while it closes would carry a later time than the loss and be played after the release.
+/// Each connection is shut off and its port marked in one step ([`MidiFeed::close_port`]), then
+/// dropped. Nothing its device thread delivers after that step gets into the queue, so no
+/// note-on can follow the release, whether or not dropping the connection waits for that thread
+/// (ALSA joins it; CoreMIDI and WinMM do not promise to).
 #[cfg(any(test, target_os = "linux", target_os = "macos", target_os = "windows"))]
-fn retire<C>(open: &mut Vec<(String, String, C)>, listed: &[(String, String)], disabled: &[String], feed: &MidiFeed) {
+fn retire<C>(open: &mut Vec<(String, String, Gate, C)>, listed: &[(String, String)], disabled: &[String], feed: &MidiFeed) {
     let (keep, gone): (Vec<_>, Vec<_>) =
-        std::mem::take(open).into_iter().partition(|(id, name, _)| listed.iter().any(|(l, _)| l == id) && !disabled.contains(name));
+        std::mem::take(open).into_iter().partition(|(id, name, ..)| listed.iter().any(|(l, _)| l == id) && !disabled.contains(name));
     *open = keep;
-    for (_, name, connection) in gone {
+    for (_, name, gate, connection) in gone {
+        feed.close_port(&gate, feed.ports().assign(&name));
         drop(connection);
-        feed.port_lost(feed.ports().assign(&name));
     }
 }
+
+/// Whether a connection still delivers: its callback asks under the feed's lock
+/// ([`MidiFeed::receive_while_open`]), and [`MidiFeed::close_port`] says no.
+#[cfg(any(test, target_os = "linux", target_os = "macos", target_os = "windows"))]
+type Gate = Arc<AtomicBool>;
 
 /// The number of an ALSA loopback port ("Midi Through Port-0").
 #[cfg(any(test, target_os = "linux", target_os = "macos", target_os = "windows"))]
@@ -602,10 +661,11 @@ fn unique_names(raw: impl IntoIterator<Item = String>) -> Vec<String> {
 }
 #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
 mod backend {
-    use super::{MidiFeed, MidiPort, assign_names};
+    use super::{Gate, MidiFeed, MidiPort, assign_names};
     use midir::{Ignore, MidiInput, MidiInputConnection, MidiInputPort};
     use std::panic::{AssertUnwindSafe, catch_unwind};
     use std::sync::Arc;
+    use std::sync::atomic::AtomicBool;
 
     const CLIENT: &str = "SoundCraft";
 
@@ -615,8 +675,8 @@ mod backend {
         scanner: Option<MidiInput>,
         /// The name each port that is there goes by: `(identity, name)`, see `assign_names`.
         names: Vec<(String, String)>,
-        /// The open connections: `(identity, name, connection)`.
-        open: Vec<(String, String, MidiInputConnection<()>)>,
+        /// The open connections: `(identity, name, gate, connection)`.
+        open: Vec<(String, String, Gate, MidiInputConnection<()>)>,
     }
 
     /// What tells a port apart from another with the same name: the system's id for it (an ALSA
@@ -626,6 +686,14 @@ mod backend {
     }
 
     impl Backend {
+        /// Shut every connection off and mark its port as having lost its input, before the
+        /// connections are dropped.
+        pub(super) fn close_all(&mut self, feed: &MidiFeed) {
+            for (_, name, gate, _) in &self.open {
+                feed.close_port(gate, feed.ports().assign(name));
+            }
+        }
+
         /// Open the enabled ports that are not open yet, close the rest, and return the list.
         pub(super) fn sync(&mut self, disabled: &[String], feed: &Arc<MidiFeed>) -> Result<Vec<MidiPort>, String> {
             // midir panics on a few failures of the MIDI system (it unwraps them); those become
@@ -660,12 +728,12 @@ mod backend {
             let mut out = Vec::with_capacity(names.len());
             for ((name, port), (id, _)) in names.into_iter().zip(found.iter()).zip(listed.iter()) {
                 let enabled = !disabled.contains(&name);
-                let mut open = self.open.iter().any(|(i, _, _)| i == id);
+                let mut open = self.open.iter().any(|(i, ..)| i == id);
                 if enabled && !open {
                     match connect(&name, port, feed) {
-                        Ok(c) => {
+                        Ok((gate, c)) => {
                             log::info!("MIDI input: {name}");
-                            self.open.push((id.clone(), name.clone(), c));
+                            self.open.push((id.clone(), name.clone(), gate, c));
                             open = true;
                         }
                         Err(e) => log::warn!("MIDI input {name}: {e}"),
@@ -677,13 +745,17 @@ mod backend {
         }
     }
 
-    fn connect(name: &str, port: &MidiInputPort, feed: &Arc<MidiFeed>) -> Result<MidiInputConnection<()>, String> {
+    fn connect(name: &str, port: &MidiInputPort, feed: &Arc<MidiFeed>) -> Result<(Gate, MidiInputConnection<()>), String> {
         let mut input = MidiInput::new(CLIENT).map_err(|e| e.to_string())?;
         // Clock, SysEx and active sensing are not used; do not wake up for them.
         input.ignore(Ignore::All);
         let index = feed.ports().assign(name);
         let feed = Arc::clone(feed);
-        input.connect(port, "in", move |_, bytes, ()| feed.receive(index, bytes), ()).map_err(|e| e.to_string())
+        let gate: Gate = Arc::new(AtomicBool::new(true));
+        let open = Arc::clone(&gate);
+        let connection =
+            input.connect(port, "in", move |_, bytes, ()| feed.receive_while_open(&open, index, bytes), ()).map_err(|e| e.to_string())?;
+        Ok((gate, connection))
     }
 }
 
@@ -696,6 +768,8 @@ mod backend {
     pub(super) struct Backend;
 
     impl Backend {
+        pub(super) fn close_all(&mut self, _feed: &MidiFeed) {}
+
         pub(super) fn sync(&mut self, _disabled: &[String], _feed: &Arc<MidiFeed>) -> Result<Vec<MidiPort>, String> {
             Err("MIDI devices are not supported on this system yet".to_string())
         }
@@ -858,16 +932,19 @@ mod tests {
         let feed = MidiFeed::default();
         let (keys, pad, off) = (feed.ports().assign("Keys"), feed.ports().assign("Pad"), feed.ports().assign("Off"));
         let id = |a: &str, b: &str| (a.to_string(), b.to_string());
+        let gate = || Arc::new(AtomicBool::new(true));
         let mut open = vec![
-            ("20:0".to_string(), "Keys".to_string(), ()),
-            ("24:0".to_string(), "Pad".to_string(), ()),
-            ("28:0".to_string(), "Off".to_string(), ()),
+            ("20:0".to_string(), "Keys".to_string(), gate(), ()),
+            ("24:0".to_string(), "Pad".to_string(), gate(), ()),
+            ("28:0".to_string(), "Off".to_string(), gate(), ()),
         ];
+        let pad_gate = Arc::clone(&open[1].2);
         // Keys was unplugged and plugged in again between two scans: the same name at another
         // address. Pad is as before. Off was switched off.
         let listed = [id("32:0", "Keys"), id("24:0", "Pad"), id("28:0", "Off")];
         retire(&mut open, &listed, &["Off".to_string()], &feed);
         assert_eq!(open.iter().map(|(id, ..)| id.as_str()).collect::<Vec<_>>(), ["24:0"], "the old Keys connection is closed");
+        assert!(pad_gate.load(Ordering::Acquire), "the connection that stays still delivers");
         assert_eq!(feed.take_lost(), midi_port_bit(keys) | midi_port_bit(off), "and what it held is released; Pad ({pad}) keeps its notes");
         // The lists of open ports before and after both show an open "Keys": nothing to see there.
         let port = |name: &str| MidiPort { name: name.to_string(), enabled: true, open: true };
@@ -875,25 +952,50 @@ mod tests {
     }
 
     #[test]
-    fn what_arrives_while_a_connection_closes_counts_as_before_the_loss() {
-        /// A connection whose device delivers one more note-on while it is being closed.
-        struct Closing(Arc<MidiFeed>, u8);
+    fn what_a_connection_delivers_while_it_closes_never_follows_the_loss() {
+        /// A connection whose device thread delivers one more note-on while it is dropped, as
+        /// a system that does not wait for that thread allows.
+        struct Closing(Arc<MidiFeed>, Gate, u8);
         impl Drop for Closing {
             fn drop(&mut self) {
                 std::thread::sleep(std::time::Duration::from_millis(2));
-                self.0.receive(self.1, &[0x90, 60, 100]);
-                std::thread::sleep(std::time::Duration::from_millis(2));
+                self.0.receive_while_open(&self.1, self.2, &[0x90, 60, 100]);
             }
         }
         let feed = Arc::new(MidiFeed::default());
         let keys = feed.ports().assign("Keys");
-        let mut open = vec![("20:0".to_string(), "Keys".to_string(), Closing(Arc::clone(&feed), keys))];
+        let gate: Gate = Arc::new(AtomicBool::new(true));
+        // Open, it delivers.
+        feed.receive_while_open(&gate, keys, &[0x90, 50, 100]);
+        let mut open = vec![("20:0".to_string(), "Keys".to_string(), Arc::clone(&gate), Closing(Arc::clone(&feed), Arc::clone(&gate), keys))];
         retire(&mut open, &[], &[], &feed);
         assert_eq!(feed.take_lost(), midi_port_bit(keys));
         let (stamp, e) = feed.next().unwrap();
-        assert_eq!((e.status, e.data1), (0x90, 60));
-        assert!(stamp <= feed.lost_at(keys), "the late note-on is from before the loss: it is dropped with it, not played after the release");
+        assert_eq!(e.data1, 50);
+        assert!(stamp <= feed.lost_at(keys), "what came before the close is from before the loss");
+        assert!(feed.next().is_none(), "the note-on delivered during the close is discarded: nothing can play after the release");
         assert_eq!(feed.lost_at(keys + 1), i64::MIN, "another port has no loss");
+    }
+
+    #[test]
+    fn a_loss_from_a_full_queue_is_written_into_the_queue_where_it_happened() {
+        let f = MidiFeed::default();
+        for _ in 0..INCOMING {
+            f.receive(1, &[0xB0, 1, 0]);
+        }
+        // Two ports lose a release each; the second drop cannot write the first one's mark.
+        f.receive(0, &[0x80, 60, 0]);
+        f.receive(2, &[0x80, 62, 0]);
+        assert_eq!(f.dropped(), 2);
+        assert_eq!(std::iter::from_fn(|| f.next()).take(INCOMING - 2).count(), INCOMING - 2);
+        // Room again: the marks come first, then what is played after the loss.
+        f.receive(0, &[0x90, 64, 100]);
+        let got: Vec<(u8, u8, u8)> = std::iter::from_fn(|| f.next()).map(|(_, e)| (e.port, e.status, e.data1)).collect();
+        assert_eq!(got, [(1, 0xB0, 1), (1, 0xB0, 1), (0, RecordedMidi::LOST, 0), (2, RecordedMidi::LOST, 0), (0, 0x90, 64)]);
+        assert_eq!(f.dropped(), 2, "nothing more was dropped");
+        // Written once.
+        f.receive(0, &[0x80, 64, 0]);
+        assert_eq!(std::iter::from_fn(|| f.next()).map(|(_, e)| e.status).collect::<Vec<_>>(), [0x80]);
     }
 
     #[test]

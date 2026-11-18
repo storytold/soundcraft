@@ -50,9 +50,13 @@ impl SoundApp {
     /// A record pass is about to be stopped: its number on the MIDI feed, when there is MIDI to
     /// wait for. The audio engine is told to stop recording with it
     /// (`Player::end_recording`) and answers for that pass alone ([`Self::await_midi_capture`]).
+    ///
+    /// That is decided by what the pass set out to record, not by the devices connected now: a
+    /// pass whose last device was unplugged before Stop still has its notes on the way to the
+    /// take, and the engine still has to say it is done with it before another pass starts.
     pub(crate) fn end_midi_pass(&self) -> Option<u64> {
         let feed = self.midi_inputs.as_ref()?.feed();
-        (self.player.is_some() && feed.connected() > 0 && !self.midi_take_inputs.is_empty()).then(|| feed.end_pass())
+        midi_pass_waits(self.player.is_some(), self.midi_take_inputs.len()).then(|| feed.end_pass())
     }
 
     /// After the audio engine was told to stop recording: wait until it has written down the MIDI
@@ -160,6 +164,25 @@ impl SoundApp {
     }
 }
 
+/// Whether the end of a record pass waits for the audio engine's answer: there is an engine
+/// (without one nothing takes MIDI in), and `tracks` MIDI or instrument tracks were
+/// record-enabled when the pass started. How many devices are connected at Stop does not count.
+fn midi_pass_waits(engine: bool, tracks: usize) -> bool {
+    engine && tracks > 0
+}
+
+/// Where a record pass stopped, from the audio engine's position (`None`: no engine) and the
+/// UI's copy of it, which is a frame behind. A pass that plays on in a line ended at the later
+/// of the two. A loop pass did not: just after the loop went round the UI's copy is still near
+/// the end of the loop while the engine is at its start, so only the engine's position counts.
+pub(crate) fn pass_stop(engine: Option<Samples>, ui: Samples, looped: bool) -> Samples {
+    match engine {
+        Some(at) if looped => at,
+        Some(at) => at.max(ui),
+        None => ui,
+    }
+}
+
 /// What to tell the user about a MIDI take that is not complete: input was dropped at `gaps`
 /// places, `uncollected` recorded events never reached this thread, or the audio engine did not
 /// confirm the end of the pass (`confirmed` false). `None` for a complete take.
@@ -180,7 +203,27 @@ fn midi_take_problem(gaps: usize, uncollected: u64, confirmed: bool) -> Option<S
 
 #[cfg(test)]
 mod tests {
-    use super::midi_take_problem;
+    use super::{midi_pass_waits, midi_take_problem, pass_stop};
+
+    #[test]
+    fn a_loop_pass_stopped_just_after_the_loop_went_round_ends_where_the_engine_is() {
+        // The loop is 0..96 000. The engine has gone round and stands at 1 000; the UI still
+        // shows 95 000 from the frame before.
+        assert_eq!(pass_stop(Some(1_000), 95_000, true), 1_000, "not the stale position near the loop end");
+        assert_eq!(pass_stop(Some(50_000), 49_000, true), 50_000);
+        // A pass in a line ends at the later position; without an engine the UI's is all there is.
+        assert_eq!(pass_stop(Some(1_000), 95_000, false), 95_000);
+        assert_eq!(pass_stop(Some(96_000), 95_000, false), 96_000);
+        assert_eq!((pass_stop(None, 7, true), pass_stop(None, 7, false)), (7, 7));
+    }
+
+    #[test]
+    fn a_pass_waits_for_the_engine_whatever_is_connected_when_it_stops() {
+        // The last device was unplugged before Stop: the pass still recorded MIDI tracks.
+        assert!(midi_pass_waits(true, 1));
+        assert!(!midi_pass_waits(true, 0), "no MIDI track was recorded");
+        assert!(!midi_pass_waits(false, 2), "no engine takes MIDI in");
+    }
 
     #[test]
     fn a_take_whose_end_was_not_confirmed_is_reported_as_incomplete() {

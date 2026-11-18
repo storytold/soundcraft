@@ -1143,3 +1143,34 @@ fn one_ports_loss_does_not_take_along_what_another_port_sent_before_it() {
     feed.receive(0, &[0x80, 64, 0]);
     assert!(!heard(&mut st, 60));
 }
+
+#[test]
+fn a_loss_met_in_the_queue_is_not_taken_for_a_second_loss_by_the_next_callback() {
+    // `late`: the port's flag is raised after the callback has read the flags (it drains the
+    // queue meanwhile, and a new note gets in), so only the next callback sees it.
+    for late in [false, true] {
+        let (mut st, tx, feed, ..) = keyboard_session();
+        tx.send(Cmd::Recording(true, 0)).unwrap();
+        tx.send(Cmd::Play { from: 0, end: None, looped: None }).unwrap();
+        heard(&mut st, 1);
+        // Port 1 fills the queue, and a release of port 0 does not fit.
+        for _ in 0..midi::INCOMING {
+            feed.receive(1, &[0xB0, 1, 0]);
+        }
+        feed.receive(0, &[0x80, 60, 0]);
+        let flag = if late { feed.take_lost() } else { 0 };
+        // The queue is drained down to a few events, and port 0 plays a new key.
+        assert_eq!(std::iter::from_fn(|| feed.next()).take(midi::INCOMING - 8).count(), midi::INCOMING - 8);
+        std::thread::sleep(std::time::Duration::from_millis(2));
+        feed.receive(0, &[0x90, 64, 100]);
+        heard(&mut st, 1);
+        feed.put_back_lost(flag);
+        assert!(heard(&mut st, 60), "late {late}: the key pressed after the loss is still held");
+        let mut rec = Vec::new();
+        feed.take_recorded(&mut rec);
+        let port0: Vec<(u8, u8)> = rec.iter().filter(|e| e.port == 0).map(|e| (e.status, e.data1)).collect();
+        assert_eq!(port0, [(midi::RecordedMidi::LOST, 0), (0x90, 64)], "late {late}: one mark, before the new key");
+        feed.receive(0, &[0x80, 64, 0]);
+        assert!(!heard(&mut st, 60), "late {late}");
+    }
+}

@@ -90,6 +90,10 @@ pub(crate) struct AudioState {
     /// Ports ([`midi_port_bit`]) that lost events and still have to let go of their notes in
     /// the engine: it is told with the next block it renders.
     midi_lost: u64,
+    /// For each port (by the place of its bit in `midi_lost`), the time up to which its losses
+    /// were dealt with at their mark in the queue: the port's flag for the same loss, seen a
+    /// callback later, is not a second loss.
+    midi_loss_seen: [i64; 64],
     /// The transport speed of the last callback: the playhead moved at it while the events the
     /// next callback takes were arriving.
     midi_speed: f64,
@@ -153,6 +157,7 @@ impl AudioState {
             midi_pending: Vec::with_capacity(MIDI_EVENTS),
             midi_delay: 0,
             midi_lost: 0,
+            midi_loss_seen: [i64::MIN; 64],
             midi_speed: 1.0,
             midi_wraps: 0,
             midi_wrap_counted: false,
@@ -172,6 +177,8 @@ impl AudioState {
                     // Another feed: releases of what is held now would never come.
                     self.midi_pending.clear();
                     self.midi_lost = u64::MAX;
+                    // Its times are on its own clock.
+                    self.midi_loss_seen = [i64::MIN; 64];
                 }
                 Cmd::Forget(gone) => {
                     self.unsent.forget(&gone);
@@ -299,14 +306,28 @@ impl AudioState {
     /// follows them in the take; what arrived after the loss comes after the mark and is played,
     /// after the engine let go of the port's notes at the start of its next block. Every port
     /// has its own time of loss, so one port's loss does not take along what another sent.
+    ///
+    /// A loss from a full queue also has a mark in the queue itself, ahead of the first event
+    /// that fitted again. That is its exact place even when the port's flag was raised after
+    /// this callback read the flags (the queue was drained meanwhile and a new note got in): the
+    /// mark is dealt with where it stands, and the flag, seen by the next callback, is known to
+    /// be the same loss (`midi_loss_seen`) instead of ending the new note.
     fn capture_midi(&mut self, device_frames: usize) {
         let callback = self.callback_frames(device_frames).max(0);
         let now_speed = self.speed();
         let speed = std::mem::replace(&mut self.midi_speed, now_speed);
         let Some(feed) = &self.midi else { return };
         // The loss flags first, then the time they stand for: see `MidiFeed::take_lost`.
-        let input_lost = feed.take_lost();
+        let mut input_lost = feed.take_lost();
         let now = feed.clock();
+        // A flag for a loss that was already met at its mark in the queue is not a new loss.
+        let flagged = input_lost;
+        for bit in (0..64u8).filter(|b| flagged & (1u64 << b) != 0) {
+            let seen = self.midi_loss_seen.get(usize::from(bit)).copied().unwrap_or(i64::MIN);
+            if feed.lost_at(bit_port(bit)) <= seen {
+                input_lost &= !(1u64 << bit);
+            }
+        }
         let per_us = self.session.sample_rate.as_f64() / 1e6 * speed;
         let frames = |since: i64| (now.saturating_sub(since).max(0) as f64 * per_us) as i64;
         let record = self.playing && self.recording;
@@ -332,6 +353,26 @@ impl AudioState {
         let mut unplayed = 0u64;
         while let Some((stamp, e)) = feed.next() {
             let age = frames(stamp);
+            if e.status == midi::RecordedMidi::LOST {
+                // The queue dropped events of this port here. What it sent before is above and
+                // may lack its releases: it is not played, and the engine lets go of the port's
+                // notes at its next block. What follows was sent after the loss and plays.
+                let bit = midi_port_bit(e.port);
+                marks &= !bit;
+                if record {
+                    while let Some((other, at)) = next_mark(feed, marks, stamp) {
+                        feed.record_lost(take.at(frames(at).min(callback).max(age)), other);
+                        marks &= !other;
+                    }
+                    feed.record_lost(take.at(age), bit);
+                }
+                self.midi_pending.retain(|(_, p)| bit & midi_port_bit(p.port) == 0);
+                self.midi_lost |= bit;
+                if let Some(seen) = self.midi_loss_seen.get_mut(usize::from(e.port).min(63)) {
+                    *seen = (*seen).max(stamp);
+                }
+                continue;
+            }
             if record {
                 while let Some((bit, at)) = next_mark(feed, marks, stamp) {
                     // Not older than this callback's own events, nor newer than this one.
@@ -521,13 +562,18 @@ impl AudioState {
     }
 }
 
+/// A port that the bit at place `bit` of a lost-ports mask ([`midi_port_bit`]) stands for. The
+/// last bit stands for the ports without an index, which share one time of loss.
+fn bit_port(bit: u8) -> u8 {
+    if bit >= 63 { u8::MAX } else { bit }
+}
+
 /// Of the lost ports in `marks` ([`midi_port_bit`]), the one that lost its input first, if that
 /// was before `before` (or at any time, for `i64::MAX`): its bit and the time.
 fn next_mark(feed: &midi::MidiFeed, marks: u64, before: i64) -> Option<(u64, i64)> {
     (0..64u8)
         .filter(|b| marks & (1u64 << b) != 0)
-        // Bit 63 stands for the ports without an index: `u8::MAX` reads their shared time.
-        .map(|b| (1u64 << b, feed.lost_at(if b == 63 { u8::MAX } else { b })))
+        .map(|b| (1u64 << b, feed.lost_at(bit_port(b))))
         .filter(|(_, at)| *at < before || before == i64::MAX)
         .min_by_key(|(_, at)| *at)
 }

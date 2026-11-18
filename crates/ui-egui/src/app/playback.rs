@@ -239,7 +239,8 @@ impl SoundApp {
             self.midi_pass_unconfirmed = midi_pass;
         }
         // Where the pass ended: the audio engine's own position is the freshest.
-        let stopped_at = self.player.as_ref().map_or(self.engine.transport.position, |p| p.position().max(self.engine.transport.position));
+        let engine_at = self.player.as_ref().map(|p| p.position());
+        let stopped_at = super::midi::pass_stop(engine_at, self.engine.transport.position, false);
         let plan = self.take_plan.take();
         // No input device is open when the pass was MIDI only.
         let (takes, problem) = self.recorder.as_mut().map_or_else(|| (Vec::new(), None), |r| r.finish());
@@ -259,7 +260,12 @@ impl SoundApp {
             Some(len) => Range::new(plan.start, plan.start.saturating_add(len)),
             None => plan.punch.unwrap_or(Range::new(self.record_start, stopped_at)),
         };
-        let (midi_clips, midi_problem) = self.finish_midi_take(midi_range, !ids.is_empty(), midi_confirmed, plan.pass.map(|_| stopped_at));
+        let (midi_clips, midi_problem) = self.finish_midi_take(
+            midi_range,
+            !ids.is_empty(),
+            midi_confirmed,
+            plan.pass.map(|_| super::midi::pass_stop(engine_at, self.engine.transport.position, true)),
+        );
         self.ui.status = if plan.pass.is_some() && midi_clips == 0 {
             crate::localized_format!("Loop-recorded {} take(s)", ids.len() / tracks)
         } else if ids.is_empty() && midi_clips == 0 {
