@@ -2,7 +2,7 @@
 //! record pass into MIDI clips.
 
 use super::{Range, Samples, SoundApp, json};
-use soundcraft_engine::io::MidiTakeEvent;
+use soundcraft_engine::io::{MidiPass, MidiTakeEvent};
 use soundcraft_playback::midi::MidiInputs;
 
 impl SoundApp {
@@ -73,20 +73,28 @@ impl SoundApp {
         }
     }
 
+    /// Where the audio engine's playhead stood when it confirmed the end of `pass`
+    /// ([`Self::await_midi_capture`]): the stop position that goes with the take it wrote.
+    /// `None` when it did not confirm, or there was no MIDI to wait for.
+    pub(crate) fn midi_pass_stopped_at(&self, pass: Option<u64>) -> Option<Samples> {
+        self.midi_inputs.as_ref()?.feed().stopped_at(pass?)
+    }
+
     /// Turn the MIDI played during the pass into clips on the MIDI and instrument tracks that
-    /// were record-enabled when it started. `with_audio`: audio takes of this pass already made
-    /// its undo step. `confirmed`: the audio engine said it had written down everything played
-    /// up to the stop ([`Self::await_midi_capture`]). `stopped`: where a loop pass stopped
-    /// inside the loop; keys still down end there. Returns how many clips, and what to tell the
-    /// user when the take is not complete.
-    pub(crate) fn finish_midi_take(&mut self, range: Range, with_audio: bool, confirmed: bool, stopped: Option<Samples>) -> (usize, Option<String>) {
+    /// were record-enabled when it started, and on those only: the same tracks the end of the
+    /// pass waited for ([`Self::end_midi_pass`]). `with_audio`: audio takes of this pass already
+    /// made its undo step. `confirmed`: the audio engine said it had written down everything
+    /// played up to the stop ([`Self::await_midi_capture`]). `pass`: whether it was a loop pass,
+    /// and where that stopped inside the loop; keys still down end there. Returns how many
+    /// clips, and what to tell the user when the take is not complete.
+    pub(crate) fn finish_midi_take(&mut self, range: Range, with_audio: bool, confirmed: bool, pass: MidiPass) -> (usize, Option<String>) {
         let Some(m) = &self.midi_inputs else { return (0, None) };
         let feed = m.feed();
         feed.take_recorded(&mut self.midi_take);
         // Events the audio thread could not hand over (this thread fell behind).
         let uncollected = self.midi_take_lost.saturating_add(u64::from(feed.take_recorded_lost()));
         self.midi_take_lost = 0;
-        let mut events: Vec<MidiTakeEvent> = self
+        let events: Vec<MidiTakeEvent> = self
             .midi_take
             .drain(..)
             .map(|e| MidiTakeEvent {
@@ -103,14 +111,11 @@ impl SoundApp {
                 data2: e.data2,
             })
             .collect();
-        if let Some(at) = stopped {
-            events.push(MidiTakeEvent { at, device: u8::MAX, status: MidiTakeEvent::END, data1: 0, data2: 0 });
-        }
         let devices: Vec<String> = (0..soundcraft_mix::MAX_MIDI_PORTS)
             .map(|i| u8::try_from(i).ok().and_then(|i| feed.ports().name(i)).unwrap_or_default().to_string())
             .collect();
         let inputs = std::mem::take(&mut self.midi_take_inputs);
-        let take = soundcraft_engine::io::add_midi_recording_from(&mut self.engine, range, &events, &devices, &inputs, with_audio);
+        let take = soundcraft_engine::io::add_midi_recording_from(&mut self.engine, range, pass, &events, &devices, &inputs, with_audio);
         (take.clips.len(), midi_take_problem(take.gaps, uncollected, confirmed))
     }
 
@@ -162,16 +167,12 @@ fn midi_pass_waits(engine: bool, tracks: usize) -> bool {
     engine && tracks > 0
 }
 
-/// Where a record pass stopped, from the audio engine's position (`None`: no engine) and the
-/// UI's copy of it, which is a frame behind. A pass that plays on in a line ended at the later
-/// of the two. A loop pass did not: just after the loop went round the UI's copy is still near
-/// the end of the loop while the engine is at its start, so only the engine's position counts.
-pub(crate) fn pass_stop(engine: Option<Samples>, ui: Samples, looped: bool) -> Samples {
-    match engine {
-        Some(at) if looped => at,
-        Some(at) => at.max(ui),
-        None => ui,
-    }
+/// Where a record pass that plays on in a line stopped, from the audio engine's position
+/// (`None`: no engine) and the UI's copy of it, which is a frame behind: the later of the two.
+/// (A loop pass gets its stop position from the audio engine's confirmation instead:
+/// `SoundApp::midi_pass_stopped_at`.)
+pub(crate) fn pass_stop(engine: Option<Samples>, ui: Samples) -> Samples {
+    engine.map_or(ui, |at| at.max(ui))
 }
 
 /// What to tell the user about a MIDI take that is not complete: input was dropped at `gaps`
@@ -197,15 +198,10 @@ mod tests {
     use super::{midi_pass_waits, midi_take_problem, pass_stop};
 
     #[test]
-    fn a_loop_pass_stopped_just_after_the_loop_went_round_ends_where_the_engine_is() {
-        // The loop is 0..96 000. The engine has gone round and stands at 1 000; the UI still
-        // shows 95 000 from the frame before.
-        assert_eq!(pass_stop(Some(1_000), 95_000, true), 1_000, "not the stale position near the loop end");
-        assert_eq!(pass_stop(Some(50_000), 49_000, true), 50_000);
-        // A pass in a line ends at the later position; without an engine the UI's is all there is.
-        assert_eq!(pass_stop(Some(1_000), 95_000, false), 95_000);
-        assert_eq!(pass_stop(Some(96_000), 95_000, false), 96_000);
-        assert_eq!((pass_stop(None, 7, true), pass_stop(None, 7, false)), (7, 7));
+    fn a_pass_in_a_line_ends_at_the_later_of_the_engines_position_and_the_uis() {
+        assert_eq!(pass_stop(Some(1_000), 95_000), 95_000);
+        assert_eq!(pass_stop(Some(96_000), 95_000), 96_000);
+        assert_eq!(pass_stop(None, 7), 7, "without an engine the UI's is all there is");
     }
 
     #[test]

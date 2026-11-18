@@ -1965,3 +1965,26 @@ fn a_lost_ports_controllers_are_reset_and_the_other_ports_kept() {
     render_block(&mut eng, &s, 1024);
     assert!(heard.lock().unwrap().is_empty());
 }
+
+#[test]
+fn a_clip_controller_at_the_start_of_the_block_a_port_is_lost_in_keeps_its_new_value() {
+    use soundcraft_midi::{CtrlEvent, CtrlKind, Sequence};
+    let (mut s, t, mut eng, heard) = ears_session();
+    // The clip sets the mod wheel at its start and again 24 ticks in: sample 600 at 120 bpm.
+    let mut seq = Sequence::default();
+    seq.ctrls.push(CtrlEvent { tick: 0, channel: 0, kind: CtrlKind::Cc(1), value: 10 });
+    seq.ctrls.push(CtrlEvent { tick: 24, channel: 0, kind: CtrlKind::Cc(1), value: 90 });
+    let cid = s.new_clip_id();
+    s.track_mut(t).unwrap().playlist_mut().unwrap().clips.push(Clip::midi(cid, "c", 0, 24_000, seq));
+    // A device bends the pitch in the block before the one that starts at sample 600.
+    eng.midi.push(LiveMidi { offset: 0, port: 0, status: 0xE0, data1: 0, data2: 0x7F });
+    render_block(&mut eng, &s, 88);
+    eng.midi.clear();
+    heard.lock().unwrap().clear();
+    // The device goes away. Its bend is taken back (a reset, then the clip's value as it stood
+    // before this block), and only then come the clip's events of this block: the mod wheel
+    // ends at the value the clip gives it here, not at the one from before.
+    eng.midi_lost = midi_port_bit(0);
+    render_block(&mut eng, &s, 600);
+    assert_eq!(std::mem::take(&mut *heard.lock().unwrap()), vec![(0, [0xB0, 121, 0]), (0, [0xB0, 1, 10]), (0, [0xB0, 1, 90])]);
+}

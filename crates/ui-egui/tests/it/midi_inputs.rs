@@ -202,7 +202,12 @@ fn a_midi_pass_does_not_start_while_the_previous_one_is_unconfirmed() {
     arm(&mut h, vox, true);
     h.get_by_label("transport.record").click();
     h.run_steps(3);
-    assert!(!h.state().ui.status.contains("previous record pass"), "{}", h.state().ui.status);
+    // It got past the MIDI guard to the audio setup, which refused it (this app has no audio
+    // engine), and the earlier pass is still owed.
+    let status = h.state().ui.status.clone();
+    assert!(!h.state().engine.transport.recording);
+    assert!(status.contains("no audio input device") && !status.contains("previous record pass"), "{status}");
+    assert!(feed.pass_owed() && !feed.captured(pass), "the attempt did not clear the pending pass");
     // Once nothing is owed, the MIDI pass starts.
     arm(&mut h, vox, false);
     arm(&mut h, synth, true);

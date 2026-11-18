@@ -176,6 +176,14 @@ pub struct MidiFeed {
     captures_done: AtomicU64,
     /// Record passes ended so far: the number of the last one.
     passes: AtomicU64,
+    /// When the last record pass was ended ([`Self::end_pass`]), on the clock of the stamps.
+    pass_end: AtomicI64,
+    /// Where the audio thread's playhead stood when it finished `stop_pass`.
+    stop_at: AtomicI64,
+    stop_pass: AtomicU64,
+    /// A clock set by a test in place of the real one (`i64::MIN`: the real one).
+    #[cfg(test)]
+    test_clock: AtomicI64,
 }
 
 impl Default for MidiFeed {
@@ -196,6 +204,11 @@ impl Default for MidiFeed {
             record_gap: AtomicBool::new(false),
             captures_done: AtomicU64::new(0),
             passes: AtomicU64::new(0),
+            pass_end: AtomicI64::new(i64::MAX),
+            stop_at: AtomicI64::new(0),
+            stop_pass: AtomicU64::new(0),
+            #[cfg(test)]
+            test_clock: AtomicI64::new(i64::MIN),
         }
     }
 }
@@ -217,10 +230,24 @@ impl MidiFeed {
 
     /// Microseconds since the feed was made.
     fn now(&self) -> i64 {
+        #[cfg(test)]
+        {
+            let set = self.test_clock.load(Ordering::Relaxed);
+            if set != i64::MIN {
+                return set;
+            }
+        }
         #[cfg(not(target_arch = "wasm32"))]
         return i64::try_from(self.epoch.elapsed().as_micros()).unwrap_or(i64::MAX);
         #[cfg(target_arch = "wasm32")]
         0
+    }
+
+    /// Stop the clock at `micros`, for tests: stamps and ages no longer depend on how fast the
+    /// test runs.
+    #[cfg(test)]
+    pub(crate) fn set_clock(&self, micros: i64) {
+        self.test_clock.store(micros, Ordering::Relaxed);
     }
 
     /// A message arrived from `port` (called on a MIDI system thread). Channel messages go on to
@@ -258,10 +285,13 @@ impl MidiFeed {
             }
             let now = self.now();
             // Losses from a full queue go into the queue first, where they happened: ahead of
-            // the first event that fits again.
+            // the first event that fits again. Each mark carries the time of its port's loss
+            // (nothing of that port got into the queue since), so the audio thread can tell it
+            // from another loss of the same port.
             let announce = *owed;
             for bit in (0..64u8).filter(|b| announce & (1u64 << b) != 0) {
-                if !self.incoming.push(now, lost_entry(if bit == 63 { u8::MAX } else { bit })) {
+                let port = if bit == 63 { u8::MAX } else { bit };
+                if !self.incoming.push(self.lost_at(port).min(now), lost_entry(port)) {
                     break;
                 }
                 *owed &= !(1u64 << bit);
@@ -336,7 +366,8 @@ impl MidiFeed {
 
     /// Audio thread: the next event and when it arrived ([`Self::clock`], microseconds). An entry
     /// with the status [`RecordedMidi::LOST`] is not an event: events of its port (of the ports
-    /// without an index, for `u8::MAX`) were dropped at this place in the queue.
+    /// without an index, for `u8::MAX`) were dropped at this place in the queue, at the time it
+    /// is stamped with ([`Self::lost_at`] as it was when the mark was written).
     pub(crate) fn next(&self) -> Option<(i64, LiveMidi)> {
         self.incoming.pop().map(|(stamp, e)| (stamp, unpack(e)))
     }
@@ -387,13 +418,33 @@ impl MidiFeed {
     /// ([`crate::Player::end_recording`]) and to wait for ([`Self::captured`]). Numbers only go
     /// up, so the late answer to an earlier pass is never taken for this one.
     pub fn end_pass(&self) -> u64 {
+        // The time first: whoever sees the pass as ended also sees when.
+        self.pass_end.store(self.now(), Ordering::Release);
         self.passes.fetch_add(1, Ordering::AcqRel).saturating_add(1)
     }
 
+    /// Audio thread: up to when arriving events belong to the take. While an ended pass is not
+    /// confirmed yet that is the time it was ended at: what a device sends after the Stop is
+    /// played but not recorded, however long the audio thread takes to hear of the Stop.
+    pub(crate) fn record_until(&self) -> i64 {
+        if self.pass_owed() { self.pass_end.load(Ordering::Acquire) } else { i64::MAX }
+    }
+
     /// Audio thread: recording was switched off for `pass`, and everything played before that is
-    /// recorded.
-    pub(crate) fn capture_done(&self, pass: u64) {
+    /// recorded. `at` is where the playhead stood then: the positions in the take, and the marks
+    /// of the loop going round, are all from before it.
+    pub(crate) fn capture_done(&self, pass: u64, at: Samples) {
+        self.stop_at.store(at, Ordering::Release);
+        self.stop_pass.store(pass, Ordering::Release);
         self.captures_done.fetch_max(pass, Ordering::AcqRel);
+    }
+
+    /// Where the pass stopped, once the audio thread has confirmed it ([`Self::captured`]): the
+    /// playhead as the take saw it. The player's position may be further on by then (in the
+    /// next round of a loop, which the take knows nothing about). `None` while the pass is not
+    /// confirmed, or when it was let go without an answer ([`Self::forgive_passes`]).
+    pub fn stopped_at(&self, pass: u64) -> Option<Samples> {
+        (self.captured(pass) && self.stop_pass.load(Ordering::Acquire) == pass).then(|| self.stop_at.load(Ordering::Acquire))
     }
 
     /// Whether the audio thread has seen the end of `pass` ([`Self::end_pass`]) and has written

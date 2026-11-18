@@ -237,7 +237,7 @@ impl SoundApp {
         let midi_confirmed = self.await_midi_capture(midi_pass);
         // Where the pass ended: the audio engine's own position is the freshest.
         let engine_at = self.player.as_ref().map(|p| p.position());
-        let stopped_at = super::midi::pass_stop(engine_at, self.engine.transport.position, false);
+        let stopped_at = super::midi::pass_stop(engine_at, self.engine.transport.position);
         let plan = self.take_plan.take();
         // No input device is open when the pass was MIDI only.
         let (takes, problem) = self.recorder.as_mut().map_or_else(|| (Vec::new(), None), |r| r.finish());
@@ -257,12 +257,15 @@ impl SoundApp {
             Some(len) => Range::new(plan.start, plan.start.saturating_add(len)),
             None => plan.punch.unwrap_or(Range::new(self.record_start, stopped_at)),
         };
-        let (midi_clips, midi_problem) = self.finish_midi_take(
-            midi_range,
-            !ids.is_empty(),
-            midi_confirmed,
-            plan.pass.map(|_| super::midi::pass_stop(engine_at, self.engine.transport.position, true)),
-        );
+        // A loop pass stopped somewhere inside the loop: where, the audio engine said with its
+        // confirmation, in step with the rounds it wrote into the take. Its position now may be
+        // a round further on; without the confirmation there is no position to trust, and the
+        // keys still down are held to the end of the loop (the take is reported as incomplete).
+        let midi_kind = match plan.pass {
+            Some(_) => soundcraft_engine::io::MidiPass::Loop { stopped: self.midi_pass_stopped_at(midi_pass) },
+            None => soundcraft_engine::io::MidiPass::Linear,
+        };
+        let (midi_clips, midi_problem) = self.finish_midi_take(midi_range, !ids.is_empty(), midi_confirmed, midi_kind);
         self.ui.status = if plan.pass.is_some() && midi_clips == 0 {
             crate::localized_format!("Loop-recorded {} take(s)", ids.len() / tracks)
         } else if ids.is_empty() && midi_clips == 0 {

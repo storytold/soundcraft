@@ -23,6 +23,8 @@
 //! release of a pitch among them ends it. That bound keeps the state a fixed size. While the
 //! shared place is in use, an owner without a place of its own joins it even when another place
 //! has come free, so an owner never holds keys in two places and its releases always find them.
+//! Only the owners that put something into the shared place act on it: a release from a source
+//! that never joined it, or the loss of a port that is not in it, leaves it alone.
 //!
 //! # Controllers
 //!
@@ -208,6 +210,11 @@ impl Owner {
         self.used && self.port == port && self.channel == channel
     }
 
+    /// Whether `port` and `channel` may hold something in this place ([`Self::join`]).
+    fn joined(&self, port: u8, channel: u8) -> bool {
+        self.used && self.ports & midi_port_bit(port) != 0 && self.channels & (1u16 << (channel & 0x0F)) != 0
+    }
+
     /// Nothing left to remember: the place is free again.
     fn settle(&mut self) {
         if self.down.is_empty() && self.sustained.is_empty() && !self.pedal {
@@ -381,9 +388,14 @@ impl LiveNotes {
         self.owners.iter().position(|o| o.used && o.shared)
     }
 
-    /// The place of an owner: its own, else the shared one when it exists.
+    /// The place of an owner: its own, else the shared one when the owner joined it. A source
+    /// that put nothing there has nothing to release there: its note-off for a pitch another
+    /// owner holds in the shared place must not end that note.
     fn find(&self, port: u8, channel: u8) -> Option<usize> {
-        self.owners.iter().position(|o| o.is(port, channel)).or_else(|| self.shared_place())
+        self.owners
+            .iter()
+            .position(|o| o.is(port, channel))
+            .or_else(|| self.shared_place().filter(|i| self.owners.get(*i).is_some_and(|o| o.joined(port, channel))))
     }
 
     /// The place of an owner that has something to hold: its own; else the shared one while it
@@ -435,14 +447,16 @@ impl LiveNotes {
     }
 
     /// Events of the ports in `lost` ([`midi_port_bit`]) were dropped: release what those ports
-    /// hold. The shared place goes too, as it may hold their notes. True when a controller one
-    /// of those ports set was forgotten ([`Self::forget_controllers`]).
+    /// hold. The shared place goes too when one of them joined it, as it may hold their notes
+    /// (it does not know whose are whose); the loss of a port that is not in it leaves the notes
+    /// of the others there alone. True when a controller one of those ports set was forgotten
+    /// ([`Self::forget_controllers`]).
     pub(crate) fn release_ports(&mut self, lost: u64, inst: &mut dyn Plugin) -> bool {
         if lost == 0 {
             return false;
         }
         if self.active() {
-            self.drop_owners(inst, 0, |o| o.shared || lost & midi_port_bit(o.port) != 0);
+            self.drop_owners(inst, 0, |o| lost & o.ports != 0);
         }
         // The port may have set a controller whose value the full table forgot.
         let forgotten = lost & self.forgotten_ports != 0;
@@ -696,6 +710,32 @@ mod tests {
         assert!(!live.active(), "every place is free again");
         // Places are reused: a new owner gets its own.
         assert_eq!(play(&mut live, &[ev(5, 0x90, 50, 1), ev(6, 0x90, 50, 1), ev(5, 0x80, 50, 0)]), [(true, 50), (true, 50)]);
+    }
+
+    #[test]
+    fn a_source_that_never_joined_the_shared_place_does_not_act_on_it() {
+        let mut live = LiveNotes::default();
+        // 16 channels of port 0 fill the table; ports 1 and 2 share the last place.
+        let ons: Vec<LiveMidi> = (0..16u8).map(|ch| ev(0, 0x90 | ch, 60 + ch, 100)).chain([ev(1, 0x90, 100, 100), ev(2, 0x90, 101, 100)]).collect();
+        assert_eq!(play(&mut live, &ons).len(), 18);
+        // Port 7 holds nothing here (its key went down before the track listened): its note-off,
+        // its pedal-up and its All Notes Off are not for the notes of ports 1 and 2.
+        assert_eq!(play(&mut live, &[ev(7, 0x80, 100, 0), ev(7, 0xB0, 64, 0), ev(7, 0xB0, 123, 0)]), []);
+        // Neither is another channel of port 1.
+        assert_eq!(play(&mut live, &[ev(1, 0x83, 100, 0)]), []);
+        assert!(live.holds(100) && live.holds(101));
+        // Port 7 loses its input: the shared place, which it is not in, keeps its notes.
+        let mut log = Log::default();
+        assert!(!live.release_ports(midi_port_bit(7), &mut log));
+        assert!(log.0.is_empty() && live.holds(100) && live.holds(101), "{:?}", log.0);
+        // Port 1 is in it: the place goes, with what the others hold there (it does not know
+        // whose is whose; the place was channel 16 of port 0 before it was shared).
+        live.release_ports(midi_port_bit(1), &mut log);
+        assert_eq!(log.0, [(false, 75), (false, 100), (false, 101)]);
+        assert!(live.holds(60), "port 0 keeps its own places");
+        // The owners that did join still release there.
+        play(&mut live, &[ev(1, 0x90, 100, 100)]);
+        assert_eq!(play(&mut live, &[ev(1, 0x80, 100, 0)]), [(false, 100)]);
     }
 
     #[test]
