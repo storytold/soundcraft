@@ -651,6 +651,43 @@ fn looping_wraps() {
 }
 
 #[test]
+fn stop_output_silences_monitored_input_until_the_next_play() {
+    use soundcraft_model::{ChannelFormat, TrackKind};
+    let mut s = soundcraft_model::Session::default();
+    let t = s.add_track(TrackKind::Audio, ChannelFormat::Mono, None);
+    s.track_mut(t).unwrap().mixer.record_arm = true;
+    let shared = Arc::new(Shared {
+        position: AtomicI64::new(0),
+        playing: AtomicBool::new(false),
+        speed: AtomicU32::new(1000),
+        meters: Mutex::new(MeterSnapshot::default()),
+    });
+    let (tx, rx) = channel();
+    let mut st = AudioState::new(rx, Arc::clone(&shared), Arc::new(s), 48_000.0, channel().0);
+    let ring = record::InputRing::new(1, 48_000);
+    tx.send(Cmd::Input(Arc::clone(&ring))).unwrap();
+    let mut out = vec![0.0f32; 4096];
+    // A transport stop keeps the monitored input audible...
+    tx.send(Cmd::Stop).unwrap();
+    ring.push(&[0.5; 4096]);
+    st.fill(&mut out, 2);
+    assert!(out.iter().any(|x| x.abs() > 0.1), "transport stop keeps monitoring");
+    // ...but a shutdown silences the output and keeps it silent.
+    tx.send(Cmd::StopOutput).unwrap();
+    for _ in 0..4 {
+        ring.push(&[0.5; 4096]);
+        st.fill(&mut out, 2);
+        assert!(out.iter().all(|x| x.abs() < 1e-6), "fresh mic input stays silent after shutdown");
+    }
+    // The next play (with recording armed, as when the take continues) brings the input back.
+    tx.send(Cmd::Recording(true)).unwrap();
+    tx.send(Cmd::Play { from: 0, end: None, looped: None }).unwrap();
+    ring.push(&[0.5; 4096]);
+    st.fill(&mut out, 2);
+    assert!(out.iter().any(|x| x.abs() > 0.1), "play restores monitoring");
+}
+
+#[test]
 fn locate_while_playing_drops_the_old_position_audio() {
     use soundcraft_model::{ChannelFormat, Clip, Insert, SourceAudio, SourceId, TrackKind};
     for (plugin, params) in [("compressor", &[("lookahead", 5.0), ("ratio", 1.0)][..]), ("room_reverb", &[][..])] {

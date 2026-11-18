@@ -125,6 +125,8 @@ enum Cmd {
         looped: Option<Range>,
     },
     Stop,
+    /// Stop playback and silence live input monitoring too, for a host about to close the stream.
+    StopOutput,
     Locate(Samples),
     /// Tracks the latest session no longer has (worked out on the UI thread): their meters go.
     Forget(Vec<TrackId>),
@@ -483,6 +485,13 @@ impl Player {
     pub fn stop(&self) {
         self.shared.playing.store(false, Ordering::Relaxed);
         let _ = self.tx.send(Cmd::Stop);
+    }
+
+    /// Stop playback and silence live input monitoring, for a host that is about to close the
+    /// output stream. Unlike transport [`Player::stop`], the output stays silent even for
+    /// monitored or record-armed inputs until the next play.
+    pub fn stop_output(&self) {
+        let _ = self.tx.send(Cmd::StopOutput);
     }
 
     pub fn locate(&self, at: Samples) {
