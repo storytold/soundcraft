@@ -35,6 +35,13 @@ fn forced() -> Option<String> {
     FORCED.lock().unwrap_or_else(PoisonError::into_inner).clone()
 }
 
+/// The host id [`force_host`] set for this run, if any: what wins over the chosen system when
+/// streams open, for a settings window to show the devices of (see
+/// [`crate::devices::effective_system`]).
+pub fn forced_host() -> Option<String> {
+    forced()
+}
+
 /// A host id as the user may write it (`"ALSA"`, `" pipewire "`), in the form cpal's ids have.
 /// `None` for no choice (empty, `auto`). Host names differ from their ids only in case, so a
 /// name remembered by an older version reads as its id.
@@ -174,26 +181,35 @@ pub(crate) fn has_default(host: &cpal::Host, direction: Direction, automatic: bo
     use cpal::traits::{DeviceTrait, HostTrait};
     match direction {
         Direction::Input => host.default_input_device().is_some(),
-        Direction::Output => {
-            let nodes = || {
+        Direction::Output if host.default_output_device().is_none() => false,
+        Direction::Output if !automatic => true,
+        Direction::Output => match host.id().to_string().as_str() {
+            "pipewire" => {
                 let all = host.devices().into_iter().flatten();
-                all.filter_map(|d| Some((d.id().ok()?.to_string(), d.supports_output(), d.supports_input()))).collect::<Vec<_>>()
-            };
-            can_play(&host.id().to_string(), host.default_output_device().is_some(), automatic, nodes)
-        }
+                let nodes: Vec<_> = all.filter_map(|d| Some((d.id().ok()?.to_string(), d.supports_output(), d.supports_input()))).collect();
+                pipewire_sink(&nodes)
+            }
+            "jack" => jack_default_route(),
+            _ => true,
+        },
     }
 }
 
-/// [`has_default`] for an output, from what the host says: whether it has a default output and,
-/// asked for only when it matters, its devices as (id, plays, records).
-fn can_play(host: &str, has_default: bool, automatic: bool, nodes: impl FnOnce() -> Vec<(String, bool, bool)>) -> bool {
-    if !has_default || !automatic || host != "pipewire" {
-        return has_default;
-    }
-    // cpal lists what can be played to (a sink, also an internal one, and a duplex node) as a
-    // device for both directions, since a sink can be recorded; a source records only and
-    // another application's stream plays only. Its stand-ins for the default say nothing.
-    nodes().iter().any(|(id, plays, records)| *plays && *records && !pipewire_alias(id))
+/// Whether PipeWire has something to play to, from its devices as (id, plays, records). cpal
+/// lists what can be played to (a sink, also an internal one, and a duplex node) as a device
+/// for both directions, since a sink can be recorded; a source records only and another
+/// application's stream plays only. Its stand-ins for the default say nothing.
+fn pipewire_sink(nodes: &[(String, bool, bool)]) -> bool {
+    nodes.iter().any(|(id, plays, records)| *plays && *records && !pipewire_alias(id))
+}
+
+/// Whether a JACK output stream nobody wires gets anywhere: cpal connects it to the server's
+/// `system:playback_*` ports, and succeeds, connected to nothing, when there are none.
+fn jack_default_route() -> bool {
+    #[cfg(all(feature = "jack", not(target_arch = "wasm32")))]
+    return jack_ports::default_route(Direction::Output);
+    #[cfg(not(all(feature = "jack", not(target_arch = "wasm32"))))]
+    true
 }
 
 /// True for the ids of the stand-ins cpal's PipeWire host makes for "the system default".
@@ -388,24 +404,23 @@ mod tests {
     fn automatic_pipewire_output_needs_something_to_play_to() {
         let node = |id: &str, plays, records| (id.to_string(), plays, records);
         // What cpal always lists: its three stand-ins for the default.
-        let aliases = || {
-            vec![node("pipewire:sink_default", true, true), node("pipewire:input_default", false, true), node("pipewire:output_default", true, false)]
+        let with = |extra: &[(String, bool, bool)]| {
+            let aliases = [
+                node("pipewire:sink_default", true, true),
+                node("pipewire:input_default", false, true),
+                node("pipewire:output_default", true, false),
+            ];
+            aliases.into_iter().chain(extra.iter().cloned()).collect::<Vec<_>>()
         };
-        let with = |extra: Vec<(String, bool, bool)>| move || aliases().into_iter().chain(extra).collect::<Vec<_>>();
-        let microphone = || vec![node("pipewire:alsa_input.usb-Mic", false, true)];
-        let browser = || vec![node("pipewire:Firefox", true, false)];
-        let sink = || vec![node("pipewire:alsa_output.usb-X", true, true)];
-        // Only a microphone, or also another application's stream: nothing to play to.
-        assert!(!can_play("pipewire", true, true, with(microphone())));
-        assert!(!can_play("pipewire", true, true, with(microphone().into_iter().chain(browser()).collect())));
+        let microphone = node("pipewire:alsa_input.usb-Mic", false, true);
+        let browser = node("pipewire:Firefox", true, false);
+        let sink = node("pipewire:alsa_output.usb-X", true, true);
+        // Nothing but the stand-ins, only a microphone, or also another application's stream.
+        assert!(!pipewire_sink(&with(&[])));
+        assert!(!pipewire_sink(&with(std::slice::from_ref(&microphone))));
+        assert!(!pipewire_sink(&with(&[microphone.clone(), browser])));
         // A sink (cpal lists it for both directions): PipeWire is taken.
-        assert!(can_play("pipewire", true, true, with(microphone().into_iter().chain(sink()).collect())));
-        // Chosen in the dialog or forced on the command line: taken at its word, without looking.
-        assert!(can_play("pipewire", true, false, || -> Vec<(String, bool, bool)> { panic!("the nodes are not asked for") }));
-        // Other hosts: their default output is enough; none is none.
-        assert!(can_play("alsa", true, true, Vec::new));
-        assert!(can_play("jack", true, true, Vec::new));
-        assert!(!can_play("pipewire", false, true, with(sink())) && !can_play("alsa", false, false, Vec::new));
+        assert!(pipewire_sink(&with(&[microphone, sink])));
     }
 
     #[test]

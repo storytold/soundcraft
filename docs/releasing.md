@@ -77,7 +77,8 @@ libclang at build time (below), and the release jobs install their build package
 has none of them. Shipping the hosts takes, in order: those packages in the shared actions (also
 for the aarch64 runner and the riscv64 cross build); the two features made default in
 `apps/soundcraft/Cargo.toml`; `--no-default-features` in the FreeBSD package and the from-source
-Flatpak manifest; and `libpipewire-0.3` among the dependencies in `packaging/linux/nfpm.yaml`. Note that a
+Flatpak manifest; and the PipeWire library among the dependencies in `packaging/linux/nfpm.yaml`, under each
+format's own package name (`libpipewire-0.3-0` for the `.deb`, `pipewire-libs` for the `.rpm`). Note that a
 binary with the `pipewire` feature links `libpipewire-0.3.so.0`, so the AppImage and the tarball
 would no longer start on a machine without PipeWire; `jack` has no such cost (libjack is loaded
 at runtime when present). The release `.flatpak` is that same tarball repackaged, with no Rust

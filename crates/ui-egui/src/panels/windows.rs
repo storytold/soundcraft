@@ -466,14 +466,18 @@ fn audio_systems(ctx: &egui::Context, refresh: bool) -> Arc<Vec<AudioSystem>> {
     s
 }
 
-/// The system a config means for its output (or input) in an enumeration: its own, else the one
-/// the automatic order opens that stream on.
+/// The system whose devices a config's output (or input) picks from: the one that stream opens
+/// on, which the command line's `--audio-host` and a chosen system with nothing to open change.
 fn chosen_system<'a>(systems: &'a [AudioSystem], cfg: &AudioConfig, output: bool) -> Option<&'a AudioSystem> {
-    cfg.system
-        .as_deref()
-        .and_then(|n| systems.iter().find(|s| s.id.eq_ignore_ascii_case(n) || s.name.eq_ignore_ascii_case(n)))
-        .or_else(|| systems.iter().find(|s| if output { s.is_default } else { s.is_default_input }))
-        .or(systems.first())
+    let forced = soundcraft_playback::host::forced_host();
+    soundcraft_playback::devices::effective_system(systems, cfg, forced.as_deref(), output)
+}
+
+/// The draft after the devices were listed again: one that still was the saved choice as the
+/// old list read it (`old`) becomes that choice as the new list reads it (`new`); an edited one
+/// is kept.
+fn refreshed_draft(draft: AudioConfig, old: &AudioConfig, new: AudioConfig) -> AudioConfig {
+    if draft == *old { new } else { draft }
 }
 
 /// What "Default" opens on `sys` when that is none of the devices it lists: PipeWire follows the
@@ -644,7 +648,10 @@ pub fn playback_engine(app: &mut SoundApp, ctx: &egui::Context) {
         }
     });
     if refresh {
-        audio_systems(ctx, true);
+        let systems = audio_systems(ctx, true);
+        // A device that was plugged in since has an id now: a draft nobody edited follows the
+        // saved choice to it, so it does not read as an unapplied change to a missing device.
+        draft = refreshed_draft(draft, &baseline, app.ui.audio.with_ids(&systems));
     }
     if apply && let Err(e) = app.apply_audio_config(draft.clone()) {
         app.ui.status = e;
@@ -949,12 +956,27 @@ mod playback_engine_tests {
             system("pipewire", (true, false), (true, false), Vec::new()),
             system("alsa", (false, true), (true, true), Vec::new()),
         ];
-        let id = |cfg: &AudioConfig, output| chosen_system(&systems, cfg, output).map(|s| s.id.as_str());
+        let id = |cfg: &AudioConfig, output| soundcraft_playback::devices::effective_system(&systems, cfg, None, output).map(|s| s.id.as_str());
         let auto = AudioConfig::default();
         assert_eq!((id(&auto, true), id(&auto, false)), (Some("pipewire"), Some("alsa")));
         // A chosen system holds for both, by id or by the name older preferences kept.
-        let jack = AudioConfig { system: Some("JACK".into()), ..Default::default() };
-        assert_eq!((id(&jack, true), id(&jack, false)), (Some("jack"), Some("jack")));
+        let alsa = AudioConfig { system: Some("ALSA".into()), ..Default::default() };
+        assert_eq!((id(&alsa, true), id(&alsa, false)), (Some("alsa"), Some("alsa")));
+    }
+
+    /// A device saved by name was unplugged when the dialog opened and is back at Refresh: the
+    /// untouched draft kept the name, which read as an edit to a device that is not there.
+    #[test]
+    fn refresh_moves_an_untouched_draft_to_the_newly_listed_device() {
+        let saved = AudioConfig { output: Some("Scarlett 2i2".into()), ..Default::default() };
+        let unplugged = [system("alsa", (true, true), (true, true), Vec::new())];
+        let plugged = [system("alsa", (true, true), (true, true), vec![device("alsa:hw:CARD=USB,DEV=0", "Scarlett 2i2", false)])];
+        let (old, new) = (saved.with_ids(&unplugged), saved.with_ids(&plugged));
+        assert_eq!((old.output.as_deref(), new.output.as_deref()), (Some("Scarlett 2i2"), Some("alsa:hw:CARD=USB,DEV=0")));
+        assert_eq!(refreshed_draft(old.clone(), &old, new.clone()), new, "untouched: it is the saved choice again");
+        // An edit is kept.
+        let edited = AudioConfig { buffer_size: Some(256), ..old.clone() };
+        assert_eq!(refreshed_draft(edited.clone(), &old, new), edited);
     }
 
     /// Preferences from before devices had ids hold a name. The draft starts from the id, so

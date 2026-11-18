@@ -84,6 +84,21 @@ pub(super) fn port_count(direction: Direction, id: &str) -> Option<usize> {
     grouped(&ports).into_iter().find(|(g, _)| *g == group).map(|(_, n)| n)
 }
 
+/// Whether the ports cpal connects a new stream of `direction` to are there: without them the
+/// stream opens and stays unconnected.
+pub(super) fn default_route(direction: Direction) -> bool {
+    client().is_ok_and(|client| system_route(direction, &client.ports(None, Some("audio"), PortFlags::empty())))
+}
+
+/// Whether `ports` has one of the server's own ports for `direction`, which cpal connects to.
+fn system_route(direction: Direction, ports: &[String]) -> bool {
+    let prefix = match direction {
+        Direction::Input => "system:capture_",
+        Direction::Output => "system:playback_",
+    };
+    ports.iter().any(|port| port.starts_with(prefix))
+}
+
 /// The channel a stream port carries: cpal names them `in_0`, `in_1`, … / `out_0`, `out_1`, ….
 /// A name without a number sorts last.
 fn channel_index(port: &str) -> u32 {
@@ -92,8 +107,10 @@ fn channel_index(port: &str) -> u32 {
 
 /// The connections that put the stream's ports (`mine`) on the ports of `group` among
 /// `hardware`. The stream's channels, in the order of their number (the server need not list
-/// them that way), pair up with the group's ports in the server's order; extra ones on either
-/// side stay unconnected.
+/// them that way), pair up with the group's ports in the server's order. The stream was opened
+/// as wide as the group was then (an output no wider than the mix): if the group has changed
+/// since, pairing would leave a channel of the mix unplayed or an input unrecorded, so it is an
+/// error and the caller opens the stream again. An output may leave ports of the group unused.
 fn plan(direction: Direction, mine: &[String], hardware: &[String], group: &str) -> Result<Vec<Wire>, String> {
     let mut of_group: Vec<&String> = Vec::new();
     for port in hardware.iter().filter(|p| group_of(p) == group) {
@@ -106,6 +123,14 @@ fn plan(direction: Direction, mine: &[String], hardware: &[String], group: &str)
     }
     if mine.is_empty() {
         return Err("the stream's JACK ports were not found".into());
+    }
+    let (channels, ports) = (mine.len(), of_group.len());
+    let fits = match direction {
+        Direction::Output => ports >= channels,
+        Direction::Input => ports == channels,
+    };
+    if !fits {
+        return Err(format!("'{group}' has {ports} ports now and the stream was opened with {channels} channels"));
     }
     let mut mine: Vec<&String> = mine.iter().collect();
     mine.sort_by_key(|port| channel_index(port));
@@ -269,11 +294,21 @@ mod tests {
             plan(Direction::Input, &mine, &hardware, "Scarlett 2i2 USB").unwrap(),
             wires(&[("Scarlett 2i2 USB:capture_FL", "cpal_client_1_in:in_0"), ("Scarlett 2i2 USB:capture_FR", "cpal_client_1_in:in_1")])
         );
-        // Fewer hardware ports than the stream has: the rest of the stream stays unconnected.
+        // The interface has another number of inputs than when the stream was opened for it:
+        // some would go unrecorded, or stream channels would stay silent.
         assert_eq!(
-            plan(Direction::Input, &mine, &hardware, "Webcam: Mono").unwrap(),
-            wires(&[("Webcam: Mono:capture_MONO", "cpal_client_1_in:in_0")])
+            plan(Direction::Input, &mine, &hardware, "Webcam: Mono").unwrap_err(),
+            "'Webcam: Mono' has 1 ports now and the stream was opened with 2 channels"
         );
+        let four = names(&["usb:capture_1", "usb:capture_2", "usb:capture_3", "usb:capture_4"]);
+        assert_eq!(plan(Direction::Input, &mine, &four, "usb").unwrap_err(), "'usb' has 4 ports now and the stream was opened with 2 channels");
+        // An output that lost a port would drop a channel of the mix.
+        let stereo = names(&["cpal_client_1_out:out_0", "cpal_client_1_out:out_1"]);
+        assert!(plan(Direction::Output, &stereo, &names(&["usb:playback_1"]), "usb").is_err());
+        // What cpal connects a stream to when nobody wires it: the server's own ports.
+        assert!(system_route(Direction::Output, &names(&["system:capture_1", "system:playback_1"])));
+        assert!(!system_route(Direction::Output, &names(&["system:capture_1", "usb:playback_1"])));
+        assert!(system_route(Direction::Input, &names(&["system:capture_1"])) && !system_route(Direction::Input, &[]));
         // More hardware ports than the stream has, and the audio flows the other way.
         let playback = names(&["system:playback_1", "system:playback_2", "system:playback_3", "system:playback_1"]);
         let out = names(&["cpal_client_1_out:out_0", "cpal_client_1_out:out_1"]);

@@ -48,9 +48,10 @@ impl AudioConfig {
     /// happens to have the same name is not the one that was meant.
     #[must_use]
     pub fn with_ids(&self, systems: &[AudioSystem]) -> AudioConfig {
-        let system =
-            self.system.as_deref().and_then(|want| systems.iter().find(|s| s.id.eq_ignore_ascii_case(want) || s.name.eq_ignore_ascii_case(want)));
-        let chosen = self.system.as_deref().and_then(crate::host::host_key).is_some();
+        // Read the way stream opening reads it: any case, spaces around it, `auto` for no choice.
+        let want = self.system.as_deref().and_then(crate::host::host_key);
+        let system = want.as_deref().and_then(|want| find_system(systems, want));
+        let chosen = want.is_some();
         let id = |want: &Option<String>, automatic: fn(&AudioSystem) -> bool, list: fn(&AudioSystem) -> &Vec<DeviceInfo>| {
             // The devices of the chosen system, else of the one the automatic order opens.
             let devices = if chosen { system } else { systems.iter().find(|s| automatic(s)) };
@@ -61,13 +62,34 @@ impl AudioConfig {
             found.map(|d| d.id.clone()).or_else(|| want.clone())
         };
         AudioConfig {
-            system: system.map(|s| s.id.clone()).or_else(|| self.system.clone()),
+            // A system that is not listed stays as it was written; `auto` and blank are no choice.
+            system: system.map(|s| s.id.clone()).or_else(|| self.system.clone().filter(|_| chosen)),
             output: id(&self.output, |s| s.is_default, |s| &s.outputs),
             input: id(&self.input, |s| s.is_default_input, |s| &s.inputs),
             sample_rate: self.sample_rate,
             buffer_size: self.buffer_size,
         }
     }
+}
+
+/// The listed system a host id or name (in any case) means.
+fn find_system<'a>(systems: &'a [AudioSystem], want: &str) -> Option<&'a AudioSystem> {
+    systems.iter().find(|s| s.id.eq_ignore_ascii_case(want) || s.name.eq_ignore_ascii_case(want))
+}
+
+/// The system an output (or input) stream opens on with this choice, as [`crate::host::pick`]
+/// decides it: the one forced for this run (`--audio-host`, see [`crate::host::forced_host`]),
+/// else the chosen one, else the first of the automatic order, in each case one that has
+/// something to open for that direction. So a settings window lists the devices of the system
+/// the streams really use: not ALSA's while the command line forces JACK, and not those of a
+/// chosen JACK whose server is not running. With nothing to open anywhere, the system that was
+/// asked for, else the first.
+pub fn effective_system<'a>(systems: &'a [AudioSystem], cfg: &AudioConfig, forced: Option<&str>, output: bool) -> Option<&'a AudioSystem> {
+    let has = |s: &&AudioSystem| if output { s.has_output } else { s.has_input };
+    let configured = cfg.system.as_deref().and_then(crate::host::host_key);
+    // The forced one when it is listed at all, else the chosen one (see `host::order`).
+    let asked = [forced.and_then(crate::host::host_key), configured].into_iter().flatten().find_map(|want| find_system(systems, &want));
+    asked.filter(has).or_else(|| systems.iter().find(has)).or(asked).or(systems.first())
 }
 
 /// One device as the settings window lists it.
@@ -523,6 +545,15 @@ mod tests {
         let unplugged = AudioConfig { system: Some("alsa".into()), output: Some("Speakers".into()), ..Default::default() }.with_ids(&systems);
         assert_eq!((unplugged.system.as_deref(), unplugged.output.as_deref()), (Some("alsa"), Some("Speakers")));
         assert_eq!(AudioConfig::default().with_ids(&systems), AudioConfig::default());
+        // The system is read the way stream opening reads it: spaces and case do not hide it,
+        // and `auto` or blank is no choice (the default system's devices, and no system kept).
+        let spaced =
+            AudioConfig { system: Some(" ALSA ".into()), output: Some("PipeWire Sound Server".into()), ..Default::default() }.with_ids(&systems);
+        assert_eq!((spaced.system.as_deref(), spaced.output.as_deref()), (Some("alsa"), Some("alsa:pipewire")));
+        for none in ["auto", " "] {
+            let auto = AudioConfig { system: Some(none.into()), output: Some("Scarlett 2i2".into()), ..Default::default() }.with_ids(&systems);
+            assert_eq!((auto.system, auto.output.as_deref()), (None, Some("pipewire:alsa_output.usb-X")), "{none:?}");
+        }
         // The automatic order opens the output on one system and the input on another (the first
         // has nothing to record from): each name is looked up where its stream opens.
         let mut split = systems.clone();
@@ -539,6 +570,42 @@ mod tests {
             Some("pipewire:alsa_output.usb-X")
         );
         assert_eq!(old.with_ids(&[]), old);
+    }
+
+    /// The settings window lists the devices of the system the streams open on, which is not
+    /// always the chosen one: the command line can force another, and a chosen system with
+    /// nothing to open gives way to the automatic order.
+    #[test]
+    fn the_listed_devices_are_those_of_the_system_the_streams_open_on() {
+        let d = || vec![info("x", "x", &[])];
+        // JACK's server is not running; PipeWire has no microphone.
+        let mut systems = [
+            system("pipewire", "PipeWire", true, d(), Vec::new()),
+            system("jack", "JACK", false, Vec::new(), Vec::new()),
+            system("alsa", "ALSA", false, d(), d()),
+        ];
+        systems[0].is_default_input = false;
+        systems[2].is_default_input = true;
+        let id = |cfg: &AudioConfig, forced: Option<&str>, output| effective_system(&systems, cfg, forced, output).map(|s| s.id.as_str());
+        let chose = |system: &str| AudioConfig { system: Some(system.into()), ..Default::default() };
+        let auto = AudioConfig::default();
+        assert_eq!((id(&auto, None, true), id(&auto, None, false)), (Some("pipewire"), Some("alsa")));
+        // A chosen system holds, by id or by the name older preferences kept.
+        assert_eq!((id(&chose("ALSA"), None, true), id(&chose("alsa"), None, false)), (Some("alsa"), Some("alsa")));
+        // The command line wins over it; `auto` there lifts nothing but itself.
+        assert_eq!(id(&chose("alsa"), Some("pipewire"), true), Some("pipewire"));
+        assert_eq!(id(&chose("alsa"), Some("auto"), true), Some("alsa"));
+        // A forced host this build does not have: the chosen one.
+        assert_eq!(id(&chose("alsa"), Some("asio"), true), Some("alsa"));
+        // Chosen or forced, but with nothing to open (no server; no microphone): the streams fall
+        // back to the automatic order, and so does the list.
+        assert_eq!((id(&chose("jack"), None, true), id(&chose("jack"), None, false)), (Some("pipewire"), Some("alsa")));
+        assert_eq!(id(&chose("alsa"), Some("pipewire"), false), Some("alsa"));
+        // Nothing to open anywhere: the system that was asked for, else the first.
+        let silent = [system("pipewire", "PipeWire", false, Vec::new(), Vec::new()), system("jack", "JACK", false, Vec::new(), Vec::new())];
+        assert_eq!(effective_system(&silent, &chose("jack"), None, true).map(|s| s.id.as_str()), Some("jack"));
+        assert_eq!(effective_system(&silent, &auto, None, true).map(|s| s.id.as_str()), Some("pipewire"));
+        assert!(effective_system(&[], &auto, None, true).is_none());
     }
 
     #[test]
