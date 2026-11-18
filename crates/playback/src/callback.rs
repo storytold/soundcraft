@@ -107,6 +107,10 @@ pub(crate) struct AudioState {
     /// The record pass a command of this callback ended, to be confirmed once the MIDI that
     /// arrived up to that command is written down.
     midi_ended: Option<u64>,
+    /// The transport was stopped while a record pass ran. The pass goes on until the command
+    /// that ends it (the UI sends the two one after the other, and they may reach two
+    /// callbacks): what arrived before the stop is still written down.
+    midi_stopped: bool,
     /// Called between taking the MIDI in and reading the commands, for tests of what arrives
     /// right there.
     #[cfg(test)]
@@ -170,6 +174,7 @@ impl AudioState {
             midi_speed: 1.0,
             midi_wraps: 0,
             midi_ended: None,
+            midi_stopped: false,
             #[cfg(test)]
             before_commands: None,
             unsent: MeterSnapshot::default(),
@@ -204,6 +209,11 @@ impl AudioState {
                 Cmd::Recording(r, pass) => {
                     self.recording = r;
                     self.midi_wraps = 0;
+                    self.midi_stopped = false;
+                    // The pass has begun here: its start is no longer waited for.
+                    if r && let Some(feed) = &self.midi {
+                        feed.pass_begun();
+                    }
                     // The UI thread waits for this pass before it builds the clips. It is told
                     // once the callback has also taken what arrived since it last looked at the
                     // MIDI queue (see `fill`).
@@ -238,18 +248,21 @@ impl AudioState {
                     self.end = end;
                     self.looped = looped.filter(|r| r.len() > 64);
                     self.midi_wraps = 0;
+                    self.midi_stopped = false;
                     self.playing = true;
                     self.pending_len = 0;
                     self.read = 0.0;
                     self.mix.reset();
                 }
                 Cmd::Stop => {
+                    self.midi_stopped = self.playing && self.recording;
                     self.playing = false;
                     self.end = None;
                     self.looped = None;
                     self.mix.reset();
                 }
                 Cmd::Locate(at) => {
+                    self.midi_stopped = false;
                     self.pos = at;
                     self.pending_len = 0;
                     self.read = 0.0;
@@ -302,7 +315,10 @@ impl AudioState {
     /// in session frames, `speed` the transport speed the events' ages are counted at.
     ///
     /// Of a pass that was ended, only what arrived up to the Stop is written down
-    /// ([`midi::MidiFeed::record_until`]); the rest is played like any live input.
+    /// ([`midi::MidiFeed::record_until`], asked for every entry); the rest is played like any
+    /// live input. Of a pass the UI has begun during playback whose command has not been read
+    /// yet, what arrived since it began is written down already
+    /// ([`midi::MidiFeed::record_from`]).
     ///
     /// Recording and playing are separate from here on. While a pass runs, each event is written
     /// to the take now, at the position it arrived at (the position of this callback less the
@@ -341,13 +357,27 @@ impl AudioState {
         let now = feed.clock();
         // A flag for a loss that was already met at its mark in the queue is not a new loss.
         let record = pass.record;
+        // When each flagged port lost its input, by the place of its bit.
+        let mut lost_time = [i64::MIN; 64];
         let flagged = input_lost;
         for bit in (0..64u8).filter(|b| flagged & (1u64 << b) != 0) {
             let seen = self.midi_loss_seen.get(usize::from(bit)).copied().unwrap_or(i64::MIN);
             let at = feed.lost_at(bit_port(bit));
             if at <= seen {
                 input_lost &= !(1u64 << bit);
-            } else if !record {
+                continue;
+            }
+            // The flag may stand for two losses: the queue overflowed, and the port was closed
+            // later. The overflow comes first when nothing has told of it yet (not its mark in
+            // the queue, not an earlier flag): it has its own time, and nothing of the port got
+            // into the queue between the two.
+            let told = seen.max(self.midi_flag_seen.get(usize::from(bit)).copied().unwrap_or(i64::MIN));
+            let overflow = feed.overflow_at(bit_port(bit));
+            let at = if overflow > told { overflow.min(at) } else { at };
+            if let Some(t) = lost_time.get_mut(usize::from(bit)) {
+                *t = at;
+            }
+            if !record {
                 // No take to write it to: its mark in the queue, if one follows, is not news.
                 flag_seen(&mut self.midi_flag_seen, 1u64 << bit, at);
             }
@@ -360,8 +390,7 @@ impl AudioState {
             self.midi_pending.retain(|(_, e)| input_lost & midi_port_bit(e.port) == 0);
             self.midi_lost |= input_lost;
         }
-        let mut take =
-            TakeWriter { feed, pos: pass.pos, looped: pass.looped, wraps: std::mem::take(&mut self.midi_wraps), until: feed.record_until() };
+        let mut take = TakeWriter { feed, pos: pass.pos, looped: pass.looped, wraps: std::mem::take(&mut self.midi_wraps), from: pass.from };
         // The lost ports whose mark is not in the take yet. Each goes in where its loss was.
         let mut marks = if record { input_lost } else { 0 };
         let mut unplayed = 0u64;
@@ -376,12 +405,16 @@ impl AudioState {
                 // The port's flag told of this very loss before the mark got into the queue.
                 let told = stamp <= self.midi_flag_seen.get(place).copied().unwrap_or(i64::MIN);
                 // The port lost its input again later (it was closed after it played on): the
-                // flag stands for that loss, whose mark stays owed and goes in at its own time.
-                if feed.lost_at(e.port) <= stamp {
+                // flag stands for that loss too, whose mark stays owed and goes in at its own
+                // time.
+                let again = feed.lost_at(e.port);
+                if again <= stamp {
                     marks &= !bit;
+                } else if let Some(t) = lost_time.get_mut(place) {
+                    *t = again;
                 }
                 if record && !told {
-                    while let Some((other, at)) = next_mark(feed, marks, stamp) {
+                    while let Some((other, at)) = next_mark(&lost_time, marks, stamp) {
                         take.lost(at, frames(at).min(callback).max(age), other);
                         flag_seen(&mut self.midi_flag_seen, other, at);
                         marks &= !other;
@@ -396,7 +429,7 @@ impl AudioState {
                 continue;
             }
             if record {
-                while let Some((bit, at)) = next_mark(feed, marks, stamp) {
+                while let Some((bit, at)) = next_mark(&lost_time, marks, stamp) {
                     // Not older than this callback's own events, nor newer than this one.
                     take.lost(at, frames(at).min(callback).max(age), bit);
                     flag_seen(&mut self.midi_flag_seen, bit, at);
@@ -422,7 +455,7 @@ impl AudioState {
         }
         if record {
             // Nothing arrived after these losses: their marks close the callback's events.
-            while let Some((bit, at)) = next_mark(feed, marks, i64::MAX) {
+            while let Some((bit, at)) = next_mark(&lost_time, marks, i64::MAX) {
                 take.lost(at, frames(at).min(callback), bit);
                 flag_seen(&mut self.midi_flag_seen, bit, at);
                 marks &= !bit;
@@ -546,7 +579,17 @@ impl AudioState {
         let step = self.step(speed);
         let callback = ((callback_frames as f64 * step).ceil() as i64).max(0);
         let age_speed = std::mem::replace(&mut self.midi_speed, speed);
-        let pass = Pass { record: self.playing && self.recording, pos: self.pos, looped: self.looped };
+        // A pass runs while playing and recording, and on through a transport stop until the
+        // command that ends it. One the UI has begun during playback counts from when it began,
+        // though the command that starts it is only read below.
+        let running = self.recording && (self.playing || self.midi_stopped);
+        let begun = self.midi.as_ref().map_or(i64::MAX, |f| f.record_from());
+        let pass = Pass {
+            record: running || (self.playing && begun != i64::MAX),
+            from: if running { i64::MIN } else { begun },
+            pos: self.pos,
+            looped: self.looped,
+        };
         self.capture_midi(callback, age_speed, pass);
         #[cfg(test)]
         if let Some(hook) = &mut self.before_commands {
@@ -562,6 +605,9 @@ impl AudioState {
                 feed.capture_done(ended, pass.pos);
             }
         }
+        // A command may have installed a session at another sample rate: the audio is rendered
+        // at the rate that is there now, at the same speed.
+        let step = self.step(speed);
         // A keyboard plays through record-enabled and input-monitored MIDI and instrument tracks.
         let midi_live = self.midi.as_ref().is_some_and(|f| f.connected() > 0)
             && self.session.tracks.iter().any(|t| matches!(t.kind, TrackKind::Instrument | TrackKind::Midi) && midi_thru(t));
@@ -614,12 +660,13 @@ fn bit_port(bit: u8) -> u8 {
     if bit >= 63 { u8::MAX } else { bit }
 }
 
-/// Of the lost ports in `marks` ([`midi_port_bit`]), the one that lost its input first, if that
-/// was before `before` (or at any time, for `i64::MAX`): its bit and the time.
-fn next_mark(feed: &midi::MidiFeed, marks: u64, before: i64) -> Option<(u64, i64)> {
+/// Of the lost ports in `marks` ([`midi_port_bit`]), the one that lost its input first
+/// (`lost_time`, by the place of each port's bit), if that was before `before` (or at any time,
+/// for `i64::MAX`): its bit and the time.
+fn next_mark(lost_time: &[i64; 64], marks: u64, before: i64) -> Option<(u64, i64)> {
     (0..64u8)
         .filter(|b| marks & (1u64 << b) != 0)
-        .map(|b| (1u64 << b, feed.lost_at(bit_port(b))))
+        .map(|b| (1u64 << b, lost_time.get(usize::from(b)).copied().unwrap_or(i64::MIN)))
         .filter(|(_, at)| *at < before || before == i64::MAX)
         .min_by_key(|(_, at)| *at)
 }
@@ -640,6 +687,9 @@ fn flag_seen(seen: &mut [i64; 64], bits: u64, at: i64) {
 struct Pass {
     /// A pass is running: playing and recording.
     record: bool,
+    /// Entries stamped earlier than this are from before the pass began (`i64::MIN` once its
+    /// start command was read).
+    from: i64,
     /// The playhead at the start of the callback.
     pos: Samples,
     looped: Option<Range>,
@@ -654,14 +704,21 @@ struct TakeWriter<'a> {
     looped: Option<Range>,
     /// Times the loop went round since the last callback, not yet written to the take.
     wraps: u8,
-    /// Entries stamped later than this are not part of the take (the pass was ended then).
-    until: i64,
+    /// Entries stamped earlier than this are not part of the take (the pass began then).
+    from: i64,
 }
 
 impl TakeWriter<'_> {
+    /// Whether an entry stamped `stamp` is part of the take: not from before the pass began, nor
+    /// from after it was ended. The end is asked for every entry: a Stop may come while the
+    /// queue is being read.
+    fn within(&self, stamp: i64) -> bool {
+        stamp >= self.from && stamp <= self.feed.record_until()
+    }
+
     /// Write down the event `e`, stamped `stamp`, that arrived `age` session frames ago.
     fn event(&mut self, stamp: i64, age: i64, e: &LiveMidi) {
-        if stamp <= self.until {
+        if self.within(stamp) {
             let at = self.at(age);
             self.feed.record(at, e);
         }
@@ -670,7 +727,7 @@ impl TakeWriter<'_> {
     /// Write down that the ports in `bits` lost input at the time `stamp`, `age` session frames
     /// ago.
     fn lost(&mut self, stamp: i64, age: i64, bits: u64) {
-        if stamp <= self.until {
+        if self.within(stamp) {
             let at = self.at(age);
             self.feed.record_lost(at, bits);
         }

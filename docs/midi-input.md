@@ -71,8 +71,8 @@ the track's instrument, with the transport stopped or running.
 Record-enable one or more MIDI or instrument tracks and record as usual (**Record**, then
 **Play**). No audio input is needed for a pass that records MIDI only.
 
-When the pass stops, each track that was record-enabled when it started gets a MIDI clip with
-what its input received: notes with their velocities, controllers, pitch bend, aftertouch and
+When the pass stops, each track that was record-enabled and active when it started gets a MIDI
+clip with what its input received: notes with their velocities, controllers, pitch bend, aftertouch and
 program changes. What a pass records is settled when it starts: a track put in record while it
 runs is recorded from the next pass, and one taken out of record keeps what it recorded. A track
 that received nothing gets no clip. The clip covers the pass, the punch range, or the loop.

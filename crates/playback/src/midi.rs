@@ -178,6 +178,13 @@ pub struct MidiFeed {
     passes: AtomicU64,
     /// When the last record pass was ended ([`Self::end_pass`]), on the clock of the stamps.
     pass_end: AtomicI64,
+    /// When a record pass was begun ([`Self::begin_pass`]) that the audio thread has not started
+    /// yet; `i64::MAX` when there is none.
+    pass_begin: AtomicI64,
+    /// When each port last had an event dropped by the full queue, by the place of its bit in
+    /// `lost`; `i64::MIN` before the first time. Kept apart from `lost_at`, which a later close
+    /// of the port moves on.
+    overflow_at: Vec<AtomicI64>,
     /// Where the audio thread's playhead stood when it finished `stop_pass`.
     stop_at: AtomicI64,
     stop_pass: AtomicU64,
@@ -205,6 +212,8 @@ impl Default for MidiFeed {
             captures_done: AtomicU64::new(0),
             passes: AtomicU64::new(0),
             pass_end: AtomicI64::new(i64::MAX),
+            pass_begin: AtomicI64::new(i64::MAX),
+            overflow_at: (0..64).map(|_| AtomicI64::new(i64::MIN)).collect(),
             stop_at: AtomicI64::new(0),
             stop_pass: AtomicU64::new(0),
             #[cfg(test)]
@@ -285,13 +294,13 @@ impl MidiFeed {
             }
             let now = self.now();
             // Losses from a full queue go into the queue first, where they happened: ahead of
-            // the first event that fits again. Each mark carries the time of its port's loss
-            // (nothing of that port got into the queue since), so the audio thread can tell it
-            // from another loss of the same port.
+            // the first event that fits again. Each mark carries the time its port's events
+            // were dropped at (nothing of that port got into the queue since), so the audio
+            // thread can tell it from another loss of the same port, such as a later close.
             let announce = *owed;
             for bit in (0..64u8).filter(|b| announce & (1u64 << b) != 0) {
                 let port = if bit == 63 { u8::MAX } else { bit };
-                if !self.incoming.push(self.lost_at(port).min(now), lost_entry(port)) {
+                if !self.incoming.push(self.overflow_at(port).min(now), lost_entry(port)) {
                     break;
                 }
                 *owed &= !(1u64 << bit);
@@ -299,6 +308,9 @@ impl MidiFeed {
             if *owed != 0 || !self.incoming.push(now, e) {
                 // The queue is full. This may be a release, so the port's notes have to go.
                 self.dropped.fetch_add(1, Ordering::Relaxed);
+                if let Some(at) = self.overflow_at.get(lost_bit(port)) {
+                    at.fetch_max(now, Ordering::AcqRel);
+                }
                 self.port_lost(port);
                 *owed |= midi_port_bit(port);
             }
@@ -350,6 +362,12 @@ impl MidiFeed {
     /// release is not.
     pub(crate) fn lost_at(&self, port: u8) -> i64 {
         self.lost_at.get(lost_bit(port)).map_or(i64::MIN, |at| at.load(Ordering::Acquire))
+    }
+
+    /// Audio thread: when the full queue last dropped an event of `port` (`i64::MIN`: never).
+    /// The mark of that loss in the queue is stamped with this time.
+    pub(crate) fn overflow_at(&self, port: u8) -> i64 {
+        self.overflow_at.get(lost_bit(port)).map_or(i64::MIN, |at| at.load(Ordering::Acquire))
     }
 
     /// Events dropped on the way to the audio thread so far (a full queue).
@@ -412,6 +430,24 @@ impl MidiFeed {
             self.recorded_lost.fetch_add(1, Ordering::Relaxed);
             self.record_gap.store(true, Ordering::Relaxed);
         }
+    }
+
+    /// UI thread: a record pass begins now, just before the audio thread is told to record.
+    /// While the transport is already running, what arrives from here on belongs to the pass,
+    /// also when the audio thread takes it in before it reads that command.
+    pub fn begin_pass(&self) {
+        self.pass_begin.store(self.now(), Ordering::Release);
+    }
+
+    /// Audio thread: since when arriving events belong to a pass that was begun and whose start
+    /// command has not been read yet; `i64::MAX` when there is no such pass.
+    pub(crate) fn record_from(&self) -> i64 {
+        self.pass_begin.load(Ordering::Acquire)
+    }
+
+    /// Audio thread: the command that starts the pass was read.
+    pub(crate) fn pass_begun(&self) {
+        self.pass_begin.store(i64::MAX, Ordering::Release);
     }
 
     /// UI thread: a record pass ends. Returns its number, to stop the recording with

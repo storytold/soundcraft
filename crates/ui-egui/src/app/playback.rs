@@ -36,6 +36,7 @@ impl SoundApp {
         } else {
             self.sim = Some((from, end, looped));
         }
+        self.play_loop = looped;
         self.engine.transport.playing = true;
         self.engine.transport.position = from;
         self.last_write_at = i64::MIN;
@@ -57,6 +58,7 @@ impl SoundApp {
             self.finish_recording();
         }
         self.sim = None;
+        self.play_loop = None;
         self.engine.transport.playing = false;
         self.engine.transport.recording = false;
         let stop_at = self.engine.transport.position;
@@ -252,19 +254,21 @@ impl SoundApp {
         self.punch = None;
         self.autosaved_rev = 0;
         let ids = soundcraft_engine::io::place_recording(&mut self.engine, &plan, takes);
-        // MIDI goes where the audio of the pass goes: the loop, the punch range, or all of it.
-        let midi_range = match plan.pass {
-            Some(len) => Range::new(plan.start, plan.start.saturating_add(len)),
-            None => plan.punch.unwrap_or(Range::new(self.record_start, stopped_at)),
+        // The audio engine may have confirmed the pass while the audio takes were finished: the
+        // stop position and what the user is told go by one answer.
+        let midi_confirmed = midi_confirmed || self.midi_pass_stopped_at(midi_pass).is_some();
+        // MIDI goes where the audio of the pass goes: the loop, the punch range, or all of it. A
+        // pass punched in while a loop was playing went on round that loop.
+        let midi_loop = match plan.pass {
+            Some(len) => Some(Range::new(plan.start, plan.start.saturating_add(len))),
+            None => self.play_loop,
         };
         // A loop pass stopped somewhere inside the loop: where, the audio engine said with its
         // confirmation, in step with the rounds it wrote into the take. Its position now may be
         // a round further on; without the confirmation there is no position to trust, and the
         // keys still down are held to the end of the loop (the take is reported as incomplete).
-        let midi_kind = match plan.pass {
-            Some(_) => soundcraft_engine::io::MidiPass::Loop { stopped: self.midi_pass_stopped_at(midi_pass) },
-            None => soundcraft_engine::io::MidiPass::Linear,
-        };
+        let (midi_range, midi_kind) =
+            super::midi::midi_take_span(midi_loop, plan.punch, self.record_start, stopped_at, self.midi_pass_stopped_at(midi_pass));
         let (midi_clips, midi_problem) = self.finish_midi_take(midi_range, !ids.is_empty(), midi_confirmed, midi_kind);
         self.ui.status = if plan.pass.is_some() && midi_clips == 0 {
             crate::localized_format!("Loop-recorded {} take(s)", ids.len() / tracks)

@@ -302,6 +302,8 @@ pub struct SoundApp {
     /// The MIDI input each record-enabled track had when the current pass started: the pass
     /// records from it even if the track is switched to another device meanwhile.
     midi_take_inputs: Vec<(TrackId, soundcraft_model::Route)>,
+    /// The loop the transport is playing round, when it was started with one.
+    play_loop: Option<Range>,
     /// Input this take lost to a slow disk, as last reported (ms).
     lost_shown: u64,
     /// Where the takes being recorded go, autosaved with the session so a crash can't lose them.

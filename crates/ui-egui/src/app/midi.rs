@@ -36,6 +36,11 @@ impl SoundApp {
         self.midi_take.clear();
         self.midi_take_lost = 0;
         self.midi_take_inputs = soundcraft_engine::io::midi_record_inputs(&self.engine);
+        // From here on what is played belongs to the pass (punching in while playing: also what
+        // the audio engine takes in before it hears of the pass).
+        if let Some(m) = &self.midi_inputs {
+            m.feed().begin_pass();
+        }
     }
 
     /// A record pass is about to be stopped: its number on the MIDI feed, when there is MIDI to
@@ -167,6 +172,25 @@ fn midi_pass_waits(engine: bool, tracks: usize) -> bool {
     engine && tracks > 0
 }
 
+/// Where the MIDI of a record pass goes and how the pass ran over that range. `looped` is the
+/// loop the pass recorded over: the loop of loop recording, or the loop that was playing when
+/// recording was punched in (the playhead goes on round it, so the take is a loop take though
+/// the audio is laid out in a line). `stopped` is where the audio engine said a loop pass
+/// stopped. Otherwise the pass ran in a line, over the punch range or from where it started to
+/// where it stopped.
+pub(crate) fn midi_take_span(
+    looped: Option<Range>,
+    punch: Option<Range>,
+    started: Samples,
+    stopped_at: Samples,
+    stopped: Option<Samples>,
+) -> (Range, MidiPass) {
+    match looped {
+        Some(l) => (l, MidiPass::Loop { stopped, marked: true }),
+        None => (punch.unwrap_or(Range::new(started, stopped_at)), MidiPass::Linear),
+    }
+}
+
 /// Where a record pass that plays on in a line stopped, from the audio engine's position
 /// (`None`: no engine) and the UI's copy of it, which is a frame behind: the later of the two.
 /// (A loop pass gets its stop position from the audio engine's confirmation instead:
@@ -195,7 +219,21 @@ fn midi_take_problem(gaps: usize, uncollected: u64, confirmed: bool) -> Option<S
 
 #[cfg(test)]
 mod tests {
-    use super::{midi_pass_waits, midi_take_problem, pass_stop};
+    use super::{MidiPass, Range, midi_pass_waits, midi_take_problem, midi_take_span, pass_stop};
+
+    #[test]
+    fn a_pass_punched_in_while_a_loop_plays_is_a_loop_take_over_that_loop() {
+        // The loop 0..96 000 plays; Record at 72 000, Stop at 24 000 in the next round. In a
+        // line from 72 000 to 24 000 nothing played would be inside the range.
+        let l = Range::new(0, 96_000);
+        assert_eq!(midi_take_span(Some(l), None, 72_000, 24_000, Some(24_000)), (l, MidiPass::Loop { stopped: Some(24_000), marked: true }));
+        // The audio engine did not say where it stopped: still that loop.
+        assert_eq!(midi_take_span(Some(l), None, 72_000, 24_000, None), (l, MidiPass::Loop { stopped: None, marked: true }));
+        // No loop: the punch range, or from the start of the pass to its stop.
+        let punch = Range::new(10, 20);
+        assert_eq!(midi_take_span(None, Some(punch), 0, 50, None), (punch, MidiPass::Linear));
+        assert_eq!(midi_take_span(None, None, 5, 50, Some(7)), (Range::new(5, 50), MidiPass::Linear));
+    }
 
     #[test]
     fn a_pass_in_a_line_ends_at_the_later_of_the_engines_position_and_the_uis() {

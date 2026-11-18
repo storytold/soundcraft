@@ -1988,3 +1988,36 @@ fn a_clip_controller_at_the_start_of_the_block_a_port_is_lost_in_keeps_its_new_v
     render_block(&mut eng, &s, 600);
     assert_eq!(std::mem::take(&mut *heard.lock().unwrap()), vec![(0, [0xB0, 121, 0]), (0, [0xB0, 1, 10]), (0, [0xB0, 1, 90])]);
 }
+
+#[test]
+fn the_clips_sustain_pedal_is_not_put_down_again_when_a_device_goes_away_while_stopped() {
+    use soundcraft_midi::{CtrlEvent, CtrlKind};
+    // The clip holds the pedal down from its start; playback runs out in the middle of it.
+    let mut s = synth_session(-6.0);
+    s.tracks[0].mixer.record_arm = true;
+    let ClipContent::Midi { sequence } = &mut s.tracks[0].playlist_mut().unwrap().clips[0].content else { panic!("a MIDI clip") };
+    sequence.ctrls.push(CtrlEvent { tick: 0, channel: 0, kind: CtrlKind::Cc(64), value: 127 });
+    let mut out = vec![vec![0.0f32; 512]; 2];
+    let mut eng = MixEngine::new(48_000.0, 512);
+    live_levels(&mut eng, &s, 0, 10, -1, &[]);
+    let mut stopped = |eng: &mut MixEngine, lost: u64, live: &[LiveMidi]| {
+        eng.monitor_only = true;
+        eng.midi_lost = lost;
+        eng.midi.clear();
+        eng.midi.extend_from_slice(live);
+        eng.render(&s, 5_120, 512, &mut out);
+        eng.midi.clear();
+        eng.midi_lost = 0;
+        peak(&out[0])
+    };
+    let ev = |port, status, data1, data2| LiveMidi { offset: 0, port, status, data1, data2 };
+    // Stopped, two devices play: one bends the pitch and is then unplugged. The controllers are
+    // set again from the clips, whose pedal is down at this position and will never come up.
+    stopped(&mut eng, 0, &[ev(0, 0xE0, 0, 0x7F)]);
+    stopped(&mut eng, midi_port_bit(0), &[]);
+    // A key of the other device ends with its release.
+    stopped(&mut eng, 0, &[ev(1, 0x90, 64, 100)]);
+    stopped(&mut eng, 0, &[ev(1, 0x80, 64, 0)]);
+    let tail = (0..200).map(|_| stopped(&mut eng, 0, &[])).last().unwrap();
+    assert!(tail < 1e-4, "the clips' pedal held the live note: {tail}");
+}

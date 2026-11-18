@@ -318,7 +318,9 @@ fn render_instrument(s: &Session, t: &Track, strip: &mut Strip, live: &LiveInput
             apply_params(inst, ins, t, INSTRUMENT_SLOT, pos);
         }
         inst.plugin.set_transport(transport);
-        if std::mem::take(&mut strip.chase) {
+        // Whether the clips' controller values were sent to the instrument for this block.
+        let mut chased = std::mem::take(&mut strip.chase);
+        if chased {
             chase_controllers(s, t, pos, inst);
         }
         // Live sources that went away (a port that lost input, an input the track no longer
@@ -332,6 +334,7 @@ fn render_instrument(s: &Session, t: &Track, strip: &mut Strip, live: &LiveInput
         if midi_thru(t) && strip.live.reconcile(t, live.midi_lost, live.ports, inst.plugin.as_mut()) {
             chase_controllers(s, t, pos, inst);
             strip.live.resend_controllers(inst.plugin.as_mut());
+            chased = true;
         }
         if !live.monitor_only {
             schedule_notes(s, t, pos, frames, inst, &mut strip.held, &strip.live);
@@ -348,7 +351,9 @@ fn render_instrument(s: &Session, t: &Track, strip: &mut Strip, live: &LiveInput
             // The clips' sustain pedal goes up too (its own pedal-up will not be played), or the
             // instrument would hold those notes for good. Live input keeps its pedal in
             // `strip.live`, not on the instrument, so keys held live are not released by this.
-            if std::mem::take(&mut strip.clips_played) {
+            // The same after the clips' controllers were sent again while stopped (a live device
+            // went away): a pedal the clips hold down there has no pedal-up coming either.
+            if std::mem::take(&mut strip.clips_played) || chased {
                 inst.plugin.midi(0, [0xB0, 64, 0]);
             }
         }
