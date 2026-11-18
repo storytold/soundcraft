@@ -4,7 +4,7 @@ use craft_ui::buttons::{ButtonVisuals, IconButton, IconButtonStyle};
 
 use crate::icons;
 use crate::theme::{Tokens, bold, regular};
-use egui::{Align2, Color32, CornerRadius, Mesh, Painter, Rect, Response, Sense, Stroke, StrokeKind, Ui, Vec2, pos2, vec2};
+use egui::{Align2, Color32, CornerRadius, Mesh, Painter, Pos2, Rect, Response, Sense, Shape, Stroke, StrokeKind, Ui, Vec2, pos2, vec2};
 
 /// `c` moved towards white (`k > 0`) or black (`k < 0`).
 pub fn shade(c: Color32, k: f32) -> Color32 {
@@ -231,6 +231,60 @@ pub(crate) fn selector_box_named(ui: &mut Ui, width: f32, height: f32, text: &st
     resp.on_hover_text(tooltip)
 }
 
+/// A disc filled with a vertical gradient from `top` to `bottom`, as one mesh.
+pub fn gradient_disc(p: &Painter, c: Pos2, r: f32, top: Color32, bottom: Color32) {
+    let mut mesh = Mesh::default();
+    let at = |y: f32| top.lerp_to_gamma(bottom, ((y - (c.y - r)) / (2.0 * r).max(1.0)).clamp(0.0, 1.0));
+    mesh.colored_vertex(c, at(c.y));
+    let n = 48u32;
+    for i in 0..n {
+        let a = i as f32 / n as f32 * std::f32::consts::TAU;
+        let v = c + vec2(a.cos(), a.sin()) * r;
+        mesh.colored_vertex(v, at(v.y));
+    }
+    for i in 0..n {
+        mesh.add_triangle(0, 1 + i, 1 + (i + 1) % n);
+    }
+    p.add(Shape::mesh(mesh));
+}
+
+/// A machined knob cap of radius `r` at `c`, its pointer at `angle` (radians, 0 = 3 o'clock):
+/// a soft shadow, a knurled skirt lit from above, a bevelled top with a dished face, a
+/// highlight and an outlined pointer. `hot` lifts it while hovered or turned.
+pub fn knob_cap(p: &Painter, c: Pos2, r: f32, angle: f32, hot: bool) {
+    let g = Color32::from_gray;
+    let lift = if hot { 14u8 } else { 0 };
+    for i in 0..4 {
+        let k = i as f32;
+        p.circle_filled(c + vec2(0.0, 1.5 + k), r + 0.5 + k * 0.8, Color32::from_black_alpha(70u8.saturating_sub(i * 16)));
+    }
+    // Skirt: dark metal, lit at the top, with grip ridges.
+    gradient_disc(p, c, r, g(108 + lift), g(26));
+    let ridges = 40;
+    for i in 0..ridges {
+        let a = i as f32 / ridges as f32 * std::f32::consts::TAU;
+        let d = vec2(a.cos(), a.sin());
+        // Ridges catch the light on the upper half and fall into shadow below.
+        let light = (-d.y * 0.5 + 0.5).clamp(0.0, 1.0);
+        let color = if i % 2 == 0 { Color32::from_white_alpha((20.0 + 50.0 * light) as u8) } else { Color32::from_black_alpha(110) };
+        p.line_segment([c + d * (r * 0.80), c + d * (r - 0.8)], Stroke::new(1.0, color));
+    }
+    p.circle_stroke(c, r - 0.5, Stroke::new(1.0, Color32::from_black_alpha(190)));
+    // Bevelled top, then a shallow dish (lit from below, as a concave face is).
+    let top = r * 0.74;
+    p.circle_filled(c + vec2(0.0, 1.0), top + 0.5, Color32::from_black_alpha(120));
+    gradient_disc(p, c, top, g(176 + lift), g(58));
+    gradient_disc(p, c, top * 0.80, g(66 + lift / 2), g(118 + lift));
+    p.circle_stroke(c, top * 0.80, Stroke::new(1.0, Color32::from_black_alpha(70)));
+    // Specular highlight on the bevel.
+    p.circle_filled(c + vec2(-top * 0.30, -top * 0.52), top * 0.26, Color32::from_white_alpha(22));
+    p.circle_filled(c + vec2(-top * 0.30, -top * 0.56), top * 0.12, Color32::from_white_alpha(46));
+    let d = vec2(angle.cos(), angle.sin());
+    let (a, b) = (c + d * (r * 0.18), c + d * (r * 0.92));
+    p.line_segment([a, b], Stroke::new(3.6, Color32::from_black_alpha(170)));
+    p.line_segment([a, b], Stroke::new(1.8, g(246)));
+}
+
 /// Rotary knob for pan / send pan (-1..1). Drag vertically; double-click resets.
 pub fn pan_knob(ui: &mut Ui, size: f32, value: &mut f32, tip: &str) -> Response {
     let t = Tokens::current();
@@ -262,11 +316,7 @@ pub fn pan_knob(ui: &mut Ui, size: f32, value: &mut f32, tip: &str) -> Response 
     let (a0, a1) = if at < mid { (at, mid) } else { (mid, at) };
     p.add(egui::Shape::line(arc(start, start + sweep), Stroke::new(2.0, t.meter_bg)));
     p.add(egui::Shape::line(arc(a0, a1), Stroke::new(2.0, t.counter_text)));
-    p.circle_filled(c + vec2(0.0, 1.0), rad, Color32::from_black_alpha(90));
-    rounded_vgradient(p, Rect::from_center_size(c, Vec2::splat(2.0 * rad)), 2.0 * rad, shade(t.knob_bg, 0.14), shade(t.knob_bg, -0.2));
-    p.circle_stroke(c, rad - 0.75, Stroke::new(1.5, t.knob_ring));
-    let d = vec2(at.cos(), at.sin());
-    p.line_segment([c + d * rad * 0.15, c + d * (rad - 2.5)], Stroke::new(2.0, t.knob_pointer));
+    knob_cap(p, c, rad, at, resp.hovered() || resp.dragged());
     resp.on_hover_text(tip)
 }
 
@@ -375,12 +425,14 @@ pub fn clip_gain_to_pos(db: f32) -> f32 {
     if db >= -36.0 { 0.25 + (db + 36.0) / 72.0 * 0.75 } else { (1.0 - ((-36.0 - db) / 108.0).powf(1.0 / 1.5)) * 0.25 }
 }
 
-const FADER_CAP_H: f32 = 34.0;
+/// The incumbent's cap, measured at 100 %: 15 × 37 points.
+const FADER_CAP_H: f32 = 37.0;
+const FADER_CAP_W: f32 = 15.0;
 
 /// The travel of a [`fader`] drawn in `r`: its cap's centre runs from the bottom (-inf) to the
 /// top (+12 dB).
 pub fn fader_slot(r: Rect) -> Rect {
-    Rect::from_center_size(r.center(), vec2(4.0, r.height() - FADER_CAP_H))
+    Rect::from_center_size(r.center(), vec2(3.0, r.height() - FADER_CAP_H))
 }
 
 /// A fader: returns the new dB value when dragged. `db` in -144..12. `name` is its accessible
@@ -391,10 +443,13 @@ pub fn fader(ui: &mut Ui, r: Rect, db: f32, id: egui::Id, name: &str) -> Option<
     resp.widget_info(|| egui::WidgetInfo::slider(ui.is_enabled(), f64::from(db), name));
     let p = ui.painter();
     let slot = fader_slot(r);
-    let cap_w = (r.width() * 0.4).clamp(14.0, 16.0);
-    p.rect_filled(slot, 2.0, t.fader_track);
-    p.vline(slot.min.x + 0.5, slot.min.y + 1.0..=slot.max.y - 1.0, Stroke::new(1.0, Color32::from_black_alpha(120)));
-    p.vline(slot.max.x + 0.5, slot.min.y + 2.0..=slot.max.y - 2.0, Stroke::new(1.0, Color32::from_white_alpha(18)));
+    let cap_w = FADER_CAP_W;
+    // The slot: a deep groove with a shadowed upper lip and a lit lower edge.
+    let groove = slot.expand2(vec2(0.5, 2.0));
+    p.rect_filled(groove, 2.5, Color32::from_black_alpha(230));
+    p.rect_stroke(groove.expand(1.0), 3.0, Stroke::new(1.0, Color32::from_white_alpha(16)), StrokeKind::Outside);
+    p.vline(groove.min.x + 1.0, groove.min.y + 1.0..=groove.max.y - 1.0, Stroke::new(1.0, Color32::from_black_alpha(255)));
+    p.vline(groove.max.x - 1.0, groove.min.y + 2.0..=groove.max.y - 2.0, Stroke::new(1.0, Color32::from_white_alpha(22)));
     let numbers_x = slot.center().x - cap_w * 0.5 - 1.0;
     let mut last = f32::NEG_INFINITY;
     for mark in [12.0f32, 6.0, 0.0, -5.0, -10.0, -15.0, -20.0, -30.0, -40.0, -60.0] {
@@ -407,19 +462,50 @@ pub fn fader(ui: &mut Ui, r: Rect, db: f32, id: egui::Id, name: &str) -> Option<
     }
     let pos = soundcraft_model::fader_db_to_pos(db);
     let y = slot.max.y - slot.height() * pos;
-    // A console-style cap: mid-grey, lit from above, with grooves either side of a dark centre line.
+    // A console cap in the incumbent's proportions: a bright rim over a darker upper half, a waist
+    // notched in from both sides at the level line, a silver lower half, and a darker base band.
     let cap = Rect::from_center_size(pos2(slot.center().x, y), vec2(cap_w, FADER_CAP_H));
-    p.rect_filled(cap.translate(vec2(0.0, 2.0)).expand(1.0), 3.0, Color32::from_black_alpha(110));
-    let g = Color32::from_gray;
-    p.rect_filled(cap, 2.0, g(22));
-    let face = cap.shrink(1.0);
-    rounded_vgradient(p, face, 2.0, g(176), g(92));
-    p.hline(face.min.x + 1.0..=face.max.x - 1.0, face.min.y + 1.0, Stroke::new(1.0, Color32::from_white_alpha(90)));
-    for dy in [-10.0f32, -6.0, 6.0, 10.0] {
-        p.hline(face.min.x + 2.0..=face.max.x - 2.0, y + dy, Stroke::new(1.0, g(70)));
-        p.hline(face.min.x + 2.0..=face.max.x - 2.0, y + dy + 1.0, Stroke::new(1.0, Color32::from_white_alpha(40)));
+    for i in 0..4 {
+        let k = i as f32;
+        p.rect_filled(cap.translate(vec2(0.0, 2.0 + k)).expand(0.5 + k * 0.7), 3.0 + k, Color32::from_black_alpha(70u8.saturating_sub(i * 16)));
     }
-    p.hline(face.x_range(), y, Stroke::new(2.0, g(20)));
+    let g = Color32::from_gray;
+    let hot = resp.hovered() || resp.dragged();
+    let lift = if hot { 12u8 } else { 0 };
+    p.rect_filled(cap, 3.0, g(18));
+    let face = cap.shrink(1.0);
+    let band = |top: f32, bottom: f32| Rect::from_x_y_ranges(face.x_range(), top..=bottom);
+    // Top rim.
+    vgradient(p, band(face.min.y + 0.5, face.min.y + 3.0), g(232 + lift / 2), g(168 + lift));
+    // Upper half: dark at the top, lighter toward the waist.
+    vgradient(p, band(face.min.y + 3.0, y - 1.0), g(86 + lift), g(150 + lift));
+    // Lower half: bright silver, brightest near the middle of the block.
+    let base = face.max.y - 5.5;
+    vgradient(p, band(y + 1.0, (y + base) * 0.5), g(206 + lift / 2), g(232 + lift / 2));
+    vgradient(p, band((y + base) * 0.5, base), g(232 + lift / 2), g(196 + lift / 2));
+    // Base band under a dark seam.
+    p.hline(face.x_range(), base + 0.5, Stroke::new(1.0, g(70)));
+    vgradient(p, band(base + 1.0, face.max.y - 0.5), g(164 + lift / 2), g(112 + lift / 2));
+    // The waist: a level line with V notches cut in from each side.
+    p.hline(face.x_range(), y, Stroke::new(1.0, g(54)));
+    for (x, dx) in [(cap.min.x, 4.0), (cap.max.x, -4.0)] {
+        p.add(Shape::convex_polygon(vec![pos2(x, y - 3.5), pos2(x + dx, y), pos2(x, y + 3.5)], g(18), Stroke::NONE));
+    }
+    // Rounded sides: a little light on the left, shade on the right.
+    let mut mesh = Mesh::default();
+    let edge = (face.width() * 0.25).max(2.0);
+    quad(
+        &mut mesh,
+        Rect::from_min_max(face.min, pos2(face.min.x + edge, face.max.y)),
+        [Color32::from_white_alpha(24), Color32::TRANSPARENT, Color32::from_white_alpha(24), Color32::TRANSPARENT],
+    );
+    quad(
+        &mut mesh,
+        Rect::from_min_max(pos2(face.max.x - edge, face.min.y), face.max),
+        [Color32::TRANSPARENT, Color32::from_black_alpha(60), Color32::TRANSPARENT, Color32::from_black_alpha(60)],
+    );
+    p.add(Shape::mesh(mesh));
+    p.rect_stroke(cap, 3.0, Stroke::new(1.0, Color32::from_black_alpha(220)), StrokeKind::Inside);
     if resp.double_clicked() || (resp.clicked() && ui.input(|i| i.modifiers.alt)) {
         return Some(0.0);
     }

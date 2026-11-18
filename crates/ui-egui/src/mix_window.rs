@@ -4,7 +4,7 @@ use crate::SoundApp;
 use crate::theme::{Tokens, bold, regular, rgb};
 use crate::widgets::{
     PannerEdit, PannerSpeaker, SelectorLabels, db_text, fader, fader_slot, groove, inset, meter, meter_scale, multi_meter, pan_knob, pan_text,
-    raised_key, rec_toggle, selector_box_named, shade, surround_panner, text_toggle, vgradient,
+    raised_key, rec_toggle, selector_box_named, shade, surround_panner, text_toggle,
 };
 use egui::{Align2, Color32, CornerRadius, Rect, Sense, Stroke, StrokeKind, Ui, pos2, vec2};
 use serde_json::json;
@@ -206,8 +206,8 @@ fn strip(app: &mut SoundApp, ui: &mut Ui, id: TrackId, snap: Option<&MeterSnapsh
     // The whole strip wears the track's colour, as in the incumbent's Mix window, so a strip is
     // found by colour at a glance and lines up with its track in the Edit window.
     let bg = if selected { t.strip_selected } else { t.strip_bg.lerp_to_gamma(crate::theme::rgb(track.color), 0.30) };
-    vgradient(ui.painter(), r, shade(bg, 0.06), bg);
-    ui.painter().vline(r.min.x + 0.5, r.y_range(), Stroke::new(1.0, t.edge_light));
+    // The strip's backdrop is painted once its height is known (below), under its sections.
+    let backdrop = ui.painter().add(egui::Shape::Noop);
     let mut y = r.min.y + 4.0;
     let inner_w = w - 8.0;
     let x0 = r.min.x + 4.0;
@@ -229,9 +229,29 @@ fn strip(app: &mut SoundApp, ui: &mut Ui, id: TrackId, snap: Option<&MeterSnapsh
     y = group_selector(app, ui, &cx, y);
     y = pan_section(app, ui, &cx, y);
     y = toggle_rows(app, ui, &cx, y);
+    // Faders keep a console's length, as the incumbent's do, rather than stretching with the
+    // window: the strip ends below its name plate and the rest of the window stays empty.
+    let bottom = r.max.y.min(y + MAX_FADER_H + STRIP_FOOT_H);
+    let mut cx = cx;
+    cx.r = Rect::from_min_max(r.min, pos2(r.max.x, bottom));
+    let sr = cx.r;
+    let mut mesh = egui::Mesh::default();
+    let top = shade(bg, 0.06);
+    for (p, c) in [(sr.left_top(), top), (sr.right_top(), top), (sr.left_bottom(), bg), (sr.right_bottom(), bg)] {
+        mesh.colored_vertex(p, c);
+    }
+    mesh.add_triangle(0, 1, 2);
+    mesh.add_triangle(1, 2, 3);
+    ui.painter().set(
+        backdrop,
+        egui::Shape::Vec(vec![egui::Shape::mesh(mesh), egui::Shape::vline(sr.min.x + 0.5, sr.y_range(), Stroke::new(1.0, t.edge_light))]),
+    );
     fader_and_meter(app, ui, &cx, y, snap);
     name_and_readout(app, ui, &cx);
 }
+
+/// The longest a strip's fader (with its meter) gets, in points.
+const MAX_FADER_H: f32 = 260.0;
 
 /// Input gain stage ahead of the inserts (the track's trim).
 fn preamp_section(app: &mut SoundApp, ui: &mut Ui, cx: &StripCtx<'_>, mut y: f32) -> f32 {

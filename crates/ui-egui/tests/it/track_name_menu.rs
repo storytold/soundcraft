@@ -35,7 +35,17 @@ fn right_click_on_a_track_name_opens_the_track_menu() {
     h.state_mut().ui.window = MainWindow::Mix;
     h.run_steps(4);
     assert!(h.query_by_label("Make Inactive").is_none());
-    let strip = h.get_by_label_contains("Record enable").rect();
-    right_click(&mut h, pos2(strip.center().x, 900.0 - 17.0));
+    // The strip's name plate: the lowest "Voice" painted (the Tracks list shows it higher up).
+    let plate = h
+        .output()
+        .shapes
+        .iter()
+        .filter_map(|shape| match &shape.shape {
+            egui::Shape::Text(text) if text.galley.job.text == "Voice" => Some(text.pos + text.galley.size() / 2.0),
+            _ => None,
+        })
+        .max_by(|a, b| a.y.total_cmp(&b.y))
+        .expect("the strip's name plate");
+    right_click(&mut h, plate);
     assert!(h.query_by_label("Make Inactive").is_some(), "the Mix strip's name plate");
 }

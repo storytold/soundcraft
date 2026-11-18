@@ -168,20 +168,7 @@ fn knob(ui: &mut Ui, p: &ParamInfo, value: f32, label: &str, shown: &str, color:
         pa.add(Shape::line(pts.clone(), Stroke::new(7.0, color.gamma_multiply(0.22))));
         pa.add(Shape::line(pts, Stroke::new(3.0, color)));
     }
-    // The cap: a soft shadow, then a body lit from above.
-    let body = rad - 6.0;
-    pa.circle_filled(c + vec2(0.0, 2.0), body + 1.0, Color32::from_black_alpha(110));
-    pa.circle_filled(c, body, Color32::from_rgb(26, 27, 30));
-    for i in 0..7 {
-        let k = i as f32 / 6.0;
-        let g = (54.0 + 46.0 * k + if hot { 10.0 } else { 0.0 }) as u8;
-        pa.circle_filled(c - vec2(0.0, body * 0.12 * k), (body - 1.0) * (1.0 - 0.13 * k), Color32::from_rgb(g, g, g.saturating_add(4)));
-    }
-    pa.circle_filled(c, (body - 1.0) * 0.55, Color32::from_rgb(70, 72, 77));
-    pa.circle_stroke(c, body, Stroke::new(1.0, Color32::from_rgb(16, 16, 18)));
-    let a = a0 + (a1 - a0) * travel;
-    let d = vec2(a.cos(), a.sin());
-    pa.line_segment([c + d * (body * 0.3), c + d * (body - 2.0)], Stroke::new(2.5, Color32::from_rgb(244, 244, 240)));
+    crate::widgets::knob_cap(pa, c, rad - 6.0, a0 + (a1 - a0) * travel, hot);
     lcd(pa, Rect::from_center_size(pos2(r.center().x, r.max.y - 9.0), vec2(CELL_W - 6.0, 16.0)), shown, t.counter_text);
     if resp.double_clicked() || (resp.clicked() && ui.input(|i| i.modifiers.alt)) {
         return Some(p.default);
