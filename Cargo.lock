@@ -1248,9 +1248,9 @@ dependencies = [
 [[package]]
 name = "craft-score"
 version = "0.1.0"
-source = "git+https://github.com/storytold/craft-libs?rev=9595e0ca9bff15b04c0096458c63d96d8b090b63#9595e0ca9bff15b04c0096458c63d96d8b090b63"
+source = "git+https://github.com/storytold/craft-libs?rev=3a1a627dc69c677d3a26c22b72e070242ee6b841#3a1a627dc69c677d3a26c22b72e070242ee6b841"
 dependencies = [
- "craft-xml 0.1.0 (git+https://github.com/storytold/craft-libs?rev=9595e0ca9bff15b04c0096458c63d96d8b090b63)",
+ "craft-xml 0.1.0 (git+https://github.com/storytold/craft-libs?rev=3a1a627dc69c677d3a26c22b72e070242ee6b841)",
 ]
 
 [[package]]
@@ -1339,7 +1339,7 @@ dependencies = [
 [[package]]
 name = "craft-xml"
 version = "0.1.0"
-source = "git+https://github.com/storytold/craft-libs?rev=9595e0ca9bff15b04c0096458c63d96d8b090b63#9595e0ca9bff15b04c0096458c63d96d8b090b63"
+source = "git+https://github.com/storytold/craft-libs?rev=3a1a627dc69c677d3a26c22b72e070242ee6b841#3a1a627dc69c677d3a26c22b72e070242ee6b841"
 dependencies = [
  "quick-xml 0.41.0",
  "serde",
@@ -4823,12 +4823,14 @@ name = "soundcraft-clap-host"
 version = "0.20.1"
 dependencies = [
  "clap-sys",
+ "libc",
  "libloading 0.9.0",
  "log",
  "serde",
  "soundcraft-dsp",
  "thiserror 2.0.21",
  "windows-sys 0.61.2",
+ "x11rb",
 ]
 
 [[package]]
@@ -4986,6 +4988,7 @@ dependencies = [
 name = "soundcraft-vst3-host"
 version = "0.20.1"
 dependencies = [
+ "libc",
  "libloading 0.9.0",
  "log",
  "objc2 0.6.5",
@@ -4996,6 +4999,7 @@ dependencies = [
  "thiserror 2.0.21",
  "vst3",
  "windows-sys 0.61.2",
+ "x11rb",
 ]
 
 [[package]]
