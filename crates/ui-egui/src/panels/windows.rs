@@ -483,7 +483,7 @@ fn refreshed_draft(draft: AudioConfig, old: &AudioConfig, new: AudioConfig) -> A
 /// What "Default" opens on `sys` when that is none of the devices it lists: PipeWire follows the
 /// desktop's default and JACK connects to the system ports. `None` when it opens nothing.
 fn default_route(sys: Option<&AudioSystem>, output: bool) -> Option<String> {
-    let sys = sys.filter(|s| if output { s.has_output } else { s.has_input })?;
+    let sys = sys.filter(|s| if output { s.output_route } else { s.has_input })?;
     Some(crate::localization::text(if sys.id == "jack" { "system ports" } else { "system default" }).to_string())
 }
 
@@ -927,6 +927,7 @@ mod playback_engine_tests {
             is_default: default.0,
             is_default_input: default.1,
             has_output: has.0,
+            output_route: has.0,
             has_input: has.1,
             outputs,
             inputs: Vec::new(),

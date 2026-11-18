@@ -85,11 +85,14 @@ fn find_system<'a>(systems: &'a [AudioSystem], want: &str) -> Option<&'a AudioSy
 /// chosen JACK whose server is not running. With nothing to open anywhere, the system that was
 /// asked for, else the first.
 pub fn effective_system<'a>(systems: &'a [AudioSystem], cfg: &AudioConfig, forced: Option<&str>, output: bool) -> Option<&'a AudioSystem> {
+    // A system that was asked for is taken when it has a default device at all; the automatic
+    // order also wants its output to reach something (see `host::has_default`).
     let has = |s: &&AudioSystem| if output { s.has_output } else { s.has_input };
+    let automatic = |s: &&AudioSystem| if output { s.is_default } else { s.is_default_input };
     let configured = cfg.system.as_deref().and_then(crate::host::host_key);
     // The forced one when it is listed at all, else the chosen one (see `host::order`).
     let asked = [forced.and_then(crate::host::host_key), configured].into_iter().flatten().find_map(|want| find_system(systems, &want));
-    asked.filter(has).or_else(|| systems.iter().find(has)).or(asked).or(systems.first())
+    asked.filter(has).or_else(|| systems.iter().find(automatic)).or(asked).or(systems.first())
 }
 
 /// One device as the settings window lists it.
@@ -131,6 +134,10 @@ pub struct AudioSystem {
     /// Whether "Default" has an output to open here. It need not be one of `outputs`: PipeWire
     /// follows the desktop's default sink and JACK connects to the system ports.
     pub has_output: bool,
+    /// Whether that output reaches something to play to. PipeWire with a microphone and no
+    /// sink, and a JACK server without system playback ports, have a default output that plays
+    /// to nothing: chosen, such a system still opens it; the automatic order passes it over.
+    pub output_route: bool,
     /// Whether "Default" opens an input here.
     pub has_input: bool,
     pub outputs: Vec<DeviceInfo>,
@@ -201,16 +208,16 @@ pub fn audio_systems() -> Vec<AudioSystem> {
                 name: id.name().to_string(),
                 is_default: false,
                 is_default_input: false,
-                // The same test the automatic order makes when it opens a stream: PipeWire with
-                // a microphone and no sink has a default output that plays to nothing.
-                has_output: crate::host::has_default(&host, Direction::Output, true),
+                has_output: crate::host::has_default(&host, Direction::Output, false),
+                output_route: crate::host::has_default(&host, Direction::Output, true),
                 has_input: crate::host::has_default(&host, Direction::Input, true),
                 outputs,
                 inputs,
             })
         })
         .collect();
-    if let Some(system) = systems.iter_mut().find(|s| s.has_output) {
+    // The same test the automatic order makes when it opens a stream.
+    if let Some(system) = systems.iter_mut().find(|s| s.output_route) {
         system.is_default = true;
     }
     if let Some(system) = systems.iter_mut().find(|s| s.has_input) {
@@ -432,6 +439,7 @@ mod tests {
             is_default: default,
             is_default_input: default,
             has_output: !outputs.is_empty(),
+            output_route: !outputs.is_empty(),
             has_input: !inputs.is_empty(),
             outputs,
             inputs,
@@ -601,6 +609,13 @@ mod tests {
         // back to the automatic order, and so does the list.
         assert_eq!((id(&chose("jack"), None, true), id(&chose("jack"), None, false)), (Some("pipewire"), Some("alsa")));
         assert_eq!(id(&chose("alsa"), Some("pipewire"), false), Some("alsa"));
+        // A chosen or forced JACK whose server has no system playback ports still opens its
+        // default output (only the automatic order passes it over): its devices are the ones listed.
+        let mut unrouted = systems.clone();
+        (unrouted[1].has_output, unrouted[1].output_route) = (true, false);
+        let id = |cfg: &AudioConfig, forced: Option<&str>| effective_system(&unrouted, cfg, forced, true).map(|s| s.id.as_str());
+        assert_eq!((id(&chose("jack"), None), id(&chose("alsa"), Some("jack"))), (Some("jack"), Some("jack")));
+        assert_eq!(id(&auto, None), Some("pipewire"), "not asked for: passed over");
         // Nothing to open anywhere: the system that was asked for, else the first.
         let silent = [system("pipewire", "PipeWire", false, Vec::new(), Vec::new()), system("jack", "JACK", false, Vec::new(), Vec::new())];
         assert_eq!(effective_system(&silent, &chose("jack"), None, true).map(|s| s.id.as_str()), Some("jack"));
@@ -628,7 +643,9 @@ mod tests {
         assert!(systems.iter().all(|s| !s.name.is_empty() && !s.id.is_empty()));
         assert!(systems.iter().filter(|s| s.is_default).count() <= 1 && systems.iter().filter(|s| s.is_default_input).count() <= 1);
         // The default system is one "Default" opens something on.
-        assert!(systems.iter().all(|s| (!s.is_default || s.has_output) && (!s.is_default_input || s.has_input)));
+        assert!(
+            systems.iter().all(|s| (!s.is_default || s.output_route) && (!s.is_default_input || s.has_input) && (!s.output_route || s.has_output))
+        );
         // Device ids are what the config holds: unique within a list.
         for list in systems.iter().flat_map(|s| [&s.outputs, &s.inputs]) {
             let mut ids: Vec<&str> = list.iter().map(|d| d.id.as_str()).collect();
