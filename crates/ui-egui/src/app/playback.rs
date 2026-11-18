@@ -123,16 +123,16 @@ impl SoundApp {
         }
         let e = self.engine.session().edit.clone();
         let sel = e.selection;
+        let (pre, post) = if e.pre_post_roll { (e.pre_roll, e.post_roll) } else { (0, 0) };
+        let from = (sel.start - pre).max(0);
         if e.loop_record && !sel.is_empty() {
-            self.record_start = sel.start;
-            self.punch = None;
-            self.start_play(sel.start, None, Some(sel));
-            self.plan_recording(takes, Some(sel.len()), false);
+            self.record_start = from;
+            self.punch = Some(sel);
+            self.start_play(from, None, Some(sel));
+            self.plan_recording(takes, Some(sel.len()), true);
         } else {
             // Record into the selection when there is one (punch), with pre/post-roll if enabled;
             // the take is trimmed back to the punch range afterwards.
-            let (pre, post) = if e.pre_post_roll { (e.pre_roll, e.post_roll) } else { (0, 0) };
-            let from = (sel.start - pre).max(0);
             self.record_start = from;
             self.punch = (!sel.is_empty()).then_some(sel);
             let end = (!sel.is_empty()).then_some(sel.end + post);
@@ -172,6 +172,9 @@ impl SoundApp {
     fn waiting_for_punch_tail(&self) -> bool {
         let (Some(plan), Some(recorder)) = (&self.take_plan, &self.recorder) else { return false };
         let Some(punch) = plan.punch else { return false };
+        if plan.pass.is_some() {
+            return false;
+        }
         let required = u64::try_from(punch.end.saturating_sub(plan.origin())).unwrap_or(0);
         plan.placement_offset > 0 && recorder.captured_frames() < required
     }
