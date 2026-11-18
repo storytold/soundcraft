@@ -15,24 +15,42 @@ pub(crate) struct Fault {
     pub(crate) gone: AtomicBool,
     /// Blocks so far, to tell a device that stopped asking for audio.
     pub(crate) beats: std::sync::atomic::AtomicU64,
+    #[cfg(all(windows, feature = "asio"))]
+    pub(crate) asio_frames: std::sync::atomic::AtomicU64,
     /// The UI has been told.
     reported: AtomicBool,
 }
 
 impl Fault {
     /// What stopped the output, once.
-    pub(crate) fn trouble(&self, stalled: bool) -> Option<OutputTrouble> {
+    pub(crate) fn trouble(&self, clock: Option<OutputTrouble>) -> Option<OutputTrouble> {
         let trouble = if self.failed.load(Ordering::Relaxed) {
             OutputTrouble::Bug
         } else if self.gone.load(Ordering::Relaxed) {
             OutputTrouble::Gone
-        } else if stalled {
-            OutputTrouble::Stalled
         } else {
-            return None;
+            clock?
         };
         (!self.reported.swap(true, Ordering::Relaxed)).then_some(trouble)
     }
+}
+
+/// Some ASIO drivers keep calling back sporadically after USB removal. Count actual device frames
+/// over a full stall interval so those callbacks cannot indefinitely mask a dead audio clock.
+#[cfg(any(test, all(windows, feature = "asio")))]
+pub(crate) fn asio_clock_slow(seen: &mut Option<(u64, std::time::Instant)>, frames: u64, now: std::time::Instant, rate: u32, playing: bool) -> bool {
+    if !playing {
+        *seen = None;
+        return false;
+    }
+    let (previous, since) = *seen.get_or_insert((frames, now));
+    let elapsed = now.saturating_duration_since(since);
+    if elapsed < STALL {
+        return false;
+    }
+    *seen = Some((frames, now));
+    // Allow normal callback jitter and brief load spikes; only a severe, sustained slowdown counts.
+    (frames.wrapping_sub(previous) as f64) < f64::from(rate) * elapsed.as_secs_f64() * 0.5
 }
 
 /// How long a playing output may go without a block before it counts as stalled.

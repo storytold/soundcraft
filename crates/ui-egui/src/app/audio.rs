@@ -22,19 +22,7 @@ impl SoundApp {
             return Err(crate::localization::text("stop recording before changing the audio device").into());
         }
         self.ui.audio = cfg;
-        let at = self.position();
-        if let Some(p) = &self.player {
-            p.stop();
-            // The old player's plugin instances go away with it; their editor windows must be
-            // closed here, on the main thread, or they would stay on screen orphaned.
-            p.close_editors();
-        }
-        // The input reopens on the next record or monitor with the new choice.
-        self.recorder = None;
-        self.recorder_failed = false;
-        let player = soundcraft_playback::Player::with_config(self.engine.session_arc(), &self.ui.audio);
-        player.locate(at);
-        self.player = Some(player);
+        self.reopen_audio();
         Ok(())
     }
 
@@ -74,10 +62,18 @@ impl SoundApp {
                 format!("“{}” {}", name, crate::localization::text("stopped asking for audio")),
                 crate::localization::text("Use Reconnect audio device in Setup › Playback Engine."),
             ),
+            OutputTrouble::ClockTooSlow => (
+                format!("“{}” {}", name, crate::localization::text("stopped providing audio at its configured rate")),
+                crate::localization::text("Check the audio device, then use Reconnect audio device in Setup › Playback Engine."),
+            ),
         };
         let (recording, playing) = (self.engine.transport.recording, self.engine.transport.playing);
         if recording || playing {
             self.stop_play();
+        }
+        if trouble == OutputTrouble::ClockTooSlow {
+            self.recorder = None;
+            self.recorder_failed = true;
         }
         self.ui.status = if recording {
             crate::localized_format!("Recording stopped: {cause} The take is kept up to there. {then}", cause = cause, then = then)
@@ -124,13 +120,22 @@ impl SoundApp {
         if self.is_playing() || self.engine.transport.recording {
             self.stop_play();
         }
-        if let Some(p) = &self.player {
-            // Its plugin editors go with it; closed here, on the main thread (see `apply_audio_config`).
-            p.close_editors();
-        }
+        self.reopen_audio();
+    }
+
+    fn reopen_audio(&mut self) {
+        let at = self.position();
         self.recorder = None;
         self.recorder_failed = false;
-        self.player = Some(Player::with_config(self.engine.session_arc(), &self.ui.audio));
+        // Release both streams before opening replacements. An ASIO driver may otherwise reuse
+        // the disconnected driver instance still held by the old output stream.
+        if let Some(p) = self.player.take() {
+            p.stop();
+            p.close_editors();
+        }
+        let player = Player::with_config(self.engine.session_arc(), &self.ui.audio);
+        player.locate(at);
+        self.player = Some(player);
     }
 }
 

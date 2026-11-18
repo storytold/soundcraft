@@ -68,6 +68,10 @@ where
             mark_audio_thread();
             let cycle = clock.as_ref().map(|clock| clock.cycle.fetch_add(1, Ordering::Relaxed).wrapping_add(1));
             let frames = data.len() / frame;
+            #[cfg(all(windows, feature = "asio"))]
+            if clock.is_some() {
+                failed.asio_frames.fetch_add(frames as u64, Ordering::Relaxed);
+            }
             for out in data.chunks_mut(chunk) {
                 let Some(s) = scratch.get_mut(..out.len()) else { return };
                 guarded_block(&failed, &guard, s, |d| state.fill(d, channels));
