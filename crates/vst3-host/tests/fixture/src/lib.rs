@@ -17,8 +17,9 @@
 //!   Every output sample is channel 1's CC 5.
 //! - "Fixture Many Params" (`Fx`): a single-component effect with 1500 automatable parameters
 //!   (ids 0..1500, default 0.5), more than one block's parameter queues hold. Output channel 0 is
-//!   the last value received for the last parameter (-1 before any), channel 1 how many
-//!   different parameters it has received. MIDI CC 5 drives the last parameter (`IMidiMapping`).
+//!   the last parameter's value, sample-accurate: each of its points from its offset on, the last
+//!   value received before that (-1 before any). Channel 1 is how many different parameters it
+//!   has received. MIDI CC 5 drives the last parameter (`IMidiMapping`).
 //! - "Fixture Wide 16x64", "Fixture Wide 32 buses", "Fixture Wide 65 buses", "Fixture Wide 65
 //!   channels" (`Fx`): effects advertising wide layouts (16 buses of 64 channels, 32 and 65 buses
 //!   of 2 channels, one bus of 65 channels per direction), through `getBusInfo` only. `process` writes 1.0 into every channel
@@ -945,25 +946,42 @@ impl IAudioProcessorTrait for ManyParams {
     unsafe fn process(&self, data: *mut ProcessData) -> tresult {
         let d = unsafe { &*data };
         let mut seen = self.seen.lock().unwrap();
+        let before = seen.last().copied().flatten().map_or(-1.0, |v| v as f32);
+        // The last parameter's points this block, in queue order: (offset, value).
+        let mut points: Vec<(i32, f32)> = Vec::new();
         if let Some(changes) = unsafe { ComRef::from_raw(d.inputParameterChanges) } {
             for i in 0..unsafe { changes.getParameterCount() } {
                 let Some(q) = (unsafe { ComRef::from_raw(changes.getParameterData(i)) }) else { continue };
-                let (mut at, mut v) = (0i32, 0f64);
-                let n = unsafe { q.getPointCount() };
-                if let Some(slot) = seen.get_mut(unsafe { q.getParameterId() } as usize)
-                    && n > 0
-                    && unsafe { q.getPoint(n - 1, &mut at, &mut v) } == kResultOk
-                {
-                    *slot = Some(v);
+                let id = unsafe { q.getParameterId() };
+                for k in 0..unsafe { q.getPointCount() } {
+                    let (mut at, mut v) = (0i32, 0f64);
+                    if unsafe { q.getPoint(k, &mut at, &mut v) } != kResultOk {
+                        continue;
+                    }
+                    if let Some(slot) = seen.get_mut(id as usize) {
+                        *slot = Some(v);
+                    }
+                    if id == MANY_PARAMS - 1 {
+                        points.push((at, v as f32));
+                    }
                 }
             }
         }
         if d.numOutputs == 1 {
-            let last = seen.last().copied().flatten().map_or(-1.0, |v| v as f32);
             let count = seen.iter().flatten().count() as f32;
-            let outs = unsafe { channels(&*d.outputs, d.numSamples.max(0) as usize) };
-            for (c, ch) in outs.into_iter().enumerate() {
-                ch.fill(if c == 0 { last } else { count });
+            let frames = d.numSamples.max(0) as usize;
+            let mut outs = unsafe { channels(&*d.outputs, frames) }.into_iter();
+            if let Some(ch) = outs.next() {
+                let (mut value, mut next) = (before, points.iter().peekable());
+                for (i, y) in ch.iter_mut().enumerate() {
+                    while let Some(&(_, v)) = next.next_if(|&&(at, _)| at.max(0) as usize <= i) {
+                        value = v;
+                    }
+                    *y = value;
+                }
+            }
+            for ch in outs {
+                ch.fill(count);
             }
         }
         kResultOk

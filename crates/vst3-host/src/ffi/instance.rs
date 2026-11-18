@@ -448,12 +448,12 @@ impl Instance {
             self.processing = true;
         }
         self.in_params.clear();
-        for &(id, v) in params.iter().take(PARAM_QUEUE_CAP) {
-            self.in_params.set(id, 0, v.clamp(0.0, 1.0));
+        for &(id, v, seq) in params.iter().take(PARAM_QUEUE_CAP) {
+            self.in_params.set(id, 0, v.clamp(0.0, 1.0), seq);
         }
-        for &(time, id, v) in controls {
+        for &(time, id, v, seq) in controls {
             if let Some(at) = time.checked_sub(offset).filter(|&t| (t as usize) < frames) {
-                self.in_params.set(id, i32::try_from(at).unwrap_or(0), v.clamp(0.0, 1.0));
+                self.in_params.set(id, i32::try_from(at).unwrap_or(0), v.clamp(0.0, 1.0), seq);
             }
         }
         self.out_params.clear();
@@ -501,8 +501,10 @@ pub(crate) struct ProcessInput<'a> {
     pub frames: usize,
     pub inputs: &'a mut BusBuffers,
     pub outputs: &'a mut BusBuffers,
-    pub params: &'a [(u32, f64)],
-    pub controls: &'a [(u32, u32, f64)],
+    /// Host values for the sub-block's start: (param id, normalized value, call order).
+    pub params: &'a [(u32, f64, u64)],
+    /// Controller points: (time, param id, normalized value, call order).
+    pub controls: &'a [(u32, u32, f64, u64)],
     pub notes: &'a [NoteEvent],
     pub offset: u32,
     pub project_time: i64,

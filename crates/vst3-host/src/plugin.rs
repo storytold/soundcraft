@@ -36,12 +36,15 @@ pub struct Vst3Plugin {
     values: Vec<f32>,
     /// Normalized value waiting for the plugin, per parameter (same order as `ids`). Coalesced
     /// per parameter and never full: what does not fit in one block's parameter queues goes out
-    /// in the next one, so no value is dropped.
-    queued: Vec<Option<f64>>,
+    /// in the next one, so no value is dropped. Each with the call order (`seq`) that queued it.
+    queued: Vec<Option<(f64, u64)>>,
     /// How many entries of `queued` are `Some`.
     queued_count: usize,
     /// One sub-block's share of `queued` (at most `PARAM_QUEUE_CAP`; never grows).
-    batch: Vec<(u32, f64)>,
+    batch: Vec<(u32, f64, u64)>,
+    /// Call order of host writes and controller messages, so a host value and a controller point
+    /// at the same sample resolve to the later call.
+    seq: u64,
     /// Parameters `set_param` has written (same order as `ids`).
     host_set: Vec<bool>,
     /// For each waiting value a later controller point for the same parameter supersedes, the
@@ -60,8 +63,9 @@ pub struct Vst3Plugin {
     midi_map: Vec<Option<u32>>,
     /// Index into `ids` of each `midi_map` parameter (same order as `midi_map`).
     midi_index: Vec<Option<usize>>,
-    /// Controller points for the next block: (time, param id, normalized value). Bounded.
-    controls: Vec<(u32, u32, f64)>,
+    /// Controller points for the next block: (time, param id, normalized value, call order).
+    /// Bounded.
+    controls: Vec<(u32, u32, f64, u64)>,
     /// Index into `ids` of each `controls` parameter (same order as `controls`).
     control_index: Vec<Option<usize>>,
     inputs: BusBuffers,
@@ -108,6 +112,7 @@ impl Vst3Plugin {
             queued: vec![None; ids.len()],
             queued_count: 0,
             batch: Vec::with_capacity(PARAM_QUEUE_CAP),
+            seq: 0,
             host_set: vec![false; ids.len()],
             stale: vec![None; ids.len()],
             unsynced: ids.iter().map(|_| AtomicU64::new(SYNCED)).collect(),
@@ -196,8 +201,9 @@ impl Vst3Plugin {
         if let Some(s) = self.stale.get_mut(i) {
             *s = None;
         }
+        self.seq += 1;
         if let Some(q) = self.queued.get_mut(i)
-            && q.replace(n).is_none()
+            && q.replace((n, self.seq)).is_none()
         {
             self.queued_count += 1;
         }
@@ -245,7 +251,7 @@ impl Vst3Plugin {
 
 /// Moves up to `room` waiting values (lowest parameter index first) into `batch` and returns how
 /// many it moved. Never grows `batch` past its capacity.
-fn take_batch(queued: &mut [Option<f64>], ids: &[u32], batch: &mut Vec<(u32, f64)>, room: usize) -> usize {
+fn take_batch(queued: &mut [Option<(f64, u64)>], ids: &[u32], batch: &mut Vec<(u32, f64, u64)>, room: usize) -> usize {
     batch.clear();
     let room = room.min(batch.capacity());
     if room == 0 {
@@ -256,8 +262,8 @@ fn take_batch(queued: &mut [Option<f64>], ids: &[u32], batch: &mut Vec<(u32, f64
         if batch.len() >= room {
             break;
         }
-        if let Some(n) = q.take() {
-            batch.push((id, n));
+        if let Some((n, seq)) = q.take() {
+            batch.push((id, n, seq));
             taken += 1;
         }
     }
@@ -520,7 +526,8 @@ impl Plugin for Vst3Plugin {
         if let Some(&Some(id)) = self.midi_map.get(ctrl)
             && self.controls.len() < self.controls.capacity()
         {
-            self.controls.push((time, id, value));
+            self.seq += 1;
+            self.controls.push((time, id, value, self.seq));
             // A value still waiting for this parameter is older than the controller: sent in a
             // later block, it would undo it. It still applies before the point, so it is retired
             // only once the point's sub-block is processed (`retire_stale`).
@@ -689,19 +696,19 @@ mod tests {
     #[test]
     fn take_batch_leaves_what_does_not_fit_for_the_next_block() {
         let ids: Vec<u32> = (100..110).collect();
-        let mut queued: Vec<Option<f64>> = (0..10).map(|i| (i % 3 != 1).then_some(f64::from(i))).collect();
+        let mut queued: Vec<Option<(f64, u64)>> = (0..10u32).map(|i| (i % 3 != 1).then_some((f64::from(i), u64::from(i)))).collect();
         let mut batch = Vec::with_capacity(4);
         assert_eq!(take_batch(&mut queued, &ids, &mut batch, 3), 3);
-        assert_eq!(batch, [(100, 0.0), (102, 2.0), (103, 3.0)]);
+        assert_eq!(batch, [(100, 0.0, 0), (102, 2.0, 2), (103, 3.0, 3)]);
         // The room is capped by the batch's capacity, so it never grows.
         assert_eq!(take_batch(&mut queued, &ids, &mut batch, 99), 4);
-        assert_eq!(batch, [(105, 5.0), (106, 6.0), (108, 8.0), (109, 9.0)]);
+        assert_eq!(batch, [(105, 5.0, 5), (106, 6.0, 6), (108, 8.0, 8), (109, 9.0, 9)]);
         assert_eq!(batch.capacity(), 4);
         assert_eq!(take_batch(&mut queued, &ids, &mut batch, 3), 0);
         assert!(batch.is_empty() && queued.iter().all(Option::is_none));
-        queued[0] = Some(1.0);
+        queued[0] = Some((1.0, 10));
         assert_eq!(take_batch(&mut queued, &ids, &mut batch, 0), 0, "no room this block");
-        assert_eq!(queued[0], Some(1.0));
+        assert_eq!(queued[0], Some((1.0, 10)));
     }
 
     /// A queue full of releases still has room to release every held key after a reset.

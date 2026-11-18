@@ -312,6 +312,56 @@ fn a_controller_point_clamped_to_the_block_end_still_retires_the_value_it_supers
     assert!((io[0][63] - 32.0 / 127.0).abs() < 1e-6, "the older host value undid the controller: {}", io[0][63]);
 }
 
+/// Fixture Many Params after the prepare resend has gone out, so parameter 1499 waits for nothing.
+fn drained_many_params() -> (Box<dyn soundcraft_dsp::Plugin>, Vec<Vec<f32>>) {
+    let mut p = soundcraft_vst3_host::create(&id_of("Fixture Many Params")).unwrap();
+    p.prepare(48_000.0, 64, 2);
+    let mut io = vec![vec![0.0f32; 64], vec![0.0f32; 64]];
+    p.process(&mut io, 64);
+    p.process(&mut io, 64);
+    assert_eq!(io[1][63], 1499.0, "the resend is through (all but the untouched CC 5 stand-in)");
+    (p, io)
+}
+
+/// A host value and a controller point for one parameter at the same sample: the later call wins,
+/// whichever of the two it is.
+#[test]
+fn at_a_shared_sample_the_later_of_host_value_and_controller_wins() {
+    let cc = 32.0 / 127.0;
+    let (mut p, mut io) = drained_many_params();
+    p.midi(0, [0xB0, 5, 32]);
+    assert!(p.set_param("1499", 1.0));
+    p.process(&mut io, 64);
+    assert!((io[0][0] - 1.0).abs() < 1e-6, "the newer host value lost to an older controller point: {}", io[0][0]);
+    p.process(&mut io, 64);
+    assert!((io[0][63] - 1.0).abs() < 1e-6, "the host value did not stay: {}", io[0][63]);
+
+    let (mut p, mut io) = drained_many_params();
+    assert!(p.set_param("1499", 1.0));
+    p.midi(0, [0xB0, 5, 32]);
+    p.process(&mut io, 64);
+    assert!((io[0][0] - cc).abs() < 1e-6, "the newer controller point lost to an older host value: {}", io[0][0]);
+    p.process(&mut io, 64);
+    assert!((io[0][63] - cc).abs() < 1e-6, "the older host value came back: {}", io[0][63]);
+}
+
+/// A host value at a sub-block's start and a later controller point in the same sub-block both
+/// reach the processor, each at its own offset.
+#[test]
+fn a_host_value_and_a_later_controller_point_in_one_block_both_arrive() {
+    let cc = 32.0 / 127.0;
+    let (mut p, mut io) = drained_many_params();
+    assert!(p.set_param("1499", 1.0));
+    // Past the block's end: processed at its last frame.
+    p.midi(64, [0xB0, 5, 32]);
+    p.process(&mut io, 64);
+    assert!((io[0][0] - 1.0).abs() < 1e-6, "the host value was replaced by the controller point: {}", io[0][0]);
+    assert!((io[0][62] - 1.0).abs() < 1e-6, "the controller point came early: {}", io[0][62]);
+    assert!((io[0][63] - cc).abs() < 1e-6, "the controller point is missing: {}", io[0][63]);
+    p.process(&mut io, 64);
+    assert!((io[0][63] - cc).abs() < 1e-6, "the older host value came back: {}", io[0][63]);
+}
+
 /// `reset` drops controller points that were never processed, so a value they would have
 /// superseded is still the one to send.
 #[test]
