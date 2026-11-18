@@ -17,6 +17,7 @@ mod new_track_rows;
 mod processing_keeps_crossfades;
 mod random_edits;
 mod recording;
+mod session_inspect;
 mod session_transport;
 mod split_into_mono;
 mod time_key_signatures;

@@ -205,7 +205,9 @@ The realtime audio thread never writes a record itself: the logger keeps the fir
 Everything you can click is also a command with an id and JSON parameters, and the same commands
 are reachable from the menus, the keyboard, the command line, a JSON control channel and an
 [MCP](https://modelcontextprotocol.io) server. Programmatic calls never open dialogs, and
-`session.inspect` reports exactly what changed, so an agent can check its own work.
+`session.inspect` returns the session's current state (tracks, clips, mixer, markers) and the
+last undo and redo step labels, so an agent can check its own work by comparing inspections from
+before and after.
 
 ```sh
 # Headless: load the demo, turn the kick down, add an EQ, bounce.
