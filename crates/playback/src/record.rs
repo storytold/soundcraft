@@ -832,11 +832,10 @@ impl InputRing {
         let (burst, early) = (demand.max(push), demand.min(push));
         let beside = room.saturating_sub(burst).saturating_sub(early.saturating_mul(2));
         let reserve = need.max(push.saturating_add(2)).saturating_add(16).saturating_add(r.extra).min(beside);
-        // Reading starts once the input covers this callback and the reserve, or as much of the
-        // two as leaves room for the burst that comes while it waits; never less than the
-        // callback itself. What it then keeps is the callback and the whole reserve, and the
-        // input block they come with, when that much is there.
-        let start = need.saturating_add(reserve).min(beside.saturating_add(early)).max(need);
+        // Reading starts once the input covers this callback and the reserve; a whole burst,
+        // where the ring is too small for that much reserve, so that what is left before the
+        // next burst is not nothing.
+        let start = need.saturating_add(reserve.max(burst));
         // The input side dropped a block: reading stood still and all of it is old. A ring that
         // is merely full holds fresh input that has not been read yet.
         if overflowed {
@@ -845,14 +844,16 @@ impl InputRing {
             r.primed = false;
         }
         if !r.primed {
-            // Wait for the start, then read from the newest input (with one more input block
-            // when there is one).
-            if avail < start {
+            // Wait for the start while the ring has room for another burst, and for the callback
+            // itself in any case; then read from the newest input, keeping the callback and the
+            // whole reserve, and the input block they come with, when that much is there.
+            let more_fits = avail.saturating_add(burst) <= room;
+            if avail < need || (avail < start && more_fits) {
                 // A callback of more than half the ring: the input of the next one does not fit
                 // behind all of this one's, and a ring that overflows is dropped whole, at every
                 // callback. Waiting gives up the oldest input instead, and the next callback
                 // finds its start.
-                if holds && avail > beside {
+                if holds && !more_fits && avail > beside {
                     tail = head.wrapping_sub(beside * ch);
                 }
                 self.tail.store(tail, Ordering::Release);
@@ -934,12 +935,17 @@ mod ring_tests {
 
     /// [`run`] on a given mono ring.
     fn run_ring(ring: &InputRing, in_rate: u32, push: usize, pop: usize, seconds: f64, drift: f64) -> (Vec<f32>, usize) {
+        run_at(ring, in_rate, 48_000, push, pop, seconds, drift)
+    }
+
+    /// [`run_ring`] with output callbacks at the session rate `rate`.
+    fn run_at(ring: &InputRing, in_rate: u32, rate: u32, push: usize, pop: usize, seconds: f64, drift: f64) -> (Vec<f32>, usize) {
         let (mut out, mut block) = (Vec::new(), vec![vec![0.0f32; 512]]);
         let (mut pushed, mut k) = (0.0f64, 0usize);
-        let total = (48_000.0 * seconds) as usize;
+        let total = (f64::from(rate) * seconds) as usize;
         while out.len() < total {
             // Input frames due by the end of this output block.
-            let due = (out.len() + pop) as f64 * f64::from(in_rate) / 48_000.0 * (1.0 + drift);
+            let due = (out.len() + pop) as f64 * f64::from(in_rate) / f64::from(rate) * (1.0 + drift);
             while pushed + push as f64 <= due {
                 // As the input callback does: the delivery, in pieces of at most 8192 frames.
                 let data: Vec<f32> = (0..push).map(|i| sine(k + i, f64::from(in_rate))).collect();
@@ -951,7 +957,7 @@ mod ring_tests {
             let mut left = pop;
             while left > 0 {
                 let n = left.min(512);
-                ring.pop_into(&mut block, n, pop, 48_000);
+                ring.pop_into(&mut block, n, pop, rate);
                 out.extend_from_slice(&block[0][..n]);
                 left -= n;
             }
@@ -1047,6 +1053,19 @@ mod ring_tests {
         assert_eq!(ring.slots.len(), 131_072);
         let (out, dry) = run_ring(&ring, 48_000, 65_536, 64, 12.0, 0.0);
         assert_eq!(ring.input_block(), 65_536);
+        assert!(out.iter().any(|v| v.abs() > 0.9), "the input is never heard");
+        assert_eq!(dry, 0);
+        assert!(roughness(&out) < 0.14, "{}", roughness(&out));
+    }
+
+    /// A delivery of half the ring (65 536 frames, 131 072 slots) at 192 kHz, from an input
+    /// clock that runs slow: the reader waits for the second delivery, which the ring holds,
+    /// and then has one in reserve. Starting on the first leaves nothing when the next is late.
+    #[test]
+    fn a_delivery_of_half_the_ring_from_a_slow_clock_does_not_run_dry() {
+        let ring = InputRing::new(1, 192_000);
+        assert_eq!(ring.slots.len(), 131_072);
+        let (out, dry) = run_at(&ring, 192_000, 192_000, 65_536, 64, 12.0, -0.001);
         assert!(out.iter().any(|v| v.abs() > 0.9), "the input is never heard");
         assert_eq!(dry, 0);
         assert!(roughness(&out) < 0.14, "{}", roughness(&out));
