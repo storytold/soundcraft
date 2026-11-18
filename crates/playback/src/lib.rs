@@ -197,7 +197,8 @@ impl Player {
         if let Some(device) = &self.asio_device
             && cfg.input.as_deref().is_none_or(|name| name == self.device_name)
         {
-            return record::Recorder::open_on_device(device, cfg);
+            let required_rate = cfg.sample_rate.is_none().then_some(self.device_rate);
+            return record::Recorder::open_on_device(device, cfg, required_rate);
         }
         record::Recorder::open_with(cfg)
     }

@@ -208,6 +208,19 @@ fn pick_input_config(configs: &[cpal::SupportedStreamConfigRange], rate: u32) ->
         .map(|(_, _, config)| config)
 }
 
+#[cfg(any(test, not(target_os = "freebsd")))]
+fn input_config_at_rate(
+    configs: &[cpal::SupportedStreamConfigRange],
+    preferred_rate: Option<u32>,
+    required_rate: Option<u32>,
+) -> Result<Option<cpal::SupportedStreamConfig>, String> {
+    if let Some(rate) = required_rate {
+        // An active ASIO input and output share the same driver clock.
+        return pick_input_config(configs, rate).map(Some).ok_or_else(|| format!("ASIO input does not support the active output rate ({rate} Hz)"));
+    }
+    Ok(preferred_rate.and_then(|rate| pick_input_config(configs, rate)))
+}
+
 impl Recorder {
     /// Open the default input device. Errors when there is none (the caller shows a message).
     pub fn open() -> Result<Recorder, String> {
@@ -221,18 +234,17 @@ impl Recorder {
     pub fn open_with(audio: &crate::AudioConfig) -> Result<Recorder, String> {
         let host = crate::devices::host(audio);
         let device = crate::devices::device(&host, audio.input.as_deref(), false).ok_or("no audio input device")?;
-        Self::open_on_device(&device, audio)
+        Self::open_on_device(&device, audio, None)
     }
 
     #[cfg(not(target_os = "freebsd"))]
-    pub(crate) fn open_on_device(device: &cpal::Device, audio: &crate::AudioConfig) -> Result<Recorder, String> {
+    pub(crate) fn open_on_device(device: &cpal::Device, audio: &crate::AudioConfig, required_rate: Option<u32>) -> Result<Recorder, String> {
         use cpal::traits::{DeviceTrait, StreamTrait};
         let name = crate::devices::device_name(device).unwrap_or_else(|| "Input".into());
         // At the chosen rate when the device offers it, so input and output run together: the
         // best format first, then the most channels.
         let configs: Vec<cpal::SupportedStreamConfigRange> = device.supported_input_configs().map(|configs| configs.collect()).unwrap_or_default();
-        let at_rate = audio.sample_rate.and_then(|r| pick_input_config(&configs, r));
-        let cfg = match at_rate {
+        let cfg = match input_config_at_rate(&configs, audio.sample_rate, required_rate)? {
             Some(c) => c,
             None => {
                 let d = device.default_input_config().map_err(|e| e.to_string())?;
@@ -520,6 +532,15 @@ mod tests {
         let config = pick_input_config(&configs, 48_000).unwrap();
         assert_eq!(config.channels(), 12);
         assert_eq!(config.sample_format(), cpal::SampleFormat::I24);
+    }
+
+    #[test]
+    fn shared_asio_input_cannot_fall_back_to_another_rate() {
+        let configs = [range(12, 44_100, 48_000, cpal::SampleFormat::I24)];
+        let config = input_config_at_rate(&configs, None, Some(48_000)).unwrap().unwrap();
+        assert_eq!(config.sample_rate(), 48_000);
+        assert!(input_config_at_rate(&configs, None, Some(96_000)).is_err());
+        assert!(input_config_at_rate(&configs, Some(96_000), None).unwrap().is_none());
     }
 
     fn recorder(shared: &Arc<Shared>) -> Recorder {
