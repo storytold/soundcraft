@@ -10,6 +10,7 @@ pub mod catalog;
 pub mod catalog_more;
 pub mod clip_group_file;
 pub mod cmd;
+pub mod command_plugin;
 pub mod demo;
 mod dirty;
 pub mod edit;
@@ -75,6 +76,10 @@ pub enum EngineError {
     Unsupported(String),
     #[error("internal error in `{0}`: {1}")]
     Internal(String, String),
+    /// A command plug-in's run failed (a trap, an exhausted budget, a refusal it passed on): the
+    /// session is as it was before the run.
+    #[error("{0}")]
+    Plugin(String),
 }
 
 pub type Result<T> = std::result::Result<T, EngineError>;
@@ -210,6 +215,9 @@ pub struct Engine {
     pub last_selection: Option<(soundcraft_time::Range, Vec<TrackId>)>,
     /// Audio decoded off the UI thread, waiting for its `file.import_audio` (see `offer_import`).
     imports: Vec<io::DecodedImport>,
+    /// WebAssembly command plug-ins (RFC-0046), not audio plug-ins: the installed ones, where they
+    /// are kept, their settings and the last run ([`command_plugin`]).
+    pub command_plugins: command_plugin::Runtime,
 }
 
 impl Default for Engine {
@@ -241,6 +249,7 @@ impl Engine {
             messages: Vec::new(),
             last_selection: None,
             imports: Vec::new(),
+            command_plugins: command_plugin::Runtime::default(),
         }
     }
 

@@ -46,6 +46,29 @@ pub fn read_file(path: impl AsRef<Path>) -> Result<Vec<u8>> {
     read_file_within(path.as_ref(), false)
 }
 
+/// [`read_file`] of a file of at most `max` bytes (a command plug-in bundle): a larger one is
+/// refused before it is read, and never more than one byte past `max` is read if it grows.
+pub fn read_file_bounded(path: impl AsRef<Path>, max: u64) -> Result<Vec<u8>> {
+    use std::io::Read as _;
+    let path = path.as_ref();
+    crate::file_access::check_read(path).map_err(EngineError::Io)?;
+    let err = |err: std::io::Error| EngineError::Io(format!("{}: {err}", path.display()));
+    let meta = std::fs::metadata(path).map_err(err)?;
+    if !meta.is_file() {
+        return Err(EngineError::Io(format!("{}: not a regular file", path.display())));
+    }
+    let too_big = || EngineError::Io(format!("{} is larger than {} KB", path.display(), max / 1024));
+    if meta.len() > max {
+        return Err(too_big());
+    }
+    let mut data = Vec::new();
+    std::fs::File::open(path).map_err(err)?.take(max.saturating_add(1)).read_to_end(&mut data).map_err(err)?;
+    if data.len() as u64 > max {
+        return Err(too_big());
+    }
+    Ok(data)
+}
+
 /// [`read_file`]; a `session` file is refused ([`session_size`]) past [`session_limit`].
 fn read_file_within(path: &Path, session: bool) -> Result<Vec<u8>> {
     use std::io::Read as _;
