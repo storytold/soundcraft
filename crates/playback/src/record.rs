@@ -157,7 +157,8 @@ where
     use cpal::traits::DeviceTrait;
     let (sh, errors) = (Arc::clone(shared), Arc::clone(shared));
     let mon = Arc::clone(monitor);
-    let mut scratch = vec![0.0f32; PUSH_FRAMES * usize::from(config.channels).max(1)];
+    let channels = usize::from(config.channels).max(1);
+    let mut scratch = vec![0.0f32; PUSH_FRAMES * channels];
     let chunk = scratch.len();
     let mut owed = 0;
     device.build_input_stream(
@@ -165,6 +166,9 @@ where
         move |data: &[T], _: &cpal::InputCallbackInfo| {
             crate::mark_audio_thread();
             sh.guarded(|| {
+                // The whole delivery, before it is cut to the scratch buffer: the monitor plans
+                // its reserve by what the device delivers at once.
+                mon.delivery(data.len() / channels);
                 for part in data.chunks(chunk) {
                     let Some(s) = scratch.get_mut(..part.len()) else { return };
                     for (o, x) in s.iter_mut().zip(part) {
@@ -656,7 +660,7 @@ pub struct InputRing {
     pub channels: AtomicUsize,
     /// Input device sample rate in Hz (0 when unknown, which reads as "same as the session").
     rate: u32,
-    /// Largest block the input callback delivered (frames).
+    /// Largest delivery of the input device (frames): a callback, whole.
     push_block: AtomicUsize,
     /// Times the input ran dry while being read (each is a gap in what is heard).
     underruns: AtomicUsize,
@@ -720,6 +724,12 @@ impl InputRing {
     /// How often the input ran dry while it was being listened to.
     pub fn underruns(&self) -> usize {
         self.underruns.load(Ordering::Relaxed)
+    }
+
+    /// Input callback: the device delivered `frames` frames at once, which [`InputRing::push`]
+    /// then gets in one piece or in several.
+    pub fn delivery(&self, frames: usize) {
+        self.push_block.fetch_max(frames, Ordering::Relaxed);
     }
 
     /// Input callback: queue interleaved samples. A block that finds the ring full is dropped.
@@ -813,17 +823,20 @@ impl InputRing {
         let demand = ((frames.max(callback) as f64 * pace).ceil() as usize).saturating_add(2);
         let holds = demand.saturating_add(push) <= room;
         let need = if holds { demand } else { demand.min(fits).max(read) };
-        // The ring is sized by the input's callback, not the output's. What is buffered before a
-        // read (the start) or left after one (the reserve) leaves room for the input of one more
-        // output callback and two blocks (one that comes early, one of headroom): a long output
-        // callback would otherwise overflow the ring while it waits to start, drop it all and
-        // wait again, and never be heard.
-        let beside = room.saturating_sub(demand.max(push)).saturating_sub(push.saturating_mul(2));
+        // Input and output come in bursts: the longer of the two callbacks is how far what is
+        // buffered rises and falls, the shorter how far a burst can be early. The ring is sized
+        // by the input's callback as planned for, not by the output's nor by a longer delivery
+        // of the host's choosing: the reserve (what is left at the lowest) leaves room for a
+        // burst above it, twice early. A burst that overflows the ring makes it drop it all;
+        // at every callback, that is never heard.
+        let (burst, early) = (demand.max(push), demand.min(push));
+        let beside = room.saturating_sub(burst).saturating_sub(early.saturating_mul(2));
         let reserve = need.max(push.saturating_add(2)).saturating_add(16).saturating_add(r.extra).min(beside);
         // Reading starts once the input covers this callback and the reserve, or as much of the
-        // two as leaves that room; never less than the callback itself. What it then keeps is
-        // the callback and the whole reserve, when that much is there.
-        let start = need.saturating_add(reserve).min(beside).max(need);
+        // two as leaves room for the burst that comes while it waits; never less than the
+        // callback itself. What it then keeps is the callback and the whole reserve, and the
+        // input block they come with, when that much is there.
+        let start = need.saturating_add(reserve).min(beside.saturating_add(early)).max(need);
         // The input side dropped a block: reading stood still and all of it is old. A ring that
         // is merely full holds fresh input that has not been read yet.
         if overflowed {
@@ -845,7 +858,7 @@ impl InputRing {
                 self.tail.store(tail, Ordering::Release);
                 return;
             }
-            let keep = need.saturating_add(reserve).saturating_add(push).min(need.saturating_add(beside)).min(avail);
+            let keep = need.saturating_add(reserve).saturating_add(push).min(beside.saturating_add(burst)).min(avail);
             tail = head.wrapping_sub(keep * ch);
             avail = keep;
             *r = Reader { primed: true, extra: r.extra, phase: 0.0, low: usize::MAX, window: 0, target: 0, trim: r.drift, drift: r.drift };
@@ -928,8 +941,10 @@ mod ring_tests {
             // Input frames due by the end of this output block.
             let due = (out.len() + pop) as f64 * f64::from(in_rate) / 48_000.0 * (1.0 + drift);
             while pushed + push as f64 <= due {
+                // As the input callback does: the delivery, in pieces of at most 8192 frames.
                 let data: Vec<f32> = (0..push).map(|i| sine(k + i, f64::from(in_rate))).collect();
-                ring.push(&data);
+                ring.delivery(push);
+                data.chunks(8192).for_each(|part| ring.push(part));
                 k += push;
                 pushed += push as f64;
             }
@@ -1018,6 +1033,20 @@ mod ring_tests {
         let ring = InputRing::sized(1, 48_000, 64);
         assert_eq!(ring.slots.len(), 32_768);
         let (out, dry) = run_ring(&ring, 48_000, 64, 16_448, 4.0, 0.0);
+        assert!(out.iter().any(|v| v.abs() > 0.9), "the input is never heard");
+        assert_eq!(dry, 0);
+        assert!(roughness(&out) < 0.14, "{}", roughness(&out));
+    }
+
+    /// A host that picks the buffer size may deliver far more than the largest size Setup
+    /// offers (65 536 frames here), which reaches the ring in pieces of 8192. The reserve is
+    /// planned by the delivery, not by the piece, or the reader runs dry before each delivery.
+    #[test]
+    fn a_delivery_longer_than_the_pieces_it_is_pushed_in_does_not_run_dry() {
+        let ring = InputRing::new(1, 48_000);
+        assert_eq!(ring.slots.len(), 131_072);
+        let (out, dry) = run_ring(&ring, 48_000, 65_536, 64, 12.0, 0.0);
+        assert_eq!(ring.input_block(), 65_536);
         assert!(out.iter().any(|v| v.abs() > 0.9), "the input is never heard");
         assert_eq!(dry, 0);
         assert!(roughness(&out) < 0.14, "{}", roughness(&out));
