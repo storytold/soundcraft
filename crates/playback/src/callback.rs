@@ -286,7 +286,13 @@ impl AudioState {
         let monitoring = self.input.is_some() && self.session.tracks.iter().any(|t| t.mixer.input_monitor || t.mixer.record_arm);
         if !self.playing && !monitoring {
             // Nothing listens. The input read stands still: start it afresh when it resumes, and
-            // drop what is left of the last rendered block, which would be heard first then.
+            // drop what is left of the last rendered block and of the input read so far, which
+            // would be heard first then.
+            if !self.input_paused
+                && let Some(ring) = &self.input
+            {
+                ring.pause();
+            }
             self.input_paused = true;
             self.pending_len = 0;
             self.read = 0.0;

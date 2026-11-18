@@ -749,6 +749,15 @@ impl InputRing {
         self.slots.get(at & self.mask).map_or(0.0, |s| f32::from_bits(s.load(Ordering::Relaxed)))
     }
 
+    /// Output callback: reading stops for a while. Drops what is buffered, so that the input
+    /// from before the pause is not what is heard when reading resumes; the input that arrives
+    /// during the pause is kept.
+    pub fn pause(&self) {
+        // Only the output callback moves `tail`, and this is the output callback.
+        self.tail.store(self.head.load(Ordering::Acquire), Ordering::Release);
+        self.resync();
+    }
+
     /// Start afresh at the newest input the next time it is read (after a pause in reading).
     pub fn resync(&self) {
         if let Ok(mut r) = self.reader.try_lock() {
@@ -785,8 +794,16 @@ impl InputRing {
         // input blocks around them: a callback too long for the ring is then heard as well as
         // the ring allows, where waiting for a start the ring cannot hold is never heard.
         let fits = room.saturating_sub(push.saturating_mul(2)).saturating_sub(r.extra).saturating_sub(64) / 2;
-        let need = ((frames.max(callback) as f64 * ratio).ceil() as usize).saturating_add(2).min(fits).max(read);
-        let reserve = need.max(push + 2).saturating_add(16).saturating_add(r.extra).min(room.saturating_sub(need));
+        let demand = ((frames.max(callback) as f64 * ratio).ceil() as usize).saturating_add(2);
+        let need = demand.min(fits).max(read);
+        let wanted = need.max(push.saturating_add(2)).saturating_add(16).saturating_add(r.extra);
+        // Reading starts once the input covers this callback and the reserve. The ring is sized
+        // by the input's callback, not the output's: the start leaves room for the input of one
+        // more output callback (and a block), or a long output callback would overflow the ring
+        // while it waits, drop it all and wait again, and never be heard. The reserve is what
+        // the start then leaves beyond the callback.
+        let start = need.saturating_add(wanted).min(room.saturating_sub(demand.max(push)).saturating_sub(push)).max(need);
+        let reserve = start.saturating_sub(need);
         // The input side dropped a block: reading stood still and all of it is old. A ring that
         // is merely full holds fresh input that has not been read yet.
         if overflowed {
@@ -795,9 +812,8 @@ impl InputRing {
             r.primed = false;
         }
         if !r.primed {
-            // Wait until the input covers this callback and the reserve, then start from the
-            // newest input (with one more input block when there is one).
-            let start = need.saturating_add(reserve).min(room);
+            // Wait for the start, then read from the newest input (with one more input block
+            // when there is one).
             if avail < start {
                 self.tail.store(tail, Ordering::Release);
                 return;
@@ -940,6 +956,41 @@ mod ring_tests {
         assert_eq!(ring.slots.len(), 32_768);
         let (out, _) = run_ring(&ring, 48_000, 480, 16_384, 4.0, 0.0);
         assert!(out.iter().any(|v| v.abs() > 0.9), "the input is never heard");
+    }
+
+    /// The ring is sized by the input's callback (64 frames: 32 768 slots), and an output
+    /// callback of 12 288 frames asks for a start of two callbacks: with the input of the third
+    /// that is more than the ring holds. The start leaves room for it, and the input is heard.
+    #[test]
+    fn an_output_callback_far_longer_than_the_inputs_is_heard() {
+        let ring = InputRing::sized(1, 48_000, 64);
+        assert_eq!(ring.slots.len(), 32_768);
+        let (out, dry) = run_ring(&ring, 48_000, 64, 12_288, 4.0, 0.0);
+        assert!(out.iter().any(|v| v.abs() > 0.9), "the input is never heard");
+        assert_eq!(dry, 0);
+        assert!(roughness(&out) < 0.14, "{}", roughness(&out));
+    }
+
+    /// Input from before a pause in reading is not heard after it: one new block is not enough
+    /// to start on, and the old input is not used to make up the rest.
+    #[test]
+    fn a_pause_drops_the_input_from_before_it() {
+        let ring = InputRing::new(1, 48_000);
+        let mut out = vec![vec![0.0f32; 64]];
+        for _ in 0..4 {
+            ring.push(&[0.5; 64]);
+        }
+        ring.pop_into(&mut out, 64, 64, 48_000);
+        assert!(out[0].iter().all(|v| *v == 0.5), "the input is heard");
+        ring.pause();
+        ring.push(&[-0.5; 64]);
+        ring.pop_into(&mut out, 64, 64, 48_000);
+        assert!(out[0].iter().all(|v| *v == 0.0), "input from before the pause: {:?}", out[0]);
+        for _ in 0..3 {
+            ring.push(&[-0.5; 64]);
+        }
+        ring.pop_into(&mut out, 64, 64, 48_000);
+        assert!(out[0].iter().all(|v| *v == -0.5), "the input since the pause is heard");
     }
 
     /// A few callbacks shorter than the others, the last of them closing the half-second window,

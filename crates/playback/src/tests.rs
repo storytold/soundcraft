@@ -718,6 +718,48 @@ fn armed_tracks_are_heard_and_metered_after_playback_stops() {
     assert!(shared.meters.lock().unwrap().tracks.get(&t).is_some_and(|m| m.peak[0] > 0.1), "and metered");
 }
 
+/// With 64-frame callbacks a read leaves about 150 frames of input in the ring. When nothing
+/// listens any more they are dropped: one new input block during the pause does not bring them
+/// back as the first thing heard later.
+#[test]
+fn monitoring_that_resumes_does_not_replay_the_input_from_before_the_pause() {
+    use soundcraft_model::{ChannelFormat, TrackKind};
+    let mut armed = soundcraft_model::Session::default();
+    let t = armed.add_track(TrackKind::Audio, ChannelFormat::Mono, None);
+    armed.track_mut(t).unwrap().mixer.record_arm = true;
+    let mut idle = armed.clone();
+    idle.track_mut(t).unwrap().mixer.record_arm = false;
+    let shared = Arc::new(Shared {
+        position: AtomicI64::new(0),
+        playing: AtomicBool::new(false),
+        speed: AtomicU32::new(1000),
+        meters: Mutex::new(MeterSnapshot::default()),
+    });
+    let (tx, rx) = channel();
+    let mut st = AudioState::new(rx, Arc::clone(&shared), Arc::new(armed.clone()), 48_000.0, channel().0);
+    let ring = record::InputRing::new(1, 48_000);
+    tx.send(Cmd::Input(Arc::clone(&ring))).unwrap();
+    let mut out = vec![0.0f32; 2 * 64];
+    for _ in 0..4 {
+        ring.push(&[0.5; 64]);
+    }
+    st.fill(&mut out, 2);
+    assert!(out.iter().any(|x| *x > 0.1), "the input is heard");
+    tx.send(Cmd::Session(Arc::new(idle), Vec::new())).unwrap();
+    st.fill(&mut out, 2);
+    assert!(out.iter().all(|x| *x == 0.0), "nothing listens");
+    // One block of input with the other sign arrives during the pause, then monitoring resumes.
+    ring.push(&[-0.5; 64]);
+    tx.send(Cmd::Session(Arc::new(armed), Vec::new())).unwrap();
+    st.fill(&mut out, 2);
+    assert!(out.iter().all(|x| *x < 0.1), "the input from before the pause is heard again");
+    for _ in 0..4 {
+        ring.push(&[-0.5; 64]);
+        st.fill(&mut out, 2);
+    }
+    assert!(out.iter().all(|x| *x < 0.1) && out.iter().any(|x| *x < -0.1), "the new input is heard");
+}
+
 /// A device callback that ends inside a rendered block leaves the rest of it pending. Once
 /// nothing listens any more, that rest is dropped: it is not the first thing heard later.
 #[test]
