@@ -325,8 +325,9 @@ fn render_instrument(s: &Session, t: &Track, strip: &mut Strip, live: &LiveInput
         if midi_thru(t) {
             strip.live.release_ports(live.midi_lost, inst.plugin.as_mut());
             strip.live.play(t, inst.plugin.as_mut(), live.midi, live.ports, frames);
-        } else if strip.live.active() {
-            strip.live.release(inst.plugin.as_mut());
+        } else if strip.live.touched() && strip.live.release(inst.plugin.as_mut()) {
+            // Live controllers moved the instrument: the next block sets them from the clips.
+            strip.chase = true;
         }
         if strip.buf.len() >= 2 {
             inst.plugin.process(&mut strip.buf, frames);
@@ -429,7 +430,7 @@ pub(crate) fn process_strip(s: &Session, t: &Track, strip: &mut Strip, busses: &
         TrackKind::Audio if live.monitor_only => {}
         // Stopped: only a track that plays live MIDI input sounds (and one that just stopped
         // doing so, to release its notes).
-        TrackKind::Instrument | TrackKind::Midi if live.monitor_only && !midi_thru(t) && !strip.live.active() => {}
+        TrackKind::Instrument | TrackKind::Midi if live.monitor_only && !midi_thru(t) && !strip.live.touched() => {}
         TrackKind::Audio => render_audio_clips(s, t, strip, blk),
         TrackKind::Aux | TrackKind::Folder => read_aux_bus(t, strip, busses, frames),
         TrackKind::Instrument | TrackKind::Midi => render_instrument(s, t, strip, live, blk, &transport),

@@ -37,7 +37,9 @@ Detail: [target-app-parity.md](docs/target-app-parity.md#readiness-by-audience).
 Editing, mixing, bouncing, and saving and reopening work end to end. But a Pro Tools user can't
 record from a chosen audio interface at a chosen buffer size (only the default devices, a fixed
 512-sample block, and takes held in RAM). Recording MIDI from a keyboard is built but checked on
-Linux only. And they can't bring a session in or hand one back (no AAF/OMF/`.ptx`).
+Linux only: macOS and Windows are type-checked and have not been tried with a device, and there
+is no MIDI input on FreeBSD or the web. And they can't bring a session in or hand one back (no
+AAF/OMF/`.ptx`).
 Readiness (~40 %) sits right at the alpha bar, but a gate failure keeps the app pre-alpha. The
 2026-10-07 estimate ("~65 % overall, 110–150 h to 100 %") counted feature presence. This one
 measures readiness and adds hardware, localization and field bug reports.
@@ -103,7 +105,7 @@ Other languages shipped: 0 complete. Brazilian Portuguese covers the fixed UI st
 Ranked; the alpha gate, the alpha checklist and the beta plan are in [docs/roadmap.md](docs/roadmap.md).
 
 1. **Alpha blocker:** audio interfaces: device and buffer-size choice, duplex stream, ASIO; record to disk (G-01, G-06). 35–55 h.
-2. **Alpha blocker:** MIDI devices: keyboard input, live play and recording are in (checked on Linux only); output, clock and loop/merge recording remain (G-02). 12–22 h.
+2. **Alpha blocker:** MIDI devices: keyboard input, live play and recording are in (checked on Linux only; macOS and Windows type-checked, none on FreeBSD or the web); output, clock and loop/merge recording remain (G-02). 12–22 h.
 3. **Alpha blocker:** AAF/OMF import and export (G-03). 50–90 h.
 4. macOS plugin entitlement (#153), then AU editors and embedded CLAP editors on macOS (G-05). 1 h for the entitlement (needed for the mix row), then 10–15 h.
 5. Land the open bug-fix PRs and clear the correctness backlog (G-04). 15–25 h.
@@ -122,7 +124,7 @@ mutated and truncated movies. Field reports from the first public week are track
 
 ## Progress log
 
-- **2026-11-18 (MIDI input):** MIDI input devices: keyboards play record-enabled and input-monitored MIDI and instrument tracks live and are recorded into MIDI clips, with a device and channel choice per track and device switches in Setup › Playback Engine. On Linux, live play was checked with a hardware keyboard (Akai MPK mini 3) and recording with a virtual one; macOS and Windows are type-checked only. No readiness percentage change until that is measured.
+- **2026-11-18 (MIDI input):** MIDI input devices: keyboards play record-enabled and input-monitored MIDI and instrument tracks live and are recorded into MIDI clips, with a device and channel choice per track. The device switches are in the MIDI inputs section of Setup › Playback Engine (Setup › MIDI › MIDI Input Devices opens the same window) and are kept in the app preferences, per computer, not in the session. Controllers, pitch bend and aftertouch reach the instrument live; a pitch held on two devices or channels sounds until both release it; a full input queue releases the notes of its device and marks the take incomplete. On Linux, live play was checked with a hardware keyboard (Akai MPK mini 3) and recording with a virtual one; macOS and Windows are type-checked only, and there is no MIDI input on FreeBSD or the web. Guide: `docs/midi-input.md`. No readiness percentage change until that is measured.
 - **2026-11-08:** Command-click near an existing automation breakpoint keeps that point as the click target with every active tool, and existing fade and clip-gain controls retain their normal priority. Empty automation space shows a crosshair and an insertion hint while Command is held. The active tool's drag gestures stay unchanged. No readiness percentage change.
 - **2026-11-05:** Command-click in an automation lane adds a point at the clicked time and value with the current editing tool (#1394), using the existing Pencil mapping. Command-click preserves the existing selection and also works on the fallback volume lanes of Master, Aux and VCA tracks. Plain clicks and clip contents stay unchanged, and one Undo removes the new point. No readiness percentage change.
 - **2026-10-27 (plugin editors on Linux):** VST3 editors and embedded CLAP editors open in a SoundCraft X11 host window on Linux and the BSDs (XWayland on Wayland desktops), resized on request and closed from its title bar; the host run loop (VST3 `Linux::IRunLoop`, CLAP `timer-support` and `posix-fd-support`) lets X11 editors read their display connection and repaint. Verified with Graillon 3 and Surge XT Effects (JUCE) in both formats (#527). No readiness percentage change.

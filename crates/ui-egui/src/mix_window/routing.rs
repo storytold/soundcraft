@@ -155,3 +155,28 @@ mod tests {
         assert_eq!(input_name(&app, track), "In 1-2");
     }
 }
+
+#[cfg(test)]
+mod midi_input_tests {
+    use super::*;
+
+    #[test]
+    fn a_midi_track_names_its_device_and_channel_on_the_input_selector() {
+        let mut app = SoundApp::new(soundcraft_engine::Engine::default(), None, crate::Services::default());
+        let midi = app.run("track.new", json!({"name": "Synth", "kind": "instrument"})).unwrap()["tracks"][0].as_u64().unwrap();
+        let audio = app.run("track.new", json!({"name": "Vox", "format": "mono"})).unwrap()["tracks"][0].as_u64().unwrap();
+        let shown = |app: &SoundApp, id: u64| input_name(app, app.engine.session().track(TrackId(id)).unwrap());
+        assert_eq!(shown(&app, midi), "All MIDI", "a new MIDI track listens to every device and channel");
+        for (input, text) in [
+            ("MIDI:10:Drum Pad", "Drum Pad ch 10"),
+            ("MIDI:*:Keys", "Keys"),
+            ("MIDI:2:*", "All ch 2"),
+            ("MIDI:99:*", "All MIDI"),
+            ("none", "All MIDI"),
+        ] {
+            app.run("track.input", json!({"tracks": [midi], "input": input})).unwrap();
+            assert_eq!(shown(&app, midi), text, "{input}");
+        }
+        assert_eq!(shown(&app, audio), "In 1", "an audio track still shows its audio input");
+    }
+}

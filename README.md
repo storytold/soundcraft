@@ -129,7 +129,8 @@ where things are.
   load too. Any processor runs offline as AudioSuite, and user presets save per plugin.
 - **MIDI:** instrument and MIDI tracks, a piano-roll MIDI editor with a velocity lane, an event
   list, a score view, step input, quantize, transpose, real-time properties, Standard MIDI Files,
-  and Audio-to-MIDI from a sung or played melody.
+  and Audio-to-MIDI from a sung or played melody. MIDI keyboards play the instruments live and
+  are recorded into MIDI clips ([how](docs/midi-input.md)).
 - **Recording:** punch in on a selection or on the fly, pre/post-roll, loop recording with a
   playlist per take, input monitoring through the full channel strip, and autosave with recovery.
 - **Time and tempo:** Bars|Beats, Min:Secs, Timecode (every rate, drop-frame included),
@@ -176,6 +177,16 @@ On macOS, **⌘←/→** changes the active row's format, **⌘↑/↓** its typ
 and **⌥⌘↑/↓** its timebase. **⇧⌃⌘↓/↑** adds/removes the active row, also with **⌥**;
 **⇧⌘↓/↑** works too. Windows/Linux use **Ctrl** for **⌘**. The active row follows the
 field you click. A new row starts with its count focused and selected; Enter creates and Escape cancels.
+
+### MIDI keyboards
+
+Plug a keyboard in, record-enable an instrument track (its **R** button) and play: the keyboard
+is heard through the track's instrument, and a record pass turns what you play into a MIDI clip.
+**Setup › Playback Engine…** lists the MIDI devices with a switch each (**Setup › MIDI › MIDI
+Input Devices…** opens the same window), and a track's input selector chooses a device and a
+channel. Tried on Linux so far; on macOS and Windows it builds but has not been tried with a
+device, and there is no MIDI input on FreeBSD or the web. The guide is
+[docs/midi-input.md](docs/midi-input.md).
 
 ### Logs
 

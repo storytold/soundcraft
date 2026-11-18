@@ -3,8 +3,13 @@
 //!
 //! The audio host fills [`crate::MixEngine::midi`] before each block. Notes reach the instrument
 //! at their sample offset; the sustain pedal (CC 64) holds note-offs back until it is released.
-//! Other controllers, pitch bend and aftertouch are not played (instruments take notes only);
-//! the host still records them.
+//! Other controllers, pitch bend, aftertouch and program changes go to the instrument as they
+//! are (`Plugin::midi`), without their channel, like the ones in clips. When the track stops
+//! playing live input, the instrument's controllers go back to what the clips say.
+//!
+//! Every byte comes from a device and is not trusted: data bytes are masked to 7 bits, an
+//! offset past the block is pulled into it, and anything that is not a channel message is
+//! ignored.
 //!
 //! # Who holds a note
 //!
@@ -163,6 +168,8 @@ impl Owner {
 #[derive(Debug, Default)]
 pub(crate) struct LiveNotes {
     owners: [Owner; MAX_OWNERS],
+    /// Controllers, pitch bend, aftertouch or a program change were passed to the instrument.
+    controllers: bool,
 }
 
 impl LiveNotes {
@@ -174,6 +181,11 @@ impl LiveNotes {
     /// Whether a live note may still sound, or a pedal is down.
     pub(crate) fn active(&self) -> bool {
         self.owners.iter().any(|o| o.used)
+    }
+
+    /// Whether live input left anything on the instrument: notes, a pedal, or controllers.
+    pub(crate) fn touched(&self) -> bool {
+        self.controllers || self.active()
     }
 
     fn sounding(&self, note: u8) -> bool {
@@ -216,9 +228,11 @@ impl LiveNotes {
         }
     }
 
-    /// Release what live input started, leaving notes from clips alone.
-    pub(crate) fn release(&mut self, inst: &mut dyn Plugin) {
+    /// Release what live input started, leaving notes from clips alone. True when live input
+    /// also moved the instrument's controllers: the caller chases them back to the clips' values.
+    pub(crate) fn release(&mut self, inst: &mut dyn Plugin) -> bool {
         self.drop_owners(inst, 0, |_| true);
+        std::mem::take(&mut self.controllers)
     }
 
     /// Events of the ports in `lost` ([`midi_port_bit`]) were dropped: release what those ports
@@ -288,6 +302,14 @@ impl LiveNotes {
                         let shared = self.owners.get(i).is_some_and(|o| o.shared);
                         self.drop_owners(inst, at, |o| if shared { o.shared } else { o.is(e.port, channel) });
                     }
+                }
+                // Other controllers, aftertouch, program change and pitch bend: passed on.
+                // Channel mode messages (120 and up) are not; the two that matter are above.
+                status @ (0xA0 | 0xB0 | 0xC0 | 0xD0 | 0xE0) if status != 0xB0 || d1 < 120 => {
+                    // Program change and channel pressure have one data byte.
+                    let d2 = if matches!(status, 0xC0 | 0xD0) { 0 } else { d2 };
+                    inst.midi(at, [status, d1, d2]);
+                    self.controllers = true;
                 }
                 _ => {}
             }

@@ -189,8 +189,18 @@ impl MidiFeed {
 
     /// A message arrived from `port` (called on a MIDI system thread). Channel messages go on to
     /// the audio thread; system messages (clock, SysEx, active sensing) are dropped.
+    ///
+    /// The bytes come from a device, real or virtual, and are not trusted: a message that does
+    /// not start with a channel status byte or is shorter than its kind needs is dropped, data
+    /// bytes are masked to 7 bits, and bytes past the message are ignored. Nothing downstream
+    /// (the engine, instruments, the recorded take) sees anything else.
     pub fn receive(&self, port: u8, bytes: &[u8]) {
         let Some(&status) = bytes.first().filter(|s| (0x80..0xF0).contains(*s)) else { return };
+        // Program change and channel pressure have one data byte, the rest two.
+        let needs = if matches!(status & 0xF0, 0xC0 | 0xD0) { 2 } else { 3 };
+        if bytes.len() < needs {
+            return;
+        }
         let data = |i: usize| bytes.get(i).copied().unwrap_or(0) & 0x7F;
         let e = pack(&LiveMidi { offset: 0, port, status, data1: data(1), data2: data(2) });
         {
@@ -305,15 +315,48 @@ pub struct MidiInputs {
     ports: Vec<MidiPort>,
     error: Option<String>,
     backend: backend::Backend,
+    /// A given list of port names stands in for the system's (see [`MidiInputs::with_port_names`]).
+    stand_in: Option<Vec<String>>,
 }
 
 impl MidiInputs {
     /// Connects to every input port except the `disabled` ones.
     pub fn open(disabled: Vec<String>) -> MidiInputs {
-        let mut m =
-            MidiInputs { feed: Arc::new(MidiFeed::default()), disabled, ports: Vec::new(), error: None, backend: backend::Backend::default() };
+        let mut m = MidiInputs {
+            feed: Arc::new(MidiFeed::default()),
+            disabled,
+            ports: Vec::new(),
+            error: None,
+            backend: backend::Backend::default(),
+            stand_in: None,
+        };
         m.rescan();
         m
+    }
+
+    /// Inputs that list `names` as their ports instead of asking the system, for tests and for
+    /// running without MIDI hardware. No device is opened; an enabled port counts as open, and
+    /// messages come in through the feed ([`MidiFeed::receive`]). Switches, rescans and the
+    /// release of a port that goes away work as with real devices.
+    pub fn with_port_names(disabled: Vec<String>, names: Vec<String>) -> MidiInputs {
+        let mut m = MidiInputs {
+            feed: Arc::new(MidiFeed::default()),
+            disabled,
+            ports: Vec::new(),
+            error: None,
+            backend: backend::Backend::default(),
+            stand_in: Some(names),
+        };
+        m.rescan();
+        m
+    }
+
+    /// The devices of [`MidiInputs::with_port_names`] changed (one was plugged in or removed);
+    /// the next [`MidiInputs::rescan`] sees it. Nothing happens on inputs that use the system's.
+    pub fn set_port_names(&mut self, names: Vec<String>) {
+        if let Some(n) = &mut self.stand_in {
+            *n = names;
+        }
     }
 
     /// What the audio engine reads ([`crate::Player::set_midi`]).
@@ -348,7 +391,19 @@ impl MidiInputs {
     /// off. True when the list changed.
     pub fn rescan(&mut self) -> bool {
         let before = std::mem::take(&mut self.ports);
-        match self.backend.sync(&self.disabled, &self.feed) {
+        let found = match &self.stand_in {
+            Some(names) => Ok(names
+                .iter()
+                .map(|name| {
+                    let enabled = !self.disabled.contains(name);
+                    // Give the port its index, as connecting to a device does.
+                    self.feed.ports().assign(name);
+                    MidiPort { name: name.clone(), enabled, open: enabled }
+                })
+                .collect()),
+            None => self.backend.sync(&self.disabled, &self.feed),
+        };
+        match found {
             Ok(ports) => {
                 self.ports = ports;
                 self.error = None;
@@ -361,8 +416,8 @@ impl MidiInputs {
             }
         }
         // A port that is no longer open sends no releases: let go of what it holds.
-        for gone in before.iter().filter(|b| b.open && !self.ports.iter().any(|p| p.open && p.name == b.name)) {
-            self.feed.port_lost(self.feed.ports().assign(&gone.name));
+        for gone in closed_ports(&before, &self.ports) {
+            self.feed.port_lost(self.feed.ports().assign(gone));
         }
         self.feed.set_connected(self.ports.iter().filter(|p| p.open).count());
         before != self.ports
@@ -377,6 +432,12 @@ impl MidiInputs {
         self.backend = backend::Backend::default();
         self.rescan();
     }
+}
+
+/// The names of the ports that were open in `before` and are not open in `after` (unplugged,
+/// switched off, or failed).
+fn closed_ports<'a>(before: &'a [MidiPort], after: &'a [MidiPort]) -> impl Iterator<Item = &'a str> {
+    before.iter().filter(|b| b.open && !after.iter().any(|p| p.open && p.name == b.name)).map(|b| b.name.as_str())
 }
 
 #[cfg(any(test, target_os = "linux", target_os = "macos", target_os = "windows"))]
@@ -555,6 +616,95 @@ mod tests {
         let ev = |port, status, data1, data2| LiveMidi { offset: 0, port, status, data1, data2 };
         assert_eq!(got, [ev(3, 0x90, 60, 100), ev(1, 0xC5, 7, 0), ev(3, 0x80, 60, 0x7F)]);
         assert_eq!(f.activity(), (3, Some(ev(3, 0x80, 60, 0x7F))));
+    }
+
+    #[test]
+    fn malformed_messages_from_a_device_are_dropped_or_masked() {
+        let f = MidiFeed::default();
+        // Too short for their kind, not a status byte, system messages, nothing at all.
+        for bad in
+            [&[0x90][..], &[0x90, 60], &[0xB0, 7], &[0xE0, 1], &[0xC0], &[0xD0], &[60, 100, 0], &[0x7F], &[0xF0, 1, 2, 0xF7], &[0xFF, 0, 0], &[]]
+        {
+            f.receive(0, bad);
+        }
+        assert_eq!((f.activity().0, f.dropped(), f.take_lost()), (0, 0, 0), "none of them counts");
+        // Data bytes above 127 are masked, bytes past the message are ignored, and a short kind
+        // keeps its one data byte.
+        f.receive(0, &[0x9F, 0xFF, 0x80, 0x55, 0x66]);
+        f.receive(0, &[0xC2, 0x85, 0x99]);
+        f.receive(0, &[0xD0, 0x40]);
+        let now = f.clock();
+        let got: Vec<(u8, u8, u8)> = std::iter::from_fn(|| f.next(now)).map(|(_, e)| (e.status, e.data1, e.data2)).collect();
+        assert_eq!(got, [(0x9F, 0x7F, 0x00), (0xC2, 0x05, 0x19), (0xD0, 0x40, 0x00)]);
+    }
+
+    #[test]
+    fn ports_that_close_are_told_apart_from_ports_that_stay_or_were_never_open() {
+        let port = |name: &str, enabled, open| MidiPort { name: name.to_string(), enabled, open };
+        let before = [port("Keys", true, true), port("Pad", true, true), port("Off", false, false), port("Stays", true, true)];
+        // Keys is unplugged, Pad is switched off, a new one arrives.
+        let after = [port("Pad", false, false), port("Off", false, false), port("Stays", true, true), port("New", true, true)];
+        assert_eq!(closed_ports(&before, &after).collect::<Vec<_>>(), ["Keys", "Pad"]);
+        assert_eq!(closed_ports(&before, &[]).count(), 3, "the MIDI service failed: every open port is gone");
+        assert_eq!(closed_ports(&[], &after).count(), 0);
+    }
+
+    /// End to end with the system's MIDI service: a virtual device shows up in the port list, what
+    /// it sends arrives, and when it goes away its port is closed and marked as having lost input.
+    /// Skipped where there is no MIDI service (a CI machine without the ALSA sequencer).
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[test]
+    fn a_virtual_device_is_found_heard_and_followed_when_it_goes_away() {
+        use midir::os::unix::VirtualOutput;
+        use std::time::{Duration, Instant};
+        let name = format!("soundcraft-test-{}", std::process::id());
+        let device = midir::MidiOutput::new("SoundCraft test device").ok().and_then(|o| o.create_virtual(&name).ok());
+        let Some(mut device) = device else {
+            eprintln!("skipped: this machine has no MIDI service to make a virtual device with");
+            return;
+        };
+        let until = |what: &mut dyn FnMut() -> bool| {
+            let start = Instant::now();
+            while !what() {
+                if start.elapsed() > Duration::from_secs(5) {
+                    return false;
+                }
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            true
+        };
+        let mut inputs = MidiInputs::open(Vec::new());
+        assert_eq!(inputs.error(), None);
+        let found = |inputs: &MidiInputs| inputs.ports().iter().find(|p| p.name.contains(&name)).cloned();
+        assert!(until(&mut || inputs.rescan() || found(&inputs).is_some()), "the device is listed");
+        let port = found(&inputs).unwrap();
+        assert!(port.enabled && port.open, "{port:?}");
+        assert!(inputs.feed().connected() >= 1);
+        let index = inputs.feed().ports().assign(&port.name);
+        // What it sends arrives, tagged with its port; a system message does not.
+        let feed = Arc::clone(inputs.feed());
+        let before = feed.activity().0;
+        device.send(&[0xF8]).unwrap();
+        device.send(&[0x92, 60, 100]).unwrap();
+        assert!(until(&mut || feed.activity().0 > before), "the note arrives");
+        let last = feed.activity().1.unwrap();
+        assert_eq!((last.port, last.status, last.data1, last.data2), (index, 0x92, 60, 100));
+        // Switched off: closed, and what it held is to be released. On again: open.
+        feed.take_lost();
+        inputs.set_enabled(&port.name, false);
+        assert_eq!(found(&inputs).map(|p| (p.enabled, p.open)), Some((false, false)));
+        assert_ne!(feed.take_lost() & midi_port_bit(index), 0);
+        assert_eq!(inputs.disabled(), std::slice::from_ref(&port.name));
+        inputs.set_enabled(&port.name, true);
+        assert_eq!(found(&inputs).map(|p| (p.enabled, p.open)), Some((true, true)));
+        // Unplugged: it leaves the list on a rescan, and its port is marked.
+        feed.take_lost();
+        drop(device);
+        assert!(until(&mut || {
+            inputs.rescan();
+            found(&inputs).is_none()
+        }));
+        assert_ne!(feed.take_lost() & midi_port_bit(index), 0, "a device that goes away lets go of its notes");
     }
 
     #[test]

@@ -67,12 +67,16 @@ When you close a gap, delete its entry (or shrink it) in the same PR, and bump t
 
 - **Done (2026-10-12):** MIDI input devices (`crates/playback/src/midi.rs`, `midir`): keyboards
   play record-enabled and input-monitored MIDI and instrument tracks live and are recorded into
-  MIDI clips, with a device and channel choice per track. On Linux, live play was checked with a hardware keyboard (Akai MPK mini 3) and recording with a virtual one;
+  MIDI clips, with a device and channel choice per track. Controllers, pitch bend, aftertouch
+  and program changes reach the instrument live. Notes are kept per device and channel, and a
+  full input queue releases the notes of its device and marks the take incomplete. The device
+  switches (Setup › Playback Engine, also opened by Setup › MIDI › MIDI Input Devices) are app
+  preferences. User guide: [midi-input.md](midi-input.md). On Linux, live play was checked with
+  a hardware keyboard (Akai MPK mini 3) and recording with a virtual one;
   **not yet on macOS or Windows** (type-checked only).
 - **Missing:** MIDI output (external synths, MIDI tracks without an instrument), MIDI clock/MTC
   out, loop and merge recording (a MIDI take replaces what it covers; a loop pass piles every
-  pass into one clip), controllers and pitch bend reaching instruments live (the plugin API takes
-  notes only; they are recorded), audition from the MIDI editor (`midi_editor.rs:288`), MIDI
+  pass into one clip), audition from the MIDI editor (`midi_editor.rs:288`), MIDI
   input on FreeBSD and the web. `setup.midi_input_devices` and `setup.midi_studio` still only
   store names in the session; the real device switches are app preferences.
 - **Impact:** you can play and record a keyboard, not drive hardware synths or sync other gear.

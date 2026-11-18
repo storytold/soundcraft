@@ -1700,3 +1700,153 @@ fn a_port_that_lost_events_lets_go_of_its_held_key_and_pedal() {
     assert!(live_peak(&mut eng, &s, &[(0x90, 60, 100)], 8) > 0.01);
     assert!(live_peak(&mut eng, &s, &[(0x80, 60, 0)], 400) < 1e-4);
 }
+
+/// A record-enabled instrument track whose instrument writes down the MIDI messages it gets.
+fn ears_session() -> (Session, TrackId, MixEngine, Arc<std::sync::Mutex<Vec<(usize, [u8; 3])>>>) {
+    let mut s = Session::default();
+    let t = s.add_track(TrackKind::Instrument, ChannelFormat::Stereo, None);
+    let tr = s.track_mut(t).unwrap();
+    tr.instrument = Some(Insert::new("clap:test.ears"));
+    tr.mixer.record_arm = true;
+    let heard = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let ears = Ears { inner: soundcraft_dsp::create("gain").unwrap(), heard: Arc::clone(&heard) };
+    let mut eng = MixEngine::new(48_000.0, 512);
+    eng.set_external_instances(true);
+    eng.adopt(vec![PreparedInstance { track: t, slot: INSTRUMENT_SLOT, id: "clap:test.ears".into(), ch: 2, plugin: Box::new(ears) }]);
+    (s, t, eng, heard)
+}
+
+#[test]
+fn live_controllers_bend_aftertouch_and_program_reach_the_instrument_at_their_offsets() {
+    let (mut s, t, mut eng, heard) = ears_session();
+    let ev = |offset, status, data1, data2| LiveMidi { offset, port: 0, status, data1, data2 };
+    eng.midi.extend([
+        ev(10, 0xB3, 1, 90),       // mod wheel on channel 4: the channel is dropped
+        ev(200, 0xE0, 0x7F, 0x7F), // pitch bend, full up
+        ev(300, 0xD0, 55, 99),     // channel pressure: one data byte
+        ev(301, 0xA0, 60, 70),     // poly pressure
+        ev(400, 0xC1, 0xFF, 0xFF), // program change; a data byte above 127 is masked
+        ev(410, 0xB0, 64, 127),    // sustain: handled by the host, not passed on
+        ev(420, 0xB0, 123, 0),     // all notes off: handled by the host
+        ev(430, 0xB0, 126, 0),     // another channel mode message: not passed on
+        ev(440, 0xF8, 0, 0),       // not a channel message
+        ev(9_999, 0xB0, 7, 100),   // an offset past the block lands on its last sample
+    ]);
+    render_block(&mut eng, &s, 0);
+    let want = vec![
+        (0, [0xB0, 121, 0]), // the first block's controller reset
+        (10, [0xB0, 1, 90]),
+        (200, [0xE0, 0x7F, 0x7F]),
+        (300, [0xD0, 55, 0]),
+        (301, [0xA0, 60, 70]),
+        (400, [0xC0, 0x7F, 0]),
+        (511, [0xB0, 7, 100]),
+    ];
+    assert_eq!(std::mem::take(&mut *heard.lock().unwrap()), want);
+    // Out of record: the controllers go back to what the clips say (a reset; there are none).
+    eng.midi.clear();
+    s.track_mut(t).unwrap().mixer.record_arm = false;
+    render_block(&mut eng, &s, 512);
+    assert!(heard.lock().unwrap().is_empty());
+    render_block(&mut eng, &s, 1024);
+    assert_eq!(std::mem::take(&mut *heard.lock().unwrap()), vec![(0, [0xB0, 121, 0])]);
+    render_block(&mut eng, &s, 1536);
+    assert!(heard.lock().unwrap().is_empty(), "once");
+}
+
+/// One playing block at `pos` with `events`; the left channel.
+fn live_block(eng: &mut MixEngine, s: &Session, pos: i64, events: &[(u32, u8, u8, u8)]) -> Vec<f32> {
+    let mut out = vec![vec![0.0f32; 512]; 2];
+    eng.monitor_only = false;
+    eng.midi.clear();
+    eng.midi.extend(events.iter().map(|&(offset, status, data1, data2)| LiveMidi { offset, port: 0, status, data1, data2 }));
+    eng.render(s, pos, 512, &mut out);
+    eng.midi.clear();
+    out.swap_remove(0)
+}
+
+/// A record-enabled synth track with no clips.
+fn live_synth_session() -> Session {
+    let mut s = synth_session(-6.0);
+    s.tracks[0].playlist_mut().unwrap().clips.clear();
+    s.tracks[0].mixer.record_arm = true;
+    s
+}
+
+#[test]
+fn several_live_events_in_one_block_play_in_order_at_their_offsets() {
+    let s = live_synth_session();
+    let mut eng = MixEngine::new(48_000.0, 512);
+    // The note starts at its offset, not at the start of the block.
+    let out = live_block(&mut eng, &s, 0, &[(300, 0x90, 60, 100)]);
+    assert!(out[..300].iter().all(|x| *x == 0.0), "silent before the key goes down");
+    assert!(peak(&out[300..]) > 0.001);
+    // On and off in one block: the note ends. The tail is over well within a second.
+    let mut eng = MixEngine::new(48_000.0, 512);
+    live_block(&mut eng, &s, 0, &[(100, 0x90, 60, 100), (400, 0x80, 60, 0)]);
+    let tail = (1..100).map(|b| peak(&live_block(&mut eng, &s, b * 512, &[]))).last().unwrap();
+    assert!(tail < 1e-4, "{tail}");
+    // A release that comes before the key goes down does not end the note that follows.
+    let mut eng = MixEngine::new(48_000.0, 512);
+    live_block(&mut eng, &s, 0, &[(100, 0x80, 60, 0), (400, 0x90, 60, 100)]);
+    let held = (1..100).map(|b| peak(&live_block(&mut eng, &s, b * 512, &[]))).last().unwrap();
+    assert!(held > 0.01, "{held}");
+    // An offset past the block still plays, in this block.
+    let mut eng = MixEngine::new(48_000.0, 512);
+    live_block(&mut eng, &s, 0, &[(u32::MAX, 0x90, 60, 100)]);
+    assert!(peak(&live_block(&mut eng, &s, 512, &[])) > 0.001);
+}
+
+#[test]
+fn a_seek_and_a_stop_silence_live_notes() {
+    let s = live_synth_session();
+    let quiet_after = |then: &dyn Fn(&mut MixEngine) -> i64| {
+        let mut eng = MixEngine::new(48_000.0, 512);
+        live_block(&mut eng, &s, 0, &[(0, 0xB0, 64, 127), (0, 0x90, 60, 100)]);
+        assert!(peak(&live_block(&mut eng, &s, 512, &[])) > 0.01);
+        let pos = then(&mut eng);
+        (0..100).map(|b| peak(&live_block(&mut eng, &s, pos + b * 512, &[]))).last().unwrap()
+    };
+    // Playing on: the key and the pedal keep the note.
+    assert!(quiet_after(&|_| 1024) > 0.01);
+    // A seek (the next block is somewhere else) and a transport reset end it, pedal or not.
+    assert!(quiet_after(&|_| 480_000) < 1e-4, "seek");
+    assert!(
+        quiet_after(&|eng| {
+            eng.reset();
+            1024
+        }) < 1e-4,
+        "stop"
+    );
+}
+
+#[test]
+fn muted_inactive_and_solo_shaded_tracks_do_not_sound_live_input() {
+    let level = |change: &dyn Fn(&mut Session)| {
+        let mut s = live_synth_session();
+        change(&mut s);
+        let mut eng = MixEngine::new(48_000.0, 512);
+        live_block(&mut eng, &s, 0, &[(0, 0x90, 60, 100)]);
+        peak(&live_block(&mut eng, &s, 512, &[]))
+    };
+    assert!(level(&|_| {}) > 0.01);
+    assert_eq!(level(&|s| s.tracks[0].mixer.mute = true), 0.0, "muted");
+    assert_eq!(level(&|s| s.tracks[0].inactive = true), 0.0, "inactive");
+    assert_eq!(
+        level(&|s| {
+            let other = s.add_track(TrackKind::Audio, ChannelFormat::Mono, None);
+            s.track_mut(other).unwrap().mixer.solo = true;
+        }),
+        0.0,
+        "another track is soloed"
+    );
+    // A track taken out of record with a key down and put back has no note left over.
+    let mut s = live_synth_session();
+    let mut eng = MixEngine::new(48_000.0, 512);
+    live_block(&mut eng, &s, 0, &[(0, 0x90, 60, 100)]);
+    s.tracks[0].mixer.record_arm = false;
+    live_block(&mut eng, &s, 512, &[]);
+    s.tracks[0].mixer.record_arm = true;
+    let tail = (2..100).map(|b| peak(&live_block(&mut eng, &s, b * 512, &[]))).last().unwrap();
+    assert!(tail < 1e-4, "{tail}");
+}

@@ -251,4 +251,166 @@ mod tests {
         let notes: Vec<(u8, i64, i64)> = sequence(&e, all, range).notes.iter().map(|n| (n.pitch, n.start, n.length)).collect();
         assert_eq!(notes, [(60, 0, 960), (60, 480, 1440), (64, 960, 480), (67, 2400, 480)]);
     }
+    /// `(channel, pitch, start, length, velocity, release velocity)` of every note.
+    fn notes_of(seq: &Sequence) -> Vec<(u8, u8, i64, i64, u8, u8)> {
+        seq.notes.iter().map(|n| (n.channel, n.pitch, n.start, n.length, n.velocity, n.release_velocity)).collect()
+    }
+
+    #[test]
+    fn note_edge_cases_make_the_notes_a_player_would_expect() {
+        // 120 bpm at 48 kHz: a quarter note is 24 000 samples and 960 ticks.
+        let s = Session::default();
+        let range = Range::new(0, 96_000);
+        let q = 24_000;
+        let cases: [(&str, Vec<MidiTakeEvent>, Vec<(u8, u8, i64, i64, u8, u8)>); 7] = [
+            (
+                "the same key again without a release: the first note ends where the second starts",
+                vec![ev(0, 0, 0x90, 60, 100), ev(q, 0, 0x90, 60, 90), ev(2 * q, 0, 0x80, 60, 0)],
+                vec![(0, 60, 0, 960, 100, 64), (0, 60, 960, 960, 90, 0)],
+            ),
+            ("a note-on with velocity 0 is a release", vec![ev(0, 0, 0x90, 60, 100), ev(q, 0, 0x90, 60, 0)], vec![(0, 60, 0, 960, 100, 64)]),
+            ("a note-off keeps its release velocity", vec![ev(0, 0, 0x90, 60, 100), ev(q, 0, 0x80, 60, 30)], vec![(0, 60, 0, 960, 100, 30)]),
+            (
+                "data bytes above 127 are masked",
+                vec![ev(0, 0, 0x91, 0x80 | 60, 0x80 | 100), ev(q, 0, 0x81, 0x80 | 60, 0xFF)],
+                vec![(1, 60, 0, 960, 100, 127)],
+            ),
+            ("a key still down at the end of the pass ends there", vec![ev(q, 0, 0x90, 60, 100)], vec![(0, 60, 960, 2880, 100, 64)]),
+            ("a release without a key down is nothing", vec![ev(q, 0, 0x80, 60, 0), ev(q, 0, 0x90, 61, 0)], vec![]),
+            (
+                "a note on and off at the same sample is one tick long, not empty",
+                vec![ev(q, 0, 0x90, 60, 100), ev(q, 0, 0x80, 60, 0)],
+                vec![(0, 60, 960, 1, 100, 0)],
+            ),
+        ];
+        for (what, events, want) in cases {
+            let seq = midi_take_sequence(&s, &MidiInput::default(), range, &events, &[]);
+            assert_eq!(notes_of(&seq), want, "{what}");
+            assert!(seq.notes.iter().all(|n| n.length > 0 && n.pitch < 128 && n.velocity < 128 && n.channel < 16), "{what}");
+        }
+        // Controller data is masked too: a pitch bend of two 0xFF bytes is full up, not more.
+        let seq = midi_take_sequence(&s, &MidiInput::default(), range, &[ev(0, 0, 0xE0, 0xFF, 0xFF), ev(0, 0, 0xB0, 0x87, 0xFF)], &[]);
+        assert_eq!(seq.ctrls.iter().map(|c| (c.kind, c.value)).collect::<Vec<_>>(), [(CtrlKind::PitchBend, 8191), (CtrlKind::Cc(7), 127)]);
+    }
+
+    #[test]
+    fn notes_keep_their_musical_place_at_any_tempo_and_sample_rate() {
+        for (hz, bpm) in [(44_100u32, 120.0), (48_000, 90.0), (96_000, 60.0), (192_000, 174.5)] {
+            let mut s = Session::new("t", soundcraft_time::SampleRate::new(hz).unwrap());
+            s.tempo.set_tempo(0, bpm).unwrap();
+            // The pass starts one quarter note in and lasts four.
+            let q = (f64::from(hz) * 60.0 / bpm).round() as i64;
+            let range = Range::new(q, 5 * q);
+            let events = [
+                ev(2 * q, 0, 0x90, 60, 100), // held to the end of the pass
+                ev(3 * q, 0, 0x90, 64, 100),
+                ev(4 * q, 0, 0x80, 64, 0),
+            ];
+            let seq = midi_take_sequence(&s, &MidiInput::default(), range, &events, &[]);
+            let near = |got: i64, want: i64| (got - want).abs() <= 1;
+            let n = notes_of(&seq);
+            assert_eq!(n.len(), 2, "{hz} Hz, {bpm} bpm");
+            assert!(near(n[0].2, 960) && near(n[0].3, 2880), "{hz} Hz, {bpm} bpm: the held note ends with the pass: {n:?}");
+            assert!(near(n[1].2, 1920) && near(n[1].3, 960), "{hz} Hz, {bpm} bpm: {n:?}");
+        }
+    }
+
+    #[test]
+    fn each_input_filter_kind_keeps_its_own_messages_out_of_the_take() {
+        let events = [
+            ev(100, 0, 0x90, 60, 100),
+            ev(200, 0, 0x80, 60, 0),
+            ev(300, 0, 0xA0, 60, 50),
+            ev(400, 0, 0xB0, 1, 60),
+            ev(500, 0, 0xC0, 5, 0),
+            ev(600, 0, 0xD0, 70, 0),
+            ev(700, 0, 0xE0, 0, 80),
+        ];
+        let range = Range::new(0, 48_000);
+        // What is left of (notes, poly pressure, controllers, programs, channel pressure, bends).
+        let kept = |filter: &[&str]| {
+            let mut e = Engine::default();
+            let t = armed(&mut e, "Keys", "none");
+            e.execute("setup.midi_input_filter", &json!({"filter": filter})).unwrap();
+            if add_midi_recording(&mut e, range, &events, &[], false).clips.is_empty() {
+                return [0; 6];
+            }
+            let seq = sequence(&e, t, range);
+            let ctrls = |f: &dyn Fn(&CtrlKind) -> bool| seq.ctrls.iter().filter(|c| f(&c.kind)).count();
+            [
+                seq.notes.len(),
+                ctrls(&|k| matches!(k, CtrlKind::PolyPressure(_))),
+                ctrls(&|k| matches!(k, CtrlKind::Cc(_))),
+                ctrls(&|k| matches!(k, CtrlKind::Program)),
+                ctrls(&|k| matches!(k, CtrlKind::ChannelPressure)),
+                ctrls(&|k| matches!(k, CtrlKind::PitchBend)),
+            ]
+        };
+        assert_eq!(kept(&[]), [1; 6]);
+        for (i, kind) in ["notes", "poly_aftertouch", "cc", "program", "mono_aftertouch", "pitch_bend"].into_iter().enumerate() {
+            let mut want = [1; 6];
+            want[i] = 0;
+            assert_eq!(kept(&[kind]), want, "{kind}");
+        }
+        assert_eq!(kept(&["notes", "poly_aftertouch", "cc", "program", "mono_aftertouch", "pitch_bend"]), [0; 6], "nothing left: no clip");
+        assert_eq!(kept(&["sysex", "realtime"]), [1; 6], "kinds that never reach a take change nothing");
+    }
+
+    #[test]
+    fn midi_clips_join_the_undo_step_of_the_audio_takes_of_the_same_pass() {
+        let mut e = Engine::default();
+        let t = armed(&mut e, "Keys", "none");
+        let range = Range::new(0, 48_000);
+        let events = [ev(100, 0, 0x90, 60, 100), ev(200, 0, 0x80, 60, 0)];
+        let clips = |e: &Engine| e.session().track(t).unwrap().clips().len();
+        // On its own the take is one undo step called Record.
+        let before = e.undo_label().map(str::to_string);
+        assert_eq!(add_midi_recording(&mut e, range, &events, &[], false).clips.len(), 1);
+        assert_eq!(e.undo_label(), Some("Record"));
+        e.run("edit.undo").unwrap();
+        assert_eq!((clips(&e), e.undo_label().map(str::to_string)), (0, before.clone()));
+        // With audio takes of the same pass, it adds no step of its own: theirs covers it.
+        assert_eq!(add_midi_recording(&mut e, range, &events, &[], true).clips.len(), 1);
+        assert_eq!((clips(&e), e.undo_label().map(str::to_string)), (1, before));
+        // A take that makes no clip makes no step either.
+        let mut e = Engine::default();
+        armed(&mut e, "Keys", "MIDI:*:Nothing");
+        let before = e.undo_label().map(str::to_string);
+        assert!(add_midi_recording(&mut e, range, &events, &["Keys".to_string()], false).clips.is_empty());
+        assert_eq!(e.undo_label().map(str::to_string), before);
+    }
+
+    #[test]
+    fn a_device_index_without_a_name_reaches_only_tracks_that_take_every_device() {
+        let mut e = Engine::default();
+        let all = armed(&mut e, "All", "none");
+        let keys = armed(&mut e, "Keys", "MIDI:*:Keys");
+        let channel = armed(&mut e, "Ch 3", "MIDI:3:*");
+        let range = Range::new(0, 48_000);
+        // Device 200 is past the name list; `u8::MAX` is a port that never got an index.
+        let events = [ev(100, 200, 0x92, 60, 100), ev(200, 200, 0x82, 60, 0), ev(300, u8::MAX, 0x90, 62, 100), ev(400, u8::MAX, 0x80, 62, 0)];
+        let take = add_midi_recording(&mut e, range, &events, &["Keys".to_string()], false);
+        assert_eq!(take.clips.len(), 2);
+        assert_eq!(notes_of(&sequence(&e, all, range)).len(), 2);
+        assert_eq!(notes_of(&sequence(&e, channel, range)).iter().map(|n| n.1).collect::<Vec<_>>(), [60], "its channel, any device");
+        assert!(e.session().track(keys).unwrap().clips().is_empty(), "not the named device");
+    }
+
+    #[test]
+    fn events_past_the_limit_are_left_out_and_the_take_is_reported_incomplete() {
+        let mut e = Engine::default();
+        let t = armed(&mut e, "Keys", "none");
+        let range = Range::new(0, 48_000);
+        // The limit's worth of events from before the pass, then two notes: one inside the limit…
+        let mut events = vec![ev(-1, 0, 0xB0, 1, 0); MAX_MIDI_TAKE_EVENTS - 2];
+        events.extend([ev(100, 0, 0x90, 60, 100), ev(200, 0, 0x80, 60, 0)]);
+        let take = add_midi_recording(&mut e, range, &events, &[], false);
+        assert_eq!((take.clips.len(), take.gaps), (1, 0), "exactly the limit is complete");
+        e.run("edit.undo").unwrap();
+        // …and one past it.
+        events.extend([ev(300, 0, 0x90, 72, 100), ev(400, 0, 0x80, 72, 0)]);
+        let take = add_midi_recording(&mut e, range, &events, &[], false);
+        assert_eq!((take.clips.len(), take.gaps), (1, 1), "the cut is reported");
+        assert_eq!(notes_of(&sequence(&e, t, range)).iter().map(|n| n.1).collect::<Vec<_>>(), [60]);
+    }
 }

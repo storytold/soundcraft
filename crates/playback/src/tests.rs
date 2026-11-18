@@ -861,3 +861,38 @@ fn lost_midi_input_is_written_into_the_take() {
     assert!(!rec.iter().any(|e| e.status == 0x80), "its note-off was among the dropped events");
     assert!(feed.dropped() > 0);
 }
+
+#[test]
+fn live_midi_keeps_its_order_and_its_time_at_another_device_rate() {
+    // The device runs at 96 kHz, the session at 48 kHz: a callback of 1024 device frames is 512
+    // session frames, and that is the delay every event gets.
+    let (_, tx, feed, s, _) = keyboard_session();
+    let shared = Arc::new(Shared {
+        position: AtomicI64::new(0),
+        playing: AtomicBool::new(false),
+        speed: AtomicU32::new(1000),
+        meters: Mutex::new(MeterSnapshot::default()),
+    });
+    let (tx2, rx) = channel();
+    drop(tx);
+    let mut st = AudioState::new(rx, shared, Arc::new(s), 96_000.0, channel().0);
+    tx2.send(Cmd::Midi(Arc::clone(&feed))).unwrap();
+    tx2.send(Cmd::Recording(true)).unwrap();
+    tx2.send(Cmd::Play { from: 10_000, end: None, looped: None }).unwrap();
+    let mut out = vec![0.0f32; 2048];
+    st.fill(&mut out, 2);
+    for note in [60, 62, 64, 65] {
+        feed.receive(0, &[0x90, note, 100]);
+    }
+    for _ in 0..3 {
+        st.fill(&mut out, 2);
+    }
+    let mut rec = Vec::new();
+    feed.take_recorded(&mut rec);
+    assert_eq!(rec.iter().map(|e| e.data1).collect::<Vec<_>>(), [60, 62, 64, 65], "in the order they arrived");
+    assert!(rec.windows(2).all(|w| w[0].at <= w[1].at), "and in time order: {rec:?}");
+    // They arrived just before the second callback, which starts at 10 000 + 512.
+    for e in &rec {
+        assert!((10_000 + 512 - 64..=10_000 + 512).contains(&e.at), "{}", e.at);
+    }
+}
