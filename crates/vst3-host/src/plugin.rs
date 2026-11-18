@@ -44,10 +44,12 @@ pub struct Vst3Plugin {
     batch: Vec<(u32, f64)>,
     /// Parameters `set_param` has written (same order as `ids`).
     host_set: Vec<bool>,
-    /// Waiting values a later controller point for the same parameter supersedes (same order as
-    /// `ids`). One is retired once the sub-block holding that point is processed, not when the
-    /// point arrives: until then it still applies before the point, and `reset` drops the point.
-    stale: Vec<bool>,
+    /// For each waiting value a later controller point for the same parameter supersedes, the
+    /// time of the earliest such point (same order as `ids`). The value is retired once the
+    /// sub-block holding that point is processed, not when the point arrives: until then it still
+    /// applies before the point, and `reset` drops the point. Points older than the value never
+    /// retire it.
+    stale: Vec<Option<u32>>,
     /// Host-set normalized values the controller has not seen yet (same order as `ids`; the bits
     /// of an `f64`, or [`SYNCED`]). `set_param` may run on the audio thread, so it never calls the
     /// controller; the state reader, which already does, hands them over first.
@@ -107,7 +109,7 @@ impl Vst3Plugin {
             queued_count: 0,
             batch: Vec::with_capacity(PARAM_QUEUE_CAP),
             host_set: vec![false; ids.len()],
-            stale: vec![false; ids.len()],
+            stale: vec![None; ids.len()],
             unsynced: ids.iter().map(|_| AtomicU64::new(SYNCED)).collect(),
             notes: Vec::with_capacity(EVENT_CAP),
             midi_map: Vec::new(),
@@ -192,7 +194,7 @@ impl Vst3Plugin {
     /// is newer than any controller point already received.
     fn queue(&mut self, i: usize, n: f64) {
         if let Some(s) = self.stale.get_mut(i) {
-            *s = false;
+            *s = None;
         }
         if let Some(q) = self.queued.get_mut(i)
             && q.replace(n).is_none()
@@ -205,7 +207,7 @@ impl Vst3Plugin {
         if self.queued_count > 0 {
             self.queued.fill(None);
             self.queued_count = 0;
-            self.stale.fill(false);
+            self.stale.fill(None);
         }
     }
 
@@ -216,7 +218,8 @@ impl Vst3Plugin {
             if c.0 < end
                 && let Some(i) = *i
                 && let Some(s) = self.stale.get_mut(i)
-                && std::mem::take(s)
+                && s.is_some_and(|t| t < end)
+                && s.take().is_some()
                 && self.queued.get_mut(i).and_then(Option::take).is_some()
             {
                 self.queued_count -= 1;
@@ -229,7 +232,7 @@ impl Vst3Plugin {
         self.control_index.clear();
         // A dropped point supersedes nothing: the values it would have retired stay queued.
         if self.queued_count > 0 {
-            self.stale.fill(false);
+            self.stale.fill(None);
         }
     }
 
@@ -521,7 +524,7 @@ impl Plugin for Vst3Plugin {
                 && self.queued.get(i).is_some_and(Option::is_some)
                 && let Some(s) = self.stale.get_mut(i)
             {
-                *s = true;
+                *s = Some(s.map_or(time, |t| t.min(time)));
             }
         }
     }

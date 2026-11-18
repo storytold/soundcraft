@@ -277,6 +277,24 @@ fn a_waiting_value_still_applies_before_a_later_controller_point() {
     assert!((io[0][127] - 32.0 / 127.0).abs() < 1e-6, "the controller did not win: {}", io[0][127]);
 }
 
+/// A controller point older than a waiting value does not retire it: only the later point that
+/// supersedes it does, once its own sub-block is processed.
+#[test]
+fn an_older_controller_point_does_not_retire_a_value_a_later_one_supersedes() {
+    let id = id_of("Fixture Many Params");
+    let mut p = soundcraft_vst3_host::create(&id).unwrap();
+    p.prepare(48_000.0, 64, 2);
+    // Right after prepare the resend fills the first sub-block, so parameter 1499 waits.
+    p.midi(0, [0xB0, 5, 32]);
+    assert!(p.set_param("1499", 1.0));
+    p.midi(164, [0xB0, 5, 64]);
+    let mut io = vec![vec![0.0f32; 192], vec![0.0f32; 192]];
+    p.process(&mut io, 192);
+    assert!((io[0][63] - 32.0 / 127.0).abs() < 1e-6, "the first controller point: {}", io[0][63]);
+    assert!((io[0][127] - 1.0).abs() < 1e-6, "the host's value was retired by an older point: {}", io[0][127]);
+    assert!((io[0][191] - 64.0 / 127.0).abs() < 1e-6, "the later controller did not win: {}", io[0][191]);
+}
+
 /// `reset` drops controller points that were never processed, so a value they would have
 /// superseded is still the one to send.
 #[test]
