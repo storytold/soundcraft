@@ -179,6 +179,10 @@ impl AudioState {
                     self.playing = false;
                     self.end = None;
                     self.looped = None;
+                    // Drop unread playback audio: monitor-only rendering keeps the output
+                    // alive now, so leftovers in `pending` would play out after stopping.
+                    self.pending_len = 0;
+                    self.read = 0.0;
                     self.mix.reset();
                 }
                 Cmd::Locate(at) => {
@@ -287,7 +291,7 @@ impl AudioState {
     pub(crate) fn fill(&mut self, out: &mut [f32], channels: usize) {
         self.drain();
         let channels = channels.max(1);
-        let monitoring = self.input.is_some() && self.session.tracks.iter().any(|t| t.mixer.input_monitor || t.mixer.record_arm);
+        let monitoring = audible_while_stopped(&self.session, self.input.is_some());
         if !self.playing && !monitoring {
             out.iter_mut().for_each(|x| *x = 0.0);
             self.unsent.silence();
@@ -327,6 +331,16 @@ impl AudioState {
             self.read += step;
         }
     }
+}
+
+/// While stopped the callback stays silent unless something listens live: an audio input
+/// (armed or input-monitored track, with an input device present) or a hosted instrument,
+/// which keeps processing so its own keyboard and editor respond (#1600).
+pub(crate) fn audible_while_stopped(s: &Session, input_present: bool) -> bool {
+    (input_present && s.tracks.iter().any(|t| t.mixer.input_monitor || t.mixer.record_arm))
+        || s.tracks.iter().any(|t| {
+            matches!(t.kind, soundcraft_model::TrackKind::Instrument | soundcraft_model::TrackKind::Midi) && t.instrument.is_some() && !t.inactive
+        })
 }
 
 /// Write one device frame from `nch` rendered channels: fold surround to stereo (a mono device

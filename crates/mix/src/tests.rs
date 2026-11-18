@@ -1076,6 +1076,122 @@ fn stopped_monitoring_does_not_click() {
     }
 }
 
+/// An instrument that counts its `process()` calls.
+struct Live {
+    inner: Box<dyn Plugin>,
+    blocks: Arc<std::sync::atomic::AtomicUsize>,
+    offs: Arc<std::sync::atomic::AtomicUsize>,
+}
+
+impl Plugin for Live {
+    fn info(&self) -> &'static soundcraft_dsp::PluginInfo {
+        self.inner.info()
+    }
+    fn prepare(&mut self, sr: f32, mb: usize, ch: usize) {
+        self.inner.prepare(sr, mb, ch);
+    }
+    fn reset(&mut self) {
+        self.inner.reset();
+    }
+    fn set_param(&mut self, id: &str, v: f32) -> bool {
+        self.inner.set_param(id, v)
+    }
+    fn param(&self, id: &str) -> Option<f32> {
+        self.inner.param(id)
+    }
+    fn process(&mut self, io: &mut [Vec<f32>], frames: usize) {
+        self.blocks.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        self.inner.process(io, frames);
+    }
+    fn all_notes_off(&mut self) {
+        self.offs.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        self.inner.all_notes_off();
+    }
+}
+
+/// Renders 4 stopped blocks on an instrument track and returns its plugin's `process()` count.
+fn stopped_instrument_blocks(arm: bool, monitor: bool) -> usize {
+    let mut s = Session::default();
+    let t = s.add_track(TrackKind::Instrument, ChannelFormat::Stereo, None);
+    s.track_mut(t).unwrap().instrument = Some(Insert::new("clap:test.live"));
+    let tr = s.track_mut(t).unwrap();
+    tr.mixer.record_arm = arm;
+    tr.mixer.input_monitor = monitor;
+    let blocks = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let live =
+        Live { inner: soundcraft_dsp::create("gain").unwrap(), blocks: Arc::clone(&blocks), offs: Arc::new(std::sync::atomic::AtomicUsize::new(0)) };
+    let mut eng = MixEngine::new(48_000.0, 512);
+    eng.set_external_instances(true);
+    eng.monitor_only = true;
+    eng.adopt(vec![PreparedInstance { track: t, slot: INSTRUMENT_SLOT, id: "clap:test.live".into(), ch: 2, plugin: Box::new(live) }]);
+    for b in 0..4 {
+        render_block(&mut eng, &s, b * 512);
+    }
+    blocks.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+#[test]
+fn instruments_stay_live_while_stopped() {
+    // Armed, monitored or neither: the plugin keeps processing while stopped so its
+    // on-screen keyboard and editor respond (#1600).
+    assert_eq!(stopped_instrument_blocks(true, false), 4);
+    assert_eq!(stopped_instrument_blocks(false, true), 4);
+    assert_eq!(stopped_instrument_blocks(false, false), 4);
+}
+
+#[test]
+fn stationary_stopped_blocks_do_not_kill_held_notes() {
+    // While stopped the playhead does not move: a monitor-only block consumes no timeline, so
+    // the next one is contiguous with it. Advancing `last_end` anyway made every stopped block
+    // look like a seek, cutting held live notes at each block edge.
+    let mut s = Session::default();
+    let t = s.add_track(TrackKind::Instrument, ChannelFormat::Stereo, None);
+    s.track_mut(t).unwrap().instrument = Some(Insert::new("clap:test.live"));
+    let offs = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let live =
+        Live { inner: soundcraft_dsp::create("gain").unwrap(), blocks: Arc::new(std::sync::atomic::AtomicUsize::new(0)), offs: Arc::clone(&offs) };
+    let mut eng = MixEngine::new(48_000.0, 512);
+    eng.set_external_instances(true);
+    eng.monitor_only = true;
+    eng.adopt(vec![PreparedInstance { track: t, slot: INSTRUMENT_SLOT, id: "clap:test.live".into(), ch: 2, plugin: Box::new(live) }]);
+    for _ in 0..4 {
+        render_block(&mut eng, &s, 0);
+    }
+    let at = || offs.load(std::sync::atomic::Ordering::Relaxed);
+    assert_eq!(at(), 0, "stationary blocks fired all_notes_off");
+    // A real seek still silences, once.
+    render_block(&mut eng, &s, 48_000);
+    assert_eq!(at(), 1);
+    render_block(&mut eng, &s, 48_000);
+    assert_eq!(at(), 1);
+    // And playing on from there stays contiguous: held notes keep sounding.
+    eng.monitor_only = false;
+    render_block(&mut eng, &s, 48_000);
+    assert_eq!(at(), 1);
+}
+
+#[test]
+fn stopped_instrument_does_not_retrigger_clip_notes() {
+    // A note that starts under the frozen playhead must not retrigger every block.
+    let mut s = Session::default();
+    let t = s.add_track(TrackKind::Instrument, ChannelFormat::Stereo, None);
+    s.track_mut(t).unwrap().instrument = Some(Insert::new("clap:test.keys"));
+    let mut seq = soundcraft_midi::Sequence::default();
+    seq.notes.push(soundcraft_midi::Note { pitch: 60, velocity: 100, release_velocity: 64, channel: 0, start: 0, length: 480 });
+    let cid = s.new_clip_id();
+    s.track_mut(t).unwrap().playlist_mut().unwrap().clips.push(Clip::midi(cid, "m", 0, 48_000, seq));
+    let heard = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let keys = Keys { inner: soundcraft_dsp::create("gain").unwrap(), heard: Arc::clone(&heard) };
+    let mut eng = MixEngine::new(48_000.0, 512);
+    eng.set_external_instances(true);
+    eng.monitor_only = true;
+    eng.adopt(vec![PreparedInstance { track: t, slot: INSTRUMENT_SLOT, id: "clap:test.keys".into(), ch: 2, plugin: Box::new(keys) }]);
+    for _ in 0..4 {
+        render_block(&mut eng, &s, 0);
+    }
+    assert!(heard.lock().unwrap().is_empty());
+}
+
 /// Renders `len` frames from zero the way playback does (metronome on), in blocks of `block`.
 fn render_playback(s: &Session, len: usize, block: usize, recording: bool) -> Vec<Vec<f32>> {
     let mut eng = MixEngine::new(s.sample_rate.as_f64() as f32, block);
