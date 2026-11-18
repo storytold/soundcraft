@@ -108,10 +108,12 @@ pub fn show(app: &mut SoundApp, ctx: &egui::Context) {
     {
         match refresh_preview(app, &pv) {
             Ok(next) => previewing = Some(next),
-            // The settings stay unheard, so the next frame does not retry in a loop.
+            // The loop would go on playing settings that are no longer the ones shown: stop it
+            // and say why, rather than pass it off as the new settings.
             Err(e) => {
+                app.stop_audition();
+                previewing = None;
                 ctx.data_mut(|d| d.insert_temp(key, e));
-                previewing = Some(Preview { targets: pv.targets, settings: app.ui.noise_settings });
             }
         }
     }
@@ -386,6 +388,30 @@ mod tests {
             app.write_automation();
         }
         assert_eq!(app.engine.revision, rev, "the audition wrote automation");
+        // Nor a last point once it stops.
+        app.stop_audition();
+        app.write_automation();
+        app.write_automation();
+        assert_eq!(app.engine.revision, rev, "stopping the audition wrote automation");
+    }
+
+    #[test]
+    fn a_failed_refresh_stops_the_preview() {
+        let (mut app, t, _) = app_with_take();
+        app.run("edit.select", json!({"tracks": [t.0], "start": 0, "end": 24_000})).unwrap();
+        let pv = start_preview(&mut app).unwrap();
+        // The profile no longer matches the session's rate: the refresh cannot render.
+        if let Some(p) = app.engine.noise_profile.as_mut() {
+            p.sample_rate = 44_100;
+        }
+        app.ui.noise_settings = [24.0, 6.0, 0.5];
+        assert!(refresh_preview(&mut app, &pv).is_err());
+        let ctx = egui::Context::default();
+        app.ui.show_noise_reduction = true;
+        ctx.data_mut(|d| d.insert_temp(egui::Id::unique("noise_reduction_preview"), Some(pv)));
+        let mut out = ctx.run_ui(Default::default(), |ui| show(&mut app, ui.ctx()));
+        out.textures_delta.clear();
+        assert!(!app.auditioning(), "the stale preview kept playing");
     }
 
     #[test]
