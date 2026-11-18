@@ -95,12 +95,25 @@ struct Shared {
     fault: AtomicU8,
     /// The first failure writing a take, until it's reported.
     failed: Mutex<Option<String>>,
+    clock: Option<Arc<crate::record_clock::OutputClock>>,
+    first_capture: crate::record_clock::Stamp,
+    frames_captured: AtomicU64,
 }
 
 impl Shared {
     fn new(ring: CaptureRing) -> Shared {
         let (beats, fault, failed) = (AtomicU64::new(0), AtomicU8::new(0), Mutex::new(None));
-        Shared { armed: AtomicBool::new(false), ring, dropped: AtomicUsize::new(0), beats, fault, failed }
+        Shared {
+            armed: AtomicBool::new(false),
+            ring,
+            dropped: AtomicUsize::new(0),
+            beats,
+            fault,
+            failed,
+            clock: None,
+            first_capture: Default::default(),
+            frames_captured: AtomicU64::new(0),
+        }
     }
 
     /// Run the input callback's `work`. After a panic in it, the input is broken and does
@@ -154,12 +167,13 @@ where
     use cpal::traits::DeviceTrait;
     let (sh, errors) = (Arc::clone(shared), Arc::clone(shared));
     let mon = Arc::clone(monitor);
-    let mut scratch = vec![0.0f32; 8192 * usize::from(config.channels).max(1)];
+    let channels = usize::from(config.channels).max(1);
+    let mut scratch = vec![0.0f32; 8192 * channels];
     let chunk = scratch.len();
     let mut owed = 0;
     device.build_input_stream(
         config,
-        move |data: &[T], _: &cpal::InputCallbackInfo| {
+        move |data: &[T], info: &cpal::InputCallbackInfo| {
             crate::mark_audio_thread();
             sh.guarded(|| {
                 for part in data.chunks(chunk) {
@@ -169,7 +183,20 @@ where
                     }
                     mon.push(s);
                     if sh.armed.load(Ordering::Acquire) {
+                        if let Some(clock) = &sh.clock
+                            && sh.first_capture.read().is_none()
+                        {
+                            let time = info.timestamp();
+                            sh.first_capture.write(
+                                clock.cycle.load(Ordering::Relaxed),
+                                time.callback.duration_since(time.capture),
+                                data.len() / channels,
+                            );
+                        }
                         sh.capture(s, &mut owed);
+                        if sh.clock.is_some() {
+                            sh.frames_captured.fetch_add((s.len() / channels) as u64, Ordering::Release);
+                        }
                     } else {
                         owed = 0;
                     }
@@ -247,6 +274,24 @@ impl Recorder {
 
     #[cfg(not(target_os = "freebsd"))]
     pub(crate) fn open_on_device(device: &cpal::Device, audio: &crate::AudioConfig) -> Result<Recorder, String> {
+        Self::open_timed(device, audio, None)
+    }
+
+    #[cfg(all(windows, feature = "asio"))]
+    pub(crate) fn open_synced(
+        device: &cpal::Device,
+        audio: &crate::AudioConfig,
+        clock: Arc<crate::record_clock::OutputClock>,
+    ) -> Result<Recorder, String> {
+        Self::open_timed(device, audio, Some(clock))
+    }
+
+    #[cfg(not(target_os = "freebsd"))]
+    fn open_timed(
+        device: &cpal::Device,
+        audio: &crate::AudioConfig,
+        clock: Option<Arc<crate::record_clock::OutputClock>>,
+    ) -> Result<Recorder, String> {
         use cpal::traits::StreamTrait;
         let name = crate::devices::device_name(device).unwrap_or_else(|| "Input".into());
         let cfg = input_config(device, audio)?;
@@ -255,7 +300,7 @@ impl Recorder {
         config.buffer_size = crate::devices::buffer_size(audio.buffer_size, cfg.buffer_size());
         let channels = usize::from(config.channels).max(1);
         let ring = CaptureRing::new((config.sample_rate as usize).saturating_mul(channels * RING_SECONDS).min(1 << 25));
-        let shared = Arc::new(Shared::new(ring));
+        let shared = Arc::new(Shared { clock, ..Shared::new(ring) });
         let monitor = InputRing::new(usize::from(config.channels), config.sample_rate);
         let build = |config: cpal::StreamConfig| match format {
             cpal::SampleFormat::I32 => build_input::<i32>(device, config, &shared, &monitor),
@@ -295,6 +340,11 @@ impl Recorder {
         let ring = &self.shared.ring;
         ring.tail.store(ring.head.load(Ordering::Acquire), Ordering::Release);
         *self.shared.failed.lock().unwrap_or_else(PoisonError::into_inner) = None;
+        self.shared.first_capture.clear();
+        self.shared.frames_captured.store(0, Ordering::Relaxed);
+        if let Some(clock) = &self.shared.clock {
+            clock.first_play.clear();
+        }
         self.shared.armed.store(true, Ordering::Release);
         let (shared, channels) = (Arc::clone(&self.shared), self.channels);
         match std::thread::Builder::new().name("take writer".into()).spawn(move || write_takes(&shared, takes, channels)) {
@@ -345,6 +395,20 @@ impl Recorder {
         let slow =
             (lost > 0).then(|| format!("{} ms of input lost: the disk was too slow", lost.saturating_mul(1000) / self.sample_rate.max(1) as usize));
         (takes, problem.or(slow))
+    }
+
+    /// Number of samples to place a take earlier when it started on one shared ASIO clock.
+    pub fn placement_offset(&self) -> Option<i64> {
+        let clock = self.shared.clock.as_ref()?;
+        let input = self.shared.first_capture.read()?;
+        let output = clock.first_play.read()?;
+        let offset = crate::record_clock::placement_offset(input, output, self.sample_rate)?;
+        log::debug!("ASIO take timing: rate={} input={input:?} output={output:?} correction={offset}", self.sample_rate);
+        Some(offset)
+    }
+
+    pub fn captured_frames(&self) -> u64 {
+        self.shared.frames_captured.load(Ordering::Acquire)
     }
 }
 

@@ -720,7 +720,14 @@ mod tests {
         std::fs::create_dir_all(take.parent().unwrap()).unwrap();
         let audio: Vec<u8> = (0..480).flat_map(|i| (i as f32 / 1000.0).to_le_bytes()).collect();
         std::fs::write(&take, [craft_audio::wav_float_header(48_000, 1, 100).unwrap(), audio].concat()).unwrap();
-        let plan = Recording { start: 48_000, pass: None, punch: None, rate: 48_000, takes: vec![Take { track, path: take, channels: 1 }] };
+        let plan = Recording {
+            start: 48_000,
+            pass: None,
+            punch: None,
+            placement_offset: 0,
+            rate: 48_000,
+            takes: vec![Take { track, path: take, channels: 1 }],
+        };
         let clips = |e: &Engine| e.session().track(track).unwrap().clips().iter().map(|c| (c.start, c.length)).collect::<Vec<_>>();
         let w = Autosaver::new(root.clone());
         w.write(e.session_arc(), None, Some(plan.clone()));
@@ -771,6 +778,7 @@ mod tests {
             start: 0,
             pass: None,
             punch: None,
+            placement_offset: 0,
             rate: 48_000,
             takes: paths.iter().map(|p| Take { track, path: p.clone(), channels: 1 }).collect(),
         };

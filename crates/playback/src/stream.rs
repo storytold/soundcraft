@@ -58,13 +58,26 @@ where
     let mut scratch = vec![0.0f32; 8192 * frame];
     let chunk = scratch.len();
     let (failed, guard, gone) = (Arc::clone(fault), Arc::clone(shared), Arc::clone(fault));
+    #[cfg(all(windows, feature = "asio"))]
+    let clock = device.id().ok().filter(|id| id.host() == cpal::HostId::Asio).map(|_| Arc::clone(&fault.record_clock));
+    #[cfg(not(all(windows, feature = "asio")))]
+    let clock: Option<Arc<crate::record_clock::OutputClock>> = None;
     device.build_output_stream(
         config,
-        move |data: &mut [T], _: &cpal::OutputCallbackInfo| {
+        move |data: &mut [T], info: &cpal::OutputCallbackInfo| {
             mark_audio_thread();
+            let cycle = clock.as_ref().map(|clock| clock.cycle.fetch_add(1, Ordering::Relaxed).wrapping_add(1));
+            let frames = data.len() / frame;
             for out in data.chunks_mut(chunk) {
                 let Some(s) = scratch.get_mut(..out.len()) else { return };
                 guarded_block(&failed, &guard, s, |d| state.fill(d, channels));
+                if state.started_now
+                    && let (Some(clock), Some(cycle)) = (&clock, cycle)
+                    && clock.first_play.read().is_none()
+                {
+                    let time = info.timestamp();
+                    clock.first_play.write(cycle, time.playback.duration_since(time.callback), frames);
+                }
                 for (o, x) in out.iter_mut().zip(s.iter()) {
                     *o = T::from_sample(*x);
                 }

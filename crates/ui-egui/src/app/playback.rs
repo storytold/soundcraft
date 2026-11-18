@@ -118,7 +118,7 @@ impl SoundApp {
             // Punch in on the fly at the current playhead.
             self.record_start = self.position();
             self.punch = None;
-            self.plan_recording(takes, None);
+            self.plan_recording(takes, None, false);
             return;
         }
         let e = self.engine.session().edit.clone();
@@ -127,7 +127,7 @@ impl SoundApp {
             self.record_start = sel.start;
             self.punch = None;
             self.start_play(sel.start, None, Some(sel));
-            self.plan_recording(takes, Some(sel.len()));
+            self.plan_recording(takes, Some(sel.len()), false);
         } else {
             // Record into the selection when there is one (punch), with pre/post-roll if enabled;
             // the take is trimmed back to the punch range afterwards.
@@ -137,18 +137,43 @@ impl SoundApp {
             self.punch = (!sel.is_empty()).then_some(sel);
             let end = (!sel.is_empty()).then_some(sel.end + post);
             self.start_play(from, end, None);
-            self.plan_recording(takes, None);
+            self.plan_recording(takes, None, true);
         }
     }
 
     /// Remember where the armed `takes` go (split into passes of `pass` when loop recording) and
     /// autosave that plan with the session.
-    fn plan_recording(&mut self, takes: Vec<soundcraft_engine::io::Take>, pass: Option<Samples>) {
+    fn plan_recording(&mut self, takes: Vec<soundcraft_engine::io::Take>, pass: Option<Samples>, align_from_stop: bool) {
         let rate = self.recorder.as_ref().map_or(0, |r| r.sample_rate);
-        self.take_plan = Some(soundcraft_engine::io::Recording { start: self.record_start, pass, punch: self.punch, rate, takes });
+        self.record_alignment_pending =
+            align_from_stop && rate == self.engine.session().sample_rate.hz() && self.player.as_ref().is_some_and(|p| p.device_rate == rate);
+        self.take_plan =
+            Some(soundcraft_engine::io::Recording { start: self.record_start, pass, punch: self.punch, placement_offset: 0, rate, takes });
         if let Some(root) = self.autosave_dir.clone() {
             self.queue_autosave(root);
         }
+    }
+
+    /// Record the compensated take origin before placing or autosaving any clip.
+    fn align_recording(&mut self) {
+        if !self.record_alignment_pending {
+            return;
+        }
+        let (Some(plan), Some(offset)) = (&mut self.take_plan, self.recorder.as_ref().and_then(|r| r.placement_offset())) else { return };
+        plan.placement_offset = offset;
+        self.record_alignment_pending = false;
+        if let Some(root) = self.autosave_dir.clone() {
+            self.queue_autosave(root);
+        }
+    }
+
+    /// Playback has ended. Keep taking input until the compensated timeline reaches Punch Out.
+    /// Manual Stop and device errors still interrupt the take.
+    fn waiting_for_punch_tail(&self) -> bool {
+        let (Some(plan), Some(recorder)) = (&self.take_plan, &self.recorder) else { return false };
+        let Some(punch) = plan.punch else { return false };
+        let required = u64::try_from(punch.end.saturating_sub(plan.origin())).unwrap_or(0);
+        plan.placement_offset > 0 && recorder.captured_frames() < required
     }
 
     /// Arm the input for the record-enabled tracks; a session never saved records into its
@@ -209,6 +234,8 @@ impl SoundApp {
     }
 
     fn finish_recording(&mut self) {
+        self.align_recording();
+        self.record_alignment_pending = false;
         self.engine.transport.recording = false;
         if let Some(p) = &self.player {
             p.set_recording(false);
@@ -221,6 +248,7 @@ impl SoundApp {
             start: self.record_start,
             pass: None,
             punch: self.punch,
+            placement_offset: 0,
             rate: 0,
             takes: Vec::new(),
         });
@@ -364,6 +392,7 @@ impl SoundApp {
                     // The old capture belongs to the replaced document, never to the new one.
                     self.recorder = None;
                     self.recorder_failed = false;
+                    self.record_alignment_pending = false;
                     self.punch = None;
                     self.gesture = None;
                     self.touched.clear();
@@ -434,6 +463,7 @@ impl SoundApp {
                 TransportRequest::AllNotesOff => {}
             }
         }
+        self.align_recording();
         // Read back the position.
         if let Some(p) = &self.player {
             let playing = p.is_playing();
@@ -463,7 +493,7 @@ impl SoundApp {
             }
             let main = snap.main.peak;
             feed_meter(&mut self.main_meter, main, 0.0, dt);
-            if ended {
+            if ended && !self.waiting_for_punch_tail() {
                 self.stop_play();
             }
         } else if let Some((pos, end, looped)) = &mut self.sim {

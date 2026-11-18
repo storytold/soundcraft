@@ -7,6 +7,8 @@ use super::{
 /// How the audio output is doing, for the UI.
 #[derive(Default)]
 pub(crate) struct Fault {
+    #[cfg(all(windows, feature = "asio"))]
+    pub(crate) record_clock: std::sync::Arc<crate::record_clock::OutputClock>,
     /// A block panicked: output stays silent from then on.
     failed: AtomicBool,
     /// The device went away or the stream was invalidated: only a reconnect can restore audio.
@@ -80,6 +82,7 @@ pub(crate) struct AudioState {
     pub(crate) device_rate: f64,
     input: Option<Arc<record::InputRing>>,
     recording: bool,
+    pub(crate) started_now: bool,
     /// Retired plugin instances go back to the UI thread to be dropped there.
     garbage: Sender<Vec<Box<dyn Plugin>>>,
     old_sessions: Option<SyncSender<Arc<Session>>>,
@@ -125,6 +128,7 @@ impl AudioState {
             device_rate,
             input: None,
             recording: false,
+            started_now: false,
             unsent: MeterSnapshot::default(),
             forget_shared: Vec::new(),
         }
@@ -170,6 +174,7 @@ impl AudioState {
                 }
                 Cmd::OldSessions(tx) => self.old_sessions = Some(tx),
                 Cmd::Play { from, end, looped } => {
+                    self.started_now = self.recording;
                     self.pos = from;
                     self.end = end;
                     self.looped = looped.filter(|r| r.len() > 64);
@@ -278,6 +283,7 @@ impl AudioState {
 
     /// Fill an interleaved device buffer.
     pub(crate) fn fill(&mut self, out: &mut [f32], channels: usize) {
+        self.started_now = false;
         self.drain();
         let channels = channels.max(1);
         let monitoring = self.input.is_some() && self.session.tracks.iter().any(|t| t.mixer.input_monitor || t.mixer.record_arm);

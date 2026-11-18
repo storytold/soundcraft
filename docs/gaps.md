@@ -1,6 +1,6 @@
 # Where SoundCraft falls short of Pro Tools
 
-> **Last reviewed:** 2026-11-18 · **Last updated:** 2026-11-18 · **Change:** G-01 named hardware input paths · **Target:** Avid Pro Tools Ultimate 2026.4.1
+> **Last reviewed:** 2026-11-18 · **Last updated:** 2026-11-18 · **Change:** G-01 ASIO recording placement and punch tail · **Target:** Avid Pro Tools Ultimate 2026.4.1
 
 Every known shortfall, one entry each, ranked by how much it stops a Pro Tools user from doing
 real work in SoundCraft. This is the work list: pick from the top. Rows marked **alpha blocker**
@@ -59,8 +59,11 @@ When you close a gap, delete its entry (or shrink it) in the same PR, and bump t
   Track input and output lists scroll in the existing Edit and Mix selectors.
 - **Done (2026-11-18):** Setup › I/O stores named inputs with a contiguous hardware range and
   format. Audio tracks select them by name for recording and input monitoring.
+- **Done (2026-11-18):** Takes started from stop on one matching-rate ASIO device use the
+  capture/playback callback anchors and reported device latency before cropping the take.
+  Selection punch records any needed input tail after the playback end.
 - **Missing:** hardware input sub-paths and noncontiguous mappings, one duplex stream on one clock (input and
-  output are still separate cpal streams), latency reporting and record-offset compensation, ASIO
+  output are still separate cpal streams), latency reporting and compensation for other capture modes and backends, ASIO
   in official builds (owner decision: Steinberg's SDK is proprietary or GPLv3), JACK, and
   verification on macOS and Linux. The mix still runs in fixed 512-sample blocks.
 - **Evidence:** code above; Playback Engine window says "Mix block size: 512 samples"; issue #42
@@ -250,6 +253,7 @@ missing. Out of scope unless the owner decides otherwise.
 | 2026-11-04 | trivial | G-04: track and master volume automation read at every sample, so breakpoints act on their own sample in any block size (#1354); estimates unchanged |
 | 2026-10-30 | minor | G-05: VST3 and embedded CLAP editors on Linux/X11 (#527) |
 | 2026-10-25 | trivial | G-04: Clip Looping (#1030) lacks the loop crossfade option, and Number of Loops stops at 512 while length and fill make up to 1000 loops |
+| 2026-11-18 | minor | G-01: same-device ASIO take alignment and punch tail |
 | 2026-11-18 | minor | G-01: named hardware input paths for recording and monitoring |
 | 2026-10-25 | trivial | G-01: `setup.playback_engine` and `setup.hardware` apply the device and buffer in the desktop app; headless returns `applied: false` |
 | 2026-10-24 | trivial | G-08: 27 processors + 3 instruments, as the plugin registry holds; G-20: the sampler shipped (#108), so it is no longer listed as missing |

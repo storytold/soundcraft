@@ -24,6 +24,7 @@
 
 pub mod devices;
 pub mod record;
+mod record_clock;
 
 pub use devices::AudioConfig;
 
@@ -194,7 +195,13 @@ impl Player {
     /// when it is the selected input. Enumerating other drivers can fail with an active stream.
     pub fn open_input(&self, cfg: &AudioConfig) -> Result<record::Recorder, String> {
         #[cfg(not(target_os = "freebsd"))]
-        return record::Recorder::open_on_device(&self.input_device(cfg)?, cfg);
+        {
+            #[cfg(all(windows, feature = "asio"))]
+            if self.asio_device.is_some() && cfg.input.as_deref().is_none_or(|name| name == self.device_name) {
+                return record::Recorder::open_synced(&self.input_device(cfg)?, cfg, Arc::clone(&self.fault.record_clock));
+            }
+            record::Recorder::open_on_device(&self.input_device(cfg)?, cfg)
+        }
         #[cfg(target_os = "freebsd")]
         record::Recorder::open_with(cfg)
     }

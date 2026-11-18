@@ -11,9 +11,23 @@ pub struct Recording {
     pub start: Samples,
     pub pass: Option<Samples>,
     pub punch: Option<Range>,
+    /// Measured device and callback delay in session samples. Older recovery plans start at zero correction.
+    #[serde(default)]
+    pub placement_offset: Samples,
     /// The input's sample rate, which the take files are written at.
     pub rate: u32,
     pub takes: Vec<Take>,
+}
+
+impl Recording {
+    pub fn origin(&self) -> Samples {
+        self.start.saturating_sub(self.placement_offset)
+    }
+
+    /// Even with leading capture, keep the material before a normal overdub's requested start.
+    pub fn crop(&self) -> Option<Range> {
+        self.punch.or_else(|| (self.placement_offset > 0).then(|| Range::new(self.start, soundcraft_time::MAX_POSITION)))
+    }
 }
 
 /// One track's take file.
@@ -26,7 +40,7 @@ pub struct Take {
 
 /// Place recorded take files as `plan` says, as one undo step ("Record").
 pub fn place_recording(e: &mut Engine, plan: &Recording, takes: Vec<(TrackId, PathBuf)>) -> Vec<soundcraft_model::ClipId> {
-    add_recording_in(e, plan.start, takes, plan.pass, plan.punch)
+    add_recording_in(e, plan.origin(), takes, plan.pass, plan.crop())
 }
 
 /// Turn recorded take files into clips at `start`, as one undo step ("Record"); each file is the
@@ -76,6 +90,13 @@ fn add_recording_in(
                     let Some(kept) = Range::new(start, start.saturating_add(n)).intersect(&p) else { continue };
                     (kept.start, kept.start.saturating_sub(start), kept.len())
                 }
+                None if start < 0 => {
+                    let cut = start.saturating_neg();
+                    if n <= cut {
+                        continue;
+                    }
+                    (0, cut, n - cut)
+                }
                 None => (start, 0, n),
             };
             kept_passes.push((offset, clip_start, cut, clip_len));
@@ -111,7 +132,8 @@ fn add_recording_in(
 pub fn live_span(start: Samples, pass: Option<Samples>, punch: Option<Range>, len: Samples) -> Option<(Samples, Range)> {
     let origin = start.saturating_sub(pass.filter(|p| *p > 0).map_or(0, |p| len / p * p));
     let span = Range::new(start, origin.saturating_add(len));
-    Some((origin, span.intersect(&punch.unwrap_or(span))?))
+    let range = punch.unwrap_or_else(|| Range::new(0, span.end.max(0)));
+    Some((origin, span.intersect(&range)?))
 }
 
 #[cfg(test)]
@@ -214,6 +236,7 @@ mod record_tests {
             start: 1_000,
             pass: None,
             punch: Some(Range::new(1_400, 1_600)),
+            placement_offset: 0,
             rate: 48_000,
             takes: vec![Take { track: vox, path: take.clone(), channels: 1 }],
         };
@@ -244,6 +267,7 @@ mod record_tests {
             start: 1_000,
             pass: None,
             punch: Some(Range::new(5_000, 6_000)),
+            placement_offset: 0,
             rate: 48_000,
             takes: vec![Take { track: vox, path: take.clone(), channels: 1 }],
         };
@@ -265,5 +289,25 @@ mod record_tests {
         let punch = Some(Range::new(1_200, 1_400));
         assert_eq!(live_span(1_000, None, punch, 150), None);
         assert_eq!(live_span(1_000, None, punch, 500), Some((1_000, Range::new(1_200, 1_400))));
+    }
+
+    #[test]
+    fn compensated_origin_is_used_before_punch_crop_and_can_precede_session_zero() {
+        let dir = std::env::temp_dir().join(format!("soundcraft-compensated-{}", std::process::id()));
+        let path = dir.join("Take.wav");
+        write_take(&path, 1_500);
+        let mut e = Engine::default();
+        let track = armed(&mut e, "Take", "mono", "In 1");
+        let mut plan = Recording { start: 0, pass: None, punch: Some(Range::new(400, 1000)), placement_offset: 128, rate: 48_000, takes: vec![] };
+        place_recording(&mut e, &plan, vec![(track, path.clone())]);
+        let clip = &e.session().track(track).unwrap().clips()[0];
+        assert_eq!((clip.start, clip.source_offset(), clip.length), (400, 528, 600));
+        e.execute("edit.undo", &json!({})).unwrap();
+        plan.punch = None;
+        place_recording(&mut e, &plan, vec![(track, path)]);
+        let clip = &e.session().track(track).unwrap().clips()[0];
+        assert_eq!((clip.start, clip.source_offset(), clip.length), (0, 128, 1372));
+        assert_eq!(live_span(-128, None, None, 1500), Some((-128, Range::new(0, 1372))));
+        let _ = std::fs::remove_dir_all(dir);
     }
 }
