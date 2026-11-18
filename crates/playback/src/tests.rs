@@ -172,12 +172,12 @@ fn named_output_uses_its_physical_channel_and_remaps_on_session_edit() {
     tx.send(Cmd::Session(Arc::new(session.clone()), vec![])).unwrap();
     let mut frames = [0.0; 10 * 32];
     audio.fill(&mut frames, 10);
-    assert!(frames.chunks_exact(10).all(|frame| frame[..9].iter().all(|sample| *sample == 0.0) && frame[9] > 0.5));
+    assert!(frames.as_chunks::<10>().0.iter().all(|frame| frame[..9].iter().all(|sample| *sample == 0.0) && frame[9] > 0.5));
 
     session.outputs[1].first_channel = 3;
     tx.send(Cmd::Session(Arc::new(session.clone()), vec![])).unwrap();
     audio.fill(&mut frames, 10);
-    assert!(frames.chunks_exact(10).all(|frame| frame[3] > 0.0 && frame[9] == 0.0));
+    assert!(frames.as_chunks::<10>().0.iter().all(|frame| frame[3] > 0.0 && frame[9] == 0.0));
 
     session.outputs[1].first_channel = 9;
     session.outputs[1].format = ChannelFormat::Stereo;
@@ -203,7 +203,9 @@ fn each_of_ten_named_paths_reaches_only_its_assigned_output() {
         audio.fill(&mut frames, 10);
         assert!(
             frames
-                .chunks_exact(10)
+                .as_chunks::<10>()
+                .0
+                .iter()
                 .all(|frame| { frame.iter().enumerate().all(|(index, &sample)| if index == channel { sample > 0.5 } else { sample == 0.0 }) })
         );
     }
