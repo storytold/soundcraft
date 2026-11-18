@@ -23,6 +23,7 @@ mod instrument;
 mod midi;
 mod mix;
 mod more_util;
+mod noise_reduction;
 mod options;
 mod plugin_state;
 mod query;
@@ -64,6 +65,9 @@ mod panic_probe {
 pub use file::bounce_job;
 
 pub(crate) use edit::remember_selection;
+pub use noise_reduction::{
+    PREVIEW_SECONDS as NOISE_PREVIEW_SECONDS, preview as noise_reduction_preview, preview_range as noise_reduction_preview_range,
+};
 pub use strip_silence::strip_silence_scan;
 
 pub type Run = fn(&mut Engine, &Value) -> Result<Value>;
@@ -144,6 +148,7 @@ pub fn command_specs() -> &'static [CommandSpec] {
         v.extend(query::specs());
         v.extend(health::specs());
         v.extend(audiosuite::specs());
+        v.extend(noise_reduction::specs());
         v.extend(audio_midi::specs());
         v.extend(midi::specs());
         v.extend(view_more::specs());

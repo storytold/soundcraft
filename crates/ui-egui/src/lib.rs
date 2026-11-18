@@ -135,6 +135,14 @@ pub struct UiState {
     pub show_shortcuts: bool,
     pub show_clip_effects: bool,
     pub show_beat_detective: bool,
+    pub show_noise_reduction: bool,
+    /// The last learned noise profile (AudioSuite › Noise Reduction), kept with the settings so it
+    /// is still there after a restart. The engine holds the one in use.
+    pub noise_profile: Option<soundcraft_dsp::denoise::NoiseProfile>,
+    /// Noise Reduction window settings: reduction and sensitivity in dB, smoothing 0..1.
+    pub noise_settings: [f32; 3],
+    /// Noise Reduction › Mute the original track.
+    pub noise_mute_original: bool,
     pub show_tempo_ops: bool,
     pub show_time_ops: bool,
     pub show_midi_ops: bool,
@@ -208,6 +216,10 @@ impl Default for UiState {
             show_shortcuts: false,
             show_clip_effects: false,
             show_beat_detective: false,
+            show_noise_reduction: false,
+            noise_profile: None,
+            noise_settings: dialogs::noise_reduction::recommended(),
+            noise_mute_original: true,
             show_tempo_ops: false,
             show_time_ops: false,
             show_midi_ops: false,
@@ -422,6 +434,11 @@ pub struct SoundApp {
     touched_sends: std::collections::HashSet<(TrackId, usize)>,
     /// The pass's last point; `i64::MIN` after a stop or a jump, so the next point erases nothing it skipped.
     last_write_at: Samples,
+    /// The player holds an audition session (Noise Reduction's Preview), not the document: set by
+    /// `loop_preview`, cleared whenever the document goes back to the player or playback stops.
+    pub(crate) audition: bool,
+    /// The noise profile saved with the settings has been offered to the engine once, at start-up.
+    pub(crate) noise_profile_restored: bool,
     /// Plugins changed in their editors whose state the session hasn't taken yet (see `editor_states_due`).
     editor_states: Vec<(TrackId, usize)>,
     /// One editor poll per host raw-input iteration, including a hidden logic-only iteration.

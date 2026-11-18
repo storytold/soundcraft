@@ -109,6 +109,8 @@ impl SoundApp {
             touched: std::collections::HashSet::new(),
             touched_sends: std::collections::HashSet::new(),
             last_write_at: i64::MIN,
+            audition: false,
+            noise_profile_restored: false,
             editor_states: Vec::new(),
             editor_poll_due: true,
             #[cfg(test)]
@@ -202,6 +204,8 @@ impl SoundApp {
             if let Some(p) = &self.player {
                 p.update_session(self.engine.session_arc());
             }
+            // The document replaced any audition session in the player.
+            self.audition = false;
         }
         self.open_inserted();
         self.autosave_changes();

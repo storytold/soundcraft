@@ -406,10 +406,7 @@ fn configurations(app: &mut SoundApp, ctx: &egui::Context) {
     win(ctx, &mut open, "Window Configurations", vec2(320.0, 240.0), |ui| {
         if ui.button(crate::localization::text("New Configuration…")).clicked() {
             let n = app.ui.configurations.len() + 1;
-            let mut snap = app.ui.clone();
-            snap.configurations.clear();
-            snap.docking_version = crate::docking::LAYOUT_VERSION;
-            if let Ok(v) = serde_json::to_value(&snap) {
+            if let Ok(v) = configuration_snapshot(&app.ui) {
                 app.ui.configurations.push((format!("Configuration {n}"), v));
             }
         }
@@ -431,6 +428,18 @@ fn configurations(app: &mut SoundApp, ctx: &egui::Context) {
     app.ui.show_configurations = open;
 }
 
+/// The UI state a new window configuration saves.
+pub fn configuration_snapshot(ui: &crate::UiState) -> serde_json::Result<Value> {
+    let mut snap = ui.clone();
+    snap.configurations.clear();
+    // A learned noise profile is a setting, not a window layout: kept once in the settings rather
+    // than copied into every configuration, where many copies could pass the size limit and stop
+    // the settings from saving.
+    snap.noise_profile = None;
+    snap.docking_version = crate::docking::LAYOUT_VERSION;
+    serde_json::to_value(&snap)
+}
+
 /// Restore a window layout while retaining current application preferences and any open draft.
 /// A configuration saved before the current panel layouts gets the default layouts.
 pub fn recall_configuration(app: &mut SoundApp, saved: &Value) -> Result<(), String> {
@@ -439,6 +448,7 @@ pub fn recall_configuration(app: &mut SoundApp, saved: &Value) -> Result<(), Str
     let mut st = serde_json::from_value::<crate::UiState>(saved).map_err(|error| error.to_string())?;
     crate::docking::validate(&st.docking).and_then(|()| crate::docking::validate_mix(&st.mix_docking))?;
     st.configurations = app.ui.configurations.clone();
+    st.noise_profile = app.ui.noise_profile.clone();
     st.theme = app.ui.theme;
     // Language is a global preference like the theme: recalling a configuration keeps the current one.
     st.language = app.ui.language;

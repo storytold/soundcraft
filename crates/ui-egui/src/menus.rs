@@ -64,6 +64,7 @@ pub const UI_COMMANDS: &[(&str, &str, &str, Option<&str>)] = &[
     ("window.search", "Search", "Window > Pro Tools Search", Some("Cmd+Ctrl+S")),
     ("window.score", "Score Editor", "Window > Score Editor", Some("Cmd+Ctrl+=")),
     ("window.beat_detective", "Beat Analysis", "", None),
+    ("window.noise_reduction", "Noise Reduction", "", None),
     ("window.tempo_ops", "Tempo Operations", "", None),
     ("window.time_ops", "Time Operations", "", None),
     ("window.midi_ops", "MIDI Operations", "", None),
@@ -534,6 +535,8 @@ const MENU_WINDOWS: &[(&str, &str)] = &[
     ("Event > Time Operations > Time Operations Window", "window.time_ops"),
     ("Event > MIDI Operations > MIDI Operations Window", "window.midi_ops"),
     ("Event > MIDI Real-Time Properties", "window.rtp"),
+    // Not in the incumbent catalog: SoundCraft's learned-profile noise reduction (#1411).
+    ("AudioSuite > Noise Reduction…", "window.noise_reduction"),
 ];
 
 /// The shortcut of an engine or window command.
@@ -686,6 +689,7 @@ pub fn run_ui_command(app: &mut SoundApp, id: &str, p: &Value) -> Option<Result<
         "window.search" => toggle(&mut app.ui.show_search),
         "window.score" => toggle(&mut app.ui.show_score),
         "window.beat_detective" => toggle(&mut app.ui.show_beat_detective),
+        "window.noise_reduction" => toggle(&mut app.ui.show_noise_reduction),
         "window.tempo_ops" => toggle(&mut app.ui.show_tempo_ops),
         "window.time_ops" => toggle(&mut app.ui.show_time_ops),
         "window.midi_ops" => toggle(&mut app.ui.show_midi_ops),
@@ -759,6 +763,7 @@ pub fn run_ui_command(app: &mut SoundApp, id: &str, p: &Value) -> Option<Result<
             app.ui.plugin_windows.clear();
             app.ui.output_window = None;
             app.ui.audiosuite = None;
+            app.ui.show_noise_reduction = false;
             json!({})
         }
         "view.mix_section" => {

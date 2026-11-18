@@ -24,6 +24,7 @@ use strip_silence::{AUTO_NAME_LABELS, STRIP_NAME_LABELS, StripRectangles, StripV
 pub use strip_silence::{StripRects, strip_silence_rectangles};
 
 pub mod new_tracks;
+pub mod noise_reduction;
 pub mod ops_windows;
 pub(super) mod recent;
 pub mod recovery;
@@ -460,6 +461,7 @@ fn strip_silence_form(
 /// Show the open dialog, if any.
 pub fn show(app: &mut SoundApp, ctx: &egui::Context) {
     audiosuite_window(app, ctx);
+    noise_reduction::show(app, ctx);
     crate::bounce::show(app, ctx);
     crate::import::show(app, ctx);
     // Whichever window shows, closing Strip Silence drops its rectangles and stops their scan.

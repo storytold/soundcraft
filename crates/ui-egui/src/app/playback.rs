@@ -30,8 +30,71 @@ impl SoundApp {
     }
 
     fn start_play(&mut self, from: Samples, end: Option<Samples>, looped: Option<Range>) {
+        self.start_play_of(self.engine.session_arc(), from, end, looped);
+    }
+
+    /// Loops `range` of the document, as Play with Loop Playback does. Not while recording.
+    pub(crate) fn loop_range(&mut self, range: Range) -> Result<(), String> {
+        if self.engine.transport.recording {
+            return Err(crate::localization::text("Stop recording first.").to_string());
+        }
+        self.start_play(range.start, None, Some(range));
+        Ok(())
+    }
+
+    /// Loops `range` of `session` in place of the document, for an audition (Noise Reduction's
+    /// Preview). Not while recording. The next change to the document, the next Play or a stop
+    /// ends the audition.
+    pub(crate) fn loop_preview(&mut self, session: std::sync::Arc<soundcraft_model::Session>, range: Range) -> Result<(), String> {
+        if self.engine.transport.recording {
+            return Err(crate::localization::text("Stop recording first.").to_string());
+        }
+        self.start_play_of(session, range.start, None, Some(range));
+        self.audition = true;
+        Ok(())
+    }
+
+    /// Swaps the session a running audition plays, without stopping it, after its settings changed.
+    /// Does nothing once the audition has ended.
+    pub(crate) fn update_preview(&self, session: std::sync::Arc<soundcraft_model::Session>) {
+        if !self.audition {
+            return;
+        }
+        if let Some(p) = &self.player {
+            p.update_session(session);
+        }
+    }
+
+    /// Whether an audition is playing.
+    pub(crate) fn auditioning(&self) -> bool {
+        self.audition && self.is_playing()
+    }
+
+    /// Ends an audition, leaving the edit selection and the view where they are (a plain Stop
+    /// may move the insertion to the playhead). Does nothing when no audition plays.
+    pub(crate) fn stop_audition(&mut self) {
+        if !self.audition {
+            return;
+        }
+        self.audition = false;
+        if let Some(p) = &self.player {
+            p.stop();
+        }
+        self.sim = None;
+        self.engine.transport.playing = false;
+        self.last_write_at = i64::MIN;
+        self.edit_layout.follow_hold = false;
+        // The player keeps no audition session for a later Play.
         if let Some(p) = &self.player {
             p.update_session(self.engine.session_arc());
+        }
+    }
+
+    fn start_play_of(&mut self, session: std::sync::Arc<soundcraft_model::Session>, from: Samples, end: Option<Samples>, looped: Option<Range>) {
+        // Every start plays one session; `loop_preview` marks its own afterwards.
+        self.audition = false;
+        if let Some(p) = &self.player {
+            p.update_session(session);
             p.play(from, end, looped);
         } else {
             self.sim = Some((from, end, looped));
@@ -48,6 +111,7 @@ impl SoundApp {
     }
 
     pub(crate) fn stop_play(&mut self) {
+        self.audition = false;
         if let Some(p) = &self.player {
             // Half-speed is a separate command. Stop must not leave that rate for the next Play.
             p.set_speed(1.0);
@@ -235,6 +299,12 @@ impl SoundApp {
     pub(crate) fn write_automation(&mut self) {
         use soundcraft_model::AutomationMode as M;
         const PASS: &str = "automation_pass";
+        // An audition plays a session that is not the document: nothing it plays is written.
+        if self.audition {
+            self.engine.hold_merge(None);
+            self.last_write_at = i64::MIN;
+            return;
+        }
         let playing = self.is_playing();
         let may_write =
             playing && self.engine.session().tracks.iter().any(|t| matches!(t.mixer.automation_mode, M::Write | M::Touch | M::Latch | M::TouchLatch));

@@ -210,6 +210,9 @@ pub struct Engine {
     pub last_selection: Option<(soundcraft_time::Range, Vec<TrackId>)>,
     /// Audio decoded off the UI thread, waiting for its `file.import_audio` (see `offer_import`).
     imports: Vec<io::DecodedImport>,
+    /// The background noise learned by `audiosuite.noise_learn`, which `audiosuite.noise_reduce`
+    /// removes. Kept out of the document, so it outlives undo and opening another session.
+    pub noise_profile: Option<soundcraft_dsp::denoise::NoiseProfile>,
 }
 
 impl Default for Engine {
@@ -241,6 +244,7 @@ impl Engine {
             messages: Vec::new(),
             last_selection: None,
             imports: Vec::new(),
+            noise_profile: None,
         }
     }
 
