@@ -43,14 +43,17 @@ impl AudioConfig {
     /// Preferences written before devices had ids hold names (`system: "ALSA"`,
     /// `output: "Speakers"`): a name that matches a listed system or device becomes its id. What
     /// matches nothing stays as it is, since the device may only be unplugged; opening falls back
-    /// to the default for it (see [`device`]).
+    /// to the default for it (see [`device`]). So do the device names of a chosen system that is
+    /// not listed (an ASIO choice read by a build without ASIO): a device of another system that
+    /// happens to have the same name is not the one that was meant.
     #[must_use]
     pub fn with_ids(&self, systems: &[AudioSystem]) -> AudioConfig {
         let system =
             self.system.as_deref().and_then(|want| systems.iter().find(|s| s.id.eq_ignore_ascii_case(want) || s.name.eq_ignore_ascii_case(want)));
-        // The devices of the chosen system, else of the one the automatic order opens.
-        let devices = system.or_else(|| systems.iter().find(|s| s.is_default));
-        let id = |want: &Option<String>, list: fn(&AudioSystem) -> &Vec<DeviceInfo>| {
+        let chosen = self.system.as_deref().and_then(crate::host::host_key).is_some();
+        let id = |want: &Option<String>, automatic: fn(&AudioSystem) -> bool, list: fn(&AudioSystem) -> &Vec<DeviceInfo>| {
+            // The devices of the chosen system, else of the one the automatic order opens.
+            let devices = if chosen { system } else { systems.iter().find(|s| automatic(s)) };
             let found = want.as_deref().zip(devices).and_then(|(want, s)| {
                 let list = list(s);
                 list.iter().find(|d| d.id == want).or_else(|| list.iter().find(|d| d.name == want))
@@ -59,8 +62,8 @@ impl AudioConfig {
         };
         AudioConfig {
             system: system.map(|s| s.id.clone()).or_else(|| self.system.clone()),
-            output: id(&self.output, |s| &s.outputs),
-            input: id(&self.input, |s| &s.inputs),
+            output: id(&self.output, |s| s.is_default, |s| &s.outputs),
+            input: id(&self.input, |s| s.is_default_input, |s| &s.inputs),
             sample_rate: self.sample_rate,
             buffer_size: self.buffer_size,
         }
@@ -98,8 +101,16 @@ pub struct AudioSystem {
     /// What [`AudioConfig::system`] holds to choose this system.
     pub id: String,
     pub name: String,
-    /// The first system of the automatic order.
+    /// The system the automatic order opens the output on: the first that has something to
+    /// play to, which need not be the first listed (JACK without a running server has nothing).
     pub is_default: bool,
+    /// The system the automatic order opens the input on.
+    pub is_default_input: bool,
+    /// Whether "Default" opens an output here. It need not be one of `outputs`: PipeWire follows
+    /// the desktop's default sink and JACK connects to the system ports.
+    pub has_output: bool,
+    /// Whether "Default" opens an input here.
+    pub has_input: bool,
     pub outputs: Vec<DeviceInfo>,
     pub inputs: Vec<DeviceInfo>,
 }
@@ -153,10 +164,10 @@ fn describe(listed: crate::host::Listed, default_id: Option<&str>) -> DeviceInfo
 /// settings window opens, not every frame.
 pub fn audio_systems() -> Vec<AudioSystem> {
     use crate::host::Direction;
-    crate::host::host_ids()
+    // (the system, whether the automatic order would open its output, its input)
+    let mut systems: Vec<(AudioSystem, bool, bool)> = crate::host::host_ids()
         .into_iter()
-        .enumerate()
-        .filter_map(|(n, id)| {
+        .filter_map(|id| {
             let host = cpal::host_from_id(id).ok()?;
             let def_out = host.default_output_device().as_ref().and_then(device_id);
             let def_in = host.default_input_device().as_ref().and_then(device_id);
@@ -164,9 +175,34 @@ pub fn audio_systems() -> Vec<AudioSystem> {
                 crate::host::listed(&host, direction).into_iter().map(|entry| describe(entry, default)).collect()
             };
             let (outputs, inputs) = (list(Direction::Output, def_out.as_deref()), list(Direction::Input, def_in.as_deref()));
-            Some(AudioSystem { id: id.to_string(), name: id.name().to_string(), is_default: n == 0, outputs, inputs })
+            let system = AudioSystem {
+                id: id.to_string(),
+                name: id.name().to_string(),
+                is_default: false,
+                is_default_input: false,
+                has_output: def_out.is_some(),
+                has_input: def_in.is_some(),
+                outputs,
+                inputs,
+            };
+            // The same test the automatic order makes when it opens a stream.
+            Some((system, crate::host::has_default(&host, Direction::Output, true), crate::host::has_default(&host, Direction::Input, true)))
         })
-        .collect()
+        .collect();
+    if let Some((system, ..)) = systems.iter_mut().find(|(_, output, _)| *output) {
+        system.is_default = true;
+    }
+    if let Some((system, ..)) = systems.iter_mut().find(|(_, _, input)| *input) {
+        system.is_default_input = true;
+    }
+    systems.into_iter().map(|(system, ..)| system).collect()
+}
+
+/// The configuration for a stream that is wired to a JACK interface afterwards: `channels` wide
+/// (one per port of the interface, see [`crate::host::group_ports`]) at the first of `rates` the
+/// host runs at, in the best sample format the streams convert.
+pub(crate) fn port_group_config(configs: &[cpal::SupportedStreamConfigRange], rates: &[u32], channels: u16) -> Option<cpal::SupportedStreamConfig> {
+    rates.iter().find_map(|rate| supported_format_config(configs, *rate, channels.max(1)))
 }
 
 /// True when a cpal error means the stream is dead and only a rebuild can restore audio. cpal 0.18
@@ -222,7 +258,8 @@ pub(crate) fn device(host: &cpal::Host, want: Option<&str>, output: bool) -> Opt
     // A JACK port group is no device: the stream opens on the default and is wired afterwards.
     if let Some(want) = want.filter(|w| !w.starts_with(crate::host::JACK_PORTS)) {
         let id = want.parse::<cpal::DeviceId>().ok();
-        let by_id = id.as_ref().and_then(|id| host.device_by_id(id));
+        // An id finds any device of the host: a microphone is no output.
+        let by_id = id.as_ref().and_then(|id| host.device_by_id(id)).filter(|d| if output { d.supports_output() } else { d.supports_input() });
         let found = by_id.or_else(|| {
             if output { host.output_devices().ok() } else { host.input_devices().ok() }
                 .and_then(|mut ds| ds.find(|d| d.description().is_ok_and(|description| description.name() == want)))
@@ -366,6 +403,38 @@ mod tests {
         describe(crate::host::Listed { id: id.into(), name: name.into(), detail: String::new(), ranges: ranges.to_vec() }, Some("default-id"))
     }
 
+    /// An audio system with these devices; `default`: the one the automatic order opens.
+    fn system(id: &str, name: &str, default: bool, outputs: Vec<DeviceInfo>, inputs: Vec<DeviceInfo>) -> AudioSystem {
+        AudioSystem {
+            id: id.into(),
+            name: name.into(),
+            is_default: default,
+            is_default_input: default,
+            has_output: !outputs.is_empty(),
+            has_input: !inputs.is_empty(),
+            outputs,
+            inputs,
+        }
+    }
+
+    /// A stream wired to a JACK interface has one channel per port of it: a one-port interface
+    /// gets a mono stream (the mix folds into it, so nothing panned right is lost) and a
+    /// four-input one a four-channel stream, whatever rate the session asks for.
+    #[test]
+    fn a_jack_stream_is_as_wide_as_the_interface_it_is_wired_to() {
+        // What cpal's JACK host offers: every channel count at the server's rate.
+        let jack: Vec<_> = (1..=64).map(|channels| range(channels, 48_000, 48_000, cpal::SampleFormat::F32)).collect();
+        let at = |rates: &[u32], ports| port_group_config(&jack, rates, ports).map(|c| (c.sample_rate(), c.channels()));
+        assert_eq!(at(&[48_000], 1), Some((48_000, 1)));
+        assert_eq!(at(&[48_000], 4), Some((48_000, 4)));
+        // A rate the server does not run at is passed over for the one it does.
+        assert_eq!(at(&[44_100, 48_000], 4), Some((48_000, 4)));
+        assert_eq!(at(&[44_100], 4), None);
+        // More ports than the host has channels: as many as it has.
+        assert_eq!(at(&[48_000], 200), Some((48_000, 64)));
+        assert_eq!(at(&[48_000], 0), Some((48_000, 1)));
+    }
+
     #[test]
     fn a_device_is_described_by_the_formats_the_streams_convert() {
         // I24 is not converted: its wider channel count, rates and buffer range do not count.
@@ -398,7 +467,7 @@ mod tests {
         assert_eq!((d.id.as_str(), d.max_channels, d.sample_rates.len(), d.buffer_min, d.buffer_max), (id.as_str(), 0, 0, None, None));
         // Every standard buffer size stays on offer, and the group can be chosen.
         assert_eq!(d.buffer_sizes().len(), STANDARD_BUFFERS.len());
-        let systems = [AudioSystem { id: "jack".into(), name: "JACK".into(), is_default: true, outputs: vec![d], inputs: Vec::new() }];
+        let systems = [system("jack", "JACK", true, vec![d], Vec::new())];
         let chosen = AudioConfig { system: Some("jack".into()), output: Some(id.clone()), ..Default::default() };
         assert_eq!(chosen.with_ids(&systems), chosen);
     }
@@ -408,20 +477,20 @@ mod tests {
     fn names_from_older_preferences_become_ids() {
         let device = |id: &str, name: &str| info(id, name, &[range(2, 48_000, 48_000, cpal::SampleFormat::F32)]);
         let systems = [
-            AudioSystem {
-                id: "pipewire".into(),
-                name: "PipeWire".into(),
-                is_default: true,
-                outputs: vec![device("pipewire:alsa_output.usb-X", "Scarlett 2i2")],
-                inputs: vec![device("pipewire:alsa_input.usb-X", "Scarlett 2i2")],
-            },
-            AudioSystem {
-                id: "alsa".into(),
-                name: "ALSA".into(),
-                is_default: false,
-                outputs: vec![device("alsa:hw:CARD=USB,DEV=0", "Scarlett 2i2 USB, USB Audio"), device("alsa:pipewire", "PipeWire Sound Server")],
-                inputs: vec![device("alsa:hw:CARD=USB,DEV=0", "Scarlett 2i2 USB, USB Audio")],
-            },
+            system(
+                "pipewire",
+                "PipeWire",
+                true,
+                vec![device("pipewire:alsa_output.usb-X", "Scarlett 2i2")],
+                vec![device("pipewire:alsa_input.usb-X", "Scarlett 2i2")],
+            ),
+            system(
+                "alsa",
+                "ALSA",
+                false,
+                vec![device("alsa:hw:CARD=USB,DEV=0", "Scarlett 2i2 USB, USB Audio"), device("alsa:pipewire", "PipeWire Sound Server")],
+                vec![device("alsa:hw:CARD=USB,DEV=0", "Scarlett 2i2 USB, USB Audio")],
+            ),
         ];
         let old = AudioConfig {
             system: Some("ALSA".into()),
@@ -443,9 +512,33 @@ mod tests {
         // A system or device that is not there now (unplugged, server not running) is kept.
         let gone = AudioConfig { system: Some("JACK".into()), output: Some("Speakers".into()), input: Some("Mic".into()), ..Default::default() };
         assert_eq!(gone.with_ids(&systems), gone);
+        // Nor does a device of the default system stand in for one of a system that is not there,
+        // whatever its name: the choice must still mean that system's device when it is back.
+        let other_host = AudioConfig {
+            system: Some("ASIO".into()),
+            output: Some("Scarlett 2i2".into()),
+            input: Some("Scarlett 2i2".into()),
+            ..Default::default()
+        };
+        assert_eq!(other_host.with_ids(&systems), other_host);
         let unplugged = AudioConfig { system: Some("alsa".into()), output: Some("Speakers".into()), ..Default::default() }.with_ids(&systems);
         assert_eq!((unplugged.system.as_deref(), unplugged.output.as_deref()), (Some("alsa"), Some("Speakers")));
         assert_eq!(AudioConfig::default().with_ids(&systems), AudioConfig::default());
+        // The automatic order opens the output on one system and the input on another (the first
+        // has nothing to record from): each name is looked up where its stream opens.
+        let mut split = systems.clone();
+        split[0].is_default_input = false;
+        split[1].is_default_input = true;
+        let names = AudioConfig { output: Some("Scarlett 2i2".into()), input: Some("Scarlett 2i2 USB, USB Audio".into()), ..Default::default() };
+        let ids = names.with_ids(&split);
+        assert_eq!((ids.output.as_deref(), ids.input.as_deref()), (Some("pipewire:alsa_output.usb-X"), Some("alsa:hw:CARD=USB,DEV=0")));
+        // The first listed system has nothing to play to (JACK without a server): not the default.
+        let mut no_server = systems.to_vec();
+        no_server.insert(0, system("jack", "JACK", false, Vec::new(), Vec::new()));
+        assert_eq!(
+            AudioConfig { output: Some("Scarlett 2i2".into()), ..Default::default() }.with_ids(&no_server).output.as_deref(),
+            Some("pipewire:alsa_output.usb-X")
+        );
         assert_eq!(old.with_ids(&[]), old);
     }
 
@@ -467,7 +560,9 @@ mod tests {
         let systems = audio_systems();
         // Every listed system has a name; on a machine without audio the lists are just empty.
         assert!(systems.iter().all(|s| !s.name.is_empty() && !s.id.is_empty()));
-        assert!(systems.iter().filter(|s| s.is_default).count() <= 1);
+        assert!(systems.iter().filter(|s| s.is_default).count() <= 1 && systems.iter().filter(|s| s.is_default_input).count() <= 1);
+        // The default system is one "Default" opens something on.
+        assert!(systems.iter().all(|s| (!s.is_default || s.has_output) && (!s.is_default_input || s.has_input)));
         // Device ids are what the config holds: unique within a list.
         for list in systems.iter().flat_map(|s| [&s.outputs, &s.inputs]) {
             let mut ids: Vec<&str> = list.iter().map(|d| d.id.as_str()).collect();

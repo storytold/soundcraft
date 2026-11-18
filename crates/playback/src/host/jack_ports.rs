@@ -5,8 +5,9 @@
 //! PipeWire's JACK library, `system` is whatever the desktop's default source and sink are, which
 //! may well be a webcam microphone next to the speakers. So the Playback Engine dialog lists the
 //! physical ports grouped by their client (one group per interface) and, when one is chosen, the
-//! stream's ports are rewired to it after the stream opens. A rewiring that fails part-way is
-//! undone, so the stream keeps the connections it had.
+//! stream opens with as many channels as the interface has ports and its ports are rewired to it
+//! afterwards. A rewiring that fails part-way is undone and reported: the caller does not go on
+//! with a stream that is not on the chosen interface.
 
 use super::{Direction, JACK_PORTS, Listed};
 use jack::{Client, ClientOptions, PortFlags};
@@ -74,8 +75,25 @@ fn tidy_group(group: &str) -> String {
     if out.is_empty() { group.to_string() } else { out.join(" ") }
 }
 
+/// How many ports the group `id` names has now; `None` when it has none (the interface is
+/// unplugged) or `id` names no group.
+pub(super) fn port_count(direction: Direction, id: &str) -> Option<usize> {
+    let group = id.strip_prefix(JACK_PORTS)?;
+    let client = client().ok()?;
+    let ports = hardware_ports(&client, direction);
+    grouped(&ports).into_iter().find(|(g, _)| *g == group).map(|(_, n)| n)
+}
+
+/// The channel a stream port carries: cpal names them `in_0`, `in_1`, … / `out_0`, `out_1`, ….
+/// A name without a number sorts last.
+fn channel_index(port: &str) -> u32 {
+    port.rsplit_once('_').and_then(|(_, n)| n.parse().ok()).unwrap_or(u32::MAX)
+}
+
 /// The connections that put the stream's ports (`mine`) on the ports of `group` among
-/// `hardware`. Channels pair up in order; extra ones on either side stay unconnected.
+/// `hardware`. The stream's channels, in the order of their number (the server need not list
+/// them that way), pair up with the group's ports in the server's order; extra ones on either
+/// side stay unconnected.
 fn plan(direction: Direction, mine: &[String], hardware: &[String], group: &str) -> Result<Vec<Wire>, String> {
     let mut of_group: Vec<&String> = Vec::new();
     for port in hardware.iter().filter(|p| group_of(p) == group) {
@@ -89,7 +107,9 @@ fn plan(direction: Direction, mine: &[String], hardware: &[String], group: &str)
     if mine.is_empty() {
         return Err("the stream's JACK ports were not found".into());
     }
-    Ok(mine.iter().zip(of_group).map(|(port, hw)| wire(direction, port, hw)).collect())
+    let mut mine: Vec<&String> = mine.iter().collect();
+    mine.sort_by_key(|port| channel_index(port));
+    Ok(mine.into_iter().zip(of_group).map(|(port, hw)| wire(direction, port, hw)).collect())
 }
 
 /// The connection between the stream's `port` and `other`, in the direction the audio flows.
@@ -122,12 +142,42 @@ impl Patchbay for Client {
     }
 }
 
+/// Why a rewiring failed, and what its undo could not put right.
+#[derive(Debug, PartialEq)]
+struct Failed {
+    cause: String,
+    /// New connections the undo could not take down.
+    stuck: Vec<Wire>,
+    /// Old connections the undo could not put back.
+    lost: Vec<Wire>,
+}
+
+impl std::fmt::Display for Failed {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.cause)?;
+        if self.stuck.is_empty() && self.lost.is_empty() {
+            return f.write_str("; its previous connections were put back");
+        }
+        let list = |wires: &[Wire]| wires.iter().map(|w| format!("{} from {}", w.1, w.0)).collect::<Vec<_>>().join(", ");
+        f.write_str("; the stream may be partly wired:")?;
+        if !self.stuck.is_empty() {
+            write!(f, " could not disconnect {}", list(&self.stuck))?;
+        }
+        if !self.lost.is_empty() {
+            let and = if self.stuck.is_empty() { "" } else { ";" };
+            write!(f, "{and} could not reconnect {}", list(&self.lost))?;
+        }
+        Ok(())
+    }
+}
+
 /// Replace the stream's connections with `wanted`. `possible` is every connection the stream's
 /// ports could be in now: asking a port for its connections only works for the client that owns
 /// it, so each one is tried, and those that were there are remembered. If a wanted connection
 /// cannot be made (a port went away since it was listed), the ones made so far are taken down and
-/// the remembered ones put back: the stream is never left without its ports, or half wired.
-fn rewire(bay: &mut impl Patchbay, possible: &[Wire], wanted: &[Wire]) -> Result<(), String> {
+/// the remembered ones put back. The error says whether that undo was whole: what it could not
+/// take down or put back is named, and the stream may then be partly wired.
+fn rewire(bay: &mut impl Patchbay, possible: &[Wire], wanted: &[Wire]) -> Result<(), Failed> {
     let mut removed: Vec<&Wire> = Vec::new();
     for w in possible.iter().filter(|w| !wanted.contains(w)) {
         if bay.disconnect(&w.0, &w.1) {
@@ -141,12 +191,10 @@ fn rewire(bay: &mut impl Patchbay, possible: &[Wire], wanted: &[Wire]) -> Result
             // It was wired like this already: nothing to undo.
             Ok(false) => {}
             Err(e) => {
-                for m in made {
-                    bay.disconnect(&m.0, &m.1);
-                }
-                let lost: Vec<&str> = removed.into_iter().filter(|r| bay.connect(&r.0, &r.1).is_err()).map(|r| r.1.as_str()).collect();
-                let restored = if lost.is_empty() { String::new() } else { format!(" (and could not reconnect {})", lost.join(", ")) };
-                return Err(format!("connecting {} to {}: {e}{restored}", w.0, w.1));
+                // These were made a moment ago: one that will not come down is still there.
+                let stuck = made.into_iter().filter(|m| !bay.disconnect(&m.0, &m.1)).cloned().collect();
+                let lost = removed.into_iter().filter(|r| bay.connect(&r.0, &r.1).is_err()).cloned().collect();
+                return Err(Failed { cause: format!("connecting {} to {}: {e}", w.0, w.1), stuck, lost });
             }
         }
     }
@@ -154,7 +202,7 @@ fn rewire(bay: &mut impl Patchbay, possible: &[Wire], wanted: &[Wire]) -> Result
 }
 
 /// Wire this process's stream of `direction` to the port group `id` names, replacing whatever it
-/// was connected to; on failure the stream keeps what it was connected to.
+/// was connected to. The error says whether the stream got its previous connections back.
 pub(super) fn patch(direction: Direction, id: &str) -> Result<(), String> {
     let Some(group) = id.strip_prefix(JACK_PORTS) else { return Ok(()) };
     let mut client = client()?;
@@ -170,7 +218,7 @@ pub(super) fn patch(direction: Direction, id: &str) -> Result<(), String> {
         Direction::Output => client.ports(None, Some("audio"), PortFlags::IS_INPUT),
     };
     let possible: Vec<Wire> = mine.iter().flat_map(|port| partners.iter().map(move |other| wire(direction, port, other))).collect();
-    rewire(&mut client, &possible, &wanted)
+    rewire(&mut client, &possible, &wanted).map_err(|e| e.to_string())
 }
 
 #[cfg(test)]
@@ -232,6 +280,16 @@ mod tests {
         assert_eq!(
             plan(Direction::Output, &out, &playback, "system").unwrap(),
             wires(&[("cpal_client_1_out:out_0", "system:playback_1"), ("cpal_client_1_out:out_1", "system:playback_2")])
+        );
+        // The server lists the stream's ports in another order: channels still pair by number.
+        let shuffled = names(&["cpal_client_1_out:out_10", "cpal_client_1_out:out_1", "cpal_client_1_out:out_0"]);
+        assert_eq!(
+            plan(Direction::Output, &shuffled, &playback, "system").unwrap(),
+            wires(&[
+                ("cpal_client_1_out:out_0", "system:playback_1"),
+                ("cpal_client_1_out:out_1", "system:playback_2"),
+                ("cpal_client_1_out:out_10", "system:playback_3")
+            ])
         );
         // The interface was unplugged since it was chosen, or the stream is gone.
         assert_eq!(plan(Direction::Input, &mine, &hardware, "Gone").unwrap_err(), "'Gone' has no ports now");
@@ -306,7 +364,7 @@ mod tests {
     fn a_failure_on_the_first_channel_keeps_the_old_connections() {
         let mut graph = Graph::new(&ON_SYSTEM, &["usb:playback_1"]);
         let e = rewire(&mut graph, &possible(), &wires(&TO_USB)).unwrap_err();
-        assert_eq!(e, "connecting me:out_0 to usb:playback_1: no such port");
+        assert_eq!(e.to_string(), "connecting me:out_0 to usb:playback_1: no such port; its previous connections were put back");
         assert_eq!(graph.sorted(), wires(&ON_SYSTEM));
     }
 
@@ -314,7 +372,7 @@ mod tests {
     fn a_failure_on_a_later_channel_undoes_the_ones_made_and_keeps_the_old_connections() {
         let mut graph = Graph::new(&ON_SYSTEM, &["usb:playback_2"]);
         let e = rewire(&mut graph, &possible(), &wires(&TO_USB)).unwrap_err();
-        assert_eq!(e, "connecting me:out_1 to usb:playback_2: no such port");
+        assert_eq!((e.cause.as_str(), e.stuck.len(), e.lost.len()), ("connecting me:out_1 to usb:playback_2: no such port", 0, 0));
         assert_eq!(graph.sorted(), wires(&ON_SYSTEM), "not half on the new interface");
         // A wanted connection that was there before the rewiring stays through the undo.
         let mut graph = Graph::new(&[TO_USB[0], ON_SYSTEM[1]], &["usb:playback_2"]);
@@ -340,7 +398,34 @@ mod tests {
         }
         let mut graph = Unplugged(Graph::new(&ON_SYSTEM, &["usb:playback_1"]));
         let e = rewire(&mut graph, &possible(), &wires(&TO_USB)).unwrap_err();
-        assert_eq!(e, "connecting me:out_0 to usb:playback_1: no such port (and could not reconnect system:playback_2)");
+        assert_eq!(e.lost, wires(&[ON_SYSTEM[1]]));
+        assert_eq!(
+            e.to_string(),
+            "connecting me:out_0 to usb:playback_1: no such port; the stream may be partly wired: could not reconnect system:playback_2 from me:out_1"
+        );
         assert_eq!(graph.0.sorted(), wires(&[ON_SYSTEM[0]]));
+    }
+
+    #[test]
+    fn a_new_connection_that_cannot_be_taken_down_is_named() {
+        // The second channel cannot be connected, and the first one, just made, will not come down.
+        struct Stuck(Graph);
+        impl Patchbay for Stuck {
+            fn connect(&mut self, from: &str, to: &str) -> Result<bool, String> {
+                self.0.connect(from, to)
+            }
+            fn disconnect(&mut self, from: &str, to: &str) -> bool {
+                to != "usb:playback_1" && self.0.disconnect(from, to)
+            }
+        }
+        let mut graph = Stuck(Graph::new(&ON_SYSTEM, &["usb:playback_2"]));
+        let e = rewire(&mut graph, &possible(), &wires(&TO_USB)).unwrap_err();
+        assert_eq!((e.stuck.as_slice(), e.lost.len()), (&wires(&[TO_USB[0]])[..], 0));
+        assert_eq!(
+            e.to_string(),
+            "connecting me:out_1 to usb:playback_2: no such port; the stream may be partly wired: could not disconnect usb:playback_1 from me:out_0"
+        );
+        // The old connections are back, next to the one that stayed.
+        assert_eq!(graph.0.sorted(), wires(&[ON_SYSTEM[0], TO_USB[0], ON_SYSTEM[1]]));
     }
 }

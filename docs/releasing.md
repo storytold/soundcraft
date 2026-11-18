@@ -76,11 +76,16 @@ libclang at build time (below), and the release jobs install their build package
 `storytold/craft-common-actions` workflow (`install-linux-deps`, `install-riscv64-cross`), which
 has none of them. Shipping the hosts takes, in order: those packages in the shared actions (also
 for the aarch64 runner and the riscv64 cross build); the two features made default in
-`apps/soundcraft/Cargo.toml`; `--no-default-features` in the FreeBSD package and the Flatpak
-manifest; and `libpipewire-0.3` among the dependencies in `packaging/linux/nfpm.yaml`. Note that a
+`apps/soundcraft/Cargo.toml`; `--no-default-features` in the FreeBSD package and the from-source
+Flatpak manifest; and `libpipewire-0.3` among the dependencies in `packaging/linux/nfpm.yaml`. Note that a
 binary with the `pipewire` feature links `libpipewire-0.3.so.0`, so the AppImage and the tarball
 would no longer start on a machine without PipeWire; `jack` has no such cost (libjack is loaded
-at runtime when present).
+at runtime when present). The release `.flatpak` is that same tarball repackaged, with no Rust
+build of its own, so `--no-default-features` in the from-source manifest does not reach it: it
+would carry the PipeWire-linked binary. Before the features become default, either the Linux job
+builds a second tarball without them for the bundle, or the bundle manifest provides
+`libpipewire-0.3.so.0` and a way to the PipeWire socket (the manifests grant only
+`--socket=pulseaudio` today).
 
 - **Linux** builds need the ALSA headers (`libasound2-dev` and `pkg-config` on Ubuntu). The binary
   links `libasound.so.2`, so the `.deb` depends on `libasound2 | libasound2t64` and the `.rpm` on
@@ -99,11 +104,15 @@ at runtime when present).
 - **Windows and macOS, `jack` feature** (`--features jack`): no build dependency; `libjack64.dll`
   / `libjack.0.dylib` is loaded at runtime and the host is offered only when it is found.
 - **Choosing the host and devices** (all platforms): Setup › Playback Engine lists the hosts the build has (remembered
-  in the UI prefs); `--audio-host <id>` and `SOUNDCRAFT_AUDIO_HOST` (`pipewire`, `jack`, `alsa`,
-  `auto`) override it. Default takes the first host with a default device, in the order
+  in the UI prefs); a host named with `--audio-host <id>` or `SOUNDCRAFT_AUDIO_HOST` (`pipewire`,
+  `jack`, `alsa`) wins over it for that run, and `auto` there lifts that choice, so the dialog's
+  applies again. Default takes the first host with a default device, in the order
   PipeWire, JACK, ALSA on Linux; on macOS and Windows the system host (CoreAudio, WASAPI) first,
-  so ASIO and JACK are used only when chosen. A host that cannot be opened falls back to the
-  automatic order. The same dialog picks the output and input device of that host.
+  so ASIO and JACK are used only when chosen. A chosen host with no default device (its server is
+  not running) falls back to the automatic order. A host that has a device whose stream cannot
+  start does not: playback then runs on the silent clock, and no other host is tried. The same
+  dialog picks the output and input device of that host; on JACK, an interface that cannot be
+  wired to (it was unplugged) gives the silent clock and no input, not another interface.
 - **FreeBSD** builds need `alsa-lib` (`pkg install alsa-lib`); at runtime `alsa-plugins-oss`
   routes ALSA to the OSS `sound(4)` devices. Without a device the player falls back to its
   silent clock, so the transport still runs.

@@ -252,6 +252,15 @@ impl Player {
                     },
                     |opened| start_stream(&opened.stream),
                 );
+                // On JACK the stream opened on the system ports: wire it to the chosen interface.
+                // One that is not on it is not the output that was chosen: it is given up.
+                let opened = opened.filter(|_| match host::wire_stream(host::Direction::Output, &host, cfg.output.as_deref()) {
+                    Ok(()) => true,
+                    Err(e) => {
+                        log::warn!("audio output: {e}");
+                        false
+                    }
+                });
                 match opened {
                     Some((config, Opened { stream, tx, grx, fault })) => {
                         let rate = config.sample_rate;
@@ -260,8 +269,6 @@ impl Player {
                             cpal::BufferSize::Fixed(n) => Some(n),
                             cpal::BufferSize::Default => None,
                         };
-                        // On JACK the stream opened on the system ports: wire it to the chosen interface.
-                        host::wire_stream(host::Direction::Output, &host, cfg.output.as_deref());
                         log::info!(
                             "audio device: {name} ({host_name}) @ {rate} Hz, {channels} ch, {format}, buffer {}",
                             buffer.map_or("default".to_string(), |n| n.to_string())

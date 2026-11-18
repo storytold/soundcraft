@@ -7,8 +7,9 @@
 //! `{"id":1,"ok":true,"result":…}`. See `soundcraft_ui_egui::control` for the methods.
 //!
 //! `--audio-host <id>` (or `SOUNDCRAFT_AUDIO_HOST`) picks the audio host: the built-in one (`alsa`, `coreaudio`,
-//! `wasapi`) or one added by a cargo feature (`jack`, `pipewire`, `asio`); `auto` (the default) takes the first one that
-//! has a device. It overrides the host remembered from the Playback Engine dialog.
+//! `wasapi`) or one added by a cargo feature (`jack`, `pipewire`, `asio`); a named host wins over the one
+//! remembered from the Playback Engine dialog; `auto` (the default) leaves that one in charge, or the automatic order
+//! when none is remembered.
 //!
 //! `log` records go to standard error and `<settings dir>/logs/soundcraft.log` (`RUST_LOG` sets the
 //! levels); see [`logging`].

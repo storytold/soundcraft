@@ -38,7 +38,7 @@ fn forced() -> Option<String> {
 /// A host id as the user may write it (`"ALSA"`, `" pipewire "`), in the form cpal's ids have.
 /// `None` for no choice (empty, `auto`). Host names differ from their ids only in case, so a
 /// name remembered by an older version reads as its id.
-fn host_key(s: &str) -> Option<String> {
+pub(crate) fn host_key(s: &str) -> Option<String> {
     let s = s.trim().to_ascii_lowercase();
     (!s.is_empty() && s != "auto").then_some(s)
 }
@@ -127,7 +127,6 @@ fn first_open<T>(order: &[String], mut open: impl FnMut(&str) -> Option<T>) -> O
 /// automatic order; in each case the first that has a default device for `direction`. `None` when
 /// no host has one.
 pub(crate) fn pick(cfg: &AudioConfig, direction: Direction) -> Option<cpal::Host> {
-    use cpal::traits::HostTrait;
     let ids = host_ids();
     let available: Vec<String> = ids.iter().map(ToString::to_string).collect();
     let (forced, configured) = (forced(), cfg.system.as_deref().and_then(host_key));
@@ -151,10 +150,9 @@ pub(crate) fn pick(cfg: &AudioConfig, direction: Direction) -> Option<cpal::Host
                 return None;
             }
         };
-        let has_device = match direction {
-            Direction::Output => host.default_output_device().is_some(),
-            Direction::Input => host.default_input_device().is_some(),
-        };
+        // A host the user asked for is taken at its word; one that is only probed must have
+        // something to play to.
+        let has_device = has_default(&host, direction, !asked.is_some_and(|a| a == want));
         if !has_device {
             // Only the host the user asked for is worth a warning; the rest are just probed.
             if asked.is_some_and(|a| a == want) {
@@ -166,6 +164,29 @@ pub(crate) fn pick(cfg: &AudioConfig, direction: Direction) -> Option<cpal::Host
         has_device.then_some(host)
     });
     picked.map(|(_, host)| host)
+}
+
+/// Whether `host` has a default device for `direction`. `automatic` is for a host nobody asked
+/// for (the automatic order, see [`pick`]): PipeWire then also needs a sink to play to. Its
+/// default output is a stand-in that exists as soon as the graph has any audio node, a lone
+/// microphone included, and a stream opened on it would play to nothing while ALSA could play.
+pub(crate) fn has_default(host: &cpal::Host, direction: Direction, automatic: bool) -> bool {
+    use cpal::traits::{DeviceTrait, HostTrait};
+    match direction {
+        Direction::Input => host.default_input_device().is_some(),
+        Direction::Output if host.default_output_device().is_none() => false,
+        Direction::Output if automatic && host.id().to_string() == "pipewire" => host.devices().is_ok_and(|mut all| {
+            // cpal lists a sink as a device for both directions (it can be recorded) and another
+            // application's stream as an output only.
+            all.any(|d| d.supports_output() && d.supports_input() && d.id().is_ok_and(|id| !pipewire_alias(&id.to_string())))
+        }),
+        Direction::Output => true,
+    }
+}
+
+/// True for the ids of the stand-ins cpal's PipeWire host makes for "the system default".
+fn pipewire_alias(id: &str) -> bool {
+    matches!(id.strip_prefix("pipewire:").unwrap_or(id), "output_default" | "input_default" | "sink_default")
 }
 
 /// The devices of `host` worth offering for `direction`, tidied (see [`tidy`]). On JACK, which
@@ -239,9 +260,9 @@ fn tidy(raw: &Raw, direction: Direction) -> Option<(String, Vec<String>, bool)> 
     let mut monitor = false;
     match host {
         "pipewire" => {
-            // The host's default nodes are the "Default" entry; nameless nodes are other
-            // applications' streams.
-            if device.ends_with("_default") || name.is_empty() || name == "unknown" {
+            // The host's stand-ins for the default are the "Default" entry (a real node may well
+            // be called `studio_default`); nameless nodes are other applications' streams.
+            if pipewire_alias(device) || name.is_empty() || name == "unknown" {
                 return None;
             }
             // PipeWire lets every output be recorded.
@@ -271,17 +292,35 @@ fn tidy(raw: &Raw, direction: Direction) -> Option<(String, Vec<String>, bool)> 
     Some((name, detail, monitor))
 }
 
-/// After a stream of `direction` opened on `host`: on JACK, wire it to the interface `device`
-/// names (see `jack_ports`). Elsewhere the device was already the right one.
-pub(crate) fn wire_stream(direction: Direction, host: &cpal::Host, device: Option<&str>) {
+/// Before a stream of `direction` opens on `host`: how many ports the JACK interface `device`
+/// names has, which is how many channels the stream should have. A stream with more would leave
+/// channels unconnected (a stereo mix on a one-port interface would lose its right side) and one
+/// with fewer would leave ports unrecorded. `None` when no JACK interface is chosen, or it is
+/// not there now.
+pub(crate) fn group_ports(direction: Direction, host: &cpal::Host, device: Option<&str>) -> Option<u16> {
     #[cfg(all(feature = "jack", not(target_arch = "wasm32")))]
     if host.id() == cpal::HostId::Jack
         && let Some(id) = device
-        && let Err(e) = jack_ports::patch(direction, id)
     {
-        log::warn!("JACK: {e}; the stream keeps the connections it had");
+        return jack_ports::port_count(direction, id).and_then(|n| u16::try_from(n).ok());
     }
     let _ = (direction, host, device);
+    None
+}
+
+/// After a stream of `direction` opened on `host`: on JACK, wire it to the interface `device`
+/// names (see `jack_ports`). Elsewhere, and with no interface chosen, the stream is already
+/// where it belongs. An error means the stream is not on the chosen interface: recording from
+/// it would capture another input, so the caller gives the stream up.
+pub(crate) fn wire_stream(direction: Direction, host: &cpal::Host, device: Option<&str>) -> Result<(), String> {
+    #[cfg(all(feature = "jack", not(target_arch = "wasm32")))]
+    if host.id() == cpal::HostId::Jack
+        && let Some(id) = device
+    {
+        return jack_ports::patch(direction, id).map_err(|e| format!("JACK: {e}"));
+    }
+    let _ = (direction, host, device);
+    Ok(())
 }
 
 #[cfg(test)]
@@ -359,6 +398,12 @@ mod tests {
         // PipeWire: defaults and other applications' streams go; outputs are monitors as inputs.
         assert!(tidy(&raw("pipewire:output_default", "default_output", None, false), Output).is_none());
         assert!(tidy(&raw("pipewire:karere", "unknown", None, false), Output).is_none());
+        for alias in ["pipewire:output_default", "pipewire:input_default", "pipewire:sink_default"] {
+            assert!(pipewire_alias(alias) && tidy(&raw(alias, "x", None, false), Output).is_none(), "{alias}");
+        }
+        // Only those three: a real sink whose name ends the same way stays.
+        let studio = raw("pipewire:studio_default", "Studio", None, false);
+        assert_eq!(tidy(&studio, Output), Some(("Studio".into(), vec![], false)));
         let sink = raw("pipewire:alsa_output.usb-X", "Scarlett 2i2", None, false);
         assert_eq!(tidy(&sink, Output), Some(("Scarlett 2i2".into(), vec![], false)));
         assert_eq!(tidy(&sink, Input), Some(("Monitor of Scarlett 2i2".into(), vec![], true)));

@@ -229,7 +229,13 @@ impl Recorder {
         // At the chosen rate when the device offers it, so input and output run together: the
         // best format first, then the most channels.
         let configs: Vec<cpal::SupportedStreamConfigRange> = device.supported_input_configs().map(|configs| configs.collect()).unwrap_or_default();
-        let at_rate = audio.sample_rate.and_then(|r| pick_input_config(&configs, r));
+        // On JACK with an interface chosen: one channel per port of it, so every input of the
+        // interface is recorded from its own port and none of another's.
+        let grouped = crate::host::group_ports(crate::host::Direction::Input, &host, audio.input.as_deref()).and_then(|ports| {
+            let rates: Vec<u32> = audio.sample_rate.into_iter().chain(device.default_input_config().ok().map(|d| d.sample_rate())).collect();
+            crate::devices::port_group_config(&configs, &rates, ports)
+        });
+        let at_rate = grouped.or_else(|| audio.sample_rate.and_then(|r| pick_input_config(&configs, r)));
         let cfg = match at_rate {
             Some(c) => c,
             None => {
@@ -270,8 +276,9 @@ impl Recorder {
             Err(e) => return Err(e.to_string()),
         };
         stream.play().map_err(|e| e.to_string())?;
-        // On JACK the stream opened on the system ports: wire it to the chosen interface.
-        crate::host::wire_stream(crate::host::Direction::Input, &host, audio.input.as_deref());
+        // On JACK the stream opened on the system ports: wire it to the chosen interface. A
+        // stream that is not on it would record another input: no input, rather than that.
+        crate::host::wire_stream(crate::host::Direction::Input, &host, audio.input.as_deref())?;
         log::info!("audio input: {name} ({host_name}) @ {} Hz, {channels} ch, {format}", config.sample_rate);
         let seen = (0, Instant::now());
         Ok(Recorder {
