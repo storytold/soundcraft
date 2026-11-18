@@ -1,6 +1,6 @@
 # Plugin parity: built-in processors and plugin hosting
 
-> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-25 · **Change:** trivial (Auto Pan stereo balance; previously minor: AudioSuite speed ramps (speed_ramp); Auto Pan; Subharmonic; previously minor: Ring Modulator; VST3 host messages: IMessage and IAttributeList; previously trivial: Sampler ping-pong loop phase (#463); previously trivial: mix.instrument sets built-in instrument parameters in params (#265); previously minor: plugin editors on Windows) · **Target:** Avid Pro Tools Ultimate 2026.4.1
+> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-11-18 · **Change:** trivial (command plug-ins are not audio plug-ins; previously trivial: Auto Pan stereo balance; previously minor: AudioSuite speed ramps (speed_ramp); Auto Pan; Subharmonic; previously minor: Ring Modulator; VST3 host messages: IMessage and IAttributeList; previously trivial: Sampler ping-pong loop phase (#463); previously trivial: mix.instrument sets built-in instrument parameters in params (#265); previously minor: plugin editors on Windows) · **Target:** Avid Pro Tools Ultimate 2026.4.1
 
 Pro Tools users live in plugins: the bundled set covers everyday mixing, and third-party plugins
 cover the rest. This doc tracks both. Our plugins have our own names and are written from
@@ -8,6 +8,9 @@ scratch (clean-room rule): Avid plugin names are not used here, only categories.
 
 **Built-in plugins and AudioSuite: breadth ~40 %, ready ~35 %** (80–120 h).
 **Third-party hosting: breadth ~70 %, ready ~45 %** (40–60 h). Both estimated.
+
+This doc is about audio plug-ins. WebAssembly **command plug-ins** (RFC-0046), which run
+SoundCraft's commands on the session and never process audio, are described in [plugins.md](plugins.md).
 
 ## Built-in processors (measured from `crates/dsp/src/plugins`)
 
@@ -58,6 +61,7 @@ User report #152: a saved instrument level does not reach the bounce.
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-11-18 | trivial | Pointer to [plugins.md](plugins.md): WebAssembly command plug-ins are not audio plug-ins |
 | 2026-10-25 | trivial | Auto Pan: constant-power balance of the left and right channels; stereo passes unchanged at the center |
 | 2026-10-24 | minor | AudioSuite speed ramps (`speed_ramp`): down to a stop and up from one, Fit To or Extend, fades on or off |
 | 2026-10-24 | minor | Auto Pan: LFO and envelope panning of stereo tracks; built-in count 27 processors + 3 instruments |

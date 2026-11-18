@@ -1,6 +1,6 @@
 # SoundCraft roadmap: milestones and what's next
 
-> **Last reviewed:** 2026-11-05 · **Last updated:** 2026-11-05 · **Change:** trivial (M15: partial pt-BR catalog in PR #1346) · **Target:** Avid Pro Tools Ultimate 2026.4.1
+> **Last reviewed:** 2026-11-05 · **Last updated:** 2026-11-18 · **Change:** trivial (M8: WebAssembly command plug-ins, RFC-0046; previously trivial: M15: partial pt-BR catalog in PR #1346) · **Target:** Avid Pro Tools Ultimate 2026.4.1
 
 Forward-looking plan. Status and numbers: [`../ROADMAP.md`](../ROADMAP.md) and
 [`target-app-parity.md`](target-app-parity.md); the ranked work list: [`gaps.md`](gaps.md).
@@ -56,6 +56,11 @@ Status: ✅ done · 🟡 in progress · ⬜ not started.
 M8 follow-up (2026-10-14): MCP batches above 1000 calls are rejected before execution (#460).
 The limit is advertised in the tool schema and description; stage and readiness estimates are unchanged.
 
+M8 follow-up (2026-11-18): WebAssembly command plug-ins (RFC-0046, the shared `craft-plugin` crate; not audio
+plug-ins): the `plugin.*` commands, the Command Plug-ins menu and window, one undo step per run, an
+allowlist of the session-editing commands a run may call ([`plugins.md`](plugins.md)). Panels and pt-BR
+strings for the new window remain. Stage and readiness estimates are unchanged.
+
 ## To beta (~350–570 h, about 60–70 % parallelizable)
 
 Beta needs ~75 % ready for real work and no blocking gap in session interchange.
@@ -88,6 +93,7 @@ There is no `cargo xtask scorecard` in this repo; the measured number is `cargo 
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-11-18 | trivial | M8: WebAssembly command plug-ins (RFC-0046), `plugin.*` commands and the Command Plug-ins menu; estimates unchanged |
 | 2026-11-05 | trivial | M15: a pt-BR catalog covers menus and `text`/`localized_format!` strings; remains native review, CJK/RTL and the other languages. Estimates unchanged |
 | 2026-10-25 | trivial | Record-workflow evidence: `setup.playback_engine` applies the device and buffer in the desktop app; headless returns `applied: false` |
 | 2026-10-24 | trivial | 27 built-in processors, as the plugin registry holds; the sampler (#108) is no longer listed under plugin essentials |

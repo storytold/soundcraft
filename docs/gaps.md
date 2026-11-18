@@ -1,6 +1,6 @@
 # Where SoundCraft falls short of Pro Tools
 
-> **Last reviewed:** 2026-10-25 · **Last updated:** 2026-11-13 · **Change:** trivial (G-09: the pt-BR catalog now covers helper-passed tooltips, the status bar, the remove-session prompt and engine error text; previously trivial: G-04: volume automation read at every sample, #1354; G-01: `setup.playback_engine` applies the device buffer in the desktop app; G-04: Clip Looping crossfade and loop count) · **Target:** Avid Pro Tools Ultimate 2026.4.1
+> **Last reviewed:** 2026-10-25 · **Last updated:** 2026-11-18 · **Change:** trivial (G-13: WebAssembly command plug-ins are not audio plug-ins, what they still lack; previously trivial: G-09: the pt-BR catalog now covers helper-passed tooltips, the status bar, the remove-session prompt and engine error text; previously trivial: G-04: volume automation read at every sample, #1354; G-01: `setup.playback_engine` applies the device buffer in the desktop app; G-04: Clip Looping crossfade and loop count) · **Target:** Avid Pro Tools Ultimate 2026.4.1
 
 Every known shortfall, one entry each, ranked by how much it stops a Pro Tools user from doing
 real work in SoundCraft. This is the work list: pick from the top. Rows marked **alpha blocker**
@@ -187,6 +187,11 @@ No sidechain (key input) buses for any host; no ARA (Melodyne-style editing is a
 Tools); plugins run in-process, so a crashing plugin can take the session down. ≈ 30–50 h. AAX
 cannot be hosted (#109): Avid's AAX SDK licence and PACE signing; owner decision, likely never.
 
+WebAssembly command plug-ins (RFC-0046, [plugins.md](plugins.md)) are a different thing: they run
+SoundCraft's commands on the session, never audio. They lack panels (`ui_show`), offering files to
+save, the installed commands in the macOS menu bar, and pt-BR strings for their menu and window.
+≈ 6–10 h.
+
 ### G-14. Platforms and CI
 
 Only `freebsd.yml` and `windows-arm64.yml` run on pull requests, and only for manifest paths;
@@ -238,6 +243,7 @@ missing. Out of scope unless the owner decides otherwise.
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-11-18 | trivial | G-13: WebAssembly command plug-ins (RFC-0046) landed; what they still lack, apart from audio plug-in depth; estimates unchanged |
 | 2026-11-13 | trivial | G-09: the pt-BR catalog now covers tooltips localized inside buttons and toggles, the Edit-window status bar, the remove-session question, the send help text and engine errors shown in the status line; estimates unchanged |
 | 2026-11-04 | trivial | G-04: track and master volume automation read at every sample, so breakpoints act on their own sample in any block size (#1354); estimates unchanged |
 | 2026-10-25 | trivial | G-04: Clip Looping (#1030) lacks the loop crossfade option, and Number of Loops stops at 512 while length and fill make up to 1000 loops |
