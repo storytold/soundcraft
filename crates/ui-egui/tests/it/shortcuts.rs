@@ -226,6 +226,9 @@ fn a_midi_editor_behind_another_tab_leaves_the_arrows_to_the_edit_window() {
 #[test]
 fn delete_with_the_midi_editor_behind_another_tab_clears_the_edit_selection() {
     let clips = |app: &SoundApp| app.engine.session().track_by_name("Keys").and_then(|t| t.playlist()).map_or(0, |p| p.clips.len());
+    let clip_ids = |app: &SoundApp| -> Vec<_> {
+        app.engine.session().track_by_name("Keys").and_then(|t| t.playlist()).map(|p| p.clips.iter().map(|c| c.id).collect()).unwrap_or_default()
+    };
     let mut app = SoundApp::new(soundcraft_engine::demo::demo_engine(), None, Services::default());
     app.ui.show_midi_editor = true;
     let end: i64 = 48_000 * 600;
@@ -241,12 +244,13 @@ fn delete_with_the_midi_editor_behind_another_tab_clears_the_edit_selection() {
     }
     assert!(app.ui.show_midi_editor, "the MIDI editor is still open");
     assert_ne!(app.ui.docking.layout.panel_state(&soundcraft_ui_egui::docking::Panel::Midi), craft_ui::docking::PanelState::Front);
-    assert!(clips(&app) > 0);
+    let before = clip_ids(&app);
+    assert!(!before.is_empty());
     app.midi.selected = vec![0, 1];
     app_frame(&ctx, &mut app, arrow(Key::Delete));
     assert_eq!(clips(&app), 0, "Delete cleared the Edit selection");
     app.run("edit.undo", json!({})).unwrap();
-    assert!(clips(&app) > 0, "one Undo brings it back");
+    assert_eq!(clip_ids(&app), before, "one Undo brings every clip back");
 }
 
 /// #1627: a layout change between frames that puts another tab over the MIDI Editor counts at
