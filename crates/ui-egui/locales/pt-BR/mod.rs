@@ -307,6 +307,7 @@ pub(super) fn translate(source: &str) -> Option<&'static str> {
         "Meter" => "Compasso",
         "Tempo" => "Andamento",
         "MIDI in: all" => "Entrada MIDI: todas",
+        "MIDI Destination" => "Destino MIDI",
         "MIDI EDITOR" => "EDITOR MIDI",
         "Velocity" => "Velocidade",
         "movie missing from session" => "vídeo ausente da sessão",

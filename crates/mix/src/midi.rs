@@ -1,7 +1,59 @@
 use super::clips::Key;
 use super::strip::{PluginSlot, Strip};
-use super::{ClipContent, CtrlKind, Range, SampleSource, Samples, Session, SourceAudio, Track};
+use super::{ClipContent, CtrlKind, Range, SampleSource, Samples, Session, SourceAudio, Track, TrackId};
 use std::sync::Arc;
+
+pub(crate) type HeldNotes = [[bool; 128]; 16];
+
+/// Note state for one source, so disabling it releases its notes on the shared instrument.
+pub(crate) struct RoutedMidi {
+    pub(crate) track: TrackId,
+    pub(crate) channel: u8,
+    enabled: bool,
+    held: HeldNotes,
+}
+
+impl RoutedMidi {
+    pub(crate) fn new(track: TrackId, channel: u8) -> Self {
+        Self { track, channel, enabled: false, held: [[false; 128]; 16] }
+    }
+
+    pub(crate) fn clear(&mut self) {
+        self.enabled = false;
+        self.held.fill([false; 128]);
+    }
+
+    pub(crate) fn release(&mut self, inst: &mut PluginSlot) {
+        if self.enabled {
+            inst.plugin.midi(0, [0xB0 | self.channel, 64, 0]);
+            inst.plugin.midi(0, [0xB0 | self.channel, 66, 0]);
+            release_notes(inst, &mut self.held);
+        }
+        self.enabled = false;
+    }
+
+    pub(crate) fn render(&mut self, s: &Session, source: &Track, dest: &Track, inst: &mut PluginSlot, blk: super::strip::Block, chase: bool) {
+        if source.inactive || source.mixer.mute || (blk.any_solo && !source.mixer.solo && !source.mixer.solo_safe && !dest.mixer.solo) {
+            self.release(inst);
+            return;
+        }
+        if chase || !self.enabled {
+            chase_controllers(s, source, blk.pos, inst, Some(self.channel));
+        }
+        self.enabled = true;
+        schedule_notes(s, source, blk.pos, blk.frames, inst, &mut self.held, Some(self.channel));
+    }
+}
+
+pub(crate) fn release_notes(inst: &mut PluginSlot, held: &mut HeldNotes) {
+    for (channel, notes) in held.iter_mut().enumerate() {
+        for (key, sounding) in notes.iter_mut().enumerate() {
+            if std::mem::take(sounding) {
+                inst.plugin.note_off_channel(0, channel as u8, key as u8);
+            }
+        }
+    }
+}
 
 /// The track's MIDI Track Offset (`midi.offset.<id>` in the edit values), in samples. Looked up
 /// without formatting the key, since this runs on the audio thread every block.
@@ -18,7 +70,7 @@ fn midi_offset(s: &Session, t: &Track) -> i64 {
 }
 
 /// Send note on/offs and controllers for MIDI clips overlapping the block.
-pub(crate) fn schedule_notes(s: &Session, t: &Track, pos: Samples, frames: usize, inst: &mut PluginSlot, held: &mut [[bool; 128]; 16]) {
+pub(crate) fn schedule_notes(s: &Session, t: &Track, pos: Samples, frames: usize, inst: &mut PluginSlot, held: &mut HeldNotes, channel: Option<u8>) {
     let sr = s.sample_rate;
     // MIDI Track Offsets: the track's notes sound `offset` samples later (earlier if negative), so
     // the block looks that far back into the clips.
@@ -54,6 +106,7 @@ pub(crate) fn schedule_notes(s: &Session, t: &Track, pos: Samples, frames: usize
                 continue;
             }
             let mut n = *n0;
+            n.channel = channel.unwrap_or(n.channel);
             n.velocity = (i64::from(n.velocity) + dv).clamp(1, 127) as u8;
             n.pitch = (i64::from(n.pitch) + dp).clamp(0, 127) as u8;
             n.length = ((n.length as f64 * dur) as i64).max(1);
@@ -89,7 +142,7 @@ pub(crate) fn schedule_notes(s: &Session, t: &Track, pos: Samples, frames: usize
             }
             let at = s.tempo.tick_to_samples(base.saturating_add(tick), sr);
             if at >= pos && at < end && at < clip.end() {
-                inst.plugin.midi(usize::try_from(at - pos).unwrap_or(0), ctrl_message(c.channel, c.kind, c.value, dp));
+                inst.plugin.midi(usize::try_from(at - pos).unwrap_or(0), ctrl_message(channel.unwrap_or(c.channel), c.kind, c.value, dp));
             }
         }
     }
@@ -115,9 +168,9 @@ fn ctrl_message(channel: u8, kind: CtrlKind, value: i32, transpose: i64) -> [u8;
 
 /// Before an instrument plays from `pos`: reset its controllers, then send each one the last value
 /// it had on this track before `pos`.
-pub(crate) fn chase_controllers(s: &Session, t: &Track, pos: Samples, inst: &mut PluginSlot) {
-    for channel in 0..16u8 {
-        inst.plugin.midi(0, [0xB0 | channel, 121, 0]);
+pub(crate) fn chase_controllers(s: &Session, t: &Track, pos: Samples, inst: &mut PluginSlot, channel: Option<u8>) {
+    for ch in channel.map_or(0..16, |ch| ch..ch.saturating_add(1)) {
+        inst.plugin.midi(0, [0xB0 | ch, 121, 0]);
     }
     let pos = pos.saturating_sub(midi_offset(s, t));
     const BEND: usize = 128;
@@ -145,7 +198,7 @@ pub(crate) fn chase_controllers(s: &Session, t: &Track, pos: Samples, inst: &mut
             };
             let at = s.tempo.tick_to_samples(base.saturating_add(c.tick), sr);
             if at < until
-                && let Some(l) = last.get_mut(usize::from(c.channel)).and_then(|controllers| controllers.get_mut(slot))
+                && let Some(l) = last.get_mut(usize::from(channel.unwrap_or(c.channel))).and_then(|controllers| controllers.get_mut(slot))
                 && at >= l.0
             {
                 *l = (at, order, c.value);

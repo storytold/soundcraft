@@ -11,6 +11,7 @@ pub(crate) fn structure_fingerprint(s: &Session) -> usize {
         t.kind.hash(&mut h);
         t.format.hash(&mut h);
         t.inactive.hash(&mut h);
+        t.midi_destination.hash(&mut h);
         t.mixer.inserts.len().hash(&mut h);
         t.mixer.input.hash(&mut h);
         t.mixer.output.hash(&mut h);
@@ -150,12 +151,27 @@ fn bounded_aux_depths(s: &Session) -> Vec<usize> {
     depths
 }
 
+/// A soloed MIDI source must keep its receiving instrument audible.
+pub(crate) fn midi_receives_solo(s: &Session, t: &Track) -> bool {
+    t.kind == TrackKind::Instrument
+        && !t.inactive
+        && t.instrument.is_some()
+        && s.tracks.iter().any(|source| {
+            source.kind == TrackKind::Midi
+                && !source.inactive
+                && !source.mixer.mute
+                && (source.mixer.solo || source.mixer.solo_safe)
+                && source.midi_destination.is_some_and(|route| route.track == t.id && (1..=16).contains(&route.channel))
+        })
+}
+
 /// Implicit solo: an aux is not muted when a soloed track feeds its input bus.
 pub(crate) fn receives_solo(s: &Session, t: &Track) -> bool {
     let Route::Bus(b) = &t.mixer.input else { return false };
-    s.tracks
-        .iter()
-        .any(|o| o.mixer.solo && (o.mixer.output == Route::Bus(*b) || o.mixer.sends.iter().flatten().any(|sn| sn.target == Route::Bus(*b))))
+    s.tracks.iter().any(|o| {
+        (o.mixer.output == Route::Bus(*b) || o.mixer.sends.iter().flatten().any(|sn| sn.target == Route::Bus(*b)))
+            && (o.mixer.solo || midi_receives_solo(s, o))
+    })
 }
 
 #[cfg(test)]

@@ -266,14 +266,42 @@ fn instrument_section(app: &mut SoundApp, ui: &mut Ui, cx: &StripCtx<'_>, mut y:
         match slot {
             _ if track.kind == TrackKind::Instrument => instrument_slot(app, ui, track, sr),
             Some(k) => insert_slot(app, ui, track, k, sr),
-            None if track.kind == TrackKind::Midi => {
-                ui.painter().text(sr.center(), Align2::CENTER_CENTER, crate::localization::text("MIDI in: all"), regular(9.0), t.text_dim);
-            }
+            None if track.kind == TrackKind::Midi => midi_destination_menu(app, ui, track, sr),
             None => {}
         }
         y = sec.max.y + 4.0;
     }
     y
+}
+
+fn midi_destination_menu(app: &mut SoundApp, ui: &mut Ui, track: &Track, rect: Rect) {
+    let session = app.engine.session();
+    let label = track
+        .midi_destination
+        .and_then(|route| session.track(route.track).map(|target| format!("{} · {}", route.channel, target.name)))
+        .unwrap_or_else(|| crate::localization::text("MIDI Destination").to_string());
+    let mut child = ui.new_child(egui::UiBuilder::new().id_salt(("midi_destination", track.id.0)).max_rect(rect));
+    let button = child.add_sized(rect.size(), egui::Button::new(&label).truncate()).on_hover_text(&label);
+    let mut selection = None;
+    egui::Popup::menu(&button).show(|menu| {
+        if menu.button(crate::localization::text("None")).clicked() {
+            selection = Some((None, None));
+            menu.close();
+        }
+        for target in session.tracks.iter().filter(|t| t.kind == TrackKind::Instrument && t.instrument.is_some()) {
+            menu.menu_button(&target.name, |channels| {
+                for channel in 1..=16 {
+                    if channels.button(channel.to_string()).clicked() {
+                        selection = Some((Some(target.id.0), Some(channel)));
+                        channels.close();
+                    }
+                }
+            });
+        }
+    });
+    if let Some((target, channel)) = selection {
+        let _ = app.run("track.midi_destination", json!({"track": track.id.0, "to": target, "channel": channel}));
+    }
 }
 
 /// The object/bed switch.

@@ -1,9 +1,9 @@
 use super::automation::{Level, apply_gain, transport_at, volume_level};
 use super::clips::{ClipFx, clip_fx_params, render_clip};
 use super::instances::{INSTRUMENT_SLOT, PluginFailures, PreparedInstance, create_instance_for, is_third_party};
-use super::midi::{chase_controllers, schedule_notes};
+use super::midi::{HeldNotes, RoutedMidi, chase_controllers, release_notes, schedule_notes};
 use super::pan::{PanSpec, apply_matrix, build_matrix, identity_matrix};
-use super::routing::receives_solo;
+use super::routing::{midi_receives_solo, receives_solo};
 use super::{
     AutoParam, BusId, ChannelFormat, MAX_CHANNELS, PanLaw, Plugin, Range, Route, Samples, Session, SourceAudio, Track, TrackId, TrackKind, Transport,
     db_to_gain,
@@ -40,7 +40,9 @@ pub(crate) struct Strip {
     /// The pool audio handed to the instrument with `set_sample` (sample-playing instruments).
     pub(crate) sample: Option<Arc<SourceAudio>>,
     /// MIDI notes currently sounding on the instrument (pitch), for note-offs at stops/seek.
-    pub(crate) held: [[bool; 128]; 16],
+    pub(crate) held: HeldNotes,
+    pub(crate) midi_sources: Vec<RoutedMidi>,
+    own_midi_enabled: bool,
     /// The instrument's next block starts somewhere new: send it the controllers in effect there.
     pub(crate) chase: bool,
     pub(crate) muted: bool,
@@ -140,6 +142,8 @@ impl Strip {
             instrument: None,
             sample: None,
             held: [[false; 128]; 16],
+            midi_sources: Vec::new(),
+            own_midi_enabled: true,
             chase: true,
             muted: false,
             gr: 0.0,
@@ -307,10 +311,22 @@ fn render_instrument(s: &Session, t: &Track, strip: &mut Strip, blk: Block, tran
             apply_params(inst, ins, t, INSTRUMENT_SLOT, pos);
         }
         inst.plugin.set_transport(transport);
-        if std::mem::take(&mut strip.chase) {
-            chase_controllers(s, t, pos, inst);
+        let chase = std::mem::take(&mut strip.chase);
+        let own_midi_enabled = strip.midi_sources.is_empty() || !blk.any_solo || t.mixer.solo || t.mixer.solo_safe || receives_solo(s, t);
+        if own_midi_enabled {
+            if chase || !strip.own_midi_enabled {
+                chase_controllers(s, t, pos, inst, None);
+            }
+            schedule_notes(s, t, pos, frames, inst, &mut strip.held, None);
+        } else if strip.own_midi_enabled {
+            release_notes(inst, &mut strip.held);
         }
-        schedule_notes(s, t, pos, frames, inst, &mut strip.held);
+        strip.own_midi_enabled = own_midi_enabled;
+        for route in &mut strip.midi_sources {
+            if let Some(source) = s.track(route.track) {
+                route.render(s, source, t, inst, blk, chase);
+            }
+        }
         if strip.buf.len() >= 2 {
             inst.plugin.process(&mut strip.buf, frames);
         } else if let Some(c0) = strip.buf.first_mut() {
@@ -423,7 +439,8 @@ pub(crate) fn process_strip(s: &Session, t: &Track, strip: &mut Strip, busses: &
         }
     }
     run_inserts(t, strip, blk, &transport);
-    let soloed_out = any_solo && !t.mixer.solo && !t.mixer.solo_safe && !receives_solo(s, t);
+    let soloed_out =
+        any_solo && !t.mixer.solo && !t.mixer.solo_safe && (strip.midi_sources.is_empty() || !midi_receives_solo(s, t)) && !receives_solo(s, t);
     strip.muted = t.mixer.mute || soloed_out;
     if t.mixer.sends.iter().flatten().any(|x| x.pre_fader) {
         strip.pre.resize_with(strip.buf.len(), Vec::new);

@@ -74,6 +74,22 @@ An output that is one of the inputs is a usage error too, however the path is sp
 `--in-place`, an output that is a symbolic link to the input replaces the file it links to; the
 link stays. An existing file that is not an input is replaced without asking.
 
+## Routing MIDI clips to one instrument
+
+Create an instrument track and assign a synth to it. Create a MIDI track for each part. In the
+Mix window's Instruments section, choose the target instrument and channel from each MIDI track's
+destination menu. Each part keeps its own clips, mute, and solo. Clip notes and controllers are sent
+on the selected channel during playback and bounce.
+
+Use `track.midi_destination` from a script or control client. This example sends the Bass MIDI
+track to the Shared Synth instrument on channel 2:
+
+```text
+track.midi_destination {"track":"Bass MIDI","to":"Shared Synth","channel":2}
+```
+
+Set `"to":null` to disconnect the track. The route is saved in the session.
+
 ## Environment variables
 
 | Variable | Flag | Notes |

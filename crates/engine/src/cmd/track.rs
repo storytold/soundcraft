@@ -779,6 +779,11 @@ fn delete(e: &mut Engine, p: &Value) -> Result<Value> {
         }
     }
     s.tracks.retain(|t| !tracks.contains(&t.id));
+    for track in &mut s.tracks {
+        if track.midi_destination.is_some_and(|route| tracks.contains(&route.track)) {
+            track.midi_destination = None;
+        }
+    }
     s.edit.selected_tracks.retain(|t| !tracks.contains(t));
     for g in &mut s.groups {
         g.members.retain(|t| !tracks.contains(t));

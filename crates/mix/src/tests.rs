@@ -499,6 +499,55 @@ impl Plugin for ChannelEars {
 }
 
 #[test]
+fn routed_midi_clips_use_distinct_channels_and_release_only_muted_source() {
+    use soundcraft_midi::{CtrlEvent, Note, Sequence};
+    use soundcraft_model::MidiDestination;
+
+    let mut s = Session::default();
+    let target = s.add_track(TrackKind::Instrument, ChannelFormat::Stereo, None);
+    s.track_mut(target).unwrap().instrument = Some(Insert::new("clap:test.channels"));
+    let mut sources = Vec::new();
+    for channel in [2, 10] {
+        let id = s.add_track(TrackKind::Midi, ChannelFormat::Mono, None);
+        sources.push(id);
+        let clip = s.new_clip_id();
+        let sequence = Sequence {
+            notes: vec![Note { channel: 0, pitch: 60, velocity: 100, release_velocity: 64, start: 1, length: 64 }],
+            ctrls: vec![CtrlEvent { tick: 0, channel: 0, kind: CtrlKind::Program, value: 33 }],
+        };
+        let track = s.track_mut(id).unwrap();
+        track.midi_destination = Some(MidiDestination { track: target, channel });
+        track.playlist_mut().unwrap().clips.push(Clip::midi(clip, "part", 0, 48_000, sequence));
+    }
+    let heard = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let mut eng = MixEngine::new(48_000.0, 512);
+    eng.set_external_instances(true);
+    eng.adopt(vec![PreparedInstance {
+        track: target,
+        slot: INSTRUMENT_SLOT,
+        id: "clap:test.channels".into(),
+        ch: 2,
+        plugin: Box::new(ChannelEars(Arc::clone(&heard))),
+    }]);
+    render_block(&mut eng, &s, 0);
+    let first = std::mem::take(&mut *heard.lock().unwrap());
+    assert!(first.contains(&(25, [0x91, 60, 100])));
+    assert!(first.contains(&(25, [0x99, 60, 100])));
+    assert!(first.contains(&(0, [0xC1, 33, 0])));
+    assert!(first.contains(&(0, [0xC9, 33, 0])));
+
+    s.track_mut(sources[0]).unwrap().mixer.mute = true;
+    render_block(&mut eng, &s, 512);
+    let second = std::mem::take(&mut *heard.lock().unwrap());
+    assert!(second.contains(&(0, [0x81, 60, 0])));
+    assert!(!second.iter().any(|(_, message)| *message == [0x89, 60, 0]));
+
+    s.track_mut(sources[1]).unwrap().midi_destination = None;
+    render_block(&mut eng, &s, 1024);
+    assert!(heard.lock().unwrap().contains(&(0, [0x89, 60, 0])));
+}
+
+#[test]
 fn midi_channels_reach_notes_controllers_and_seek_chase() {
     use soundcraft_midi::{CtrlEvent, Note, Sequence};
     let mut s = Session::default();
