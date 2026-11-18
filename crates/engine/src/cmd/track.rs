@@ -1021,9 +1021,17 @@ fn route(e: &mut Engine, p: &Value, input: bool) -> Result<Value> {
     let create_bus = bool_or(p, "create_bus", true);
     let s = e.session_mut();
     let mut r = parse_route(s, &v);
+    if !input
+        && !matches!(r, Route::None)
+        && (!create_bus || !matches!(r, Route::Bus(_)))
+        && let Some((index, path)) = s.outputs.iter().enumerate().find(|(_, path)| path.name.eq_ignore_ascii_case(&v))
+    {
+        r = if index == 0 { Route::Main } else { Route::Hardware(path.name.clone()) };
+    }
     if let Route::Hardware(name) = &r
         && create_bus
         && !name.to_ascii_lowercase().starts_with("in ")
+        && (input || !s.outputs.iter().any(|path| path.name.eq_ignore_ascii_case(name)))
     {
         let fmt = tracks
             .first()

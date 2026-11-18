@@ -67,7 +67,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "I/O...",
             ["Setup"],
             None,
-            "{action?: list|create_bus|rename_bus|delete_bus|create_output|rename_output|delete_output, name?, new_name?, format?: stereo, first_channel?: 0}",
+            "{action?: list|create_bus|rename_bus|delete_bus|create_output|set_output|rename_output|delete_output, name?, new_name?, format?: stereo, first_channel?: 0}",
             always,
             io_setup
         ),
@@ -342,13 +342,37 @@ fn io_setup(e: &mut Engine, p: &Value) -> Result<Value> {
         }
         "rename_output" => {
             let to = new_name.ok_or_else(|| bad(id, "`new_name` required"))?;
+            if s.outputs.iter().any(|o| o.name.eq_ignore_ascii_case(&to) && !o.name.eq_ignore_ascii_case(&name)) {
+                return Err(bad(id, format!("an output named `{to}` exists")));
+            }
             let o = s.outputs.iter_mut().find(|o| o.name.eq_ignore_ascii_case(&name)).ok_or_else(|| bad(id, format!("no output `{name}`")))?;
             let old = std::mem::replace(&mut o.name, to.clone());
             for t in &mut s.tracks {
-                if t.mixer.output == Route::Hardware(old.clone()) {
+                if matches!(&t.mixer.output, Route::Hardware(path) if path.eq_ignore_ascii_case(&old)) {
                     t.mixer.output = Route::Hardware(to.clone());
                 }
             }
+        }
+        "set_output" => {
+            let (index, output) = s
+                .outputs
+                .iter_mut()
+                .enumerate()
+                .find(|(_, o)| o.name.eq_ignore_ascii_case(&name))
+                .ok_or_else(|| bad(id, format!("no output `{name}`")))?;
+            let first = i64_or(p, "first_channel", i64::from(output.first_channel));
+            let format = if p.get("format").is_some() { format } else { output.format };
+            if index == 0 && format != output.format {
+                return Err(bad(id, "use Main output format to change the main mix width"));
+            }
+            if first < 0
+                || first.saturating_add(format.channels() as i64) > soundcraft_mix::MAX_HARDWARE_CHANNELS as i64
+                || !(1..=soundcraft_mix::MAX_CHANNELS).contains(&format.channels())
+            {
+                return Err(bad(id, "output path is outside the supported channel range"));
+            }
+            output.first_channel = first as u16;
+            output.format = format;
         }
         "delete_output" => {
             let before = s.outputs.len();

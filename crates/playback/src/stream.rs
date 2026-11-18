@@ -54,6 +54,7 @@ where
 {
     use cpal::traits::DeviceTrait;
     let frame = channels.max(1);
+    state.mix.set_hardware_channels(frame);
     let mut scratch = vec![0.0f32; 8192 * frame];
     let chunk = scratch.len();
     let (failed, guard, gone) = (Arc::clone(fault), Arc::clone(shared), Arc::clone(fault));
@@ -101,6 +102,9 @@ pub(crate) fn open_device(
     let name = devices::device_name(&device).unwrap_or_else(|| "Audio device".into());
     // Prefer a config at the chosen (else session) rate; else the device default (we resample).
     let want_ch = want_ch.max(2);
+    // Keep every ASIO output open so I/O Setup edits and session switches can reroute live.
+    #[cfg(all(windows, feature = "asio"))]
+    let want_ch = if host.id() == cpal::HostId::Asio { soundcraft_mix::MAX_HARDWARE_CHANNELS as u16 } else { want_ch };
     let rates: Vec<u32> = cfg.sample_rate.into_iter().chain(Some(want_rate)).collect();
     let configs: Vec<cpal::SupportedStreamConfigRange> = device.supported_output_configs().map(|configs| configs.collect()).unwrap_or_default();
     let (config, format) = match pick_output_config(&configs, &rates, want_ch) {

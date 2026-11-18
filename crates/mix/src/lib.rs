@@ -100,6 +100,8 @@ pub const MAIN_CHANNELS: usize = 2;
 
 /// Widest strip, bus or main mix (9.1.6 / 3rd-order Ambisonics). Wider formats are truncated.
 pub const MAX_CHANNELS: usize = 16;
+/// Bound realtime routing buffers and the session's physical channel addresses.
+pub const MAX_HARDWARE_CHANNELS: usize = 1024;
 
 /// Number of channels of a session's main mix.
 pub fn main_channels(s: &Session) -> usize {
@@ -113,6 +115,8 @@ pub struct MixEngine {
     strips: HashMap<TrackId, Strip>,
     busses: HashMap<BusId, BusBuf>,
     main: Vec<Vec<f32>>,
+    /// Independent hardware paths, indexed by physical channel. Empty for offline rendering.
+    physical: Vec<Vec<f32>>,
     main_fmt: ChannelFormat,
     pub meters: HashMap<TrackId, StripMeter>,
     pub main_meter: StripMeter,
@@ -164,6 +168,7 @@ impl MixEngine {
             strips: HashMap::new(),
             busses: HashMap::new(),
             main: vec![vec![0.0; max_block]; MAIN_CHANNELS],
+            physical: Vec::new(),
             main_fmt: ChannelFormat::Stereo,
             meters: HashMap::new(),
             main_meter: StripMeter::default(),
@@ -232,6 +237,21 @@ impl MixEngine {
 
     pub fn max_block(&self) -> usize {
         self.max_block
+    }
+
+    /// Reserve the device's output channels before the first audio block.
+    pub fn set_hardware_channels(&mut self, channels: usize) {
+        self.physical.resize_with(channels.min(MAX_HARDWARE_CHANNELS), || vec![0.0; self.max_block]);
+    }
+
+    pub fn hardware_output(&self) -> &[Vec<f32>] {
+        &self.physical
+    }
+
+    pub fn clear_hardware_output(&mut self, frames: usize) {
+        for channel in &mut self.physical {
+            channel.iter_mut().take(frames).for_each(|sample| *sample = 0.0);
+        }
     }
 
     /// Format of the main mix as of the last sync.
@@ -420,7 +440,7 @@ impl MixEngine {
                 c.iter_mut().take(frames).for_each(|x| *x = 0.0);
             }
         }
-        for c in &mut self.main {
+        for c in self.main.iter_mut().chain(&mut self.physical) {
             c.iter_mut().take(frames).for_each(|x| *x = 0.0);
         }
     }
@@ -483,7 +503,7 @@ impl MixEngine {
         }
         for (i, st) in work.iter_mut() {
             if let Some(t) = s.tracks.get(*i) {
-                self.route_strip(t, st, pos, frames);
+                self.route_strip(s, t, st, pos, frames);
             }
         }
         for (i, st) in work.drain(..) {
@@ -509,7 +529,7 @@ impl MixEngine {
             st.align.set(if pdc { lmax_a.saturating_sub(st.latency) } else { 0 }, ch);
             st.align.process(&mut st.buf, frames);
             st.out_extra.set(0, ch);
-            self.route_strip(t, &mut st, pos, frames);
+            self.route_strip(s, t, &mut st, pos, frames);
             self.strips.insert(t.id, st);
         }
     }
@@ -596,8 +616,8 @@ impl MixEngine {
         }
     }
 
-    /// Send, meter and pan a processed strip into the busses / main mix.
-    fn route_strip(&mut self, t: &Track, strip: &mut Strip, pos: Samples, frames: usize) {
+    /// Send, meter and pan a processed strip into its output path.
+    fn route_strip(&mut self, s: &Session, t: &Track, strip: &mut Strip, pos: Samples, frames: usize) {
         let m = self.meters.entry(t.id).or_default();
         m.measure(&strip.buf, frames, strip.gr);
         m.plugin_failures = strip.failures;
@@ -637,12 +657,25 @@ impl MixEngine {
             _ => &strip.buf,
         };
         let (dst, dst_fmt) = match &t.mixer.output {
-            Route::Main => (&mut self.main, self.main_fmt),
+            Route::Main => (self.main.as_mut_slice(), self.main_fmt),
             Route::Bus(b) => match self.busses.get_mut(b) {
-                Some(d) => (&mut d.buf, d.fmt),
+                Some(d) => (d.buf.as_mut_slice(), d.fmt),
                 None => return,
             },
-            _ => return,
+            Route::Hardware(name) => {
+                if self.physical.is_empty() {
+                    return;
+                }
+                let Some(path) = s.outputs.iter().find(|path| path.name.eq_ignore_ascii_case(name)) else { return };
+                let width = path.format.channels();
+                if !(1..=MAX_CHANNELS).contains(&width) {
+                    return;
+                }
+                let first = usize::from(path.first_channel);
+                let Some(dst) = self.physical.get_mut(first..first + width) else { return };
+                (dst, path.format)
+            }
+            Route::None => return,
         };
         let mut start = 0;
         while start < frames {

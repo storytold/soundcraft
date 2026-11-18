@@ -25,8 +25,7 @@ pub(crate) fn route_popup(app: &mut SoundApp, resp: &egui::Response, id: TrackId
     egui::Popup::menu(resp).close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside).show(|ui| route_menu(app, ui, id, input));
 }
 
-/// Input or output menu: no route and buses on both, plus the main output (outputs) or inputs 1-8
-/// (inputs). Its search field takes typing at once and finds any of them, not just the buses.
+/// Input or output menu with searchable hardware paths and buses.
 fn route_menu(app: &mut SoundApp, ui: &mut Ui, id: TrackId, input: bool) {
     let key = if input { "input" } else { "output" };
     let cmd = if input { "track.input" } else { "track.output" };
@@ -40,20 +39,21 @@ fn route_menu(app: &mut SoundApp, ui: &mut Ui, id: TrackId, input: bool) {
         fixed.extend((1..=8).map(|i| (crate::localized_format!("In {}", i), format!("In {i}"))));
     } else {
         fixed.push((main_name, "main".to_string()));
+        fixed.extend(app.engine.session().outputs.iter().skip(1).map(|path| (path.name.clone(), path.name.clone())));
     }
     if search.typing() {
-        let visible: Vec<(&String, &String)> =
-            fixed.iter().map(|(l, v)| (l, v)).chain(busses.iter().map(|b| (b, b))).filter(|(l, _)| search.matches(l)).collect();
-        let picked = search.rows(ui, visible.len(), 420.0, |ui, i, highlighted| visible.get(i).is_some_and(|(l, _)| menu_row(ui, highlighted, l)));
-        if let Some((_, value)) = picked.and_then(|i| visible.get(i)) {
-            let _ = app.run(cmd, json!({"track": id.0, key: value}));
+        let visible: Vec<_> =
+            fixed.iter().map(|(l, v)| (l, v, false)).chain(busses.iter().map(|b| (b, b, true))).filter(|(l, _, _)| search.matches(l)).collect();
+        let picked = search.rows(ui, visible.len(), 420.0, |ui, i, highlighted| visible.get(i).is_some_and(|(l, _, _)| menu_row(ui, highlighted, l)));
+        if let Some((_, value, create_bus)) = picked.and_then(|i| visible.get(i)) {
+            let _ = app.run(cmd, json!({"track": id.0, key: value, "create_bus": create_bus}));
             ui.close();
         }
         return;
     }
     for (label, value) in &fixed {
         if ui.button(label).clicked() {
-            let _ = app.run(cmd, json!({"track": id.0, key: value}));
+            let _ = app.run(cmd, json!({"track": id.0, key: value, "create_bus": false}));
             ui.close();
         }
     }

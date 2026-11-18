@@ -102,6 +102,13 @@ fn output_config_prefers_format_over_channels_and_needs_stereo_within_the_cap() 
 }
 
 #[test]
+fn output_config_can_use_the_full_device_width() {
+    let configs = [range(2, 48_000, 48_000, cpal::SampleFormat::I32), range(10, 48_000, 48_000, cpal::SampleFormat::I32)];
+    let (config, _, _) = pick_output_config(&configs, &[48_000], soundcraft_mix::MAX_HARDWARE_CHANNELS as u16).unwrap();
+    assert_eq!(config.channels, 10);
+}
+
+#[test]
 fn no_config_that_starts_yields_none_so_the_caller_falls_back_to_a_silent_clock() {
     let mut tried = 0;
     let won = first_started(
@@ -152,6 +159,54 @@ fn spike_session(spike_at: usize) -> (Arc<Shared>, AudioState, std::sync::mpsc::
     let st = AudioState::new(rx, Arc::clone(&shared), Arc::new(s), 48_000.0, channel().0);
     tx.send(Cmd::Play { from: 0, end: None, looped: None }).unwrap();
     (shared, st, tx, t)
+}
+
+#[test]
+fn named_output_uses_its_physical_channel_and_remaps_on_session_edit() {
+    use soundcraft_model::{ChannelFormat, OutputPath, Route};
+    let (_, mut audio, tx, track) = spike_session(0);
+    audio.mix.set_hardware_channels(10);
+    let mut session = (*audio.session).clone();
+    session.outputs.push(OutputPath { name: "Cue".into(), first_channel: 9, format: ChannelFormat::Mono });
+    session.track_mut(track).unwrap().mixer.output = Route::Hardware("Cue".into());
+    tx.send(Cmd::Session(Arc::new(session.clone()), vec![])).unwrap();
+    let mut frames = [0.0; 10 * 32];
+    audio.fill(&mut frames, 10);
+    assert!(frames.chunks_exact(10).all(|frame| frame[..9].iter().all(|sample| *sample == 0.0) && frame[9] > 0.5));
+
+    session.outputs[1].first_channel = 3;
+    tx.send(Cmd::Session(Arc::new(session.clone()), vec![])).unwrap();
+    audio.fill(&mut frames, 10);
+    assert!(frames.chunks_exact(10).all(|frame| frame[3] > 0.0 && frame[9] == 0.0));
+
+    session.outputs[1].first_channel = 9;
+    session.outputs[1].format = ChannelFormat::Stereo;
+    tx.send(Cmd::Session(Arc::new(session), vec![])).unwrap();
+    audio.fill(&mut frames, 10);
+    assert!(frames.iter().all(|sample| *sample == 0.0), "a path that does not fit must not play on the wrong port");
+}
+
+#[test]
+fn each_of_ten_named_paths_reaches_only_its_assigned_output() {
+    use soundcraft_model::{ChannelFormat, OutputPath, Route};
+    let (_, mut audio, tx, track) = spike_session(0);
+    audio.mix.set_hardware_channels(10);
+    let mut session = (*audio.session).clone();
+    for channel in 0..10 {
+        session.outputs.push(OutputPath { name: format!("USB {}", channel + 1), first_channel: channel, format: ChannelFormat::Mono });
+    }
+    for channel in 0..10 {
+        session.track_mut(track).unwrap().mixer.output = Route::Hardware(format!("USB {}", channel + 1));
+        tx.send(Cmd::Session(Arc::new(session.clone()), vec![])).unwrap();
+        tx.send(Cmd::Play { from: 0, end: None, looped: None }).unwrap();
+        let mut frames = [0.0; 10 * 32];
+        audio.fill(&mut frames, 10);
+        assert!(
+            frames
+                .chunks_exact(10)
+                .all(|frame| { frame.iter().enumerate().all(|(index, &sample)| if index == channel { sample > 0.5 } else { sample == 0.0 }) })
+        );
+    }
 }
 
 #[test]
