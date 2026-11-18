@@ -235,9 +235,6 @@ impl SoundApp {
         }
         // The audio thread writes down what was played up to the stop; the clips wait for that.
         let midi_confirmed = self.await_midi_capture(midi_pass);
-        if !midi_confirmed {
-            self.midi_pass_unconfirmed = midi_pass;
-        }
         // Where the pass ended: the audio engine's own position is the freshest.
         let engine_at = self.player.as_ref().map(|p| p.position());
         let stopped_at = super::midi::pass_stop(engine_at, self.engine.transport.position, false);

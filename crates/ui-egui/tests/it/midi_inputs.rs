@@ -192,12 +192,11 @@ fn a_midi_pass_does_not_start_while_the_previous_one_is_unconfirmed() {
     // would write the notes of a new pass down with the old pass's state.
     let feed = std::sync::Arc::clone(h.state().midi_inputs.as_ref().unwrap().feed());
     let pass = feed.end_pass();
-    h.state_mut().midi_pass_unconfirmed = Some(pass);
     h.get_by_label("transport.record").click();
     h.run_steps(3);
     assert!(!h.state().engine.transport.recording);
     assert!(h.state().ui.status.contains("has not finished the previous record pass"), "{}", h.state().ui.status);
-    assert_eq!(h.state().midi_pass_unconfirmed, Some(pass), "still waiting");
+    assert!(feed.pass_owed() && !feed.captured(pass), "still waiting");
     // A pass without MIDI tracks does not wait for it (here it is refused for its own reason).
     arm(&mut h, synth, false);
     arm(&mut h, vox, true);
@@ -207,7 +206,7 @@ fn a_midi_pass_does_not_start_while_the_previous_one_is_unconfirmed() {
     // Once nothing is owed, the MIDI pass starts.
     arm(&mut h, vox, false);
     arm(&mut h, synth, true);
-    h.state_mut().midi_pass_unconfirmed = None;
+    feed.forgive_passes();
     h.get_by_label("transport.record").click();
     h.run_steps(3);
     assert!(h.state().engine.transport.recording, "{}", h.state().ui.status);

@@ -403,6 +403,21 @@ impl MidiFeed {
         self.captures_done.load(Ordering::Acquire) >= pass
     }
 
+    /// Whether a record pass that was ended ([`Self::end_pass`]) is not confirmed yet. The audio
+    /// thread takes the MIDI that arrived since its last callback in one go, with the state of
+    /// the pass it knows about: a pass started and stopped before it runs again would have its
+    /// notes written at the old pass's position. So no pass that records MIDI starts while this
+    /// is true.
+    pub fn pass_owed(&self) -> bool {
+        self.captures_done.load(Ordering::Acquire) < self.passes.load(Ordering::Acquire)
+    }
+
+    /// The audio engine that owed the passes ended so far is gone (another one takes the feed):
+    /// nothing is owed any more.
+    pub fn forgive_passes(&self) {
+        self.captures_done.fetch_max(self.passes.load(Ordering::Acquire), Ordering::AcqRel);
+    }
+
     /// UI thread: how many recorded events were dropped since the last call (the UI did not
     /// collect them in time). The take is incomplete when this is not zero.
     pub fn take_recorded_lost(&self) -> u32 {

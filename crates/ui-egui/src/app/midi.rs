@@ -12,28 +12,19 @@ impl SoundApp {
     }
 
     /// Hand the MIDI inputs to a (new) audio engine.
-    pub(crate) fn attach_midi(&mut self, player: &soundcraft_playback::Player) {
+    pub(crate) fn attach_midi(&self, player: &soundcraft_playback::Player) {
         if let Some(m) = &self.midi_inputs {
+            // A pass the old engine never confirmed is not this one's to answer: it starts idle.
+            m.feed().forgive_passes();
             player.set_midi(std::sync::Arc::clone(m.feed()));
         }
-        // A pass the old engine never confirmed is not this one's to answer: it starts idle.
-        self.midi_pass_unconfirmed = None;
     }
 
     /// Whether the audio engine still owes the confirmation of an earlier record pass
-    /// ([`Self::await_midi_capture`] gave up on it). It takes the MIDI that arrived since its
-    /// last callback in one go, with the state of the pass it knows about: a new pass started
-    /// and stopped before it runs again would have its notes written at the old pass's
-    /// position. So a pass that records MIDI waits for it.
-    pub(crate) fn midi_pass_pending(&mut self) -> bool {
-        let pending = match (self.midi_pass_unconfirmed, &self.midi_inputs) {
-            (Some(pass), Some(m)) => !m.feed().captured(pass),
-            _ => false,
-        };
-        if !pending {
-            self.midi_pass_unconfirmed = None;
-        }
-        pending
+    /// ([`Self::await_midi_capture`] gave up on it): a pass that records MIDI waits for it
+    /// (`MidiFeed::pass_owed` says why).
+    pub(crate) fn midi_pass_pending(&self) -> bool {
+        self.midi_inputs.as_ref().is_some_and(|m| m.feed().pass_owed())
     }
 
     /// A record pass starts: whatever was played before is not part of it.

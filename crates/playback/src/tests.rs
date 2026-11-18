@@ -1174,3 +1174,78 @@ fn a_loss_met_in_the_queue_is_not_taken_for_a_second_loss_by_the_next_callback()
         assert!(!heard(&mut st, 60), "late {late}");
     }
 }
+
+#[test]
+fn a_loop_pass_stopped_at_the_end_of_the_loop_does_not_start_another_round() {
+    let (mut st, tx, feed, ..) = keyboard_session();
+    tx.send(Cmd::Recording(true, 0)).unwrap();
+    tx.send(Cmd::Play { from: 0, end: None, looped: Some(Range::new(0, 4096)) }).unwrap();
+    let mut out = vec![0.0f32; 2048];
+    st.fill(&mut out, 2);
+    feed.receive(0, &[0x90, 60, 100]);
+    // Three more callbacks: the playhead stands exactly at the end of the loop.
+    for _ in 0..3 {
+        st.fill(&mut out, 2);
+    }
+    assert_eq!(st.shared.position.load(Ordering::Relaxed), 4096);
+    // Another key, and Stop, before the audio thread runs again.
+    feed.receive(0, &[0x90, 62, 100]);
+    let pass = feed.end_pass();
+    tx.send(Cmd::Stop).unwrap();
+    tx.send(Cmd::Recording(false, pass)).unwrap();
+    st.fill(&mut out, 2);
+    assert!(feed.captured(pass));
+    let mut rec = Vec::new();
+    feed.take_recorded(&mut rec);
+    // The loop never went round, and the take does not say it did: with a mark, the first key
+    // (held to the stop at the loop end) would count as held into a second round.
+    assert_eq!(rec.iter().map(|e| (e.status, e.data1)).collect::<Vec<_>>(), [(0x90, 60), (0x90, 62)], "{rec:?}");
+    assert!(rec.iter().all(|e| e.at < 4096), "both keys are inside the loop: {rec:?}");
+    assert_eq!(st.shared.position.load(Ordering::Relaxed), 4096, "the pass stopped at the loop end");
+}
+
+#[test]
+fn a_pass_stays_owed_through_a_stalled_callback_whatever_the_devices_do() {
+    let (mut st, tx, feed, ..) = keyboard_session();
+    let mut out = vec![0.0f32; 2048];
+    assert!(!feed.pass_owed());
+    // Pass A records a key; then its only device is unplugged, and Stop follows.
+    tx.send(Cmd::Recording(true, 0)).unwrap();
+    tx.send(Cmd::Play { from: 0, end: None, looped: None }).unwrap();
+    st.fill(&mut out, 2);
+    feed.receive(0, &[0x90, 60, 100]);
+    st.fill(&mut out, 2);
+    feed.port_lost(0);
+    feed.set_connected(0);
+    let a = feed.end_pass();
+    tx.send(Cmd::Stop).unwrap();
+    tx.send(Cmd::Recording(false, a)).unwrap();
+    // The audio callback stalls: it has not seen the Stop. The device comes back and a key is
+    // played. Pass A is still owed, so pass B must not start: this key would be written down
+    // with pass A's state, at pass A's position.
+    assert!(feed.pass_owed() && !feed.captured(a));
+    feed.set_connected(1);
+    feed.receive(0, &[0x90, 72, 100]);
+    assert!(feed.pass_owed(), "a device coming back changes nothing");
+    // The callback runs again: pass A is confirmed, and only then may B start.
+    st.fill(&mut out, 2);
+    assert!(feed.captured(a) && !feed.pass_owed());
+    let mut rec = Vec::new();
+    feed.take_recorded(&mut rec);
+    // What reached the take belongs to pass A (the UI clears it when B starts).
+    assert!(rec.iter().all(|e| e.at <= 2048), "{rec:?}");
+    tx.send(Cmd::Recording(true, 0)).unwrap();
+    tx.send(Cmd::Play { from: 96_000, end: None, looped: None }).unwrap();
+    st.fill(&mut out, 2);
+    feed.receive(0, &[0x90, 74, 100]);
+    st.fill(&mut out, 2);
+    rec.clear();
+    feed.take_recorded(&mut rec);
+    assert_eq!(rec.iter().map(|e| e.data1).collect::<Vec<_>>(), [74]);
+    assert!(rec[0].at >= 96_000, "pass B's key is at pass B's position: {}", rec[0].at);
+    // An engine that is replaced no longer owes its passes.
+    let b = feed.end_pass();
+    assert!(feed.pass_owed());
+    feed.forgive_passes();
+    assert!(!feed.pass_owed() && feed.captured(b));
+}

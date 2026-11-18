@@ -100,9 +100,6 @@ pub(crate) struct AudioState {
     /// Times loop recording went back to the start of the loop since the take was last written
     /// to (2 stands for any more: a note held that long covers the whole loop either way).
     midi_wraps: u8,
-    /// `capture_midi` already counted the round the next block starts (the playhead stood at the
-    /// end of the loop): the wrap itself does not count it again.
-    midi_wrap_counted: bool,
     /// Retired plugin instances go back to the UI thread to be dropped there.
     garbage: Sender<Vec<Box<dyn Plugin>>>,
     old_sessions: Option<SyncSender<Arc<Session>>>,
@@ -160,7 +157,6 @@ impl AudioState {
             midi_loss_seen: [i64::MIN; 64],
             midi_speed: 1.0,
             midi_wraps: 0,
-            midi_wrap_counted: false,
             unsent: MeterSnapshot::default(),
             forget_shared: Vec::new(),
         }
@@ -192,7 +188,6 @@ impl AudioState {
                 Cmd::Recording(r, pass) => {
                     self.recording = r;
                     self.midi_wraps = 0;
-                    self.midi_wrap_counted = false;
                     // Everything played up to here is in the take (`capture_midi` ran first):
                     // tell the UI thread, which waits for this pass before it builds the clips.
                     if !r
@@ -229,7 +224,6 @@ impl AudioState {
                     self.end = end;
                     self.looped = looped.filter(|r| r.len() > 64);
                     self.midi_wraps = 0;
-                    self.midi_wrap_counted = false;
                     self.playing = true;
                     self.pending_len = 0;
                     self.read = 0.0;
@@ -338,16 +332,6 @@ impl AudioState {
             self.midi_lost |= input_lost;
         }
         let mut take = TakeWriter { feed, pos: self.pos, looped: self.looped, wraps: std::mem::take(&mut self.midi_wraps) };
-        if record
-            && let Some(l) = self.looped
-            && self.pos >= l.end
-        {
-            // The playhead stands at the end of the loop and goes round as this callback
-            // renders: what arrives from now on belongs to the next round, from its start.
-            take.pos = l.start;
-            take.wraps = take.wraps.saturating_add(1).min(2);
-            self.midi_wrap_counted = true;
-        }
         // The lost ports whose mark is not in the take yet. Each goes in where its loss was.
         let mut marks = if record { input_lost } else { 0 };
         let mut unplayed = 0u64;
@@ -444,7 +428,7 @@ impl AudioState {
             && self.pos >= l.end
         {
             self.pos = l.start;
-            if self.playing && self.recording && !std::mem::take(&mut self.midi_wrap_counted) {
+            if self.playing && self.recording {
                 self.midi_wraps = self.midi_wraps.saturating_add(1).min(2);
             }
         }
@@ -603,7 +587,13 @@ impl TakeWriter<'_> {
             }
             self.flush();
         }
-        at
+        // The playhead stands at the end of the loop until the next block takes it round (and
+        // stays there if the pass is stopped first): what is played now is the last thing of
+        // this round, not the first of a round that may never start.
+        match self.looped {
+            Some(l) if at >= l.end => l.end.saturating_sub(1).max(l.start),
+            _ => at,
+        }
     }
 
     /// Say that the loop went round, before the first entry of the new round.
