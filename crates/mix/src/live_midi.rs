@@ -290,9 +290,10 @@ pub(crate) struct LiveNotes {
     /// (one that set it earlier, or one whose value the full table forgot).
     kept_last: [Option<(u8, u8)>; 2],
     /// Note-offs of the clips that were held back in this block because a live key held the
-    /// pitch: `(pitch, sample offset)`. A live release earlier in the block does not end the
-    /// note before the clip would have ([`Self::end_note`]).
-    clip_offs: [(u8, usize); MAX_CLIP_OFFS],
+    /// pitch: `(pitch, sample offset, where the last live owner let go of the pitch in this
+    /// block)`, the last `usize::MAX` while it has not. What becomes of them is settled once the
+    /// block's live events are all played ([`Self::settle_clip_offs`]).
+    clip_offs: [(u8, usize, usize); MAX_CLIP_OFFS],
     clip_offs_len: usize,
     /// Which of [`KEPT_BY_RESET`] a live source that is gone had set: the next reset of the
     /// instrument's controllers does not undo that ([`Self::restore_defaults`]).
@@ -311,7 +312,7 @@ impl Default for LiveNotes {
             forgotten_ports: 0,
             forgotten_channels: 0,
             kept_last: [None; 2],
-            clip_offs: [(0, 0); MAX_CLIP_OFFS],
+            clip_offs: [(0, 0, usize::MAX); MAX_CLIP_OFFS],
             clip_offs_len: 0,
             defaults_owed: 0,
             clip: NoteSet::default(),
@@ -358,34 +359,55 @@ impl LiveNotes {
     /// key holds the pitch.
     pub(crate) fn clip_off_held_back(&mut self, pitch: u8, offset: usize) {
         if let Some(slot) = self.clip_offs.get_mut(self.clip_offs_len) {
-            *slot = (pitch, offset);
+            *slot = (pitch, offset, usize::MAX);
             self.clip_offs_len += 1;
         }
     }
 
     /// The last live owner let go of `note` at sample `at`: the note ends, unless a clip still
-    /// holds it. When the clips' own note-off for it was held back in this block, the note ends
-    /// at the later of the two: a key let go early in the block does not cut the clip's note
-    /// short.
+    /// holds it. When note-offs of the clips for it were held back in this block, where it ends
+    /// is settled after the block's live events ([`Self::settle_clip_offs`]): the key may go
+    /// down again before the clip's note would have ended.
     fn end_note(&mut self, inst: &mut dyn Plugin, at: usize, note: u8) {
         if self.sounding(note) {
             return;
         }
-        let held_back = self.clip_offs.iter().take(self.clip_offs_len).position(|(pitch, _)| *pitch == note);
-        let at = match held_back.and_then(|i| self.clip_offs.get(i).copied().map(|(_, off)| (i, off))) {
-            Some((i, off)) => {
-                // Taken: the last entry moves into its place.
-                self.clip_offs_len -= 1;
-                if let Some(last) = self.clip_offs.get(self.clip_offs_len).copied()
-                    && let Some(slot) = self.clip_offs.get_mut(i)
-                {
-                    *slot = last;
-                }
-                off.max(at)
+        let mut held_back = false;
+        for entry in self.clip_offs.iter_mut().take(self.clip_offs_len).filter(|(pitch, ..)| *pitch == note) {
+            entry.2 = at;
+            held_back = true;
+        }
+        if !held_back {
+            inst.note_off(at, note);
+        }
+    }
+
+    /// The block's live events are played: send the note-offs that go with the clips' held back
+    /// ones. A pitch a live key holds again, or a clip, gets none (that owner ends it). For a
+    /// pitch nobody holds, the clips' note-offs from where the last key went up are sent where
+    /// they were: the clip's note lasts as long as the clip says, and a gap between two clip
+    /// notes stays. When they were all earlier than that, the note ends where the key went up.
+    pub(crate) fn settle_clip_offs(&mut self, inst: &mut dyn Plugin) {
+        let offs = self.clip_offs;
+        let n = std::mem::take(&mut self.clip_offs_len);
+        for (i, &(note, _, released)) in offs.iter().take(n).enumerate() {
+            // Each pitch once, at its first entry; not one no live owner let go of.
+            let first = offs.iter().take(i).all(|(pitch, ..)| *pitch != note);
+            if !first || released == usize::MAX || self.sounding(note) {
+                continue;
             }
-            None => at,
-        };
-        inst.note_off(at, note);
+            // The last time a live owner let go of it in this block.
+            let released =
+                offs.iter().take(n).filter(|(pitch, ..)| *pitch == note).map(|(.., at)| *at).filter(|at| *at != usize::MAX).max().unwrap_or(released);
+            let mut any = false;
+            for &(_, off, _) in offs.iter().take(n).filter(|(pitch, off, _)| *pitch == note && *off >= released) {
+                inst.note_off(off, note);
+                any = true;
+            }
+            if !any {
+                inst.note_off(released, note);
+            }
+        }
     }
 
     /// After the instrument's controllers were reset and set from the clips (`from_clips`: the
@@ -399,6 +421,13 @@ impl LiveNotes {
             if owed & bit != 0 && live & bit == 0 && from_clips & (1u128 << cc) == 0 {
                 inst.midi(0, [0xB0, cc, default]);
             }
+        }
+        // Where the source that set the volume or the pan last is gone and another one's value
+        // is sent again ([`Self::resend_controllers`]), that one is the last setter from now on:
+        // when it goes too, the default is owed.
+        for ((cc, ..), last) in KEPT_BY_RESET.iter().zip(self.kept_last.iter_mut()).filter(|(_, last)| last.is_none()) {
+            let newest = self.ctrls.iter().filter(|c| c.msg.status & 0xF0 == 0xB0 && c.msg.data1 == *cc).max_by_key(|c| c.order);
+            *last = newest.map(|c| (c.msg.port, c.msg.channel()));
         }
     }
 
@@ -565,6 +594,7 @@ impl LiveNotes {
     /// also moved the instrument's controllers: the caller chases them back to the clips' values.
     pub(crate) fn release(&mut self, inst: &mut dyn Plugin) -> bool {
         self.drop_owners(inst, 0, |_| true);
+        self.settle_clip_offs(inst);
         self.defaults_owed = self.kept_set();
         self.ctrls = [LiveCtrl::default(); MAX_LIVE_CTRLS];
         self.forgotten_ports = 0;
@@ -659,6 +689,7 @@ impl LiveNotes {
                 _ => {}
             }
         }
+        self.settle_clip_offs(inst);
     }
 }
 
@@ -790,6 +821,29 @@ mod tests {
             live.play(t, &mut log, &[at(release, 0x80)], None, 512);
             assert_eq!((log.0.last(), log.2.as_slice()), (Some(&(false, 60)), &[ends][..]), "key up at {release}");
         }
+        // What the clips' note-offs at `offs` and the live events of one block come to: the
+        // offsets of the note-offs the instrument gets.
+        let block = |offs: &[usize], events: &[LiveMidi]| {
+            let (mut live, mut log) = (LiveNotes::default(), Log::default());
+            live.set_clip_notes(&[60]);
+            live.play(t, &mut log, &[at(0, 0x90)], None, 512);
+            live.begin_block();
+            offs.iter().for_each(|off| live.clip_off_held_back(60, *off));
+            live.set_clip_notes(&[]);
+            live.play(t, &mut log, events, None, 512);
+            (log.2, live.holds(60))
+        };
+        // The key goes up and down again before the clip's note would have ended: no note-off,
+        // or it would end the new press. The key going up once more ends the note there, or at
+        // the clip's note-off when that is later.
+        assert_eq!(block(&[400], &[at(32, 0x80), at(200, 0x90)]), (vec![], true));
+        assert_eq!(block(&[400], &[at(32, 0x80), at(200, 0x90), at(300, 0x80)]), (vec![400], false));
+        assert_eq!(block(&[400], &[at(32, 0x80), at(200, 0x90), at(450, 0x80)]), (vec![450], false));
+        // Two clip notes of the pitch end in the block, at 100 and at 400 (the second started in
+        // between). The key goes up at 300: the second clip note lasts to its end. The key goes
+        // up at 50: both clip note-offs are sent, so the gap between the two notes stays.
+        assert_eq!(block(&[100, 400], &[at(300, 0x80)]), (vec![400], false));
+        assert_eq!(block(&[100, 400], &[at(50, 0x80)]), (vec![100, 400], false));
         // Nothing is carried into the next block: a release there ends the note where it is.
         let (mut live, mut log) = (LiveNotes::default(), Log::default());
         live.play(t, &mut log, &[at(0, 0x90)], None, 512);

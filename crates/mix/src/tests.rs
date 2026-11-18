@@ -2052,6 +2052,9 @@ fn a_volume_or_pan_left_by_a_device_that_went_away_goes_back_to_the_midi_default
     heard.lock().unwrap().clear();
     lost(&mut eng, &s, 512, midi_port_bit(0));
     assert_eq!(std::mem::take(&mut *heard.lock().unwrap()), vec![(0, [0xB0, 121, 0]), (0, [0xB0, 7, 90])]);
+    // That device is the one whose volume the instrument has now: when it goes too, the default.
+    lost(&mut eng, &s, 1024, midi_port_bit(1));
+    assert_eq!(std::mem::take(&mut *heard.lock().unwrap()), vec![(0, [0xB0, 121, 0]), (0, [0xB0, 7, 100])]);
     // So have the clips: their volume at this position, no default.
     let (mut s, t, mut eng, heard) = ears_session();
     let mut seq = Sequence::default();

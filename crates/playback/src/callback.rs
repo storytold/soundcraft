@@ -110,13 +110,18 @@ pub(crate) struct AudioState {
     /// The transport stopped while a record pass ran. The pass goes on until the command that
     /// ends it (the UI sends the two one after the other, and they may reach two callbacks):
     /// what arrived before the stop is still written down. The value is the time up to which
-    /// that holds: when playback ran to its end by itself, the time it did (the UI ends the
-    /// pass only when it notices); `i64::MAX` for a Stop, whose time the UI gives.
+    /// that holds, which is when the transport stopped (after playback ran to its end by itself
+    /// the UI ends the pass only when it notices; for a Stop it gives the time itself, a little
+    /// earlier). The ages of the pass's last events are counted up to then.
     midi_stopped: Option<i64>,
     /// Called between taking the MIDI in and reading the commands, for tests of what arrives
     /// right there.
     #[cfg(test)]
     pub(crate) before_commands: Option<Box<dyn FnMut() + Send>>,
+    /// Called after the callback has looked at the state of the pass and before it takes the
+    /// MIDI in, for tests of what happens right there.
+    #[cfg(test)]
+    pub(crate) before_capture: Option<Box<dyn FnMut() + Send>>,
     /// Retired plugin instances go back to the UI thread to be dropped there.
     garbage: Sender<Vec<Box<dyn Plugin>>>,
     old_sessions: Option<SyncSender<Arc<Session>>>,
@@ -179,6 +184,8 @@ impl AudioState {
             midi_stopped: None,
             #[cfg(test)]
             before_commands: None,
+            #[cfg(test)]
+            before_capture: None,
             unsent: MeterSnapshot::default(),
             forget_shared: Vec::new(),
         }
@@ -257,7 +264,7 @@ impl AudioState {
                     self.mix.reset();
                 }
                 Cmd::Stop => {
-                    self.midi_stopped = (self.playing && self.recording).then_some(i64::MAX);
+                    self.midi_stopped = (self.playing && self.recording).then(|| self.midi.as_ref().map_or(i64::MAX, |f| f.clock()));
                     self.playing = false;
                     self.end = None;
                     self.looped = None;
@@ -385,6 +392,10 @@ impl AudioState {
         }
         let per_us = self.session.sample_rate.as_f64() / 1e6 * speed;
         let frames = |since: i64| (now.saturating_sub(since).max(0) as f64 * per_us) as i64;
+        // For the take, ages are counted up to when the transport stopped, if it has: the
+        // playhead stands still since then, and the time gone by since is not part of an age.
+        let take_now = now.min(pass.until);
+        let take_frames = |since: i64| (take_now.saturating_sub(since).max(0) as f64 * per_us) as i64;
         self.midi_delay = callback;
         if input_lost != 0 {
             // What is already waiting from those ports came before the loss.
@@ -396,7 +407,8 @@ impl AudioState {
             pos: pass.pos,
             looped: pass.looped,
             wraps: std::mem::take(&mut self.midi_wraps),
-            from: pass.from,
+            running: pass.running,
+            playing: pass.playing,
             until: pass.until,
             stopped: pass.stopped,
         };
@@ -405,6 +417,7 @@ impl AudioState {
         let mut unplayed = 0u64;
         while let Some((stamp, e)) = feed.next() {
             let age = frames(stamp);
+            let take_age = take_frames(stamp);
             if e.status == midi::RecordedMidi::LOST {
                 // The queue dropped events of this port here. What it sent before is above and
                 // may lack its releases: it is not played, and the engine lets go of the port's
@@ -421,18 +434,21 @@ impl AudioState {
                     marks &= !bit;
                 } else if input_lost & bit != 0
                     && let Some(t) = lost_time.get_mut(place)
+                    && *t <= stamp
                 {
                     // Dealt with in this callback (what the port sent up to it is not played,
                     // see below), at its own mark in the queue if it has one, else at the end.
+                    // A loss the flag told of that is later than this mark keeps its own time:
+                    // an overflow whose mark never got into the queue comes before the close.
                     *t = again;
                 }
                 if record && !told {
                     while let Some((other, at)) = next_mark(&lost_time, marks, stamp) {
-                        take.lost(at, frames(at).min(callback).max(age), other);
+                        take.lost(at, take_frames(at).min(callback).max(take_age), other);
                         flag_seen(&mut self.midi_flag_seen, other, at);
                         marks &= !other;
                     }
-                    take.lost(stamp, age, bit);
+                    take.lost(stamp, take_age, bit);
                 }
                 self.midi_pending.retain(|(_, p)| bit & midi_port_bit(p.port) == 0);
                 self.midi_lost |= bit;
@@ -444,12 +460,13 @@ impl AudioState {
             if record {
                 while let Some((bit, at)) = next_mark(&lost_time, marks, stamp) {
                     // Not older than this callback's own events, nor newer than this one.
-                    take.lost(at, frames(at).min(callback).max(age), bit);
+                    take.lost(at, take_frames(at).min(callback).max(take_age), bit);
                     flag_seen(&mut self.midi_flag_seen, bit, at);
                     marks &= !bit;
                 }
-                take.event(stamp, age, &e);
             }
+            // Asked for every event: a pass may begin while the queue is being read.
+            take.event(stamp, take_age, &e);
             // From before its port's loss: its release may be among what was lost.
             if input_lost & midi_port_bit(e.port) != 0 && stamp <= feed.lost_at(e.port) {
                 continue;
@@ -469,7 +486,7 @@ impl AudioState {
         if record {
             // Nothing arrived after these losses: their marks close the callback's events.
             while let Some((bit, at)) = next_mark(&lost_time, marks, i64::MAX) {
-                take.lost(at, frames(at).min(callback), bit);
+                take.lost(at, take_frames(at).min(callback), bit);
                 flag_seen(&mut self.midi_flag_seen, bit, at);
                 marks &= !bit;
             }
@@ -607,18 +624,20 @@ impl AudioState {
         // command that ends it. One the UI has begun during playback counts from when it began,
         // though the command that starts it is only read below.
         let running = self.recording && (self.playing || self.midi_stopped.is_some());
-        // Whether a pass was begun first, then when: the time is stored before the pass counts
-        // as begun, so a pass seen as begun here has its own start time.
         let begun = self.midi.as_ref().is_some_and(|f| f.begin_pending());
-        let from = self.midi.as_ref().map_or(i64::MIN, |f| f.record_from());
         let pass = Pass {
             record: running || (self.playing && begun),
-            from,
+            running,
+            playing: self.playing,
             until: self.midi_stopped.unwrap_or(i64::MAX),
             stopped: self.midi_stopped.is_some(),
             pos: self.pos,
             looped: self.looped,
         };
+        #[cfg(test)]
+        if let Some(hook) = &mut self.before_capture {
+            hook();
+        }
         self.capture_midi(callback, age_speed, pass);
         #[cfg(test)]
         if let Some(hook) = &mut self.before_commands {
@@ -721,10 +740,13 @@ fn flag_seen(seen: &mut [i64; 64], bits: u64, at: i64) {
 /// arrived until then is written down with.
 #[derive(Clone, Copy)]
 struct Pass {
-    /// A pass is running: playing and recording.
+    /// A pass is running, or one was begun that the transport is running for.
     record: bool,
-    /// Entries stamped earlier than this are from before the pass began.
-    from: i64,
+    /// A pass is running: recording, and playing or stopped with the pass still open.
+    running: bool,
+    /// The transport is running: a pass that is begun now (also while the queue is being read)
+    /// records from when it began.
+    playing: bool,
     /// Entries stamped later than this are from after the transport stopped by itself.
     until: i64,
     /// The transport has stopped: the playhead stands where the pass ends.
@@ -743,8 +765,10 @@ struct TakeWriter<'a> {
     looped: Option<Range>,
     /// Times the loop went round since the last callback, not yet written to the take.
     wraps: u8,
-    /// Entries stamped earlier than this are not part of the take (the pass began then).
-    from: i64,
+    /// A pass is running.
+    running: bool,
+    /// The transport is running: a pass begun meanwhile records from when it began.
+    playing: bool,
     /// Entries stamped later than this are not part of it either (the transport stopped then).
     until: i64,
     /// The playhead stands where the pass ends.
@@ -756,7 +780,10 @@ impl TakeWriter<'_> {
     /// from after it was ended. The end is asked for every entry: a Stop may come while the
     /// queue is being read.
     fn within(&self, stamp: i64) -> bool {
-        stamp >= self.from && stamp <= self.until.min(self.feed.record_until())
+        // Whether a pass was begun first, then when: the time is stored before the pass counts
+        // as begun, so a pass seen as begun here has its own start time.
+        let on = self.running || (self.playing && self.feed.begin_pending());
+        on && stamp >= self.feed.record_from() && stamp <= self.until.min(self.feed.record_until())
     }
 
     /// Write down the event `e`, stamped `stamp`, that arrived `age` session frames ago.

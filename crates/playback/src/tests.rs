@@ -1718,8 +1718,7 @@ fn two_overflows_of_one_port_in_one_callback_each_keep_their_mark() {
     feed.take_recorded(&mut rec);
     let lost = midi::RecordedMidi::LOST;
     let port0: Vec<(u8, u8)> = rec.iter().filter(|e| e.port == 0).map(|e| (e.status, e.data1)).collect();
-    assert_eq!(port0.last(), Some(&(lost, 0)), "the key whose release was dropped ends at the second mark: {port0:?}");
-    assert_eq!(port0.iter().filter(|e| e.0 == lost).count(), 2, "{port0:?}");
+    assert_eq!(port0, [(lost, 0), (0x90, 64), (lost, 0)], "both marks, and the key between them ends at the second");
 }
 
 #[test]
@@ -1753,5 +1752,71 @@ fn what_is_played_as_playback_runs_to_its_end_is_in_the_take_and_what_follows_is
     let mut rec = Vec::new();
     feed.take_recorded(&mut rec);
     assert_eq!(rec.iter().map(|e| (e.status, e.data1)).collect::<Vec<_>>(), [(0x90, 60)], "the key from before the end, not the one after");
-    assert!(rec[0].at < 1536, "inside the range that ends there: {}", rec[0].at);
+    // It was played as playback ran out, and that is where it is: the time the audio thread
+    // stood still after that does not move it back.
+    assert_eq!(rec[0].at, 1535);
+}
+
+#[test]
+fn a_pass_begun_while_the_queue_is_being_read_records_from_when_it_began() {
+    let (mut st, tx, feed, ..) = keyboard_session();
+    tx.send(Cmd::Play { from: 0, end: None, looped: None }).unwrap();
+    let mut out = vec![0.0f32; 2048];
+    st.fill(&mut out, 2);
+    // The callback has seen that no pass is begun. Before it takes the queue in, a key goes
+    // down, Record is pressed, and another key goes down.
+    let (f, tx2) = (Arc::clone(&feed), tx.clone());
+    let mut once = true;
+    st.before_capture = Some(Box::new(move || {
+        if std::mem::take(&mut once) {
+            f.set_clock(1_000);
+            f.receive(0, &[0x90, 60, 100]);
+            f.set_clock(2_000);
+            f.begin_pass();
+            let _ = tx2.send(Cmd::Recording(true, 0));
+            f.set_clock(3_000);
+            f.receive(0, &[0x90, 62, 100]);
+        }
+    }));
+    st.fill(&mut out, 2);
+    let mut rec = Vec::new();
+    feed.take_recorded(&mut rec);
+    assert_eq!(rec.iter().map(|e| (e.status, e.data1)).collect::<Vec<_>>(), [(0x90, 62)], "the key from after Record, not the one before");
+}
+
+#[test]
+fn an_overflow_before_stop_whose_mark_never_came_is_in_the_take_though_an_older_mark_shows_a_later_close() {
+    let (mut st, tx, feed, ..) = keyboard_session();
+    tx.send(Cmd::Recording(true, 0)).unwrap();
+    tx.send(Cmd::Play { from: 0, end: None, looped: None }).unwrap();
+    heard(&mut st, 1);
+    // Port 0 overflows, and plays a key while the audio thread is part of the way through the
+    // queue: the mark of that overflow is in the queue, ahead of the key.
+    feed.set_clock(1_000);
+    for _ in 0..midi::INCOMING {
+        feed.receive(1, &[0xB0, 1, 0]);
+    }
+    feed.receive(0, &[0x80, 60, 0]);
+    assert_eq!(std::iter::from_fn(|| feed.next()).take(midi::INCOMING - 500).count(), midi::INCOMING - 500);
+    feed.set_clock(2_000);
+    feed.receive(0, &[0x90, 64, 100]);
+    // The queue fills again and the key's release is dropped. Nothing more arrives, so that
+    // overflow has no mark in the queue. Stop; and then the port is closed.
+    feed.set_clock(3_000);
+    for _ in 0..midi::INCOMING - 502 {
+        feed.receive(1, &[0xB0, 1, 0]);
+    }
+    feed.receive(0, &[0x80, 64, 0]);
+    feed.set_clock(3_500);
+    let pass = feed.end_pass();
+    feed.set_clock(4_000);
+    feed.port_lost(0);
+    tx.send(Cmd::Recording(false, pass)).unwrap();
+    heard(&mut st, 1);
+    assert!(feed.captured(pass));
+    let mut rec = Vec::new();
+    feed.take_recorded(&mut rec);
+    let lost = midi::RecordedMidi::LOST;
+    let port0: Vec<(u8, u8)> = rec.iter().filter(|e| e.port == 0).map(|e| (e.status, e.data1)).collect();
+    assert_eq!(port0, [(lost, 0), (0x90, 64), (lost, 0)], "the key whose release was dropped has its end");
 }
