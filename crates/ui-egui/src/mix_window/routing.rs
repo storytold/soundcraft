@@ -160,6 +160,15 @@ mod tests {
                 app,
             );
             h.run();
+            h.get_by_label("Choose input").click();
+            h.run();
+            h.event(egui::Event::Text("in 3".into()));
+            h.run();
+            assert!(h.query_by_label("In 4").is_none(), "only the matches are listed");
+            h.key_press(egui::Key::Enter);
+            h.run();
+            assert_eq!(h.state().engine.session().tracks[0].mixer.input, soundcraft_model::Route::Hardware("In 3".into()));
+
             for (button, first, last, input) in
                 [("Choose input", "In 1", format!("In {ports}"), true), ("Choose output", "USB 01", format!("USB {ports}"), false)]
             {
