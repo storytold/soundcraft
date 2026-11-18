@@ -11,6 +11,7 @@ rust-version = "1.95"
 repository = "https://github.com/storytold/soundcraft"
 
 [workspace.dependencies]
+craft-score = { git = "https://github.com/storytold/craft-libs", rev = "3a1a627dc69c677d3a26c22b72e070242ee6b841" }
 craft-xml = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "ea24422ae9859dc5da398d0462bc87f8e02e0d10" }
 craft-mime = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "ea24422ae9859dc5da398d0462bc87f8e02e0d10" }
 # internal
