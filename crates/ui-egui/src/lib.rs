@@ -446,6 +446,22 @@ pub struct SoundApp {
     /// Test-only count of synthetic batches acknowledged by a pass that received their events.
     #[cfg(test)]
     synthetic_applied_batches: u32,
+    /// Open and Save against cloud storage (`craft_ui::cloud::CloudApp`). No backend is connected
+    /// by a production host yet, so `craft_ui::cloud::available` is false and every cloud-shaped
+    /// control this crate offers stays hidden; a test connects `craft_cloud_local::LocalBackend`
+    /// to exercise the pages against a real, working `CloudBackend`.
+    cloud: craft_ui::cloud::CloudFiles,
+    /// The Share dialog `CloudApp::sharing` hands back. Unconnected alongside `cloud` for the same
+    /// reason: nobody in `storytold` answers `craft_ui::share::ShareBackend` yet either.
+    sharing: craft_ui::share::ShareDialog,
+    /// Who else is editing this document. SoundCraft has no realtime collaboration of its own
+    /// (that is RFC-0020's separate track), so this stays empty and `CloudApp::presence` draws
+    /// nothing; the field exists because the trait requires one to hand back.
+    presence: craft_ui::presence::PresenceBar,
+    /// A URL `CloudApp::open_url` queued from a cloud page, for the next UI pass (which has an
+    /// `egui::Context` to open it from) to drain. `open_url` takes `&self`, so this needs a `Cell`
+    /// rather than a plain field.
+    pending_cloud_url: std::cell::Cell<Option<String>>,
 }
 
 #[cfg(test)]

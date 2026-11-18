@@ -343,6 +343,14 @@ pub fn menu_bar(app: &mut SoundApp, ui: &mut egui::Ui) {
                     }
                 );
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    // Hidden by construction with no cloud backend connected (the production
+                    // state today): `who` draws nothing while `craft_ui::cloud::available` is
+                    // false, and the Share button is offered only once a provider reports it has
+                    // sharing at all.
+                    craft_ui::cloud::who(app, ui);
+                    if craft_ui::cloud::shares(app) {
+                        let _ = craft_ui::cloud::share_button(app, ui, &[]);
+                    }
                     ui.label(egui::RichText::new(title).color(t.text_dim));
                 });
             });
@@ -574,8 +582,13 @@ pub fn invoke_menu(app: &mut SoundApp, id: &str, path: &str) {
         app.ui.audiosuite = p.get("process").and_then(Value::as_str).map(str::to_string);
         return;
     }
-    if wants_dialog(id) && app.dialogs.open_for_command(&app.engine, id) {
-        return;
+    if wants_dialog(id) {
+        // Before another dialog replaces whatever is open: an abandoned cloud Save As (left open,
+        // not saved through) must not carry its target document or suggested name into it.
+        craft_ui::cloud::cancel_save_as(app);
+        if app.dialogs.open_for_command(&app.engine, id) {
+            return;
+        }
     }
     // These ids only exist to open a dialog from the menu. Programmatic `app.run` refuses them.
     if id == "ui.new_tracks_dialog" {
@@ -593,6 +606,11 @@ pub fn invoke_menu(app: &mut SoundApp, id: &str, path: &str) {
 /// Keyboard shortcut for a dialog command, or one that would close a modified session: open its
 /// dialog. Returns true when handled.
 pub fn invoke_shortcut_dialog(app: &mut SoundApp, id: &str) -> bool {
+    // Same reasoning as `invoke_menu`: a shortcut (Cmd+S with no path yet, for example) can open a
+    // dialog too, so an abandoned cloud Save As is cleared here on the same terms.
+    if wants_dialog(id) {
+        craft_ui::cloud::cancel_save_as(app);
+    }
     (wants_dialog(id) && app.dialogs.open_for_command(&app.engine, id)) || crate::dialogs::ask_to_save(app, id, &json!({}))
 }
 

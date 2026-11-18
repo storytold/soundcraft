@@ -3,6 +3,7 @@
 use crate::SoundApp;
 use crate::theme::{Tokens, bold};
 use craft_audio::EncodeFormat;
+use craft_ui::cloud::CloudApp;
 use egui::{Align2, vec2};
 use serde_json::{Value, json};
 use soundcraft_engine::Engine;
@@ -18,7 +19,7 @@ mod strip_silence;
 #[cfg(test)]
 use audiosuite::SPEED_RAMP_CHOICES;
 use audiosuite::audiosuite_window;
-pub use files::{NotUnicode, ask_to_save, open_path, open_session_bytes, run_or_ask, takes_path, unicode};
+pub use files::{CloudMode, NotUnicode, ask_to_save, open_path, open_session_bytes, run_or_ask, takes_path, unicode};
 use files::{OPEN_PENDING, default_dir, open_pending_session, path_dialog};
 use strip_silence::{AUTO_NAME_LABELS, STRIP_NAME_LABELS, StripRectangles, StripValues, auto_rename_action, strip_name_fields, strip_silence_action};
 pub use strip_silence::{StripRects, strip_silence_rectangles};
@@ -39,6 +40,10 @@ pub enum Dialog {
     RenameMarker { id: soundcraft_model::MarkerId, name: String },
     ClearClips { clips: Vec<ClipId>, sources: Vec<SourceId>, message: String },
     PathPrompt { cmd: String, title: String, path: String, key: String },
+    // Reached from the Open or Save As PathPrompt (when a cloud backend is connected) and from a
+    // refused cloud save's "Save as a copy". Draws `craft_ui::cloud`'s own Open/Save As pages;
+    // "Use a local file instead" goes back to the ordinary `PathPrompt` for the same command.
+    Cloud { mode: files::CloudMode },
     Number { cmd: String, title: String, key: String, value: f64, suffix: String },
     TempoChange { at: Samples, bpm: f64 }, // from double-clicking the tempo ruler
     Spot(crate::spot::Spot),
@@ -98,6 +103,8 @@ impl Dialogs {
             Dialog::RenameMarker { .. } => "rename_marker",
             Dialog::ClearClips { .. } => "clear_clips",
             Dialog::PathPrompt { .. } => "path",
+            Dialog::Cloud { mode: files::CloudMode::Open } => "cloud_open",
+            Dialog::Cloud { mode: files::CloudMode::SaveAs } => "cloud_save_as",
             Dialog::Number { .. } => "number",
             Dialog::TempoChange { .. } => "tempo_change",
             Dialog::Spot(_) => "spot",
@@ -457,8 +464,72 @@ fn strip_silence_form(
     (action, rename_from)
 }
 
+/// The link under an Open or Save As path prompt that switches to the cloud page. Offered only
+/// once a backend answers the cloud contract; with none connected (the production state today)
+/// this draws nothing at all. Returns the page to switch to when the link was pressed.
+fn offer_cloud_page(app: &mut SoundApp, ui: &mut egui::Ui, cmd: &str) -> Option<files::CloudMode> {
+    if !craft_ui::cloud::available(app) || !matches!(cmd, "session.open" | "session.save_as" | "session.save_copy") {
+        return None;
+    }
+    ui.add_space(4.0);
+    let label =
+        if cmd == "session.open" { crate::localization::text("Open from the cloud…") } else { crate::localization::text("Save to the cloud…") };
+    if ui.link(label).clicked() {
+        return Some(if cmd == "session.open" { files::CloudMode::Open } else { files::CloudMode::SaveAs });
+    }
+    None
+}
+
+/// One frame of the cloud Open or Save As page. True when a save started, which closes the dialog
+/// and returns to the document.
+fn cloud_page(app: &mut SoundApp, ui: &mut egui::Ui, mode: files::CloudMode) -> bool {
+    match mode {
+        files::CloudMode::Open => {
+            craft_ui::cloud::open_page(app, ui);
+            false
+        }
+        files::CloudMode::SaveAs => craft_ui::cloud::save_page(app, ui),
+    }
+}
+
+/// The way back from the cloud page to the ordinary local-file prompt. Returns the command whose
+/// path prompt to reopen when the link was pressed.
+fn back_to_local_file(ui: &mut egui::Ui, mode: files::CloudMode) -> Option<String> {
+    ui.add_space(8.0);
+    ui.separator();
+    if ui.link(crate::localization::text("Use a local file instead")).clicked() {
+        return Some(if mode == files::CloudMode::Open { "session.open".to_owned() } else { "session.save_as".to_owned() });
+    }
+    None
+}
+
+/// Applies a frame's request to switch between the local path prompt and the cloud page, clearing
+/// an abandoned cloud Save As on the way out of it.
+fn switch_between_cloud_and_local(app: &mut SoundApp, d: &mut Dialog, switch_cloud: Option<files::CloudMode>, switch_local: Option<String>) {
+    if let Some(mode) = switch_cloud {
+        *d = Dialog::Cloud { mode };
+        return;
+    }
+    let Some(cmd) = switch_local else { return };
+    // Leaving the cloud Save As page for the ordinary one, without saving through it.
+    if matches!(d, Dialog::Cloud { mode: files::CloudMode::SaveAs }) {
+        craft_ui::cloud::cancel_save_as(app);
+    }
+    if app.dialogs.open_for_command(&app.engine, &cmd)
+        && let Some(fresh) = app.dialogs.open.take()
+    {
+        *d = fresh;
+    }
+}
+
 /// Show the open dialog, if any.
 pub fn show(app: &mut SoundApp, ctx: &egui::Context) {
+    // Independent of whether the cloud dialog (or any dialog) is on screen: a refused save can
+    // surface this after the user has moved on to another window entirely.
+    craft_ui::cloud::conflict_modal(app, ctx);
+    // Called unconditionally, as its own docs require: this is what collects a backend's answers
+    // and paints the modal once `app.sharing().open(..)` (the title bar's Share button) is pressed.
+    app.sharing().show(ctx);
     audiosuite_window(app, ctx);
     crate::bounce::show(app, ctx);
     crate::import::show(app, ctx);
@@ -480,6 +551,11 @@ pub fn show(app: &mut SoundApp, ctx: &egui::Context) {
     let mut action: Option<(String, Value)> = None;
     let mut bounce_params: Option<Value> = None;
     let mut save_first: Option<(String, Value)> = None;
+    // Set from `Dialog::PathPrompt` when the user asks for the cloud page instead, and from
+    // `Dialog::Cloud` when they ask to go back; applied after the match below so the frame that
+    // draws one page never also tries to draw the other.
+    let mut switch_cloud: Option<files::CloudMode> = None;
+    let mut switch_local: Option<String> = None;
     let confirmed = matches!(d, Dialog::SaveChanges { .. });
     // Strip Silence's Rename button, and the naming scheme its dialog's OK keeps.
     let mut rename_from: Option<[f64; 4]> = None;
@@ -494,6 +570,8 @@ pub fn show(app: &mut SoundApp, ctx: &egui::Context) {
         Dialog::RenameMarker { .. } => "Rename Marker",
         Dialog::ClearClips { .. } => "Clear",
         Dialog::PathPrompt { title, .. } | Dialog::Number { title, .. } => title.as_str(),
+        Dialog::Cloud { mode: files::CloudMode::Open } => "Open Session",
+        Dialog::Cloud { mode: files::CloudMode::SaveAs } => "Save Session As",
         Dialog::TempoChange { .. } => "Tempo Change (BPM)",
         Dialog::Spot(_) => "Spot",
         Dialog::Fades { .. } => "Fades",
@@ -610,6 +688,13 @@ pub fn show(app: &mut SoundApp, ctx: &egui::Context) {
                     if let Some(c) = path_prompt_form(app, ui, cmd, path, key, enter) {
                         action = Some(c);
                     }
+                    switch_cloud = offer_cloud_page(app, ui, cmd);
+                }
+                Dialog::Cloud { mode } => {
+                    if cloud_page(app, ui, *mode) {
+                        keep = false;
+                    }
+                    switch_local = back_to_local_file(ui, *mode);
                 }
                 Dialog::Number { cmd, key, value, suffix, .. } => {
                     ui.horizontal(|ui| {
@@ -794,9 +879,18 @@ pub fn show(app: &mut SoundApp, ctx: &egui::Context) {
         action = None;
         bounce_params = None;
         save_first = None;
+        switch_cloud = None;
+        switch_local = None;
         app.dialogs.after_save = None;
         app.dialogs.pending_session = None;
         ctx.memory_mut(|m| m.data.remove::<bool>(egui::Id::unique("dlg_cancel")));
+        // Leaving the cloud Save As page without saving, however it closes: Escape or Cancel.
+        if matches!(d, Dialog::Cloud { mode: files::CloudMode::SaveAs }) {
+            craft_ui::cloud::cancel_save_as(app);
+        }
+    }
+    if keep {
+        switch_between_cloud_and_local(app, &mut d, switch_cloud, switch_local);
     }
     if let Some(strip) = rename_from
         && keep

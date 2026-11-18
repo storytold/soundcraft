@@ -189,6 +189,22 @@ pub fn draw(painter: &Painter, r: Rect, name: &str, c: Color32) {
             painter.line_segment([p(r, 0.42, 0.5), p(r, 0.62, 0.5)], s);
             painter.add(Shape::convex_polygon(vec![p(r, 0.84, 0.5), p(r, 0.64, 0.34), p(r, 0.64, 0.66)], c, Stroke::NONE));
         }
+        // Row icons for the cloud Open and Save As pages (`craft_ui::cloud::CloudApp::paint_icon`).
+        "cloud_folder" => {
+            painter.add(Shape::convex_polygon(
+                vec![p(r, 0.14, 0.3), p(r, 0.38, 0.3), p(r, 0.46, 0.4), p(r, 0.86, 0.4), p(r, 0.86, 0.74), p(r, 0.14, 0.74)],
+                c,
+                Stroke::NONE,
+            ));
+        }
+        "cloud_document" => {
+            painter.rect_stroke(Rect::from_min_max(p(r, 0.26, 0.14), p(r, 0.68, 0.86)), 1.0, s, egui::StrokeKind::Middle);
+            // A folded top-right corner, so the outline reads as paper rather than a plain box.
+            painter.line_segment([p(r, 0.56, 0.14), p(r, 0.68, 0.26)], s);
+            for y in [0.42, 0.56, 0.7] {
+                painter.line_segment([p(r, 0.34, y), p(r, 0.6, y)], Stroke::new(s.width * 0.8, c));
+            }
+        }
         _ => {
             painter.rect_stroke(r.shrink(r.width() * 0.25), 1.0, s, egui::StrokeKind::Middle);
         }

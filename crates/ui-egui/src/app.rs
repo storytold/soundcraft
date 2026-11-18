@@ -7,6 +7,7 @@ use super::{
 };
 
 mod audio;
+mod cloud;
 mod commands;
 mod control;
 mod files;
@@ -123,6 +124,10 @@ impl SoundApp {
             _palette_lock: theme::lock_test_palette(),
             #[cfg(test)]
             synthetic_applied_batches: 0,
+            cloud: craft_ui::cloud::CloudFiles::default(),
+            sharing: craft_ui::share::ShareDialog::default(),
+            presence: craft_ui::presence::PresenceBar::default(),
+            pending_cloud_url: std::cell::Cell::new(None),
         }
     }
 
@@ -175,6 +180,10 @@ impl SoundApp {
         self.last_frame = Some(self.uptime);
         crate::control::expire_gestures(self);
         crate::control::drain(self, ctx);
+        craft_ui::cloud::pump(self, ctx);
+        if let Some(url) = self.pending_cloud_url.take() {
+            ctx.open_url(egui::OpenUrl::new_tab(url));
+        }
         self.note_recent_session();
         self.apply_editor_edits();
         // A multi-pass frame runs this logic once per pass; bounce slices and background-import

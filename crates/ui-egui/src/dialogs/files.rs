@@ -1,5 +1,15 @@
 use super::{Dialog, SoundApp, Value, json};
 
+/// Which cloud page `Dialog::Cloud` shows: the Open page (both sides, mine and shared) or the
+/// Save As page. There is no cloud "Save" without first choosing a destination, since whether
+/// Save has somewhere to go without asking is a property of the open document's origin
+/// (`craft_ui::cloud::has_target`), checked before this dialog would ever be reached.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CloudMode {
+    Open,
+    SaveAs,
+}
+
 /// When `id` would close a session with unsaved changes, ask first; true when the question is
 /// open instead. A take in progress is stopped first, so it counts as a change.
 pub fn ask_to_save(app: &mut SoundApp, id: &str, params: &Value) -> bool {
