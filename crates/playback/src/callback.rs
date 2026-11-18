@@ -278,11 +278,23 @@ impl AudioState {
 
     /// Nothing plays live MIDI: let the events go, so that they do not sound late. Their
     /// releases go with them, so every port lets go of its notes when the engine runs again.
+    ///
+    /// During a record pass this is how the last device going away shows (no port is open, so
+    /// nothing plays live): the take gets its entry for what was dropped or will not come, like
+    /// any other loss, instead of ending as if it were complete.
     fn skip_midi(&mut self) {
         let Some(feed) = &self.midi else { return };
-        feed.take_lost();
+        let mut lost = feed.take_lost();
         let now = feed.clock();
-        while feed.next(now).is_some() {}
+        while let Some((_, e)) = feed.next(now) {
+            lost |= midi_port_bit(e.port);
+        }
+        for (_, e) in &self.midi_pending {
+            lost |= midi_port_bit(e.port);
+        }
+        if lost != 0 && self.playing && self.recording {
+            feed.record_lost(self.pos.saturating_sub(self.midi_delay), lost);
+        }
         self.midi_pending.clear();
         self.midi_lost = u64::MAX;
     }

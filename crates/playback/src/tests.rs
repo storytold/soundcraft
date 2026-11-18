@@ -896,3 +896,27 @@ fn live_midi_keeps_its_order_and_its_time_at_another_device_rate() {
         assert!((10_000 + 512 - 64..=10_000 + 512).contains(&e.at), "{}", e.at);
     }
 }
+
+#[test]
+fn the_last_device_going_away_during_a_record_pass_is_written_into_the_take() {
+    let (mut st, tx, feed, ..) = keyboard_session();
+    tx.send(Cmd::Recording(true)).unwrap();
+    tx.send(Cmd::Play { from: 0, end: None, looped: None }).unwrap();
+    feed.receive(0, &[0xB0, 64, 127]);
+    feed.receive(0, &[0x90, 60, 100]);
+    assert!(heard(&mut st, 4));
+    // Unplugged with the key and the pedal down: no port is open any more.
+    feed.port_lost(0);
+    feed.set_connected(0);
+    assert!(!heard(&mut st, 60), "nothing is left sounding");
+    let mut rec = Vec::new();
+    feed.take_recorded(&mut rec);
+    let lost: Vec<&midi::RecordedMidi> = rec.iter().filter(|e| e.is_lost()).collect();
+    assert_eq!(lost.iter().map(|e| e.port).collect::<Vec<_>>(), [0], "once, for the port that went");
+    assert!(lost[0].at >= rec[1].at, "the note that was held ends there");
+    // Playing on without a device adds nothing to the take.
+    heard(&mut st, 10);
+    rec.clear();
+    feed.take_recorded(&mut rec);
+    assert!(rec.is_empty());
+}
