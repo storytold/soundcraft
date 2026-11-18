@@ -7,7 +7,9 @@ use soundcraft_model::TrackId;
 use soundcraft_ui_egui::{Services, SoundApp};
 use std::collections::BTreeMap;
 
-fn harness(app: SoundApp) -> Harness<'static, SoundApp> {
+fn harness(mut app: SoundApp) -> Harness<'static, SoundApp> {
+    // These tests drive the slider list (the knob view has its own tests).
+    app.ui.plugin_list_view = true;
     let mut h = Harness::builder().with_size(vec2(1600.0, 1000.0)).build_ui_state(
         |ui, app: &mut SoundApp| {
             let ctx = ui.ctx().clone();
@@ -98,6 +100,8 @@ fn undo_steps(h: &Harness<'_, SoundApp>) -> usize {
 /// Kick's EQ 7-Band window, with Input at 6 dB and HPF Slope on its last choice.
 fn kick_eq() -> (Harness<'static, SoundApp>, TrackId) {
     let mut app = SoundApp::new(soundcraft_engine::demo::demo_engine(), None, Services::default());
+    // These tests drive the slider list (the knob view has its own tests).
+    app.ui.plugin_list_view = true;
     let kick = app.engine.session().track_by_name("Kick").unwrap().id;
     let slope = param("eq_7band", "hpf_slope");
     app.run("mix.insert_param", json!({"track": kick.0, "slot": 0, "param": "input_gain", "value": 6.0})).unwrap();
@@ -177,6 +181,8 @@ fn alt_pressed_during_a_drag_holds_the_value_and_the_drag_goes_on_from_there() {
 /// Kick's compressor window, with Attack away from its default.
 fn kick_compressor_attack() -> (Harness<'static, SoundApp>, TrackId, f32) {
     let mut app = SoundApp::new(soundcraft_engine::demo::demo_engine(), None, Services::default());
+    // These tests drive the slider list (the knob view has its own tests).
+    app.ui.plugin_list_view = true;
     let kick = app.engine.session().track_by_name("Kick").unwrap().id;
     let attack = param("compressor", "attack");
     let away = (attack.default * 2.0).min(attack.max);
@@ -217,6 +223,8 @@ fn alt_drag_leaves_a_log_taper_slider_where_it_is() {
 #[test]
 fn alt_click_returns_a_whole_number_slider_to_its_default() {
     let mut app = SoundApp::new(soundcraft_engine::demo::demo_engine(), None, Services::default());
+    // These tests drive the slider list (the knob view has its own tests).
+    app.ui.plugin_list_view = true;
     let keys = app.engine.session().track_by_name("Keys").unwrap().id;
     app.run("mix.instrument", json!({"track": keys.0, "plugin": "sampler"})).unwrap();
     app.run("mix.instrument_param", json!({"track": keys.0, "param": "root_note", "value": 72.0})).unwrap();
@@ -237,6 +245,8 @@ fn alt_click_returns_a_whole_number_slider_to_its_default() {
 #[test]
 fn alt_click_returns_clip_effects_sliders_and_value_boxes_to_their_defaults() {
     let mut app = SoundApp::new(soundcraft_engine::demo::demo_engine(), None, Services::default());
+    // These tests drive the slider list (the knob view has its own tests).
+    app.ui.plugin_list_view = true;
     let s = app.engine.session();
     let clip = s.track_by_name("Kick").unwrap().clips().iter().find(|c| c.is_audio()).unwrap().id;
     app.run("edit.select", json!({"clips": [clip.0]})).unwrap();
@@ -270,6 +280,8 @@ fn fallback_audiosuite_sliders_reset_with_alt_click() {
         ("pitch_shift", "Semitones", "semitones", 0.0),
     ] {
         let mut app = SoundApp::new(soundcraft_engine::demo::demo_engine(), None, Services::default());
+        // These tests drive the slider list (the knob view has its own tests).
+        app.ui.plugin_list_view = true;
         app.ui.audiosuite = Some(process.into());
         let mut h = harness(app);
         let read = |h: &Harness<'_, SoundApp>| -> BTreeMap<String, f32> {
@@ -295,6 +307,8 @@ fn fallback_audiosuite_sliders_reset_with_alt_click() {
 #[test]
 fn alt_click_returns_audiosuite_parameter_sliders_to_their_defaults() {
     let mut app = SoundApp::new(soundcraft_engine::demo::demo_engine(), None, Services::default());
+    // These tests drive the slider list (the knob view has its own tests).
+    app.ui.plugin_list_view = true;
     app.ui.audiosuite = Some("compressor".into());
     let mut h = harness(app);
     let read = |h: &Harness<'_, SoundApp>| -> BTreeMap<String, f32> {
@@ -320,6 +334,8 @@ fn alt_click_returns_audiosuite_parameter_sliders_to_their_defaults() {
 #[test]
 fn clip_effects_gain_resets_with_alt_click_and_undo_restores_the_value() {
     let mut app = SoundApp::new(soundcraft_engine::demo::demo_engine(), None, Services::default());
+    // These tests drive the slider list (the knob view has its own tests).
+    app.ui.plugin_list_view = true;
     let clip = app.engine.session().track_by_name("Kick").unwrap().clips().iter().find(|c| c.is_audio()).unwrap().id;
     app.run("edit.select", json!({"clips": [clip.0]})).unwrap();
     app.run("clip.effects_set", json!({"clips": [clip.0], "params": {"gain": 6.0}})).unwrap();

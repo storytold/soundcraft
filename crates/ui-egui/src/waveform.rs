@@ -153,21 +153,22 @@ impl Grid {
     /// fill, along the top only when `rectified`.
     fn paint(&self, painter: &Painter, ys: &[Option<(f32, f32)>], wave: Color32, outlines: bool, rectified: bool) {
         let mut mesh = Mesh::default();
-        self.strip(&mut mesh, ys, if outlines { wave.gamma_multiply(0.55) } else { wave });
-        let edges: &[fn((f32, f32)) -> f32] = match (outlines, rectified) {
-            (false, _) => &[],
-            (true, true) => &[|y| y.0],
-            (true, false) => &[|y| y.0, |y| y.1],
-        };
-        for edge in edges {
+        // A slightly darker body edged in the full colour, as the incumbent draws its waveforms:
+        // the edge keeps the shape crisp at any zoom. "Outlines" darkens the body further.
+        self.strip(&mut mesh, ys, wave.gamma_multiply(if outlines { 0.55 } else { 0.78 }));
+        // Each edge column reaches toward its neighbours' edges only on the inside (towards the
+        // centre line), so steep slopes stay joined while a lone peak stays one column wide.
+        let edges: &[(fn((f32, f32)) -> f32, bool)] = if rectified { &[(|y| y.0, true)] } else { &[(|y| y.0, true), (|y| y.1, false)] };
+        for (edge, top) in edges {
             let line: Vec<Option<(f32, f32)>> = ys
                 .iter()
                 .enumerate()
                 .map(|(c, y)| {
                     let y = edge((*y)?);
-                    let near = |i: Option<usize>| i.and_then(|i| ys.get(i).copied().flatten()).map_or(y, |n| (edge(n) + y) * 0.5);
+                    let near = |i: Option<usize>| i.and_then(|i| ys.get(i).copied().flatten()).map_or(y, edge);
                     let (a, b) = (near(c.checked_sub(1)), near(Some(c + 1)));
-                    Some((y.min(a).min(b) - self.weight * 0.5, y.max(a).max(b) + self.weight * 0.5))
+                    let (lo, hi) = if *top { (y, y.max(a).max(b)) } else { (y.min(a).min(b), y) };
+                    Some((lo - self.weight * 0.5, hi + self.weight * 0.5))
                 })
                 .collect();
             self.strip(&mut mesh, &line, wave);

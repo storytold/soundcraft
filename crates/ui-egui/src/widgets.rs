@@ -312,7 +312,9 @@ pub fn meter(ui: &Ui, r: Rect, level: f32, hold: f32, clip: bool) {
     let (amber, red) = (meter_pos(-12.0), meter_pos(-3.0));
     let zones = [(0.0, amber, t.meter_green), (amber, red, t.meter_yellow), (red, 1.0, t.meter_red)];
     let lit = level_pos(level);
-    let unlit = if t.meter_bg.intensity() > 0.5 { 0.08 } else { 0.18 };
+    // Unlit segments barely show, as on the incumbent's meters: at 0.18 the dark theme drew three
+    // solid green, yellow and red blocks on every idle strip, which read as a meter stuck on.
+    let unlit = if t.meter_bg.intensity() > 0.5 { 0.08 } else { 0.07 };
     let mut mesh = Mesh::default();
     for (lo, hi, color) in zones {
         let top = lit.clamp(lo, hi);

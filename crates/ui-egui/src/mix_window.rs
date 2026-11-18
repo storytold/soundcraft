@@ -201,7 +201,9 @@ fn strip(app: &mut SoundApp, ui: &mut Ui, id: TrackId, snap: Option<&MeterSnapsh
         ui.scroll_to_rect(r.translate(vec2(margin, 0.0)), Some(egui::Align::Min));
     }
     let selected = app.engine.session().edit.selected_tracks.contains(&id);
-    let bg = if selected { t.strip_selected } else { t.strip_bg };
+    // The whole strip wears the track's colour, as in the incumbent's Mix window, so a strip is
+    // found by colour at a glance and lines up with its track in the Edit window.
+    let bg = if selected { t.strip_selected } else { t.strip_bg.lerp_to_gamma(crate::theme::rgb(track.color), 0.30) };
     vgradient(ui.painter(), r, shade(bg, 0.06), bg);
     ui.painter().vline(r.min.x + 0.5, r.y_range(), Stroke::new(1.0, t.edge_light));
     let mut y = r.min.y + 4.0;
@@ -603,6 +605,11 @@ fn toggle_rows(app: &mut SoundApp, ui: &mut Ui, cx: &StripCtx<'_>, mut y: f32) -
     y
 }
 
+/// Channels the strip meter shows as separate bars (two at most for a stereo strip).
+fn chans_shown(track: &soundcraft_model::Track) -> usize {
+    if track.kind == TrackKind::Master { 2 } else { track.channels().min(2) }
+}
+
 /// The fader and its meter.
 fn fader_and_meter(app: &mut SoundApp, ui: &mut Ui, cx: &StripCtx<'_>, y: f32, snap: Option<&MeterSnapshot>) {
     let StripCtx { track, id, narrow, x0, inner_w, r, .. } = *cx;
@@ -617,7 +624,17 @@ fn fader_and_meter(app: &mut SoundApp, ui: &mut Ui, cx: &StripCtx<'_>, y: f32, s
     }
     let md = app.meters.get(&id).copied().unwrap_or_default();
     let slot = fader_slot(fr);
-    let mr = Rect::from_min_max(pos2(fr.max.x + 4.0, slot.min.y - 5.0), pos2(x0 + inner_w - 2.0, slot.max.y + if wide_meter { 17.0 } else { 1.0 }));
+    let right = x0 + inner_w - 2.0;
+    // Slim bars (about 7 pt a channel) right of the scale, not a block filling the strip.
+    let bars = if wide_meter {
+        0.0
+    } else if chans_shown(track) >= 2 {
+        16.0
+    } else {
+        8.0
+    };
+    let left = if wide_meter { fr.max.x + 4.0 } else { (right - bars).max(fr.max.x + 4.0) };
+    let mr = Rect::from_min_max(pos2(left, slot.min.y - 5.0), pos2(right, slot.max.y + if wide_meter { 17.0 } else { 1.0 }));
     if !narrow && !wide_meter {
         meter_scale(ui.painter(), mr, mr.min.x - 1.0);
     }
