@@ -22,6 +22,8 @@ pub fn show(app: &mut SoundApp, ctx: &egui::Context) {
     workspace(app, ctx);
     configurations(app, ctx);
     playback_engine(app, ctx);
+    #[cfg(windows)]
+    crate::hui::show(app, ctx);
     io_setup(app, ctx);
     shortcuts_window(app, ctx);
     clip_effects(app, ctx);
@@ -81,7 +83,7 @@ fn audio_health(app: &mut SoundApp, ctx: &egui::Context) {
     }
 }
 
-fn win(ctx: &egui::Context, open: &mut bool, title: &str, size: egui::Vec2, body: impl FnOnce(&mut egui::Ui)) {
+pub(crate) fn win(ctx: &egui::Context, open: &mut bool, title: &str, size: egui::Vec2, body: impl FnOnce(&mut egui::Ui)) {
     if !*open {
         return;
     }

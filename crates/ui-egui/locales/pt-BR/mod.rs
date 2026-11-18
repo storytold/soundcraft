@@ -1315,6 +1315,13 @@ fn menu_translate(source: &str) -> Option<&'static str> {
         "Timecode rate" => "Taxa de timecode",
         "Triplet" => "Tercina",
         "Type" => "Tipo",
+        "Channels" => "Canais",
+        "HUI connected" => "HUI conectado",
+        "MIDI Controllers" => "Controladores MIDI",
+        "Peripherals" => "Periféricos",
+        "Receive From" => "Receber de",
+        "Send To" => "Enviar para",
+        "Waiting for HUI" => "Aguardando HUI",
         "Use Reconnect audio device in Setup › Playback Engine, or restart SoundCraft." => {
             "Use Reconectar dispositivo de áudio em Configurar › Mecanismo de reprodução, ou reinicie o SoundCraft."
         }

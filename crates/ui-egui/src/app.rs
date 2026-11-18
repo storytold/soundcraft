@@ -31,6 +31,8 @@ impl SoundApp {
     /// synthetic-input state.
     pub fn new(engine: Engine, player: Option<Player>, services: Services) -> Self {
         SoundApp {
+            #[cfg(windows)]
+            hui: crate::hui::Surface::default(),
             recent_seen: engine.path.clone(),
             recent_changed: false,
             recent_checked: None,
@@ -200,10 +202,14 @@ impl SoundApp {
                 self.engine.end_merge();
             }
         }
+        #[cfg(windows)]
+        crate::hui::poll(self, ctx);
         self.watch_output();
         self.watch_input();
         // Stop the old playback before sending a replacement session to the audio thread.
         self.handle_transport(dt);
+        #[cfg(windows)]
+        crate::hui::feedback(self);
         if self.engine.revision != self.last_rev {
             self.last_rev = self.engine.revision;
             if let Some(p) = &self.player {

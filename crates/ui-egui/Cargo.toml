@@ -35,6 +35,9 @@ image.workspace = true
 [target.'cfg(target_os = "linux")'.dependencies]
 zbus = "5"
 
+[target.'cfg(windows)'.dependencies]
+midir = "0.11"
+
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 craft-update = { workspace = true }
 
