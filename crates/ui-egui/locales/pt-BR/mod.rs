@@ -208,6 +208,7 @@ pub(super) fn translate(source: &str) -> Option<&'static str> {
         "List" => "Lista",
         "Show the parameters as knobs or as a list" => "Mostrar os parâmetros como botões giratórios ou como lista",
         "Out" => "Saída",
+        "AUTO" => "AUTO",
         "In" => "Entrada",
         "GR" => "RG",
         "Refresh Report" => "Atualizar relatório",

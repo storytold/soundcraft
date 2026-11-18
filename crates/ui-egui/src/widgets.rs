@@ -375,7 +375,7 @@ pub fn clip_gain_to_pos(db: f32) -> f32 {
     if db >= -36.0 { 0.25 + (db + 36.0) / 72.0 * 0.75 } else { (1.0 - ((-36.0 - db) / 108.0).powf(1.0 / 1.5)) * 0.25 }
 }
 
-const FADER_CAP_H: f32 = 40.0;
+const FADER_CAP_H: f32 = 34.0;
 
 /// The travel of a [`fader`] drawn in `r`: its cap's centre runs from the bottom (-inf) to the
 /// top (+12 dB).
@@ -391,7 +391,7 @@ pub fn fader(ui: &mut Ui, r: Rect, db: f32, id: egui::Id, name: &str) -> Option<
     resp.widget_info(|| egui::WidgetInfo::slider(ui.is_enabled(), f64::from(db), name));
     let p = ui.painter();
     let slot = fader_slot(r);
-    let cap_w = (r.width() * 0.4).clamp(16.0, 18.0);
+    let cap_w = (r.width() * 0.4).clamp(14.0, 16.0);
     p.rect_filled(slot, 2.0, t.fader_track);
     p.vline(slot.min.x + 0.5, slot.min.y + 1.0..=slot.max.y - 1.0, Stroke::new(1.0, Color32::from_black_alpha(120)));
     p.vline(slot.max.x + 0.5, slot.min.y + 2.0..=slot.max.y - 2.0, Stroke::new(1.0, Color32::from_white_alpha(18)));
@@ -407,18 +407,19 @@ pub fn fader(ui: &mut Ui, r: Rect, db: f32, id: egui::Id, name: &str) -> Option<
     }
     let pos = soundcraft_model::fader_db_to_pos(db);
     let y = slot.max.y - slot.height() * pos;
+    // A console-style cap: mid-grey, lit from above, with grooves either side of a dark centre line.
     let cap = Rect::from_center_size(pos2(slot.center().x, y), vec2(cap_w, FADER_CAP_H));
-    p.rect_filled(cap.translate(vec2(0.0, 2.0)).expand(1.0), 4.0, Color32::from_black_alpha(80));
+    p.rect_filled(cap.translate(vec2(0.0, 2.0)).expand(1.0), 3.0, Color32::from_black_alpha(110));
     let g = Color32::from_gray;
-    p.rect_filled(cap, 3.0, g(34));
+    p.rect_filled(cap, 2.0, g(22));
     let face = cap.shrink(1.0);
-    rounded_vgradient(p, face, 2.0, g(236), g(104));
-    vgradient(p, Rect::from_x_y_ranges(face.x_range(), y + 1.0..=face.max.y - 2.0), g(214), g(150));
-    p.hline(face.min.x + 2.0..=face.max.x - 2.0, face.min.y + 1.5, Stroke::new(1.0, Color32::from_white_alpha(110)));
-    p.hline(face.x_range(), y, Stroke::new(2.0, g(30)));
-    for (x, dx) in [(cap.min.x, 2.5), (cap.max.x, -2.5)] {
-        p.add(egui::Shape::convex_polygon(vec![pos2(x, y - 3.0), pos2(x + dx, y), pos2(x, y + 3.0)], g(34), Stroke::NONE));
+    rounded_vgradient(p, face, 2.0, g(176), g(92));
+    p.hline(face.min.x + 1.0..=face.max.x - 1.0, face.min.y + 1.0, Stroke::new(1.0, Color32::from_white_alpha(90)));
+    for dy in [-10.0f32, -6.0, 6.0, 10.0] {
+        p.hline(face.min.x + 2.0..=face.max.x - 2.0, y + dy, Stroke::new(1.0, g(70)));
+        p.hline(face.min.x + 2.0..=face.max.x - 2.0, y + dy + 1.0, Stroke::new(1.0, Color32::from_white_alpha(40)));
     }
+    p.hline(face.x_range(), y, Stroke::new(2.0, g(20)));
     if resp.double_clicked() || (resp.clicked() && ui.input(|i| i.modifiers.alt)) {
         return Some(0.0);
     }

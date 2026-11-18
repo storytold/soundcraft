@@ -74,18 +74,12 @@ pub(super) fn plugin_windows(app: &mut SoundApp, ctx: &egui::Context) {
                 if !soundcraft_mix::is_third_party(&ins.plugin) && !instrument && !app.ui.plugin_list_view {
                     // Built-in plugins: a graph where one helps, then knobs by band or section.
                     let params: Vec<(&str, f32)> = ins.params.iter().map(|(k, v)| (k.as_str(), *v)).collect();
-                    if info.id == "eq_7band" || info.id == "eq_1band" {
-                        super::plugin_panel::eq_graph(ui, info, &params);
-                    } else if matches!(info.id, "compressor" | "expander_gate" | "maximizer") {
-                        let gr = app.meters.get(&tid).map_or(0.0, |m| m.gr);
-                        super::plugin_panel::dynamics_graph(ui, info, &params, gr);
-                    }
-                    ui.add_space(4.0);
+                    let gr = app.meters.get(&tid).map_or(0.0, |m| m.gr);
                     let value = |p: &soundcraft_dsp::ParamInfo| ins.params.get(p.id).copied().unwrap_or(p.default);
                     let shown = |p: &soundcraft_dsp::ParamInfo, x: f32| {
                         if instrument { crate::sampler_window::format_param(&ins.plugin, p, x) } else { p.format(x) }
                     };
-                    let changed = super::plugin_panel::show(ui, (tid.0, slot), info, &value, &shown);
+                    let changed = super::plugin_panel::face(ui, (tid.0, slot), info, &params, gr, &value, &shown);
                     for (param, x) in changed {
                         if instrument {
                             let _ = app.engine.execute_merged(

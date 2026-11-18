@@ -309,7 +309,8 @@ impl Tokens {
         knob_pointer: Color32::from_rgb(230, 230, 230),
         section_label: Color32::from_rgb(200, 200, 200),
         slot_well: Color32::from_rgb(43, 43, 43),
-        slot_empty: Color32::from_rgb(39, 39, 39),
+        // A see-through dark well, so a Mix strip's colour shows through its empty slots.
+        slot_empty: Color32::from_black_alpha(70),
         slot_face: [Color32::from_rgb(92, 92, 92), Color32::from_rgb(75, 75, 75)],
         slot_bypassed: [Color32::from_rgb(66, 96, 146), Color32::from_rgb(50, 76, 120)],
         slot_mark: Color32::from_rgb(159, 159, 159),

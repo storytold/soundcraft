@@ -27,7 +27,7 @@ pub(crate) use sends::{send_slot, send_window};
 pub(crate) use slots::{insert_slot, instrument_slot};
 
 pub fn strip_width(narrow: bool) -> f32 {
-    if narrow { 64.0 } else { 98.0 }
+    if narrow { 64.0 } else { 86.0 }
 }
 
 pub fn show(app: &mut SoundApp, ui: &mut Ui) {
@@ -175,6 +175,8 @@ struct StripCtx<'a> {
     inner_w: f32,
     narrow: bool,
     selected: bool,
+    /// The fill behind the strip's sections: a darker shade of the strip's own colour.
+    section: Color32,
     views: Vec<String>,
     all: bool,
 }
@@ -211,7 +213,10 @@ fn strip(app: &mut SoundApp, ui: &mut Ui, id: TrackId, snap: Option<&MeterSnapsh
     let x0 = r.min.x + 4.0;
     let views = app.ui.mix_views.clone();
     let all = views.iter().any(|x| x == "all");
-    let cx = StripCtx { track, id, r, w, x0, inner_w, narrow, selected, views, all };
+    // Sections sit in a darker shade of the strip, so the track colour runs through the whole
+    // strip as in the incumbent's Mix window rather than boxing it in grey panels.
+    let section = if selected || t.strip_bg.intensity() > 0.5 { t.strip_section } else { shade(bg, -0.3) };
+    let cx = StripCtx { track, id, r, w, x0, inner_w, narrow, selected, section, views, all };
     // Preamp, instrument and object rows keep their height on every strip so sections line up;
     // their controls only appear on tracks with an input.
     y = preamp_section(app, ui, &cx, y);
@@ -231,12 +236,11 @@ fn strip(app: &mut SoundApp, ui: &mut Ui, id: TrackId, snap: Option<&MeterSnapsh
 /// Input gain stage ahead of the inserts (the track's trim).
 fn preamp_section(app: &mut SoundApp, ui: &mut Ui, cx: &StripCtx<'_>, mut y: f32) -> f32 {
     let StripCtx { track, id, narrow, x0, inner_w, .. } = *cx;
-    let t = Tokens::current();
     let has_input = matches!(track.kind, TrackKind::Audio | TrackKind::Instrument | TrackKind::Midi);
     if cx.shows("mic_preamps") {
         // Input gain stage ahead of the inserts (the track's trim).
         let sec = Rect::from_min_size(pos2(x0, y), vec2(inner_w, 34.0));
-        inset(ui.painter(), sec, t.strip_section);
+        inset(ui.painter(), sec, cx.section);
         section_label(ui, sec, "PREAMP", narrow);
         if has_input {
             let kr = Rect::from_min_size(pos2(x0 + 6.0, sec.min.y + 15.0), vec2(inner_w - 12.0, 16.0));
@@ -263,7 +267,7 @@ fn instrument_section(app: &mut SoundApp, ui: &mut Ui, cx: &StripCtx<'_>, mut y:
     let t = Tokens::current();
     if cx.shows("instruments") {
         let sec = Rect::from_min_size(pos2(x0, y), vec2(inner_w, 34.0));
-        inset(ui.painter(), sec, t.strip_section);
+        inset(ui.painter(), sec, cx.section);
         section_label(ui, sec, "INSTRUMENT", narrow);
         let sr = Rect::from_min_size(pos2(x0 + 2.0, sec.min.y + 16.0), vec2(inner_w - 4.0, 15.0));
         let slot = track.mixer.inserts.iter().position(|i| i.as_ref().is_some_and(|i| plugin_info(&i.plugin).is_some_and(|p| p.is_instrument)));
@@ -305,7 +309,6 @@ fn object_section(app: &mut SoundApp, ui: &mut Ui, cx: &StripCtx<'_>, mut y: f32
 /// The insert and send sections.
 fn slot_sections(app: &mut SoundApp, ui: &mut Ui, cx: &StripCtx<'_>, mut y: f32) -> f32 {
     let StripCtx { track, narrow, x0, inner_w, .. } = *cx;
-    let t = Tokens::current();
     for (key, title, off, is_send) in [
         ("inserts_ae", "INSERTS A-E", 0usize, false),
         ("inserts_fj", "INSERTS F-J", 5, false),
@@ -316,7 +319,7 @@ fn slot_sections(app: &mut SoundApp, ui: &mut Ui, cx: &StripCtx<'_>, mut y: f32)
             continue;
         }
         let sec = Rect::from_min_size(pos2(x0, y), vec2(inner_w, 16.0 + 5.0 * 17.0));
-        inset(ui.painter(), sec, t.strip_section);
+        inset(ui.painter(), sec, cx.section);
         section_label(ui, sec, title, narrow);
         for k in 0..5 {
             let sr = Rect::from_min_size(pos2(x0 + 2.0, sec.min.y + 15.0 + k as f32 * 17.0), vec2(inner_w - 4.0, 15.0));
@@ -400,7 +403,7 @@ fn io_section(app: &mut SoundApp, ui: &mut Ui, cx: &StripCtx<'_>, mut y: f32) ->
     if cx.shows("io") {
         let has_input = has_input_selector(track.kind);
         let sec = Rect::from_min_size(pos2(x0, y), vec2(inner_w, 16.0 + 2.0 * 18.0 + 30.0));
-        inset(ui.painter(), sec, t.strip_section);
+        inset(ui.painter(), sec, cx.section);
         section_label(ui, sec, "I / O", narrow);
         let in_r = Rect::from_min_size(pos2(x0 + 2.0, sec.min.y + 15.0), vec2(inner_w - 4.0, 16.0));
         let out_r = if has_input { Rect::from_min_size(pos2(x0 + 2.0, sec.min.y + 33.0), vec2(inner_w - 4.0, 16.0)) } else { in_r };
@@ -437,8 +440,14 @@ fn io_section(app: &mut SoundApp, ui: &mut Ui, cx: &StripCtx<'_>, mut y: f32) ->
         );
         route_popup(app, &resp, id, false);
         // Automation mode.
-        let am_r = Rect::from_min_size(pos2(x0 + 2.0, sec.min.y + 15.0 + 2.0 * 18.0), vec2(inner_w - 4.0, 16.0));
-        ui.painter().text(pos2(am_r.center().x, am_r.min.y - 1.0), Align2::CENTER_BOTTOM, "", regular(9.0), t.text_dim);
+        let am_r = Rect::from_min_size(pos2(x0 + 2.0, sec.min.y + 15.0 + 2.0 * 18.0 + 12.0), vec2(inner_w - 4.0, 16.0));
+        ui.painter().text(
+            pos2(am_r.center().x, am_r.min.y - 1.0),
+            Align2::CENTER_BOTTOM,
+            crate::localization::text("AUTO"),
+            bold(9.0),
+            t.section_label,
+        );
         let mut c = ui.new_child(egui::UiBuilder::new().max_rect(am_r));
         let mode = track.mixer.automation_mode;
         let col = if mode == soundcraft_model::AutomationMode::Read {
