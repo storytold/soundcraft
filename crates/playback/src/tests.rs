@@ -717,3 +717,44 @@ fn armed_tracks_are_heard_and_metered_after_playback_stops() {
     assert!(out.iter().any(|x| x.abs() > 0.1), "the input is heard");
     assert!(shared.meters.lock().unwrap().tracks.get(&t).is_some_and(|m| m.peak[0] > 0.1), "and metered");
 }
+
+/// A device callback that ends inside a rendered block leaves the rest of it pending. Once
+/// nothing listens any more, that rest is dropped: it is not the first thing heard later.
+#[test]
+fn monitoring_that_resumes_does_not_replay_the_block_it_stopped_in() {
+    use soundcraft_model::{ChannelFormat, TrackKind};
+    let mut armed = soundcraft_model::Session::default();
+    let t = armed.add_track(TrackKind::Audio, ChannelFormat::Mono, None);
+    armed.track_mut(t).unwrap().mixer.record_arm = true;
+    let mut idle = armed.clone();
+    idle.track_mut(t).unwrap().mixer.record_arm = false;
+    let shared = Arc::new(Shared {
+        position: AtomicI64::new(0),
+        playing: AtomicBool::new(false),
+        speed: AtomicU32::new(1000),
+        meters: Mutex::new(MeterSnapshot::default()),
+    });
+    let (tx, rx) = channel();
+    let mut st = AudioState::new(rx, Arc::clone(&shared), Arc::new(armed.clone()), 48_000.0, channel().0);
+    // 1024 device frames at 44.1 kHz take 1115 session frames: the third block is partly read.
+    st.device_rate = 44_100.0;
+    let ring = record::InputRing::new(1, 48_000);
+    tx.send(Cmd::Input(Arc::clone(&ring))).unwrap();
+    let mut out = vec![0.0f32; 2 * 1024];
+    for _ in 0..3 {
+        ring.push(&[0.5; 4096]);
+    }
+    st.fill(&mut out, 2);
+    assert!(out.iter().any(|x| *x > 0.1), "the input is heard");
+    tx.send(Cmd::Session(Arc::new(idle), Vec::new())).unwrap();
+    st.fill(&mut out, 2);
+    assert!(out.iter().all(|x| *x == 0.0), "nothing listens");
+    // The input goes on, with the other sign, and monitoring resumes.
+    for _ in 0..3 {
+        ring.push(&[-0.5; 4096]);
+    }
+    tx.send(Cmd::Session(Arc::new(armed), Vec::new())).unwrap();
+    st.fill(&mut out, 2);
+    assert!(out.iter().all(|x| *x < 0.1), "the block rendered before the pause is heard again");
+    assert!(out.iter().any(|x| *x < -0.1), "the new input is heard");
+}

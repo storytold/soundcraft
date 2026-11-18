@@ -208,8 +208,9 @@ impl AudioState {
         }
     }
 
-    /// Render the next block at the session rate into `pending`.
-    fn render_next(&mut self, quantum: usize) {
+    /// Render the next block at the session rate into `pending`: at most `quantum` frames of the
+    /// `demand` frames this device callback takes in all.
+    fn render_next(&mut self, quantum: usize, demand: usize) {
         let mut n = quantum.clamp(1, BLOCK);
         if let Some(l) = self.looped
             && self.pos >= l.end
@@ -243,7 +244,7 @@ impl AudioState {
             if self.mix.input.len() != ch {
                 self.mix.input = vec![vec![0.0; BLOCK]; ch];
             }
-            ring.pop_into(&mut self.mix.input, n, self.session.sample_rate.hz());
+            ring.pop_into(&mut self.mix.input, n, demand, self.session.sample_rate.hz());
         }
         self.mix.monitor_only = !self.playing;
         self.mix.recording = self.recording;
@@ -284,8 +285,11 @@ impl AudioState {
         let channels = channels.max(1);
         let monitoring = self.input.is_some() && self.session.tracks.iter().any(|t| t.mixer.input_monitor || t.mixer.record_arm);
         if !self.playing && !monitoring {
-            // Nothing listens. The input read stands still: start it afresh when it resumes.
+            // Nothing listens. The input read stands still: start it afresh when it resumes, and
+            // drop what is left of the last rendered block, which would be heard first then.
             self.input_paused = true;
+            self.pending_len = 0;
+            self.read = 0.0;
             out.iter_mut().for_each(|x| *x = 0.0);
             self.unsent.silence();
             self.forget_meters();
@@ -297,14 +301,16 @@ impl AudioState {
         let speed = f64::from(self.shared.speed.load(Ordering::Relaxed)) / 1000.0;
         let step = self.session.sample_rate.as_f64() / self.device_rate.max(1.0) * speed.clamp(0.1, 4.0);
         let callback_frames = out.len() / channels;
-        let quantum = ((callback_frames as f64 * step).ceil() as usize).clamp(1, BLOCK);
+        // Session frames this callback takes in all, rendered in blocks of at most `BLOCK`.
+        let demand = (callback_frames as f64 * step).ceil() as usize;
+        let quantum = demand.clamp(1, BLOCK);
         for frame in out.chunks_mut(channels) {
             while self.read >= self.pending_len as f64 {
                 self.read -= self.pending_len as f64;
                 if !self.playing && !monitoring {
                     break;
                 }
-                self.render_next(quantum);
+                self.render_next(quantum, demand);
                 if self.pending_len == 0 {
                     break;
                 }
