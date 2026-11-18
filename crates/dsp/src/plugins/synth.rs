@@ -7,6 +7,8 @@ use crate::util::{Smoother, frames_in, ms_to_samples, note_hz, sane_channels, sa
 use crate::{Category, ParamInfo, Plugin, PluginInfo, Unit, db_to_gain};
 
 pub(crate) const MAX_EVENTS: usize = 512;
+/// Time constant for a retriggered voice's change of velocity.
+const VELOCITY_GLIDE_MS: f32 = 3.0;
 
 #[derive(Debug, Clone, Copy)]
 pub(crate) enum EventKind {
@@ -210,6 +212,9 @@ impl Svf {
 struct Voice {
     note: u8,
     vel: f32,
+    /// Where `vel` is heading: a retriggered, still-sounding voice glides to
+    /// its new velocity instead of jumping, which would click.
+    vel_target: f32,
     freq: f32,
     target: f32,
     osc1: Osc,
@@ -228,6 +233,7 @@ impl Voice {
         Self {
             note: 0,
             vel: 0.0,
+            vel_target: 0.0,
             freq: 440.0,
             target: 440.0,
             osc1: Osc::new(seed),
@@ -256,6 +262,8 @@ pub struct SubtractiveSynth {
     amp_rates: AdsrRates,
     filt_rates: AdsrRates,
     glide_coef: f32,
+    /// Per-sample coefficient for a velocity change on a sounding voice.
+    vel_coef: f32,
     last_freq: Option<f32>,
     counter: u64,
     level: Smoother,
@@ -285,6 +293,7 @@ impl SubtractiveSynth {
             amp_rates: AdsrRates::default(),
             filt_rates: AdsrRates::default(),
             glide_coef: 0.0,
+            vel_coef: 0.0,
             last_freq: None,
             counter: 0,
             level: Smoother::new(0.5),
@@ -303,6 +312,7 @@ impl SubtractiveSynth {
         self.filt_rates = AdsrRates::new(v(12), v(13), v(14) / 100.0, v(15), sr);
         let glide = v(16);
         self.glide_coef = if glide < 0.5 { 0.0 } else { crate::util::time_coef(glide / 3.0, sr) };
+        self.vel_coef = crate::util::time_coef(VELOCITY_GLIDE_MS, sr);
         self.level.set(db_to_gain(v(18)));
         self.cutoff.set(v(5));
     }
@@ -339,7 +349,11 @@ impl SubtractiveSynth {
         if let Some(v) = self.voices.get_mut(idx) {
             let was_active = v.active();
             v.note = note;
-            v.vel = (1.0 - sens) + sens * f32::from(vel.min(127)) / 127.0;
+            v.vel_target = (1.0 - sens) + sens * f32::from(vel.min(127)) / 127.0;
+            // A fresh voice starts at its velocity; a sounding one glides there.
+            if !was_active {
+                v.vel = v.vel_target;
+            }
             v.target = freq;
             v.freq = if was_active && glide { v.freq } else { start };
             if !was_active {
@@ -423,6 +437,7 @@ impl SubtractiveSynth {
             } else {
                 v.freq = v.target;
             }
+            v.vel = v.vel_target + (v.vel - v.vel_target) * self.vel_coef;
             let a = v.amp.next(&self.amp_rates);
             let fe = v.filt.next(&self.filt_rates);
             let s1 = v.osc1.next(w1, v.freq * bend / sr);
