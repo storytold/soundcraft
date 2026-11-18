@@ -1,48 +1,44 @@
 //! AudioSuite › Noise Reduction: learn the background noise from a selected passage, then remove
-//! it from the selected clips or the selected part of a track.
+//! it into a copy of the track (or of the selected part of it), after listening to it.
 use crate::SoundApp;
 use egui::{Pos2, Stroke, vec2};
-use serde_json::json;
+use serde_json::{Value, json};
 use soundcraft_dsp::denoise::{BINS, FFT_SIZE, NoiseProfile};
 use soundcraft_model::TrackId;
 use soundcraft_time::Range;
 
-/// Keeps the engine's profile and the one saved with the settings in step: a profile saved before
-/// a restart goes back to the engine, and a profile learned or set another way (an agent, the
-/// command line) is saved.
+/// Keeps the engine's profile and the one saved with the settings in step. At start-up a saved
+/// profile goes back to the engine, once; after that the saved one follows the engine, so a
+/// profile learned, set or forgotten another way (an agent, the command line) is saved as it is.
 pub(crate) fn sync_profile(app: &mut SoundApp) {
-    match (&app.engine.noise_profile, &app.ui.noise_profile) {
-        (None, Some(saved)) if saved.is_valid() => app.engine.noise_profile = Some(saved.clone()),
-        (Some(used), saved) if saved.as_ref() != Some(used) => app.ui.noise_profile = Some(used.clone()),
-        _ => {}
+    if !app.noise_profile_restored {
+        app.noise_profile_restored = true;
+        if app.engine.noise_profile.is_none()
+            && let Some(saved) = app.ui.noise_profile.as_ref().filter(|p| p.is_valid())
+        {
+            app.engine.noise_profile = Some(saved.clone());
+            return;
+        }
+    }
+    if app.ui.noise_profile != app.engine.noise_profile {
+        app.ui.noise_profile = app.engine.noise_profile.clone();
     }
 }
 
-/// What Apply and Preview work on: the selected audio tracks over the edit selection, or else the
-/// tracks of the selected clips over the span of those clips.
-fn targets(app: &SoundApp) -> Option<(Vec<u64>, Range)> {
+/// What Apply and Preview work on, as `audiosuite.noise_reduce` parameters: the selected audio
+/// tracks over the edit selection, or else the selected audio clips (just those, whole).
+fn targets(app: &SoundApp) -> Option<Value> {
     let s = app.engine.session();
     let audio = |t: &TrackId| s.track(*t).is_some_and(|t| t.kind == soundcraft_model::TrackKind::Audio);
     let sel = s.edit.selection;
     if !sel.is_empty() {
         let tracks: Vec<u64> = s.edit.selected_tracks.iter().filter(|t| audio(t)).map(|t| t.0).collect();
         if !tracks.is_empty() {
-            return Some((tracks, sel));
+            return Some(json!({"tracks": tracks, "start": sel.start, "end": sel.end}));
         }
     }
-    let mut tracks = Vec::new();
-    let mut span: Option<Range> = None;
-    for (t, c) in s.edit.selected_clips.iter().filter_map(|id| s.find_clip(*id)) {
-        if !c.is_audio() {
-            continue;
-        }
-        if !tracks.contains(&t.0) {
-            tracks.push(t.0);
-        }
-        let r = c.range();
-        span = Some(span.map_or(r, |o| Range::new(o.start.min(r.start), o.end.max(r.end))));
-    }
-    span.map(|r| (tracks, r))
+    let clips: Vec<u64> = s.edit.selected_clips.iter().filter(|id| s.find_clip(**id).is_some_and(|(_, c)| c.is_audio())).map(|id| id.0).collect();
+    (!clips.is_empty()).then(|| json!({"clips": clips}))
 }
 
 /// The recommended settings (reduction, sensitivity, smoothing): the DSP's defaults.
@@ -51,31 +47,51 @@ pub(crate) fn recommended() -> [f32; 3] {
     [d.reduction_db, d.sensitivity_db, d.smoothing]
 }
 
-/// The settings a running preview was made with, so a change re-renders it.
-#[derive(Clone, Copy, PartialEq)]
+/// A running preview: the targets it was started on (kept, so a refresh after a setting change
+/// cleans the same audio the loop plays) and the settings it plays.
+#[derive(Clone, PartialEq)]
 struct Preview {
+    targets: Value,
     settings: [f32; 3],
 }
 
-fn settings_json(app: &SoundApp, tracks: &[u64], r: Range) -> serde_json::Value {
+/// `targets` with the current settings.
+fn with_settings(app: &SoundApp, targets: &Value) -> Value {
     let [reduction, sensitivity, smoothing] = app.ui.noise_settings;
-    json!({"tracks": tracks, "start": r.start, "end": r.end, "reduction_db": reduction, "sensitivity_db": sensitivity, "smoothing": smoothing})
+    let mut p = targets.clone();
+    if let Some(o) = p.as_object_mut() {
+        o.insert("reduction_db".into(), json!(reduction));
+        o.insert("sensitivity_db".into(), json!(sensitivity));
+        o.insert("smoothing".into(), json!(smoothing));
+    }
+    p
 }
 
-/// Starts (or, with `restart` false, refreshes) the preview of the current targets and settings.
-fn preview(app: &mut SoundApp, restart: bool) -> Result<(), String> {
-    let (tracks, r) =
-        targets(app).ok_or_else(|| crate::localization::text("Select the clips to clean, or a range on audio tracks, first.").to_string())?;
-    let most = app.engine.session().sample_rate.samples(soundcraft_engine::cmd::NOISE_PREVIEW_SECONDS);
-    let r = Range::new(r.start, r.end.min(r.start.saturating_add(most)));
-    let session = soundcraft_engine::cmd::noise_reduction_preview(&app.engine, &settings_json(app, &tracks, r))
+fn no_targets() -> String {
+    crate::localization::text("Select the clips to clean, or a range on audio tracks, first.").to_string()
+}
+
+/// Starts a preview of the current targets and settings.
+fn start_preview(app: &mut SoundApp) -> Result<Preview, String> {
+    let targets = targets(app).ok_or_else(no_targets)?;
+    let (session, r) = soundcraft_engine::cmd::noise_reduction_preview(&app.engine, &with_settings(app, &targets))
         .map_err(|e| crate::localization::error_text(&e.to_string()))?;
-    if restart {
-        app.loop_preview(session, r);
-    } else {
-        app.update_preview(session);
-    }
-    Ok(())
+    app.loop_preview(session, r)?;
+    Ok(Preview { targets, settings: app.ui.noise_settings })
+}
+
+/// Re-renders a running preview with the current settings, on the targets it started with.
+fn refresh_preview(app: &mut SoundApp, pv: &Preview) -> Result<Preview, String> {
+    let (session, _) = soundcraft_engine::cmd::noise_reduction_preview(&app.engine, &with_settings(app, &pv.targets))
+        .map_err(|e| crate::localization::error_text(&e.to_string()))?;
+    app.update_preview(session);
+    Ok(Preview { targets: pv.targets.clone(), settings: app.ui.noise_settings })
+}
+
+/// The loop range Original plays for the current targets: the same range Preview would loop.
+fn original_range(app: &SoundApp) -> Result<Range, String> {
+    let targets = targets(app).ok_or_else(no_targets)?;
+    soundcraft_engine::cmd::noise_reduction_preview_range(&app.engine, &targets).map_err(|e| crate::localization::error_text(&e.to_string()))
 }
 
 pub fn show(app: &mut SoundApp, ctx: &egui::Context) {
@@ -83,23 +99,25 @@ pub fn show(app: &mut SoundApp, ctx: &egui::Context) {
     let mut open = app.ui.show_noise_reduction;
     let key = egui::Id::unique("noise_reduction_result");
     let pkey = egui::Id::unique("noise_reduction_preview");
-    let mut previewing: Option<Preview> = ctx.data(|d| d.get_temp(pkey)).flatten();
-    if previewing.is_some() && !app.is_playing() {
-        previewing = None;
-    }
+    // The preview's state lasts only while its own audition plays: Play, a stop or an edit ends it.
+    let mut previewing: Option<Preview> = ctx.data(|d| d.get_temp(pkey)).flatten().filter(|_| app.auditioning());
     // A setting changed while the preview plays: hear the new one once the slider is let go.
-    if let Some(pv) = previewing
+    if let Some(pv) = previewing.clone()
         && pv.settings != app.ui.noise_settings
         && !ctx.input(|i| i.pointer.any_down())
     {
-        let msg = preview(app, false).err().unwrap_or_default();
-        ctx.data_mut(|d| d.insert_temp(key, msg));
-        previewing = Some(Preview { settings: app.ui.noise_settings });
+        match refresh_preview(app, &pv) {
+            Ok(next) => previewing = Some(next),
+            // The settings stay unheard, so the next frame does not retry in a loop.
+            Err(e) => {
+                ctx.data_mut(|d| d.insert_temp(key, e));
+                previewing = Some(Preview { targets: pv.targets, settings: app.ui.noise_settings });
+            }
+        }
     }
     if !open {
-        if previewing.is_some() {
-            app.stop_play();
-            previewing = None;
+        if previewing.take().is_some() {
+            app.stop_audition();
         }
         ctx.data_mut(|d| d.insert_temp(pkey, previewing));
         return;
@@ -164,25 +182,25 @@ pub fn show(app: &mut SoundApp, ctx: &egui::Context) {
             ui.horizontal(|ui| {
                 ui.label(crate::localization::text("Listen:"));
                 if ui.add_enabled(has, egui::Button::new(crate::localization::text("Preview"))).clicked() {
-                    match preview(app, true) {
-                        Ok(()) => {
-                            previewing = Some(Preview { settings: app.ui.noise_settings });
-                            ui.ctx().data_mut(|d| d.insert_temp(key, String::new()));
+                    let msg = match start_preview(app) {
+                        Ok(pv) => {
+                            previewing = Some(pv);
+                            String::new()
                         }
-                        Err(e) => {
-                            ui.ctx().data_mut(|d| d.insert_temp(key, e));
-                        }
-                    }
+                        Err(e) => e,
+                    };
+                    ui.ctx().data_mut(|d| d.insert_temp(key, msg));
                 }
                 if ui.button(crate::localization::text("Original")).clicked() {
-                    previewing = None;
-                    match targets(app) {
-                        Some((_, r)) => app.loop_range(r),
-                        None => {
-                            let msg = crate::localization::text("Select the clips to clean, or a range on audio tracks, first.").to_string();
-                            ui.ctx().data_mut(|d| d.insert_temp(key, msg));
+                    // Starting the original ends the preview; failing to start leaves it as it is.
+                    let msg = match original_range(app).and_then(|r| app.loop_range(r)) {
+                        Ok(()) => {
+                            previewing = None;
+                            String::new()
                         }
-                    }
+                        Err(e) => e,
+                    };
+                    ui.ctx().data_mut(|d| d.insert_temp(key, msg));
                 }
                 // A running preview picks the new values up like a slider move.
                 let reset = ui.add_enabled(app.ui.noise_settings != recommended(), egui::Button::new(crate::localization::text("Reset")));
@@ -201,15 +219,12 @@ pub fn show(app: &mut SoundApp, ctx: &egui::Context) {
             ui.separator();
             crate::widgets::checkbox(ui, &mut app.ui.noise_mute_original, crate::localization::text("Mute the original track"));
             if ui.add_enabled(has, egui::Button::new(egui::RichText::new(crate::localization::text("Apply")).strong())).clicked() {
-                let [reduction, sensitivity, smoothing] = app.ui.noise_settings;
-                let mut p = json!({"reduction_db": reduction, "sensitivity_db": sensitivity, "smoothing": smoothing, "mute_original": app.ui.noise_mute_original});
-                // The same targets the preview played.
-                if let Some((tracks, r)) = targets(app) {
-                    p = settings_json(app, &tracks, r);
-                    p["mute_original"] = json!(app.ui.noise_mute_original);
-                }
+                // The same targets the preview played, when it still plays.
+                let on = previewing.as_ref().map(|pv| pv.targets.clone()).or_else(|| targets(app)).unwrap_or_else(|| json!({}));
+                let mut p = with_settings(app, &on);
+                p["mute_original"] = json!(app.ui.noise_mute_original);
                 if previewing.take().is_some() {
-                    app.stop_play();
+                    app.stop_audition();
                 }
                 let r = app.run("audiosuite.noise_reduce", p);
                 let msg = match r {
@@ -224,7 +239,7 @@ pub fn show(app: &mut SoundApp, ctx: &egui::Context) {
             }
         });
     if !open && previewing.take().is_some() {
-        app.stop_play();
+        app.stop_audition();
     }
     ctx.data_mut(|d| d.insert_temp(pkey, previewing));
     app.ui.show_noise_reduction = open;
@@ -261,10 +276,25 @@ fn spectrum(ui: &mut egui::Ui, p: &NoiseProfile) {
 mod tests {
     use super::*;
     use crate::Services;
+    use craft_audio::AudioBuffer;
+    use soundcraft_model::{ChannelFormat, Clip, FileFormat, Session, TrackKind};
 
     fn profile() -> NoiseProfile {
         let hiss: Vec<f32> = (0..4096).map(|i| ((i * 7919) % 101) as f32 / 1000.0 - 0.05).collect();
         NoiseProfile::learn(&[hiss], 48_000).unwrap()
+    }
+
+    /// An app with one mono track holding a one-second clip of hiss, its noise already learned.
+    fn app_with_take() -> (SoundApp, TrackId, soundcraft_model::ClipId) {
+        let mut s = Session::default();
+        let t = s.add_track(TrackKind::Audio, ChannelFormat::Mono, Some("Sax"));
+        let hiss: Vec<f32> = (0..48_000).map(|i| ((i * 7919) % 101) as f32 / 1000.0 - 0.05).collect();
+        let src = soundcraft_engine::io::add_source(&mut s, "take", AudioBuffer { sample_rate: 48_000, channels: vec![hiss] }, None, FileFormat::Wav);
+        let id = s.new_clip_id();
+        soundcraft_engine::edit::place_clip(&mut s, t, Clip::audio(id, "take", src, 0, 0, 48_000));
+        let mut app = SoundApp::new(soundcraft_engine::Engine::new(s), None, Services::default());
+        app.run("audiosuite.noise_learn", json!({"track": t.0, "start": 0, "end": 24_000})).unwrap();
+        (app, t, id)
     }
 
     #[test]
@@ -273,47 +303,117 @@ mod tests {
     }
 
     #[test]
-    fn a_saved_profile_returns_to_the_engine_after_a_restart() {
+    fn a_saved_profile_returns_once_and_a_forgotten_one_stays_forgotten() {
         let mut app = SoundApp::new(soundcraft_engine::Engine::default(), None, Services::default());
         app.ui.noise_profile = Some(profile());
         sync_profile(&mut app);
-        assert_eq!(app.engine.noise_profile, app.ui.noise_profile);
-    }
-
-    #[test]
-    fn a_profile_set_by_command_is_saved_and_forgetting_clears_both() {
-        let mut app = SoundApp::new(soundcraft_engine::Engine::default(), None, Services::default());
-        let data = serde_json::to_value(profile()).unwrap();
-        app.run("audiosuite.noise_profile_set", json!({"profile": data})).unwrap();
+        assert_eq!(app.engine.noise_profile, app.ui.noise_profile, "restored at start-up");
+        // Forgotten by a command, not the window: the saved copy follows instead of restoring it.
+        app.run("audiosuite.noise_profile_set", json!({"profile": null})).unwrap();
+        sync_profile(&mut app);
+        sync_profile(&mut app);
+        assert!(app.engine.noise_profile.is_none() && app.ui.noise_profile.is_none());
+        // And one set by a command is saved.
+        app.run("audiosuite.noise_profile_set", json!({"profile": serde_json::to_value(profile()).unwrap()})).unwrap();
         sync_profile(&mut app);
         assert!(app.ui.noise_profile.is_some());
-        app.run("window.noise_reduction", json!({"value": true})).unwrap();
-        assert!(app.ui.show_noise_reduction);
-        app.run("audiosuite.noise_profile_set", json!({"profile": null})).unwrap();
-        app.ui.noise_profile = None;
-        sync_profile(&mut app);
-        assert!(app.engine.noise_profile.is_none());
     }
 
     #[test]
-    fn preview_plays_without_changing_the_session() {
-        use craft_audio::AudioBuffer;
-        use soundcraft_model::{ChannelFormat, Clip, FileFormat, Session, TrackKind};
-        let mut s = Session::default();
-        let t = s.add_track(TrackKind::Audio, ChannelFormat::Mono, Some("Sax"));
-        let hiss: Vec<f32> = (0..48_000).map(|i| ((i * 7919) % 101) as f32 / 1000.0 - 0.05).collect();
-        let src = soundcraft_engine::io::add_source(&mut s, "take", AudioBuffer { sample_rate: 48_000, channels: vec![hiss] }, None, FileFormat::Wav);
-        let id = s.new_clip_id();
-        soundcraft_engine::edit::place_clip(&mut s, t, Clip::audio(id, "take", src, 0, 0, 48_000));
-        let mut app = SoundApp::new(soundcraft_engine::Engine::new(s), None, Services::default());
-        assert!(preview(&mut app, true).is_err(), "nothing selected");
+    fn preview_auditions_without_changing_the_session_and_play_ends_it() {
+        let (mut app, t, _) = app_with_take();
+        assert!(start_preview(&mut app).is_err(), "nothing selected");
         app.run("edit.select", json!({"tracks": [t.0], "start": 0, "end": 24_000})).unwrap();
-        app.run("audiosuite.noise_learn", json!({})).unwrap();
         let rev = app.engine.revision;
-        preview(&mut app, true).unwrap();
-        assert!(app.is_playing());
-        assert_eq!(app.engine.revision, rev);
-        assert_eq!(app.engine.session().tracks.len(), 1);
-        assert_eq!(targets(&app).map(|(t, r)| (t.len(), r.start, r.end)), Some((1, 0, 24_000)));
+        let pv = start_preview(&mut app).unwrap();
+        assert!(app.auditioning());
+        assert_eq!((app.engine.revision, app.engine.session().tracks.len()), (rev, 1));
+        assert_eq!(pv.targets, json!({"tracks": [t.0], "start": 0, "end": 24_000}));
+        // Original plays the document: the audition is over.
+        app.loop_range(original_range(&app).unwrap()).unwrap();
+        assert!(app.is_playing() && !app.auditioning());
+    }
+
+    #[test]
+    fn closing_a_preview_keeps_the_selection() {
+        let (mut app, t, _) = app_with_take();
+        app.engine.session_mut().edit.insertion_follows_playback = true;
+        app.run("edit.select", json!({"tracks": [t.0], "start": 0, "end": 24_000})).unwrap();
+        start_preview(&mut app).unwrap();
+        app.engine.transport.position = 12_000;
+        app.stop_audition();
+        assert!(!app.is_playing());
+        let sel = app.engine.session().edit.selection;
+        assert_eq!((sel.start, sel.end), (0, 24_000));
+    }
+
+    #[test]
+    fn selected_clips_are_previewed_and_applied_by_id() {
+        let (mut app, t, id) = app_with_take();
+        // A second clip on the same track, not selected.
+        let src = match app.engine.session().find_clip(id).unwrap().1.content {
+            soundcraft_model::ClipContent::Audio { source, .. } => source,
+            _ => panic!("an audio clip"),
+        };
+        let other = app.engine.session_mut().new_clip_id();
+        soundcraft_engine::edit::place_clip(app.engine.session_mut(), t, Clip::audio(other, "other", src, 0, 60_000, 24_000));
+        app.engine.session_mut().edit.selection = Range::point(0);
+        app.engine.session_mut().edit.selected_clips = vec![other];
+        assert_eq!(targets(&app), Some(json!({"clips": [other.0]})));
+        let pv = start_preview(&mut app).unwrap();
+        assert_eq!(pv.targets, json!({"clips": [other.0]}));
+    }
+
+    #[test]
+    fn no_audition_while_recording() {
+        let (mut app, t, _) = app_with_take();
+        app.run("edit.select", json!({"tracks": [t.0], "start": 0, "end": 24_000})).unwrap();
+        app.engine.transport.recording = true;
+        assert!(start_preview(&mut app).is_err());
+        assert!(app.loop_range(Range::new(0, 24_000)).is_err());
+        assert!(!app.auditioning());
+    }
+
+    #[test]
+    fn an_audition_writes_no_automation() {
+        let (mut app, t, _) = app_with_take();
+        app.run("edit.select", json!({"tracks": [t.0], "start": 0, "end": 24_000})).unwrap();
+        app.engine.session_mut().track_mut(t).unwrap().mixer.automation_mode = soundcraft_model::AutomationMode::Write;
+        start_preview(&mut app).unwrap();
+        let rev = app.engine.revision;
+        for pos in [0, 4_800, 9_600] {
+            app.engine.transport.position = pos;
+            app.write_automation();
+        }
+        assert_eq!(app.engine.revision, rev, "the audition wrote automation");
+    }
+
+    #[test]
+    fn the_menu_opens_the_window_and_hiding_floating_windows_closes_it() {
+        let mut app = SoundApp::new(soundcraft_engine::Engine::default(), None, Services::default());
+        let path = "AudioSuite > Noise Reduction…";
+        let id = crate::menus::command_for_path(path, &crate::menus::ui_aliases());
+        assert_eq!(id.as_deref(), Some("window.noise_reduction"));
+        for _ in 0..2 {
+            crate::menus::invoke_menu(&mut app, "window.noise_reduction", path);
+            assert!(app.ui.show_noise_reduction, "choosing the menu item again keeps the window open");
+        }
+        app.run("window.hide_floating", json!({})).unwrap();
+        assert!(!app.ui.show_noise_reduction);
+    }
+
+    #[test]
+    fn window_configurations_leave_the_profile_in_the_settings() {
+        let mut app = SoundApp::new(soundcraft_engine::Engine::default(), None, Services::default());
+        app.ui.noise_profile = Some(profile());
+        // A configuration as the window saves it, then a recall after the profile changed.
+        let saved = crate::panels::windows::configuration_snapshot(&app.ui).unwrap();
+        assert!(saved["noise_profile"].is_null());
+        app.ui.noise_profile = None;
+        crate::panels::windows::recall_configuration(&mut app, &saved).unwrap();
+        assert!(app.ui.noise_profile.is_none(), "recall keeps the current profile");
+        app.ui.noise_profile = Some(profile());
+        crate::panels::windows::recall_configuration(&mut app, &saved).unwrap();
+        assert!(app.ui.noise_profile.is_some(), "recall keeps the current profile");
     }
 }

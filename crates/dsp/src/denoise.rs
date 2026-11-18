@@ -83,7 +83,8 @@ fn finite(x: f32) -> f32 {
 
 impl NoiseProfile {
     /// Learns the noise in `ch` (planar audio at `sample_rate`). `None` when there is no audio,
-    /// more than [`MAX_PROFILE_CHANNELS`] channels, or fewer than [`MIN_LEARN_SAMPLES`] samples.
+    /// more than [`MAX_PROFILE_CHANNELS`] channels, fewer than [`MIN_LEARN_SAMPLES`] samples, or
+    /// samples too large to analyse; a profile it returns is always [`NoiseProfile::is_valid`].
     pub fn learn(ch: &[Vec<f32>], sample_rate: u32) -> Option<NoiseProfile> {
         if ch.is_empty() || ch.len() > MAX_PROFILE_CHANNELS || sample_rate == 0 {
             return None;
@@ -115,7 +116,10 @@ impl NoiseProfile {
             let n = f64::from(count.max(1));
             magnitudes.push(sum.iter().map(|s| (s / n) as f32).collect());
         }
-        Some(NoiseProfile { sample_rate, fft_size: FFT_SIZE, frames: len as u64, magnitudes })
+        let profile = NoiseProfile { sample_rate, fft_size: FFT_SIZE, frames: len as u64, magnitudes };
+        // Samples near f32::MAX are finite but overflow the transform: such a profile could not
+        // be used, so learning fails rather than hand back one that `reduce` would ignore.
+        profile.is_valid().then_some(profile)
     }
 
     /// Channels in the profile.
@@ -254,6 +258,8 @@ mod tests {
         assert!(NoiseProfile::learn(&[], 48_000).is_none());
         assert!(NoiseProfile::learn(&[vec![0.1; MIN_LEARN_SAMPLES - 1]], 48_000).is_none());
         assert!(NoiseProfile::learn(&[vec![0.1; MIN_LEARN_SAMPLES]], 0).is_none());
+        // Finite but huge: the transform overflows, so there is nothing usable to learn.
+        assert!(NoiseProfile::learn(&[vec![f32::MAX; MIN_LEARN_SAMPLES]], 48_000).is_none());
         let p = NoiseProfile::learn(&[noise(MIN_LEARN_SAMPLES, 0.1, 1), noise(9000, 0.1, 2)], 48_000).unwrap();
         assert!(p.is_valid());
         assert_eq!((p.channels(), p.frames), (2, MIN_LEARN_SAMPLES as u64));

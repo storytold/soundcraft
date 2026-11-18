@@ -81,6 +81,32 @@ fn learn_track(e: &Engine, p: &Value) -> Result<Option<TrackId>> {
     Ok(clip_ids_param(e, p).into_iter().find_map(|id| s.find_clip(id).map(|(t, _)| t)).filter(audio))
 }
 
+/// The clip as `learn` and `reduce` hear it: without fades, clip gain and clip mute, which stay on
+/// the clip for playback.
+fn unprocessed(c: &mut Clip) {
+    c.fade_in = Default::default();
+    c.fade_out = Default::default();
+    c.gain_db = 0.0;
+    c.gain_env.clear();
+    c.muted = false;
+}
+
+/// Whether every sample of `range` on `track` lies inside an audio clip.
+fn covered_by_audio(s: &soundcraft_model::Session, track: TrackId, range: Range) -> bool {
+    let Some(t) = s.track(track) else { return false };
+    let mut spans: Vec<Range> =
+        t.clips().iter().filter(|c| c.is_audio()).filter_map(|c| c.range().intersect(&range)).filter(|r| !r.is_empty()).collect();
+    spans.sort_by_key(|r| r.start);
+    let mut at = range.start;
+    for r in spans {
+        if r.start > at {
+            return false;
+        }
+        at = at.max(r.end);
+    }
+    at >= range.end
+}
+
 fn learn(e: &mut Engine, p: &Value) -> Result<Value> {
     const CMD: &str = "audiosuite.noise_learn";
     let track = learn_track(e, p)?.ok_or_else(|| bad(CMD, "select a passage of noise on an audio track"))?;
@@ -95,19 +121,25 @@ fn learn(e: &mut Engine, p: &Value) -> Result<Value> {
     let s = e.session();
     let frames = usize::try_from(range.len()).unwrap_or(0).min(denoise::MAX_LEARN_SAMPLES);
     let range = Range::new(range.start, range.start.saturating_add(i64::try_from(frames).unwrap_or(0)));
-    // Without clip gain and fades, the way `reduce` renders the audio it cleans: a clip turned
-    // down 6 dB must not teach a noise 6 dB quieter than the one in its file.
+    let min_ms = (denoise::MIN_LEARN_SAMPLES as f64 * 1000.0 / s.sample_rate.as_f64()).ceil();
+    if frames < denoise::MIN_LEARN_SAMPLES {
+        return Err(bad(CMD, format!("select at least {min_ms:.0} ms of noise to learn")));
+    }
+    // A gap between clips renders as digital silence, which would teach "no noise" and replace a
+    // useful profile: the whole passage must be audio from clips.
+    if !covered_by_audio(s, track, range) {
+        return Err(bad(CMD, "select noise inside the audio clips: the selection runs over a gap"));
+    }
+    // Without clip gain, fades and clip mute, the way `reduce` renders the audio it cleans: a clip
+    // turned down 6 dB must not teach a noise 6 dB quieter than the one in its file.
     let mut raw = s.clone();
     for c in raw.track_mut(track).and_then(|t| t.playlist_mut()).map(|pl| pl.clips.iter_mut()).into_iter().flatten() {
-        c.fade_in = Default::default();
-        c.fade_out = Default::default();
-        c.gain_db = 0.0;
-        c.gain_env.clear();
+        unprocessed(c);
     }
     let audio = soundcraft_mix::render_clips(&raw, track, range);
-    let min_ms = (denoise::MIN_LEARN_SAMPLES as f64 * 1000.0 / s.sample_rate.as_f64()).ceil();
+    // On failure the previous profile stays.
     let profile =
-        NoiseProfile::learn(&audio, s.sample_rate.hz()).ok_or_else(|| bad(CMD, format!("select at least {min_ms:.0} ms of noise to learn")))?;
+        NoiseProfile::learn(&audio, s.sample_rate.hz()).ok_or_else(|| bad(CMD, "this passage could not be analysed (its level is out of range)"))?;
     let name = s.track(track).map(|t| t.name.clone()).unwrap_or_default();
     let out = info(&profile);
     e.noise_profile = Some(profile);
@@ -166,10 +198,20 @@ fn segments(e: &Engine, p: &Value) -> Result<Vec<(TrackId, ClipId, Range)>> {
         }
         return Ok(out);
     }
-    Ok(clip_ids_param(e, p).into_iter().filter_map(|id| s.find_clip(id).filter(|(_, c)| c.is_audio()).map(|(t, c)| (t, id, c.range()))).collect())
+    // Whole clips. Named tracks still limit which: a selected clip on another track is left alone.
+    let named = p.get("tracks").is_some();
+    Ok(clip_ids_param(e, p)
+        .into_iter()
+        .filter_map(|id| s.find_clip(id).filter(|(t, c)| c.is_audio() && (!named || tracks.contains(t))).map(|(t, c)| (t, id, c.range())))
+        .collect())
 }
 
 fn reduce(e: &mut Engine, p: &Value) -> Result<Value> {
+    reduce_in(e, p, None)
+}
+
+/// `audiosuite.noise_reduce`, cleaning only what falls inside `window` when one is given.
+fn reduce_in(e: &mut Engine, p: &Value, window: Option<Range>) -> Result<Value> {
     const CMD: &str = "audiosuite.noise_reduce";
     let profile = e.noise_profile.clone().ok_or_else(|| bad(CMD, "learn a noise profile first (audiosuite.noise_learn)"))?;
     let sr = e.session().sample_rate;
@@ -183,7 +225,10 @@ fn reduce(e: &mut Engine, p: &Value) -> Result<Value> {
     }
     .sanitized();
     let mute_original = p.get("mute_original").and_then(Value::as_bool).unwrap_or(true);
-    let parts = segments(e, p)?;
+    let mut parts = segments(e, p)?;
+    if let Some(w) = window {
+        parts = parts.into_iter().filter_map(|(t, id, r)| r.intersect(&w).filter(|r| !r.is_empty()).map(|r| (t, id, r))).collect();
+    }
     if parts.is_empty() {
         return Err(bad(CMD, "select audio clips, or a range on audio tracks, first"));
     }
@@ -192,8 +237,11 @@ fn reduce(e: &mut Engine, p: &Value) -> Result<Value> {
     let mut budget = soundcraft_mix::MAX_RENDER_SAMPLES;
     for (track, id, part) in &parts {
         let channels = e.session().track(*track).map_or(1, |t| t.channels()).max(1);
-        let name = e.session().find_clip(*id).map(|(_, c)| c.name.clone()).unwrap_or_default();
-        crate::io::refuse_longer(e.session(), CMD, &name, "clean", part.len(), crate::io::render_limit(channels))?;
+        let (name, rendered) =
+            e.session().find_clip(*id).map_or((String::new(), part.len()), |(_, c)| (c.name.clone(), with_handles(c, *part).len()));
+        // The render includes the handles: a part that fits but whose handles do not would come
+        // back cut short.
+        crate::io::refuse_longer(e.session(), CMD, &name, "clean", rendered, crate::io::render_limit(channels))?;
         budget = budget
             .checked_sub(usize::try_from(part.len()).unwrap_or(usize::MAX).saturating_mul(channels))
             .ok_or_else(|| bad(CMD, "too much audio to clean in one command"))?;
@@ -203,7 +251,13 @@ fn reduce(e: &mut Engine, p: &Value) -> Result<Value> {
     for (track, id, part) in parts {
         let Some(clip) = e.session().find_clip(id).map(|(_, c)| c.clone()) else { continue };
         let audio = clean_part(e.session(), &profile, settings, track, &clip, part);
-        if audio.first().is_some_and(|c| !c.is_empty()) {
+        // Every channel must cover the whole part, or the copy would be short; checked before
+        // anything is changed.
+        let want = usize::try_from(part.len()).unwrap_or(0);
+        if audio.is_empty() || audio.iter().any(|c| c.len() != want) {
+            return Err(bad(CMD, format!("could not render all of {} to clean it", clip.name)));
+        }
+        {
             // The clip as it will sit on the copy: cut to the part, its fades kept only at its own edges.
             let mut piece = clip.clone();
             if part.start > clip.start {
@@ -236,8 +290,9 @@ fn reduce(e: &mut Engine, p: &Value) -> Result<Value> {
                 for pl in &mut nt.playlists {
                     pl.clips.clear();
                 }
+                // The copy plays as the original would: it keeps a solo (clearing it would leave
+                // a soloed original muted and its copy silenced by the solo), but not a mute.
                 nt.mixer.mute = false;
-                nt.mixer.solo = false;
                 nt.mixer.record_arm = false;
                 let id = nt.id;
                 s.tracks.insert((idx + 1).min(s.tracks.len()), nt);
@@ -260,7 +315,16 @@ fn reduce(e: &mut Engine, p: &Value) -> Result<Value> {
         nc.stretch = 1.0;
         nc.clamp_fades();
         clips.push(nc.id.0);
-        crate::edit::place_clip(s, copy, nc);
+        // Straight onto the copy's playlist, keeping the source's arrangement: clips that overlap
+        // in a crossfade must not clear each other, as placing one over the other would.
+        if let Some(pl) = s.track_mut(copy).and_then(|t| t.playlist_mut()) {
+            pl.clips.push(nc);
+        }
+    }
+    for (_, copy) in &copies {
+        if let Some(pl) = s.track_mut(*copy).and_then(|t| t.playlist_mut()) {
+            pl.sort();
+        }
     }
     let tracks: Vec<TrackId> = copies.iter().map(|(_, c)| *c).collect();
     s.edit.selected_tracks = tracks.clone();
@@ -268,8 +332,14 @@ fn reduce(e: &mut Engine, p: &Value) -> Result<Value> {
     Ok(json!({"processed": clips.len(), "clips": clips, "tracks": tracks}))
 }
 
-/// `part` of `clip` on `track`, cleaned: rendered without the clip's fades and gain (those stay on
-/// the clip, editable), with up to one analysis frame of the clip's own audio either side so the
+/// `part` with up to one analysis frame of `clip` on each side: what [`clean_part`] renders.
+fn with_handles(clip: &Clip, part: Range) -> Range {
+    let handle = i64::try_from(denoise::FFT_SIZE).unwrap_or(0);
+    Range::new(part.start.saturating_sub(handle).max(clip.start), part.end.saturating_add(handle).min(clip.end()))
+}
+
+/// `part` of `clip` on `track`, cleaned: rendered without the clip's fades, gain and mute (those stay
+/// on the clip, editable), with up to one analysis frame of the clip's own audio either side so the
 /// edges of the part are analysed with real context.
 fn clean_part(
     s: &soundcraft_model::Session,
@@ -281,16 +351,12 @@ fn clean_part(
 ) -> Vec<Vec<f32>> {
     let mut tmp = s.clone();
     if let Some(c) = tmp.find_clip_mut(clip.id) {
-        c.fade_in = Default::default();
-        c.fade_out = Default::default();
-        c.gain_db = 0.0;
-        c.gain_env.clear();
+        unprocessed(c);
     }
     if let Some(pl) = tmp.track_mut(track).and_then(|t| t.playlist_mut()) {
         pl.clips.retain(|c| c.id == clip.id);
     }
-    let handle = i64::try_from(denoise::FFT_SIZE).unwrap_or(0);
-    let around = Range::new(part.start.saturating_sub(handle).max(clip.start), part.end.saturating_add(handle).min(clip.end()));
+    let around = with_handles(clip, part);
     let audio = soundcraft_mix::render_clips(&tmp, track, around);
     let out = denoise::reduce(&audio, profile, settings);
     let skip = usize::try_from(part.start.saturating_sub(around.start)).unwrap_or(0);
@@ -301,25 +367,33 @@ fn clean_part(
 /// Longest stretch [`preview`] cleans.
 pub const PREVIEW_SECONDS: f64 = 30.0;
 
-/// The session as `audiosuite.noise_reduce` with `p` would leave it, for listening before applying:
-/// the original tracks muted and their cleaned copies beside them. The document is not changed.
-/// `p` should name `tracks`, `start` and `end`; the range is cut to [`PREVIEW_SECONDS`].
-pub fn preview(e: &Engine, p: &Value) -> Result<std::sync::Arc<soundcraft_model::Session>> {
+/// The range [`preview`] cleans and loops for `p`: from the start of the first target, at most
+/// [`PREVIEW_SECONDS`] long. Nothing is rendered.
+pub fn preview_range(e: &Engine, p: &Value) -> Result<Range> {
+    let parts = segments(e, p)?;
+    let start = parts
+        .iter()
+        .map(|(_, _, r)| r.start)
+        .min()
+        .ok_or_else(|| bad("audiosuite.noise_reduce", "select audio clips, or a range on audio tracks, first"))?;
+    let end = parts.iter().map(|(_, _, r)| r.end).max().unwrap_or(start);
+    Ok(Range::new(start, end.min(start.saturating_add(e.session().sample_rate.samples(PREVIEW_SECONDS)))))
+}
+
+/// The session as `audiosuite.noise_reduce` with `p` would leave it, for listening before applying,
+/// and the range to loop. The original tracks are muted and their cleaned copies sit beside them;
+/// only the first [`PREVIEW_SECONDS`] of the targets (as `noise_reduce` resolves them: named clips,
+/// or a range on tracks) are cleaned. The document is not changed.
+pub fn preview(e: &Engine, p: &Value) -> Result<(std::sync::Arc<soundcraft_model::Session>, Range)> {
+    let window = preview_range(e, p)?;
     let mut tmp = Engine::new(e.session().clone());
     tmp.noise_profile = e.noise_profile.clone();
-    tmp.history_limit = 0;
     let mut p = p.clone();
     if let Some(o) = p.as_object_mut() {
         o.insert("mute_original".into(), json!(true));
-        let start = o.get("start").and_then(Value::as_i64);
-        let end = o.get("end").and_then(Value::as_i64);
-        if let (Some(a), Some(b)) = (start, end) {
-            let most = e.session().sample_rate.samples(PREVIEW_SECONDS);
-            o.insert("end".into(), json!(b.min(a.saturating_add(most))));
-        }
     }
-    tmp.execute("audiosuite.noise_reduce", &p)?;
-    Ok(tmp.session_arc())
+    reduce_in(&mut tmp, &p, Some(window))?;
+    Ok((tmp.session_arc(), window))
 }
 
 #[cfg(test)]
@@ -445,7 +519,8 @@ mod tests {
         e.execute("audiosuite.noise_learn", &json!({"track": t.0, "start": 0, "end": 24_000})).unwrap();
         let rev = e.revision;
         let undo = e.can_undo();
-        let s = preview(&e, &json!({"tracks": [t.0], "start": 0, "end": 96_000, "mute_original": false})).unwrap();
+        let (s, r) = preview(&e, &json!({"tracks": [t.0], "start": 0, "end": 96_000, "mute_original": false})).unwrap();
+        assert_eq!((r.start, r.end), (0, 96_000));
         assert_eq!((e.revision, e.can_undo(), e.session().tracks.len()), (rev, undo, 1));
         assert_eq!(s.tracks.len(), 2);
         assert!(s.tracks[0].mixer.mute, "the preview always plays the cleaned copy alone");
@@ -459,8 +534,12 @@ mod tests {
         c.length = 96_000 * 30;
         let mut e2 = Engine::new(long);
         e2.noise_profile = e.noise_profile.clone();
-        let s = preview(&e2, &json!({"tracks": [t.0], "start": 0, "end": 96_000 * 30})).unwrap();
-        assert_eq!(s.tracks[1].clips()[0].length, most);
+        let (s, r) = preview(&e2, &json!({"tracks": [t.0], "start": 0, "end": 96_000 * 30})).unwrap();
+        assert_eq!((s.tracks[1].clips()[0].length, r.len()), (most, most));
+        // Named clips with no range are cut to the limit too, after they are resolved.
+        let id = e2.session().tracks[0].clips()[0].id;
+        let (s, r) = preview(&e2, &json!({"clips": [id.0]})).unwrap();
+        assert_eq!((s.tracks[1].clips()[0].length, r.len()), (most, most));
     }
 
     #[test]
@@ -485,5 +564,71 @@ mod tests {
         e.execute("audiosuite.noise_profile_set", &json!({"profile": other})).unwrap();
         let err = e.execute("audiosuite.noise_reduce", &json!({"clips": [id.0]})).unwrap_err().to_string();
         assert!(err.contains("44100 Hz"), "{err}");
+    }
+
+    #[test]
+    fn learning_over_a_gap_is_refused_and_keeps_the_profile() {
+        let (mut e, t, _) = take();
+        e.execute("audiosuite.noise_learn", &json!({"track": t.0, "start": 0, "end": 24_000})).unwrap();
+        let before = e.noise_profile.clone();
+        // The take ends at 96 000: this passage is half silence after it.
+        let err = e.execute("audiosuite.noise_learn", &json!({"track": t.0, "start": 90_000, "end": 102_000})).unwrap_err().to_string();
+        assert!(err.contains("gap"), "{err}");
+        assert_eq!(e.noise_profile, before);
+    }
+
+    #[test]
+    fn a_muted_clip_is_cleaned_from_its_audio_and_stays_muted() {
+        let (mut e, t, id) = take();
+        e.execute("audiosuite.noise_learn", &json!({"track": t.0, "start": 0, "end": 24_000})).unwrap();
+        e.session_mut().find_clip_mut(id).unwrap().muted = true;
+        e.execute("audiosuite.noise_reduce", &json!({"clips": [id.0]})).unwrap();
+        let mut s = e.session().clone();
+        let copy = s.tracks[1].id;
+        let c = s.tracks[1].clips()[0].clone();
+        assert!(c.muted, "the copy keeps the clip's mute");
+        s.find_clip_mut(c.id).unwrap().muted = false;
+        let audio = soundcraft_mix::render_clips(&s, copy, Range::new(52_000, 80_000));
+        assert!(rms(&audio[0]) > 0.2, "the tone was lost: {}", rms(&audio[0]));
+    }
+
+    #[test]
+    fn named_tracks_limit_the_selected_clips() {
+        let (mut e, t, id) = take();
+        let other = e.session_mut().add_track(TrackKind::Audio, ChannelFormat::Mono, Some("Other"));
+        e.execute("audiosuite.noise_learn", &json!({"track": t.0, "start": 0, "end": 24_000})).unwrap();
+        e.session_mut().edit.selected_clips = vec![id];
+        let err = e.execute("audiosuite.noise_reduce", &json!({"tracks": [other.0]})).unwrap_err().to_string();
+        assert!(err.contains("select audio clips"), "{err}");
+        assert_eq!(e.session().tracks.len(), 2, "nothing was copied");
+    }
+
+    #[test]
+    fn the_copy_of_a_soloed_track_stays_soloed() {
+        let (mut e, t, id) = take();
+        e.execute("audiosuite.noise_learn", &json!({"track": t.0, "start": 0, "end": 24_000})).unwrap();
+        e.session_mut().track_mut(t).unwrap().mixer.solo = true;
+        e.execute("audiosuite.noise_reduce", &json!({"clips": [id.0]})).unwrap();
+        let s = e.session();
+        assert!(s.tracks[0].mixer.solo && s.tracks[0].mixer.mute);
+        assert!(s.tracks[1].mixer.solo && !s.tracks[1].mixer.mute, "the copy must still be heard");
+    }
+
+    #[test]
+    fn crossfading_clips_are_both_copied() {
+        let (mut e, t, id) = take();
+        // A second clip of the take overlapping the first one's last 4800 samples, as a crossfade.
+        let src = match e.session().find_clip(id).unwrap().1.content {
+            ClipContent::Audio { source, .. } => source,
+            _ => panic!("an audio clip"),
+        };
+        let id2 = e.session_mut().new_clip_id();
+        let c2 = Clip::audio(id2, "take2", src, 0, 91_200, 48_000);
+        e.session_mut().track_mut(t).unwrap().playlist_mut().unwrap().clips.push(c2);
+        assert_eq!(e.session().tracks[0].clips().len(), 2);
+        e.execute("audiosuite.noise_learn", &json!({"track": t.0, "start": 0, "end": 24_000})).unwrap();
+        e.execute("audiosuite.noise_reduce", &json!({"clips": [id.0, id2.0]})).unwrap();
+        let copy: Vec<(i64, i64)> = e.session().tracks[1].clips().iter().map(|c| (c.start, c.length)).collect();
+        assert_eq!(copy, vec![(0, 96_000), (91_200, 48_000)]);
     }
 }

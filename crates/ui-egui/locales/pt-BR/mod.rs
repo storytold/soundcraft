@@ -2075,6 +2075,7 @@ fn menu_translate(source: &str) -> Option<&'static str> {
         "Mute the original track" => "Silenciar a faixa original",
         "Cleaned {n} clip(s) into a copy of the track." => "{n} clipe(s) limpo(s) numa cópia da faixa.",
         "Back to the recommended settings" => "Voltar às configurações recomendadas",
+        "Stop recording first." => "Pare a gravação primeiro.",
         _ => return error_translation(source),
     })
 }
@@ -2095,6 +2096,9 @@ macro_rules! error_templates {
 }
 
 error_templates! {
+    "select noise inside the audio clips: the selection runs over a gap" => "selecione ruído dentro dos clipes de áudio: a seleção passa por um vão",
+    "this passage could not be analysed (its level is out of range)" => "este trecho não pôde ser analisado (o nível está fora da faixa)",
+    "could not render all of {name} to clean it" => "não foi possível renderizar todo o {name} para limpá-lo",
     "select a passage of noise on an audio track" => "selecione um trecho de ruído numa faixa de áudio",
     "select at least {ms} ms of noise to learn" => "selecione pelo menos {ms} ms de ruído para aprender",
     "learn a noise profile first" => "aprenda um perfil de ruído primeiro",

@@ -65,7 +65,9 @@ mod panic_probe {
 pub use file::bounce_job;
 
 pub(crate) use edit::remember_selection;
-pub use noise_reduction::{PREVIEW_SECONDS as NOISE_PREVIEW_SECONDS, preview as noise_reduction_preview};
+pub use noise_reduction::{
+    PREVIEW_SECONDS as NOISE_PREVIEW_SECONDS, preview as noise_reduction_preview, preview_range as noise_reduction_preview_range,
+};
 pub use strip_silence::strip_silence_scan;
 
 pub type Run = fn(&mut Engine, &Value) -> Result<Value>;

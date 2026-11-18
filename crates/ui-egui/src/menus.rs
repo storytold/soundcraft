@@ -313,10 +313,6 @@ pub fn menu_bar(app: &mut SoundApp, ui: &mut egui::Ui) {
                                 }
                                 if root.path == "AudioSuite" {
                                     ui.separator();
-                                    if ui.button(crate::localization::text("Noise Reduction…")).clicked() {
-                                        app.ui.show_noise_reduction = true;
-                                        ui.close();
-                                    }
                                     ui.label(
                                         egui::RichText::new(crate::localization::text("Processes selected clips offline")).small().color(t.text_dim),
                                     );
@@ -539,6 +535,8 @@ const MENU_WINDOWS: &[(&str, &str)] = &[
     ("Event > Time Operations > Time Operations Window", "window.time_ops"),
     ("Event > MIDI Operations > MIDI Operations Window", "window.midi_ops"),
     ("Event > MIDI Real-Time Properties", "window.rtp"),
+    // Not in the incumbent catalog: SoundCraft's learned-profile noise reduction (#1411).
+    ("AudioSuite > Noise Reduction…", "window.noise_reduction"),
 ];
 
 /// The shortcut of an engine or window command.
@@ -765,6 +763,7 @@ pub fn run_ui_command(app: &mut SoundApp, id: &str, p: &Value) -> Option<Result<
             app.ui.plugin_windows.clear();
             app.ui.output_window = None;
             app.ui.audiosuite = None;
+            app.ui.show_noise_reduction = false;
             json!({})
         }
         "view.mix_section" => {

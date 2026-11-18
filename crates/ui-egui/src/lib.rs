@@ -434,6 +434,11 @@ pub struct SoundApp {
     touched_sends: std::collections::HashSet<(TrackId, usize)>,
     /// The pass's last point; `i64::MIN` after a stop or a jump, so the next point erases nothing it skipped.
     last_write_at: Samples,
+    /// The player holds an audition session (Noise Reduction's Preview), not the document: set by
+    /// `loop_preview`, cleared whenever the document goes back to the player or playback stops.
+    pub(crate) audition: bool,
+    /// The noise profile saved with the settings has been offered to the engine once, at start-up.
+    pub(crate) noise_profile_restored: bool,
     /// Plugins changed in their editors whose state the session hasn't taken yet (see `editor_states_due`).
     editor_states: Vec<(TrackId, usize)>,
     /// One editor poll per host raw-input iteration, including a hidden logic-only iteration.
