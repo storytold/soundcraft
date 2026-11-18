@@ -413,7 +413,10 @@ impl MixEngine {
                 st.chase = true;
             }
         }
-        self.last_end = pos.saturating_add(frames as i64);
+        // A monitor-only block renders at the stationary playhead and consumes no timeline,
+        // so the next one is contiguous with it — advancing `last_end` here would make every
+        // stopped block look like a seek and kill held live notes at each block edge.
+        self.last_end = if self.monitor_only { pos } else { pos.saturating_add(frames as i64) };
         self.ensure_synced(s);
         for b in self.busses.values_mut() {
             for c in b.buf.iter_mut() {

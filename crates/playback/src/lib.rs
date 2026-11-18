@@ -45,7 +45,7 @@ const OLD_SESSIONS: usize = 16;
 /// renders on worker threads; the cpal callbacks here set it.
 pub use soundcraft_mix::{mark_audio_thread, on_audio_thread};
 
-mod callback;
+pub(crate) mod callback;
 mod stream;
 
 use callback::{AudioState, Fault, Side, take_meter_snapshot};
