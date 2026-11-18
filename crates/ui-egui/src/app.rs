@@ -55,6 +55,7 @@ impl SoundApp {
             last_autosave: None,
             dialogs: dialogs::Dialogs::default(),
             updates_rt: updates_ui::Runtime::default(),
+            command_plugins: Default::default(),
             meters: HashMap::new(),
             main_meter: MeterDisplay::default(),
             meter_snapshot: soundcraft_playback::MeterSnapshot::default(),

@@ -36,6 +36,8 @@ impl NativeMenu {
         native.add_item(app, &app_menu, "Preferences...", "", Some("setup.preferences".into()))?;
         native.add_item(app, &app_menu, "Session Info", "", Some("window.session_info".into()))?;
         native.add_item(app, &app_menu, "Session Audio Health", "", Some("window.audio_health".into()))?;
+        // The egui menu bar lists the installed command plug-ins; here their window does.
+        native.add_item(app, &app_menu, "Command Plug-ins…", "", Some(soundcraft_ui_egui::command_plugins::WINDOW.into()))?;
         app_menu.append(&PredefinedMenuItem::separator())?;
         app_menu.append(&PredefinedMenuItem::services(None))?;
         app_menu.append(&PredefinedMenuItem::separator())?;

@@ -28,6 +28,8 @@ pub const UI_COMMANDS: &[(&str, &str, &str, Option<&str>)] = &[
     ("window.session_info", "Session Info", "", None),
     ("window.audio_health", "Session Audio Health", "", None),
     ("window.about", "About SoundCraft", "", None),
+    // WebAssembly command plug-ins (not audio plug-ins): the menu is built from what is installed
+    (crate::command_plugins::WINDOW, "Command Plug-ins", "", None),
     ("window.close", "Close Window", "Window > Close Window", Some("Cmd+W")),
     ("window.hide_floating", "Hide All Floating Windows", "Window > Hide All Floating Windows", Some("Cmd+Ctrl+W")),
     ("window.midi_editor", "MIDI Editor", "Window > MIDI Editor", None),
@@ -332,6 +334,8 @@ pub fn menu_bar(app: &mut SoundApp, ui: &mut egui::Ui) {
                         });
                     });
                 }
+                // Built from the installed command plug-ins, after the catalog's menus
+                crate::command_plugins::menu(app, ui, menu_entries_enabled);
                 let title = format!(
                     "{}{}  —  {}",
                     app.engine.session().name,
@@ -603,6 +607,9 @@ fn wants_dialog(id: &str) -> bool {
 
 /// Handle UI-layer commands. Returns None when `id` is not a UI command.
 pub fn run_ui_command(app: &mut SoundApp, id: &str, p: &Value) -> Option<Result<Value, String>> {
+    if let Some(r) = crate::command_plugins::route(app, id, p) {
+        return Some(r);
+    }
     if matches!(id, "ui.dock" | "ui.dock.reset") {
         return Some(crate::docking::command(app, id, p));
     }

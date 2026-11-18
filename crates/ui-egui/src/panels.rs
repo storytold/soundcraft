@@ -92,4 +92,5 @@ pub fn floating(app: &mut SoundApp, ctx: &egui::Context) {
     crate::mix_window::send_window(app, ctx);
     about(app, ctx);
     session_info(app, ctx);
+    crate::command_plugins::show(app, ctx);
 }

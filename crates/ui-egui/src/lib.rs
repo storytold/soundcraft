@@ -15,6 +15,7 @@ pub const UPDATE_APP: craft_update::app::App = craft_update::app::App {
 
 pub mod appearance;
 pub mod bounce;
+pub mod command_plugins;
 pub mod control;
 pub mod credits;
 pub mod dialogs;
@@ -28,6 +29,9 @@ pub mod menus;
 pub mod mix_window;
 pub mod palette;
 pub mod panels;
+/// HTTPS for command plug-in installs, over craft-update's client (desktop only).
+#[cfg(not(target_arch = "wasm32"))]
+pub mod plugin_http;
 pub mod preferences;
 pub mod shortcuts;
 pub mod theme;
@@ -153,6 +157,9 @@ pub struct UiState {
     pub window_size: [f32; 2],
     pub window_maximized: bool,
     pub ui_scale: f32,
+    /// Each command plug-in's settings and the catalogs added, kept with the preferences: the
+    /// engine holds them while the app runs ([`SoundApp::start_command_plugins`]).
+    pub command_plugins: soundcraft_engine::command_plugin::PluginPrefs,
 }
 
 impl Default for UiState {
@@ -220,6 +227,7 @@ impl Default for UiState {
             window_size: [1600.0, 1000.0],
             window_maximized: false,
             ui_scale: 1.0,
+            command_plugins: Default::default(),
         }
     }
 }
@@ -310,6 +318,9 @@ pub struct SoundApp {
     last_autosave: Option<std::time::Instant>,
     pub dialogs: dialogs::Dialogs,
     pub(crate) updates_rt: updates_ui::Runtime,
+    /// The Command Plug-ins menu's windows: the manager, the install confirmation, the parameter
+    /// dialog and the download in progress ([`command_plugins`]).
+    pub command_plugins: command_plugins::CommandPluginsUi,
     pub meters: HashMap<TrackId, MeterDisplay>,
     pub main_meter: MeterDisplay,
     /// Reused meter snapshot, taken from the player at an adaptive rate by `logic`: the highest

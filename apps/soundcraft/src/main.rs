@@ -74,8 +74,10 @@ impl eframe::App for App {
             self.0.ui.window_size = (r.size() * ctx.zoom_factor()).round().into();
         }
         self.0.ui.ui_scale = self.0.extra.ui_scale;
-        // Saved now rather than at exit: the recent list matters most after a crash.
-        if self.0.take_recent_changed() {
+        // Saved now rather than at exit: the recent list matters most after a crash, and a command
+        // plug-in's settings are its own work.
+        let plugin_prefs = self.0.take_command_plugin_prefs_changed();
+        if self.0.take_recent_changed() || plugin_prefs {
             save_prefs(&self.2, &self.0.ui);
         }
         // With the system menu bar there is no egui bar showing the window and dirty state, so the
@@ -102,6 +104,7 @@ impl eframe::App for App {
     }
     fn on_exit(&mut self) {
         self.0.close_autosave();
+        self.0.take_command_plugin_prefs_changed();
         save_prefs(&self.2, &self.0.ui);
         if let Some(logger) = self.1 {
             logger.report_audio_thread();
@@ -152,6 +155,7 @@ fn services() -> Services {
             let d = match purpose {
                 "session.open" => d.add_filter("SoundCraft Session", &["scraft"]),
                 "file.import_midi" => d.add_filter("MIDI", &["mid", "midi", "smf"]),
+                "plugin.install" => d.add_filter("Command Plug-in", &["craftplugin"]),
                 _ => d.add_filter("Audio", craft_audio::DECODE_EXTENSIONS),
             };
             d.pick_file()
@@ -263,6 +267,9 @@ fn main() -> eframe::Result {
             app.preset_dir = env.config_dir.as_ref().map(|d| d.join("Presets"));
             app.extra.ui_scale = prefs.ui_scale;
             app.ui = prefs;
+            // Command plug-ins (not audio plug-ins) are kept in `<settings>/Plug-ins`; runs without
+            // preferences keep them for the session only.
+            app.start_command_plugins(env.config_dir.as_deref().filter(|_| env.prefs_enabled()));
             if let Some(port) = control_port {
                 let rx = control_server::start(port, cc.egui_ctx.clone());
                 app = app.with_control(rx);
