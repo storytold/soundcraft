@@ -6,6 +6,8 @@ impl SoundApp {
     /// one's pixels, so every replacement path bumps the epoch.
     pub(crate) fn document_replaced(&mut self) {
         self.doc_epoch = self.doc_epoch.wrapping_add(1);
+        #[cfg(windows)]
+        crate::hui::document_replaced(self);
         // Note indices and gestures belong to the old session's clips (#443); every document
         // replacement (run, Recover, a session the browser read) goes through here.
         self.midi = midi_editor::MidiEditorState::default();

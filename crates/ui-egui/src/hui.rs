@@ -3,12 +3,14 @@ use crate::{SoundApp, json};
 use midir::{MidiInput, MidiInputConnection, MidiOutput, MidiOutputConnection};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use soundcraft_model::{TrackId, TrackKind};
 use std::sync::mpsc::{Receiver, sync_channel};
 use std::time::{Duration, Instant};
 
 const NAME: &str = "SoundCraft HUI";
 const STRIPS: usize = 8;
 const TRANSPORT: u8 = 0x0e;
+const NAVIGATION: u8 = 0x0a;
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct Ports {
@@ -36,6 +38,7 @@ struct Link {
     ping: Option<Instant>,
     reply: Option<Instant>,
     ready: bool,
+    first_track: usize,
     lamps: Option<[bool; STRIPS + 3]>,
 }
 
@@ -45,8 +48,29 @@ enum Event {
     Stop,
     Play,
     Record,
+    Navigate(Navigation),
     Arm(usize),
     Fader(usize, u16),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Navigation {
+    BankLeft,
+    BankRight,
+    ChannelLeft,
+    ChannelRight,
+}
+
+impl Navigation {
+    fn target(self, first: usize, count: usize) -> usize {
+        let last_bank = (count.saturating_sub(1) / STRIPS) * STRIPS;
+        match self {
+            Self::BankLeft => first.saturating_sub(STRIPS),
+            Self::BankRight => first.saturating_add(STRIPS).min(last_bank),
+            Self::ChannelLeft => first.saturating_sub(1),
+            Self::ChannelRight => first.saturating_add(1).min(last_bank),
+        }
+    }
 }
 
 #[derive(Default)]
@@ -67,6 +91,10 @@ impl Decode {
                 (TRANSPORT, 0x43) => Some(Event::Stop),
                 (TRANSPORT, 0x44) => Some(Event::Play),
                 (TRANSPORT, 0x45) => Some(Event::Record),
+                (NAVIGATION, 0x40) => Some(Event::Navigate(Navigation::ChannelLeft)),
+                (NAVIGATION, 0x41) => Some(Event::Navigate(Navigation::BankLeft)),
+                (NAVIGATION, 0x42) => Some(Event::Navigate(Navigation::ChannelRight)),
+                (NAVIGATION, 0x43) => Some(Event::Navigate(Navigation::BankRight)),
                 (strip @ 0..=7, 0x47) => Some(Event::Arm(usize::from(strip))),
                 _ => None,
             },
@@ -122,7 +150,7 @@ impl Link {
                 (),
             )
             .map_err(|e| e.to_string())?;
-        Ok(Self { _input: input, output, packets, decoder: Decode::default(), ping: None, reply: None, ready: false, lamps: None })
+        Ok(Self { _input: input, output, packets, decoder: Decode::default(), ping: None, reply: None, ready: false, first_track: 0, lamps: None })
     }
 
     fn send(&mut self, packet: [u8; 3]) {
@@ -133,6 +161,45 @@ impl Link {
 
     fn online(&self) -> bool {
         self.reply.is_some_and(|at| at.elapsed() < Duration::from_secs(3))
+    }
+}
+
+fn mixer_tracks(app: &SoundApp) -> impl Iterator<Item = TrackId> + '_ {
+    app.engine.session().tracks.iter().filter(|track| !track.hidden && track.kind != TrackKind::Video).map(|track| track.id)
+}
+
+fn mapped_tracks(app: &SoundApp, first: usize) -> [Option<TrackId>; STRIPS] {
+    let mut tracks = mixer_tracks(app).skip(first);
+    std::array::from_fn(|_| tracks.next())
+}
+
+pub(crate) fn controlled_tracks(app: &SoundApp) -> [Option<TrackId>; STRIPS] {
+    app.hui.link.as_ref().filter(|link| link.online()).map_or([None; STRIPS], |link| mapped_tracks(app, link.first_track))
+}
+
+pub(crate) fn document_replaced(app: &mut SoundApp) {
+    if let Some(link) = &mut app.hui.link {
+        link.first_track = 0;
+        link.ready = false;
+        link.decoder = Decode::default();
+        link.lamps = None;
+    }
+}
+
+fn navigate(app: &mut SoundApp, link: &mut Link, direction: Navigation) {
+    let first = direction.target(link.first_track, mixer_tracks(app).count());
+    if first != link.first_track {
+        link.first_track = first;
+        link.decoder.coarse.fill(None);
+        let first_id = mixer_tracks(app).nth(first);
+        app.mix_scroll_into_view = first_id;
+    }
+}
+
+fn navigate_from_host(app: &mut SoundApp, direction: Navigation) {
+    if let Some(mut link) = app.hui.link.take() {
+        navigate(app, &mut link, direction);
+        app.hui.link = Some(link);
     }
 }
 
@@ -168,7 +235,21 @@ pub(crate) fn command(app: &mut SoundApp, id: &str, p: &Value) -> Result<Value, 
     } else if let (Some(input), Some(output)) = (p.get("input").and_then(Value::as_str), p.get("output").and_then(Value::as_str)) {
         apply(app, Some(Ports { input: input.into(), output: output.into() }))?;
     }
+    if let Some(action) = p.get("navigate").and_then(Value::as_str) {
+        let direction = match action {
+            "bank_left" => Navigation::BankLeft,
+            "bank_right" => Navigation::BankRight,
+            "channel_left" => Navigation::ChannelLeft,
+            "channel_right" => Navigation::ChannelRight,
+            _ => return Err(format!("Unknown HUI navigation: {action}")),
+        };
+        navigate_from_host(app, direction);
+    }
+    let tracks = controlled_tracks(app);
+    let first = app.hui.link.as_ref().map_or(0, |link| link.first_track);
     Ok(json!({
+        "tracks": tracks.map(|id| id.map(|id| id.0)),
+        "first_track": tracks[0].map(|_| first + 1),
         "ports": app.ui.hui,
         "online": app.hui.link.as_ref().is_some_and(Link::online),
         "record_ready": app.hui.link.as_ref().is_some_and(|link| link.ready),
@@ -195,6 +276,10 @@ pub(crate) fn poll(app: &mut SoundApp, ctx: &egui::Context) {
         link.ready = false;
         link.lamps = None;
     }
+    let track_count = mixer_tracks(app).count();
+    let last_bank = (track_count.saturating_sub(1) / STRIPS) * STRIPS;
+    link.first_track = link.first_track.min(last_bank);
+    let mut tracks = mapped_tracks(app, link.first_track);
     let mut faders = [None; STRIPS];
     for _ in 0..512 {
         let Ok(packet) = link.packets.try_recv() else { break };
@@ -214,8 +299,13 @@ pub(crate) fn poll(app: &mut SoundApp, ctx: &egui::Context) {
             }
             Event::Record if !app.is_playing() => link.ready = !link.ready,
             Event::Record => {}
+            Event::Navigate(direction) => {
+                apply_faders(app, tracks, std::mem::take(&mut faders));
+                navigate(app, &mut link, direction);
+                tracks = mapped_tracks(app, link.first_track);
+            }
             Event::Arm(strip) => {
-                if let Some(track) = app.engine.session().tracks.get(strip) {
+                if let Some(track) = tracks.get(strip).and_then(|id| id.and_then(|id| app.engine.session().track(id))) {
                     let _ = app.run("mix.record_arm", json!({"tracks":[track.id.0], "value": !track.mixer.record_arm}));
                 }
             }
@@ -226,25 +316,30 @@ pub(crate) fn poll(app: &mut SoundApp, ctx: &egui::Context) {
             }
         }
     }
-    for (strip, value) in faders.into_iter().enumerate() {
-        if let (Some(value), Some(track)) = (value, app.engine.session().tracks.get(strip)) {
+    apply_faders(app, tracks, faders);
+    app.hui.link = Some(link);
+}
+
+fn apply_faders(app: &mut SoundApp, tracks: [Option<TrackId>; STRIPS], faders: [Option<u16>; STRIPS]) {
+    for (id, value) in tracks.into_iter().zip(faders) {
+        if let (Some(value), Some(track)) = (value, id.and_then(|id| app.engine.session().track(id))) {
             let db = soundcraft_model::fader_pos_to_db(f32::from(value) / 16_383.0);
             if (track.mixer.volume_db - db).abs() > 0.001 {
                 let _ = app.run("mix.volume", json!({"tracks":[track.id.0], "db":db}));
             }
         }
     }
-    app.hui.link = Some(link);
 }
 
 pub(crate) fn feedback(app: &mut SoundApp) {
+    let tracks = controlled_tracks(app);
     let Some(link) = app.hui.link.as_mut().filter(|link| link.online()) else { return };
     let transport = &app.engine.transport;
     let lamps: [bool; STRIPS + 3] = std::array::from_fn(|i| match i {
         8 => !transport.playing,
         9 => transport.playing,
         10 => transport.recording || link.ready,
-        _ => app.engine.session().tracks.get(i).is_some_and(|t| t.mixer.record_arm),
+        _ => tracks.get(i).and_then(|id| id.and_then(|id| app.engine.session().track(id))).is_some_and(|t| t.mixer.record_arm),
     });
     let previous = link.lamps.replace(lamps);
     for (i, lit) in lamps.into_iter().enumerate() {
@@ -268,7 +363,8 @@ fn port_picker(ui: &mut egui::Ui, id: &str, selected: &mut String, ports: &[Stri
 pub(crate) fn show(app: &mut SoundApp, ctx: &egui::Context) {
     let mut open = app.hui.show;
     let mut pending = false;
-    crate::windows::win(ctx, &mut open, "Peripherals", egui::vec2(390.0, 200.0), |ui| {
+    let mut movement = None;
+    crate::windows::win(ctx, &mut open, "Peripherals", egui::vec2(390.0, 260.0), |ui| {
         ui.label(crate::localization::text("MIDI Controllers"));
         egui::Grid::new("hui-peripherals").show(ui, |ui| {
             ui.label(crate::localization::text("Type"));
@@ -299,9 +395,33 @@ pub(crate) fn show(app: &mut SoundApp, ctx: &egui::Context) {
             ui.label(&app.hui.error);
         } else if let Some(link) = &app.hui.link {
             ui.label(crate::localization::text(if link.online() { "HUI connected" } else { "Waiting for HUI" }));
+            if link.online() {
+                let count = mixer_tracks(app).count();
+                let first = link.first_track;
+                if count > first {
+                    ui.label(crate::localized_format!("Tracks {first} to {last}", first = first + 1, last = (first + STRIPS).min(count)));
+                }
+                for (label, left, right) in [
+                    (crate::localization::text("Bank"), Navigation::BankLeft, Navigation::BankRight),
+                    (crate::localization::text("Channel"), Navigation::ChannelLeft, Navigation::ChannelRight),
+                ] {
+                    ui.horizontal(|ui| {
+                        ui.label(label);
+                        if ui.add_enabled(left.target(first, count) != first, egui::Button::new("<")).clicked() {
+                            movement = Some(left);
+                        }
+                        if ui.add_enabled(right.target(first, count) != first, egui::Button::new(">")).clicked() {
+                            movement = Some(right);
+                        }
+                    });
+                }
+            }
         }
     });
     app.hui.show = open;
+    if let Some(direction) = movement {
+        navigate_from_host(app, direction);
+    }
     if pending {
         let _ = apply(app, app.hui.enabled.then(|| app.hui.draft.clone()));
     }
@@ -321,6 +441,13 @@ mod tests {
             assert_eq!(decoder.packet([0xb0, 0x0f, TRANSPORT]), None);
             assert_eq!(decoder.packet([0xb0, 0x2f, port]), None);
         }
+        for (port, direction) in [(0, Navigation::ChannelLeft), (1, Navigation::BankLeft), (2, Navigation::ChannelRight), (3, Navigation::BankRight)]
+        {
+            assert_eq!(decoder.packet([0xb0, 0x0f, NAVIGATION]), None);
+            assert_eq!(decoder.packet([0xb0, 0x2f, port | 0x40]), Some(Event::Navigate(direction)));
+            assert_eq!(decoder.packet([0xb0, 0x0f, NAVIGATION]), None);
+            assert_eq!(decoder.packet([0xb0, 0x2f, port]), None);
+        }
         for strip in 0..8 {
             assert_eq!(decoder.packet([0xb0, 0x0f, strip]), None);
             assert_eq!(decoder.packet([0xb0, 0x2f, 0x47]), Some(Event::Arm(usize::from(strip))));
@@ -329,4 +456,19 @@ mod tests {
             assert_eq!(decoder.packet([0xb0, 0x20 + strip, 16]), None);
         }
     }
+}
+
+#[cfg(test)]
+#[test]
+fn hui_navigation_steps_eight_or_one_and_stops_at_the_last_bank() {
+    use Navigation::*;
+    assert_eq!(BankRight.target(0, 16), 8);
+    assert_eq!(BankRight.target(8, 16), 8);
+    assert_eq!(ChannelRight.target(8, 16), 8);
+    assert_eq!(ChannelLeft.target(8, 16), 7);
+    assert_eq!(ChannelRight.target(7, 16), 8);
+    assert_eq!(BankLeft.target(7, 16), 0);
+    assert_eq!(BankRight.target(8, 17), 16);
+    assert_eq!(BankRight.target(0, 1), 0);
+    assert_eq!(ChannelRight.target(0, 0), 0);
 }
