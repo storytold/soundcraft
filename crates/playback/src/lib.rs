@@ -22,6 +22,12 @@
 //! through handles taken from each instance before it leaves ([`Player::open_editor`]).
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
 
+/// Whether playback goes round `range` as a loop: a range of 64 frames or less is too short,
+/// and is played once.
+pub fn loops(range: Range) -> bool {
+    range.len() > 64
+}
+
 pub mod devices;
 pub mod midi;
 pub mod record;

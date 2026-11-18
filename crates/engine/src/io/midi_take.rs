@@ -107,37 +107,44 @@ fn midi_take_sequence(s: &Session, input: &MidiInput<'_>, range: Range, pass: Mi
     let mut seq = Sequence::default();
     // The round of the loop being played: it goes up at every `WRAP`.
     let mut round = 0u32;
-    // Keys down: (device, channel, pitch) -> (start tick, velocity, round).
-    let mut down: HashMap<(u8, u8, u8), (i64, u8, u32)> = HashMap::new();
-    let close =
-        |seq: &mut Sequence, (_, channel, pitch): (u8, u8, u8), (start, velocity, since): (i64, u8, u32), end: i64, release: u8, round: u32| {
-            let note = |start: i64, end: i64, release: u8| Note {
-                pitch,
-                velocity,
-                release_velocity: release,
-                channel,
-                start,
-                length: end.saturating_sub(start).max(1),
-            };
-            let rounds = round.saturating_sub(since);
-            // A pass in a line never goes round, and neither does a loop pass between two
-            // entries of one round when its rounds are marked: a release stamped before its
-            // press ends the note at the press (a note is at least a tick long).
-            if !looped || (rounds == 0 && (end >= start || !inferred)) {
-                seq.notes.push(note(start, end, release));
-                return;
-            }
-            // The pass went round between the key press and the release (loop recording goes back to
-            // the start of the loop): the capture said so, or the release is earlier on the timeline
-            // than the press. The note is held to the end of the pass and goes on from its start, as
-            // it was played. Held for a whole round or more, it covers the loop: the second note
-            // then ends where the first begins, so the two do not overlap.
-            seq.notes.push(note(start, end_tick, 64));
-            let end = if rounds > 1 || (rounds == 1 && end >= start) { start } else { end };
-            if end > 0 {
-                seq.notes.push(note(0, end, release));
-            }
+    // Keys down: (device, channel, pitch) -> (start tick, velocity, round, the tick the key was
+    // pressed at). The two ticks differ only for a press in the last samples of the range, whose
+    // note starts a tick earlier so that it plays; where the loop went round is judged by the
+    // press as it was played.
+    let mut down: HashMap<(u8, u8, u8), (i64, u8, u32, i64)> = HashMap::new();
+    let close = |seq: &mut Sequence,
+                 (_, channel, pitch): (u8, u8, u8),
+                 (start, velocity, since, pressed): (i64, u8, u32, i64),
+                 end: i64,
+                 release: u8,
+                 round: u32| {
+        let note = |start: i64, end: i64, release: u8| Note {
+            pitch,
+            velocity,
+            release_velocity: release,
+            channel,
+            start,
+            length: end.saturating_sub(start).max(1),
         };
+        let rounds = round.saturating_sub(since);
+        // A pass in a line never goes round, and neither does a loop pass between two
+        // entries of one round when its rounds are marked: a release stamped before its
+        // press ends the note at the press (a note is at least a tick long).
+        if !looped || (rounds == 0 && (end >= pressed || !inferred)) {
+            seq.notes.push(note(start, end, release));
+            return;
+        }
+        // The pass went round between the key press and the release (loop recording goes back to
+        // the start of the loop): the capture said so, or the release is earlier on the timeline
+        // than the press. The note is held to the end of the pass and goes on from its start, as
+        // it was played. Held for a whole round or more, it covers the loop: the second note
+        // then ends where the first begins, so the two do not overlap.
+        seq.notes.push(note(start, end_tick, 64));
+        let end = if rounds > 1 || (rounds == 1 && end >= pressed) { start } else { end };
+        if end > 0 {
+            seq.notes.push(note(0, end, release));
+        }
+    };
     for e in events.iter().take(MAX_MIDI_TAKE_EVENTS) {
         // The mark sits at the end of the loop, which is the end of the range.
         if e.status == MidiTakeEvent::WRAP {
@@ -162,11 +169,12 @@ fn midi_take_sequence(s: &Session, input: &MidiInput<'_>, range: Range, pass: Mi
             continue;
         }
         let key = (e.device, channel, d1);
-        let ctrl = |kind, value| CtrlEvent { tick: at, channel, kind, value };
+        // Like a note start, a controller in the last samples of the range stays where it plays.
+        let ctrl = |kind, value| CtrlEvent { tick: at.min(last_start), channel, kind, value };
         match e.status & 0xF0 {
             0x90 if d2 > 0 => {
                 // The same key again without a release: the first note ends here.
-                if let Some(open) = down.insert(key, (at.min(last_start), d2, round)) {
+                if let Some(open) = down.insert(key, (at.min(last_start), d2, round, at)) {
                     close(&mut seq, key, open, at, 64, round);
                 }
             }
@@ -187,8 +195,10 @@ fn midi_take_sequence(s: &Session, input: &MidiInput<'_>, range: Range, pass: Mi
     // there, in the round the stop is in. Otherwise, or when nothing says where it stopped, they
     // are held to the end of the range, in the round that was playing (after a round or more,
     // that is the whole loop).
+    // A take cut at the event cap may have lost the marks of its last rounds: the stop position
+    // belongs to a round the entries that are left do not reach, and is not used.
     let stop = match pass {
-        MidiPass::Loop { stopped: Some(at), .. } => tick(at.clamp(range.start, range.end)),
+        MidiPass::Loop { stopped: Some(at), .. } if events.len() <= MAX_MIDI_TAKE_EVENTS => tick(at.clamp(range.start, range.end)),
         _ => end_tick,
     };
     for (key, open) in down {
@@ -514,6 +524,16 @@ mod tests {
         let got = notes_of(&midi_take_sequence(&s, &MidiInput::default(), range, MidiPass::Loop { stopped: None, marked: true }, &events, &[]));
         assert_eq!(got, [(0, 60, 960, 1, 100, 40), (0, 64, 1920, 960, 100, 0)]);
         // A key pressed in the last sample of the range starts at the last tick that plays.
+        let unmarked = MidiPass::Loop { stopped: None, marked: false };
+        // In a take without marks, a key pressed there and released a tick's worth earlier in
+        // the next round went round the loop: judged by where it was pressed, not where it starts.
+        let round = [ev(95_999, 0, 0x90, 60, 100), ev(95_975, 0, 0x80, 60, 0)];
+        let got = notes_of(&midi_take_sequence(&s, &MidiInput::default(), range, unmarked, &round, &[]));
+        assert_eq!(got.iter().map(|n| (n.2, n.3)).collect::<Vec<_>>(), [(0, 3839), (3839, 1)], "the tail and the round after it");
+        // A controller there stays inside the clip too.
+        let cc = [ev(95_999, 0, 0xB0, 7, 90)];
+        let seq = midi_take_sequence(&s, &MidiInput::default(), range, MidiPass::Linear, &cc, &[]);
+        assert_eq!(seq.ctrls.iter().map(|c| c.tick).collect::<Vec<_>>(), [3839]);
         let late = [ev(95_999, 0, 0x90, 60, 100)];
         let got = notes_of(&midi_take_sequence(&s, &MidiInput::default(), range, MidiPass::Linear, &late, &[]));
         assert_eq!(got.iter().map(|n| (n.2, n.3)).collect::<Vec<_>>(), [(3839, 1)], "not at the tick of the clip's end");
@@ -538,6 +558,12 @@ mod tests {
         let inputs = midi_record_inputs(&e);
         let take = add_midi_recording_from(&mut e, range, MidiPass::Loop { stopped: Some(48_000), marked: true }, &events, &[], &inputs, false);
         assert_eq!((take.clips.len(), take.gaps), (1, 0), "and a full take is not reported as cut");
+        // One entry more and the take is cut: the stop may be in a round whose mark was cut off,
+        // so the key is held to the end of the loop instead of ending early.
+        events.push(ev(96_000, u8::MAX, MidiTakeEvent::WRAP, 0, 0));
+        let got =
+            notes_of(&midi_take_sequence(&s, &MidiInput::default(), range, MidiPass::Loop { stopped: Some(48_000), marked: true }, &events, &[]));
+        assert_eq!(got.iter().map(|n| (n.2, n.3)).collect::<Vec<_>>(), [(960, 2880)]);
     }
 
     #[test]

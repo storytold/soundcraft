@@ -123,6 +123,13 @@ pub(crate) fn chase_controllers(s: &Session, t: &Track, pos: Samples, inst: &mut
     const BEND: usize = 128;
     const PRESSURE: usize = 129;
     const PROGRAM: usize = 130;
+    // MIDI Real-Time Properties: the delay moves the track's controllers as it does when they
+    // are played (`schedule_notes`), so a value is in the past here when it was already sent.
+    let delay = if s.edit.values.is_empty() {
+        0i64
+    } else {
+        Key::new(format_args!("rtp.{}.delay", t.id.0)).map_or(0.0, |k| s.edit.value(k.as_str(), 0.0)).clamp(-1e7, 1e7) as i64
+    };
     let mut last = [(i64::MIN, 0i32); 131];
     let mut sent = 0u128;
     let sr = s.sample_rate;
@@ -141,7 +148,7 @@ pub(crate) fn chase_controllers(s: &Session, t: &Track, pos: Samples, inst: &mut
                 CtrlKind::Program => PROGRAM,
                 CtrlKind::PolyPressure(_) => continue,
             };
-            let at = s.tempo.tick_to_samples(base.saturating_add(c.tick), sr);
+            let at = s.tempo.tick_to_samples(base.saturating_add(c.tick.saturating_add(delay).max(0)), sr);
             if at < until
                 && let Some(l) = last.get_mut(slot)
                 && at >= l.0

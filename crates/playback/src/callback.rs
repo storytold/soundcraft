@@ -246,7 +246,7 @@ impl AudioState {
                 Cmd::Play { from, end, looped } => {
                     self.pos = from;
                     self.end = end;
-                    self.looped = looped.filter(|r| r.len() > 64);
+                    self.looped = looped.filter(|r| super::loops(*r));
                     self.midi_wraps = 0;
                     self.midi_stopped = false;
                     self.playing = true;
@@ -363,7 +363,11 @@ impl AudioState {
         for bit in (0..64u8).filter(|b| flagged & (1u64 << b) != 0) {
             let seen = self.midi_loss_seen.get(usize::from(bit)).copied().unwrap_or(i64::MIN);
             let at = feed.lost_at(bit_port(bit));
-            if at <= seen {
+            // Nor is one for a loss that was dealt with from an earlier flag: a port closed
+            // while the callback was reading the queue is met there through the mark of its
+            // overflow, and its own flag comes a callback later.
+            let told = seen.max(self.midi_flag_seen.get(usize::from(bit)).copied().unwrap_or(i64::MIN));
+            if at <= told {
                 input_lost &= !(1u64 << bit);
                 continue;
             }
@@ -371,7 +375,6 @@ impl AudioState {
             // later. The overflow comes first when nothing has told of it yet (not its mark in
             // the queue, not an earlier flag): it has its own time, and nothing of the port got
             // into the queue between the two.
-            let told = seen.max(self.midi_flag_seen.get(usize::from(bit)).copied().unwrap_or(i64::MIN));
             let overflow = feed.overflow_at(bit_port(bit));
             let at = if overflow > told { overflow.min(at) } else { at };
             if let Some(t) = lost_time.get_mut(usize::from(bit)) {
@@ -410,8 +413,13 @@ impl AudioState {
                 let again = feed.lost_at(e.port);
                 if again <= stamp {
                     marks &= !bit;
-                } else if let Some(t) = lost_time.get_mut(place) {
-                    *t = again;
+                } else if input_lost & bit != 0 {
+                    if let Some(t) = lost_time.get_mut(place) {
+                        *t = again;
+                    }
+                    // Dealt with here (what the port sent up to it is not played, see below):
+                    // the flag of that loss, if it comes later, is not news.
+                    flag_seen(&mut self.midi_flag_seen, bit, again);
                 }
                 if record && !told {
                     while let Some((other, at)) = next_mark(&lost_time, marks, stamp) {
@@ -583,13 +591,8 @@ impl AudioState {
         // command that ends it. One the UI has begun during playback counts from when it began,
         // though the command that starts it is only read below.
         let running = self.recording && (self.playing || self.midi_stopped);
-        let begun = self.midi.as_ref().map_or(i64::MAX, |f| f.record_from());
-        let pass = Pass {
-            record: running || (self.playing && begun != i64::MAX),
-            from: if running { i64::MIN } else { begun },
-            pos: self.pos,
-            looped: self.looped,
-        };
+        let (from, begun) = self.midi.as_ref().map_or((i64::MIN, false), |f| (f.record_from(), f.begin_pending()));
+        let pass = Pass { record: running || (self.playing && begun), from, pos: self.pos, looped: self.looped };
         self.capture_midi(callback, age_speed, pass);
         #[cfg(test)]
         if let Some(hook) = &mut self.before_commands {
@@ -687,8 +690,7 @@ fn flag_seen(seen: &mut [i64; 64], bits: u64, at: i64) {
 struct Pass {
     /// A pass is running: playing and recording.
     record: bool,
-    /// Entries stamped earlier than this are from before the pass began (`i64::MIN` once its
-    /// start command was read).
+    /// Entries stamped earlier than this are from before the pass began.
     from: i64,
     /// The playhead at the start of the callback.
     pos: Samples,
@@ -743,7 +745,13 @@ impl TakeWriter<'_> {
     /// them however often the loop went round in this callback.
     fn at(&mut self, age: i64) -> Samples {
         let at = self.pos.saturating_sub(age.max(0));
-        let Some(l) = self.looped else { return at };
+        let Some(l) = self.looped else {
+            // A pass that is being ended stops at the playhead, and its range ends there: what
+            // was played just before the Stop is the last thing inside it, not the first thing
+            // outside.
+            let ending = self.feed.record_until() != i64::MAX;
+            return if ending { at.min(self.pos.saturating_sub(1)) } else { at };
+        };
         let len = l.len().max(1);
         let back = if self.wraps == 0 || at >= l.start {
             0

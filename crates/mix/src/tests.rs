@@ -2016,8 +2016,10 @@ fn the_clips_sustain_pedal_is_not_put_down_again_when_a_device_goes_away_while_s
     // set again from the clips, whose pedal is down at this position and will never come up.
     stopped(&mut eng, 0, &[ev(0, 0xE0, 0, 0x7F)]);
     stopped(&mut eng, midi_port_bit(0), &[]);
-    // A key of the other device ends with its release.
+    // A key of the other device sounds while it is held, and ends with its release.
     stopped(&mut eng, 0, &[ev(1, 0x90, 64, 100)]);
+    let held = (0..20).map(|_| stopped(&mut eng, 0, &[])).last().unwrap();
+    assert!(held > 0.01, "the live note plays: {held}");
     stopped(&mut eng, 0, &[ev(1, 0x80, 64, 0)]);
     let tail = (0..200).map(|_| stopped(&mut eng, 0, &[])).last().unwrap();
     assert!(tail < 1e-4, "the clips' pedal held the live note: {tail}");
@@ -2073,4 +2075,53 @@ fn a_volume_or_pan_left_by_a_device_that_went_away_goes_back_to_the_midi_default
     heard.lock().unwrap().clear();
     render_block(&mut eng, &s, 1024);
     assert_eq!(std::mem::take(&mut *heard.lock().unwrap()), vec![(0, [0xB0, 121, 0]), (0, [0xB0, 7, 100])]);
+}
+
+#[test]
+fn a_volume_the_full_controller_table_forgot_is_reset_only_when_its_own_device_goes() {
+    let ev = |port, status, data1, data2| LiveMidi { offset: 0, port, status, data1, data2 };
+    let (s, _, mut eng, heard) = ears_session();
+    // Keys (port 0) sets the volume. A third device then sets so many controllers that the
+    // table forgets that value, and Pad (port 1) bends the pitch.
+    eng.midi.push(ev(0, 0xB0, 7, 30));
+    render_block(&mut eng, &s, 0);
+    eng.midi.clear();
+    eng.midi.extend((0..crate::live_midi::MAX_LIVE_CTRLS as u8).map(|n| ev(2, 0xB0, 20 + n, 1)));
+    eng.midi.push(ev(1, 0xE0, 0, 0x7F));
+    render_block(&mut eng, &s, 512);
+    let lost = |eng: &mut MixEngine, pos: i64, port: u8| {
+        heard.lock().unwrap().clear();
+        eng.midi.clear();
+        eng.midi_lost = midi_port_bit(port);
+        render_block(eng, &s, pos);
+        eng.midi_lost = 0;
+        heard.lock().unwrap().iter().filter(|(_, m)| m[1] == 7 || m[1] == 121).map(|(_, m)| *m).collect::<Vec<_>>()
+    };
+    // Pad goes: the controllers are reset for its bend, but the volume is Keys', who is still
+    // there, and is left alone.
+    assert_eq!(lost(&mut eng, 1024, 1), [[0xB0, 121, 0]]);
+    // Keys goes: now the volume goes back to the default.
+    assert_eq!(lost(&mut eng, 1536, 0), [[0xB0, 121, 0], [0xB0, 7, 100]]);
+}
+
+#[test]
+fn a_clip_volume_moved_earlier_by_the_track_delay_counts_as_set_when_a_device_goes_away() {
+    use soundcraft_midi::{CtrlEvent, CtrlKind, Sequence};
+    let ev = |port, status, data1, data2| LiveMidi { offset: 0, port, status, data1, data2 };
+    // The clip sets the volume at tick 960; the track's MIDI delay of -960 ticks plays it at 0.
+    let (mut s, t, mut eng, heard) = ears_session();
+    let mut seq = Sequence::default();
+    seq.ctrls.push(CtrlEvent { tick: 960, channel: 0, kind: CtrlKind::Cc(7), value: 80 });
+    let cid = s.new_clip_id();
+    s.track_mut(t).unwrap().playlist_mut().unwrap().clips.push(Clip::midi(cid, "c", 0, 48_000, seq));
+    s.edit.values.insert(format!("rtp.{}.delay", t.0), -960.0);
+    render_block(&mut eng, &s, 0);
+    // A device turns the volume down and is unplugged, long before tick 960.
+    eng.midi.push(ev(0, 0xB0, 7, 0));
+    render_block(&mut eng, &s, 512);
+    heard.lock().unwrap().clear();
+    eng.midi.clear();
+    eng.midi_lost = midi_port_bit(0);
+    render_block(&mut eng, &s, 1024);
+    assert_eq!(std::mem::take(&mut *heard.lock().unwrap()), vec![(0, [0xB0, 121, 0]), (0, [0xB0, 7, 80])], "the clip's volume, not the default");
 }

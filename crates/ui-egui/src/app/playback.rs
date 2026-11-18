@@ -36,7 +36,8 @@ impl SoundApp {
         } else {
             self.sim = Some((from, end, looped));
         }
-        self.play_loop = looped;
+        // The loop as the audio engine takes it: a range too short to loop is played once.
+        self.play_loop = looped.filter(|l| soundcraft_playback::loops(*l));
         self.engine.transport.playing = true;
         self.engine.transport.position = from;
         self.last_write_at = i64::MIN;
@@ -235,14 +236,16 @@ impl SoundApp {
                 None => p.set_recording(false),
             }
         }
+        // The audio input stops taking in first: waiting for the MIDI below would otherwise add
+        // what the input hears meanwhile to the audio takes. No input device is open when the
+        // pass was MIDI only.
+        let (takes, problem) = self.recorder.as_mut().map_or_else(|| (Vec::new(), None), |r| r.finish());
         // The audio thread writes down what was played up to the stop; the clips wait for that.
         let midi_confirmed = self.await_midi_capture(midi_pass);
         // Where the pass ended: the audio engine's own position is the freshest.
         let engine_at = self.player.as_ref().map(|p| p.position());
         let stopped_at = super::midi::pass_stop(engine_at, self.engine.transport.position);
         let plan = self.take_plan.take();
-        // No input device is open when the pass was MIDI only.
-        let (takes, problem) = self.recorder.as_mut().map_or_else(|| (Vec::new(), None), |r| r.finish());
         let tracks = takes.len().max(1);
         let plan = plan.unwrap_or_else(|| soundcraft_engine::io::Recording {
             start: self.record_start,
@@ -436,6 +439,7 @@ impl SoundApp {
                         if let Some(sim) = &mut self.sim {
                             *sim = (at, None, None);
                         }
+                        self.play_loop = None;
                         self.last_write_at = i64::MIN;
                         self.engine.transport.position = at;
                     } else {

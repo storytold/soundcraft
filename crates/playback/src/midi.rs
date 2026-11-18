@@ -178,9 +178,10 @@ pub struct MidiFeed {
     passes: AtomicU64,
     /// When the last record pass was ended ([`Self::end_pass`]), on the clock of the stamps.
     pass_end: AtomicI64,
-    /// When a record pass was begun ([`Self::begin_pass`]) that the audio thread has not started
-    /// yet; `i64::MAX` when there is none.
+    /// When the last record pass was begun ([`Self::begin_pass`]); `i64::MIN` before the first.
     pass_begin: AtomicI64,
+    /// A pass was begun whose start command the audio thread has not read yet.
+    begin_pending: AtomicBool,
     /// When each port last had an event dropped by the full queue, by the place of its bit in
     /// `lost`; `i64::MIN` before the first time. Kept apart from `lost_at`, which a later close
     /// of the port moves on.
@@ -212,7 +213,8 @@ impl Default for MidiFeed {
             captures_done: AtomicU64::new(0),
             passes: AtomicU64::new(0),
             pass_end: AtomicI64::new(i64::MAX),
-            pass_begin: AtomicI64::new(i64::MAX),
+            pass_begin: AtomicI64::new(i64::MIN),
+            begin_pending: AtomicBool::new(false),
             overflow_at: (0..64).map(|_| AtomicI64::new(i64::MIN)).collect(),
             stop_at: AtomicI64::new(0),
             stop_pass: AtomicU64::new(0),
@@ -308,10 +310,12 @@ impl MidiFeed {
             if *owed != 0 || !self.incoming.push(now, e) {
                 // The queue is full. This may be a release, so the port's notes have to go.
                 self.dropped.fetch_add(1, Ordering::Relaxed);
+                // One time for the drop and for the loss it is: the mark in the queue and the
+                // port's flag are then known to stand for the same loss.
                 if let Some(at) = self.overflow_at.get(lost_bit(port)) {
                     at.fetch_max(now, Ordering::AcqRel);
                 }
-                self.port_lost(port);
+                self.port_lost_at(port, now);
                 *owed |= midi_port_bit(port);
             }
         }
@@ -333,9 +337,14 @@ impl MidiFeed {
     /// Events of `port` did not (or will not) reach the audio thread: it releases what the port
     /// holds. Called when the queue is full and when a port closes.
     pub fn port_lost(&self, port: u8) {
+        self.port_lost_at(port, self.now());
+    }
+
+    /// [`Self::port_lost`] at the time `now`.
+    fn port_lost_at(&self, port: u8, now: i64) {
         // The time first: whoever sees the port's bit also sees a time that covers this loss.
         if let Some(at) = self.lost_at.get(lost_bit(port)) {
-            at.fetch_max(self.now(), Ordering::AcqRel);
+            at.fetch_max(now, Ordering::AcqRel);
         }
         self.lost.fetch_or(midi_port_bit(port), Ordering::Release);
     }
@@ -436,25 +445,33 @@ impl MidiFeed {
     /// While the transport is already running, what arrives from here on belongs to the pass,
     /// also when the audio thread takes it in before it reads that command.
     pub fn begin_pass(&self) {
+        // The time first: whoever sees the pass as begun also sees when.
         self.pass_begin.store(self.now(), Ordering::Release);
+        self.begin_pending.store(true, Ordering::Release);
     }
 
-    /// Audio thread: since when arriving events belong to a pass that was begun and whose start
-    /// command has not been read yet; `i64::MAX` when there is no such pass.
+    /// Audio thread: since when arriving events belong to the pass that was last begun. It
+    /// holds for the whole pass: what was played before Record stays out of the take also when
+    /// the audio thread takes it in after it has read the start command.
     pub(crate) fn record_from(&self) -> i64 {
         self.pass_begin.load(Ordering::Acquire)
     }
 
+    /// Audio thread: whether a pass was begun whose start command has not been read yet.
+    pub(crate) fn begin_pending(&self) -> bool {
+        self.begin_pending.load(Ordering::Acquire)
+    }
+
     /// Audio thread: the command that starts the pass was read.
     pub(crate) fn pass_begun(&self) {
-        self.pass_begin.store(i64::MAX, Ordering::Release);
+        self.begin_pending.store(false, Ordering::Release);
     }
 
     /// UI thread: a record pass ends. Returns its number, to stop the recording with
     /// ([`crate::Player::end_recording`]) and to wait for ([`Self::captured`]). Numbers only go
     /// up, so the late answer to an earlier pass is never taken for this one.
     pub fn end_pass(&self) -> u64 {
-        // The time first: whoever sees the pass as ended also sees when.
+        // The cutoff is in force from this one store on ([`Self::record_until`]).
         self.pass_end.store(self.now(), Ordering::Release);
         self.passes.fetch_add(1, Ordering::AcqRel).saturating_add(1)
     }
@@ -463,7 +480,7 @@ impl MidiFeed {
     /// confirmed yet that is the time it was ended at: what a device sends after the Stop is
     /// played but not recorded, however long the audio thread takes to hear of the Stop.
     pub(crate) fn record_until(&self) -> i64 {
-        if self.pass_owed() { self.pass_end.load(Ordering::Acquire) } else { i64::MAX }
+        self.pass_end.load(Ordering::Acquire)
     }
 
     /// Audio thread: recording was switched off for `pass`, and everything played before that is
@@ -472,6 +489,11 @@ impl MidiFeed {
     pub(crate) fn capture_done(&self, pass: u64, at: Samples) {
         self.stop_at.store(at, Ordering::Release);
         self.stop_pass.store(pass, Ordering::Release);
+        // The last pass that was ended: its cutoff goes, before the UI can see the answer and
+        // begin another pass.
+        if pass >= self.passes.load(Ordering::Acquire) {
+            self.pass_end.store(i64::MAX, Ordering::Release);
+        }
         self.captures_done.fetch_max(pass, Ordering::AcqRel);
     }
 
@@ -502,6 +524,7 @@ impl MidiFeed {
     /// The audio engine that owed the passes ended so far is gone (another one takes the feed):
     /// nothing is owed any more.
     pub fn forgive_passes(&self) {
+        self.pass_end.store(i64::MAX, Ordering::Release);
         self.captures_done.fetch_max(self.passes.load(Ordering::Acquire), Ordering::AcqRel);
     }
 

@@ -254,6 +254,11 @@ impl LiveCtrl {
 /// `(controller, default, bit in [`LiveNotes::defaults_owed`])`.
 const KEPT_BY_RESET: [(u8, u8, u8); 2] = [(7, 100, 1), (10, 64, 2)];
 
+/// The place of `msg` in [`KEPT_BY_RESET`], when it sets one of them.
+fn kept_index(msg: &LiveMidi) -> Option<usize> {
+    KEPT_BY_RESET.iter().position(|(cc, ..)| msg.status & 0xF0 == 0xB0 && *cc == msg.data1)
+}
+
 /// The bit of `msg` in [`LiveNotes::defaults_owed`], when it sets one of [`KEPT_BY_RESET`].
 fn kept_by_reset(msg: &LiveMidi) -> u8 {
     if msg.status & 0xF0 != 0xB0 {
@@ -276,8 +281,10 @@ pub(crate) struct LiveNotes {
     /// full table forgot: the instrument may still have a value of theirs.
     forgotten_ports: u64,
     forgotten_channels: u16,
-    /// Which of [`KEPT_BY_RESET`] the full table forgot a value of.
-    forgotten_kept: u8,
+    /// For each of [`KEPT_BY_RESET`], the ports ([`midi_port_bit`]) and channels of the values
+    /// of it that the full table forgot: the default is owed when one of those sources goes,
+    /// not when another does.
+    forgotten_kept: [(u64, u16); 2],
     /// Which of [`KEPT_BY_RESET`] a live source that is gone had set: the next reset of the
     /// instrument's controllers does not undo that ([`Self::restore_defaults`]).
     defaults_owed: u8,
@@ -294,7 +301,7 @@ impl Default for LiveNotes {
             ctrl_order: 0,
             forgotten_ports: 0,
             forgotten_channels: 0,
-            forgotten_kept: 0,
+            forgotten_kept: [(0, 0); 2],
             defaults_owed: 0,
             clip: NoteSet::default(),
         }
@@ -312,7 +319,23 @@ impl LiveNotes {
 
     /// Which of [`KEPT_BY_RESET`] live input has set on the instrument, as far as is known.
     fn kept_set(&self) -> u8 {
-        self.ctrls.iter().filter(|c| c.msg.status != 0).fold(self.defaults_owed | self.forgotten_kept, |m, c| m | kept_by_reset(&c.msg))
+        let forgotten = KEPT_BY_RESET.iter().zip(&self.forgotten_kept).filter(|(_, (ports, _))| *ports != 0).fold(0, |m, ((.., bit), _)| m | bit);
+        self.ctrls.iter().filter(|c| c.msg.status != 0).fold(self.defaults_owed | forgotten, |m, c| m | kept_by_reset(&c.msg))
+    }
+
+    /// The sources picked by `gone` (the ports and channels a forgotten value came from) went
+    /// away: the defaults of the volume and the pan they had set are owed. True when there were
+    /// any, so that the caller resets the controllers.
+    fn forgotten_kept_gone(&mut self, gone: impl Fn(u64, u16) -> bool) -> bool {
+        let mut any = false;
+        for ((.., bit), from) in KEPT_BY_RESET.iter().zip(self.forgotten_kept.iter_mut()) {
+            if from.0 != 0 && gone(from.0, from.1) {
+                self.defaults_owed |= bit;
+                *from = (0, 0);
+                any = true;
+            }
+        }
+        any
     }
 
     /// After the instrument's controllers were reset and set from the clips (`from_clips`: the
@@ -371,6 +394,7 @@ impl LiveNotes {
         }
         // A source whose value the full table forgot may be among those the input dropped.
         let forgotten = self.forgotten_ports != 0 && !all_accepted(self.forgotten_ports, self.forgotten_channels, input, ports);
+        let forgotten = self.forgotten_kept_gone(|from, channels| !all_accepted(from, channels, input, ports)) || forgotten;
         self.forget_controllers(|c| !input.accepts(ports.and_then(|p| p.name(c.port)), c.channel())) || forgotten
     }
 
@@ -400,7 +424,10 @@ impl LiveNotes {
             let (i, oldest) = self.ctrls.iter().enumerate().min_by_key(|(_, c)| c.order)?;
             self.forgotten_ports |= midi_port_bit(oldest.msg.port);
             self.forgotten_channels |= 1u16 << oldest.msg.channel();
-            self.forgotten_kept |= kept_by_reset(&oldest.msg);
+            if let Some(from) = kept_index(&oldest.msg).and_then(|i| self.forgotten_kept.get_mut(i)) {
+                from.0 |= midi_port_bit(oldest.msg.port);
+                from.1 |= 1u16 << oldest.msg.channel();
+            }
             Some(i)
         });
         if let Some(c) = at.and_then(|i| self.ctrls.get_mut(i)) {
@@ -428,10 +455,10 @@ impl LiveNotes {
         let stale = self.drop_unaccepted(&MidiInput::of(&t.mixer.input), ports, inst) || lost;
         if stale {
             // The caller resets the instrument's controllers: no forgotten value is left on it,
-            // but for the volume and the pan, which the reset does not touch.
+            // but for the volume and the pan, which the reset does not touch (`forgotten_kept`
+            // goes on saying whose they are).
             self.forgotten_ports = 0;
             self.forgotten_channels = 0;
-            self.defaults_owed |= std::mem::take(&mut self.forgotten_kept);
         }
         stale
     }
@@ -496,7 +523,7 @@ impl LiveNotes {
         self.ctrls = [LiveCtrl::default(); MAX_LIVE_CTRLS];
         self.forgotten_ports = 0;
         self.forgotten_channels = 0;
-        self.forgotten_kept = 0;
+        self.forgotten_kept = [(0, 0); 2];
         std::mem::take(&mut self.controllers)
     }
 
@@ -514,6 +541,7 @@ impl LiveNotes {
         }
         // The port may have set a controller whose value the full table forgot.
         let forgotten = lost & self.forgotten_ports != 0;
+        let forgotten = self.forgotten_kept_gone(|from, _| lost & from != 0) || forgotten;
         self.forget_controllers(|c| lost & midi_port_bit(c.port) != 0) || forgotten
     }
 

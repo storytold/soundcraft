@@ -941,7 +941,8 @@ fn a_note_played_just_before_stop_is_in_the_take_and_the_end_of_the_pass_is_ackn
     st.fill(&mut out, 2);
     assert!(feed.captured(pass), "it says when everything up to the stop is written down");
     feed.take_recorded(&mut rec);
-    assert_eq!(rec.iter().map(|e| (e.status, e.data1, e.at)).collect::<Vec<_>>(), [(0x90, 60, 1024)]);
+    // The pass stopped at 1024, where its range ends: the key is the last thing inside it.
+    assert_eq!(rec.iter().map(|e| (e.status, e.data1, e.at)).collect::<Vec<_>>(), [(0x90, 60, 1023)]);
     assert_eq!(feed.stopped_at(pass), Some(1024), "the answer says where the pass stopped");
     // What is played after the stop is not part of it.
     feed.receive(0, &[0x80, 60, 0]);
@@ -1334,7 +1335,8 @@ fn a_note_that_arrives_between_the_queue_being_read_and_the_stop_is_in_the_take(
     assert!(pass != 0 && feed.captured(pass), "confirmed in the same callback");
     let mut rec = Vec::new();
     feed.take_recorded(&mut rec);
-    assert_eq!(rec.iter().map(|e| (e.status, e.data1, e.at)).collect::<Vec<_>>(), [(0x90, 60, 1024)]);
+    assert_eq!(rec.iter().map(|e| (e.status, e.data1, e.at)).collect::<Vec<_>>(), [(0x90, 60, 1023)]);
+    assert!(feed.stopped_at(pass).is_some_and(|stop| rec[0].at < stop), "inside the range that ends at the stop");
 }
 
 #[test]
@@ -1483,8 +1485,8 @@ fn a_note_played_before_the_transport_stop_is_in_the_take_when_the_end_of_the_pa
     assert!(feed.captured(pass));
     let mut rec = Vec::new();
     feed.take_recorded(&mut rec);
-    assert_eq!(rec.iter().map(|e| (e.status, e.data1, e.at)).collect::<Vec<_>>(), [(0x90, 60, 1024)]);
-    assert_eq!(feed.stopped_at(pass), Some(1024));
+    assert_eq!(rec.iter().map(|e| (e.status, e.data1, e.at)).collect::<Vec<_>>(), [(0x90, 60, 1023)]);
+    assert_eq!(feed.stopped_at(pass), Some(1024), "the key is inside the range that ends at the stop");
 }
 
 #[test]
@@ -1584,4 +1586,93 @@ fn a_speed_change_during_a_callback_does_not_split_what_it_renders_at_from_what_
     feed.take_recorded(&mut rec);
     assert_eq!(rec.iter().map(|e| e.at).collect::<Vec<_>>(), [2048 - 480]);
     assert_eq!(st.shared.position.load(Ordering::Relaxed), 2048 + 512, "half speed from the callback after");
+}
+
+#[test]
+fn what_was_played_before_record_stays_out_of_the_take_when_it_is_taken_in_after_the_start_command() {
+    let (mut st, tx, feed, ..) = keyboard_session();
+    tx.send(Cmd::Play { from: 0, end: None, looped: None }).unwrap();
+    let mut out = vec![0.0f32; 2048];
+    st.fill(&mut out, 2);
+    // The callback has read the MIDI queue. A key goes down, then Record: the callback reads
+    // the start command now, and takes the key in only with its next run, while recording.
+    let (f, tx2) = (Arc::clone(&feed), tx.clone());
+    let mut once = true;
+    st.before_commands = Some(Box::new(move || {
+        if std::mem::take(&mut once) {
+            f.set_clock(1_000);
+            f.receive(0, &[0x90, 60, 100]);
+            f.set_clock(2_000);
+            f.begin_pass();
+            let _ = tx2.send(Cmd::Recording(true, 0));
+        }
+    }));
+    st.fill(&mut out, 2);
+    feed.set_clock(3_000);
+    feed.receive(0, &[0x90, 62, 100]);
+    st.fill(&mut out, 2);
+    let mut rec = Vec::new();
+    feed.take_recorded(&mut rec);
+    assert_eq!(rec.iter().map(|e| (e.status, e.data1)).collect::<Vec<_>>(), [(0x90, 62)], "only the key from after Record");
+}
+
+#[test]
+fn the_stop_cutoff_holds_before_the_stop_command_arrives() {
+    let (mut st, tx, feed, ..) = keyboard_session();
+    tx.send(Cmd::Recording(true, 0)).unwrap();
+    tx.send(Cmd::Play { from: 0, end: None, looped: None }).unwrap();
+    let mut out = vec![0.0f32; 2048];
+    st.fill(&mut out, 2);
+    // The pass is ended; the command that says so has not reached the audio thread when it
+    // takes in a key played after that.
+    feed.set_clock(1_000);
+    let pass = feed.end_pass();
+    feed.set_clock(2_000);
+    feed.receive(0, &[0x90, 60, 100]);
+    st.fill(&mut out, 2);
+    let mut rec = Vec::new();
+    feed.take_recorded(&mut rec);
+    assert!(rec.is_empty() && !feed.captured(pass), "{rec:?}");
+    // Once the pass is confirmed, the cutoff is gone: the next pass records.
+    tx.send(Cmd::Recording(false, pass)).unwrap();
+    st.fill(&mut out, 2);
+    assert!(feed.captured(pass));
+    tx.send(Cmd::Recording(true, 0)).unwrap();
+    st.fill(&mut out, 2);
+    feed.set_clock(3_000);
+    feed.receive(0, &[0x90, 62, 100]);
+    st.fill(&mut out, 2);
+    feed.take_recorded(&mut rec);
+    assert_eq!(rec.iter().map(|e| e.data1).collect::<Vec<_>>(), [62]);
+}
+
+#[test]
+fn a_close_met_through_the_mark_of_an_earlier_overflow_is_not_a_second_loss_when_its_flag_comes() {
+    let (mut st, tx, feed, ..) = keyboard_session();
+    tx.send(Cmd::Recording(true, 0)).unwrap();
+    tx.send(Cmd::Play { from: 0, end: None, looped: None }).unwrap();
+    heard(&mut st, 1);
+    // Port 0 overflows, plays on (the mark of the overflow goes into the queue), and is closed.
+    feed.set_clock(1_000);
+    for _ in 0..midi::INCOMING {
+        feed.receive(1, &[0xB0, 1, 0]);
+    }
+    feed.receive(0, &[0x80, 60, 0]);
+    assert_eq!(std::iter::from_fn(|| feed.next()).take(midi::INCOMING - 8).count(), midi::INCOMING - 8);
+    feed.set_clock(2_000);
+    feed.receive(0, &[0x90, 64, 100]);
+    feed.set_clock(3_000);
+    feed.port_lost(0);
+    heard(&mut st, 1);
+    // The flag of the close reaches the audio thread a callback late (it was raised while the
+    // queue was being read). By then a new connection of the port plays a key.
+    feed.put_back_lost(soundcraft_mix::midi_port_bit(0));
+    feed.set_clock(4_000);
+    feed.receive(0, &[0x90, 67, 100]);
+    assert!(heard(&mut st, 60), "the key of the new connection is not ended by the old close");
+    let mut rec = Vec::new();
+    feed.take_recorded(&mut rec);
+    let lost = midi::RecordedMidi::LOST;
+    let port0: Vec<(u8, u8)> = rec.iter().filter(|e| e.port == 0).map(|e| (e.status, e.data1)).collect();
+    assert_eq!(port0, [(lost, 0), (0x90, 64), (lost, 0), (0x90, 67)], "one mark for the overflow, one for the close");
 }
