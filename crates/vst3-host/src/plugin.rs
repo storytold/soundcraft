@@ -299,6 +299,13 @@ impl Plugin for Vst3Plugin {
         }
     }
 
+    fn render_idle(&mut self) {
+        // Offline render blocks have no UI idle: deliver the conn proxy queues here (#1358).
+        if let Some(link) = self.inst.editor() {
+            link.deliver_conn();
+        }
+    }
+
     fn reset(&mut self) {
         // Keep pending releases and release whatever is still held, so the processor's voices stop
         // on the next block instead of sounding on while the host forgets them.

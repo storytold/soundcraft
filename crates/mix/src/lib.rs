@@ -201,6 +201,21 @@ impl MixEngine {
         self.offline = on;
     }
 
+    /// Gives every plugin the internal servicing a UI idle loop would have done: a VST3
+    /// delivers queued component↔controller messages here. An offline render calls this
+    /// per block — a queued-up plugin would otherwise render on stale state the whole
+    /// bounce (#1358).
+    pub fn idle_plugins(&mut self) {
+        for st in self.strips.values_mut() {
+            if let Some(i) = &mut st.instrument {
+                i.plugin.render_idle();
+            }
+            for p in st.plugins.iter_mut().flatten() {
+                p.plugin.render_idle();
+            }
+        }
+    }
+
     /// Takes instances created off the audio thread; the next render's `sync` places them.
     /// An earlier instance waiting for the same slot is retired.
     pub fn adopt(&mut self, instances: Vec<PreparedInstance>) {

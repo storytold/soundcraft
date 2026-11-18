@@ -29,7 +29,7 @@ use vst3::Steinberg::Vst::{
 };
 use vst3::Steinberg::{self as sb};
 use vst3::Steinberg::{FUnknown, IBStreamTrait, IPlugFrameTrait, IPlugViewTrait, IPluginBaseTrait, IPluginFactory2Trait, IPluginFactoryTrait};
-use vst3::{Class, ComPtr, ComWrapper, Interface};
+use vst3::{Class, ComPtr, ComRef, ComWrapper, Interface};
 
 mod editor;
 mod host;
@@ -291,5 +291,75 @@ mod tests {
         assert_eq!(read_c16(&name), "SoundCraft");
         assert!(h.latency_changed.load(Ordering::Relaxed));
         assert_eq!(hex(&[0xAB; 16]), "AB".repeat(16));
+    }
+
+    /// An `IConnectionPoint` that records the ids of the messages it receives.
+    #[derive(Default)]
+    struct Recorder {
+        got: Mutex<Vec<String>>,
+    }
+
+    impl Class for Recorder {
+        type Interfaces = (sv::IConnectionPoint,);
+    }
+
+    impl IConnectionPointTrait for Recorder {
+        unsafe fn connect(&self, _other: *mut sv::IConnectionPoint) -> sb::tresult {
+            sb::kResultOk
+        }
+        unsafe fn disconnect(&self, _other: *mut sv::IConnectionPoint) -> sb::tresult {
+            sb::kResultOk
+        }
+        unsafe fn notify(&self, message: *mut sv::IMessage) -> sb::tresult {
+            // SAFETY: `message` is a live IMessage for the call (test provides it).
+            let id = unsafe { ComRef::from_raw(message) }
+                .and_then(|m| unsafe { std::ffi::CStr::from_ptr(m.getMessageID()) }.to_str().ok().map(str::to_string));
+            self.got.lock().unwrap_or_else(PoisonError::into_inner).push(id.unwrap_or_default());
+            sb::kResultOk
+        }
+    }
+
+    #[test]
+    fn connection_proxies_deliver_on_the_main_thread() {
+        use host::ConnProxy;
+        // A notify through the proxy must not reach the peer on the caller's thread — that is
+        // what pinned NI plugins' database work onto the audio thread (#1358).
+        let proxy = ComWrapper::new(ConnProxy::default());
+        let peer = ComWrapper::new(Recorder::default());
+        let host = ComWrapper::new(HostContext::default());
+        let msg = create::<sv::IMessage>(&host, sv::IMessage::IID).expect("IMessage");
+        // SAFETY: valid message; the id is a static C string.
+        unsafe { msg.setMessageID(c"BrowserQuery".as_ptr()) };
+        let p = proxy.as_com_ref::<sv::IConnectionPoint>().expect("proxy cp");
+        let r = peer.as_com_ref::<sv::IConnectionPoint>().expect("peer cp");
+        // SAFETY: both connection points are valid for the rest of the test.
+        unsafe {
+            assert_eq!(p.connect(r.as_ptr()), sb::kResultOk);
+            assert_eq!(p.notify(msg.as_ptr()), sb::kResultOk);
+        }
+        assert!(peer.got.lock().unwrap_or_else(PoisonError::into_inner).is_empty(), "notify ran synchronously");
+        proxy.deliver();
+        assert_eq!(peer.got.lock().unwrap_or_else(PoisonError::into_inner).as_slice(), ["BrowserQuery"]);
+        // SAFETY: as above.
+        unsafe { p.disconnect(r.as_ptr()) };
+    }
+
+    #[test]
+    fn a_full_connection_queue_fails_instead_of_dropping() {
+        use host::{CONN_CAP, ConnProxy};
+        // The bound protects the audio path; a message the sender believes delivered is worse
+        // than a failure it can see.
+        let proxy = ComWrapper::new(ConnProxy::default());
+        let host = ComWrapper::new(HostContext::default());
+        let msg = create::<sv::IMessage>(&host, sv::IMessage::IID).expect("IMessage");
+        unsafe { msg.setMessageID(c"x".as_ptr()) };
+        let p = proxy.as_com_ref::<sv::IConnectionPoint>().expect("proxy cp");
+        // SAFETY: `msg` stays alive for the test; `notify` is the interface under test.
+        unsafe {
+            for _ in 0..CONN_CAP {
+                assert_eq!(p.notify(msg.as_ptr()), sb::kResultOk);
+            }
+            assert_eq!(p.notify(msg.as_ptr()), sb::kOutOfMemory);
+        }
     }
 }
