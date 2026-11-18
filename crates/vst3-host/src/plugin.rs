@@ -415,8 +415,14 @@ impl Plugin for Vst3Plugin {
                 e.set_time(last);
             }
         }
-        for c in &mut self.controls {
-            c.0 = c.0.min(last);
+        for (c, i) in self.controls.iter_mut().zip(&self.control_index) {
+            if c.0 > last {
+                c.0 = last;
+                // The point now lands in this block, so the value it supersedes retires here too.
+                if let Some(s) = i.and_then(|i| self.stale.get_mut(i)) {
+                    *s = s.map(|t| t.min(last));
+                }
+            }
         }
         let mut start = 0usize;
         while start < frames {

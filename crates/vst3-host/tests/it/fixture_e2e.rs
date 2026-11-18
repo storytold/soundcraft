@@ -295,6 +295,23 @@ fn an_older_controller_point_does_not_retire_a_value_a_later_one_supersedes() {
     assert!((io[0][191] - 64.0 / 127.0).abs() < 1e-6, "the later controller did not win: {}", io[0][191]);
 }
 
+/// A controller point past the block's end is processed at its last frame, and so is the
+/// retirement of the waiting value it supersedes: the next block must not send that value.
+#[test]
+fn a_controller_point_clamped_to_the_block_end_still_retires_the_value_it_supersedes() {
+    let id = id_of("Fixture Many Params");
+    let mut p = soundcraft_vst3_host::create(&id).unwrap();
+    p.prepare(48_000.0, 64, 2);
+    // Right after prepare the resend fills the first sub-block, so parameter 1499 waits.
+    assert!(p.set_param("1499", 1.0));
+    p.midi(64, [0xB0, 5, 32]);
+    let mut io = vec![vec![0.0f32; 64], vec![0.0f32; 64]];
+    p.process(&mut io, 64);
+    assert!((io[0][63] - 32.0 / 127.0).abs() < 1e-6, "the clamped controller point: {}", io[0][63]);
+    p.process(&mut io, 64);
+    assert!((io[0][63] - 32.0 / 127.0).abs() < 1e-6, "the older host value undid the controller: {}", io[0][63]);
+}
+
 /// `reset` drops controller points that were never processed, so a value they would have
 /// superseded is still the one to send.
 #[test]
