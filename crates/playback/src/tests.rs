@@ -920,3 +920,78 @@ fn the_last_device_going_away_during_a_record_pass_is_written_into_the_take() {
     feed.take_recorded(&mut rec);
     assert!(rec.is_empty());
 }
+
+#[test]
+fn a_note_played_just_before_stop_is_in_the_take_and_the_end_of_the_pass_is_acknowledged() {
+    let (mut st, tx, feed, ..) = keyboard_session();
+    tx.send(Cmd::Recording(true)).unwrap();
+    tx.send(Cmd::Play { from: 0, end: None, looped: None }).unwrap();
+    let mut out = vec![0.0f32; 2048];
+    st.fill(&mut out, 2);
+    let done = feed.captures_done();
+    // The key goes down, and Stop arrives before the audio thread runs again: the note has not
+    // been played yet (it waits out its delay), but it belongs to the pass.
+    feed.receive(0, &[0x90, 60, 100]);
+    tx.send(Cmd::Stop).unwrap();
+    tx.send(Cmd::Recording(false)).unwrap();
+    let mut rec = Vec::new();
+    feed.take_recorded(&mut rec);
+    assert!(rec.is_empty() && feed.captures_done() == done, "the audio thread has not seen the stop yet");
+    st.fill(&mut out, 2);
+    assert_eq!(feed.captures_done(), done + 1, "it says when everything up to the stop is written down");
+    feed.take_recorded(&mut rec);
+    assert_eq!(rec.iter().map(|e| (e.status, e.data1)).collect::<Vec<_>>(), [(0x90, 60)]);
+    assert!((1024 - 64..=1024).contains(&rec[0].at), "{}", rec[0].at);
+    // What is played after the stop is not part of it.
+    feed.receive(0, &[0x80, 60, 0]);
+    st.fill(&mut out, 2);
+    rec.clear();
+    feed.take_recorded(&mut rec);
+    assert!(rec.is_empty());
+}
+
+#[test]
+fn the_recorded_position_does_not_move_with_the_size_of_later_callbacks() {
+    let (mut st, tx, feed, ..) = keyboard_session();
+    tx.send(Cmd::Recording(true)).unwrap();
+    tx.send(Cmd::Play { from: 0, end: None, looped: None }).unwrap();
+    let (mut long, mut short) = (vec![0.0f32; 2048], vec![0.0f32; 256]);
+    st.fill(&mut long, 2);
+    // Arrives before a callback of 1024 frames, so it is due 1024 frames later; the callbacks
+    // that follow are 128 frames long.
+    feed.receive(0, &[0x90, 60, 100]);
+    st.fill(&mut long, 2);
+    let mut rec = Vec::new();
+    feed.take_recorded(&mut rec);
+    assert_eq!(rec.len(), 1, "written down when it is taken, not when it is played");
+    assert!((1024 - 64..=1024).contains(&rec[0].at), "{}", rec[0].at);
+    let mut sounded = false;
+    for _ in 0..40 {
+        st.fill(&mut short, 2);
+        sounded |= short.iter().any(|x| x.abs() > 0.003);
+    }
+    assert!(sounded, "and it is still played");
+    feed.take_recorded(&mut rec);
+    assert_eq!(rec.len(), 1, "once");
+}
+
+#[test]
+fn more_events_than_a_callback_can_play_are_still_all_recorded() {
+    let (mut st, tx, feed, ..) = keyboard_session();
+    tx.send(Cmd::Recording(true)).unwrap();
+    tx.send(Cmd::Play { from: 0, end: None, looped: None }).unwrap();
+    let mut out = vec![0.0f32; 2048];
+    st.fill(&mut out, 2);
+    feed.receive(0, &[0x90, 60, 100]);
+    for _ in 0..callback::MIDI_EVENTS {
+        feed.receive(0, &[0xB0, 1, 0]);
+    }
+    feed.receive(0, &[0x80, 60, 0]);
+    st.fill(&mut out, 2);
+    let mut rec = Vec::new();
+    feed.take_recorded(&mut rec);
+    assert_eq!(rec.len(), callback::MIDI_EVENTS + 2, "the take has them all");
+    assert!(!rec.iter().any(|e| e.is_lost()), "nothing is missing from it, so it is not marked incomplete");
+    assert_eq!((rec[0].status, rec.last().unwrap().status), (0x90, 0x80));
+    assert!(!heard(&mut st, 60), "what could not be played ended the port's notes");
+}

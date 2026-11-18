@@ -143,6 +143,8 @@ pub struct MidiFeed {
     recorded_lost: AtomicU32,
     /// The last recorded event was dropped: the next one is preceded by a [`RecordedMidi::LOST`].
     record_gap: AtomicBool,
+    /// Record passes whose MIDI the audio thread has finished writing down.
+    captures_done: AtomicU64,
 }
 
 impl Default for MidiFeed {
@@ -160,6 +162,7 @@ impl Default for MidiFeed {
             dropped: AtomicU64::new(0),
             recorded_lost: AtomicU32::new(0),
             record_gap: AtomicBool::new(false),
+            captures_done: AtomicU64::new(0),
         }
     }
 }
@@ -280,6 +283,19 @@ impl MidiFeed {
             self.recorded_lost.fetch_add(1, Ordering::Relaxed);
             self.record_gap.store(true, Ordering::Relaxed);
         }
+    }
+
+    /// Audio thread: recording was switched off, and everything played before that is recorded.
+    pub(crate) fn capture_done(&self) {
+        self.captures_done.fetch_add(1, Ordering::Release);
+    }
+
+    /// How many record passes the audio thread has finished capturing. It goes up by one when
+    /// the audio thread has seen the end of a pass and has written down all that was played up
+    /// to it: read it before stopping the recording, and collect the take
+    /// ([`Self::take_recorded`]) once it has changed.
+    pub fn captures_done(&self) -> u64 {
+        self.captures_done.load(Ordering::Acquire)
     }
 
     /// UI thread: how many recorded events were dropped since the last call (the UI did not
@@ -425,11 +441,13 @@ impl MidiInputs {
 
     /// Close every connection and open them again (after a device was replugged in place).
     pub fn reconnect(&mut self) {
-        // Events may pass unseen between closing and opening.
+        // Close first: once the old connections are gone, nothing more arrives through them.
+        // Only then say that their ports lost input, so that no note-on can slip in after the
+        // release it stands for; then open them again.
+        self.backend = backend::Backend::default();
         for p in self.ports.iter().filter(|p| p.open) {
             self.feed.port_lost(self.feed.ports().assign(&p.name));
         }
-        self.backend = backend::Backend::default();
         self.rescan();
     }
 }
@@ -468,14 +486,25 @@ fn through_number(name: &str) -> Option<&str> {
     name.strip_prefix("Midi Through Port-").filter(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()))
 }
 
-/// Tidy names, made unique: a second "Keys" becomes "Keys (2)". The system's loopback port is
-/// plain "Midi Through" while it is the only one, "Midi Through 0", "Midi Through 1" otherwise.
+/// The names the ports go by, kept per port. `found` lists the ports that are there now, each
+/// with what tells it apart from the others (`identity`: the system's id for the port) and the
+/// name the system gives it. A port keeps the name it got for as long as it is there, whatever
+/// happens to the others: with two keyboards called "Keys", unplugging the first leaves the
+/// second as "Keys (2)", connected, and the tracks that listen to it still do.
+///
+/// A new port gets its tidy name, made unique among the names in use: a second "Keys" becomes
+/// "Keys (2)". The system's loopback port is plain "Midi Through" while it is the only one,
+/// "Midi Through 0", "Midi Through 1" otherwise. `known` holds `(identity, name)` and loses the
+/// ports that went away.
 #[cfg(any(test, target_os = "linux", target_os = "macos", target_os = "windows"))]
-fn unique_names(raw: impl IntoIterator<Item = String>) -> Vec<String> {
-    let tidy: Vec<String> = raw.into_iter().map(|r| tidy_port_name(&r)).collect();
+fn assign_names(known: &mut Vec<(String, String)>, found: &[(String, String)]) -> Vec<String> {
+    known.retain(|(identity, _)| found.iter().any(|(f, _)| f == identity));
+    let tidy: Vec<String> = found.iter().map(|(_, raw)| tidy_port_name(raw)).collect();
     let through = tidy.iter().filter(|n| through_number(n).is_some()).count();
-    let mut out: Vec<String> = Vec::new();
-    for base in tidy {
+    for ((identity, _), base) in found.iter().zip(tidy) {
+        if known.iter().any(|(k, _)| k == identity) {
+            continue;
+        }
         let base = match through_number(&base) {
             Some(_) if through == 1 => "Midi Through".to_string(),
             Some(n) => format!("Midi Through {n}"),
@@ -483,18 +512,24 @@ fn unique_names(raw: impl IntoIterator<Item = String>) -> Vec<String> {
         };
         let mut name = base.clone();
         let mut n = 2;
-        while out.contains(&name) {
+        while known.iter().any(|(_, used)| *used == name) {
             name = format!("{base} ({n})");
             n += 1;
         }
-        out.push(name);
+        known.push((identity.clone(), name));
     }
-    out
+    found.iter().map(|(identity, _)| known.iter().find(|(k, _)| k == identity).map(|(_, name)| name.clone()).unwrap_or_default()).collect()
 }
 
+/// The names a first scan gives the ports with these system names, in order.
+#[cfg(test)]
+fn unique_names(raw: impl IntoIterator<Item = String>) -> Vec<String> {
+    let found: Vec<(String, String)> = raw.into_iter().enumerate().map(|(i, r)| (i.to_string(), r)).collect();
+    assign_names(&mut Vec::new(), &found)
+}
 #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
 mod backend {
-    use super::{MidiFeed, MidiPort, unique_names};
+    use super::{MidiFeed, MidiPort, assign_names};
     use midir::{Ignore, MidiInput, MidiInputConnection, MidiInputPort};
     use std::panic::{AssertUnwindSafe, catch_unwind};
     use std::sync::Arc;
@@ -505,7 +540,16 @@ mod backend {
     pub(super) struct Backend {
         /// Lists the ports; kept, so a rescan does not make a new client each time.
         scanner: Option<MidiInput>,
-        open: Vec<(String, MidiInputConnection<()>)>,
+        /// The name each port that is there goes by: `(identity, name)`, see `assign_names`.
+        names: Vec<(String, String)>,
+        /// The open connections: `(identity, name, connection)`.
+        open: Vec<(String, String, MidiInputConnection<()>)>,
+    }
+
+    /// What tells a port apart from another with the same name: the system's id for it (an ALSA
+    /// address, a CoreMIDI unique id, a Windows device id), with its name.
+    fn identity(port: &MidiInputPort, raw: &str) -> String {
+        format!("{}\u{1f}{raw}", port.id())
     }
 
     impl Backend {
@@ -525,18 +569,27 @@ mod backend {
                 None => MidiInput::new(CLIENT).map_err(|e| format!("MIDI is not available: {e}"))?,
             };
             let found: Vec<MidiInputPort> = scanner.ports();
-            let names = unique_names(found.iter().map(|p| scanner.port_name(p).unwrap_or_default()));
+            let listed: Vec<(String, String)> = found
+                .iter()
+                .map(|p| {
+                    let raw = scanner.port_name(p).unwrap_or_default();
+                    (identity(p, &raw), raw)
+                })
+                .collect();
+            let names = assign_names(&mut self.names, &listed);
             self.scanner = Some(scanner);
-            self.open.retain(|(n, _)| names.contains(n) && !disabled.contains(n));
+            // A connection belongs to its port, not to a name: it stays while that port is there
+            // and switched on, and no other port takes it over.
+            self.open.retain(|(id, name, _)| listed.iter().any(|(l, _)| l == id) && !disabled.contains(name));
             let mut out = Vec::with_capacity(names.len());
-            for (name, port) in names.into_iter().zip(found.iter()) {
+            for ((name, port), (id, _)) in names.into_iter().zip(found.iter()).zip(listed.iter()) {
                 let enabled = !disabled.contains(&name);
-                let mut open = self.open.iter().any(|(n, _)| *n == name);
+                let mut open = self.open.iter().any(|(i, _, _)| i == id);
                 if enabled && !open {
                     match connect(&name, port, feed) {
                         Ok(c) => {
                             log::info!("MIDI input: {name}");
-                            self.open.push((name.clone(), c));
+                            self.open.push((id.clone(), name.clone(), c));
                             open = true;
                         }
                         Err(e) => log::warn!("MIDI input {name}: {e}"),
@@ -595,6 +648,25 @@ mod tests {
             unique_names(["Midi Through:Midi Through Port-0 14:0".to_string(), "Midi Through:Midi Through Port-1 14:1".into()]),
             ["Midi Through 0", "Midi Through 1"]
         );
+    }
+
+    #[test]
+    fn a_port_keeps_its_name_when_another_with_the_same_name_goes_away() {
+        let port = |id: &str, raw: &str| (id.to_string(), raw.to_string());
+        let mut known = Vec::new();
+        // Two keyboards that call themselves the same, and a pad.
+        let (a, b, pad) = (port("20:0", "Keys 20:0"), port("24:0", "Keys 24:0"), port("28:0", "Pad 28:0"));
+        assert_eq!(assign_names(&mut known, &[a.clone(), b.clone(), pad.clone()]), ["Keys", "Keys (2)", "Pad"]);
+        // The first is unplugged: the second is still "Keys (2)", so its connection and the
+        // tracks that listen to it stay with it.
+        assert_eq!(assign_names(&mut known, &[b.clone(), pad.clone()]), ["Keys (2)", "Pad"]);
+        // Another "Keys" arrives (the first one again, at a new address): the free name is its.
+        let c = port("32:0", "Keys 32:0");
+        assert_eq!(assign_names(&mut known, &[b.clone(), pad.clone(), c.clone()]), ["Keys (2)", "Pad", "Keys"]);
+        // The order the system lists them in does not matter.
+        assert_eq!(assign_names(&mut known, &[c, pad, b]), ["Keys", "Pad", "Keys (2)"]);
+        assert_eq!(known.len(), 3);
+        assert!(assign_names(&mut known, &[]).is_empty() && known.is_empty(), "ports that went away are forgotten");
     }
 
     #[test]

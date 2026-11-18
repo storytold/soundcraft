@@ -44,6 +44,7 @@ impl SoundApp {
             midi_scan_at: 0.0,
             midi_take: Vec::new(),
             midi_take_lost: 0,
+            midi_take_inputs: Vec::new(),
             lost_shown: 0,
             take_plan: None,
             ui: UiState::default(),
@@ -213,10 +214,7 @@ impl SoundApp {
         self.write_automation();
         self.autosave();
         self.service_midi(self.uptime);
-        if self.recorder.is_none()
-            && !self.recorder_failed
-            && self.engine.session().tracks.iter().any(|t| t.mixer.input_monitor || t.mixer.record_arm)
-        {
+        if self.recorder.is_none() && !self.recorder_failed && audio::wants_audio_input(self.engine.session()) {
             self.ensure_input();
         }
         // Autosave and the macOS menu bar only run on frames, and plugin editors are native windows egui never hears from.

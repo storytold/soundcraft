@@ -1,4 +1,5 @@
 use super::clips::Key;
+use super::live_midi::LiveNotes;
 use super::strip::{PluginSlot, Strip};
 use super::{ClipContent, CtrlKind, Range, SampleSource, Samples, Session, SourceAudio, Track};
 use std::sync::Arc;
@@ -18,7 +19,12 @@ fn midi_offset(s: &Session, t: &Track) -> i64 {
 }
 
 /// Send note on/offs and controllers for MIDI clips overlapping the block.
-pub(crate) fn schedule_notes(s: &Session, t: &Track, pos: Samples, frames: usize, inst: &mut PluginSlot, held: &mut Vec<u8>) {
+///
+/// `live` holds the notes played live on the same instrument. Instruments end notes by pitch, so
+/// a clip note-off is not sent while a live key holds that pitch: the key's own release ends it.
+/// (Clip events of a block go to the instrument before its live events, so when both end in one
+/// block the note ends at the earlier of the two.)
+pub(crate) fn schedule_notes(s: &Session, t: &Track, pos: Samples, frames: usize, inst: &mut PluginSlot, held: &mut Vec<u8>, live: &LiveNotes) {
     let sr = s.sample_rate;
     // MIDI Track Offsets: the track's notes sound `offset` samples later (earlier if negative), so
     // the block looks that far back into the clips.
@@ -72,7 +78,9 @@ pub(crate) fn schedule_notes(s: &Session, t: &Track, pos: Samples, frames: usize
                 }
             }
             if off >= pos && off < end {
-                inst.plugin.note_off(usize::try_from(off - pos).unwrap_or(0), n.pitch);
+                if !live.holds(n.pitch) {
+                    inst.plugin.note_off(usize::try_from(off - pos).unwrap_or(0), n.pitch);
+                }
                 held.retain(|p| *p != n.pitch);
             }
         }

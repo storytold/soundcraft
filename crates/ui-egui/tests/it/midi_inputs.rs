@@ -118,3 +118,63 @@ fn the_monitor_shows_what_arrives_from_a_device() {
     h.run_steps(2);
     h.get_by_label_contains("note C3 on, velocity 100, channel 3");
 }
+
+/// The app with a connected MIDI device, an instrument track and an audio track, none armed yet.
+fn recording_harness() -> (Harness<'static, SoundApp>, u64, u64) {
+    let mut h = harness(&[]);
+    let new =
+        |h: &mut Harness<'_, SoundApp>, params: serde_json::Value| h.state_mut().run("track.new", params).unwrap()["tracks"][0].as_u64().unwrap();
+    let synth = new(&mut h, serde_json::json!({"name": "Synth", "kind": "instrument"}));
+    let vox = new(&mut h, serde_json::json!({"name": "Vox", "format": "mono"}));
+    h.state_mut().ui.show_playback_engine = false;
+    h.state_mut().ui.show_transport = true;
+    h.run_steps(3);
+    (h, synth, vox)
+}
+
+fn arm(h: &mut Harness<'_, SoundApp>, track: u64, on: bool) {
+    h.state_mut().run("mix.record_arm", serde_json::json!({"tracks": [track], "value": on})).unwrap();
+    h.run_steps(2);
+}
+
+#[test]
+fn a_pass_with_only_midi_tracks_starts_without_an_audio_input() {
+    let (mut h, synth, _) = recording_harness();
+    arm(&mut h, synth, true);
+    assert!(h.state().recorder.is_none(), "arming an instrument track does not open the audio input");
+    h.get_by_label("transport.record").click();
+    h.run_steps(3);
+    assert!(h.state().engine.transport.recording, "{}", h.state().ui.status);
+    assert!(h.state().recorder.is_none());
+}
+
+#[test]
+fn a_mixed_pass_whose_audio_cannot_be_recorded_is_refused_with_the_reason() {
+    let (mut h, synth, vox) = recording_harness();
+    arm(&mut h, synth, true);
+    arm(&mut h, vox, true);
+    // This app has no audio engine, so the audio track's take cannot be made. MIDI is ready,
+    // but recording only the instrument track would lose the audio without a word.
+    h.get_by_label("transport.record").click();
+    h.run_steps(3);
+    assert!(!h.state().engine.transport.recording);
+    let status = h.state().ui.status.clone();
+    assert!(status.starts_with("Cannot record: ") && status.contains("no audio input device"), "{status}");
+    // Without the audio track in record, the same pass starts.
+    arm(&mut h, vox, false);
+    h.get_by_label("transport.record").click();
+    h.run_steps(3);
+    assert!(h.state().engine.transport.recording, "{}", h.state().ui.status);
+}
+
+#[test]
+fn a_midi_pass_without_a_connected_device_says_so() {
+    let (mut h, synth, _) = recording_harness();
+    arm(&mut h, synth, true);
+    h.state_mut().midi_inputs.as_mut().unwrap().set_port_names(Vec::new());
+    h.state_mut().midi_inputs.as_mut().unwrap().rescan();
+    h.get_by_label("transport.record").click();
+    h.run_steps(3);
+    assert!(!h.state().engine.transport.recording);
+    assert!(h.state().ui.status.contains("no MIDI input device is connected"), "{}", h.state().ui.status);
+}

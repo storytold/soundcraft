@@ -170,6 +170,8 @@ pub(crate) struct LiveNotes {
     owners: [Owner; MAX_OWNERS],
     /// Controllers, pitch bend, aftertouch or a program change were passed to the instrument.
     controllers: bool,
+    /// Pitches the track's clips hold on the same instrument right now ([`Self::set_clip_notes`]).
+    clip: NoteSet,
 }
 
 impl LiveNotes {
@@ -188,8 +190,34 @@ impl LiveNotes {
         self.controllers || self.active()
     }
 
-    fn sounding(&self, note: u8) -> bool {
+    /// Whether a live owner holds `note` (a key down or the pedal). The clips ask before they end
+    /// a note of the same pitch: instruments release by pitch, so that note-off would silence
+    /// the key that is still down.
+    pub(crate) fn holds(&self, note: u8) -> bool {
         self.owners.iter().any(|o| o.holds(note))
+    }
+
+    /// The pitches the track's clips hold on the instrument, told before each block's live
+    /// events. A live release of such a pitch is not sent on: the clip's note goes on sounding
+    /// and ends with its own note-off.
+    pub(crate) fn set_clip_notes(&mut self, held: &[u8]) {
+        self.clip = NoteSet::default();
+        for &note in held {
+            self.clip.set(note & 0x7F, true);
+        }
+    }
+
+    /// Whether anything still holds `note` on the instrument: a live owner or a clip.
+    fn sounding(&self, note: u8) -> bool {
+        self.clip.has(note) || self.holds(note)
+    }
+
+    /// The track's input changed: owners it no longer takes would never be heard releasing, so
+    /// what they hold ends now. Owners it still takes stay.
+    fn drop_unaccepted(&mut self, input: &MidiInput<'_>, ports: Option<&MidiPorts>, inst: &mut dyn Plugin) {
+        if self.active() {
+            self.drop_owners(inst, 0, |o| !input.accepts(ports.and_then(|p| p.name(o.port)), o.channel));
+        }
     }
 
     /// The place of an owner: its own, else the shared one when it exists.
@@ -245,10 +273,8 @@ impl LiveNotes {
 
     /// Play the block's events that `t` listens to.
     pub(crate) fn play(&mut self, t: &Track, inst: &mut dyn Plugin, events: &[LiveMidi], ports: Option<&MidiPorts>, frames: usize) {
-        if events.is_empty() {
-            return;
-        }
         let input = MidiInput::of(&t.mixer.input);
+        self.drop_unaccepted(&input, ports, inst);
         for e in events {
             let channel = e.channel();
             if !input.accepts(ports.and_then(|p| p.name(e.port)), channel) {
@@ -358,6 +384,64 @@ mod tests {
         let mut log = Log::default();
         live.play(s.track(id).unwrap(), &mut log, events, None, 512);
         log.0
+    }
+
+    #[test]
+    fn changing_the_track_input_releases_the_owners_it_no_longer_takes() {
+        let ports = MidiPorts::default();
+        let (keys, pad) = (ports.assign("Keys"), ports.assign("Pad"));
+        let mut s = soundcraft_model::Session::default();
+        let id = s.add_track(soundcraft_model::TrackKind::Instrument, soundcraft_model::ChannelFormat::Stereo, None);
+        let mut live = LiveNotes::default();
+        let mut step = |s: &soundcraft_model::Session, events: &[LiveMidi]| {
+            let mut log = Log::default();
+            live.play(s.track(id).unwrap(), &mut log, events, Some(&ports), 512);
+            log.0
+        };
+        // All devices: Keys holds 60 (with its pedal down, and 61 sustained), Pad holds 62 and 60.
+        let held = [
+            ev(keys, 0xB0, 64, 127),
+            ev(keys, 0x90, 60, 100),
+            ev(keys, 0x90, 61, 100),
+            ev(keys, 0x80, 61, 0),
+            ev(pad, 0x91, 62, 100),
+            ev(pad, 0x91, 60, 100),
+        ];
+        assert_eq!(step(&s, &held).len(), 4);
+        // The track now listens to Pad only. Keys' notes end at once, with no event at all; the
+        // pitch Pad also holds stays.
+        s.track_mut(id).unwrap().mixer.input = MidiInput { device: Some("Pad"), channel: None }.route();
+        assert_eq!(step(&s, &[]), [(false, 61)]);
+        // Keys' late releases are not for this track any more and change nothing.
+        assert_eq!(step(&s, &[ev(keys, 0x80, 60, 0), ev(keys, 0xB0, 64, 0)]), []);
+        // Pad on another channel: its channel-2 notes end.
+        s.track_mut(id).unwrap().mixer.input = MidiInput { device: Some("Pad"), channel: Some(4) }.route();
+        assert_eq!(step(&s, &[]), [(false, 60), (false, 62)]);
+        // The same choice again releases nothing that is still taken.
+        assert_eq!(step(&s, &[ev(pad, 0x94, 70, 100)]), [(true, 70)]);
+        assert_eq!(step(&s, &[]), []);
+        assert_eq!(step(&s, &[ev(pad, 0x84, 70, 0)]), [(false, 70)]);
+    }
+
+    #[test]
+    fn a_live_release_leaves_a_pitch_that_a_clip_holds() {
+        let mut live = LiveNotes::default();
+        live.set_clip_notes(&[60]);
+        assert_eq!(play(&mut live, &[ev(0, 0x90, 60, 100), ev(0, 0x90, 64, 100)]), [(true, 60), (true, 64)]);
+        assert!(live.holds(60) && !live.holds(61));
+        assert_eq!(play(&mut live, &[ev(0, 0x80, 60, 0), ev(0, 0x80, 64, 0)]), [(false, 64)], "the clip's note goes on");
+        // The same for the pedal, All Notes Off and a port that lost its input.
+        play(&mut live, &[ev(0, 0xB0, 64, 127), ev(0, 0x90, 60, 100), ev(0, 0x80, 60, 0)]);
+        assert_eq!(play(&mut live, &[ev(0, 0xB0, 64, 0)]), []);
+        play(&mut live, &[ev(0, 0x90, 60, 100), ev(0, 0x90, 67, 100)]);
+        assert_eq!(play(&mut live, &[ev(0, 0xB0, 123, 0)]), [(false, 67)]);
+        play(&mut live, &[ev(0, 0x90, 60, 100)]);
+        let mut log = Log::default();
+        live.release_ports(midi_port_bit(0), &mut log);
+        assert!(log.0.is_empty());
+        // Once the clip's note is over, a live release ends the pitch as usual.
+        live.set_clip_notes(&[]);
+        assert_eq!(play(&mut live, &[ev(0, 0x90, 60, 100), ev(0, 0x80, 60, 0)]), [(true, 60), (false, 60)]);
     }
 
     #[test]

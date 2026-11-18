@@ -159,3 +159,33 @@ pub(super) fn feed_meter(d: &mut MeterDisplay, peak: [f32; 2], gr: f32, dt: f32)
     }
     d.gr = if gr > d.gr { gr } else { d.gr * fall };
 }
+
+/// Whether a track needs the audio input opened: an audio track (or an aux) that is
+/// record-enabled or input-monitored. A MIDI or instrument track listens to MIDI devices, so
+/// arming one does not open an audio device or complain that there is none.
+pub(super) fn wants_audio_input(s: &soundcraft_model::Session) -> bool {
+    s.tracks.iter().any(|t| !t.kind.is_midi() && (t.mixer.input_monitor || t.mixer.record_arm))
+}
+
+#[cfg(test)]
+mod audio_input_tests {
+    use super::wants_audio_input;
+    use soundcraft_model::{ChannelFormat, Session, TrackKind};
+
+    #[test]
+    fn only_audio_tracks_ask_for_the_audio_input() {
+        let mut s = Session::default();
+        let synth = s.add_track(TrackKind::Instrument, ChannelFormat::Stereo, None);
+        let midi = s.add_track(TrackKind::Midi, ChannelFormat::Stereo, None);
+        let vox = s.add_track(TrackKind::Audio, ChannelFormat::Mono, None);
+        assert!(!wants_audio_input(&s));
+        s.track_mut(synth).unwrap().mixer.record_arm = true;
+        s.track_mut(midi).unwrap().mixer.input_monitor = true;
+        assert!(!wants_audio_input(&s), "armed and monitored MIDI tracks listen to MIDI devices");
+        s.track_mut(vox).unwrap().mixer.input_monitor = true;
+        assert!(wants_audio_input(&s));
+        s.track_mut(vox).unwrap().mixer.input_monitor = false;
+        s.track_mut(vox).unwrap().mixer.record_arm = true;
+        assert!(wants_audio_input(&s));
+    }
+}

@@ -2,7 +2,7 @@
 
 use super::{Clip, Engine, Range, Samples, Session, TrackId, TrackKind};
 use soundcraft_midi::{CtrlEvent, CtrlKind, Note, Sequence};
-use soundcraft_model::{ClipId, MidiInput};
+use soundcraft_model::{ClipId, MidiInput, Route};
 use std::collections::HashMap;
 
 /// A MIDI message played during a record pass, at its timeline position; or, with the status
@@ -75,7 +75,25 @@ fn midi_take_sequence(s: &Session, input: &MidiInput<'_>, range: Range, events: 
     // Keys down: (device, channel, pitch) -> (start tick, velocity).
     let mut down: HashMap<(u8, u8, u8), (i64, u8)> = HashMap::new();
     let close = |seq: &mut Sequence, (_, channel, pitch): (u8, u8, u8), (start, velocity): (i64, u8), end: i64, release: u8| {
-        seq.notes.push(Note { pitch, velocity, release_velocity: release, channel, start, length: end.saturating_sub(start).max(1) });
+        let note = |start: i64, end: i64, release: u8| Note {
+            pitch,
+            velocity,
+            release_velocity: release,
+            channel,
+            start,
+            length: end.saturating_sub(start).max(1),
+        };
+        if end >= start {
+            seq.notes.push(note(start, end, release));
+            return;
+        }
+        // The release is earlier on the timeline than the key press: the pass wrapped in between
+        // (loop recording goes back to the start of the loop). The note is held to the end of the
+        // pass and goes on from its start, as it was played.
+        seq.notes.push(note(start, end_tick, 64));
+        if end > 0 {
+            seq.notes.push(note(0, end, release));
+        }
     };
     for e in events.iter().take(MAX_MIDI_TAKE_EVENTS) {
         if e.at < range.start || e.at >= range.end {
@@ -133,6 +151,27 @@ pub const MAX_MIDI_TAKE_EVENTS: usize = 1 << 20;
 /// no clip. One undo step ("Record"); with `same_pass` the clips join the step the audio takes
 /// of this pass already made. The result says where input was dropped during the pass.
 pub fn add_midi_recording(e: &mut Engine, range: Range, events: &[MidiTakeEvent], devices: &[String], same_pass: bool) -> MidiTake {
+    add_midi_recording_from(e, range, events, devices, &[], same_pass)
+}
+
+/// The MIDI inputs of the record-enabled MIDI and instrument tracks, to keep from the start of a
+/// record pass and hand to [`add_midi_recording_from`] at its end.
+pub fn midi_record_inputs(e: &Engine) -> Vec<(TrackId, Route)> {
+    e.session().tracks.iter().filter(|t| records_midi_on(t)).map(|t| (t.id, t.mixer.input.clone())).collect()
+}
+
+/// [`add_midi_recording`] with the MIDI inputs the tracks had when the pass started (`inputs`,
+/// from [`midi_record_inputs`]). A track listed there takes the events of that input for the whole
+/// pass, so changing its device or channel while recording does not throw away what it already
+/// recorded; the change applies from the next pass. A track not listed uses its current input.
+pub fn add_midi_recording_from(
+    e: &mut Engine,
+    range: Range,
+    events: &[MidiTakeEvent],
+    devices: &[String],
+    inputs: &[(TrackId, Route)],
+    same_pass: bool,
+) -> MidiTake {
     let before = e.session_arc();
     let mut out = MidiTake::default();
     if range.len() <= 0 {
@@ -146,7 +185,10 @@ pub fn add_midi_recording(e: &mut Engine, range: Range, events: &[MidiTakeEvent]
         s.tracks
             .iter()
             .filter(|t| records_midi_on(t))
-            .map(|t| (t.id, t.name.clone(), midi_take_sequence(s, &MidiInput::of(&t.mixer.input), range, events, devices)))
+            .map(|t| {
+                let route = inputs.iter().find(|(id, _)| *id == t.id).map_or(&t.mixer.input, |(_, route)| route);
+                (t.id, t.name.clone(), midi_take_sequence(s, &MidiInput::of(route), range, events, devices))
+            })
             .filter(|(_, _, seq)| !seq.notes.is_empty() || !seq.ctrls.is_empty())
             .collect()
     };
@@ -291,6 +333,65 @@ mod tests {
         // Controller data is masked too: a pitch bend of two 0xFF bytes is full up, not more.
         let seq = midi_take_sequence(&s, &MidiInput::default(), range, &[ev(0, 0, 0xE0, 0xFF, 0xFF), ev(0, 0, 0xB0, 0x87, 0xFF)], &[]);
         assert_eq!(seq.ctrls.iter().map(|c| (c.kind, c.value)).collect::<Vec<_>>(), [(CtrlKind::PitchBend, 8191), (CtrlKind::Cc(7), 127)]);
+    }
+
+    #[test]
+    fn a_note_held_across_the_loop_point_is_split_at_it() {
+        // A loop of four quarter notes (3840 ticks), recorded over several times: the timeline
+        // position goes back to the start, so a release can be earlier than its key press.
+        let s = Session::default();
+        let (q, range) = (24_000, Range::new(0, 96_000));
+        let events = [
+            ev(q / 2, 0, 0x90, 64, 100), // within one time round: an ordinary note
+            ev(q, 0, 0x80, 64, 0),
+            ev(3 * q + q / 2, 0, 0x90, 60, 100), // pressed half a quarter before the loop point…
+            ev(q / 2, 0, 0x80, 60, 40),          // …released half a quarter after it
+            ev(3 * q, 0, 0x90, 67, 100),         // pressed, then pressed again after the loop point
+            ev(q, 0, 0x90, 67, 90),
+            ev(2 * q, 0, 0x80, 67, 0),
+            ev(3 * q, 1, 0x90, 72, 100), // its device loses input after the loop point
+            ev(q, 1, MidiTakeEvent::LOST, 0, 0),
+            ev(3 * q, 0, 0x90, 48, 100), // released exactly at the loop start: nothing after it
+            ev(0, 0, 0x80, 48, 0),
+        ];
+        let seq = midi_take_sequence(&s, &MidiInput::default(), range, &events, &[]);
+        let mut got = notes_of(&seq);
+        got.sort_by_key(|n| (n.1, n.2));
+        let want = [
+            (0, 48, 2880, 960, 100, 64),
+            (0, 60, 0, 480, 100, 40),    // from the loop start to the release
+            (0, 60, 3360, 480, 100, 64), // from the key press to the loop point
+            (0, 64, 480, 480, 100, 0),
+            (0, 67, 0, 960, 100, 64), // the first press, carried over the loop point…
+            (0, 67, 960, 960, 90, 0), // …ends where the key is pressed again
+            (0, 67, 2880, 960, 100, 64),
+            (0, 72, 0, 960, 100, 64),
+            (0, 72, 2880, 960, 100, 64),
+        ];
+        assert_eq!(got, want);
+        assert!(seq.notes.iter().all(|n| n.start >= 0 && n.start + n.length <= 3840), "every note is inside the loop");
+    }
+
+    #[test]
+    fn a_track_records_the_input_it_had_when_the_pass_started() {
+        let mut e = Engine::default();
+        let t = armed(&mut e, "Keys", "MIDI:*:A");
+        let other = armed(&mut e, "Other", "MIDI:*:B");
+        let devices = ["A".to_string(), "B".to_string()];
+        let range = Range::new(0, 48_000);
+        let events = [ev(100, 0, 0x90, 60, 100), ev(200, 0, 0x80, 60, 0), ev(300, 1, 0x90, 72, 100), ev(400, 1, 0x80, 72, 0)];
+        let inputs = midi_record_inputs(&e);
+        assert_eq!(inputs.len(), 2);
+        // During the pass the first track is switched to device B.
+        e.execute("track.input", &json!({"tracks": [t.0], "input": "MIDI:*:B"})).unwrap();
+        let take = add_midi_recording_from(&mut e, range, &events, &devices, &inputs, false);
+        assert_eq!(take.clips.len(), 2);
+        assert_eq!(notes_of(&sequence(&e, t, range)).iter().map(|n| n.1).collect::<Vec<_>>(), [60], "what it recorded from A is kept");
+        assert_eq!(notes_of(&sequence(&e, other, range)).iter().map(|n| n.1).collect::<Vec<_>>(), [72]);
+        // The next pass (and a track that was not in the list) uses the input as it is now.
+        e.run("edit.undo").unwrap();
+        add_midi_recording_from(&mut e, range, &events, &devices, &[], false);
+        assert_eq!(notes_of(&sequence(&e, t, range)).iter().map(|n| n.1).collect::<Vec<_>>(), [72]);
     }
 
     #[test]

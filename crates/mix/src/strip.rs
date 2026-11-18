@@ -318,10 +318,19 @@ fn render_instrument(s: &Session, t: &Track, strip: &mut Strip, live: &LiveInput
         if std::mem::take(&mut strip.chase) {
             chase_controllers(s, t, pos, inst);
         }
-        // Stopped: the clips are silent, only live MIDI input plays.
         if !live.monitor_only {
-            schedule_notes(s, t, pos, frames, inst, &mut strip.held);
+            schedule_notes(s, t, pos, frames, inst, &mut strip.held, &strip.live);
+        } else {
+            // Stopped: the clips are silent, only live MIDI input plays. Playback that ran to its
+            // end left the clips' notes without their note-offs: end them here, except a pitch a
+            // live key still holds.
+            for note in strip.held.drain(..) {
+                if !strip.live.holds(note) {
+                    inst.plugin.note_off(0, note);
+                }
+            }
         }
+        strip.live.set_clip_notes(&strip.held);
         if midi_thru(t) {
             strip.live.release_ports(live.midi_lost, inst.plugin.as_mut());
             strip.live.play(t, inst.plugin.as_mut(), live.midi, live.ports, frames);

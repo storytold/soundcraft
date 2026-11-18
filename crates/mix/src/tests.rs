@@ -1850,3 +1850,63 @@ fn muted_inactive_and_solo_shaded_tracks_do_not_sound_live_input() {
     let tail = (2..100).map(|b| peak(&live_block(&mut eng, &s, b * 512, &[]))).last().unwrap();
     assert!(tail < 1e-4, "{tail}");
 }
+
+/// The peak of each of `blocks` playing blocks from `first`, with `events` in block `at`.
+fn live_levels(eng: &mut MixEngine, s: &Session, first: i64, blocks: i64, at: i64, events: &[(u32, u8, u8, u8)]) -> Vec<f32> {
+    (first..first + blocks).map(|b| peak(&live_block(eng, s, b * 512, if b == at { events } else { &[] }))).collect()
+}
+
+#[test]
+fn a_clip_note_and_a_live_key_on_one_pitch_do_not_cut_each_other() {
+    // The clip plays C4 (60) from 0 to 24 000 samples: blocks 0 to 46.
+    let mut s = synth_session(-6.0);
+    s.tracks[0].mixer.record_arm = true;
+    // The key goes down during the clip's note and stays down past its end: it keeps sounding.
+    let mut eng = MixEngine::new(48_000.0, 512);
+    let levels = live_levels(&mut eng, &s, 0, 200, 20, &[(0, 0x90, 60, 100)]);
+    assert!(levels[199] > 0.01, "the clip's note-off silenced the key that is still down: {}", levels[199]);
+    // The key's release then ends it.
+    let after = live_levels(&mut eng, &s, 200, 200, 200, &[(0, 0x80, 60, 0)]);
+    assert!(after[199] < 1e-4, "{}", after[199]);
+    // The other way round: a key pressed and released during the clip's note does not cut it.
+    let mut eng = MixEngine::new(48_000.0, 512);
+    live_levels(&mut eng, &s, 0, 10, 5, &[(0, 0x90, 60, 100)]);
+    let during = live_levels(&mut eng, &s, 10, 30, 10, &[(0, 0x80, 60, 0)]);
+    assert!(during[29] > 0.01, "the live release cut the clip's note: {}", during[29]);
+    // And the clip's own note-off ends it on time.
+    let end = live_levels(&mut eng, &s, 40, 160, -1, &[]);
+    assert!(end[159] < 1e-4, "{}", end[159]);
+    // Another pitch is not affected by any of this.
+    let mut eng = MixEngine::new(48_000.0, 512);
+    live_levels(&mut eng, &s, 0, 60, 5, &[(0, 0x90, 72, 100)]);
+    assert!(live_levels(&mut eng, &s, 60, 100, -1, &[])[99] > 0.01, "the other key is still down");
+}
+
+#[test]
+fn clip_notes_end_when_playback_runs_out_while_the_track_is_still_monitored() {
+    let mut s = synth_session(-6.0);
+    s.tracks[0].mixer.record_arm = true;
+    let mut out = vec![vec![0.0f32; 512]; 2];
+    // Playback stops by itself in the middle of the clip's note (no reset, as at a range end),
+    // and the armed track goes on being rendered for live input.
+    let stopped = |eng: &mut MixEngine, out: &mut Vec<Vec<f32>>, live: &[LiveMidi]| {
+        eng.monitor_only = true;
+        eng.midi.clear();
+        eng.midi.extend_from_slice(live);
+        eng.render(&s, 5_120, 512, out);
+        eng.midi.clear();
+        peak(&out[0])
+    };
+    let mut eng = MixEngine::new(48_000.0, 512);
+    assert!(live_levels(&mut eng, &s, 0, 10, -1, &[])[9] > 0.01);
+    let tail = (0..200).map(|_| stopped(&mut eng, &mut out, &[])).last().unwrap();
+    assert!(tail < 1e-4, "the clip's note was left on: {tail}");
+    // A key held on the same pitch at that moment stays, and ends with its own release.
+    let mut eng = MixEngine::new(48_000.0, 512);
+    live_levels(&mut eng, &s, 0, 10, 5, &[(0, 0x90, 60, 100)]);
+    let held = (0..200).map(|_| stopped(&mut eng, &mut out, &[])).last().unwrap();
+    assert!(held > 0.01, "{held}");
+    stopped(&mut eng, &mut out, &[LiveMidi { offset: 0, port: 0, status: 0x80, data1: 60, data2: 0 }]);
+    let released = (0..200).map(|_| stopped(&mut eng, &mut out, &[])).last().unwrap();
+    assert!(released < 1e-4, "{released}");
+}

@@ -108,19 +108,23 @@ impl SoundApp {
         if audio_tracks {
             self.ensure_input();
         }
-        let audio = if audio_tracks { self.arm_recorder() } else { Err("no audio track is record-enabled".to_string()) };
-        let takes = match audio {
-            Ok(takes) => takes,
-            // MIDI alone still makes a pass.
-            Err(_) if midi_ready => Vec::new(),
-            Err(err) => {
-                self.ui.status = if midi_tracks && !audio_tracks {
-                    crate::localization::text("Cannot record: no MIDI input device is connected (Setup > Playback Engine lists them)").into()
-                } else {
-                    crate::localized_format!("Cannot record: {err}", err = err)
-                };
-                return;
+        let takes = if audio_tracks {
+            // An audio track is record-enabled: its audio has to be recordable. A pass that would
+            // quietly record only the MIDI tracks is refused, with the reason.
+            match self.arm_recorder() {
+                Ok(takes) => takes,
+                Err(err) => {
+                    self.ui.status = crate::localized_format!("Cannot record: {err}", err = err);
+                    return;
+                }
             }
+        } else if midi_ready {
+            // MIDI alone makes a pass.
+            Vec::new()
+        } else {
+            self.ui.status =
+                crate::localization::text("Cannot record: no MIDI input device is connected (Setup > Playback Engine lists them)").into();
+            return;
         };
         self.lost_shown = 0;
         self.begin_midi_take();
@@ -214,9 +218,12 @@ impl SoundApp {
 
     fn finish_recording(&mut self) {
         self.engine.transport.recording = false;
+        let midi_pass = self.midi_pass_mark();
         if let Some(p) = &self.player {
             p.set_recording(false);
         }
+        // The audio thread writes down what was played up to the stop; the clips wait for that.
+        self.await_midi_capture(midi_pass);
         // Where the pass ended: the audio engine's own position is the freshest.
         let stopped_at = self.player.as_ref().map_or(self.engine.transport.position, |p| p.position().max(self.engine.transport.position));
         let plan = self.take_plan.take();
