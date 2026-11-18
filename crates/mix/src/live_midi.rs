@@ -382,6 +382,35 @@ impl LiveNotes {
         }
     }
 
+    /// A live key takes `note` at sample `at`. If no live owner held it since one let go
+    /// earlier in the block, what happened in between is settled now: the clips' held back
+    /// note-offs of that stretch are sent where they were (the clip's note ended there, and the
+    /// instrument gets to release it before the new press), and when the clips held nothing by
+    /// then, the note ends where the key went up. Held back note-offs that come later stay held
+    /// back: the key is down again.
+    fn press_settles_clip_offs(&mut self, inst: &mut dyn Plugin, at: usize, note: u8) {
+        let n = self.clip_offs_len;
+        let Some(released) = self.clip_offs.iter().take(n).filter(|(pitch, ..)| *pitch == note).map(|(.., r)| *r).filter(|r| *r != usize::MAX).max()
+        else {
+            return;
+        };
+        let (mut sent, mut later) = (false, false);
+        for entry in self.clip_offs.iter_mut().take(n).filter(|(pitch, ..)| *pitch == note) {
+            if entry.1 >= released && entry.1 < at {
+                inst.note_off(entry.1, note);
+                // Done with: no pitch has this number.
+                entry.0 = u8::MAX;
+                sent = true;
+            } else {
+                later |= entry.1 >= at;
+                entry.2 = usize::MAX;
+            }
+        }
+        if !sent && !later && !self.clip.has(note) {
+            inst.note_off(released, note);
+        }
+    }
+
     /// The block's live events are played: send the note-offs that go with the clips' held back
     /// ones. A pitch a live key holds again, or a clip, gets none (that owner ends it). For a
     /// pitch nobody holds, the clips' note-offs from where the last key went up are sent where
@@ -393,7 +422,7 @@ impl LiveNotes {
         for (i, &(note, _, released)) in offs.iter().take(n).enumerate() {
             // Each pitch once, at its first entry; not one no live owner let go of.
             let first = offs.iter().take(i).all(|(pitch, ..)| *pitch != note);
-            if !first || released == usize::MAX || self.sounding(note) {
+            if !first || note == u8::MAX || released == usize::MAX || self.sounding(note) {
                 continue;
             }
             // The last time a live owner let go of it in this block.
@@ -636,6 +665,7 @@ impl LiveNotes {
                     let Some(o) = self.place(e.port, channel).and_then(|i| self.owners.get_mut(i)) else { continue };
                     o.down.set(d1, true);
                     o.sustained.set(d1, false);
+                    self.press_settles_clip_offs(inst, at, d1);
                     inst.note_on(at, d1, d2);
                 }
                 0x80 | 0x90 => {
@@ -837,6 +867,12 @@ mod tests {
         // or it would end the new press. The key going up once more ends the note there, or at
         // the clip's note-off when that is later.
         assert_eq!(block(&[400], &[at(32, 0x80), at(200, 0x90)]), (vec![], true));
+        // The key goes up, the clip's note ends, and the key goes down again: the clip's
+        // note-off is sent where it was, so the instrument lets go before the new press. When
+        // the clip's note had ended before the key went up, the note ends where the key went up.
+        assert_eq!(block(&[100], &[at(50, 0x80), at(200, 0x90)]), (vec![100], true));
+        assert_eq!(block(&[20], &[at(50, 0x80), at(200, 0x90)]), (vec![50], true));
+        assert_eq!(block(&[100], &[at(50, 0x80), at(200, 0x90), at(300, 0x80)]), (vec![100, 300], false));
         assert_eq!(block(&[400], &[at(32, 0x80), at(200, 0x90), at(300, 0x80)]), (vec![400], false));
         assert_eq!(block(&[400], &[at(32, 0x80), at(200, 0x90), at(450, 0x80)]), (vec![450], false));
         // Two clip notes of the pitch end in the block, at 100 and at 400 (the second started in

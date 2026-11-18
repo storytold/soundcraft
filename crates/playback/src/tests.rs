@@ -1820,3 +1820,76 @@ fn an_overflow_before_stop_whose_mark_never_came_is_in_the_take_though_an_older_
     let port0: Vec<(u8, u8)> = rec.iter().filter(|e| e.port == 0).map(|e| (e.status, e.data1)).collect();
     assert_eq!(port0, [(lost, 0), (0x90, 64), (lost, 0)], "the key whose release was dropped has its end");
 }
+
+#[test]
+fn a_loss_in_a_pass_begun_while_the_queue_is_being_read_is_written_into_the_take() {
+    let (mut st, tx, feed, ..) = keyboard_session();
+    tx.send(Cmd::Play { from: 0, end: None, looped: None }).unwrap();
+    let mut out = vec![0.0f32; 2048];
+    st.fill(&mut out, 2);
+    // The callback has seen that no pass is begun. Before it takes the queue in: a port is
+    // lost (not part of the pass), Record, a key goes down, and its port is lost.
+    let (f, tx2) = (Arc::clone(&feed), tx.clone());
+    let mut once = true;
+    st.before_capture = Some(Box::new(move || {
+        if std::mem::take(&mut once) {
+            f.set_clock(1_000);
+            f.port_lost(1);
+            f.set_clock(2_000);
+            f.begin_pass();
+            let _ = tx2.send(Cmd::Recording(true, 0));
+            f.set_clock(3_000);
+            f.receive(0, &[0x90, 62, 100]);
+            f.set_clock(4_000);
+            f.port_lost(0);
+        }
+    }));
+    st.fill(&mut out, 2);
+    let mut rec = Vec::new();
+    feed.take_recorded(&mut rec);
+    let lost = midi::RecordedMidi::LOST;
+    assert_eq!(
+        rec.iter().map(|e| (e.port, e.status, e.data1)).collect::<Vec<_>>(),
+        [(0, 0x90, 62), (0, lost, 0)],
+        "the key ends where its port went"
+    );
+}
+
+#[test]
+fn a_pass_started_and_ended_by_the_commands_of_one_callback_keeps_what_was_played_in_it() {
+    let (mut st, tx, feed, ..) = keyboard_session();
+    tx.send(Cmd::Play { from: 0, end: None, looped: None }).unwrap();
+    let mut out = vec![0.0f32; 2048];
+    st.fill(&mut out, 2);
+    // Record while playing. After the callback has read the MIDI queue, a key goes down and
+    // recording is ended: both commands are read by this one callback.
+    feed.set_clock(1_000);
+    feed.begin_pass();
+    tx.send(Cmd::Recording(true, 0)).unwrap();
+    let ended = Arc::new(std::sync::atomic::AtomicU64::new(0));
+    let (f, tx2, e) = (Arc::clone(&feed), tx.clone(), Arc::clone(&ended));
+    st.before_commands = Some(Box::new(move || {
+        if e.load(Ordering::Relaxed) == 0 {
+            f.set_clock(2_000);
+            f.receive(0, &[0x90, 60, 100]);
+            f.set_clock(3_000);
+            let pass = f.end_pass();
+            e.store(pass, Ordering::Relaxed);
+            let _ = tx2.send(Cmd::Recording(false, pass));
+        }
+    }));
+    st.fill(&mut out, 2);
+    let pass = ended.load(Ordering::Relaxed);
+    assert!(pass != 0 && feed.captured(pass));
+    let mut rec = Vec::new();
+    feed.take_recorded(&mut rec);
+    assert_eq!(rec.iter().map(|e| (e.status, e.data1)).collect::<Vec<_>>(), [(0x90, 60)]);
+    // The next callback is outside any pass.
+    st.before_commands = None;
+    feed.set_clock(4_000);
+    feed.receive(0, &[0x90, 62, 100]);
+    st.fill(&mut out, 2);
+    rec.clear();
+    feed.take_recorded(&mut rec);
+    assert!(rec.is_empty(), "{rec:?}");
+}

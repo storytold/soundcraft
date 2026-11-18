@@ -114,6 +114,10 @@ pub(crate) struct AudioState {
     /// the UI ends the pass only when it notices; for a Stop it gives the time itself, a little
     /// earlier). The ages of the pass's last events are counted up to then.
     midi_stopped: Option<i64>,
+    /// A command of this callback started a pass that the UI had begun while the transport was
+    /// running: should the pass also end in this callback, its last read of the queue still
+    /// counts from when it began.
+    midi_started: bool,
     /// Called between taking the MIDI in and reading the commands, for tests of what arrives
     /// right there.
     #[cfg(test)]
@@ -182,6 +186,7 @@ impl AudioState {
             midi_wraps: 0,
             midi_ended: None,
             midi_stopped: None,
+            midi_started: false,
             #[cfg(test)]
             before_commands: None,
             #[cfg(test)]
@@ -221,6 +226,7 @@ impl AudioState {
                     self.midi_stopped = None;
                     // The pass has begun here: its start is no longer waited for.
                     if r && let Some(feed) = &self.midi {
+                        self.midi_started = self.playing && feed.begin_pending();
                         feed.pass_begun();
                     }
                     // The UI thread waits for this pass before it builds the clips. It is told
@@ -365,7 +371,10 @@ impl AudioState {
         let mut input_lost = feed.take_lost();
         let now = feed.clock();
         // A flag for a loss that was already met at its mark in the queue is not a new loss.
-        let record = pass.record;
+        // Losses are followed whenever a pass runs or may begin while the queue is read (the
+        // transport is running): whether one is written to the take is decided for each, like
+        // for an event, by when it happened (`TakeWriter::within`).
+        let record = pass.record || pass.playing;
         // When each flagged port lost its input, by the place of its bit.
         let mut lost_time = [i64::MIN; 64];
         let flagged = input_lost;
@@ -409,6 +418,7 @@ impl AudioState {
             wraps: std::mem::take(&mut self.midi_wraps),
             running: pass.running,
             playing: pass.playing,
+            begun: pass.begun,
             until: pass.until,
             stopped: pass.stopped,
         };
@@ -629,6 +639,7 @@ impl AudioState {
             record: running || (self.playing && begun),
             running,
             playing: self.playing,
+            begun,
             until: self.midi_stopped.unwrap_or(i64::MAX),
             stopped: self.midi_stopped.is_some(),
             pos: self.pos,
@@ -654,12 +665,16 @@ impl AudioState {
             // the answer is given without that: the audio thread does not wait.)
             let feed = self.midi.clone();
             let quiet = feed.as_ref().and_then(|f| f.hold_writers());
+            // A pass that was started by a command of this same callback (while the transport
+            // was running) is still that pass here, though it no longer waits to be started.
+            let pass = Pass { begun: pass.begun || std::mem::take(&mut self.midi_started), ..pass };
             self.capture_midi(callback, age_speed, pass);
             if let Some(feed) = &feed {
                 feed.capture_done(ended, pass.pos);
             }
             drop(quiet);
         }
+        self.midi_started = false;
         // A command may have installed a session at another sample rate: the audio is rendered
         // at the rate that is there now, at the same speed.
         let step = self.step(speed);
@@ -747,6 +762,9 @@ struct Pass {
     /// The transport is running: a pass that is begun now (also while the queue is being read)
     /// records from when it began.
     playing: bool,
+    /// A pass was begun for the running transport when the callback started, or by one of its
+    /// commands.
+    begun: bool,
     /// Entries stamped later than this are from after the transport stopped by itself.
     until: i64,
     /// The transport has stopped: the playhead stands where the pass ends.
@@ -769,6 +787,8 @@ struct TakeWriter<'a> {
     running: bool,
     /// The transport is running: a pass begun meanwhile records from when it began.
     playing: bool,
+    /// A pass was begun for the running transport, as far as the callback saw.
+    begun: bool,
     /// Entries stamped later than this are not part of it either (the transport stopped then).
     until: i64,
     /// The playhead stands where the pass ends.
@@ -782,7 +802,7 @@ impl TakeWriter<'_> {
     fn within(&self, stamp: i64) -> bool {
         // Whether a pass was begun first, then when: the time is stored before the pass counts
         // as begun, so a pass seen as begun here has its own start time.
-        let on = self.running || (self.playing && self.feed.begin_pending());
+        let on = self.running || (self.playing && (self.begun || self.feed.begin_pending()));
         on && stamp >= self.feed.record_from() && stamp <= self.until.min(self.feed.record_until())
     }
 
