@@ -491,15 +491,22 @@ pub(crate) struct ProcessInput<'a> {
 impl Drop for Instance {
     fn drop(&mut self) {
         // Close any editor and cut its handles off before the controller goes away.
+        let conn = self.editor.take_conn();
         if self.editor.kill() {
             self.bundle.mark_leaked();
         }
         self.shutdown();
-        if let Some((a, b)) = self.connections.take() {
-            // SAFETY: the pair was connected in `instantiate`; disconnect before terminating.
+        if let Some((a, b)) = self.connections.take()
+            && let Some((pa, pb)) =
+                conn.as_ref().and_then(|(x, y)| x.as_com_ref::<sv::IConnectionPoint>().zip(y.as_com_ref::<sv::IConnectionPoint>()))
+        {
+            // SAFETY: the four endpoints were connected in `instantiate`; each link is
+            // disconnected before either side terminates.
             unsafe {
-                a.disconnect(b.as_ptr());
-                b.disconnect(a.as_ptr());
+                a.disconnect(pa.as_ptr());
+                b.disconnect(pb.as_ptr());
+                pa.disconnect(b.as_ptr());
+                pb.disconnect(a.as_ptr());
             }
         }
         if let Some(c) = self.controller.take() {

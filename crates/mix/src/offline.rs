@@ -82,6 +82,9 @@ impl RangeRender {
             return None;
         }
         let n = (self.total - self.done).min(self.eng.max_block());
+        // No UI idle loop reaches a bounce: flush each plugin's main-thread work (queued
+        // VST3 connection messages) before it renders, or it renders on stale state (#1358).
+        self.eng.idle_plugins();
         self.render(s, self.start + self.done as i64, n);
         if self.done == 0 {
             // The first block tells the mix's latency: render that much more and drop the head.

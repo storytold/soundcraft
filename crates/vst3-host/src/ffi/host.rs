@@ -1,8 +1,9 @@
 use super::module::tuid_bytes;
 use super::{
-    AtomicBool, Class, ComWrapper, EDIT_CAP, FUnknown, IComponentHandlerTrait, IHostApplicationTrait, Interface, Mutex, Ordering, PoisonError,
-    c_void, sb, sv, write_c16,
+    AtomicBool, Class, ComPtr, ComRef, ComWrapper, EDIT_CAP, FUnknown, IComponentHandlerTrait, IConnectionPointTrait, IHostApplicationTrait,
+    Interface, Mutex, Ordering, PoisonError, c_void, sb, sv, write_c16,
 };
+use std::collections::VecDeque;
 
 // ---- host-side COM objects -----------------------------------------------------------------
 
@@ -292,5 +293,83 @@ impl sv::IMessageTrait for HostMessage {
     unsafe fn getAttributes(&self) -> *mut sv::IAttributeList {
         // Not add-ref'ed: the list belongs to the message (VST3 contract).
         self.attributes.as_com_ref::<sv::IAttributeList>().map_or(std::ptr::null_mut(), |r| r.as_ptr())
+    }
+}
+
+/// Most `IConnectionPoint` messages queued for delivery; a chatty processor may not grow the
+/// queue without bound (NI instruments post once per `process` call — #1358).
+pub(crate) const CONN_CAP: usize = 1024;
+
+/// An `IConnectionPoint` that queues `IMessage`s for delivery to its peer on the main thread.
+/// The VST3 SDK prescribes this proxy between a component and its controller instead of a
+/// direct `connect`: a direct link runs the receiver's `notify` on the sender's thread, and
+/// NI instruments' processors post every block, so their controllers did browser/database
+/// work per block on the audio thread and pinned every core (#1358).
+pub(crate) struct ConnProxy {
+    /// The peer's connection point, registered by `connect`.
+    target: Mutex<Option<ComPtr<sv::IConnectionPoint>>>,
+    /// Undelivered messages, in order (preallocated: pushing never allocates).
+    queue: Mutex<VecDeque<ComPtr<sv::IMessage>>>,
+}
+
+impl Default for ConnProxy {
+    fn default() -> Self {
+        ConnProxy { target: Mutex::new(None), queue: Mutex::new(VecDeque::with_capacity(CONN_CAP)) }
+    }
+}
+
+impl Class for ConnProxy {
+    type Interfaces = (sv::IConnectionPoint,);
+}
+
+impl ConnProxy {
+    /// Delivers every queued message to the connected peer. Called on the main thread under
+    /// the link lock that keeps the plugin's objects alive.
+    pub(super) fn deliver(&self) {
+        let target = self.target.lock().unwrap_or_else(PoisonError::into_inner).clone();
+        let Some(t) = target else { return };
+        // Swap in a fresh queue with the same reserve so the sender's push never allocates.
+        let mut queue = VecDeque::with_capacity(CONN_CAP);
+        std::mem::swap(&mut queue, &mut *self.queue.lock().unwrap_or_else(PoisonError::into_inner));
+        for m in queue {
+            // SAFETY: the peer's connection point lives while the instance does; the caller
+            // holds the link lock that guards that lifetime.
+            unsafe { t.notify(m.as_ptr()) };
+        }
+    }
+}
+
+impl IConnectionPointTrait for ConnProxy {
+    unsafe fn connect(&self, other: *mut sv::IConnectionPoint) -> sb::tresult {
+        // SAFETY: `other` is the peer's valid connection point for the call (or null, handled);
+        // the clone add-refs it for as long as it stays registered.
+        let Some(other) = (unsafe { ComRef::from_raw(other) }) else { return sb::kInvalidArgument };
+        *self.target.lock().unwrap_or_else(PoisonError::into_inner) = Some(other.to_com_ptr());
+        sb::kResultOk
+    }
+
+    unsafe fn disconnect(&self, other: *mut sv::IConnectionPoint) -> sb::tresult {
+        let mut t = self.target.lock().unwrap_or_else(PoisonError::into_inner);
+        if t.as_ref().is_some_and(|p| p.as_ptr() == other) {
+            *t = None;
+        }
+        sb::kResultOk
+    }
+
+    unsafe fn notify(&self, message: *mut sv::IMessage) -> sb::tresult {
+        // SAFETY: `message` is the sender's valid message for the call; the clone add-refs it
+        // so it stays alive until the main thread delivers it.
+        let Some(msg) = (unsafe { ComRef::from_raw(message) }).map(|m| m.to_com_ptr()) else {
+            return sb::kInvalidArgument;
+        };
+        let mut q = self.queue.lock().unwrap_or_else(PoisonError::into_inner);
+        if q.len() < CONN_CAP {
+            q.push_back(msg);
+            sb::kResultOk
+        } else {
+            // The bound protects the audio path; a dropped message the sender believes
+            // delivered is worse than a failure it can see and retry.
+            sb::kOutOfMemory
+        }
     }
 }
