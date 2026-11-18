@@ -70,6 +70,11 @@ impl NativeMenu {
                 submenu.append(&self.add_branch(app, child, aliases)?)?;
             }
         }
+        // Not a catalog leaf: the egui menu bar lists it at the same place.
+        if node.path == "AudioSuite" {
+            submenu.append(&PredefinedMenuItem::separator())?;
+            self.add_item(app, &submenu, "Noise Reduction…", "", Some("window.noise_reduction".into()))?;
+        }
         Ok(submenu)
     }
 

@@ -3,7 +3,7 @@
 //!
 //! Realtime plugins (EQ, dynamics, reverb, delay, modulation, harmonic, pitch, utilities and three
 //! instruments), metering (peak, RMS, ITU-R BS.1770 loudness), spectrum analysis and offline
-//! AudioSuite-style whole-buffer processing.
+//! AudioSuite-style whole-buffer processing and learned-profile noise reduction.
 //!
 //! Every algorithm here is an original implementation of textbook DSP (RBJ cookbook biquads,
 //! feed-forward log-domain dynamics, feedback-delay-network reverbs, WSOLA, windowed-sinc
@@ -14,6 +14,7 @@
 //! Audio is planar `f32`: `io[channel][frame]`.
 
 pub mod biquad;
+pub mod denoise;
 pub mod meter;
 pub mod offline;
 mod osc;

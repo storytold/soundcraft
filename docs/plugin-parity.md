@@ -1,6 +1,6 @@
 # Plugin parity: built-in processors and plugin hosting
 
-> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-27 · **Change:** minor (editors: VST3 and embedded CLAP editors on Linux/X11; previously trivial: Auto Pan stereo balance) · **Target:** Avid Pro Tools Ultimate 2026.4.1
+> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-11-18 · **Change:** minor (AudioSuite Noise Reduction with a learned noise profile; previously minor: editors: VST3 and embedded CLAP editors on Linux/X11; previously trivial: Auto Pan stereo balance) · **Target:** Avid Pro Tools Ultimate 2026.4.1
 
 Pro Tools users live in plugins: the bundled set covers everyday mixing, and third-party plugins
 cover the rest. This doc tracks both. Our plugins have our own names and are written from
@@ -27,7 +27,10 @@ scratch (clean-room rule): Avid plugin names are not used here, only categories.
 AudioSuite: every catalog AudioSuite leaf maps to one of our processes (`AUDIOSUITE` in
 `crates/ui-egui/src/menus.rs`), so the AudioSuite menu is 100 % present. Depth: no preview,
 handles, "clip by clip / entire selection" and multi-input modes beyond the basics; hosted
-plugins can't be used offline as AudioSuite yet.
+plugins can't be used offline as AudioSuite yet. Beyond the catalog, AudioSuite › Noise Reduction
+(`audiosuite.noise_learn`, `audiosuite.noise_reduce`) learns a noise profile from a selected
+passage and removes it by spectral subtraction into a copy of the track, with a looping preview
+(#1411); it has no adaptive (learn-as-you-go) mode and no hum or click removal.
 
 Fidelity: **unmeasured.** Nothing compares a SoundCraft processor's frequency response, gain
 reduction curve or reverb tail with the Pro Tools equivalent (G-07 in [`gaps.md`](gaps.md)).
@@ -58,6 +61,7 @@ User report #152: a saved instrument level does not reach the bounce.
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-11-18 | minor | AudioSuite Noise Reduction: learned noise profile, spectral subtraction into a copy of the track, looping preview (#1411) |
 | 2026-10-27 | minor | Editors: VST3 and embedded CLAP editors on Linux/X11, with the host run loop (VST3 `IRunLoop`, CLAP timer and fd support) (#527) |
 | 2026-10-25 | trivial | Auto Pan: constant-power balance of the left and right channels; stereo passes unchanged at the center |
 | 2026-10-24 | minor | AudioSuite speed ramps (`speed_ramp`): down to a stop and up from one, Fit To or Extend, fades on or off |

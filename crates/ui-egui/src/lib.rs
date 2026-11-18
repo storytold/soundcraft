@@ -135,6 +135,14 @@ pub struct UiState {
     pub show_shortcuts: bool,
     pub show_clip_effects: bool,
     pub show_beat_detective: bool,
+    pub show_noise_reduction: bool,
+    /// The last learned noise profile (AudioSuite › Noise Reduction), kept with the settings so it
+    /// is still there after a restart. The engine holds the one in use.
+    pub noise_profile: Option<soundcraft_dsp::denoise::NoiseProfile>,
+    /// Noise Reduction window settings: reduction and sensitivity in dB, smoothing 0..1.
+    pub noise_settings: [f32; 3],
+    /// Noise Reduction › Mute the original track.
+    pub noise_mute_original: bool,
     pub show_tempo_ops: bool,
     pub show_time_ops: bool,
     pub show_midi_ops: bool,
@@ -208,6 +216,10 @@ impl Default for UiState {
             show_shortcuts: false,
             show_clip_effects: false,
             show_beat_detective: false,
+            show_noise_reduction: false,
+            noise_profile: None,
+            noise_settings: dialogs::noise_reduction::recommended(),
+            noise_mute_original: true,
             show_tempo_ops: false,
             show_time_ops: false,
             show_midi_ops: false,

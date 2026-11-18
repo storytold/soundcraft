@@ -2040,6 +2040,41 @@ fn menu_translate(source: &str) -> Option<&'static str> {
         " {n} of the files are used by {users}" => " {n} dos arquivos são usados por {users}",
         " The file stays on disk." => " O arquivo permanece no disco.",
         " The files stay on disk." => " Os arquivos permanecem no disco.",
+        "Noise Reduction" => "Redução de ruído",
+        "Noise Reduction…" => "Redução de ruído…",
+        "1. Learn the noise" => "1. Aprender o ruído",
+        "Select a passage that holds only the background noise (a silence between phrases), then click Learn." => {
+            "Selecione um trecho que contenha apenas o ruído de fundo (um silêncio entre frases) e clique em Aprender."
+        }
+        "Forget" => "Esquecer",
+        "Noise profile: {secs:.2} s, {channels} channel(s), {rate} Hz" => "Perfil de ruído: {secs:.2} s, {channels} canal(is), {rate} Hz",
+        "No noise profile learned yet." => "Nenhum perfil de ruído aprendido ainda.",
+        "2. Remove it" => "2. Removê-lo",
+        "Reduction (dB)" => "Redução (dB)",
+        "Sensitivity (dB)" => "Sensibilidade (dB)",
+        "Smoothing" => "Suavização",
+        "More reduction or sensitivity removes more noise; too much makes the sound hollow or watery." => {
+            "Mais redução ou sensibilidade remove mais ruído; em excesso, o som fica oco ou aquoso."
+        }
+        "Learn Noise Profile" => "Aprender perfil de ruído",
+        "Noise Profile" => "Perfil de ruído",
+        "Set Noise Profile" => "Definir perfil de ruído",
+        "Select the clips to clean, or a range on the tracks to clean only that part. The cleaned audio goes on a copy of the track; the original is kept." => {
+            "Selecione os clipes a limpar, ou um intervalo nas faixas para limpar só essa parte. O áudio limpo vai para uma cópia da faixa; a original é mantida."
+        }
+        "Select the clips to clean, or a range on audio tracks, first." => {
+            "Selecione primeiro os clipes a limpar, ou um intervalo em faixas de áudio."
+        }
+        "Listen:" => "Ouvir:",
+        "Preview" => "Pré-escuta",
+        "Original" => "Original",
+        "Playing the cleaned audio. Move a slider to hear the change." => "Tocando o áudio limpo. Mova um controle para ouvir a mudança.",
+        "Preview loops the cleaned selection (its first 30 s); Original loops it untouched." => {
+            "A pré-escuta repete a seleção limpa (os primeiros 30 s); Original a repete sem alteração."
+        }
+        "Mute the original track" => "Silenciar a faixa original",
+        "Cleaned {n} clip(s) into a copy of the track." => "{n} clipe(s) limpo(s) numa cópia da faixa.",
+        "Back to the recommended settings" => "Voltar às configurações recomendadas",
         _ => return error_translation(source),
     })
 }
@@ -2060,6 +2095,14 @@ macro_rules! error_templates {
 }
 
 error_templates! {
+    "select a passage of noise on an audio track" => "selecione um trecho de ruído numa faixa de áudio",
+    "select at least {ms} ms of noise to learn" => "selecione pelo menos {ms} ms de ruído para aprender",
+    "learn a noise profile first" => "aprenda um perfil de ruído primeiro",
+    "learn a noise profile first (audiosuite.noise_learn)" => "aprenda um perfil de ruído primeiro (audiosuite.noise_learn)",
+    "the noise profile was learned at {a} Hz, but this session runs at {b} Hz" => "o perfil de ruído foi aprendido a {a} Hz, mas esta sessão usa {b} Hz",
+    "select audio clips, or a range on audio tracks, first" => "selecione clipes de áudio, ou um intervalo em faixas de áudio, primeiro",
+    "nothing could be processed" => "nada pôde ser processado",
+    "too much audio to clean in one command" => "áudio demais para limpar num só comando",
     "{path} is not valid Unicode" => "{path} não é Unicode válido",
     "unknown command `{c}`" => "comando desconhecido `{c}`",
     "`{c}` is not available: {why}" => "`{c}` não está disponível: {why}",

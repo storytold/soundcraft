@@ -30,8 +30,30 @@ impl SoundApp {
     }
 
     fn start_play(&mut self, from: Samples, end: Option<Samples>, looped: Option<Range>) {
+        self.start_play_of(self.engine.session_arc(), from, end, looped);
+    }
+
+    /// Loops `range` of the document, as Play with Loop Playback does.
+    pub(crate) fn loop_range(&mut self, range: Range) {
+        self.start_play(range.start, None, Some(range));
+    }
+
+    /// Loops `range` of `session` in place of the document, for an audition (Noise Reduction's
+    /// Preview). The next change to the document or the next Play sends the document again.
+    pub(crate) fn loop_preview(&mut self, session: std::sync::Arc<soundcraft_model::Session>, range: Range) {
+        self.start_play_of(session, range.start, None, Some(range));
+    }
+
+    /// Swaps the session an audition plays without stopping it, after its settings changed.
+    pub(crate) fn update_preview(&self, session: std::sync::Arc<soundcraft_model::Session>) {
         if let Some(p) = &self.player {
-            p.update_session(self.engine.session_arc());
+            p.update_session(session);
+        }
+    }
+
+    fn start_play_of(&mut self, session: std::sync::Arc<soundcraft_model::Session>, from: Samples, end: Option<Samples>, looped: Option<Range>) {
+        if let Some(p) = &self.player {
+            p.update_session(session);
             p.play(from, end, looped);
         } else {
             self.sim = Some((from, end, looped));
