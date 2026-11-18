@@ -449,6 +449,7 @@ fn checked_state(app: &SoundApp, path: &str, id: Option<&str>) -> bool {
         Some("options.markers_follow_edit") => e.markers_follow_edit,
         Some("options.click") => e.click,
         Some("options.delay_compensation") => e.delay_compensation,
+        Some("options.low_latency_monitoring") => e.flag("options.low_latency_monitoring"),
         Some("options.pre_fader_metering") => e.pre_fader_metering,
         Some("view.ruler") => path.rsplit(" > ").next().map(ruler_id).is_some_and(|r| e.rulers.iter().any(|x| x == r)),
         Some("view.main_counter") => path.rsplit(" > ").next().map(ruler_id).is_some_and(|r| e.main_counter.id() == r),

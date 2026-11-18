@@ -44,6 +44,8 @@ pub(crate) struct Strip {
     /// The instrument's next block starts somewhere new: send it the controllers in effect there.
     pub(crate) chase: bool,
     pub(crate) muted: bool,
+    /// The interface is monitoring this live input. Keep its input meter, skip software routing.
+    pub(crate) direct_monitor: bool,
     pub(crate) gr: f32,
     /// Per-clip effect chains (Clip Effects) and a scratch buffer to render clips into.
     pub(crate) clip_fx: HashMap<u64, ClipFx>,
@@ -142,6 +144,7 @@ impl Strip {
             held: Vec::new(),
             chase: true,
             muted: false,
+            direct_monitor: false,
             gr: 0.0,
             clip_fx: HashMap::new(),
             clipbuf: Vec::new(),
@@ -399,11 +402,29 @@ fn gate_mute_automation(t: &Track, strip: &mut Strip, blk: Block) {
 pub(crate) fn process_strip(s: &Session, t: &Track, strip: &mut Strip, busses: &HashMap<BusId, BusBuf>, live: &LiveInput<'_>, blk: Block) {
     let Block { pos, frames, any_solo } = blk;
     zero_buf(&mut strip.buf, frames);
+    let monitors_input = t.kind == TrackKind::Audio
+        && !live.input.is_empty()
+        && (t.mixer.input_monitor || (t.mixer.record_arm && (live.monitor_only || live.recording)));
+    // The device mixes its physical input with DAW playback. Suppress only the software copy
+    // of a live input, retaining clip playback when an armed track is in Auto Input playback.
+    let direct_monitor = monitors_input
+        && s.edit.flag("options.low_latency_monitoring")
+        && matches!(&t.mixer.input, Route::Input(_) | Route::Hardware(_) | Route::None);
+    if direct_monitor && !strip.direct_monitor {
+        strip.align.clear();
+        strip.align_pre.clear();
+        strip.out_extra.clear();
+    }
+    strip.direct_monitor = direct_monitor;
+    if direct_monitor {
+        monitor_input(s, t, strip, live, frames);
+        strip.gr = 0.0;
+        strip.latency = 0;
+        return;
+    }
     let transport = transport_at(s, pos, !live.monitor_only, live.recording);
     match t.kind {
-        TrackKind::Audio if !live.input.is_empty() && (t.mixer.input_monitor || (t.mixer.record_arm && (live.monitor_only || live.recording))) => {
-            monitor_input(s, t, strip, live, frames);
-        }
+        TrackKind::Audio if monitors_input => monitor_input(s, t, strip, live, frames),
         TrackKind::Audio if live.monitor_only => {}
         TrackKind::Instrument | TrackKind::Midi if live.monitor_only => {}
         TrackKind::Audio => render_audio_clips(s, t, strip, blk),

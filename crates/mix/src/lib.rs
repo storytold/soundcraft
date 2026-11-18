@@ -487,6 +487,9 @@ impl MixEngine {
         }
         for (i, st) in work.iter_mut() {
             let Some(t) = s.tracks.get(*i) else { continue };
+            if st.direct_monitor {
+                continue;
+            }
             let ch = st.buf.len();
             st.align.set(lmax_t.saturating_sub(st.latency), ch);
             st.align.process(&mut st.buf, frames);
@@ -621,6 +624,9 @@ impl MixEngine {
         let m = self.meters.entry(t.id).or_default();
         m.measure(&strip.buf, frames, strip.gr);
         m.plugin_failures = strip.failures;
+        if strip.direct_monitor {
+            return;
+        }
         let src_fmt = strip_format(t, strip.buf.len());
         let law = self.pan_law;
         for (i, snd) in t.mixer.sends.iter().enumerate() {
