@@ -797,7 +797,10 @@ impl InputRing {
         // What the whole output callback takes (not only this read of it), the input's own block,
         // and the reserve beyond the callback: a callback of the longer side and a little more,
         // so that a late input block is not a gap.
-        let read = (frames as f64 * ratio).ceil() as usize + 2;
+        // Reading runs a little off the nominal ratio, by the clock difference learned so far
+        // (what a start takes up) or the correction in force: the callback takes that much.
+        let pace = ratio * (1.0 + if r.primed && !overflowed { r.trim } else { r.drift });
+        let read = (frames as f64 * pace).ceil() as usize + 2;
         let push = self.push_block.load(Ordering::Relaxed).max(1);
         // No more than the ring can hold, so that a ring filled by fresh input starts reading.
         let room = self.slots.len() / ch;
@@ -807,8 +810,9 @@ impl InputRing {
         // heard. A callback the ring holds counts whole: reading that starts on less runs dry
         // at the end of every callback.
         let fits = room.saturating_sub(push.saturating_mul(2)).saturating_sub(r.extra).saturating_sub(64) / 2;
-        let demand = ((frames.max(callback) as f64 * ratio).ceil() as usize).saturating_add(2);
-        let need = if demand.saturating_add(push) <= room { demand } else { demand.min(fits).max(read) };
+        let demand = ((frames.max(callback) as f64 * pace).ceil() as usize).saturating_add(2);
+        let holds = demand.saturating_add(push) <= room;
+        let need = if holds { demand } else { demand.min(fits).max(read) };
         // The ring is sized by the input's callback, not the output's. What is buffered before a
         // read (the start) or left after one (the reserve) leaves room for the input of one more
         // output callback and two blocks (one that comes early, one of headroom): a long output
@@ -831,6 +835,13 @@ impl InputRing {
             // Wait for the start, then read from the newest input (with one more input block
             // when there is one).
             if avail < start {
+                // A callback of more than half the ring: the input of the next one does not fit
+                // behind all of this one's, and a ring that overflows is dropped whole, at every
+                // callback. Waiting gives up the oldest input instead, and the next callback
+                // finds its start.
+                if holds && avail > beside {
+                    tail = head.wrapping_sub(beside * ch);
+                }
                 self.tail.store(tail, Ordering::Release);
                 return;
             }
@@ -997,6 +1008,40 @@ mod ring_tests {
         assert!(out.iter().any(|v| v.abs() > 0.9), "the input is never heard");
         assert_eq!(dry, 0);
         assert!(roughness(&out) < 0.14, "{}", roughness(&out));
+    }
+
+    /// An output callback of just over half the ring (16 448 frames, 32 768 slots): its first
+    /// input is two frames short of a start, and with the second the ring would overflow and be
+    /// dropped whole, at every callback. The wait gives up the oldest input instead.
+    #[test]
+    fn an_output_callback_of_just_over_half_the_ring_is_heard() {
+        let ring = InputRing::sized(1, 48_000, 64);
+        assert_eq!(ring.slots.len(), 32_768);
+        let (out, dry) = run_ring(&ring, 48_000, 64, 16_448, 4.0, 0.0);
+        assert!(out.iter().any(|v| v.abs() > 0.9), "the input is never heard");
+        assert_eq!(dry, 0);
+        assert!(roughness(&out) < 0.14, "{}", roughness(&out));
+    }
+
+    /// A reader that has learned that the input clock runs fast starts at that speed, and takes
+    /// more input for a callback than the nominal ratio says: the start counts it, and waits
+    /// where the callback would run dry at its end.
+    #[test]
+    fn the_start_counts_the_clock_difference_learned() {
+        let ring = InputRing::sized(1, 48_000, 64);
+        ring.reader.lock().unwrap().drift = 0.0003;
+        for _ in 0..256 {
+            ring.push(&[0.5; 64]);
+        }
+        // 16 382 frames at 1.0003 take 16 387 input frames and the one after; 16 384 are there.
+        let mut out = vec![vec![0.0f32; 512]];
+        let mut left = 16_382;
+        while left > 0 {
+            let n = left.min(512);
+            ring.pop_into(&mut out, n, 16_382, 48_000);
+            left -= n;
+        }
+        assert_eq!(ring.underruns(), 0, "started on less than the callback takes");
     }
 
     /// A block dropped before a pause says the input from before it is stale. That input is
