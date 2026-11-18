@@ -229,11 +229,7 @@ impl Player {
         match open_device(want, want_ch, cfg) {
             Ok((host, device, config, format, name)) => {
                 let host_name = host.id().name().to_string();
-                // The chosen buffer size first; if the device refuses it, its default.
-                let mut attempts = vec![config];
-                if config.buffer_size != cpal::BufferSize::Default {
-                    attempts.push(cpal::StreamConfig { buffer_size: cpal::BufferSize::Default, ..config });
-                }
+                let attempts = stream::output_attempts(config, host.id().to_string() == "jack");
                 let opened = first_started(
                     attempts,
                     |config: &cpal::StreamConfig| -> Result<Opened, cpal::Error> {

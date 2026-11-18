@@ -52,6 +52,30 @@ fn a_config_that_fails_to_build_falls_through_to_the_next() {
     assert_eq!(won.map(|(n, _)| n), Some(2));
 }
 
+/// On JACK a build can fail because a system port went away while cpal was connecting to it;
+/// tried once, that moment left the player on the silent clock.
+#[test]
+fn a_jack_output_is_tried_again_before_it_is_given_up() {
+    let config = |buffer_size| cpal::StreamConfig { channels: 2, sample_rate: 48_000, buffer_size };
+    let (fixed, default) = (config(cpal::BufferSize::Fixed(256)), config(cpal::BufferSize::Default));
+    assert_eq!(stream::output_attempts(fixed, true), [fixed, fixed, default, default]);
+    assert_eq!(stream::output_attempts(default, true), [default, default]);
+    // Other hosts: each configuration once, as before.
+    assert_eq!(stream::output_attempts(fixed, false), [fixed, default]);
+    assert_eq!(stream::output_attempts(default, false), [default]);
+    // The build that failed for a passing reason succeeds on the second try with the same configuration.
+    let mut tries = 0;
+    let won = first_started(
+        stream::output_attempts(fixed, true),
+        |_| {
+            tries += 1;
+            if tries == 1 { Err("JACK failed to connect port".to_string()) } else { Ok(Fake { starts: true }) }
+        },
+        start_stream,
+    );
+    assert_eq!(won.map(|(c, _)| c), Some(fixed));
+}
+
 /// Build a cpal configuration range for tests with a 64..1024-frame buffer.
 fn range(channels: u16, min: u32, max: u32, format: cpal::SampleFormat) -> cpal::SupportedStreamConfigRange {
     cpal::SupportedStreamConfigRange::new(channels, min, max, cpal::SupportedBufferSize::Range { min: 64, max: 1024 }, format)

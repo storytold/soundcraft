@@ -21,6 +21,21 @@ pub(crate) struct Opened {
     pub(crate) fault: Arc<Fault>,
 }
 
+/// The configurations to try opening the output with, in order: the chosen buffer size first
+/// and, if the device refuses it, its default. On JACK each one twice: cpal connects a new
+/// stream to the server's system ports while it builds it, and fails the build when one of them
+/// went away since it listed them. A second try lists them afresh, so that passing moment does
+/// not cost the output (an interface chosen in the dialog is wired after the build, and never
+/// reached if the build fails).
+pub(crate) fn output_attempts(config: cpal::StreamConfig, jack: bool) -> Vec<cpal::StreamConfig> {
+    let mut sizes = vec![config];
+    if config.buffer_size != cpal::BufferSize::Default {
+        sizes.push(cpal::StreamConfig { buffer_size: cpal::BufferSize::Default, ..config });
+    }
+    let times = if jack { 2 } else { 1 };
+    sizes.into_iter().flat_map(|config| std::iter::repeat_n(config, times)).collect()
+}
+
 /// Build and start the attempts in order; the first that builds and starts wins. A build error or
 /// a stream that will not start is logged, and the next attempt is tried. `None` when none works.
 pub(crate) fn first_started<A: std::fmt::Debug, S, E: std::fmt::Display>(
