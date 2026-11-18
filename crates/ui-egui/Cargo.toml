@@ -9,7 +9,10 @@ repository.workspace = true
 
 [dependencies]
 craft-mime.workspace = true
-craft-ui.workspace = true
+craft-ui = { workspace = true, features = ["cloud"] }
+# Entries, capabilities and the other vendor-neutral types `craft_ui::cloud` and `craft_ui::share`
+# carry; no provider implements it in this repository.
+craft-cloud.workspace = true
 soundcraft-time.workspace = true
 craft-audio.workspace = true
 soundcraft-midi.workspace = true
@@ -40,6 +43,10 @@ craft-update = { workspace = true }
 
 [dev-dependencies]
 egui_kittest = { workspace = true, features = ["wgpu", "snapshot"] }
+# The reference `CloudBackend` the cloud module's tests connect, proving the pages work against a
+# real, working implementation of the contract rather than a bespoke test double.
+craft-cloud-local.workspace = true
+tempfile = "3"
 
 [lints]
 workspace = true

@@ -51,8 +51,28 @@ pub(super) fn save_session_bundle(e: &mut Engine, path: &str) -> Result<usize> {
 
 /// Open a session from bytes (the browser has no paths): a bundle ([`session_bundle`]) or a bare
 /// `.scraft`, whose audio is then reported missing. Returns the missing media, like
-/// [`open_session`].
+/// [`open_session`]. Adopts a bundle-named path, so the document behaves like one opened from this
+/// machine's disk (it gets a File > Open Recent entry and a future Save writes back to that name).
 pub fn open_session_bytes(e: &mut Engine, name: &str, bytes: &[u8]) -> Result<Vec<String>> {
+    let missing = open_bytes_into(e, name, bytes)?;
+    let stem = Path::new(name).file_stem().and_then(OsStr::to_str).filter(|x| !x.is_empty()).unwrap_or("Untitled");
+    e.path = Some(format!("{}.{BUNDLE_EXTENSION}", sanitize_name(stem)));
+    Ok(missing)
+}
+
+/// Open a session from bytes a cloud storage backend read, adopting no local path.
+///
+/// Cloud storage has nowhere on this machine's disk that the document is "at". Reusing
+/// [`open_session_bytes`]'s bundle-named path here would show the document in File > Open Recent
+/// as though it already lived on this computer, and a subsequent plain Save would write that
+/// name to disk instead of back to the cloud.
+pub fn open_cloud_bytes(e: &mut Engine, name: &str, bytes: &[u8]) -> Result<Vec<String>> {
+    open_bytes_into(e, name, bytes)
+}
+
+/// The decode-and-replace work shared by [`open_session_bytes`] and [`open_cloud_bytes`]; neither
+/// sets `e.path`, which each caller does (or does not) on its own terms.
+fn open_bytes_into(e: &mut Engine, name: &str, bytes: &[u8]) -> Result<Vec<String>> {
     let (text, mut files) = if bytes.starts_with(b"PK\x03\x04") {
         read_bundle(bytes, BUNDLE_LIMITS)?
     } else {
@@ -89,9 +109,7 @@ pub fn open_session_bytes(e: &mut Engine, name: &str, bytes: &[u8]) -> Result<Ve
     }
     // Movies are referenced by path, never copied into a session: none can be found here.
     missing.extend(s.videos.iter().map(|v| v.path.clone()));
-    let stem = Path::new(name).file_stem().and_then(OsStr::to_str).filter(|x| !x.is_empty()).unwrap_or("Untitled").to_string();
     e.replace_session(s);
-    e.path = Some(format!("{}.{BUNDLE_EXTENSION}", sanitize_name(&stem)));
     for m in &missing {
         e.message(format!("missing media: {m}"));
     }
@@ -109,6 +127,37 @@ mod bundle_tests {
         let huge = vec![0u8; usize::try_from(super::super::MAX_SESSION_BYTES).unwrap() + 1];
         let err = open_session_bytes(&mut Engine::default(), "Huge.scraft", &huge).unwrap_err().to_string();
         assert_eq!(err, "Huge.scraft is too large to open (over 256 MiB)");
+    }
+
+    #[test]
+    fn opening_from_the_cloud_adopts_no_local_path() {
+        // A cloud document has nowhere on this machine's disk that it is "at". Adopting the
+        // bundle's synthetic name here would make it look locally saved: it would appear in
+        // File > Open Recent and a later plain Save would write that name to disk instead of
+        // sending the bytes back to the cloud. `open_session_bytes` (the browser path, which
+        // does have one on-disk destination to adopt) is the contrast case.
+        let e1 = crate::demo::demo_engine();
+        let (bundle, _) = session_bundle(e1.session()).unwrap();
+
+        let mut cloud = Engine::default();
+        open_cloud_bytes(&mut cloud, "Song.scraft", &bundle).unwrap();
+        assert_eq!(cloud.path, None);
+
+        let mut browser = Engine::default();
+        open_session_bytes(&mut browser, "Song.scraft", &bundle).unwrap();
+        assert_eq!(browser.path, Some(format!("Song.{BUNDLE_EXTENSION}")));
+    }
+
+    #[test]
+    fn opening_from_the_cloud_replaces_the_session_and_marks_it_clean() {
+        let e1 = crate::demo::demo_engine();
+        let (bundle, _) = session_bundle(e1.session()).unwrap();
+        let mut e2 = Engine::default();
+        e2.session_mut().name = "placeholder".into();
+        assert!(e2.is_dirty());
+        open_cloud_bytes(&mut e2, "Song.scraft", &bundle).unwrap();
+        assert_eq!(e2.session().name, e1.session().name);
+        assert!(!e2.is_dirty(), "a document just opened has no edits yet");
     }
 
     #[test]
