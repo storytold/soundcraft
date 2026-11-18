@@ -122,7 +122,13 @@ pub fn show(app: &mut SoundApp, ui: &mut Ui) {
     ui.painter().rect_filled(full, 0.0, t.panel_bg);
     let header = Rect::from_min_size(full.min, vec2(full.width(), 22.0));
     ui.painter().rect_filled(header, 0.0, t.panel_bg2);
-    ui.painter().text(pos2(header.min.x + 8.0, header.center().y), Align2::LEFT_CENTER, "MIDI EDITOR", bold(11.5), t.header_text);
+    ui.painter().text(
+        pos2(header.min.x + 8.0, header.center().y),
+        Align2::LEFT_CENTER,
+        crate::localization::text("MIDI EDITOR"),
+        bold(11.5),
+        t.header_text,
+    );
     let Some(cid) = target_clip(app) else {
         empty_state(app, ui, full, header);
         return;
@@ -184,8 +190,8 @@ fn empty_state(app: &mut SoundApp, ui: &mut Ui, full: Rect, header: Rect) {
         s.tracks.iter().find(|t| t.kind.is_midi() && s.edit.selected_tracks.contains(&t.id)).map(|t| (t.id, t.name.clone()))
     };
     let msg = match &track {
-        Some((_, name)) => format!("Click to add a MIDI clip to {name} at the insertion point."),
-        None => "Select a MIDI clip (or a MIDI track) to edit its notes.".into(),
+        Some((_, name)) => crate::localized_format!("Click to add a MIDI clip to {name} at the insertion point.", name = name),
+        None => crate::localization::text("Select a MIDI clip (or a MIDI track) to edit its notes.").into(),
     };
     ui.painter().text(full.center(), Align2::CENTER_CENTER, msg, regular(13.0), t.text_dim);
     let body = Rect::from_min_max(pos2(full.min.x, header.max.y), full.max);
@@ -223,16 +229,16 @@ fn midi_toolbar(app: &mut SoundApp, ui: &mut Ui, header: Rect, cid: ClipId, grid
     let mut tb = ui.new_child(egui::UiBuilder::new().max_rect(bar).layout(egui::Layout::right_to_left(egui::Align::Center)));
     tb.spacing_mut().item_spacing.x = 4.0;
     let mut op: Option<(&str, serde_json::Value)> = None;
-    if tb.small_button("Legato").clicked() {
+    if tb.small_button(crate::localization::text("Legato")).clicked() {
         op = Some(("event.change_duration", json!({"legato": 0})));
     }
-    if tb.small_button("Vel −10").clicked() {
+    if tb.small_button(crate::localization::text("Vel −10")).clicked() {
         op = Some(("event.change_velocity", json!({"add": -10})));
     }
-    if tb.small_button("Vel +10").clicked() {
+    if tb.small_button(crate::localization::text("Vel +10")).clicked() {
         op = Some(("event.change_velocity", json!({"add": 10})));
     }
-    if tb.small_button("Quantize").on_hover_text("Quantize to the grid").clicked() {
+    if tb.small_button(crate::localization::text("Quantize")).on_hover_text(crate::localization::text("Quantize to the grid")).clicked() {
         op = Some(("event.quantize", json!({"grid": grid_ticks, "strength": 100})));
     }
     if let Some((id, mut p)) = op {
@@ -265,18 +271,40 @@ fn draw_roll_background(painter: &egui::Painter, g: &Roll<'_>) {
         }
     }
     // Grid.
+    let step = grid_stride(grid_ticks, px_per_tick);
     let mut tick = 0;
     while tick <= len_ticks {
         let bar = tick % (TICKS_PER_QUARTER * 4) == 0;
         let x = g.x_of(tick);
-        if grid_ticks as f32 * px_per_tick > 4.0 || bar {
-            painter.line_segment(
-                [pos2(x, roll.min.y), pos2(x, roll.max.y)],
-                Stroke::new(1.0, if bar { Color32::from_rgb(80, 80, 86) } else { Color32::from_rgb(50, 50, 54) }),
-            );
-        }
-        tick += grid_ticks;
+        painter.line_segment(
+            [pos2(x, roll.min.y), pos2(x, roll.max.y)],
+            Stroke::new(1.0, if bar { Color32::from_rgb(80, 80, 86) } else { Color32::from_rgb(50, 50, 54) }),
+        );
+        tick = tick.saturating_add(step);
     }
+}
+
+/// Closest lines the grid draws, in points.
+const MIN_GRID_PX: f32 = 4.0;
+
+/// Ticks between grid lines: the grid when its lines are more than [`MIN_GRID_PX`] apart, else
+/// as few common multiples of the grid and a bar as keep that spacing (so every line is a snap
+/// position and falls on a bar). The lines drawn are then bounded by the roll's width, however long
+/// the clip, instead of by its length.
+fn grid_stride(grid_ticks: i64, px_per_tick: f32) -> i64 {
+    let bar_ticks = TICKS_PER_QUARTER * 4;
+    if grid_ticks as f32 * px_per_tick > MIN_GRID_PX {
+        return grid_ticks.max(1);
+    }
+    let grid = grid_ticks.max(1);
+    let (mut a, mut b) = (grid, bar_ticks);
+    while b != 0 {
+        (a, b) = (b, a % b);
+    }
+    let common = (grid / a).saturating_mul(bar_ticks);
+    // `as` saturates a huge or NaN quotient; a zero `px_per_tick` gives one common multiple.
+    let n = (MIN_GRID_PX / (common as f32 * px_per_tick)).ceil().max(1.0) as i64;
+    common.saturating_mul(n)
 }
 
 /// The notes, with a drag in progress applied.
@@ -455,7 +483,7 @@ fn velocity_lane(app: &mut SoundApp, ui: &mut Ui, g: &Roll<'_>, cid: ClipId, bas
     let t = Tokens::current();
     // Velocity lane.
     ui.painter().rect_filled(vel, 0.0, Color32::from_rgb(28, 28, 30));
-    ui.painter().text(pos2(label_x, vel.center().y), Align2::LEFT_CENTER, "Velocity", regular(10.0), t.text_dim);
+    ui.painter().text(pos2(label_x, vel.center().y), Align2::LEFT_CENTER, crate::localization::text("Velocity"), regular(10.0), t.text_dim);
     let vresp = ui.interact(vel, ui.scope_id().with(("vel", cid.0)), Sense::click_and_drag());
     for (i, n) in sequence.notes.iter().enumerate() {
         let x = g.x_of(n.start);
@@ -477,6 +505,24 @@ fn velocity_lane(app: &mut SoundApp, ui: &mut Ui, g: &Roll<'_>, cid: ClipId, bas
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn grid_lines_are_bounded_by_the_roll_width_not_the_clip_length() {
+        let sixteenth = TICKS_PER_QUARTER / 4;
+        // A 1000 pt roll showing a 4-bar clip: every sixteenth is 16 pt apart and drawn.
+        assert_eq!(grid_stride(sixteenth, 1000.0 / (16.0 * TICKS_PER_QUARTER as f32)), sixteenth);
+        // The same roll over a clip a billion ticks long: at most a line every 4 pt.
+        let (len, px_per_tick) = (1_000_000_000i64, 1000.0 / 1_000_000_000.0f32);
+        let step = grid_stride(sixteenth, px_per_tick);
+        assert_eq!(step % (TICKS_PER_QUARTER * 4), 0, "lines fall on bars");
+        assert!((len / step) <= 251, "{} lines", len / step);
+        // a dotted quarter grid (1440 ticks): every line is also a grid position
+        let dotted = TICKS_PER_QUARTER * 3 / 2;
+        let step = grid_stride(dotted, px_per_tick);
+        assert_eq!((step % dotted, step % (TICKS_PER_QUARTER * 4)), (0, 0), "lines are snap positions on bars: {step}");
+        assert!((len / step) <= 251, "{} lines", len / step);
+        assert!(grid_stride(0, 0.0) >= TICKS_PER_QUARTER * 4, "a zero grid or width still advances");
+    }
 
     #[test]
     fn switching_clip_drops_selection_and_gestures() {

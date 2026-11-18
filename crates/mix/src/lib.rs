@@ -71,7 +71,7 @@ mod routing;
 mod strip;
 mod threads;
 
-use automation::{GainRamp, pan_at, pan_segment, send_level, transport_at, volume_db_at};
+use automation::{copy_with_gain, pan_at, pan_segment, send_level, transport_at, volume_level};
 pub use instances::{INSTRUMENT_SLOT, InstanceSpec, NewInstance, PluginFailures, PreparedInstance, create_instance, instance_specs, is_third_party};
 pub use meter::StripMeter;
 use midi::sync_sample;
@@ -80,7 +80,8 @@ pub use offline::{
 };
 pub use pan::itu_stereo_fold;
 use pan::{PanSpec, apply_matrix, apply_matrix_span, build_matrix};
-use routing::{processing_order, structure_fingerprint};
+pub use routing::solo_mutes;
+use routing::{any_solo, processing_order, structure_fingerprint};
 use strip::{
     Block, BusBuf, LiveInput, SlotCtx, Strip, apply_params, contain_failure, note_insert_latency, process_strip, strip_channels, strip_format,
 };
@@ -365,7 +366,7 @@ impl MixEngine {
     pub fn render(&mut self, s: &Session, pos: Samples, frames: usize, out: &mut [Vec<f32>]) {
         let frames = frames.min(self.max_block);
         self.begin_block(s, pos, frames);
-        let blk = Block { pos, frames, any_solo: s.tracks.iter().any(|t| t.mixer.solo && !t.inactive) };
+        let blk = Block { pos, frames, any_solo: any_solo(s) };
         let order = std::mem::take(&mut self.order);
         // Phase 1: independent strips (audio, instrument, MIDI) in parallel.
         let mut work = std::mem::take(&mut self.work);
@@ -539,21 +540,8 @@ impl MixEngine {
                         }
                     }
                 }
-                // Match track faders: the next block's first sample must not ramp this one.
-                let last = pos.saturating_add(frames.saturating_sub(1) as i64);
-                let v0 = volume_db_at(t, pos);
-                let v1 = volume_db_at(t, last);
-                let ramp = GainRamp::new(v0, v1, frames.saturating_sub(1));
-                for (ch, src) in strip.buf.iter().enumerate().take(self.main.len()) {
-                    if let Some(m) = self.main.get_mut(ch) {
-                        for i in 0..frames {
-                            let g = ramp.at(i);
-                            if let (Some(d), Some(x)) = (m.get_mut(i), src.get(i)) {
-                                *d = x * g;
-                            }
-                        }
-                    }
-                }
+                // Read at every sample, like track faders: a breakpoint acts on its own sample.
+                copy_with_gain(&[volume_level(t)], pos, frames, f32::INFINITY, &strip.buf, &mut self.main);
                 let m = self.meters.entry(t.id).or_default();
                 m.measure(&self.main, frames, 0.0);
                 m.plugin_failures = strip.failures;

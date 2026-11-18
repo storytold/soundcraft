@@ -86,7 +86,7 @@ People trust SoundCraft with their recordings; a crash loses takes. **This outra
 ## Architecture (layers enforced by `cargo xtask layers`)
 | Layer | Crate | Role |
 |---|---|---|
-| L0 | `soundcraft-time`, `soundcraft-audio-io`, `soundcraft-midi` | Timebases/tempo/grid; audio file formats + peaks; Standard MIDI Files + MIDI ops |
+| L0 | `soundcraft-time`, `soundcraft-midi` | Timebases/tempo/grid; Standard MIDI Files + MIDI ops |
 | L1 | `soundcraft-dsp` | Plugins (EQ, dynamics, reverb, delay, modulation, harmonic, pitch, utility, instruments), offline processing, meters, FFT |
 | L2 | `soundcraft-model` | The session document (tracks, playlists, clips, mixer, routing, automation, markers, groups) |
 | L3 | `soundcraft-mix` | Mix engine shared by realtime playback and offline bounce |
@@ -94,6 +94,8 @@ People trust SoundCraft with their recordings; a crash loses takes. **This outra
 | L5 | `soundcraft-automation` | MCP server + control-channel client |
 | L6 | `soundcraft-ui-egui` | The swappable UI (egui) |
 | apps | `soundcraft`, `soundcraft-cli`, `soundcraft-web` | Entry points |
+
+Audio file formats, codecs and waveform peaks are not a SoundCraft crate: they come from `craft-audio` in `storytold/craft-libs`, which every Craft app shares. Fix or extend a format there, never in a local copy; SoundCraft keeps only the mapping onto its session model (`soundcraft_model::FileFormat`).
 
 Nothing below L6 depends on egui/eframe/winit/rfd. The UI is thin: panels read engine state and act through `engine.execute(id, params)`.
 
@@ -107,9 +109,16 @@ Parity is measured, not guessed: `crates/engine/catalog/menus.txt` lists the inc
 - Drive it: JSON lines over TCP, e.g. `{"id":1,"method":"engine.execute","params":{"command":"track.new","params":{"count":2,"format":"stereo"}}}`, then `{"id":2,"method":"ui.screenshot","params":{"path":"/tmp/shot.png"}}`. Methods: `crates/ui-egui/src/control.rs`, docs: `docs/control-protocol.md`.
 - Offscreen UI render (no window, no focus stealing): `cargo run -p soundcraft-ui-egui --example ui_shot -- out.png [script.jsonl]`.
 - Headless: `soundcraft-cli run --demo --cmd 'mix.volume={"track":"Kick","db":-6}' --bounce out.wav`; MCP: `soundcraft-cli mcp [--connect PORT]`.
-- **For UI work, look at the result** (render, read the PNG) and compare with `plan/protools/screenshots/`.
+- **Language / localization:** the interface is English by default; Brazilian Portuguese
+  (`pt-BR`) is selected under `Setup › Appearance › Language` (or the `ui.language` command with
+  `{"language":"pt-BR"}`). The pt-BR catalog is complete for every fixed UI string — tests cover
+  placeholder parity, unique keys and source coverage, and the `cargo test` suite passes.
+- Commands: build `cargo build -p soundcraft --bin soundcraft`; test
+  `cargo test -p soundcraft --bin soundcraft`; run `DISPLAY=:0 ./target/debug/soundcraft`. The
+  `cargo xtask ci` gate runs formatting, clippy, tests, assets, layering and the WebAssembly build.
+- Parallel agents: separate `CARGO_TARGET_DIR` per agent; edit only the crates you own; write
+  manifests atomically; delete your target dir when done (disk).
 - Shell gotcha: `mv`/`cp` are aliased interactive here — use `/bin/mv -f` / `/bin/cp -f`.
-- Parallel agents: separate `CARGO_TARGET_DIR` per agent; edit only the crates you own; write manifests atomically; delete your target dir when done (disk).
 
 ## Quality gates (before every commit)
 `cargo xtask ci` = fmt check, `clippy --workspace --all-targets -D warnings`, tests, assets, layers, wasm check. Commit after each arc of work that builds; one topic per commit.
@@ -141,3 +150,7 @@ Push to the `release` branch to build signed installers for macOS (universal DMG
 - Some workflow files here still run their own jobs. Don't add to them. Moving a job into craft-common-actions is its own task, never part of another PR, and the job stays here until a shared workflow runs it.
 
 New workspace crates include `[lints] workspace = true` in `Cargo.toml`. Production crate roots declare the crate-level lint attributes before modules; crate-level `//!` documentation may precede them.
+
+## Shared Craft libraries
+
+Before adding or changing reusable file-format, codec, protocol or UI code, check [craft-libs](https://github.com/storytold/craft-libs) and existing contributor work; reuse its public APIs or extend the appropriate shared library instead of adding an app-local duplicate, keeping app-specific policy and model mapping local and preserving compatibility, security limits and regression coverage.

@@ -1,5 +1,7 @@
 //! Loopback JSON-lines control server: one request per line, one reply per line.
 //! This is the transport the MCP server (`soundcraft-cli mcp --connect PORT`) wraps.
+//! A line that is not a JSON object with a string `method` gets one error reply, and the
+//! connection is closed.
 //!
 //! Lines are bounded ([`MAX_LINE`]): a longer one is refused and the connection closed, without
 //! buffering the rest. So is the number of connections served at once ([`MAX_CONNECTIONS`]).
@@ -103,7 +105,8 @@ fn read_bounded_line(reader: &mut impl BufRead, buf: &mut Vec<u8>, max: usize) -
 }
 
 /// Answer newline-delimited JSON requests for one connection: bound each line, forward it to the UI thread with a 90
-/// s reply deadline, and stop at EOF, invalid UTF-8 or a closed request queue. Bad JSON still gets an error reply.
+/// s reply deadline, and stop at EOF, invalid UTF-8, a closed request queue or a line that isn't a request (see
+/// [`parse_request`]). That line gets one error reply first.
 fn serve(stream: TcpStream, tx: SyncSender<ControlRequest>, ctx: egui::Context) {
     let Ok(read) = stream.try_clone() else { return };
     let mut out = stream;
@@ -123,11 +126,8 @@ fn serve(stream: TcpStream, tx: SyncSender<ControlRequest>, ctx: egui::Context) 
         if line.trim().is_empty() {
             continue;
         }
-        let reply = match serde_json::from_str::<Value>(line) {
-            Ok(msg) => {
-                let id = msg.get("id").cloned().unwrap_or(Value::Null);
-                let method = msg.get("method").and_then(Value::as_str).unwrap_or("").to_string();
-                let params = msg.get("params").cloned().unwrap_or(json!({}));
+        let reply = match parse_request(line) {
+            Ok((id, method, params)) => {
                 let (req, rrx) = ControlRequest::new(method, params);
                 match tx.try_send(req) {
                     Ok(()) => {
@@ -143,12 +143,26 @@ fn serve(stream: TcpStream, tx: SyncSender<ControlRequest>, ctx: egui::Context) 
                     Err(TrySendError::Disconnected(_)) => break,
                 }
             }
-            Err(e) => json!({"ok": false, "error": format!("bad JSON: {e}")}),
+            // Control clients send one request object per line. A peer that sends anything else isn't
+            // one: answer once and close, so nothing it sends after that line runs.
+            Err(e) => {
+                let _ = writeln!(out, "{}", json!({"ok": false, "error": format!("{e}; closing the connection")}));
+                break;
+            }
         };
         if writeln!(out, "{reply}").is_err() {
             break;
         }
     }
+}
+
+/// A request line's `(id, method, params)`. The line must be a JSON object with a string `method`;
+/// otherwise the error says what it is instead.
+fn parse_request(line: &str) -> Result<(Value, String, Value), String> {
+    let msg = serde_json::from_str::<Value>(line).map_err(|e| format!("bad JSON: {e}"))?;
+    let Some(msg) = msg.as_object() else { return Err("not a request: expected a JSON object".into()) };
+    let Some(method) = msg.get("method").and_then(Value::as_str) else { return Err("not a request: no string `method`".into()) };
+    Ok((msg.get("id").cloned().unwrap_or(Value::Null), method.to_string(), msg.get("params").cloned().unwrap_or(json!({}))))
 }
 
 #[cfg(test)]
@@ -225,5 +239,27 @@ mod tests {
         BufReader::new(&mut extra).read_line(&mut line).unwrap();
         assert!(line.contains("too many control connections"), "{line}");
         drop(held);
+    }
+
+    #[test]
+    fn a_line_that_is_not_a_request_ends_the_connection() {
+        let addr = serve_echo();
+        for junk in ["not json", "[1, 2]", "\"ping\"", r#"{"id": 5}"#, r#"{"id": 5, "method": 7}"#] {
+            let mut c = TcpStream::connect(addr).unwrap();
+            c.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+            // One write, so both lines arrive together and the request after the junk is waiting.
+            c.write_all(format!("{junk}\n{{\"id\":6,\"method\":\"ping\"}}\n").as_bytes()).unwrap();
+            let mut r = BufReader::new(c);
+            let mut line = String::new();
+            r.read_line(&mut line).unwrap();
+            let v: Value = serde_json::from_str(&line).unwrap();
+            assert_eq!(v["ok"].as_bool(), Some(false), "{junk}: {line}");
+            line.clear();
+            let closed = match r.read_line(&mut line) {
+                Ok(n) => n == 0,
+                Err(e) => e.kind() == std::io::ErrorKind::ConnectionReset,
+            };
+            assert!(closed, "{junk}: the connection stays open and the next request is answered: {line}");
+        }
     }
 }
