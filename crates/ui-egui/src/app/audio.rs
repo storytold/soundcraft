@@ -34,14 +34,13 @@ impl SoundApp {
 
     /// Open the input device once (for recording and input monitoring) and feed the player.
     pub(super) fn ensure_input(&mut self) {
-        if self.recorder.is_some() || self.recorder_failed || self.player.is_none() {
+        if self.recorder.is_some() || self.recorder_failed {
             return;
         }
-        match soundcraft_playback::record::Recorder::open_with(&self.ui.audio) {
+        let Some(player) = &self.player else { return };
+        match player.open_input(&self.ui.audio) {
             Ok(r) => {
-                if let Some(p) = &self.player {
-                    p.set_input(std::sync::Arc::clone(&r.monitor));
-                }
+                player.set_input(std::sync::Arc::clone(&r.monitor));
                 self.recorder = Some(r);
             }
             Err(e) => {

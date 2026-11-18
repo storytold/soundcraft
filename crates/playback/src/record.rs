@@ -219,10 +219,15 @@ impl Recorder {
     /// drivers usually are) are converted to f32.
     #[cfg(not(target_os = "freebsd"))]
     pub fn open_with(audio: &crate::AudioConfig) -> Result<Recorder, String> {
-        use cpal::traits::{DeviceTrait, StreamTrait};
         let host = crate::devices::host(audio);
         let device = crate::devices::device(&host, audio.input.as_deref(), false).ok_or("no audio input device")?;
-        let name = crate::devices::device_name(&device).unwrap_or_else(|| "Input".into());
+        Self::open_on_device(&device, audio)
+    }
+
+    #[cfg(not(target_os = "freebsd"))]
+    pub(crate) fn open_on_device(device: &cpal::Device, audio: &crate::AudioConfig) -> Result<Recorder, String> {
+        use cpal::traits::{DeviceTrait, StreamTrait};
+        let name = crate::devices::device_name(device).unwrap_or_else(|| "Input".into());
         // At the chosen rate when the device offers it, so input and output run together: the
         // best format first, then the most channels.
         let configs: Vec<cpal::SupportedStreamConfigRange> = device.supported_input_configs().map(|configs| configs.collect()).unwrap_or_default();
@@ -231,7 +236,7 @@ impl Recorder {
             Some(c) => c,
             None => {
                 let d = device.default_input_config().map_err(|e| e.to_string())?;
-                // cpal 0.18's default can name a format these callbacks do not decode (I24, F64);
+                // cpal 0.18's default can name a format these callbacks do not decode (e.g. F64);
                 // open the same rate and channels in a format they do.
                 if crate::devices::format_rank(d.sample_format()).is_some() {
                     d
@@ -252,9 +257,10 @@ impl Recorder {
         let shared = Arc::new(Shared::new(ring));
         let monitor = InputRing::new(usize::from(config.channels), config.sample_rate);
         let build = |config: cpal::StreamConfig| match format {
-            cpal::SampleFormat::I32 => build_input::<i32>(&device, config, &shared, &monitor),
-            cpal::SampleFormat::I16 => build_input::<i16>(&device, config, &shared, &monitor),
-            _ => build_input::<f32>(&device, config, &shared, &monitor),
+            cpal::SampleFormat::I32 => build_input::<i32>(device, config, &shared, &monitor),
+            cpal::SampleFormat::I24 => build_input::<cpal::I24>(device, config, &shared, &monitor),
+            cpal::SampleFormat::I16 => build_input::<i16>(device, config, &shared, &monitor),
+            _ => build_input::<f32>(device, config, &shared, &monitor),
         };
         // The chosen buffer size first; if the device refuses it, its default.
         let stream = match build(config) {
@@ -506,6 +512,14 @@ mod tests {
         let c = pick_input_config(&configs, 48_000).unwrap();
         assert_eq!((c.sample_rate(), c.channels(), c.sample_format()), (48_000, 8, cpal::SampleFormat::F32), "more channels win in the same format");
         assert!(pick_input_config(&configs, 192_001).is_none(), "an unsupported rate falls back to the device default");
+    }
+
+    #[test]
+    fn input_config_accepts_a_twelve_channel_packed_pcm_device() {
+        let configs = [range(12, 44_100, 48_000, cpal::SampleFormat::I24)];
+        let config = pick_input_config(&configs, 48_000).unwrap();
+        assert_eq!(config.channels(), 12);
+        assert_eq!(config.sample_format(), cpal::SampleFormat::I24);
     }
 
     fn recorder(shared: &Arc<Shared>) -> Recorder {

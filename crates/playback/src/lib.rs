@@ -163,6 +163,8 @@ pub struct Player {
     #[cfg(target_arch = "wasm32")]
     _stream: Option<cpal::Stream>,
     pub device_name: String,
+    #[cfg(all(windows, feature = "asio"))]
+    asio_device: Option<cpal::Device>,
     pub device_rate: u32,
     /// Output channels the device was opened with (0 for the silent clock).
     pub device_channels: u16,
@@ -186,6 +188,18 @@ impl Player {
         // Hand the initial session's third-party plugins over.
         p.update_session(session);
         p
+    }
+
+    /// Open recording and monitoring on the configured input. Reuse the active ASIO device
+    /// when it is the selected input. Enumerating other drivers can fail with an active stream.
+    pub fn open_input(&self, cfg: &AudioConfig) -> Result<record::Recorder, String> {
+        #[cfg(all(windows, feature = "asio"))]
+        if let Some(device) = &self.asio_device
+            && cfg.input.as_deref().is_none_or(|name| name == self.device_name)
+        {
+            return record::Recorder::open_on_device(device, cfg);
+        }
+        record::Recorder::open_with(cfg)
     }
 
     /// What stopped the audio output, once: a bug in the engine, or the device went away or
@@ -241,6 +255,7 @@ impl Player {
                         let fault = Arc::new(Fault::default());
                         let stream = match format {
                             cpal::SampleFormat::I32 => build_output::<i32>(&device, *config, state, channels, &fault, &shared),
+                            cpal::SampleFormat::I24 => build_output::<cpal::I24>(&device, *config, state, channels, &fault, &shared),
                             cpal::SampleFormat::I16 => build_output::<i16>(&device, *config, state, channels, &fault, &shared),
                             _ => build_output::<f32>(&device, *config, state, channels, &fault, &shared),
                         }?;
@@ -268,6 +283,11 @@ impl Player {
                             tx,
                             side: new_side(grx),
                             _stream: Some(stream),
+                            #[cfg(all(windows, feature = "asio"))]
+                            asio_device: {
+                                use cpal::traits::DeviceTrait;
+                                device.id().ok().filter(|id| id.host() == cpal::HostId::Asio).map(|_| device)
+                            },
                             device_name: name,
                             device_rate: rate,
                             device_channels: config.channels,
@@ -345,6 +365,8 @@ impl Player {
             tx,
             side,
             _stream: None,
+            #[cfg(all(windows, feature = "asio"))]
+            asio_device: None,
             device_name: "No audio device (silent)".into(),
             device_rate: rate,
             device_channels: 0,
