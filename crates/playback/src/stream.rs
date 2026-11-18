@@ -65,7 +65,7 @@ where
                 let Some(s) = scratch.get_mut(..out.len()) else { return };
                 guarded_block(&failed, &guard, s, |d| state.fill(d, channels));
                 for (o, x) in out.iter_mut().zip(s.iter()) {
-                    *o = T::from_sample(*x);
+                    *o = output_sample(*x);
                 }
             }
         },
@@ -84,6 +84,23 @@ where
         },
         None,
     )
+}
+
+fn output_sample<T: cpal::SizedSample + cpal::FromSample<f32>>(sample: f32) -> T {
+    // The I24 conversion scales +1.0 to 0x800000, which is negative full scale
+    // when ASIO packs it into three bytes.
+    const I24_POSITIVE_FULL_SCALE: f32 = 8_388_607.0 / 8_388_608.0;
+    let sample = if T::FORMAT == cpal::SampleFormat::I24 { sample.min(I24_POSITIVE_FULL_SCALE) } else { sample };
+    T::from_sample(sample)
+}
+
+#[cfg(test)]
+#[test]
+fn output_sample_preserves_packed_i24_full_scale() {
+    assert_eq!(output_sample::<cpal::I24>(1.0).inner(), 8_388_607);
+    assert_eq!(output_sample::<cpal::I24>(-1.0).inner(), -8_388_608);
+    assert_eq!(output_sample::<cpal::I24>(0.5).inner(), 4_194_304);
+    assert_eq!(output_sample::<f32>(1.0), 1.0);
 }
 
 /// Open the output device `cfg` chooses (else the default) at the chosen rate (else the session
