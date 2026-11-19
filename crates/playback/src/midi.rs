@@ -44,6 +44,8 @@ use std::time::Instant;
 pub(crate) const INCOMING: usize = 1024;
 /// Recorded events waiting for the UI thread, which collects every frame.
 const RECORDED: usize = 16_384;
+/// Recent control changes tapped for the mixer UI, independent of audio input and recording.
+const CONTROLS: usize = 256;
 
 /// A fixed-size queue of stamped events for one reader and one writer at a time. Lock-free.
 struct Ring {
@@ -153,6 +155,7 @@ pub struct MidiFeed {
     /// a full queue is not written into the queue yet.
     writers: Mutex<u64>,
     recorded: Ring,
+    controls: Ring,
     /// When the feed was made. Not on the web: there is no MIDI input there, and no clock in std.
     #[cfg(not(target_arch = "wasm32"))]
     epoch: Instant,
@@ -201,6 +204,7 @@ impl Default for MidiFeed {
             incoming: Ring::new(INCOMING),
             writers: Mutex::new(0),
             recorded: Ring::new(RECORDED),
+            controls: Ring::new(CONTROLS),
             #[cfg(not(target_arch = "wasm32"))]
             epoch: Instant::now(),
             connected: AtomicUsize::new(0),
@@ -295,6 +299,9 @@ impl MidiFeed {
                 return;
             }
             let now = self.now();
+            if status & 0xF0 == 0xB0 && data(1) < 120 {
+                self.controls.push(now, e);
+            }
             // Losses from a full queue go into the queue first, where they happened: ahead of
             // the first event that fits again. Each mark carries the time its port's events
             // were dropped at (nothing of that port got into the queue since), so the audio
@@ -389,6 +396,11 @@ impl MidiFeed {
         let a = self.activity.load(Ordering::Relaxed);
         let count = u32::try_from(a >> 32).unwrap_or(u32::MAX);
         (count, (count > 0).then(|| unpack(u32::try_from(a & 0xFFFF_FFFF).unwrap_or(0))))
+    }
+
+    /// UI thread: control changes pending for the mixer, up to one queue's worth per frame.
+    pub fn control_changes(&self) -> impl Iterator<Item = LiveMidi> {
+        std::iter::from_fn(|| self.controls.pop().map(|(_, event)| unpack(event))).take(CONTROLS)
     }
 
     /// Audio thread: the next event and when it arrived ([`Self::clock`], microseconds). An entry

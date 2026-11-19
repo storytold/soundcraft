@@ -12,6 +12,7 @@ mod control;
 mod files;
 mod input;
 mod midi;
+mod midi_learn;
 mod playback;
 mod plugins;
 
@@ -41,6 +42,7 @@ impl SoundApp {
             punch: None,
             recorder_failed: false,
             midi_inputs: None,
+            midi_learn_target: None,
             midi_scan_at: 0.0,
             midi_take: Vec::new(),
             midi_take_lost: 0,
@@ -215,6 +217,9 @@ impl SoundApp {
         self.write_automation();
         self.autosave();
         self.service_midi(self.uptime);
+        if self.service_midi_learn() {
+            ctx.request_repaint_after_secs(0.03);
+        }
         if self.recorder.is_none() && !self.recorder_failed && audio::wants_audio_input(self.engine.session()) {
             self.ensure_input();
         }

@@ -1024,6 +1024,17 @@ fn menu_translate(source: &str) -> Option<&'static str> {
         "Add MIDI Note" => "Adicionar nota MIDI",
         "Add Note" => "Adicionar nota",
         "Arrange Panel" => "Organizar painel",
+        "MIDI Learn" => "Aprender MIDI",
+        "Cancel MIDI Learn" => "Cancelar aprendizado MIDI",
+        "Assign MIDI Controller" => "Atribuir controlador MIDI",
+        "Remove MIDI Assignment" => "Remover atribuição MIDI",
+        "The mixer control is unavailable" => "O controle do mixer está indisponível",
+        "MIDI Learn: turn an absolute CC control" => "Aprender MIDI: gire um controle CC absoluto",
+        "MIDI Learn: this control is already assigned. Turn another control." => {
+            "Aprender MIDI: este controle já está atribuído. Gire outro controle."
+        }
+        "MIDI Learn: assigned {} · Ch {} · CC {}" => "MIDI atribuído: {} · Canal {} · CC {}",
+        "{} · Ch {} · CC {}" => "{} · Canal {} · CC {}",
         "Assign Send" => "Atribuir envio",
         "Assign to VCA" => "Atribuir ao VCA",
         "Audio Device" => "Dispositivo de áudio",

@@ -293,6 +293,7 @@ pub struct SoundApp {
     recorder_failed: bool,
     /// MIDI device input, opened on the first frame of an app that has an audio engine.
     pub midi_inputs: Option<soundcraft_playback::midi::MidiInputs>,
+    midi_learn_target: Option<soundcraft_engine::midi_learn::Target>,
     /// When the MIDI ports were last looked for (app uptime, seconds).
     midi_scan_at: f64,
     /// MIDI played during the current record pass.

@@ -9,6 +9,7 @@ impl SoundApp {
         // Note indices and gestures belong to the old session's clips (#443); every document
         // replacement (run, Recover, a session the browser read) goes through here.
         self.midi = midi_editor::MidiEditorState::default();
+        self.reset_midi_learn();
         // The Output window shows a track of the old session: a track of the new one can have
         // the same id.
         self.ui.output_window = None;
