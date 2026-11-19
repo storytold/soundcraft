@@ -22,7 +22,7 @@ fn bind(e: &mut Engine, p: &Value) -> Result<Value> {
     let id = "midi.learn.bind";
     let binding: Binding = serde_json::from_value(p.clone()).map_err(|err| bad(id, err.to_string()))?;
     if !binding.target.available(e.session()) {
-        return Err(bad(id, "the mixer control is unavailable"));
+        return Err(bad(id, "this control is unavailable"));
     }
     if !crate::midi_learn::valid_range(&binding) {
         return Err(bad(id, "expected normalized plugin parameter endpoints"));
@@ -98,6 +98,80 @@ fn remove_where(e: &mut Engine, matches: impl Fn(&Binding) -> bool) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn plugin_assignment(track: soundcraft_model::TrackId, slot: Option<usize>, plugin: &str, id: &str, cc: u8) -> Value {
+        json!({"source":{"device":"Keys","channel":1,"cc":cc},"target":{"track":track,"parameter":{"plugin":{"slot":slot,"plugin":plugin,"id":id}}}})
+    }
+
+    #[test]
+    fn midi_learn_insert_removal_releases_stored_binding_and_undo_restores_it() {
+        let mut e = crate::demo::demo_engine();
+        let t = e.session().track_by_name("Kick").unwrap().id;
+        e.execute("mix.insert", &json!({"track":t,"slot":0,"plugin":"gain"})).unwrap();
+        e.execute("midi.learn.bind", &plugin_assignment(t, Some(0), "gain", "gain", 75)).unwrap();
+        e.execute("mix.insert_remove", &json!({"track":t,"slot":0})).unwrap();
+        assert_eq!(stored(e.session()).count(), 0);
+        assert!(e.undo());
+        assert_eq!(bindings(e.session()).count(), 1);
+    }
+
+    #[test]
+    fn midi_learn_replacing_instrument_with_same_type_releases_binding_until_undo() {
+        let mut e = Engine::default();
+        e.execute("track.new", &json!({"kind":"instrument"})).unwrap();
+        let t = e.session().tracks.last().unwrap().id;
+        e.execute("midi.learn.bind", &plugin_assignment(t, None, "subtractive_synth", "cutoff", 75)).unwrap();
+        e.execute("mix.instrument", &json!({"track":t,"plugin":"subtractive_synth"})).unwrap();
+        assert_eq!(stored(e.session()).count(), 0);
+        assert!(e.undo());
+        assert_eq!(bindings(e.session()).count(), 1);
+    }
+
+    #[test]
+    fn midi_learn_preset_replaces_only_the_plugin_instances_it_contains() {
+        let mut e = Engine::default();
+        e.execute("track.new", &json!({"kind":"instrument"})).unwrap();
+        let t = e.session().tracks.last().unwrap().id;
+        e.execute("mix.insert", &json!({"track":t,"slot":0,"plugin":"gain"})).unwrap();
+        e.execute("midi.learn.bind", &plugin_assignment(t, None, "subtractive_synth", "cutoff", 74)).unwrap();
+        e.execute("midi.learn.bind", &plugin_assignment(t, Some(0), "gain", "gain", 75)).unwrap();
+        let tr = e.session().track(t).unwrap();
+        let mut preset = json!({"format":"soundcraft-track-preset","mixer":tr.mixer,"instrument":tr.instrument});
+        let path = std::env::temp_dir().join(format!("sc-midi-learn-preset-{}.json", std::process::id()));
+        for include_instrument in [true, false] {
+            if !include_instrument {
+                preset.as_object_mut().unwrap().remove("instrument");
+            }
+            std::fs::write(&path, preset.to_string()).unwrap();
+            e.execute("track.load_preset", &json!({"track":t,"path":path})).unwrap();
+            let ccs: Vec<_> = stored(e.session()).map(|(_, binding)| binding.source.cc).collect();
+            if include_instrument {
+                assert!(ccs.is_empty());
+            } else {
+                assert_eq!(ccs, [74]);
+            }
+            assert!(e.undo());
+            assert_eq!(bindings(e.session()).count(), 2);
+        }
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn midi_learn_invalid_ranges_cannot_be_bound_or_restored() {
+        let mut e = crate::demo::demo_engine();
+        let t = e.session().track_by_name("Kick").unwrap().id;
+        e.execute("mix.insert", &json!({"track":t,"slot":0,"plugin":"gain"})).unwrap();
+        let plugin = plugin_assignment(t, Some(0), "gain", "gain", 75);
+        for (param, range) in [(json!("volume"), json!([0, 1])), (plugin["target"]["parameter"].clone(), json!([0, 1.5]))] {
+            let mut invalid = plugin.clone();
+            invalid["target"]["parameter"] = param;
+            invalid["range"] = range;
+            assert!(e.execute("midi.learn.bind", &invalid).unwrap_err().to_string().contains("endpoints"));
+            e.session_mut().edit.flags.insert(format!("{PREFIX}{invalid}"));
+        }
+        assert_eq!(stored(e.session()).count(), 2);
+        assert_eq!(bindings(e.session()).count(), 0);
+    }
 
     #[test]
     fn midi_learn_plugin_swap_carries_bindings_between_identical_effects() {

@@ -167,6 +167,22 @@ mod tests {
     }
 
     #[test]
+    fn midi_learn_sampler_load_releases_replaced_synth_assignment_until_undo() {
+        let d = dir("midi-learn");
+        let wav = d.join("tone.wav");
+        tone_wav(&wav, 440.0, 48_000, 0.01, 1);
+        let mut e = Engine::default();
+        let t = instrument_track(&mut e);
+        e.execute("midi.learn.bind", &json!({"target":{"track":t,"parameter":{"plugin":{"slot":null,"plugin":"subtractive_synth","id":"cutoff"}}},"source":{"device":"Keys","channel":1,"cc":75}})).unwrap();
+        e.execute("mix.sampler_load", &json!({"track":t,"path":wav})).unwrap();
+        assert_eq!(crate::midi_learn::stored(e.session()).count(), 0);
+        assert!(e.undo());
+        assert_eq!(crate::midi_learn::bindings(e.session()).count(), 1);
+        std::fs::remove_file(wav).unwrap();
+        std::fs::remove_dir(d).unwrap();
+    }
+
+    #[test]
     fn loads_a_sample_plays_it_and_undoes() {
         let d = dir("play");
         let wav = d.join("tone.wav");

@@ -1,5 +1,20 @@
 use super::{Color32, Sense, SoundApp, Stroke, Tokens, Ui, json, mono, pos2, vec2};
 
+fn parameter_filter(ui: &mut Ui, plugin: &str, param_count: usize) -> String {
+    if param_count <= 32 {
+        return String::new();
+    }
+    let key = ui.scope_id().with(("parameter filter", plugin));
+    let mut filter: String = ui.data(|d| d.get_temp(key)).unwrap_or_default();
+    ui.horizontal(|ui| {
+        ui.label(crate::localization::text("Find parameter"));
+        if ui.text_edit_singleline(&mut filter).changed() {
+            ui.data_mut(|d| d.insert_temp(key, filter.clone()));
+        }
+    });
+    filter
+}
+
 /// Draw plugin windows for instrument and insert slots that still exist, removing closed ones from the list.
 pub(super) fn plugin_windows(app: &mut SoundApp, ctx: &egui::Context) {
     let wins = app.ui.plugin_windows.clone();
@@ -60,16 +75,7 @@ pub(super) fn plugin_windows(app: &mut SoundApp, ctx: &egui::Context) {
                 if info.id == "eq_7band" || info.id == "eq_1band" {
                     eq_curve(ui, info.id, &ins);
                 }
-                let filter_key = ui.scope_id().with("parameter filter");
-                let mut filter = ui.data(|d| d.get_temp::<String>(filter_key)).unwrap_or_default();
-                if info.params.len() > 32 {
-                    ui.horizontal(|ui| {
-                        ui.label(crate::localization::text("Find parameter"));
-                        if ui.text_edit_singleline(&mut filter).changed() {
-                            ui.data_mut(|d| d.insert_temp(filter_key, filter.clone()));
-                        }
-                    });
-                }
+                let filter = parameter_filter(ui, &ins.plugin, info.params.len());
                 let words: Vec<_> = filter.split_whitespace().map(str::to_lowercase).collect();
                 egui::ScrollArea::vertical().max_height(440.0).show(ui, |ui| {
                     egui::Grid::new(("pg", tid.0, slot)).num_columns(3).show(ui, |ui| {
@@ -265,4 +271,23 @@ fn preset_menu(
         }
     });
     ui.ctx().memory_mut(|m| m.data.insert_temp(key, name));
+}
+
+#[cfg(test)]
+mod parameter_filter_tests {
+    use super::*;
+
+    #[test]
+    fn midi_learn_parameter_filter_follows_its_plugin_and_only_applies_when_visible() {
+        let ctx = egui::Context::default();
+        let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
+            let key = ui.scope_id().with(("parameter filter", "synth"));
+            ui.data_mut(|d| d.insert_temp(key, String::from("cutoff")));
+            assert_eq!(parameter_filter(ui, "synth", 128), "cutoff");
+            assert!(parameter_filter(ui, "gain", 1).is_empty());
+            assert!(parameter_filter(ui, "other synth", 128).is_empty());
+            assert!(parameter_filter(ui, "synth", 32).is_empty());
+        });
+        output.textures_delta.clear();
+    }
 }

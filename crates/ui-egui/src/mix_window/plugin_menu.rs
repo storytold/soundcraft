@@ -99,7 +99,7 @@ fn pick_insert(app: &mut SoundApp, ui: &Ui, id: TrackId, slot: usize, plugin: &s
     ui.close();
 }
 
-/// Runs a menu's pick, shows its error in the status line and closes the menu.
+/// Open the generic parameter editor for this instance.
 fn edit_parameters(app: &mut SoundApp, ui: &mut Ui, id: TrackId, slot: usize) {
     if ui.button(crate::localization::text("Edit Parameters…")).clicked() {
         if !app.ui.plugin_windows.contains(&(id, slot)) {
@@ -109,6 +109,7 @@ fn edit_parameters(app: &mut SoundApp, ui: &mut Ui, id: TrackId, slot: usize) {
     }
 }
 
+/// Runs a menu's pick, shows its error in the status line and closes the menu.
 fn run_pick(app: &mut SoundApp, ui: &Ui, cmd: &str, params: serde_json::Value) {
     if let Err(e) = app.run(cmd, params) {
         app.ui.status = e;
