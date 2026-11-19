@@ -81,6 +81,8 @@ pub(crate) struct AudioState {
     read: f64,
     pub(crate) device_rate: f64,
     input: Option<Arc<record::InputRing>>,
+    /// Nothing read the input for a while (see `fill`).
+    input_paused: bool,
     recording: bool,
     midi: Option<Arc<midi::MidiFeed>>,
     /// Live MIDI events of this callback not played yet: frames (session rate) until each is due.
@@ -175,6 +177,7 @@ impl AudioState {
             read: 0.0,
             device_rate,
             input: None,
+            input_paused: false,
             recording: false,
             midi: None,
             midi_pending: Vec::with_capacity(MIDI_EVENTS),
@@ -543,9 +546,9 @@ impl AudioState {
         });
         self.midi_lost(lost);
     }
-
-    /// Render the next block at the session rate into `pending`.
-    fn render_next(&mut self, quantum: usize) {
+    /// Render the next block at the session rate into `pending`: at most `quantum` frames of the
+    /// `demand` frames this device callback takes in all.
+    fn render_next(&mut self, quantum: usize, demand: usize) {
         let mut n = quantum.clamp(1, BLOCK);
         if let Some(l) = self.looped
             && self.pos >= l.end
@@ -580,11 +583,14 @@ impl AudioState {
             return;
         }
         if let Some(ring) = &self.input {
+            if std::mem::take(&mut self.input_paused) {
+                ring.resync();
+            }
             let ch = ring.channels.load(Ordering::Relaxed).max(1);
             if self.mix.input.len() != ch {
                 self.mix.input = vec![vec![0.0; BLOCK]; ch];
             }
-            ring.pop_into(&mut self.mix.input, n, self.session.sample_rate.hz());
+            ring.pop_into(&mut self.mix.input, n, demand, self.session.sample_rate.hz());
         }
         self.due_midi(n);
         self.mix.monitor_only = !self.playing;
@@ -683,6 +689,17 @@ impl AudioState {
             && self.session.tracks.iter().any(|t| matches!(t.kind, TrackKind::Instrument | TrackKind::Midi) && midi_thru(t));
         let monitoring = midi_live || (self.input.is_some() && self.session.tracks.iter().any(|t| t.mixer.input_monitor || t.mixer.record_arm));
         if !self.playing && !monitoring {
+            // Nothing listens. The input read stands still: start it afresh when it resumes, and
+            // drop what is left of the last rendered block and of the input read so far, which
+            // would be heard first then.
+            if !self.input_paused
+                && let Some(ring) = &self.input
+            {
+                ring.pause();
+            }
+            self.input_paused = true;
+            self.pending_len = 0;
+            self.read = 0.0;
             self.drop_midi();
             out.iter_mut().for_each(|x| *x = 0.0);
             self.unsent.silence();
@@ -692,7 +709,9 @@ impl AudioState {
             }
             return;
         }
-        let quantum = ((callback_frames as f64 * step).ceil() as usize).clamp(1, BLOCK);
+        // Session frames this callback takes in all, rendered in blocks of at most `BLOCK`.
+        let demand = (callback_frames as f64 * step).ceil() as usize;
+        let quantum = demand.clamp(1, BLOCK);
         if !midi_live {
             self.drop_midi();
         }
@@ -702,7 +721,7 @@ impl AudioState {
                 if !self.playing && !monitoring {
                     break;
                 }
-                self.render_next(quantum);
+                self.render_next(quantum, demand);
                 if self.pending_len == 0 {
                     break;
                 }

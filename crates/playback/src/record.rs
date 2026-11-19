@@ -79,6 +79,9 @@ impl CaptureRing {
     }
 }
 
+/// Most frames the input callback converts and pushes at once; longer callbacks go in pieces.
+const PUSH_FRAMES: usize = 8192;
+
 /// An input sample, or silence for NaN and infinities, which would poison the take and the mix.
 fn finite(x: f32) -> f32 {
     if x.is_finite() { x } else { 0.0 }
@@ -154,7 +157,8 @@ where
     use cpal::traits::DeviceTrait;
     let (sh, errors) = (Arc::clone(shared), Arc::clone(shared));
     let mon = Arc::clone(monitor);
-    let mut scratch = vec![0.0f32; 8192 * usize::from(config.channels).max(1)];
+    let channels = usize::from(config.channels).max(1);
+    let mut scratch = vec![0.0f32; PUSH_FRAMES * channels];
     let chunk = scratch.len();
     let mut owed = 0;
     device.build_input_stream(
@@ -162,6 +166,9 @@ where
         move |data: &[T], _: &cpal::InputCallbackInfo| {
             crate::mark_audio_thread();
             sh.guarded(|| {
+                // The whole delivery, before it is cut to the scratch buffer: the monitor plans
+                // its reserve by what the device delivers at once.
+                mon.delivery(data.len() / channels);
                 for part in data.chunks(chunk) {
                     let Some(s) = scratch.get_mut(..part.len()) else { return };
                     for (o, x) in s.iter_mut().zip(part) {
@@ -250,19 +257,29 @@ impl Recorder {
         let channels = usize::from(config.channels).max(1);
         let ring = CaptureRing::new((config.sample_rate as usize).saturating_mul(channels * RING_SECONDS).min(1 << 25));
         let shared = Arc::new(Shared::new(ring));
-        let monitor = InputRing::new(usize::from(config.channels), config.sample_rate);
-        let build = |config: cpal::StreamConfig| match format {
-            cpal::SampleFormat::I32 => build_input::<i32>(&device, config, &shared, &monitor),
-            cpal::SampleFormat::I16 => build_input::<i16>(&device, config, &shared, &monitor),
-            _ => build_input::<f32>(&device, config, &shared, &monitor),
+        // The monitor ring is sized for the stream's callbacks before the stream starts; when the
+        // host picks the buffer size, for the largest one Setup offers.
+        let monitor_for = |buffer: cpal::BufferSize| {
+            let callback = match buffer {
+                cpal::BufferSize::Fixed(n) => n as usize,
+                cpal::BufferSize::Default => InputRing::LARGEST_CALLBACK,
+            };
+            InputRing::sized(channels, config.sample_rate, callback)
+        };
+        let mut monitor = monitor_for(config.buffer_size);
+        let build = |config: cpal::StreamConfig, monitor: &Arc<InputRing>| match format {
+            cpal::SampleFormat::I32 => build_input::<i32>(&device, config, &shared, monitor),
+            cpal::SampleFormat::I16 => build_input::<i16>(&device, config, &shared, monitor),
+            _ => build_input::<f32>(&device, config, &shared, monitor),
         };
         // The chosen buffer size first; if the device refuses it, its default.
-        let stream = match build(config) {
+        let stream = match build(config, &monitor) {
             Ok(s) => s,
             Err(e) if config.buffer_size != cpal::BufferSize::Default => {
                 log::warn!("cannot open the input with buffer {:?}: {e}; using the device default", config.buffer_size);
                 config.buffer_size = cpal::BufferSize::Default;
-                build(config).map_err(|e| e.to_string())?
+                monitor = monitor_for(config.buffer_size);
+                build(config, &monitor).map_err(|e| e.to_string())?
             }
             Err(e) => return Err(e.to_string()),
         };
@@ -612,76 +629,292 @@ mod tests {
     }
 }
 
-/// Ring state behind the lock: interleaved input frames at the input device's rate, plus the
-/// fractional read position (in input frames) of the next output sample.
-struct RingState {
-    data: std::collections::VecDeque<f32>,
+/// The reading side of an [`InputRing`]: the read position and how well the streams keep step.
+struct Reader {
+    /// Fractional position (input frames) of the next output sample past the ring's tail.
     phase: f64,
+    /// Reading has started: enough input is buffered. Cleared when the input runs dry.
+    primed: bool,
+    /// Extra frames kept in hand, grown each time the input ran dry.
+    extra: usize,
+    /// Fewest frames left after a read in the current half-second window, and its length so far.
+    low: usize,
+    window: usize,
+    /// Largest reserve asked for in that window: what `low` is compared with.
+    target: usize,
+    /// Read speed correction (±0.5 %) that holds the reserve steady across two device clocks.
+    trim: f64,
+    /// The steady part of `trim`: the clock difference learned so far.
+    drift: f64,
 }
 
-/// A small interleaved FIFO from the input callback to the output callback, for input
-/// monitoring. Both sides only `try_lock`; it holds at most ~0.5 s and drops the oldest frames.
-/// The input device may run at a different rate than the session, so the reader converts
-/// rates with linear interpolation (cheap, allocation-free, fine for monitoring).
+/// Live input from the input callback to the output callback, for input monitoring. The samples
+/// cross lock-free; the reader's own state sits behind a lock only the output callback tries.
+/// The reader keeps a small reserve and steers its speed to hold it; it also converts the rate.
 pub struct InputRing {
-    state: Mutex<RingState>,
-    pub channels: std::sync::atomic::AtomicUsize,
+    slots: Box<[AtomicU32]>,
+    mask: usize,
+    /// Samples written and samples read so far (wrapping).
+    head: AtomicUsize,
+    tail: AtomicUsize,
+    pub channels: AtomicUsize,
     /// Input device sample rate in Hz (0 when unknown, which reads as "same as the session").
     rate: u32,
-    /// Most samples kept: half a second of input, or 24 000 frames when the rate is unknown.
-    cap: usize,
+    /// Largest delivery of the input device (frames): a callback, whole.
+    push_block: AtomicUsize,
+    /// Times the input ran dry while being read (each is a gap in what is heard).
+    underruns: AtomicUsize,
+    /// The input found the ring full and dropped a block: what is buffered is stale.
+    overflowed: AtomicBool,
+    /// Where the samples written stood (`head`) when the last block was dropped.
+    dropped_at: AtomicUsize,
+    /// Peak of each input channel since [`InputRing::take_peaks`] (bits of a non-negative f32).
+    peaks: Box<[AtomicU32]>,
+    /// Only the reader locks this (`try_lock`, never contended in normal running).
+    reader: Mutex<Reader>,
 }
 
 impl InputRing {
+    /// Frames per callback planned for when the input's callback size is not known: the largest
+    /// buffer size Setup offers.
+    pub const LARGEST_CALLBACK: usize = 8192;
+
+    /// A ring for an input whose callback size is not known.
     pub fn new(channels: usize, rate: u32) -> Arc<InputRing> {
+        InputRing::sized(channels, rate, InputRing::LARGEST_CALLBACK)
+    }
+
+    /// A ring for an input delivering `callback_frames` frames per callback (at most 65 536 are
+    /// planned for). Allocated whole here, before the stream starts.
+    pub fn sized(channels: usize, rate: u32, callback_frames: usize) -> Arc<InputRing> {
         let ch = channels.max(1);
-        let frames = if rate == 0 { 24_000 } else { rate as usize / 2 };
+        // Half a second of input, and at least room for the reader's start (a read, the reserve
+        // and the extra it may grow) with the next callbacks behind it: far more than the reader
+        // keeps, room for a stalled reader.
+        let half_second = if rate == 0 { 24_000 } else { rate as usize / 2 };
+        let callbacks = callback_frames.clamp(1, 65_536).saturating_mul(8).saturating_add(8_192);
+        let frames = half_second.max(callbacks).clamp(4_096, 1 << 20);
+        let n = frames.saturating_mul(ch).next_power_of_two();
         Arc::new(InputRing {
-            state: Mutex::new(RingState { data: std::collections::VecDeque::with_capacity(rate.max(48_000) as usize * ch), phase: 0.0 }),
-            channels: std::sync::atomic::AtomicUsize::new(ch),
+            slots: (0..n).map(|_| AtomicU32::new(0)).collect(),
+            mask: n - 1,
+            head: AtomicUsize::new(0),
+            tail: AtomicUsize::new(0),
+            channels: AtomicUsize::new(ch),
             rate,
-            cap: frames * ch,
+            push_block: AtomicUsize::new(0),
+            underruns: AtomicUsize::new(0),
+            overflowed: AtomicBool::new(false),
+            dropped_at: AtomicUsize::new(0),
+            peaks: (0..ch.min(64)).map(|_| AtomicU32::new(0)).collect(),
+            reader: Mutex::new(Reader { phase: 0.0, primed: false, extra: 0, low: usize::MAX, window: 0, target: 0, trim: 0.0, drift: 0.0 }),
         })
     }
 
+    /// Frames per callback the input device delivers (0 before the first).
+    pub fn input_block(&self) -> usize {
+        self.push_block.load(Ordering::Relaxed)
+    }
+
+    /// The peak level of each input channel since the last call (linear, 1.0 is full scale).
+    pub fn take_peaks(&self) -> Vec<f32> {
+        self.peaks.iter().map(|p| f32::from_bits(p.swap(0, Ordering::Relaxed))).collect()
+    }
+
+    /// How often the input ran dry while it was being listened to.
+    pub fn underruns(&self) -> usize {
+        self.underruns.load(Ordering::Relaxed)
+    }
+
+    /// Input callback: the device delivered `frames` frames at once, which [`InputRing::push`]
+    /// then gets in one piece or in several.
+    pub fn delivery(&self, frames: usize) {
+        self.push_block.fetch_max(frames, Ordering::Relaxed);
+    }
+
+    /// Input callback: queue interleaved samples. A block that finds the ring full is dropped.
     pub fn push(&self, samples: &[f32]) {
-        if let Ok(mut s) = self.state.try_lock() {
-            s.data.extend(samples.iter().copied().map(finite));
-            while s.data.len() > self.cap {
-                s.data.pop_front();
+        let ch = self.channels.load(Ordering::Relaxed).max(1);
+        // Levels for the input meters, also of a block the full ring drops: the device still
+        // receives it. Non-negative floats order like their bits.
+        for (c, peak) in self.peaks.iter().enumerate() {
+            let top = samples.iter().skip(c).step_by(ch).fold(0.0f32, |m, s| m.max(finite(*s).abs()));
+            peak.fetch_max(top.to_bits(), Ordering::Relaxed);
+        }
+        // The block size goes before the samples: the reader that sees them (the release store
+        // to `head` below) sizes its reserve by it.
+        self.push_block.fetch_max(samples.len() / ch, Ordering::Relaxed);
+        let head = self.head.load(Ordering::Relaxed);
+        let free = self.slots.len().saturating_sub(head.wrapping_sub(self.tail.load(Ordering::Acquire)));
+        if samples.len() > free {
+            self.dropped_at.store(head, Ordering::Relaxed);
+            self.overflowed.store(true, Ordering::Release);
+            return;
+        }
+        for (i, s) in samples.iter().enumerate() {
+            if let Some(slot) = self.slots.get(head.wrapping_add(i) & self.mask) {
+                slot.store(finite(*s).to_bits(), Ordering::Relaxed);
             }
+        }
+        self.head.store(head.wrapping_add(samples.len()), Ordering::Release);
+    }
+
+    fn sample(&self, at: usize) -> f32 {
+        self.slots.get(at & self.mask).map_or(0.0, |s| f32::from_bits(s.load(Ordering::Relaxed)))
+    }
+
+    /// Output callback: reading stops for a while. Drops what is buffered, so that the input
+    /// from before the pause is not what is heard when reading resumes; the input that arrives
+    /// during the pause is kept.
+    pub fn pause(&self) {
+        // A block dropped before now belongs to the input given up here, not to what comes
+        // next: its notice is taken back. One the input callback raises this instant is told by
+        // where it was dropped (see `pop_into`).
+        self.overflowed.store(false, Ordering::Release);
+        // Only the output callback moves `tail`, and this is the output callback.
+        self.tail.store(self.head.load(Ordering::Acquire), Ordering::Release);
+        self.resync();
+    }
+
+    /// Start afresh at the newest input the next time it is read (after a pause in reading).
+    pub fn resync(&self) {
+        if let Ok(mut r) = self.reader.try_lock() {
+            r.primed = false;
         }
     }
 
-    /// Fill `out` (planar, at `session_rate`) with up to `frames` frames, converting from the
-    /// input rate. Missing frames are silence.
-    pub fn pop_into(&self, out: &mut [Vec<f32>], frames: usize, session_rate: u32) {
+    /// Output callback: fill `out` (planar, at `session_rate`) with `frames` frames, one read of
+    /// an output callback that takes `callback` frames in all (in as many reads as it needs, with
+    /// no input arriving between them). Silence until enough input is buffered, and where it
+    /// runs dry.
+    pub fn pop_into(&self, out: &mut [Vec<f32>], frames: usize, callback: usize, session_rate: u32) {
         let ch = self.channels.load(Ordering::Relaxed).max(1);
         for c in out.iter_mut() {
             c.iter_mut().take(frames).for_each(|x| *x = 0.0);
         }
-        let Ok(mut s) = self.state.try_lock() else { return };
+        let Ok(mut r) = self.reader.try_lock() else { return };
         // Input frames consumed per output frame.
-        let step = if self.rate == 0 || session_rate == 0 { 1.0 } else { f64::from(self.rate) / f64::from(session_rate) };
-        for f in 0..frames {
-            // Drop input frames we have moved past; keep the one at `phase` and the next one.
-            while s.phase >= 1.0 && s.data.len() >= 2 * ch {
-                s.data.drain(..ch);
-                s.phase -= 1.0;
+        let ratio = if self.rate == 0 || session_rate == 0 { 1.0 } else { f64::from(self.rate) / f64::from(session_rate) };
+        // Before `head`: when a block was dropped, the `head` read next covers all the input
+        // published before the drop, so none of it is kept and played next to fresh input.
+        let overflowed = self.overflowed.swap(false, Ordering::Acquire);
+        let head = self.head.load(Ordering::Acquire);
+        let mut tail = self.tail.load(Ordering::Relaxed);
+        // A block dropped where reading now starts was dropped for input that [`InputRing::pause`]
+        // has given up since: what was written after it is fresh.
+        let overflowed = overflowed && self.dropped_at.load(Ordering::Relaxed) != tail;
+        let mut avail = head.wrapping_sub(tail) / ch;
+        // What the whole output callback takes (not only this read of it), the input's own block,
+        // and the reserve beyond the callback: a callback of the longer side and a little more,
+        // so that a late input block is not a gap.
+        // Reading runs a little off the nominal ratio, by the clock difference learned so far
+        // (what a start takes up) or the correction in force: the callback takes that much.
+        let pace = ratio * (1.0 + if r.primed && !overflowed { r.trim } else { r.drift });
+        let read = (frames as f64 * pace).ceil() as usize + 2;
+        let push = self.push_block.load(Ordering::Relaxed).max(1);
+        // No more than the ring can hold, so that a ring filled by fresh input starts reading.
+        let room = self.slots.len() / ch;
+        // A callback too long for the ring (with an input block beside it) counts for what fits
+        // twice, itself and its reserve, beside the input blocks around them: it is then heard
+        // as well as the ring allows, where waiting for a start the ring cannot hold is never
+        // heard. A callback the ring holds counts whole: reading that starts on less runs dry
+        // at the end of every callback.
+        let fits = room.saturating_sub(push.saturating_mul(2)).saturating_sub(r.extra).saturating_sub(64) / 2;
+        let demand = ((frames.max(callback) as f64 * pace).ceil() as usize).saturating_add(2);
+        let holds = demand.saturating_add(push) <= room;
+        let need = if holds { demand } else { demand.min(fits).max(read) };
+        // Input and output come in bursts: the longer of the two callbacks is how far what is
+        // buffered rises and falls, the shorter how far a burst can be early. The ring is sized
+        // by the input's callback as planned for, not by the output's nor by a longer delivery
+        // of the host's choosing: the reserve (what is left at the lowest) leaves room for a
+        // burst above it, twice early. A burst that overflows the ring makes it drop it all;
+        // at every callback, that is never heard.
+        let (burst, early) = (demand.max(push), demand.min(push));
+        let beside = room.saturating_sub(burst).saturating_sub(early.saturating_mul(2));
+        let reserve = need.max(push.saturating_add(2)).saturating_add(16).saturating_add(r.extra).min(beside);
+        // Reading starts once the input covers this callback and the reserve; a whole burst,
+        // where the ring is too small for that much reserve, so that what is left before the
+        // next burst is not nothing.
+        let start = need.saturating_add(reserve.max(burst));
+        // The input side dropped a block: reading stood still and all of it is old. A ring that
+        // is merely full holds fresh input that has not been read yet.
+        if overflowed {
+            tail = head;
+            avail = 0;
+            r.primed = false;
+        }
+        if !r.primed {
+            // Wait for the start while the ring has room for another burst, and for the callback
+            // itself in any case; then read from the newest input, keeping the callback and the
+            // whole reserve, and the input block they come with, when that much is there.
+            let more_fits = avail.saturating_add(burst) <= room;
+            if avail < need || (avail < start && more_fits) {
+                // A callback of more than half the ring: the input of the next one does not fit
+                // behind all of this one's, and a ring that overflows is dropped whole, at every
+                // callback. Waiting gives up the oldest input instead, and the next callback
+                // finds its start.
+                if holds && !more_fits && avail > beside {
+                    tail = head.wrapping_sub(beside * ch);
+                }
+                self.tail.store(tail, Ordering::Release);
+                return;
             }
-            if s.phase >= 1.0 || s.data.len() < 2 * ch {
+            let keep = need.saturating_add(reserve).saturating_add(push).min(beside.saturating_add(burst)).min(avail);
+            tail = head.wrapping_sub(keep * ch);
+            avail = keep;
+            *r = Reader { primed: true, extra: r.extra, phase: 0.0, low: usize::MAX, window: 0, target: 0, trim: r.drift, drift: r.drift };
+        }
+        let step = ratio * (1.0 + r.trim);
+        for f in 0..frames {
+            // Move past the input frames already read; keep the one at `phase` and the next.
+            while r.phase >= 1.0 && avail >= 2 {
+                tail = tail.wrapping_add(ch);
+                avail -= 1;
+                r.phase -= 1.0;
+            }
+            if r.phase >= 1.0 || avail < 2 {
+                // Ran dry: a gap. Keep more in hand from now on (up to four input blocks more).
+                r.primed = false;
+                r.extra = r.extra.saturating_add(reserve / 2 + 1).min(push.saturating_mul(4).max(256));
+                self.underruns.fetch_add(1, Ordering::Relaxed);
                 break;
             }
-            let fr = s.phase as f32;
+            let fr = r.phase as f32;
             for c in 0..ch {
-                let a = s.data.get(c).copied().unwrap_or(0.0);
-                let b = s.data.get(ch + c).copied().unwrap_or(a);
+                let (a, b) = (self.sample(tail.wrapping_add(c)), self.sample(tail.wrapping_add(ch + c)));
                 if let Some(x) = out.get_mut(c).and_then(|o| o.get_mut(f)) {
                     *x = a + (b - a) * fr;
                 }
             }
-            s.phase += step;
+            r.phase += step;
         }
+        if r.primed {
+            // Every half second, compare the least that was left after a read with the reserve:
+            // the largest one the window asked for, so that a callback shorter than the others
+            // does not make what the longer ones need look like a backlog.
+            r.low = r.low.min(avail);
+            r.window = r.window.saturating_add(frames);
+            r.target = r.target.max(reserve);
+            let window = (session_rate as usize / 2).max(1);
+            if r.window >= window {
+                let over = r.low as f64 - r.target as f64;
+                if over > (push.max(need) + self.rate.max(1) as usize / 100) as f64 {
+                    // Far behind (more than 10 ms late): drop the excess at once.
+                    let skip = over as usize;
+                    tail = tail.wrapping_add(skip.min(avail.saturating_sub(2)) * ch);
+                    r.trim = r.drift;
+                } else {
+                    // The two clocks differ: learn by how much, and work the rest off quickly.
+                    let rate = over / (window as f64 * ratio);
+                    r.drift = (r.drift + 0.1 * rate).clamp(-0.005, 0.005);
+                    r.trim = (r.drift + 0.5 * rate).clamp(-0.005, 0.005);
+                }
+                r.low = usize::MAX;
+                r.window = 0;
+                r.target = 0;
+            }
+        }
+        self.tail.store(tail, Ordering::Release);
     }
 }
 
@@ -689,66 +922,387 @@ impl InputRing {
 mod ring_tests {
     use super::InputRing;
 
-    /// A 1 kHz sine recorded at 16 kHz must come out as a 1 kHz sine at 48 kHz, across calls.
+    fn sine(k: usize, rate: f64) -> f32 {
+        (2.0 * std::f64::consts::PI * 1_000.0 * k as f64 / rate).sin() as f32
+    }
+
+    /// Runs input callbacks of `push` frames at `in_rate` (clock off by `drift`) against output
+    /// callbacks of `pop` frames at 48 kHz, read as the output callback does: in blocks of at
+    /// most 512 frames. Returns the output and how often the input ran dry.
+    fn run(in_rate: u32, push: usize, pop: usize, seconds: f64, drift: f64) -> (Vec<f32>, usize) {
+        run_ring(&InputRing::new(1, in_rate), in_rate, push, pop, seconds, drift)
+    }
+
+    /// [`run`] on a given mono ring.
+    fn run_ring(ring: &InputRing, in_rate: u32, push: usize, pop: usize, seconds: f64, drift: f64) -> (Vec<f32>, usize) {
+        run_at(ring, in_rate, 48_000, push, pop, seconds, drift)
+    }
+
+    /// [`run_ring`] with output callbacks at the session rate `rate`.
+    fn run_at(ring: &InputRing, in_rate: u32, rate: u32, push: usize, pop: usize, seconds: f64, drift: f64) -> (Vec<f32>, usize) {
+        let (mut out, mut block) = (Vec::new(), vec![vec![0.0f32; 512]]);
+        let (mut pushed, mut k) = (0.0f64, 0usize);
+        let total = (f64::from(rate) * seconds) as usize;
+        while out.len() < total {
+            // Input frames due by the end of this output block.
+            let due = (out.len() + pop) as f64 * f64::from(in_rate) / f64::from(rate) * (1.0 + drift);
+            while pushed + push as f64 <= due {
+                // As the input callback does: the delivery, in pieces of at most 8192 frames.
+                let data: Vec<f32> = (0..push).map(|i| sine(k + i, f64::from(in_rate))).collect();
+                ring.delivery(push);
+                data.chunks(8192).for_each(|part| ring.push(part));
+                k += push;
+                pushed += push as f64;
+            }
+            let mut left = pop;
+            while left > 0 {
+                let n = left.min(512);
+                ring.pop_into(&mut block, n, pop, rate);
+                out.extend_from_slice(&block[0][..n]);
+                left -= n;
+            }
+        }
+        (out, ring.underruns())
+    }
+
+    /// The largest jump between neighbouring samples: 0.131 at most for the sine, far more at a gap.
+    fn roughness(out: &[f32]) -> f32 {
+        let start = out.iter().position(|v| v.abs() > 0.5).unwrap_or(out.len());
+        out.get(start..).unwrap_or_default().windows(2).map(|w| (w[1] - w[0]).abs()).fold(0.0, f32::max)
+    }
+
     #[test]
-    fn monitor_converts_input_rate_to_session_rate() {
-        let ring = InputRing::new(1, 16_000);
-        let input: Vec<f32> = (0..4_000).map(|i| (2.0 * std::f64::consts::PI * 1_000.0 * f64::from(i) / 16_000.0).sin() as f32).collect();
-        ring.push(&input);
-        let mut out = vec![vec![0.0f32; 48]];
+    fn monitoring_is_continuous_for_small_and_large_buffers_on_one_clock() {
+        for (rate, push, pop) in [(48_000, 64, 64), (48_000, 1024, 1024), (48_000, 256, 64), (48_000, 64, 512), (44_100, 441, 480), (96_000, 128, 64)]
+        {
+            let (out, dry) = run(rate, push, pop, 3.0, 0.0);
+            assert_eq!(dry, 0, "{rate} Hz, {push} in, {pop} out");
+            assert!(roughness(&out) < 0.14, "{rate} Hz, {push} in, {pop} out: {}", roughness(&out));
+            assert!(out.iter().skip(48_000).any(|v| v.abs() > 0.9), "the input is heard");
+        }
+    }
+
+    /// An output callback longer than a render block reads the ring several times with no input
+    /// arriving in between: the reserve covers the whole callback, not one read of it. 8192
+    /// frames out against 64-frame input blocks is the reviewed case.
+    #[test]
+    fn monitoring_is_continuous_for_output_callbacks_of_many_render_blocks() {
+        for (rate, push, pop) in [(48_000, 64, 8192), (48_000, 256, 2048), (48_000, 64, 1024), (44_100, 128, 4096), (96_000, 64, 8192)] {
+            let (out, dry) = run(rate, push, pop, 4.0, 0.0);
+            assert_eq!(dry, 0, "{rate} Hz, {push} in, {pop} out");
+            assert!(roughness(&out) < 0.14, "{rate} Hz, {push} in, {pop} out: {}", roughness(&out));
+            assert!(out.iter().skip(96_000).any(|v| v.abs() > 0.9), "{rate} Hz, {push} in, {pop} out: the input is heard");
+        }
+    }
+
+    /// An output callback that takes more input than the ring holds twice over (16 384 frames
+    /// in one callback, the largest buffer played at double speed, from a ring of 32 768) is
+    /// still heard.
+    #[test]
+    fn a_callback_too_long_for_the_ring_is_still_heard() {
+        let ring = InputRing::sized(1, 48_000, 480);
+        assert_eq!(ring.slots.len(), 32_768);
+        let (out, _) = run_ring(&ring, 48_000, 480, 16_384, 4.0, 0.0);
+        assert!(out.iter().any(|v| v.abs() > 0.9), "the input is never heard");
+    }
+
+    /// The ring is sized by the input's callback (64 frames: 32 768 slots), and an output
+    /// callback of 12 288 frames asks for a start of two callbacks: with the input of the third
+    /// that is more than the ring holds. The start leaves room for it, and the input is heard.
+    #[test]
+    fn an_output_callback_far_longer_than_the_inputs_is_heard() {
+        let ring = InputRing::sized(1, 48_000, 64);
+        assert_eq!(ring.slots.len(), 32_768);
+        let (out, dry) = run_ring(&ring, 48_000, 64, 12_288, 4.0, 0.0);
+        assert!(out.iter().any(|v| v.abs() > 0.9), "the input is never heard");
+        assert_eq!(dry, 0);
+        assert!(roughness(&out) < 0.14, "{}", roughness(&out));
+    }
+
+    /// An output callback of half the ring (16 384 frames, 32 768 slots): the limit on the start
+    /// does not go below the callback itself, or every callback would run dry at its end.
+    #[test]
+    fn an_output_callback_of_half_the_ring_does_not_run_dry() {
+        let ring = InputRing::sized(1, 48_000, 64);
+        assert_eq!(ring.slots.len(), 32_768);
+        let (out, dry) = run_ring(&ring, 48_000, 64, 16_384, 4.0, 0.0);
+        assert!(out.iter().any(|v| v.abs() > 0.9), "the input is never heard");
+        assert_eq!(dry, 0);
+        assert!(roughness(&out) < 0.14, "{}", roughness(&out));
+    }
+
+    /// An output callback of just over half the ring (16 448 frames, 32 768 slots): its first
+    /// input is two frames short of a start, and with the second the ring would overflow and be
+    /// dropped whole, at every callback. The wait gives up the oldest input instead.
+    #[test]
+    fn an_output_callback_of_just_over_half_the_ring_is_heard() {
+        let ring = InputRing::sized(1, 48_000, 64);
+        assert_eq!(ring.slots.len(), 32_768);
+        let (out, dry) = run_ring(&ring, 48_000, 64, 16_448, 4.0, 0.0);
+        assert!(out.iter().any(|v| v.abs() > 0.9), "the input is never heard");
+        assert_eq!(dry, 0);
+        assert!(roughness(&out) < 0.14, "{}", roughness(&out));
+    }
+
+    /// A host that picks the buffer size may deliver far more than the largest size Setup
+    /// offers (65 536 frames here), which reaches the ring in pieces of 8192. The reserve is
+    /// planned by the delivery, not by the piece, or the reader runs dry before each delivery.
+    #[test]
+    fn a_delivery_longer_than_the_pieces_it_is_pushed_in_does_not_run_dry() {
+        let ring = InputRing::new(1, 48_000);
+        assert_eq!(ring.slots.len(), 131_072);
+        let (out, dry) = run_ring(&ring, 48_000, 65_536, 64, 12.0, 0.0);
+        assert_eq!(ring.input_block(), 65_536);
+        assert!(out.iter().any(|v| v.abs() > 0.9), "the input is never heard");
+        assert_eq!(dry, 0);
+        assert!(roughness(&out) < 0.14, "{}", roughness(&out));
+    }
+
+    /// A delivery of half the ring (65 536 frames, 131 072 slots) at 192 kHz, from an input
+    /// clock that runs slow: the reader waits for the second delivery, which the ring holds,
+    /// and then has one in reserve. Starting on the first leaves nothing when the next is late.
+    #[test]
+    fn a_delivery_of_half_the_ring_from_a_slow_clock_does_not_run_dry() {
+        let ring = InputRing::new(1, 192_000);
+        assert_eq!(ring.slots.len(), 131_072);
+        let (out, dry) = run_at(&ring, 192_000, 192_000, 65_536, 64, 12.0, -0.001);
+        assert!(out.iter().any(|v| v.abs() > 0.9), "the input is never heard");
+        assert_eq!(dry, 0);
+        assert!(roughness(&out) < 0.14, "{}", roughness(&out));
+    }
+
+    /// A reader that has learned that the input clock runs fast starts at that speed, and takes
+    /// more input for a callback than the nominal ratio says: the start counts it, and waits
+    /// where the callback would run dry at its end.
+    #[test]
+    fn the_start_counts_the_clock_difference_learned() {
+        let ring = InputRing::sized(1, 48_000, 64);
+        ring.reader.lock().unwrap().drift = 0.0003;
+        for _ in 0..256 {
+            ring.push(&[0.5; 64]);
+        }
+        // 16 382 frames at 1.0003 take 16 387 input frames and the one after; 16 384 are there.
+        let mut out = vec![vec![0.0f32; 512]];
+        let mut left = 16_382;
+        while left > 0 {
+            let n = left.min(512);
+            ring.pop_into(&mut out, n, 16_382, 48_000);
+            left -= n;
+        }
+        assert_eq!(ring.underruns(), 0, "started on less than the callback takes");
+    }
+
+    /// A block dropped before a pause says the input from before it is stale. That input is
+    /// given up at the pause; the input since is fresh and is heard. A block dropped during the
+    /// pause still means what is buffered is stale.
+    #[test]
+    fn a_block_dropped_before_a_pause_does_not_drop_the_input_since() {
+        let ring = InputRing::new(1, 48_000);
+        let mut out = vec![vec![0.0f32; 64]];
+        for _ in 0..ring.slots.len() / 64 + 2 {
+            ring.push(&[0.5; 64]);
+        }
+        ring.pause();
+        for _ in 0..4 {
+            ring.push(&[-0.5; 64]);
+        }
+        ring.pop_into(&mut out, 64, 64, 48_000);
+        assert!(out[0].iter().all(|v| *v == -0.5), "the input since the pause is dropped: {:?}", out[0]);
+        ring.pause();
+        for _ in 0..ring.slots.len() / 64 + 2 {
+            ring.push(&[0.25; 64]);
+        }
+        ring.pop_into(&mut out, 64, 64, 48_000);
+        assert!(out[0].iter().all(|v| *v == 0.0), "input left to overflow during the pause is stale");
+    }
+
+    /// Input from before a pause in reading is not heard after it: one new block is not enough
+    /// to start on, and the old input is not used to make up the rest.
+    #[test]
+    fn a_pause_drops_the_input_from_before_it() {
+        let ring = InputRing::new(1, 48_000);
+        let mut out = vec![vec![0.0f32; 64]];
+        for _ in 0..4 {
+            ring.push(&[0.5; 64]);
+        }
+        ring.pop_into(&mut out, 64, 64, 48_000);
+        assert!(out[0].iter().all(|v| *v == 0.5), "the input is heard");
+        ring.pause();
+        ring.push(&[-0.5; 64]);
+        ring.pop_into(&mut out, 64, 64, 48_000);
+        assert!(out[0].iter().all(|v| *v == 0.0), "input from before the pause: {:?}", out[0]);
+        for _ in 0..3 {
+            ring.push(&[-0.5; 64]);
+        }
+        ring.pop_into(&mut out, 64, 64, 48_000);
+        assert!(out[0].iter().all(|v| *v == -0.5), "the input since the pause is heard");
+    }
+
+    /// A few callbacks shorter than the others, the last of them closing the half-second window,
+    /// do not make what the long ones keep in hand look like a backlog to be skipped. 48 kHz
+    /// input into a 16 kHz session is the reviewed case.
+    #[test]
+    fn short_callbacks_among_long_ones_do_not_skip_input() {
+        let ring = InputRing::new(1, 48_000);
+        let (mut out, mut block) = (Vec::new(), vec![vec![0.0f32; 512]]);
         let mut k = 0usize;
-        for _ in 0..10 {
-            ring.pop_into(&mut out, 48, 48_000);
-            for v in &out[0] {
-                let want = (2.0 * std::f64::consts::PI * 1_000.0 * k as f64 / 48_000.0).sin() as f32;
-                assert!((v - want).abs() < 0.05, "sample {k}: got {v}, want {want}");
-                k += 1;
+        // 14 callbacks of 512 frames, then 64-frame ones across the end of the window (8000).
+        for pop in std::iter::repeat_n(512usize, 14).chain(std::iter::repeat_n(64, 40)) {
+            // Three input frames for each output frame: a ramp, so that a skip shows as a jump.
+            for _ in 0..pop * 3 / 64 {
+                let data: Vec<f32> = (k..k + 64).map(|i| i as f32).collect();
+                ring.push(&data);
+                k += 64;
+            }
+            ring.pop_into(&mut block, pop, pop, 16_000);
+            out.extend_from_slice(&block[0][..pop]);
+        }
+        let start = out.iter().position(|v| *v != 0.0).unwrap_or(out.len());
+        let heard = out.get(start..).unwrap_or_default();
+        assert!(heard.len() > 8_000, "the input is heard: {}", heard.len());
+        let jump = heard.windows(2).map(|w| w[1] - w[0]).fold(0.0, f32::max);
+        assert!(jump < 3.5, "input was skipped: a jump of {jump} frames");
+        assert_eq!(ring.underruns(), 0);
+    }
+
+    /// The input meters show a block that the full ring dropped: the device still receives it.
+    #[test]
+    fn a_full_ring_still_meters_the_input() {
+        let ring = InputRing::new(1, 48_000);
+        for _ in 0..ring.slots.len() / 128 + 10 {
+            ring.push(&[0.0; 128]);
+        }
+        assert_eq!(ring.take_peaks(), vec![0.0]);
+        ring.push(&[0.5; 128]);
+        assert_eq!(ring.take_peaks(), vec![0.5], "nobody listens, the ring is full, and the input has signal");
+    }
+
+    #[test]
+    fn monitoring_follows_an_input_clock_that_runs_fast_or_slow() {
+        for drift in [0.0002, -0.0002, 0.001, -0.001] {
+            let (out, dry) = run(48_000, 64, 64, 20.0, drift);
+            assert_eq!(dry, 0, "drift {drift}");
+            assert!(roughness(&out) < 0.14, "drift {drift}: {}", roughness(&out));
+        }
+    }
+
+    #[test]
+    fn the_reserve_is_about_one_block_of_each_side_not_the_whole_ring() {
+        // A reader that comes late finds half a second waiting: it must start at the newest input.
+        let ring = InputRing::new(1, 48_000);
+        let ramp: Vec<f32> = (0..20_000).map(|i| i as f32).collect();
+        for block in ramp.chunks(64) {
+            ring.push(block);
+        }
+        let mut out = vec![vec![0.0f32; 64]];
+        ring.pop_into(&mut out, 64, 64, 48_000);
+        // 64 + 2 to read, that and 16 more in reserve, 64 for the next input block.
+        assert_eq!(out[0][0], (20_000 - 212) as f32);
+        assert_eq!(out[0][63], (20_000 - 212 + 63) as f32);
+    }
+
+    #[test]
+    fn a_ring_left_full_starts_afresh_and_an_empty_one_is_silent() {
+        let ring = InputRing::new(2, 48_000);
+        let mut out = vec![vec![1.0f32; 64], vec![1.0f32; 64]];
+        ring.pop_into(&mut out, 64, 64, 48_000);
+        assert!(out.iter().flatten().all(|v| *v == 0.0));
+        assert_eq!(ring.underruns(), 0, "waiting for input is not a gap");
+        ring.push(&[0.1, -0.7, -0.3, 0.2]);
+        assert_eq!((ring.take_peaks(), ring.take_peaks()), (vec![0.3, 0.7], vec![0.0, 0.0]), "a level per input channel");
+        // Nobody reads until the ring overflows: old input must not be played back afterwards.
+        for _ in 0..ring.slots.len() / 128 + 10 {
+            ring.push(&[0.25; 128]);
+        }
+        ring.pop_into(&mut out, 64, 64, 48_000);
+        assert!(out.iter().flatten().all(|v| *v == 0.0), "the stale input is dropped");
+        for _ in 0..4 {
+            ring.push(&[0.5, -0.5].repeat(64));
+        }
+        ring.pop_into(&mut out, 64, 64, 48_000);
+        assert!(out[0].iter().all(|v| *v == 0.5) && out[1].iter().all(|v| *v == -0.5));
+    }
+
+    /// Input callbacks as large as Setup offers (8192 frames) at low device rates, where one
+    /// callback is a large part of the ring or all of it: the input is heard, without gaps.
+    /// Mono 16 kHz with 8192-frame callbacks into a 48 kHz session reading 512 frames is the
+    /// reviewed case (eight callbacks, 48 reads between them).
+    #[test]
+    fn monitoring_is_heard_with_callbacks_as_large_as_the_ring() {
+        for (rate, push) in [(16_000, 8192), (16_000, 4096), (22_050, 8192), (8_000, 4096), (8_000, 8192)] {
+            let (out, dry) = run(rate, push, 512, 8.0 * 8192.0 / 16_000.0, 0.0);
+            assert!(out.iter().any(|v| v.abs() > 0.9), "{rate} Hz, {push} in: the input is never heard");
+            assert_eq!(dry, 0, "{rate} Hz, {push} in");
+            assert!(roughness(&out) < 0.14, "{rate} Hz, {push} in: {}", roughness(&out));
+        }
+    }
+
+    /// One callback that exactly fills the ring is fresh input, not the stale overflow of a
+    /// reader that stood still: it is played, from its start.
+    #[test]
+    fn a_callback_that_fills_the_ring_is_fresh_not_stale() {
+        let ring = InputRing::new(1, 16_000);
+        let frames = ring.slots.len();
+        let ramp: Vec<f32> = (1..=frames).map(|i| i as f32).collect();
+        ring.push(&ramp);
+        let mut out = vec![vec![0.0f32; 512]];
+        let mut heard = Vec::new();
+        for _ in 0..48 {
+            ring.pop_into(&mut out, 512, 512, 48_000);
+            heard.extend(out[0].iter().copied().filter(|v| *v != 0.0));
+        }
+        assert!(!heard.is_empty(), "a full first callback is dropped as stale");
+        assert!(heard.windows(2).all(|w| w[1] >= w[0]), "played in order");
+    }
+
+    /// Whatever the device rate, channel count and callback size Setup can choose, a ring sized
+    /// for that callback has room for the reader's start (this read and its reserve) plus the
+    /// next input callback.
+    #[test]
+    fn the_ring_holds_the_readers_start_and_the_next_callback() {
+        for rate in [8_000u32, 11_025, 16_000, 22_050, 44_100, 48_000, 96_000, 192_000] {
+            for ch in [1usize, 2, 8] {
+                for push in crate::devices::STANDARD_BUFFERS.iter().map(|b| *b as usize) {
+                    holds_the_start(&InputRing::sized(ch, rate, push), rate, ch, push);
+                }
             }
         }
     }
 
-    /// Input faster than the session (96 kHz into 48 kHz): every other frame is read, in order.
+    /// A ring for an input whose callback size is not known holds the same for the largest
+    /// callback Setup offers.
     #[test]
-    fn monitor_decimates_when_input_is_faster() {
-        let ring = InputRing::new(1, 96_000);
-        let input: Vec<f32> = (0..1_000).map(|i| i as f32).collect();
-        ring.push(&input);
-        let mut out = vec![vec![0.0f32; 100]];
-        ring.pop_into(&mut out, 100, 48_000);
-        for (k, v) in out[0].iter().enumerate() {
-            assert_eq!(*v, (2 * k) as f32, "output {k}");
+    fn the_default_ring_holds_the_largest_callback() {
+        for rate in [8_000u32, 11_025, 16_000, 22_050, 44_100, 48_000, 96_000, 192_000] {
+            for ch in [1usize, 2, 8] {
+                holds_the_start(&InputRing::new(ch, rate), rate, ch, InputRing::LARGEST_CALLBACK);
+            }
         }
     }
 
-    /// Same rate: samples pass through unchanged.
-    #[test]
-    fn monitor_passes_through_at_equal_rates() {
-        let ring = InputRing::new(2, 48_000);
-        let input: Vec<f32> = (0..200).map(|i| i as f32).collect();
-        ring.push(&input);
-        let mut out = vec![vec![0.0f32; 50], vec![0.0f32; 50]];
-        ring.pop_into(&mut out, 50, 48_000);
-        assert_eq!(out[0][0], 0.0);
-        assert_eq!(out[1][0], 1.0);
-        assert_eq!(out[0][49], 98.0);
-    }
-
-    /// Nothing buffered: silence, not stale data.
-    #[test]
-    fn monitor_underrun_is_silence() {
-        let ring = InputRing::new(1, 16_000);
-        let mut out = vec![vec![1.0f32; 16]];
-        ring.pop_into(&mut out, 16, 48_000);
-        assert!(out[0].iter().all(|v| *v == 0.0));
+    fn holds_the_start(ring: &InputRing, rate: u32, ch: usize, push: usize) {
+        let need = (512.0 * f64::from(rate) / 48_000.0).ceil() as usize + 2;
+        let reserve = need.max(push + 2) + 16;
+        let room = ring.slots.len() / ch;
+        assert!(
+            need + reserve + push < room,
+            "{rate} Hz, {ch} ch, {push}-frame callbacks: start {} + callback {push} >= ring {room}",
+            need + reserve
+        );
     }
 
     /// NaN and infinities from the device monitor as silence.
     #[test]
     fn monitor_silences_nan_and_infinite_input() {
         let ring = InputRing::new(1, 48_000);
-        ring.push(&[0.5, f32::NAN, f32::INFINITY, -0.5, 0.0, 0.0, 0.0, 0.0]);
-        let mut out = vec![vec![1.0f32; 4]];
-        ring.pop_into(&mut out, 4, 48_000);
-        assert_eq!(out[0], [0.5, 0.0, 0.0, -0.5]);
+        // Enough for the reader's reserve, so that it reads.
+        for _ in 0..4 {
+            ring.push(&[0.5, f32::NAN, f32::INFINITY, -0.5].repeat(16));
+        }
+        let mut out = vec![vec![1.0f32; 64]];
+        ring.pop_into(&mut out, 64, 64, 48_000);
+        assert!(out[0].iter().all(|v| v.is_finite() && v.abs() <= 0.5), "{:?}", out[0]);
+        assert!(out[0].iter().any(|v| *v > 0.25) && out[0].iter().any(|v| *v < -0.25), "{:?}", out[0]);
+        assert!(ring.take_peaks().iter().all(|p| *p == 0.5));
     }
 }
