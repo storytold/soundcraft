@@ -16,7 +16,7 @@ pub struct ControlChange {
 impl ControlChange {
     /// Preserve the effect of hitting either endpoint and then reversing between UI frames.
     pub fn relative_value(&self, position: u8) -> u8 {
-        self.relative_position(f64::from(position)) as u8
+        self.relative_position(f64::from(position)).min(127.0) as u8
     }
 
     /// Moves a fractional starting position over this source's configured tick range.
@@ -159,6 +159,8 @@ mod tests {
         let burst = feed.control_changes().next().unwrap();
         assert_eq!(burst.relative_position(0.0), 251.0);
         assert_eq!(burst.relative_position(400.0), 511.0);
+        // A mixer target can adopt this CC before the UI drains its wide-range turn.
+        assert_eq!(burst.relative_value(127), 127);
     }
 
     #[test]

@@ -294,7 +294,8 @@ fn relative_plugin_value(desc: &soundcraft_dsp::ParamInfo, current: f32, range: 
         return desc.from_normalized(first as f32);
     }
     let tick = ((start - first) / (last - first)).clamp(0.0, 1.0) * width;
-    let next = change.relative_position(tick);
+    // A turn captured before a range edit can have a wider span than this binding.
+    let next = change.relative_position(tick).clamp(0.0, width);
     if next == tick && (first.min(last)..=first.max(last)).contains(&start) {
         return current;
     }
@@ -442,6 +443,21 @@ mod tests {
         let assigned: Vec<_> = midi_learn::bindings(app.engine.session()).collect();
         assert_eq!(assigned.len(), 1);
         assert_eq!(assigned[0].target.parameter, Parameter::Volume);
+    }
+
+    #[test]
+    fn midi_learn_relative_plugin_respects_a_range_edited_with_a_turn_pending() {
+        let (mut app, feed, track, port) = controller();
+        app.run("mix.insert", json!({"track":track,"slot":0,"plugin":"auto_pan"})).unwrap();
+        let mut binding = json!({"target":{"track":track,"parameter":{"plugin":{"slot":0,"plugin":"auto_pan","id":"waveform"}}},
+            "source":{"device":"Keys","channel":1,"cc":75},"mode":"relative_64"});
+        app.run("midi.learn.bind", binding.clone()).unwrap();
+        app.sync_midi_routes();
+        feed.receive(port, &[0xb0, 75, 69]); // +5, captured against the original six-step span.
+        binding["range"] = json!([0.0, 0.5]);
+        app.run("midi.learn.bind", binding).unwrap();
+        assert!(app.service_midi_learn());
+        assert_eq!(app.engine.session().track(track).unwrap().mixer.inserts[0].as_ref().unwrap().params["waveform"], 3.0);
     }
 
     #[test]
