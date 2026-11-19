@@ -139,6 +139,9 @@ impl SoundApp {
             "frame_ms": self.frame_ms,
             "audio_device": self.player.as_ref().map(|p| p.device_name.clone()),
             "audio_host": self.player.as_ref().map(|p| p.host_name.clone()),
+            "midi_inputs": self.midi_inputs.as_ref().map(|m| m.ports().iter().map(|p| json!({"name": p.name, "enabled": p.enabled, "open": p.open})).collect::<Vec<_>>()),
+            "midi_events": self.midi_inputs.as_ref().map(|m| m.feed().activity().0),
+            "midi_events_dropped": self.midi_inputs.as_ref().map(|m| m.feed().dropped()),
             "status": self.ui.status,
         })
     }

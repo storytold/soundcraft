@@ -1,6 +1,6 @@
 [package]
 name = "soundcraft-playback"
-description = "SoundCraft audio device I/O: realtime playback and recording through the mix engine"
+description = "SoundCraft audio and MIDI device I/O: realtime playback and recording through the mix engine"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -25,6 +25,10 @@ jack = { version = "0.13", optional = true }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 cpal = { workspace = true, features = ["wasm-bindgen"] }
+
+# MIDI devices (ALSA sequencer, CoreMIDI, WinMM). Elsewhere there is no MIDI input (midi.rs).
+[target.'cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))'.dependencies]
+midir.workspace = true
 
 [features]
 # Extra audio hosts next to the system one (see docs/releasing.md, "Audio libraries"). All are
