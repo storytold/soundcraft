@@ -1,6 +1,6 @@
 # SoundCraft roadmap: milestones and what's next
 
-> **Last reviewed:** 2026-11-05 · **Last updated:** 2026-11-18 · **Change:** minor (MIDI input landed, the gate row needs checking on macOS and Windows; previously trivial: 28 built-in processors with the Frequency Shifter; previously trivial: G-05 estimate after Linux/X11 plugin editors; previously trivial: M15: partial pt-BR catalog in PR #1346) · **Target:** Avid Pro Tools Ultimate 2026.4.1
+> **Last reviewed:** 2026-11-05 · **Last updated:** 2026-11-19 · **Change:** minor (Mix MIDI Learn for volume and pan; previously minor: MIDI input landed, the gate row needs checking on macOS and Windows; previously trivial: 28 built-in processors with the Frequency Shifter; previously trivial: G-05 estimate after Linux/X11 plugin editors; previously trivial: M15: partial pt-BR catalog in PR #1346) · **Target:** Avid Pro Tools Ultimate 2026.4.1
 
 Forward-looking plan. Status and numbers: [`../ROADMAP.md`](../ROADMAP.md) and
 [`target-app-parity.md`](target-app-parity.md); the ranked work list: [`gaps.md`](gaps.md).
@@ -88,6 +88,7 @@ There is no `cargo xtask scorecard` in this repo; the measured number is `cargo 
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-11-19 | minor | Project-scoped MIDI Learn for Mix volume and pan; additional mapping targets remain open |
 | 2026-11-18 | minor | MIDI input devices landed (G-02 shrunk); the MIDI gate row is unverified until checked on macOS and Windows |
 | 2026-11-09 | trivial | 28 built-in processors with the Frequency Shifter |
 | 2026-11-05 | trivial | M15: a pt-BR catalog covers menus and `text`/`localized_format!` strings; remains native review, CJK/RTL and the other languages. Estimates unchanged |

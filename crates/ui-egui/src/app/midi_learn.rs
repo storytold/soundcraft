@@ -3,14 +3,45 @@ use crate::localization::text;
 use soundcraft_engine::midi_learn::{self, Binding, Parameter, Source, Target};
 use std::sync::Arc;
 
+const GESTURE_KEY: &str = "midi_cc_gesture";
+const RELEASE_SECONDS: f64 = 0.3;
+
 impl SoundApp {
+    pub(super) fn expire_midi_moves(&mut self) {
+        self.midi_moves.retain(|(_, deadline)| *deadline > self.uptime);
+        if self.midi_moves.is_empty() && self.engine.merge_key() == Some(GESTURE_KEY) {
+            self.engine.end_merge();
+        }
+    }
+
+    pub(super) fn sync_midi_routes(&mut self) {
+        if self.midi_learn_target.is_some_and(|t| !t.available(self.engine.session())) {
+            self.midi_learn_target = None;
+            self.midi_route_revision = None;
+            self.ui.status = text("The mixer control is unavailable").to_owned();
+        }
+        if self.midi_route_revision == Some(self.engine.revision) {
+            return;
+        }
+        if let Some(inputs) = &self.midi_inputs {
+            inputs.feed().set_control_sources(self.midi_sources(), self.midi_learn_target.is_some());
+            self.midi_route_revision = Some(self.engine.revision);
+        }
+    }
+
+    pub(super) fn midi_sources(&self) -> impl Iterator<Item = (String, u8, u8)> + '_ {
+        midi_learn::bindings(self.engine.session()).map(|b| (b.source.device, b.source.channel, b.source.cc))
+    }
+
     pub(super) fn reset_midi_learn(&mut self) {
         if self.midi_learn_target.take().is_some() {
             self.ui.status.clear();
         }
         if let Some(inputs) = &self.midi_inputs {
-            inputs.feed().control_changes().for_each(drop);
+            inputs.feed().clear_control_capture();
         }
+        self.midi_route_revision = None;
+        self.sync_midi_routes();
     }
 
     fn start_midi_learn(&mut self, target: Target) -> Result<(), String> {
@@ -19,6 +50,8 @@ impl SoundApp {
         }
         self.reset_midi_learn();
         self.midi_learn_target = Some(target);
+        self.midi_route_revision = None;
+        self.sync_midi_routes();
         self.ui.status = text("MIDI Learn: turn an absolute CC control").to_owned();
         Ok(())
     }
@@ -67,15 +100,11 @@ impl SoundApp {
     }
 
     pub(super) fn service_midi_learn(&mut self) -> bool {
-        let active = self.midi_learn_target.is_some() || midi_learn::configured(self.engine.session());
+        self.sync_midi_routes();
         let Some(feed) = self.midi_inputs.as_ref().map(|inputs| Arc::clone(inputs.feed())) else { return false };
-        if !active {
-            feed.control_changes().for_each(drop);
-            return false;
-        }
         let mut changes = feed.control_changes().peekable();
         if changes.peek().is_none() {
-            return feed.connected() > 0;
+            return false;
         }
         let mut bindings: Vec<_> = midi_learn::bindings(self.engine.session()).collect();
         // Encoders may send many values between frames. Keep the last value for each target,
@@ -92,12 +121,14 @@ impl SoundApp {
                     continue;
                 }
                 self.midi_learn_target = None;
+                self.midi_route_revision = None;
                 let binding = Binding { source: Source { device: device.to_owned(), channel, cc }, target };
                 if self.run("midi.learn.bind", json!(binding)).is_ok() {
                     bindings.retain(|old| old.target != target && old.source != binding.source);
                     bindings.push(binding);
                     self.ui.status = crate::localized_format!("MIDI Learn: assigned {} · Ch {} · CC {}", device, channel, cc);
                 }
+                self.sync_midi_routes();
                 continue;
             }
             if let Some(binding) = existing {
@@ -105,20 +136,27 @@ impl SoundApp {
                 updates.push((binding.target, event.data2));
             }
         }
+        if !updates.is_empty() {
+            self.prepare_automation_merge();
+        }
         for (target, value) in updates {
             let track = target.track.0;
-            let (id, params, merge_key) = match target.parameter {
+            let (id, params) = match target.parameter {
                 Parameter::Volume => {
-                    let db = soundcraft_model::fader_pos_to_db(f32::from(value) / 127.0);
-                    ("mix.volume", json!({"track": track, "db": db}), format!("fader:{track}"))
+                    let unity = (soundcraft_model::fader_db_to_pos(0.0) * 127.0).round() as u8;
+                    let db = if value == unity { 0.0 } else { soundcraft_model::fader_pos_to_db(f32::from(value) / 127.0) };
+                    ("mix.volume", json!({"track": track, "db": db}))
                 }
-                Parameter::Pan(index) => ("mix.pan", json!({"track": track, "index": index, "pan": pan(value)}), format!("pan:{track}:{index}")),
+                Parameter::Pan(index) => ("mix.pan", json!({"track": track, "index": index, "pan": pan(value)})),
             };
-            if let Err(err) = self.engine.execute_merged(id, &params, &merge_key) {
+            if let Err(err) = self.engine.execute_merged(id, &params, GESTURE_KEY) {
                 self.ui.status = crate::localization::error_text(&err.to_string());
+            } else {
+                self.midi_moves.retain(|(other, _)| *other != target);
+                self.midi_moves.push((target, self.uptime + RELEASE_SECONDS));
             }
         }
-        feed.connected() > 0
+        true
     }
 }
 
@@ -133,6 +171,147 @@ mod tests {
     use soundcraft_engine::{Engine, autosave};
     use soundcraft_model::TrackId;
     use soundcraft_playback::midi::MidiInputs;
+
+    fn controller() -> (SoundApp, Arc<soundcraft_playback::midi::MidiFeed>, TrackId, u8) {
+        let mut app = SoundApp::new(soundcraft_engine::demo::demo_engine(), None, Services::default());
+        let id = app.engine.session().track_by_name("Kick").unwrap().id;
+        let inputs = MidiInputs::with_port_names(vec![], vec!["Keys".into()]);
+        let feed = inputs.feed().clone();
+        let port = feed.ports().assign("Keys");
+        app.midi_inputs = Some(inputs);
+        app.run("midi.learn.bind", json!({"target":{"track":id,"parameter":"volume"},"source":{"device":"Keys","channel":1,"cc":71}})).unwrap();
+        (app, feed, id, port)
+    }
+
+    #[test]
+    fn midi_learn_continuous_turns_across_real_frames_preserve_undo() {
+        let (mut app, feed, id, port) = controller();
+        app.run("midi.learn.bind", json!({"target":{"track":id,"parameter":{"pan":0}},"source":{"device":"Keys","channel":1,"cc":75}})).unwrap();
+        let before = app.engine.undo_history().len();
+        let original = app.engine.session().track(id).unwrap().mixer.volume_db;
+        let ctx = egui::Context::default();
+        let frame = |app: &mut SoundApp, ms| {
+            app.advance_test_clock(std::time::Duration::from_millis(ms));
+            let _ = ctx.run_logic(&egui::RawInput::default(), |ctx| app.logic(ctx));
+        };
+        for value in 10..60 {
+            feed.receive(port, &[0xb0, 71, value]);
+            feed.receive(port, &[0xb0, 75, value]);
+            frame(&mut app, 20);
+        }
+        assert_eq!(app.engine.undo_history().len(), before + 1);
+        frame(&mut app, 600);
+        feed.receive(port, &[0xb0, 71, 110]);
+        frame(&mut app, 20);
+        assert_eq!(app.engine.undo_history().len(), before + 2);
+        assert!(app.engine.undo());
+        assert!(app.engine.undo());
+        assert_eq!(app.engine.session().track(id).unwrap().mixer.volume_db, original);
+    }
+
+    #[test]
+    fn midi_learn_writes_volume_and_pan_until_touch_release_or_latch_stop() {
+        use soundcraft_model::AutoParam;
+        for mode in ["touch", "latch", "touch_latch"] {
+            let (mut app, feed, id, port) = controller();
+            app.run("midi.learn.bind", json!({"target":{"track":id,"parameter":{"pan":0}},"source":{"device":"Keys","channel":1,"cc":75}})).unwrap();
+            app.run("mix.automation_mode", json!({"tracks":[id],"mode":mode})).unwrap();
+            app.run("transport.play", json!({})).unwrap();
+            let ctx = egui::Context::default();
+            let frame = |app: &mut SoundApp, ms| {
+                app.advance_test_clock(std::time::Duration::from_millis(ms));
+                let _ = ctx.run_logic(&egui::RawInput::default(), |ctx| app.logic(ctx));
+            };
+            frame(&mut app, 20);
+            let before = app.engine.undo_history().len();
+            feed.receive(port, &[0xb0, 71, 80]);
+            feed.receive(port, &[0xb0, 75, 127]);
+            frame(&mut app, 50);
+            frame(&mut app, 50);
+            let points = |app: &SoundApp, param: AutoParam| app.engine.session().track(id).unwrap().lane(&param).unwrap().points.len();
+            let volumes = points(&app, AutoParam::Volume);
+            let pans = points(&app, AutoParam::Pan(0));
+            assert!(volumes > 0 && pans > 0);
+            frame(&mut app, 400);
+            assert_eq!(points(&app, AutoParam::Volume) > volumes, mode != "touch");
+            assert_eq!(points(&app, AutoParam::Pan(0)) > pans, mode != "touch");
+            assert_eq!(app.engine.undo_history().len(), before + 1);
+            app.run("transport.stop", json!({})).unwrap();
+            frame(&mut app, 20);
+            assert!(app.midi_pan_latches.is_empty());
+            assert!(app.engine.undo());
+            assert!(app.engine.session().track(id).unwrap().lane(&AutoParam::Pan(0)).is_none_or(|l| l.points.is_empty()));
+        }
+    }
+
+    #[test]
+    fn midi_learn_idle_port_sleeps_and_stalled_knob_reaches_unity() {
+        let (mut app, feed, id, port) = controller();
+        assert!(!app.service_midi_learn(), "idle controller must not request fast polling");
+        for _ in 0..400 {
+            feed.receive(port, &[0xb0, 71, 10]);
+        }
+        feed.receive(port, &[0xb0, 71, 95]);
+        app.service_midi_learn();
+        assert_eq!(app.engine.session().track(id).unwrap().mixer.volume_db, 0.0);
+    }
+
+    #[test]
+    fn midi_learn_ignores_parameter_sequences_and_cancels_deleted_target() {
+        let (mut app, feed, id, port) = controller();
+        let target = Target { track: id, parameter: Parameter::Pan(0) };
+        app.start_midi_learn(target).unwrap();
+        for cc in [0, 32, 99, 98, 6, 38, 100, 101, 96, 97, 21] {
+            feed.receive(port, &[0xb0, cc, 42]);
+        }
+        app.service_midi_learn();
+        assert!(midi_learn::bindings(app.engine.session()).any(|b| b.target == target && b.source.cc == 21));
+        app.start_midi_learn(target).unwrap();
+        app.run("track.delete", json!({"tracks":[id]})).unwrap();
+        app.service_midi_learn();
+        assert!(app.midi_learn_target.is_none());
+        assert!(!midi_learn::configured(app.engine.session()));
+        feed.receive(port, &[0xb0, 71, 24]);
+        assert!(!app.service_midi_learn(), "an orphan does not capture controls");
+        assert!(app.engine.undo());
+        app.service_midi_learn();
+        feed.receive(port, &[0xb0, 71, 127]);
+        assert!(app.service_midi_learn());
+        assert_eq!(app.engine.session().track(id).unwrap().mixer.volume_db, 12.0);
+    }
+
+    #[test]
+    fn midi_learn_errors_and_escape_release_the_capture() {
+        let (mut app, feed, id, port) = controller();
+        let target = Target { track: id, parameter: Parameter::Pan(0) };
+        app.start_midi_learn(target).unwrap();
+        let invalid = feed.ports().assign(&"x".repeat(257));
+        feed.receive(invalid, &[0xb0, 75, 12]);
+        app.service_midi_learn();
+        assert!(app.midi_learn_target.is_none());
+        assert!(app.ui.status.contains("256"), "{}", app.ui.status);
+        assert_eq!(midi_learn::bindings(app.engine.session()).count(), 1);
+        app.start_midi_learn(target).unwrap();
+        let ctx = egui::Context::default();
+        let mut input = egui::RawInput::default();
+        input.events.push(egui::Event::Key {
+            key: egui::Key::Escape,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: egui::Modifiers::NONE,
+        });
+        for raw in [egui::RawInput::default(), input] {
+            let mut out = ctx.run_ui(raw, |ui| {
+                app.logic(ui.ctx());
+                app.ui(ui);
+            });
+            out.textures_delta.clear();
+        }
+        assert!(app.midi_learn_target.is_none());
+        feed.receive(port, &[0xb0, 75, 10]);
+        assert!(feed.control_changes().next().is_none());
+    }
 
     #[test]
     fn learns_scoped_ccs_and_drives_the_same_controls_after_reopening_the_file() {
@@ -176,11 +355,14 @@ mod tests {
 
         let dir = autosave::create_unique_folder(&std::env::temp_dir(), "soundcraft-midi-learn").unwrap();
         let path = dir.join("Learn.scraft");
+        let unknown_flag = "midi.learn.v1=not-json";
+        app.engine.session_mut().edit.flags.insert(unknown_flag.into());
         app.run("session.save_as", json!({"path": path})).unwrap();
         app.run("session.new", json!({"name": "Empty"})).unwrap();
         assert_eq!(midi_learn::bindings(app.engine.session()).count(), 0);
         feed.receive(port, &[0xB0, 19, 0]);
         app.run("session.open", json!({"path": path})).unwrap();
+        assert!(app.engine.session().edit.flags.contains(unknown_flag));
         feed.receive(other_port, &[0xB0, 19, 0]);
         feed.receive(port, &[0xB1, 19, 0]);
         app.service_midi_learn();

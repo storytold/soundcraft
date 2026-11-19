@@ -8,4 +8,4 @@ pub use craft_scraft_format::*;
 
 mod midi_input;
 
-pub use midi_input::MidiInput;
+pub use midi_input::{MidiInput, is_mixer_cc};

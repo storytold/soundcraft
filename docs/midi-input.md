@@ -81,6 +81,14 @@ One **Undo** removes the take.
 **Setup › MIDI › MIDI Input Filter…** keeps kinds of messages (for example aftertouch) out of
 recordings.
 
+## Learn a mixer control
+
+In the Mix window, right-click a track volume fader or either pan control, choose **MIDI Learn**, and turn an absolute 7-bit CC knob. Use **Escape** to cancel. The menu shows the assignment and can remove it. Save the project to keep the device, MIDI channel, CC and target in its `.scraft` file. Each source drives one control.
+
+The assigned CC goes to the mixer. Notes, other channels and unassigned controls still reach monitored instruments and MIDI takes. During Learn, the first eligible unassigned knob is reserved immediately. Bank select (0/32), data entry (6/38), RPN/NRPN (98–101), increment/decrement (96/97) and channel-mode messages (120–127) stay on the performance path.
+
+A knob turn ends after 300 ms without movement. Overlapping turns share one undo step. Volume reaches unity at 95 and pan centers at 64. During playback, Touch writes the moved parameter until release, and Latch and Touch/Latch continue the ride until Stop.
+
 ## If something is lost
 
 The path from a device to the engine has a fixed size. If a device sends more than it holds
