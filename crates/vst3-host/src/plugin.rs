@@ -170,21 +170,18 @@ impl Vst3Plugin {
         }
     }
 
-    /// Inserts keeping the queue time-sorted; drops the event when the queue is full (never
-    /// allocates on the audio thread).
-    fn push_note(&mut self, e: NoteEvent) -> bool {
+    /// Queues an event if space is available. Processing sorts the queue by sample offset.
+    fn push_note(&mut self, e: NoteEvent) {
         let room = if matches!(e, NoteEvent::Off { .. }) { self.notes.capacity() } else { self.notes.capacity().saturating_sub(RELEASE_RESERVE) };
-        if self.notes.len() >= room {
-            return false;
+        if self.notes.len() < room {
+            self.notes.push(e);
         }
-        self.notes.push(e);
-        true
     }
 }
 
 /// Keeps only the pending releases, one per key and moved to the start of the next block, so at
 /// most 16 * 128 remain and `all_notes_off` always has room in the queue.
-fn keep_releases(notes: &mut Vec<NoteEvent>) {
+fn keep_releases(notes: &mut Vec<NoteEvent>) -> [[bool; 128]; 16] {
     let mut seen = [[false; 128]; 16];
     notes.retain(|e| match *e {
         NoteEvent::Off { channel, key, .. } => {
@@ -195,6 +192,7 @@ fn keep_releases(notes: &mut Vec<NoteEvent>) {
     for e in notes.iter_mut() {
         e.set_time(0);
     }
+    seen
 }
 
 /// Copy `n` frames from `start` of the host buffers into the plugin's input `port` (mono sources
@@ -270,11 +268,8 @@ impl Plugin for Vst3Plugin {
     fn reset(&mut self) {
         // Keep pending releases and release whatever is still held, so the processor's voices stop
         // on the next block instead of sounding on while the host forgets them.
-        soundcraft_dsp::sort_timed_events(&mut self.notes, &mut self.note_order, NoteEvent::time);
-        keep_releases(&mut self.notes);
         self.controls.clear();
         self.all_notes_off();
-        self.held = [[false; 128]; 16];
     }
 
     fn set_param(&mut self, id: &str, value: f32) -> bool {
@@ -345,6 +340,18 @@ impl Plugin for Vst3Plugin {
                 project_time: self.position,
                 transport: self.transport.as_ref(),
             });
+            if r.is_ok() {
+                for event in notes {
+                    let (channel, key, playing) = match *event {
+                        NoteEvent::On { channel, key, .. } => (channel, key, true),
+                        NoteEvent::Off { channel, key, .. } => (channel, key, false),
+                        NoteEvent::Pressure { .. } => continue,
+                    };
+                    if let Some(held) = self.held.get_mut(usize::from(channel)).and_then(|keys| keys.get_mut(usize::from(key))) {
+                        *held = playing;
+                    }
+                }
+            }
             self.pending.clear();
             self.notes.drain(..k);
             self.position = self.position.saturating_add(i64::try_from(n).unwrap_or(0));
@@ -381,11 +388,7 @@ impl Plugin for Vst3Plugin {
             return;
         }
         let time = u32::try_from(offset).unwrap_or(u32::MAX);
-        if self.push_note(NoteEvent::On { time, channel, key: note, velocity: f32::from(velocity.min(127)) / 127.0 })
-            && let Some(h) = self.held.get_mut(usize::from(channel)).and_then(|keys| keys.get_mut(usize::from(note)))
-        {
-            *h = true;
-        }
+        self.push_note(NoteEvent::On { time, channel, key: note, velocity: f32::from(velocity.min(127)) / 127.0 });
     }
 
     fn note_off(&mut self, offset: usize, note: u8) {
@@ -397,11 +400,7 @@ impl Plugin for Vst3Plugin {
             return;
         }
         let time = u32::try_from(offset).unwrap_or(u32::MAX);
-        if self.push_note(NoteEvent::Off { time, channel, key: note })
-            && let Some(h) = self.held.get_mut(usize::from(channel)).and_then(|keys| keys.get_mut(usize::from(note)))
-        {
-            *h = false;
-        }
+        self.push_note(NoteEvent::Off { time, channel, key: note });
     }
 
     fn midi(&mut self, offset: usize, msg: [u8; 3]) {
@@ -426,10 +425,11 @@ impl Plugin for Vst3Plugin {
     }
 
     fn all_notes_off(&mut self) {
-        for channel in 0..16u8 {
-            for k in 0..128u8 {
-                if self.held.get(usize::from(channel)).and_then(|keys| keys.get(usize::from(k))).copied().unwrap_or(false) {
-                    self.note_off_channel(0, channel, k);
+        let pending = keep_releases(&mut self.notes);
+        for (channel, (held, pending)) in self.held.iter().zip(pending).enumerate() {
+            for (key, (&held, pending)) in held.iter().zip(pending).enumerate() {
+                if held && !pending {
+                    self.notes.push(NoteEvent::Off { time: 0, channel: channel as u8, key: key as u8 });
                 }
             }
         }
