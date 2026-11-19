@@ -2,6 +2,8 @@
 
 #[path = "../locales/pt-BR/mod.rs"]
 mod pt_br;
+#[path = "../locales/tr/mod.rs"]
+mod tr;
 
 use std::cell::Cell;
 
@@ -17,17 +19,20 @@ pub enum Language {
     English,
     #[serde(rename = "pt-BR")]
     PortugueseBrazil,
+    #[serde(rename = "tr")]
+    Turkish,
 }
 
 impl Language {
     /// All supported languages, in the order they are shown in the language menu.
-    pub const ALL: [Self; 2] = [Self::English, Self::PortugueseBrazil];
+    pub const ALL: [Self; 3] = [Self::English, Self::PortugueseBrazil, Self::Turkish];
 
     /// Stable language tag used in preferences and control commands.
     pub const fn id(self) -> &'static str {
         match self {
             Self::English => "en",
             Self::PortugueseBrazil => "pt-BR",
+            Self::Turkish => "tr",
         }
     }
 
@@ -36,6 +41,7 @@ impl Language {
         match self {
             Self::English => "English",
             Self::PortugueseBrazil => "Portuguese (Brazil)",
+            Self::Turkish => "Turkish",
         }
     }
 
@@ -47,7 +53,7 @@ impl Language {
     pub fn localize_decimal(self, number: &str) -> String {
         match self {
             Self::English => number.to_owned(),
-            Self::PortugueseBrazil => number.replace('.', ","),
+            Self::PortugueseBrazil | Self::Turkish => number.replace('.', ","),
         }
     }
 
@@ -56,6 +62,7 @@ impl Language {
         match self {
             Self::English => source,
             Self::PortugueseBrazil => pt_br::translate(source).unwrap_or(source),
+            Self::Turkish => tr::translate(source).unwrap_or(source),
         }
     }
 }
@@ -89,6 +96,7 @@ fn error_text_in(language: Language, message: &str, depth: usize) -> String {
     let templates: &[(&str, &str)] = match language {
         Language::English => &[],
         Language::PortugueseBrazil => pt_br::ERROR_TEMPLATES,
+        Language::Turkish => tr::ERROR_TEMPLATES,
     };
     let mut best: Option<(usize, &str, Vec<(String, String)>)> = None;
     for (template, translation) in templates {
@@ -354,6 +362,7 @@ mod tests {
             assert_eq!(decoded, language);
         }
         assert_eq!(Language::parse(" PT-br "), Some(Language::PortugueseBrazil));
+        assert_eq!(Language::parse(" TR "), Some(Language::Turkish));
         assert_eq!(Language::parse("fr"), None);
     }
 
@@ -361,6 +370,8 @@ mod tests {
     fn language_translations_fall_back_to_the_english_source() {
         assert_ne!(Language::PortugueseBrazil.text("Appearance"), "Appearance");
         assert_eq!(Language::PortugueseBrazil.text("A source string with no catalog entry"), "A source string with no catalog entry");
+        assert_ne!(Language::Turkish.text("Appearance"), "Appearance");
+        assert_eq!(Language::Turkish.text("A source string with no catalog entry"), "A source string with no catalog entry");
         assert_eq!(Language::English.text("Appearance"), "Appearance");
     }
 
@@ -384,6 +395,15 @@ mod tests {
         for path in include_str!("../../engine/catalog/menus.txt").lines() {
             for label in path.split(" > ").map(str::trim).filter(|label| !label.is_empty()) {
                 assert!(super::pt_br::translate(label).is_some(), "missing pt-BR menu label: {label}");
+            }
+        }
+    }
+
+    #[test]
+    fn turkish_catalog_covers_every_menu_label() {
+        for path in include_str!("../../engine/catalog/menus.txt").lines() {
+            for label in path.split(" > ").map(str::trim).filter(|label| !label.is_empty()) {
+                assert!(super::tr::translate(label).is_some(), "missing tr menu label: {label}");
             }
         }
     }
