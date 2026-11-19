@@ -129,6 +129,8 @@ pub struct Recorder {
     #[cfg(not(target_os = "freebsd"))]
     _stream: Option<cpal::Stream>,
     pub device_name: String,
+    /// The audio system the device was opened on (`"PipeWire"`, `"ALSA"`, …).
+    pub host_name: String,
     pub sample_rate: u32,
     pub channels: usize,
     /// The take writer, and what each track's take holds so far.
@@ -208,6 +210,26 @@ fn pick_input_config(configs: &[cpal::SupportedStreamConfigRange], rate: u32) ->
         .map(|(_, _, config)| config)
 }
 
+/// The input configuration at the chosen rate, if one is chosen and the device offers it (see
+/// [`pick_input_config`]). Not on JACK: it offers every channel count at its one rate, so "the
+/// most channels" would be all 64 of them; without an interface chosen its default (two, on the
+/// system ports) is kept.
+fn configured_rate_config(configs: &[cpal::SupportedStreamConfigRange], rate: Option<u32>, host: &str) -> Option<cpal::SupportedStreamConfig> {
+    rate.filter(|_| host != "jack").and_then(|rate| pick_input_config(configs, rate))
+}
+
+/// The configuration for an input stream wired to a JACK interface with `ports` inputs: one
+/// channel each. An interface with more inputs than a stream can have channels is refused, since
+/// the inputs beyond would be left out of every take without a word.
+fn port_group_input_config(configs: &[cpal::SupportedStreamConfigRange], rates: &[u32], ports: u16) -> Result<cpal::SupportedStreamConfig, String> {
+    let config = crate::devices::port_group_config(configs, rates, ports)
+        .ok_or_else(|| format!("no input configuration for an interface with {ports} inputs"))?;
+    if config.channels() < ports {
+        return Err(format!("the interface has {ports} inputs and an input stream here has at most {} channels", config.channels()));
+    }
+    Ok(config)
+}
+
 impl Recorder {
     /// Open the default input device. Errors when there is none (the caller shows a message).
     pub fn open() -> Result<Recorder, String> {
@@ -220,13 +242,23 @@ impl Recorder {
     #[cfg(not(target_os = "freebsd"))]
     pub fn open_with(audio: &crate::AudioConfig) -> Result<Recorder, String> {
         use cpal::traits::{DeviceTrait, StreamTrait};
-        let host = crate::devices::host(audio);
+        let host = crate::devices::host(audio, false);
+        let host_name = host.id().name().to_string();
         let device = crate::devices::device(&host, audio.input.as_deref(), false).ok_or("no audio input device")?;
         let name = crate::devices::device_name(&device).unwrap_or_else(|| "Input".into());
         // At the chosen rate when the device offers it, so input and output run together: the
         // best format first, then the most channels.
         let configs: Vec<cpal::SupportedStreamConfigRange> = device.supported_input_configs().map(|configs| configs.collect()).unwrap_or_default();
-        let at_rate = audio.sample_rate.and_then(|r| pick_input_config(&configs, r));
+        // On JACK with an interface chosen: one channel per port of it, so every input of the
+        // interface is recorded from its own port and none of another's.
+        let grouped = match crate::host::group_ports(crate::host::Direction::Input, &host, audio.input.as_deref()) {
+            Some(ports) => {
+                let rates: Vec<u32> = audio.sample_rate.into_iter().chain(device.default_input_config().ok().map(|d| d.sample_rate())).collect();
+                Some(port_group_input_config(&configs, &rates, ports)?)
+            }
+            None => None,
+        };
+        let at_rate = grouped.or_else(|| configured_rate_config(&configs, audio.sample_rate, &host.id().to_string()));
         let cfg = match at_rate {
             Some(c) => c,
             None => {
@@ -266,9 +298,25 @@ impl Recorder {
             }
             Err(e) => return Err(e.to_string()),
         };
+        // On JACK the stream opened on the system ports: wire it to the chosen interface. A
+        // stream that is not on it would record another input: no input, rather than that.
+        // Before it starts (its ports are there once it is built), so the monitor never hears
+        // the system ports first.
+        crate::host::wire_stream(crate::host::Direction::Input, &host, audio.input.as_deref())?;
         stream.play().map_err(|e| e.to_string())?;
+        log::info!("audio input: {name} ({host_name}) @ {} Hz, {channels} ch, {format}", config.sample_rate);
         let seen = (0, Instant::now());
-        Ok(Recorder { monitor, shared, _stream: Some(stream), device_name: name, sample_rate: config.sample_rate, channels, writer: None, seen })
+        Ok(Recorder {
+            monitor,
+            shared,
+            _stream: Some(stream),
+            device_name: name,
+            host_name,
+            sample_rate: config.sample_rate,
+            channels,
+            writer: None,
+            seen,
+        })
     }
 
     #[cfg(target_os = "freebsd")]
@@ -508,6 +556,37 @@ mod tests {
         assert!(pick_input_config(&configs, 192_001).is_none(), "an unsupported rate falls back to the device default");
     }
 
+    /// What cpal's JACK host offers: every channel count from 1 to 64 at the server's rate.
+    fn jack_configs() -> Vec<cpal::SupportedStreamConfigRange> {
+        (1..=64).map(|channels| range(channels, 48_000, 48_000, cpal::SampleFormat::F32)).collect()
+    }
+
+    /// On JACK with a rate chosen and no interface, "the most channels at that rate" opened a
+    /// 64-channel input for the two system ports.
+    #[test]
+    fn a_chosen_rate_does_not_widen_a_jack_input_to_every_channel_it_could_have() {
+        let jack = jack_configs();
+        assert!(configured_rate_config(&jack, Some(48_000), "jack").is_none(), "the host's default configuration is used");
+        assert!(configured_rate_config(&jack, None, "jack").is_none());
+        // Other hosts: the widest configuration at the chosen rate, as before.
+        let alsa = [range(2, 44_100, 48_000, cpal::SampleFormat::F32), range(8, 44_100, 48_000, cpal::SampleFormat::F32)];
+        assert_eq!(configured_rate_config(&alsa, Some(48_000), "alsa").map(|c| c.channels()), Some(8));
+        assert!(configured_rate_config(&alsa, Some(96_000), "alsa").is_none() && configured_rate_config(&alsa, None, "alsa").is_none());
+    }
+
+    /// An interface with more inputs than a stream has channels opened 64 wide and recorded
+    /// nothing from the rest.
+    #[test]
+    fn a_jack_input_wider_than_a_stream_can_be_is_refused() {
+        let jack = jack_configs();
+        let four = port_group_input_config(&jack, &[44_100, 48_000], 4).unwrap();
+        assert_eq!((four.channels(), four.sample_rate()), (4, 48_000));
+        assert_eq!(port_group_input_config(&jack, &[48_000], 64).unwrap().channels(), 64);
+        let e = port_group_input_config(&jack, &[48_000], 65).unwrap_err();
+        assert_eq!(e, "the interface has 65 inputs and an input stream here has at most 64 channels");
+        assert!(port_group_input_config(&jack, &[44_100], 2).is_err(), "no configuration at a rate the server does not run at");
+    }
+
     fn recorder(shared: &Arc<Shared>) -> Recorder {
         Recorder {
             shared: Arc::clone(shared),
@@ -515,6 +594,7 @@ mod tests {
             #[cfg(not(target_os = "freebsd"))]
             _stream: None,
             device_name: "Mic In".into(),
+            host_name: String::new(),
             sample_rate: 48_000,
             channels: 1,
             writer: None,

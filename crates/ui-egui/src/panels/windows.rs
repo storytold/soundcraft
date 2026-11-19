@@ -466,28 +466,48 @@ fn audio_systems(ctx: &egui::Context, refresh: bool) -> Arc<Vec<AudioSystem>> {
     s
 }
 
-/// The system a config means (its own, else the default one) in an enumeration.
-fn chosen_system<'a>(systems: &'a [AudioSystem], cfg: &AudioConfig) -> Option<&'a AudioSystem> {
-    cfg.system
-        .as_deref()
-        .and_then(|n| systems.iter().find(|s| s.name.eq_ignore_ascii_case(n)))
-        .or_else(|| systems.iter().find(|s| s.is_default))
-        .or(systems.first())
+/// The system whose devices a config's output (or input) picks from: the one that stream opens
+/// on, which the command line's `--audio-host` and a chosen system with nothing to open change.
+fn chosen_system<'a>(systems: &'a [AudioSystem], cfg: &AudioConfig, output: bool) -> Option<&'a AudioSystem> {
+    let forced = soundcraft_playback::host::forced_host();
+    soundcraft_playback::devices::effective_system(systems, cfg, forced.as_deref(), output)
 }
 
-/// The device a config means (by name, else the system default).
-fn chosen_device<'a>(devices: &'a [DeviceInfo], name: Option<&str>) -> Option<&'a DeviceInfo> {
-    name.and_then(|n| devices.iter().find(|d| d.name == n)).or_else(|| devices.iter().find(|d| d.is_default))
+/// The draft after the devices were listed again: one that still was the saved choice as the
+/// old list read it (`old`) becomes that choice as the new list reads it (`new`); an edited one
+/// is kept.
+fn refreshed_draft(draft: AudioConfig, old: &AudioConfig, new: AudioConfig) -> AudioConfig {
+    if draft == *old { new } else { draft }
 }
 
-/// Device picker with a Default entry and channel counts, labelled for accessibility.
-fn device_combo(ui: &mut egui::Ui, id: &str, name: &str, value: &mut Option<String>, devices: &[DeviceInfo]) {
-    let default = devices.iter().find(|d| d.is_default).map_or_else(|| crate::localization::text("none").to_string(), |d| d.name.clone());
-    let shown = value.clone().unwrap_or_else(|| crate::localized_format!("Default ({default})", default = default));
+/// What "Default" opens on `sys` when that is none of the devices it lists: PipeWire follows the
+/// desktop's default and JACK connects to the system ports. `None` when it opens nothing.
+fn default_route(sys: Option<&AudioSystem>, output: bool) -> Option<String> {
+    let sys = sys.filter(|s| if output { s.output_route } else { s.has_input })?;
+    Some(crate::localization::text(if sys.id == "jack" { "system ports" } else { "system default" }).to_string())
+}
+
+/// The device a config means (by id, else the system default).
+fn chosen_device<'a>(devices: &'a [DeviceInfo], id: Option<&str>) -> Option<&'a DeviceInfo> {
+    id.and_then(|n| devices.iter().find(|d| d.id == n)).or_else(|| devices.iter().find(|d| d.is_default))
+}
+
+/// Device picker with a Default entry and what tells the devices apart, labelled for accessibility.
+/// `route` is what Default opens when it is not one of `devices` (see [`default_route`]).
+fn device_combo(ui: &mut egui::Ui, id: &str, name: &str, value: &mut Option<String>, devices: &[DeviceInfo], route: Option<String>) {
+    let listed = devices.iter().find(|d| d.is_default).map(|d| d.name.clone());
+    let default = listed.or(route).unwrap_or_else(|| crate::localization::text("none").to_string());
+    // A remembered device that is gone stays visible.
+    let shown = match value.as_deref() {
+        None => crate::localized_format!("Default ({default})", default = default),
+        Some(v) => devices.iter().find(|d| d.id == v).map_or_else(|| crate::localized_format!("{name} (unavailable)", name = v), |d| d.name.clone()),
+    };
     let combo = craft_ui::ComboBox::from_id_salt(id).width(300.0).selected_text(shown).show_ui(ui, |ui| {
         ui.selectable_value(value, None, crate::localized_format!("Default ({default})", default = default));
         for d in devices {
-            ui.selectable_value(value, Some(d.name.clone()), format!("{} ({} ch)", d.name, d.max_channels));
+            // The name, then what tells it apart from its neighbours.
+            let text = if d.detail.is_empty() { d.name.clone() } else { format!("{} ({})", d.name, d.detail) };
+            ui.selectable_value(value, Some(d.id.clone()), text).on_hover_text(&d.id);
         }
     });
     combo.response.accessible_name(crate::localization::text(name));
@@ -599,36 +619,45 @@ pub fn playback_engine(app: &mut SoundApp, ctx: &egui::Context) {
         return;
     }
     let draft_id = egui::Id::unique("audio_draft");
-    let mut draft = ctx.data(|d| d.get_temp::<AudioConfig>(draft_id)).unwrap_or_else(|| app.ui.audio.clone());
+    let systems = audio_systems(ctx, false);
+    // Preferences from before devices had ids hold names: the draft starts from their ids, and
+    // is compared with and reverted to the same thing (a name would read as a missing device).
+    let baseline = app.ui.audio.with_ids(&systems);
+    let mut draft = ctx.data(|d| d.get_temp::<AudioConfig>(draft_id)).unwrap_or_else(|| baseline.clone());
     let mut refresh = false;
     let mut apply = false;
-    let systems = audio_systems(ctx, false);
     win(ctx, &mut open, "Playback Engine", vec2(460.0, 360.0), |ui| {
         let t = Tokens::current();
         egui::Grid::new("pe").num_columns(2).spacing(vec2(12.0, 6.0)).show(ui, |ui| {
             let system_label = ui.label(crate::localization::text("Audio system"));
             let def = systems.iter().find(|s| s.is_default).map_or("none".to_string(), |s| s.name.clone());
-            let shown = draft.system.clone().unwrap_or_else(|| crate::localized_format!("Default ({default})", default = def));
+            let shown = match draft.system.as_deref() {
+                None => crate::localized_format!("Default ({default})", default = def),
+                Some(id) => systems
+                    .iter()
+                    .find(|s| s.id.eq_ignore_ascii_case(id) || s.name.eq_ignore_ascii_case(id))
+                    .map_or_else(|| crate::localized_format!("{name} (unavailable)", name = id), |s| s.name.clone()),
+            };
             let system = craft_ui::ComboBox::from_id_salt("pe-system").width(300.0).selected_text(shown).show_ui(ui, |ui| {
                 let before = draft.system.clone();
                 ui.selectable_value(&mut draft.system, None, crate::localized_format!("Default ({default})", default = def));
                 for s in systems.iter() {
-                    ui.selectable_value(&mut draft.system, Some(s.name.clone()), &s.name);
+                    ui.selectable_value(&mut draft.system, Some(s.id.clone()), &s.name);
                 }
                 if draft.system != before {
-                    // Device names belong to a system.
+                    // Device ids belong to a system.
                     draft.output = None;
                     draft.input = None;
                 }
             });
             system.response.labelled_by(system_label.id);
             ui.end_row();
-            let sys = chosen_system(&systems, &draft);
+            let (sys, sys_in) = (chosen_system(&systems, &draft, true), chosen_system(&systems, &draft, false));
             ui.label(crate::localization::text("Output device"));
-            device_combo(ui, "pe-out", "Output device", &mut draft.output, sys.map_or(&[][..], |s| &s.outputs));
+            device_combo(ui, "pe-out", "Output device", &mut draft.output, sys.map_or(&[][..], |s| &s.outputs), default_route(sys, true));
             ui.end_row();
             ui.label(crate::localization::text("Input device"));
-            device_combo(ui, "pe-in", "Input device", &mut draft.input, sys.map_or(&[][..], |s| &s.inputs));
+            device_combo(ui, "pe-in", "Input device", &mut draft.input, sys_in.map_or(&[][..], |s| &s.inputs), default_route(sys_in, false));
             ui.end_row();
             let out = sys.and_then(|s| chosen_device(&s.outputs, draft.output.as_deref()));
             ui.label(crate::localization::text("Sample rate"));
@@ -646,7 +675,7 @@ pub fn playback_engine(app: &mut SoundApp, ctx: &egui::Context) {
             if ui.button(crate::localization::text("Refresh devices")).clicked() {
                 refresh = true;
             }
-            let changed = draft != app.ui.audio;
+            let changed = draft != baseline;
             if ui
                 .add_enabled(changed, egui::Button::new(crate::localization::text("Apply")))
                 .on_hover_text(crate::localization::text("Reopen the audio devices with these settings"))
@@ -655,7 +684,7 @@ pub fn playback_engine(app: &mut SoundApp, ctx: &egui::Context) {
                 apply = true;
             }
             if changed && ui.button(crate::localization::text("Revert")).clicked() {
-                draft = app.ui.audio.clone();
+                draft = baseline.clone();
             }
         });
         ui.separator();
@@ -668,7 +697,9 @@ pub fn playback_engine(app: &mut SoundApp, ctx: &egui::Context) {
                     let buf = p
                         .device_buffer
                         .map_or(crate::localization::text("default buffer").to_string(), |b| crate::localized_format!("{} samples", b));
-                    crate::localized_format!("{} · {} Hz · {} ch · {}", p.device_name, p.device_rate, p.device_channels, buf)
+                    // The device, and the audio system it was opened on.
+                    let device = format!("{} ({})", p.device_name, p.host_name);
+                    crate::localized_format!("{} · {} Hz · {} ch · {}", device, p.device_rate, p.device_channels, buf)
                 }
             }));
             ui.end_row();
@@ -703,7 +734,10 @@ pub fn playback_engine(app: &mut SoundApp, ctx: &egui::Context) {
         midi_inputs(app, ui);
     });
     if refresh {
-        audio_systems(ctx, true);
+        let systems = audio_systems(ctx, true);
+        // A device that was plugged in since has an id now: a draft nobody edited follows the
+        // saved choice to it, so it does not read as an unapplied change to a missing device.
+        draft = refreshed_draft(draft, &baseline, app.ui.audio.with_ids(&systems));
     }
     if apply && let Err(e) = app.apply_audio_config(draft.clone()) {
         app.ui.status = e;
@@ -746,7 +780,7 @@ pub fn audio_device_command(app: &mut SoundApp, p: &serde_json::Value) -> Result
         app.apply_audio_config(cfg)?;
     }
     let device = app.player.as_ref().map(|pl| {
-        json!({"name": pl.device_name, "sample_rate": pl.device_rate, "channels": pl.device_channels, "buffer_size": pl.device_buffer, "silent": pl.silent})
+        json!({"name": pl.device_name, "host": pl.host_name, "sample_rate": pl.device_rate, "channels": pl.device_channels, "buffer_size": pl.device_buffer, "silent": pl.silent})
     });
     let mut out = json!({"config": app.ui.audio, "device": device});
     if p.get("list").and_then(Value::as_bool).unwrap_or(false) {
@@ -755,7 +789,7 @@ pub fn audio_device_command(app: &mut SoundApp, p: &serde_json::Value) -> Result
     Ok(out)
 }
 
-/// Programmatic `setup.playback_engine` / `setup.hardware`. `device` is the output name and
+/// Programmatic `setup.playback_engine` / `setup.hardware`. `device` is the output device id and
 /// `buffer_size` is any integer 16..=8192 or null (not rounded to the window's power-of-two list);
 /// both go through [`audio_device_command`]. Delay compensation still goes through the engine
 /// command, and only after the device change has been accepted. The result is the open device:
@@ -951,6 +985,102 @@ pub fn clip_effects(app: &mut SoundApp, ctx: &egui::Context) {
         });
     });
     app.ui.show_clip_effects = open;
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod playback_engine_tests {
+    use super::*;
+
+    fn device(id: &str, name: &str, is_default: bool) -> DeviceInfo {
+        DeviceInfo {
+            id: id.into(),
+            name: name.into(),
+            detail: String::new(),
+            is_default,
+            max_channels: 2,
+            sample_rates: vec![48_000],
+            buffer_min: None,
+            buffer_max: None,
+        }
+    }
+
+    /// (id, the automatic order opens its output, its input, Default opens an output, an input)
+    fn system(id: &str, default: (bool, bool), has: (bool, bool), outputs: Vec<DeviceInfo>) -> AudioSystem {
+        AudioSystem {
+            id: id.into(),
+            name: id.to_uppercase(),
+            is_default: default.0,
+            is_default_input: default.1,
+            has_output: has.0,
+            output_route: has.0,
+            has_input: has.1,
+            outputs,
+            inputs: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn default_names_what_it_opens_when_that_is_not_a_listed_device() {
+        // JACK lists interfaces, and Default is none of them: it is the system ports.
+        let jack = system("jack", (false, false), (true, true), vec![device("jack-ports:Scarlett", "Scarlett", false)]);
+        assert_eq!(default_route(Some(&jack), true).as_deref(), Some("system ports"));
+        assert_eq!(default_route(Some(&jack), false).as_deref(), Some("system ports"));
+        // PipeWire's default follows the desktop's and is not listed either.
+        let pipewire = system("pipewire", (true, true), (true, false), Vec::new());
+        assert_eq!(default_route(Some(&pipewire), true).as_deref(), Some("system default"));
+        // Nothing to open (no microphone; a JACK server that is not running): none.
+        assert_eq!(default_route(Some(&pipewire), false), None);
+        assert_eq!(default_route(Some(&system("jack", (false, false), (false, false), Vec::new())), true), None);
+        assert_eq!(default_route(None, true), None);
+    }
+
+    #[test]
+    fn without_a_chosen_system_each_stream_lists_the_devices_of_the_system_that_opens_it() {
+        // JACK is listed first but its server is not running; PipeWire has no microphone.
+        let systems = [
+            system("jack", (false, false), (false, false), Vec::new()),
+            system("pipewire", (true, false), (true, false), Vec::new()),
+            system("alsa", (false, true), (true, true), Vec::new()),
+        ];
+        let id = |cfg: &AudioConfig, output| soundcraft_playback::devices::effective_system(&systems, cfg, None, output).map(|s| s.id.as_str());
+        let auto = AudioConfig::default();
+        assert_eq!((id(&auto, true), id(&auto, false)), (Some("pipewire"), Some("alsa")));
+        // A chosen system holds for both, by id or by the name older preferences kept.
+        let alsa = AudioConfig { system: Some("ALSA".into()), ..Default::default() };
+        assert_eq!((id(&alsa, true), id(&alsa, false)), (Some("alsa"), Some("alsa")));
+    }
+
+    /// A device saved by name was unplugged when the dialog opened and is back at Refresh: the
+    /// untouched draft kept the name, which read as an edit to a device that is not there.
+    #[test]
+    fn refresh_moves_an_untouched_draft_to_the_newly_listed_device() {
+        let saved = AudioConfig { output: Some("Scarlett 2i2".into()), ..Default::default() };
+        let unplugged = [system("alsa", (true, true), (true, true), Vec::new())];
+        let plugged = [system("alsa", (true, true), (true, true), vec![device("alsa:hw:CARD=USB,DEV=0", "Scarlett 2i2", false)])];
+        let (old, new) = (saved.with_ids(&unplugged), saved.with_ids(&plugged));
+        assert_eq!((old.output.as_deref(), new.output.as_deref()), (Some("Scarlett 2i2"), Some("alsa:hw:CARD=USB,DEV=0")));
+        assert_eq!(refreshed_draft(old.clone(), &old, new.clone()), new, "untouched: it is the saved choice again");
+        // An edit is kept.
+        let edited = AudioConfig { buffer_size: Some(256), ..old.clone() };
+        assert_eq!(refreshed_draft(edited.clone(), &old, new), edited);
+    }
+
+    /// Preferences from before devices had ids hold a name. The draft starts from the id, so
+    /// comparing it with the name offered Apply and Revert for a dialog nobody had touched,
+    /// and Revert put the name back, which the picker reads as a device that is gone.
+    #[test]
+    fn a_remembered_device_name_is_not_an_unapplied_change() {
+        let systems = [system("alsa", (true, true), (true, true), vec![device("alsa:hw:CARD=USB,DEV=0", "Scarlett 2i2", false)])];
+        let saved = AudioConfig { output: Some("Scarlett 2i2".into()), ..Default::default() };
+        let baseline = saved.with_ids(&systems);
+        assert_ne!(baseline, saved, "the name became an id");
+        assert_eq!(baseline.output.as_deref(), Some("alsa:hw:CARD=USB,DEV=0"));
+        // What the dialog compares the draft with and reverts to is that same baseline.
+        assert_eq!(baseline.with_ids(&systems), baseline);
+        assert!(chosen_device(&systems[0].outputs, baseline.output.as_deref()).is_some());
+        assert!(chosen_device(&systems[0].outputs, saved.output.as_deref()).is_none(), "the name finds no device");
+    }
 }
 
 #[cfg(test)]

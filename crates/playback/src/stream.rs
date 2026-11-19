@@ -21,6 +21,21 @@ pub(crate) struct Opened {
     pub(crate) fault: Arc<Fault>,
 }
 
+/// The configurations to try opening the output with, in order: the chosen buffer size first
+/// and, if the device refuses it, its default. On JACK each one twice: cpal connects a new
+/// stream to the server's system ports while it builds it, and fails the build when one of them
+/// went away since it listed them. A second try lists them afresh, so that passing moment does
+/// not cost the output (an interface chosen in the dialog is wired after the build, and never
+/// reached if the build fails).
+pub(crate) fn output_attempts(config: cpal::StreamConfig, jack: bool) -> Vec<cpal::StreamConfig> {
+    let mut sizes = vec![config];
+    if config.buffer_size != cpal::BufferSize::Default {
+        sizes.push(cpal::StreamConfig { buffer_size: cpal::BufferSize::Default, ..config });
+    }
+    let times = if jack { 2 } else { 1 };
+    sizes.into_iter().flat_map(|config| std::iter::repeat_n(config, times)).collect()
+}
+
 /// Build and start the attempts in order; the first that builds and starts wins. A build error or
 /// a stream that will not start is logged, and the next attempt is tried. `None` when none works.
 pub(crate) fn first_started<A: std::fmt::Debug, S, E: std::fmt::Display>(
@@ -86,50 +101,69 @@ where
     )
 }
 
-/// Open the output device `cfg` chooses (else the default) at the chosen rate (else the session
+/// Open the output device `cfg` chooses, on the audio system it chooses (else the defaults, see
+/// [`crate::host`]), at the chosen rate (else the session
 /// rate) if possible, in the best sample format it offers (f32, else 32- or 16-bit integers),
-/// with as many channels as it offers up to `want_ch` (at least stereo when available), and the
-/// chosen buffer size when the device allows it.
+/// with as many channels as it offers up to `want_ch` (at least stereo when available; on JACK
+/// one per port of the chosen interface), and the chosen buffer size when the device allows it.
 pub(crate) fn open_device(
     want_rate: u32,
     want_ch: u16,
     cfg: &AudioConfig,
-) -> Result<(cpal::Device, cpal::StreamConfig, cpal::SampleFormat, String), String> {
+) -> Result<(cpal::Host, cpal::Device, cpal::StreamConfig, cpal::SampleFormat, String, Option<String>), String> {
     use cpal::traits::DeviceTrait;
-    let host = devices::host(cfg);
+    let host = devices::host(cfg, true);
     let device = devices::device(&host, cfg.output.as_deref(), true).ok_or_else(|| "no output device".to_string())?;
     let name = devices::device_name(&device).unwrap_or_else(|| "Audio device".into());
     // Prefer a config at the chosen (else session) rate; else the device default (we resample).
     let want_ch = want_ch.max(2);
     let rates: Vec<u32> = cfg.sample_rate.into_iter().chain(Some(want_rate)).collect();
     let configs: Vec<cpal::SupportedStreamConfigRange> = device.supported_output_configs().map(|configs| configs.collect()).unwrap_or_default();
-    let (config, format) = match pick_output_config(&configs, &rates, want_ch) {
-        Some((mut c, buffers, format)) => {
-            c.buffer_size = devices::buffer_size(cfg.buffer_size, &buffers);
-            (c, format)
-        }
-        None => {
-            let d = device.default_output_config().map_err(|e| e.to_string())?;
-            let format = d.sample_format();
-            // cpal 0.18's default can name a format these callbacks do not decode (I24, F64);
-            // open the same rate and channels in a format they do, rather than lose output.
-            let c = if devices::format_rank(format).is_some() {
-                d
-            } else {
-                // Same rate and channels first; else any usable channel count at the default
-                // rate; else the session rate (the mix resamples and folds channels). A device
-                // whose only decoded format is wider or at another rate would otherwise open no
-                // stream at all.
-                devices::supported_format_config(&configs, d.sample_rate(), d.channels())
-                    .or_else(|| devices::supported_format_config(&configs, want_rate, want_ch))
-                    .ok_or_else(|| format!("unsupported device sample format {format:?}"))?
-            };
-            let mut stream_config = c.config();
-            stream_config.buffer_size = devices::buffer_size(cfg.buffer_size, c.buffer_size());
-            (stream_config, c.sample_format())
-        }
-    };
-    Ok((device, config, format, name))
+    // On JACK with an interface chosen: as many channels as the interface has ports (up to what
+    // the session plays), so a one-port interface gets a mono stream the mix folds into.
+    let ports = crate::host::group_ports(crate::host::Direction::Output, &host, cfg.output.as_deref());
+    let wired = wire_target(cfg.output.as_deref(), ports).map(str::to_string);
+    let grouped = ports.and_then(|ports| {
+        let rates: Vec<u32> = rates.iter().copied().chain(device.default_output_config().ok().map(|d| d.sample_rate())).collect();
+        devices::port_group_config(&configs, &rates, ports.min(want_ch))
+    });
+    let (config, format) =
+        match grouped.map(|c| (c.config(), *c.buffer_size(), c.sample_format())).or_else(|| pick_output_config(&configs, &rates, want_ch)) {
+            Some((mut c, buffers, format)) => {
+                c.buffer_size = devices::buffer_size(cfg.buffer_size, &buffers);
+                (c, format)
+            }
+            None => {
+                let d = device.default_output_config().map_err(|e| e.to_string())?;
+                let format = d.sample_format();
+                // cpal 0.18's default can name a format these callbacks do not decode (I24, F64);
+                // open the same rate and channels in a format they do, rather than lose output.
+                let c = if devices::format_rank(format).is_some() {
+                    d
+                } else {
+                    // Same rate and channels first; else any usable channel count at the default
+                    // rate; else the session rate (the mix resamples and folds channels). A device
+                    // whose only decoded format is wider or at another rate would otherwise open no
+                    // stream at all.
+                    devices::supported_format_config(&configs, d.sample_rate(), d.channels())
+                        .or_else(|| devices::supported_format_config(&configs, want_rate, want_ch))
+                        .ok_or_else(|| format!("unsupported device sample format {format:?}"))?
+                };
+                let mut stream_config = c.config();
+                stream_config.buffer_size = devices::buffer_size(cfg.buffer_size, c.buffer_size());
+                (stream_config, c.sample_format())
+            }
+        };
+    Ok((host, device, config, format, name, wired))
+}
+
+/// The output a stream is wired to once it is open (see [`crate::host::wire_stream`]): the chosen
+/// one while it has `ports`. One that was already gone when the device was picked is not wired:
+/// the stream opened on the default output instead (see [`devices::device`]), and wiring it to
+/// ports that are not there would fail and cost that output too. An interface that goes away
+/// after this still fails the wiring.
+pub(crate) fn wire_target(chosen: Option<&str>, ports: Option<u16>) -> Option<&str> {
+    chosen.filter(|_| ports.is_some())
 }
 
 /// Pick the output configuration for the first requested rate the device offers (the configured

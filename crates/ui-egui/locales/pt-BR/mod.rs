@@ -950,6 +950,8 @@ fn menu_translate(source: &str) -> Option<&'static str> {
         "No sample" => "Nenhuma amostra",
         "{}: missing" => "{}: ausente",
         "none" => "nenhum",
+        "system ports" => "portas do sistema",
+        "system default" => "padrão do sistema",
         // Formatted messages. Placeholders mirror the English source so the same arguments fill
         // them; `localized_format!` selects the template at run time.
         "Active audio ends at {seconds:.2} seconds" => "O áudio ativo termina em {seconds:.2} segundos",
@@ -993,6 +995,7 @@ fn menu_translate(source: &str) -> Option<&'static str> {
         "{}  (missing)" => "{}  (ausente)",
         "{} for {}" => "{} para {}",
         "{} @ {} Hz" => "{} a {} Hz",
+        "{name} (unavailable)" => "{name} (indisponível)",
         "{} samples" => "{} amostras",
         "{} · {} Hz · {} ch · {}" => "{} · {} Hz · {} canais · {}",
         "{} · {} Hz · {} ch" => "{} · {} Hz · {} canais",

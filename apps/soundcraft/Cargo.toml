@@ -11,7 +11,10 @@ default-run = "soundcraft"
 workspace = true
 
 [features]
-# ASIO audio devices on Windows (see soundcraft-playback's `asio` feature).
+# Extra audio hosts, all opt-in (see soundcraft-playback's features and docs/releasing.md,
+# "Audio libraries"): JACK, PipeWire (Linux) and ASIO (Windows).
+jack = ["soundcraft-playback/jack"]
+pipewire = ["soundcraft-playback/pipewire"]
 asio = ["soundcraft-playback/asio"]
 
 [dependencies]
