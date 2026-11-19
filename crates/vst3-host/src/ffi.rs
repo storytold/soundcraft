@@ -104,6 +104,13 @@ pub(crate) const AFTERTOUCH: usize = sv::ControllerNumbers_::kAfterTouch as usiz
 pub(crate) const PITCH_BEND: usize = sv::ControllerNumbers_::kPitchBend as usize;
 pub(crate) const PROGRAM_CHANGE: usize = sv::ControllerNumbers_::kCtrlProgramChange as usize;
 
+pub(crate) const MAP_STRIDE: usize = PROGRAM_CHANGE + 1;
+pub(crate) const MIDI_CHANNELS: usize = 16;
+
+pub(crate) fn map_index(channel: usize, controller: usize) -> Option<usize> {
+    (channel < MIDI_CHANNELS && controller < MAP_STRIDE).then(|| channel * MAP_STRIDE + controller)
+}
+
 /// The platform host window for plugin views.
 #[cfg(target_os = "macos")]
 #[path = "ffi/window/macos.rs"]
@@ -124,6 +131,15 @@ mod window;
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn controller_mapping_uses_the_full_stride_on_every_channel() {
+        assert_eq!(super::map_index(1, 0), Some(131));
+        assert_eq!(super::map_index(15, super::PROGRAM_CHANGE), Some(2095));
+        assert_eq!(super::map_index(16, 0), None);
+        assert_eq!(super::map_index(0, 131), None);
+    }
+
     use super::*;
     use sv::{IAttributeListTrait as _, IMessageTrait as _};
 

@@ -4,8 +4,8 @@ use super::module::Bundle;
 use super::process::{BusBuffers, EventList, MemoryStream, NoteEvent, ParamChanges};
 use super::{
     Arc, ComPtr, ComWrapper, EVENT_CAP, IAudioProcessorTrait, IComponentTrait, IConnectionPointTrait, IEditControllerTrait, IMidiMappingTrait,
-    IPluginBaseTrait, MAX_BUS_CHANNELS, MAX_BUSES, MAX_PARAMS, MAX_STATE_BYTES, Mutex, Ordering, PARAM_QUEUE_CAP, PROGRAM_CHANGE, STATE_MAGIC,
-    Transport, Vst3Error, ok, read_c16, sb, sv,
+    IPluginBaseTrait, MAP_STRIDE, MAX_BUS_CHANNELS, MAX_BUSES, MAX_PARAMS, MAX_STATE_BYTES, MIDI_CHANNELS, Mutex, Ordering, PARAM_QUEUE_CAP,
+    STATE_MAGIC, Transport, Vst3Error, ok, read_c16, sb, sv,
 };
 
 // ---- instances -----------------------------------------------------------------------------
@@ -236,8 +236,8 @@ impl Instance {
     /// controller numbers: CCs 0–127, aftertouch, pitch bend and Program Change. Main thread only.
     pub fn midi_mapping(&self) -> Vec<Option<u32>> {
         let Some(m) = self.controller.as_ref().and_then(|c| c.cast::<sv::IMidiMapping>()) else { return Vec::new() };
-        (0..16i16)
-            .flat_map(|channel| (0..=PROGRAM_CHANGE).map(move |n| (channel, n)))
+        (0..MIDI_CHANNELS as i16)
+            .flat_map(|channel| (0..MAP_STRIDE).map(move |n| (channel, n)))
             .map(|(channel, n)| {
                 let mut id: sv::ParamID = 0;
                 let n = i16::try_from(n).unwrap_or(0);
@@ -445,7 +445,7 @@ impl Instance {
         for &(id, v) in params.iter().take(PARAM_QUEUE_CAP) {
             self.in_params.set(id, 0, v.clamp(0.0, 1.0));
         }
-        for &(time, id, v) in controls {
+        for &(time, id, v, _) in controls {
             if let Some(at) = time.checked_sub(offset).filter(|&t| (t as usize) < frames) {
                 self.in_params.set(id, i32::try_from(at).unwrap_or(0), v.clamp(0.0, 1.0));
             }
@@ -496,7 +496,7 @@ pub(crate) struct ProcessInput<'a> {
     pub inputs: &'a mut BusBuffers,
     pub outputs: &'a mut BusBuffers,
     pub params: &'a [(u32, f64)],
-    pub controls: &'a [(u32, u32, f64)],
+    pub controls: &'a [(u32, u32, f64, usize)],
     pub notes: &'a [NoteEvent],
     pub offset: u32,
     pub project_time: i64,

@@ -564,9 +564,9 @@ impl IAudioProcessorTrait for Synth {
                     volume = Some((at.max(0) as usize, v as f32));
                 }
                 if unsafe { q.getParameterId() } == PROGRAM_PARAM && unsafe { q.getPoint(0, &mut at, &mut v) } == kResultOk {
-                    // Test program 127 exposes the process context on the stereo output.
+                    // The last test program exposes the process context on the stereo output.
                     self.context_output.store(v == 1.0, Ordering::Relaxed);
-                    volume = Some((at.max(0) as usize, 10.0 + v as f32 * 127.0));
+                    volume = Some((at.max(0) as usize, 10.0 + v as f32 * 7.0));
                 }
             }
         }
@@ -617,10 +617,18 @@ impl IEditControllerTrait for Synth {
         kResultOk
     }
     unsafe fn getParameterCount(&self) -> i32 {
-        0
+        1
     }
-    unsafe fn getParameterInfo(&self, _index: i32, _info: *mut ParameterInfo) -> tresult {
-        kInvalidArgument
+    unsafe fn getParameterInfo(&self, index: i32, info: *mut ParameterInfo) -> tresult {
+        if index != 0 {
+            return kInvalidArgument;
+        }
+        let info = unsafe { &mut *info };
+        info.id = PROGRAM_PARAM;
+        copy_c16("Program", &mut info.title);
+        info.stepCount = 7;
+        info.flags = ParameterInfo_::ParameterFlags_::kIsProgramChange | ParameterInfo_::ParameterFlags_::kIsHidden;
+        kResultOk
     }
     unsafe fn getParamStringByValue(&self, _id: u32, _n: f64, _s: *mut String128) -> tresult {
         kInvalidArgument

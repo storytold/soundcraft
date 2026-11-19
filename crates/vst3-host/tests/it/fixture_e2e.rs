@@ -15,25 +15,44 @@ fn id_of(name: &str) -> String {
 fn mapped_program_changes_reach_the_instrument_at_each_event_offset() {
     let mut p = soundcraft_vst3_host::create(&id_of("Fixture Synth")).unwrap();
     p.prepare(48_000.0, 64, 2);
-    p.midi(10, [0xC0, 24, 0]);
-    p.midi(40, [0xC0, 7, 0]);
+    p.midi(40, [0xC0, 2, 0]);
+    p.midi(10, [0xC0, 5, 0]);
     let mut io = vec![vec![0.0f32; 64]; 2];
     p.process(&mut io, 64);
     assert_eq!(io[0][9], 0.0);
-    assert!((io[0][10] - 34.0).abs() < 1e-5, "program 24 was dropped or delivered late: {:?}", io[0]);
-    assert!((io[0][39] - 34.0).abs() < 1e-5);
-    assert!((io[0][40] - 17.0).abs() < 1e-5, "program 7 must not replace program 24's earlier point");
-    assert!((io[0][63] - 17.0).abs() < 1e-5);
+    assert!((io[0][10] - 15.0).abs() < 1e-5, "program 5/7 was dropped, mis-scaled or delivered late");
+    assert!((io[0][39] - 15.0).abs() < 1e-5);
+    assert!((io[0][40] - 12.0).abs() < 1e-5, "program 2 must not replace program 5's earlier point");
+    assert!((io[0][63] - 12.0).abs() < 1e-5);
+}
+
+#[test]
+fn dense_program_changes_keep_each_offset_across_process_splits() {
+    let mut p = soundcraft_vst3_host::create(&id_of("Fixture Synth")).unwrap();
+    let frames = 1024;
+    p.prepare(48_000.0, 64, 2);
+    for offset in (0..frames).rev() {
+        p.midi(offset, [0xC0, if offset % 2 == 0 { 2 } else { 5 }, 0]);
+    }
+    let mut io = vec![vec![0.0f32; frames]; 2];
+    p.process(&mut io, frames);
+    for (offset, &sample) in io[0].iter().enumerate() {
+        let expected = if offset % 2 == 0 { 12.0 } else { 15.0 };
+        assert!((sample - expected).abs() < 1e-5, "program at offset {offset}");
+    }
 }
 
 #[test]
 fn an_unmapped_program_channel_does_not_select_channel_one_programs() {
     let mut p = soundcraft_vst3_host::create(&id_of("Fixture Synth")).unwrap();
     p.prepare(48_000.0, 64, 2);
-    p.midi(10, [0xC9, 24, 0]);
+    p.midi(10, [0xC9, 5, 0]);
+    p.midi(12, [0xB1, 0, 127]);
+    p.midi(40, [0xC0, 5, 0]);
     let mut io = vec![vec![0.0f32; 64]; 2];
     p.process(&mut io, 64);
-    assert!(io.iter().flatten().all(|&v| v == 0.0));
+    assert!(io[0][..40].iter().all(|&v| v == 0.0));
+    assert!((io[0][40] - 15.0).abs() < 1e-5);
 }
 
 #[test]
