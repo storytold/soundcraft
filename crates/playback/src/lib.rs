@@ -22,7 +22,14 @@
 //! through handles taken from each instance before it leaves ([`Player::open_editor`]).
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
 
+/// Whether playback goes round `range` as a loop: a range of 64 frames or less is too short,
+/// and is played once.
+pub fn loops(range: Range) -> bool {
+    range.len() > 64
+}
+
 pub mod devices;
+pub mod midi;
 pub mod record;
 mod record_clock;
 
@@ -119,7 +126,10 @@ enum Cmd {
     /// Where the callback sends the snapshots it replaces (freeing one takes thousands of frees).
     OldSessions(SyncSender<Arc<Session>>),
     Input(Arc<record::InputRing>, bool),
-    Recording(bool),
+    Midi(Arc<midi::MidiFeed>),
+    /// Recording on or off. Switching it off carries the number of the pass that ends
+    /// (`MidiFeed::end_pass`; 0: nobody waits for it), which the callback acknowledges.
+    Recording(bool, u64),
     Play {
         from: Samples,
         end: Option<Samples>,
@@ -209,19 +219,18 @@ impl Player {
 
     /// Open recording and monitoring on the configured input. Reuse the active ASIO device
     /// when it is the selected input. Enumerating other drivers can fail with an active stream.
-    pub fn open_input(&self, cfg: &AudioConfig) -> Result<record::Recorder, String> {
+    pub fn open_input(&self, cfg: &AudioConfig) -> Result<record::Recorder, record::InputOpenError> {
         #[cfg(not(target_os = "freebsd"))]
         {
+            let (device, shared_output) = self.input_device(cfg)?;
             #[cfg(all(windows, feature = "asio"))]
-            if let Some(device) = self.shared_asio_input(cfg) {
-                let rate = cfg.sample_rate.is_none().then_some(self.device_rate);
-                return record::Recorder::open_synced(device, cfg, rate, Arc::clone(&self.fault.record_clock));
+            if let Some(config) = shared_output {
+                return record::Recorder::open_synced(&device, cfg, config, Arc::clone(&self.fault.record_clock));
             }
-            let (device, rate) = self.input_device(cfg)?;
-            return record::Recorder::open_on_device(&device, cfg, rate);
+            record::Recorder::open_on_device(&device, cfg, shared_output)
         }
         #[cfg(target_os = "freebsd")]
-        record::Recorder::open_with(cfg)
+        record::Recorder::open_with(cfg).map_err(Into::into)
     }
 
     /// Input width at the selected rate without opening a recording stream.
@@ -229,7 +238,7 @@ impl Player {
         #[cfg(not(target_os = "freebsd"))]
         return self
             .input_device(cfg)
-            .and_then(|(device, rate)| record::input_config(&device, cfg, rate))
+            .and_then(|(device, shared_output)| record::input_config(&device, cfg, shared_output.map(|(rate, _)| rate)))
             .map_or(0, |config| usize::from(config.channels()));
         #[cfg(target_os = "freebsd")]
         {
@@ -244,11 +253,11 @@ impl Player {
     }
 
     #[cfg(not(target_os = "freebsd"))]
-    fn input_device(&self, cfg: &AudioConfig) -> Result<(cpal::Device, Option<u32>), String> {
+    fn input_device(&self, cfg: &AudioConfig) -> Result<(cpal::Device, Option<(u32, cpal::BufferSize)>), String> {
         #[cfg(all(windows, feature = "asio"))]
         if let Some(device) = self.shared_asio_input(cfg) {
-            let required_rate = cfg.sample_rate.is_none().then_some(self.device_rate);
-            return Ok((device.clone(), required_rate));
+            let buffer = self.device_buffer.map_or(cpal::BufferSize::Default, cpal::BufferSize::Fixed);
+            return Ok((device.clone(), Some((self.device_rate, buffer))));
         }
         record::input_device(cfg).map(|device| (device, None))
     }
@@ -570,8 +579,20 @@ impl Player {
         let _ = self.tx.send(Cmd::Input(Arc::clone(&recorder.monitor), recorder.shares_asio_output()));
     }
 
+    /// Play MIDI devices through record-enabled and input-monitored MIDI and instrument tracks.
+    pub fn set_midi(&self, feed: Arc<midi::MidiFeed>) {
+        let _ = self.tx.send(Cmd::Midi(feed));
+    }
+
     pub fn set_recording(&self, on: bool) {
-        let _ = self.tx.send(Cmd::Recording(on));
+        let _ = self.tx.send(Cmd::Recording(on, 0));
+    }
+
+    /// Switch recording off at the end of record pass `pass` ([`midi::MidiFeed::end_pass`]). The
+    /// audio thread answers on the feed once the MIDI played up to here is written down
+    /// ([`midi::MidiFeed::captured`]).
+    pub fn end_recording(&self, pass: u64) {
+        let _ = self.tx.send(Cmd::Recording(false, pass));
     }
 
     pub fn stop(&self) {
