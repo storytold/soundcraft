@@ -178,6 +178,71 @@ mod name_tests {
     }
 
     #[test]
+    fn a_midi_file_with_stray_bytes_after_its_last_track_is_imported() {
+        // #1528: a complete format-0 file followed by two line feeds, too short to be a chunk.
+        let note = soundcraft_midi::Note { pitch: 60, velocity: 100, release_velocity: 64, channel: 0, start: 0, length: 960 };
+        let sequence = soundcraft_midi::Sequence { notes: vec![note], ..Default::default() };
+        let smf = soundcraft_midi::Smf { format: 0, tracks: vec![soundcraft_midi::SmfTrack { name: String::new(), sequence }], ..Default::default() };
+        let mut bytes = soundcraft_midi::write_smf(&smf).unwrap();
+        bytes.extend_from_slice(b"\n\n");
+        let mut e = Engine::default();
+        let ids = import_midi_bytes(&mut e, &bytes, 0, true).unwrap();
+        assert_eq!(ids.len(), 1);
+        match &e.session().track(ids[0]).unwrap().clips()[0].content {
+            ClipContent::Midi { sequence } => assert_eq!(sequence.notes, vec![note]),
+            _ => panic!("expected a MIDI clip"),
+        }
+        // Something that is no MIDI file is still refused, and leaves the session as it was.
+        let mut e = Engine::default();
+        assert!(import_midi_bytes(&mut e, b"RIFF\0\0\0\0WAVE", 0, true).is_err());
+        assert!(e.session().tracks.is_empty());
+    }
+
+    #[test]
+    fn a_midi_file_past_the_track_limit_is_refused_even_with_stray_bytes() {
+        // Read leniently, the tracks past the limit would be left out without a word: the note in
+        // the last one would be lost. The file stays refused, and the session as it was.
+        let tracks = soundcraft_midi::MAX_TRACKS + 1;
+        let mut bytes = b"MThd\0\0\0\x06\0\x01".to_vec();
+        bytes.extend_from_slice(&u16::try_from(tracks).unwrap().to_be_bytes());
+        bytes.extend_from_slice(&960u16.to_be_bytes());
+        for _ in 1..tracks {
+            bytes.extend_from_slice(b"MTrk\0\0\0\x04\0\xFF\x2F\0");
+        }
+        // A note on, a quarter note later its note off, then End of Track.
+        bytes.extend_from_slice(b"MTrk\0\0\0\x0D\0\x90\x3C\x64\x87\x40\x80\x3C\x40\0\xFF\x2F\0");
+        bytes.extend_from_slice(b"\n\n");
+        let mut e = Engine::default();
+        let err = import_midi_bytes(&mut e, &bytes, 0, true).unwrap_err();
+        assert!(err.to_string().contains("too many tracks"), "{err}");
+        assert!(e.session().tracks.is_empty());
+    }
+
+    #[test]
+    fn a_midi_file_past_the_event_limit_is_refused_after_a_damaged_track() {
+        // The strict reader stops at track 1's damage, before track 2 reaches the event limit; read
+        // leniently, track 2's note after the limit (pitch 72) would be lost without a word.
+        let mut damaged = b"\0\x3C\x40".to_vec(); // a data byte with no status before it
+        damaged.extend_from_slice(b"\0\xFF\x2F\0");
+        let mut long = b"\0\x90\x3C\x64".to_vec();
+        for _ in 0..soundcraft_midi::MAX_EVENTS {
+            long.extend_from_slice(b"\0\x3C\0"); // running status: note off
+        }
+        long.extend_from_slice(b"\0\x90\x48\x64\x87\x40\x80\x48\x40\0\xFF\x2F\0");
+        let mut bytes = b"MThd\0\0\0\x06\0\x01\0\x02\x03\xC0".to_vec();
+        for body in [&damaged, &long] {
+            bytes.extend_from_slice(b"MTrk");
+            bytes.extend_from_slice(&u32::try_from(body.len()).unwrap().to_be_bytes());
+            bytes.extend_from_slice(body);
+        }
+        assert!(!matches!(soundcraft_midi::read_smf(&bytes), Err(soundcraft_midi::MidiError::TooManyEvents(_)) | Ok(_)));
+        let mut e = Engine::default();
+        let err = import_midi_bytes(&mut e, &bytes, 0, true).unwrap_err();
+        assert!(err.to_string().contains("events"), "{err}");
+        assert!(e.session().tracks.is_empty());
+    }
+
+    #[test]
     fn midi_longer_than_a_day_is_refused() {
         let held = soundcraft_midi::Note { pitch: 60, velocity: 100, release_velocity: 64, channel: 0, start: 0, length: (1 << 28) - 1 };
         let sequence = soundcraft_midi::Sequence { notes: vec![held], ..Default::default() };

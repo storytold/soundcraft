@@ -1,3 +1,4 @@
+use clap_sys::ext::gui::clap_window_handle;
 use std::ffi::c_void;
 
 pub const SUPPORTED: bool = false;
@@ -11,8 +12,8 @@ impl HostWindow {
     pub fn raw(&self) -> *mut c_void {
         std::ptr::null_mut()
     }
-    pub fn parent(&self) -> *mut c_void {
-        std::ptr::null_mut()
+    pub fn handle(&self) -> clap_window_handle {
+        clap_window_handle { ptr: std::ptr::null_mut() }
     }
     pub fn raise(&self) {}
     pub fn is_visible(&self) -> bool {
