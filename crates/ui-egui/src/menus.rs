@@ -272,8 +272,8 @@ pub fn menu_bar(app: &mut SoundApp, ui: &mut egui::Ui) {
     egui::Panel::top("menu_bar").exact_size(24.0).frame(egui::Frame::NONE.fill(t.menu_bar).inner_margin(egui::Margin::symmetric(8, 2))).show(
         ui,
         |ui| {
-            ui.with_layout(craft_ui::direction::row(ui), |ui| {
-                egui::MenuBar::new().ui(ui, |ui| {
+            egui::MenuBar::new().ui(ui, |ui| {
+                ui.with_layout(craft_ui::direction::row(ui), |ui| {
                     ui.menu_button(crate::localization::text("SoundCraft"), |ui| {
                         ui.add_enabled_ui(menu_entries_enabled, |ui| {
                             if ui.button(crate::localization::text("About SoundCraft")).clicked() {
@@ -314,7 +314,9 @@ pub fn menu_bar(app: &mut SoundApp, ui: &mut egui::Ui) {
                                     if root.path == "AudioSuite" {
                                         ui.separator();
                                         ui.label(
-                                            egui::RichText::new(crate::localization::text("Processes selected clips offline")).small().color(t.text_dim),
+                                            egui::RichText::new(crate::localization::text("Processes selected clips offline"))
+                                                .small()
+                                                .color(t.text_dim),
                                         );
                                     }
                                     if root.path == "Window" {
