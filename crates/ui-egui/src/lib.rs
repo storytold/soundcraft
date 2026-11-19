@@ -59,6 +59,9 @@ pub use panels::video_window;
 pub use panels::windows;
 #[cfg(windows)]
 mod hui;
+#[cfg(any(windows, test))]
+#[cfg_attr(not(windows), allow(dead_code))]
+mod surface_protocol;
 #[cfg(windows)]
 pub use hui::Ports as HuiPorts;
 

@@ -95,6 +95,19 @@ System to Dark, or on Linux to the desktop's portal setting when one is availabl
 track) brings the track to the top of the Edit window and the left of the Mix window, the same as
 Scroll Into View in the track name menu. A window not on screen catches up when it is next shown.
 
+## MIDI control surfaces (Windows)
+
+`ui.hui {"list":true}` lists MIDI input and output port names. Configure the surface with
+`ui.hui {"protocol":"mcu","input":"Controller MIDI In","output":"Controller MIDI Out"}`.
+The default protocol is `hui`. Enable `"motorized":true` for fader position feedback on hardware
+with motorized faders. Otherwise, a fader takes control as it reaches or crosses the assigned
+track's current position. The mapped tracks follow Bank and Channel navigation.
+
+Call `ui.hui {}` to read `online`, the one-based `first_track`, eight `tracks` slots
+(track IDs or null), `ports` and `record_ready`. A `navigate` value of `bank_left`,
+`bank_right`, `channel_left` or `channel_right` shifts the mapping. Use
+`ui.hui {"enabled":false}` to disconnect.
+
 ## Panel docking
 
 Tracks and Groups, Clips, MIDI Editor, Memory Locations, and Undo History use movable panels. Commands target the active Edit or Mix view; floating panels stay inside the current viewport. Edit and Mix retain separate arrangements; Clips and MIDI Editor belong to Edit. Transport, plug-in, and specialist utility windows retain their existing hosts. The document/session view is protected.

@@ -292,6 +292,13 @@ impl SoundApp {
         }
     }
 
+    pub(crate) fn hold_automation_pass(&mut self) {
+        use soundcraft_model::AutomationMode as M;
+        let may_write = self.is_playing()
+            && self.engine.session().tracks.iter().any(|t| matches!(t.mixer.automation_mode, M::Write | M::Touch | M::Latch | M::TouchLatch));
+        self.engine.hold_merge(may_write.then_some("automation_pass"));
+    }
+
     /// While playing, record volume automation from fader positions for tracks in Write mode, and
     /// for Touch/Latch tracks whose fader is (or, for Latch, was) being moved. Send levels follow the
     /// same rules, per send, from its slot or its floating send window. Each point replaces the
@@ -301,9 +308,7 @@ impl SoundApp {
         use soundcraft_model::AutomationMode as M;
         const PASS: &str = "automation_pass";
         let playing = self.is_playing();
-        let may_write =
-            playing && self.engine.session().tracks.iter().any(|t| matches!(t.mixer.automation_mode, M::Write | M::Touch | M::Latch | M::TouchLatch));
-        self.engine.hold_merge(may_write.then_some(PASS));
+        self.hold_automation_pass();
         if !playing && self.touched.is_empty() && self.touched_sends.is_empty() {
             self.last_write_at = i64::MIN;
             return;
@@ -331,7 +336,11 @@ impl SoundApp {
             .iter()
             .filter_map(|t| {
                 let m = t.mixer.automation_mode;
-                let touched_now = dragging && fader_track == Some(t.id);
+                #[cfg(windows)]
+                let surface_touched = crate::hui::touching(self, t.id);
+                #[cfg(not(windows))]
+                let surface_touched = false;
+                let touched_now = (dragging && fader_track == Some(t.id)) || surface_touched;
                 let write = match m {
                     M::Write => true,
                     M::Touch => touched_now,

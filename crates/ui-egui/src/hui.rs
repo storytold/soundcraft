@@ -1,26 +1,25 @@
 //! Eight MIDI surface strips connected to the existing desktop transport and mixer commands.
-mod mcu;
+mod motion;
+
+use crate::surface_protocol::{Decode, Event, Navigation, PONG, STRIPS, TRANSPORT, hui_fader, mcu};
+use motion::{FADER_MAX, GESTURE_GAP, Motion};
 
 use crate::{SoundApp, json};
 use midir::{MidiInput, MidiInputConnection, MidiOutput, MidiOutputConnection};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use soundcraft_model::{TrackId, TrackKind};
+use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::mpsc::{Receiver, sync_channel};
 use std::time::{Duration, Instant};
 
 const NAME: &str = "SoundCraft HUI";
-const STRIPS: usize = 8;
-const TRANSPORT: u8 = 0x0e;
-const NAVIGATION: u8 = 0x0a;
-const LOOP: u8 = 0x0f;
-const MARKERS: u8 = 0x14;
 const STRIP_LAMP_PORTS: [u8; 3] = [2, 3, 7];
 const TRANSPORT_LAMP_PORTS: [u8; 3] = [3, 4, 5];
-const PONG: [u8; 3] = [0x90, 0, 0x7f];
 const PING_INTERVAL: Duration = Duration::from_millis(900);
 const HEARTBEAT_TIMEOUT: Duration = Duration::from_secs(3);
 const RETRY_INTERVAL: Duration = Duration::from_secs(1);
+const MIX_GESTURE: &str = "surface:mixer";
 // The Model 12 sends about 50 single steps between the centre and either end.
 const PAN_STEP: f32 = 0.02;
 
@@ -30,6 +29,8 @@ pub struct Ports {
     output: String,
     #[serde(default, skip_serializing_if = "Protocol::is_hui")]
     protocol: Protocol,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    motorized: bool,
 }
 
 impl Ports {
@@ -79,14 +80,19 @@ pub(crate) struct Surface {
     inputs: Vec<String>,
     outputs: Vec<String>,
     error: String,
+    context: Option<egui::Context>,
+    motion: Motion,
+    frame: Option<Instant>,
 }
 
 struct Link {
-    _input: MidiInputConnection<()>,
-    output: MidiOutputConnection,
+    input: Option<MidiInputConnection<()>>,
+    output: Option<MidiOutputConnection>,
     packets: Receiver<[u8; 3]>,
     protocol: Protocol,
-    mcu_output_failed: bool,
+    failed: bool,
+    check_at: Instant,
+    motorized: bool,
     decoder: Decode,
     ping: Option<Instant>,
     heartbeat: Heartbeat,
@@ -128,15 +134,17 @@ impl Surface {
     }
 
     fn take_link(&mut self, ports: &Ports, now: Instant, ctx: &egui::Context) -> Option<Link> {
-        if let Some(link) = self.link.take()
-            && !link.needs_reopen(now)
-        {
-            return Some(link);
+        if let Some(mut link) = self.link.take() {
+            link.check_ports(ports, now);
+            if !link.needs_reopen(now) {
+                return Some(link);
+            }
         }
+        self.motion = Motion::default();
         // A timed-out WinMM handle may stay invalid after USB has re-enumerated.
         // Drop it before opening both ports again by name.
         if self.connection_due(now) {
-            match Link::connect(ports) {
+            match Link::connect(ports, Some(ctx.clone())) {
                 Ok(link) => {
                     self.error.clear();
                     return Some(link);
@@ -149,115 +157,38 @@ impl Surface {
         }
         None
     }
-}
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Event {
-    Pong,
-    Stop,
-    Play,
-    Record,
-    Rewind,
-    FastForward,
-    Cycle,
-    SetMarker,
-    Jog(i8),
-    Navigate(Navigation),
-    Mute(usize),
-    Solo(usize),
-    Arm(usize),
-    Pan(usize, i8),
-    Fader(usize, u16),
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Navigation {
-    BankLeft,
-    BankRight,
-    ChannelLeft,
-    ChannelRight,
-}
-
-impl Navigation {
-    fn target(self, first: usize, count: usize) -> usize {
-        let last_bank = (count.saturating_sub(1) / STRIPS) * STRIPS;
-        match self {
-            Self::BankLeft => first.saturating_sub(STRIPS),
-            Self::BankRight => first.saturating_add(STRIPS).min(last_bank),
-            Self::ChannelLeft => first.saturating_sub(1),
-            Self::ChannelRight => first.saturating_add(1).min(last_bank),
+    pub(crate) fn set_context(&mut self, ctx: &egui::Context) {
+        if self.context.is_none() {
+            self.context = Some(ctx.clone());
         }
     }
 }
 
-#[derive(Default)]
-struct Decode {
-    zone: Option<u8>,
-    coarse: [Option<u8>; STRIPS],
-}
-
-impl Decode {
-    fn packet(&mut self, packet: [u8; 3]) -> Option<Event> {
-        match packet {
-            PONG => Some(Event::Pong),
-            [0xb0, 0x0f, zone @ 0..=127] => {
-                self.zone = Some(zone);
-                None
-            }
-            [0xb0, 0x2f, value] => match (self.zone.take()?, value) {
-                (TRANSPORT, 0x41) => Some(Event::Rewind),
-                (TRANSPORT, 0x42) => Some(Event::FastForward),
-                (TRANSPORT, 0x43) => Some(Event::Stop),
-                (TRANSPORT, 0x44) => Some(Event::Play),
-                (TRANSPORT, 0x45) => Some(Event::Record),
-                (LOOP, 0x43) => Some(Event::Cycle),
-                (MARKERS, 0x40) => Some(Event::SetMarker),
-                (NAVIGATION, 0x40) => Some(Event::Navigate(Navigation::ChannelLeft)),
-                (NAVIGATION, 0x41) => Some(Event::Navigate(Navigation::BankLeft)),
-                (NAVIGATION, 0x42) => Some(Event::Navigate(Navigation::ChannelRight)),
-                (NAVIGATION, 0x43) => Some(Event::Navigate(Navigation::BankRight)),
-                (strip @ 0..=7, 0x42) => Some(Event::Mute(usize::from(strip))),
-                (strip @ 0..=7, 0x43) => Some(Event::Solo(usize::from(strip))),
-                (strip @ 0..=7, 0x47) => Some(Event::Arm(usize::from(strip))),
-                _ => None,
-            },
-            [0xb0, 0x0d, value] => relative_steps(value).map(Event::Jog),
-            [0xb0, knob @ 0x40..=0x47, value] => relative_steps(value).map(|steps| Event::Pan(usize::from(knob - 0x40), steps)),
-            [0xb0, strip @ 0..=7, coarse @ 0..=127] => {
-                *self.coarse.get_mut(usize::from(strip))? = Some(coarse);
-                None
-            }
-            [0xb0, fine @ 0x20..=0x27, value @ 0..=127] => {
-                let strip = usize::from(fine - 0x20);
-                let coarse = self.coarse.get_mut(strip)?.take()?;
-                Some(Event::Fader(strip, (u16::from(coarse) << 7) | u16::from(value)))
-            }
-            _ => None,
-        }
-    }
-}
-
-fn relative_steps(value: u8) -> Option<i8> {
-    let magnitude = (value & 0x3f) as i8;
-    match value {
-        0 | 0x40 | 0x80..=0xff => None,
-        1..=0x3f => Some(-magnitude),
-        _ => Some(magnitude),
-    }
+fn guarded<T>(f: impl FnOnce() -> Result<T, String>) -> Result<T, String> {
+    catch_unwind(AssertUnwindSafe(f)).unwrap_or_else(|_| Err(crate::localization::text("The system's MIDI service failed").into()))
 }
 
 fn input_names() -> Result<Vec<String>, String> {
-    let midi = MidiInput::new(NAME).map_err(|e| e.to_string())?;
-    Ok(midi.ports().iter().filter_map(|port| midi.port_name(port).ok()).collect())
+    guarded(|| {
+        let midi = MidiInput::new(NAME).map_err(|e| e.to_string())?;
+        Ok(midi.ports().iter().filter_map(|port| midi.port_name(port).ok()).collect())
+    })
 }
 
 fn output_names() -> Result<Vec<String>, String> {
-    let midi = MidiOutput::new(NAME).map_err(|e| e.to_string())?;
-    Ok(midi.ports().iter().filter_map(|port| midi.port_name(port).ok()).collect())
+    guarded(|| {
+        let midi = MidiOutput::new(NAME).map_err(|e| e.to_string())?;
+        Ok(midi.ports().iter().filter_map(|port| midi.port_name(port).ok()).collect())
+    })
 }
 
 impl Link {
-    fn connect(ports: &Ports) -> Result<Self, String> {
+    fn connect(ports: &Ports, ctx: Option<egui::Context>) -> Result<Self, String> {
+        guarded(|| Self::connect_midi(ports, ctx))
+    }
+
+    fn connect_midi(ports: &Ports, ctx: Option<egui::Context>) -> Result<Self, String> {
         let input = MidiInput::new(NAME).map_err(|e| e.to_string())?;
         let output = MidiOutput::new(NAME).map_err(|e| e.to_string())?;
         let (tx, packets) = sync_channel(512);
@@ -265,31 +196,36 @@ impl Link {
             .ports()
             .into_iter()
             .find(|p| input.port_name(p).ok().as_deref() == Some(ports.input.as_str()))
-            .ok_or_else(|| ports.input.clone())?;
+            .ok_or_else(|| missing_port(&ports.input))?;
         let out_port = output
             .ports()
             .into_iter()
             .find(|p| output.port_name(p).ok().as_deref() == Some(ports.output.as_str()))
-            .ok_or_else(|| ports.output.clone())?;
+            .ok_or_else(|| missing_port(&ports.output))?;
         let output = output.connect(&out_port, NAME).map_err(|e| e.to_string())?;
         let input = input
             .connect(
                 &in_port,
                 NAME,
                 move |_, bytes, _| {
-                    if let Ok(packet) = <[u8; 3]>::try_from(bytes) {
-                        let _ = tx.try_send(packet);
+                    if let Ok(packet) = <[u8; 3]>::try_from(bytes)
+                        && tx.try_send(packet).is_ok()
+                        && let Some(ctx) = &ctx
+                    {
+                        ctx.request_repaint();
                     }
                 },
                 (),
             )
             .map_err(|e| e.to_string())?;
         Ok(Self {
-            _input: input,
-            output,
+            input: Some(input),
+            output: Some(output),
             packets,
             protocol: ports.protocol,
-            mcu_output_failed: false,
+            failed: false,
+            check_at: Instant::now() + RETRY_INTERVAL,
+            motorized: ports.motorized,
             decoder: Decode::default(),
             ping: None,
             heartbeat: Heartbeat::new(Instant::now()),
@@ -299,27 +235,66 @@ impl Link {
     }
 
     fn send(&mut self, packet: [u8; 3]) {
-        if self.mcu_output_failed {
+        if self.failed {
             return;
         }
-        if let Err(error) = self.output.send(&packet) {
+        if let Some(output) = &mut self.output
+            && let Err(error) = guarded(|| output.send(&packet).map_err(|error| error.to_string()))
+        {
             log::debug!("{} MIDI output: {error}", self.protocol.label());
-            self.mcu_output_failed = self.protocol == Protocol::Mcu;
+            self.failed = true;
+        }
+    }
+
+    fn lamp(&mut self, strip: usize, index: usize, lit: bool) {
+        let ports = if strip == STRIPS { TRANSPORT_LAMP_PORTS } else { STRIP_LAMP_PORTS };
+        if strip > STRIPS {
+            return;
+        }
+        match self.protocol {
+            Protocol::Hui => {
+                if let Some(port) = ports.get(index) {
+                    let zone = if strip == STRIPS { TRANSPORT } else { strip as u8 };
+                    self.send([0xb0, 0x0c, zone]);
+                    self.send([0xb0, 0x2c, port | if lit { 0x40 } else { 0 }]);
+                }
+            }
+            Protocol::Mcu => {
+                if let Some(packet) = mcu::lamp(strip, index, lit) {
+                    self.send(packet);
+                }
+            }
+        }
+    }
+
+    fn check_ports(&mut self, ports: &Ports, now: Instant) {
+        if now < self.check_at || self.failed {
+            return;
+        }
+        self.check_at = now + RETRY_INTERVAL;
+        self.failed = match input_names().and_then(|input| Ok((input, output_names()?))) {
+            Ok((input, output)) => !ports_present(ports, &input, &output),
+            Err(error) => {
+                log::debug!("{} MIDI scan: {error}", self.protocol.label());
+                true
+            }
+        };
+        // Reassert the current Stop lamp to detect stale WinMM handles when a device went
+        // away and came back between two scans, with no ordinary feedback changes.
+        if self.protocol == Protocol::Mcu
+            && let Some(lamps) = self.lamps
+            && let Some(packet) = mcu::lamp(STRIPS, 0, lamps[STRIPS][0])
+        {
+            self.send(packet);
         }
     }
 
     fn needs_reopen(&self, now: Instant) -> bool {
-        match self.protocol {
-            Protocol::Hui => self.heartbeat.expired(now),
-            Protocol::Mcu => self.mcu_output_failed,
-        }
+        self.failed || (self.protocol.is_hui() && self.heartbeat.seen_reply && self.heartbeat.expired(now))
     }
 
     fn online(&self) -> bool {
-        match self.protocol {
-            Protocol::Hui => self.heartbeat.online(Instant::now()),
-            Protocol::Mcu => !self.mcu_output_failed,
-        }
+        !self.failed && (!self.protocol.is_hui() || self.heartbeat.online(Instant::now()))
     }
 
     fn decode(&mut self, packet: [u8; 3], now: Instant) -> Option<Event> {
@@ -329,6 +304,36 @@ impl Link {
             Protocol::Mcu => mcu::decode(packet),
         }
     }
+}
+
+impl Drop for Link {
+    fn drop(&mut self) {
+        if let Some(lamps) = self.lamps.take() {
+            for (strip, states) in lamps.into_iter().enumerate() {
+                for (index, lit) in states.into_iter().enumerate() {
+                    if lit {
+                        self.lamp(strip, index, false);
+                    }
+                }
+            }
+        }
+        let _ = guarded(|| {
+            drop(self.input.take());
+            Ok(())
+        });
+        let _ = guarded(|| {
+            drop(self.output.take());
+            Ok(())
+        });
+    }
+}
+
+fn ports_present(ports: &Ports, inputs: &[String], outputs: &[String]) -> bool {
+    inputs.contains(&ports.input) && outputs.contains(&ports.output)
+}
+
+fn missing_port(name: &str) -> String {
+    crate::localized_format!("MIDI port not found: {}", name)
 }
 
 fn mixer_tracks(app: &SoundApp) -> impl Iterator<Item = TrackId> + '_ {
@@ -346,6 +351,7 @@ pub(crate) fn controlled_tracks(app: &SoundApp) -> [Option<TrackId>; STRIPS] {
 
 pub(crate) fn document_replaced(app: &mut SoundApp) {
     app.hui.first_track = 0;
+    app.hui.motion = Motion::default();
     if let Some(link) = &mut app.hui.link {
         link.ready = false;
         link.decoder = Decode::default();
@@ -353,11 +359,24 @@ pub(crate) fn document_replaced(app: &mut SoundApp) {
     }
 }
 
+pub(crate) fn gesture_active(app: &SoundApp) -> bool {
+    app.engine.merge_key() == Some(MIX_GESTURE) && app.hui.motion.active(app.clock_now())
+}
+
+pub(crate) fn touching(app: &SoundApp, track: TrackId) -> bool {
+    let (Some(frame), Some(link)) = (app.hui.frame, &app.hui.link) else { return false };
+    link.online() && app.hui.motion.strips.iter().any(|strip| strip.track == Some(track) && strip.writing(frame, link.motorized))
+}
+
 fn navigate(app: &mut SoundApp, link: &mut Link, direction: Navigation) {
     let first = direction.target(app.hui.first_track, mixer_tracks(app).count());
     if first != app.hui.first_track {
         app.hui.first_track = first;
         link.decoder.coarse.fill(None);
+        app.hui.motion = Motion::default();
+        if app.engine.merge_key() == Some(MIX_GESTURE) {
+            app.engine.end_merge();
+        }
         let first_id = mixer_tracks(app).nth(first);
         app.mix_scroll_into_view = first_id;
     }
@@ -372,6 +391,7 @@ fn navigate_from_host(app: &mut SoundApp, direction: Navigation) {
 
 fn apply(app: &mut SoundApp, ports: Option<Ports>) -> Result<(), String> {
     app.hui.link = None;
+    app.hui.motion = Motion::default();
     app.hui.retry_at = None;
     app.hui.first_track = 0;
     app.ui.hui = None;
@@ -379,7 +399,7 @@ fn apply(app: &mut SoundApp, ports: Option<Ports>) -> Result<(), String> {
         inputs.reserve_for_surface(ports.as_ref().map(Ports::input));
     }
     if let Some(p) = ports {
-        let link = Link::connect(&p).inspect_err(|e| {
+        let link = Link::connect(&p, app.hui.context.clone()).inspect_err(|e| {
             app.hui.error.clone_from(e);
             if let Some(inputs) = &mut app.midi_inputs {
                 inputs.reserve_for_surface(None);
@@ -396,10 +416,18 @@ pub(crate) fn command(app: &mut SoundApp, id: &str, p: &Value) -> Result<Value, 
     if id == "setup.peripherals" {
         app.hui.show = p.get("value").and_then(Value::as_bool).unwrap_or(!app.hui.show);
         if app.hui.show {
-            app.hui.inputs = input_names()?;
-            app.hui.outputs = output_names()?;
             app.hui.enabled = app.ui.hui.is_some();
             app.hui.draft = app.ui.hui.clone().unwrap_or_default();
+            app.hui.inputs.clear();
+            app.hui.outputs.clear();
+            match input_names().and_then(|inputs| Ok((inputs, output_names()?))) {
+                Ok((inputs, outputs)) => {
+                    app.hui.inputs = inputs;
+                    app.hui.outputs = outputs;
+                    app.hui.error.clear();
+                }
+                Err(error) => app.hui.error = error,
+            }
         }
         return Ok(json!({"value": app.hui.show}));
     }
@@ -410,7 +438,8 @@ pub(crate) fn command(app: &mut SoundApp, id: &str, p: &Value) -> Result<Value, 
         apply(app, None)?;
     } else if let (Some(input), Some(output)) = (p.get("input").and_then(Value::as_str), p.get("output").and_then(Value::as_str)) {
         let protocol = p.get("protocol").map(|value| serde_json::from_value(value.clone())).transpose().map_err(|error| error.to_string())?;
-        apply(app, Some(Ports { input: input.into(), output: output.into(), protocol: protocol.unwrap_or_default() }))?;
+        let motorized = p.get("motorized").and_then(Value::as_bool).unwrap_or(false);
+        apply(app, Some(Ports { input: input.into(), output: output.into(), protocol: protocol.unwrap_or_default(), motorized }))?;
     }
     if let Some(action) = p.get("navigate").and_then(Value::as_str) {
         let direction = match action {
@@ -434,9 +463,9 @@ pub(crate) fn command(app: &mut SoundApp, id: &str, p: &Value) -> Result<Value, 
 
 pub(crate) fn poll(app: &mut SoundApp, ctx: &egui::Context) {
     let Some(ports) = &app.ui.hui else { return };
-    let now = Instant::now();
+    let now = app.clock_now();
+    app.hui.frame = Some(now);
     let Some(mut link) = app.hui.take_link(ports, now, ctx) else { return };
-    ctx.request_repaint_after(Duration::from_millis(16));
     if link.protocol.is_hui() && link.ping.is_none_or(|at| now.saturating_duration_since(at) >= PING_INTERVAL) {
         link.send([0x90, 0, 0]);
         link.ping = Some(now);
@@ -445,11 +474,15 @@ pub(crate) fn poll(app: &mut SoundApp, ctx: &egui::Context) {
     let last_bank = (track_count.saturating_sub(1) / STRIPS) * STRIPS;
     app.hui.first_track = app.hui.first_track.min(last_bank);
     let mut tracks = mapped_tracks(app, app.hui.first_track);
+    app.hui.motion.map(tracks);
     let mut faders = [None; STRIPS];
     let mut pans = [None; STRIPS];
     let mut jog_steps = 0;
-    for _ in 0..512 {
+    for index in 0..512 {
         let Ok(packet) = link.packets.try_recv() else { break };
+        if index == 511 {
+            ctx.request_repaint();
+        }
         let Some(event) = link.decode(packet, now) else { continue };
         if let Event::Jog(steps) = event {
             jog_steps += i32::from(steps);
@@ -480,9 +513,10 @@ pub(crate) fn poll(app: &mut SoundApp, ctx: &egui::Context) {
                 apply_pans(app, tracks, std::mem::take(&mut pans));
                 navigate(app, &mut link, direction);
                 tracks = mapped_tracks(app, app.hui.first_track);
+                app.hui.motion.map(tracks);
             }
             Event::Mute(strip) | Event::Solo(strip) => {
-                if let Some(id) = tracks[strip] {
+                if let Some(id) = tracks.get(strip).copied().flatten() {
                     let command = if matches!(event, Event::Mute(_)) { "mix.mute" } else { "mix.solo" };
                     let _ = app.run(command, json!({"tracks":[id.0]}));
                 }
@@ -493,14 +527,26 @@ pub(crate) fn poll(app: &mut SoundApp, ctx: &egui::Context) {
                 }
             }
             Event::Fader(strip, value) => {
-                if let Some(fader) = faders.get_mut(strip) {
+                if let Some(fader) = faders.get_mut(strip)
+                    && let Some(control) = app.hui.motion.strips.get_mut(strip)
+                    && let Some(track) = control.track.and_then(|id| app.engine.session().track(id))
+                    && control.accept(value, motion::position(track.mixer.volume_db), link.motorized, now)
+                {
                     *fader = Some(value);
                 }
             }
+            Event::Touch(strip, held) => {
+                if let Some(control) = app.hui.motion.strips.get_mut(strip) {
+                    control.touch(held);
+                }
+            }
             Event::Pan(strip, steps) => {
-                if let Some(track) = tracks[strip].and_then(|id| app.engine.session().track(id)) {
-                    let pan = pans[strip].unwrap_or(track.mixer.pan[0]);
-                    pans[strip] = Some((pan + f32::from(steps) * PAN_STEP).clamp(-1.0, 1.0));
+                if let Some(pan) = pans.get_mut(strip)
+                    && let Some(track) = tracks.get(strip).copied().flatten().and_then(|id| app.engine.session().track(id))
+                    && let Some(current) = track.mixer.pan.first()
+                {
+                    *pan = Some((pan.unwrap_or(*current) + f32::from(steps) * PAN_STEP).clamp(-1.0, 1.0));
+                    app.hui.motion.pan_until = Some(now + GESTURE_GAP);
                 }
             }
         }
@@ -508,6 +554,12 @@ pub(crate) fn poll(app: &mut SoundApp, ctx: &egui::Context) {
     jog(app, jog_steps);
     apply_faders(app, tracks, faders);
     apply_pans(app, tracks, pans);
+    for at in [Some(link.check_at), link.ping.map(|at| at + PING_INTERVAL), app.hui.motion.deadline(now)].into_iter().flatten() {
+        ctx.request_repaint_after(at.saturating_duration_since(now));
+    }
+    if link.failed {
+        ctx.request_repaint();
+    }
     app.hui.link = Some(link);
 }
 
@@ -545,9 +597,9 @@ fn transport_control(app: &mut SoundApp, event: Event) {
 fn apply_pans(app: &mut SoundApp, tracks: [Option<TrackId>; STRIPS], pans: [Option<f32>; STRIPS]) {
     for (id, pan) in tracks.into_iter().zip(pans) {
         if let (Some(id), Some(pan)) = (id, pan)
-            && app.engine.session().track(id).is_some_and(|t| (t.mixer.pan[0] - pan).abs() > 0.000_01)
+            && app.engine.session().track(id).and_then(|t| t.mixer.pan.first()).is_some_and(|old| (*old - pan).abs() > 0.000_01)
         {
-            let _ = app.engine.execute_merged("mix.pan", &json!({"tracks":[id.0], "pan":pan}), &format!("pan:{}:0", id.0));
+            let _ = app.engine.execute_merged("mix.pan", &json!({"tracks":[id.0], "pan":pan}), MIX_GESTURE);
         }
     }
 }
@@ -555,9 +607,9 @@ fn apply_pans(app: &mut SoundApp, tracks: [Option<TrackId>; STRIPS], pans: [Opti
 fn apply_faders(app: &mut SoundApp, tracks: [Option<TrackId>; STRIPS], faders: [Option<u16>; STRIPS]) {
     for (id, value) in tracks.into_iter().zip(faders) {
         if let (Some(value), Some(track)) = (value, id.and_then(|id| app.engine.session().track(id))) {
-            let db = soundcraft_model::fader_pos_to_db(f32::from(value) / 16_383.0);
+            let db = soundcraft_model::fader_pos_to_db(f32::from(value) / FADER_MAX);
             if (track.mixer.volume_db - db).abs() > 0.001 {
-                let _ = app.run("mix.volume", json!({"tracks":[track.id.0], "db":db}));
+                let _ = app.engine.execute_merged("mix.volume", &json!({"tracks":[track.id.0], "db":db}), MIX_GESTURE);
             }
         }
     }
@@ -571,22 +623,50 @@ pub(crate) fn feedback(app: &mut SoundApp) {
         if i == STRIPS {
             [!transport.playing, transport.playing, transport.recording || link.ready]
         } else {
-            tracks[i].and_then(|id| app.engine.session().track(id)).map_or([false; 3], |t| [t.mixer.mute, t.mixer.solo, t.mixer.record_arm])
+            tracks
+                .get(i)
+                .copied()
+                .flatten()
+                .and_then(|id| app.engine.session().track(id))
+                .map_or([false; 3], |t| [t.mixer.mute, t.mixer.solo, t.mixer.record_arm])
         }
     });
     let previous = link.lamps.replace(lamps);
+    if previous.is_none() && link.protocol == Protocol::Mcu {
+        for note in 0x18..=0x1f {
+            link.send([0x90, note, 0]);
+        }
+    }
     for (i, states) in lamps.into_iter().enumerate() {
-        let (zone, ports) = if i < STRIPS { (i as u8, STRIP_LAMP_PORTS) } else { (TRANSPORT, TRANSPORT_LAMP_PORTS) };
-        for (index, (port, lit)) in ports.into_iter().zip(states).enumerate() {
+        for (index, lit) in states.into_iter().enumerate() {
             if previous.is_some_and(|old| old[i][index] == lit) {
+                continue;
+            }
+            link.lamp(i, index, lit);
+        }
+    }
+    if link.motorized
+        && let Some(frame) = app.hui.frame
+    {
+        for (index, strip) in app.hui.motion.strips.iter_mut().enumerate() {
+            let Some(track) = strip.track.and_then(|id| app.engine.session().track(id)) else { continue };
+            let position = motion::position(track.mixer.volume_db);
+            if !strip.should_send(position, frame) {
                 continue;
             }
             match link.protocol {
                 Protocol::Hui => {
-                    link.send([0xb0, 0x0c, zone]);
-                    link.send([0xb0, 0x2c, port | if lit { 0x40 } else { 0 }]);
+                    if let Some(packets) = hui_fader(index, position) {
+                        for packet in packets {
+                            link.send(packet);
+                        }
+                    }
                 }
-                Protocol::Mcu => link.send(mcu::lamp(i, index, lit)),
+                Protocol::Mcu => {
+                    if let Some(packet) = mcu::fader(index, position) {
+                        link.send(packet);
+                    }
+                }
             }
         }
     }
@@ -629,6 +709,9 @@ pub(crate) fn show(app: &mut SoundApp, ctx: &egui::Context) {
             ui.end_row();
             ui.label(crate::localization::text("Channels"));
             ui.label(if app.hui.enabled { "8" } else { "0" });
+            ui.end_row();
+            ui.label(crate::localization::text("Faders"));
+            ui.checkbox(&mut app.hui.draft.motorized, crate::localization::text("Motorized faders"));
             ui.end_row();
         });
         pending = ui
@@ -708,6 +791,143 @@ mod tests {
     }
 
     #[test]
+    fn midi_failures_are_contained_and_missing_either_configured_port_requires_reopening() {
+        assert_eq!(guarded(|| Ok(1)), Ok(1));
+        assert!(guarded::<()>(|| panic!("WinMM test failure")).unwrap_err().contains("MIDI service failed"));
+        let ports = Ports { input: "in".into(), output: "out".into(), protocol: Protocol::Mcu, motorized: false };
+        assert!(ports_present(&ports, &["in".into()], &["out".into()]));
+        assert!(!ports_present(&ports, &[], &["out".into()]));
+        assert!(!ports_present(&ports, &["in".into()], &[]));
+        assert_eq!(missing_port("in"), "MIDI port not found: in");
+        let start = Instant::now();
+        let (mut link, _) = test_link(Protocol::Hui, start);
+        assert!(!link.needs_reopen(start + HEARTBEAT_TIMEOUT));
+        link.heartbeat.receive(start);
+        assert!(link.needs_reopen(start + HEARTBEAT_TIMEOUT));
+    }
+
+    fn test_link(protocol: Protocol, now: Instant) -> (Link, std::sync::mpsc::SyncSender<[u8; 3]>) {
+        let (send, packets) = sync_channel(512);
+        (
+            Link {
+                input: None,
+                output: None,
+                packets,
+                protocol,
+                failed: false,
+                check_at: now + Duration::from_secs(60),
+                motorized: false,
+                decoder: Decode::default(),
+                ping: None,
+                heartbeat: Heartbeat::new(now),
+                ready: false,
+                lamps: None,
+            },
+            send,
+        )
+    }
+
+    fn test_app() -> (SoundApp, TrackId, std::sync::mpsc::SyncSender<[u8; 3]>) {
+        let mut app = SoundApp::new(soundcraft_engine::Engine::default(), None, crate::Services::default());
+        app.advance_test_clock(Duration::ZERO);
+        let track = app.run("track.new", json!({"name":"Fader","kind":"audio","format":"mono"})).unwrap()["tracks"][0].as_u64().unwrap();
+        app.ui.hui = Some(Ports { protocol: Protocol::Mcu, ..Ports::default() });
+        let (link, packets) = test_link(Protocol::Mcu, app.clock_now());
+        app.hui.link = Some(link);
+        (app, TrackId(track), packets)
+    }
+
+    #[test]
+    fn ten_frames_of_fader_or_pan_make_one_undo_and_end_after_idle() {
+        for is_fader in [true, false] {
+            let (mut app, id, packets) = test_app();
+            let ctx = egui::Context::default();
+            let undo = app.engine.undo_history().len();
+            if is_fader {
+                packets.send(mcu::fader(0, motion::position(0.0)).unwrap()).unwrap();
+            }
+            for step in 1..=10 {
+                app.finish_idle_mixer_gesture();
+                let packet = if is_fader { mcu::fader(0, motion::position(0.0) - step * 200).unwrap() } else { [0xb0, 0x10, 1] };
+                packets.send(packet).unwrap();
+                poll(&mut app, &ctx);
+                app.advance_test_clock(Duration::from_millis(16));
+            }
+            assert_eq!(app.engine.undo_history().len(), undo + 1);
+            app.advance_test_clock(GESTURE_GAP);
+            app.finish_idle_mixer_gesture();
+            assert!(app.engine.merge_key().is_none());
+            app.run("edit.undo", json!({})).unwrap();
+            let track = app.engine.session().track(id).unwrap();
+            assert_eq!(track.mixer.volume_db, 0.0);
+            assert_eq!(track.mixer.pan[0], 0.0);
+        }
+    }
+
+    #[test]
+    fn bank_change_ignores_the_old_fader_position_until_pickup() {
+        let (mut app, first, packets) = test_app();
+        app.run("track.new", json!({"count": 8, "kind":"audio","format":"mono"})).unwrap();
+        let ninth = app.engine.session().tracks.last().unwrap().id;
+        let ctx = egui::Context::default();
+        for packet in [mcu::fader(0, motion::position(0.0)).unwrap(), mcu::fader(0, motion::position(-20.0)).unwrap()] {
+            packets.send(packet).unwrap();
+        }
+        poll(&mut app, &ctx);
+        let first_level = app.engine.session().track(first).unwrap().mixer.volume_db;
+        assert!((first_level + 20.0).abs() < 0.01);
+        for packet in [[0x90, 0x2f, 127], mcu::fader(0, motion::position(-18.0)).unwrap()] {
+            packets.send(packet).unwrap();
+        }
+        poll(&mut app, &ctx);
+        assert_eq!(app.engine.session().track(ninth).unwrap().mixer.volume_db, 0.0);
+        for packet in [mcu::fader(0, motion::position(0.0)).unwrap(), mcu::fader(0, motion::position(3.0)).unwrap()] {
+            packets.send(packet).unwrap();
+        }
+        poll(&mut app, &ctx);
+        assert!((app.engine.session().track(ninth).unwrap().mixer.volume_db - 3.0).abs() < 0.01);
+        assert_eq!(app.engine.session().track(first).unwrap().mixer.volume_db, first_level);
+    }
+
+    #[test]
+    fn surface_touch_and_latch_write_volume_and_share_the_pass_undo() {
+        use soundcraft_model::{AutoParam, AutomationMode};
+        for (mode, continues) in [(AutomationMode::Touch, false), (AutomationMode::Latch, true)] {
+            let (mut app, id, packets) = test_app();
+            app.engine.session_mut().track_mut(id).unwrap().mixer.automation_mode = mode;
+            app.engine.transport.playing = true;
+            let ctx = egui::Context::default();
+            let undo = app.engine.undo_history().len();
+            packets.send([0x90, 0x68, 127]).unwrap();
+            packets.send(mcu::fader(0, motion::position(0.0)).unwrap()).unwrap();
+            for (position, level) in [(1_000, -3.0), (2_000, -6.0)] {
+                app.engine.transport.position = position;
+                app.hold_automation_pass();
+                packets.send(mcu::fader(0, motion::position(level)).unwrap()).unwrap();
+                poll(&mut app, &ctx);
+                app.write_automation();
+                app.advance_test_clock(Duration::from_millis(25));
+            }
+            let lane = |app: &SoundApp| {
+                app.engine.session().track(id).unwrap().automation.iter().find(|lane| lane.param == AutoParam::Volume).unwrap().points.clone()
+            };
+            let before_release = lane(&app);
+            assert_eq!(before_release.last().unwrap().at, 2_000);
+            assert_eq!(app.engine.undo_history().len(), undo + 1);
+            packets.send([0x90, 0x68, 0]).unwrap();
+            app.engine.transport.position = 3_000;
+            poll(&mut app, &ctx);
+            app.write_automation();
+            if continues {
+                assert_eq!(lane(&app).last().unwrap().at, 3_000);
+            } else {
+                assert_eq!(lane(&app), before_release);
+            }
+            assert_eq!(app.engine.undo_history().len(), undo + 1);
+        }
+    }
+
+    #[test]
     fn hui_port_reopen_is_rate_limited_without_changing_bank() {
         let start = Instant::now();
         let mut surface = Surface { first_track: 8, ..Surface::default() };
@@ -715,29 +935,6 @@ mod tests {
         assert!(!surface.connection_due(start + PING_INTERVAL));
         assert!(surface.connection_due(start + RETRY_INTERVAL));
         assert_eq!(surface.first_track, 8);
-    }
-
-    #[test]
-    fn model_12_mixing_and_locate_packets_act_only_on_button_press() {
-        let mut decoder = Decode::default();
-        for (zone, port, event) in [
-            (0x0f, 3, Event::Cycle),
-            (0, 2, Event::Mute(0)),
-            (7, 3, Event::Solo(7)),
-            (0x14, 0, Event::SetMarker),
-            (0x0e, 1, Event::Rewind),
-            (0x0e, 2, Event::FastForward),
-        ] {
-            assert_eq!(decoder.packet([0xb0, 0x0f, zone]), None);
-            assert_eq!(decoder.packet([0xb0, 0x2f, port | 0x40]), Some(event));
-            assert_eq!(decoder.packet([0xb0, 0x0f, zone]), None);
-            assert_eq!(decoder.packet([0xb0, 0x2f, port]), None);
-        }
-        assert_eq!(decoder.packet([0xb0, 0x40, 0x3f]), Some(Event::Pan(0, -63)));
-        assert_eq!(decoder.packet([0xb0, 0x47, 0x7f]), Some(Event::Pan(7, 63)));
-        assert_eq!(decoder.packet([0xb0, 0x0d, 0x41]), Some(Event::Jog(1)));
-        assert_eq!(decoder.packet([0xb0, 0x0d, 0x01]), Some(Event::Jog(-1)));
-        assert_eq!(decoder.packet([0xb0, 0x0d, 0x40]), None);
     }
 
     #[test]
@@ -766,45 +963,4 @@ mod tests {
         transport_control(&mut app, Event::Rewind);
         assert_eq!(playhead(&app), initial + three_frames);
     }
-
-    #[test]
-    fn model_12_packets_select_transport_strip_buttons_and_faders() {
-        let mut decoder = Decode::default();
-        assert_eq!(decoder.packet([0x90, 0, 127]), Some(Event::Pong));
-        for (port, action) in [(3, Event::Stop), (4, Event::Play), (5, Event::Record)] {
-            assert_eq!(decoder.packet([0xb0, 0x0f, TRANSPORT]), None);
-            assert_eq!(decoder.packet([0xb0, 0x2f, port | 0x40]), Some(action));
-            assert_eq!(decoder.packet([0xb0, 0x0f, TRANSPORT]), None);
-            assert_eq!(decoder.packet([0xb0, 0x2f, port]), None);
-        }
-        for (port, direction) in [(0, Navigation::ChannelLeft), (1, Navigation::BankLeft), (2, Navigation::ChannelRight), (3, Navigation::BankRight)]
-        {
-            assert_eq!(decoder.packet([0xb0, 0x0f, NAVIGATION]), None);
-            assert_eq!(decoder.packet([0xb0, 0x2f, port | 0x40]), Some(Event::Navigate(direction)));
-            assert_eq!(decoder.packet([0xb0, 0x0f, NAVIGATION]), None);
-            assert_eq!(decoder.packet([0xb0, 0x2f, port]), None);
-        }
-        for strip in 0..8 {
-            assert_eq!(decoder.packet([0xb0, 0x0f, strip]), None);
-            assert_eq!(decoder.packet([0xb0, 0x2f, 0x47]), Some(Event::Arm(usize::from(strip))));
-            assert_eq!(decoder.packet([0xb0, strip, 96]), None);
-            assert_eq!(decoder.packet([0xb0, 0x20 + strip, 16]), Some(Event::Fader(usize::from(strip), 12_304)));
-            assert_eq!(decoder.packet([0xb0, 0x20 + strip, 16]), None);
-        }
-    }
-}
-
-#[cfg(test)]
-#[test]
-fn hui_navigation_steps_eight_or_one_and_stops_at_the_last_bank() {
-    use Navigation::*;
-    assert_eq!(BankRight.target(0, 16), 8);
-    assert_eq!(BankRight.target(8, 16), 8);
-    assert_eq!(ChannelRight.target(8, 16), 8);
-    assert_eq!(ChannelLeft.target(8, 16), 7);
-    assert_eq!(ChannelRight.target(7, 16), 8);
-    assert_eq!(BankLeft.target(7, 16), 0);
-    assert_eq!(BankRight.target(8, 17), 16);
-    assert_eq!(BankRight.target(0, 1), 0);
-    assert_eq!(ChannelRight.target(0, 0), 0);
 }

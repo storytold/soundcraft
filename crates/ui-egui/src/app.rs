@@ -15,6 +15,25 @@ mod midi;
 mod playback;
 mod plugins;
 
+impl SoundApp {
+    pub(crate) fn finish_idle_mixer_gesture(&mut self) {
+        if self.pointer_down {
+            return;
+        }
+        if matches!(self.gesture, Some(Gesture::Fader { .. } | Gesture::SendFader { .. })) {
+            self.gesture = None;
+        }
+        #[cfg(windows)]
+        let surface_gesture = crate::hui::gesture_active(self);
+        #[cfg(not(windows))]
+        let surface_gesture = false;
+        // Keep a running automation pass merged until playback stops.
+        if !self.wants_keyboard && self.touched.is_empty() && self.touched_sends.is_empty() && !surface_gesture {
+            self.engine.end_merge();
+        }
+    }
+}
+
 #[cfg(test)]
 pub(crate) use playback::automation_step_due;
 #[cfg(test)]
@@ -183,6 +202,8 @@ impl SoundApp {
         let dt = self.tick_dt();
         self.last_frame = Some(self.uptime);
         crate::control::expire_gestures(self);
+        #[cfg(windows)]
+        self.hui.set_context(ctx);
         crate::control::drain(self, ctx);
         self.note_recent_session();
         self.apply_editor_edits();
@@ -193,17 +214,12 @@ impl SoundApp {
             import::step(self, ctx);
             updates_ui::tick(self, ctx);
         }
-        if !self.pointer_down {
-            if matches!(self.gesture, Some(Gesture::Fader { .. } | Gesture::SendFader { .. })) {
-                self.gesture = None;
-            }
-            // Keep a running automation pass merged until playback stops.
-            if !self.wants_keyboard && self.touched.is_empty() && self.touched_sends.is_empty() {
-                self.engine.end_merge();
-            }
-        }
+        self.finish_idle_mixer_gesture();
         #[cfg(windows)]
-        crate::hui::poll(self, ctx);
+        if self.ui.hui.is_some() {
+            self.hold_automation_pass();
+            crate::hui::poll(self, ctx);
+        }
         self.watch_output();
         self.watch_input();
         // Stop the old playback before sending a replacement session to the audio thread.
