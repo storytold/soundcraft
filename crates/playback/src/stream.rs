@@ -90,7 +90,11 @@ fn output_sample<T: cpal::SizedSample + cpal::FromSample<f32>>(sample: f32) -> T
     // The I24 conversion scales +1.0 to 0x800000, which is negative full scale
     // when ASIO packs it into three bytes.
     const I24_POSITIVE_FULL_SCALE: f32 = 8_388_607.0 / 8_388_608.0;
-    let sample = if T::FORMAT == cpal::SampleFormat::I24 { sample.min(I24_POSITIVE_FULL_SCALE) } else { sample };
+    let sample = if T::FORMAT == cpal::SampleFormat::I24 {
+        if sample.is_finite() { sample.clamp(-1.0, I24_POSITIVE_FULL_SCALE) } else { 0.0 }
+    } else {
+        sample
+    };
     T::from_sample(sample)
 }
 
@@ -100,6 +104,9 @@ fn output_sample_preserves_packed_i24_full_scale() {
     assert_eq!(output_sample::<cpal::I24>(1.0).inner(), 8_388_607);
     assert_eq!(output_sample::<cpal::I24>(-1.0).inner(), -8_388_608);
     assert_eq!(output_sample::<cpal::I24>(0.5).inner(), 4_194_304);
+    assert_eq!(output_sample::<cpal::I24>(-1.5).inner(), -8_388_608);
+    assert_eq!(output_sample::<cpal::I24>(1.5).inner(), 8_388_607);
+    assert_eq!(output_sample::<cpal::I24>(f32::NAN).inner(), 0);
     assert_eq!(output_sample::<f32>(1.0), 1.0);
 }
 

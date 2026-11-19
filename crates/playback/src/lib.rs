@@ -174,6 +174,18 @@ pub struct Player {
     pub silent: bool,
 }
 
+#[cfg(any(test, all(windows, feature = "asio")))]
+fn reuses_output_device(selected_input: Option<&str>, opened_output: &str) -> bool {
+    selected_input.is_none_or(|name| name == opened_output)
+}
+
+#[test]
+fn shared_asio_capture_requires_the_opened_output_or_default_input() {
+    assert!(reuses_output_device(None, "USB Mixer"));
+    assert!(reuses_output_device(Some("USB Mixer"), "USB Mixer"));
+    assert!(!reuses_output_device(Some("Other Input"), "USB Mixer"));
+}
+
 impl Player {
     /// Open the default output device. Never fails: without a device it runs a silent clock.
     pub fn new(session: Arc<Session>) -> Player {
@@ -195,7 +207,7 @@ impl Player {
     pub fn open_input(&self, cfg: &AudioConfig) -> Result<record::Recorder, String> {
         #[cfg(all(windows, feature = "asio"))]
         if let Some(device) = &self.asio_device
-            && cfg.input.as_deref().is_none_or(|name| name == self.device_name)
+            && reuses_output_device(cfg.input.as_deref(), &self.device_name)
         {
             let required_rate = cfg.sample_rate.is_none().then_some(self.device_rate);
             return record::Recorder::open_on_device(device, cfg, required_rate);

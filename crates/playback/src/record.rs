@@ -215,6 +215,9 @@ fn input_config_at_rate(
     required_rate: Option<u32>,
 ) -> Result<Option<cpal::SupportedStreamConfig>, String> {
     if let Some(rate) = required_rate {
+        if configs.is_empty() {
+            return Err("the active ASIO device reports no input configurations".into());
+        }
         // An active ASIO input and output share the same driver clock.
         return pick_input_config(configs, rate).map(Some).ok_or_else(|| format!("ASIO input does not support the active output rate ({rate} Hz)"));
     }
@@ -243,7 +246,11 @@ impl Recorder {
         let name = crate::devices::device_name(device).unwrap_or_else(|| "Input".into());
         // At the chosen rate when the device offers it, so input and output run together: the
         // best format first, then the most channels.
-        let configs: Vec<cpal::SupportedStreamConfigRange> = device.supported_input_configs().map(|configs| configs.collect()).unwrap_or_default();
+        let configs: Vec<_> = match device.supported_input_configs() {
+            Ok(configs) => configs.collect(),
+            Err(err) if required_rate.is_some() => return Err(err.to_string()),
+            Err(_) => Vec::new(),
+        };
         let cfg = match input_config_at_rate(&configs, audio.sample_rate, required_rate)? {
             Some(c) => c,
             None => {
@@ -536,6 +543,7 @@ mod tests {
 
     #[test]
     fn shared_asio_input_cannot_fall_back_to_another_rate() {
+        assert_eq!(input_config_at_rate(&[], None, Some(48_000)).unwrap_err(), "the active ASIO device reports no input configurations");
         let configs = [range(12, 44_100, 48_000, cpal::SampleFormat::I24)];
         let config = input_config_at_rate(&configs, None, Some(48_000)).unwrap().unwrap();
         assert_eq!(config.sample_rate(), 48_000);
