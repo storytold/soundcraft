@@ -176,6 +176,27 @@ fn recording_clock_arms_once_only_when_play_starts_with_recording_on() {
 }
 
 #[test]
+fn main_mix_falls_back_to_first_channels_on_a_narrow_device() {
+    let (_, mut audio, tx, _) = spike_session(0);
+    let mut session = (*audio.session).clone();
+    session.outputs[0].first_channel = 2;
+    tx.send(Cmd::Session(Arc::new(session), vec![])).unwrap();
+    let mut stereo = [0.0; 2 * 32];
+    audio.fill(&mut stereo, 2);
+    assert!(stereo.iter().all(|sample| *sample > 0.0));
+
+    tx.send(Cmd::Play { from: 0, end: None, looped: None }).unwrap();
+    let mut wide = [0.0; 10 * 32];
+    audio.fill(&mut wide, 10);
+    assert!(
+        wide.as_chunks::<10>()
+            .0
+            .iter()
+            .all(|frame| { frame[..2].iter().chain(&frame[4..]).all(|sample| *sample == 0.0) && frame[2..4].iter().all(|sample| *sample > 0.0) })
+    );
+}
+
+#[test]
 fn named_output_uses_its_physical_channel_and_remaps_on_session_edit() {
     use soundcraft_model::{ChannelFormat, OutputPath, Route};
     let (_, mut audio, tx, track) = spike_session(0);

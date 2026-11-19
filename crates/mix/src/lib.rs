@@ -406,7 +406,12 @@ impl MixEngine {
             }
         }
         let busses = std::mem::take(&mut self.busses);
-        let live_in = LiveInput { input: &self.input, monitor_only: self.monitor_only, recording: self.recording, direct_monitor_available: self.direct_monitor_available };
+        let live_in = LiveInput {
+            input: &self.input,
+            monitor_only: self.monitor_only,
+            recording: self.recording,
+            direct_monitor_available: self.direct_monitor_available,
+        };
         run_strips(&mut work, |(i, st)| {
             if let Some(t) = s.tracks.get(*i) {
                 process_strip(s, t, st, &busses, &live_in, blk);
@@ -529,7 +534,12 @@ impl MixEngine {
             if st.scratch.len() < self.max_block {
                 st.scratch.resize(self.max_block, 0.0);
             }
-            let live_in = LiveInput { input: &self.input, monitor_only: self.monitor_only, recording: self.recording, direct_monitor_available: self.direct_monitor_available };
+            let live_in = LiveInput {
+                input: &self.input,
+                monitor_only: self.monitor_only,
+                recording: self.recording,
+                direct_monitor_available: self.direct_monitor_available,
+            };
             process_strip(s, t, &mut st, &self.busses, &live_in, blk);
             let ch = st.buf.len();
             st.align.set(if pdc { lmax_a.saturating_sub(st.latency) } else { 0 }, ch);
@@ -667,6 +677,9 @@ impl MixEngine {
         };
         let (dst, dst_fmt) = match &t.mixer.output {
             Route::Main => (self.main.as_mut_slice(), self.main_fmt),
+            Route::Hardware(name) if s.outputs.first().is_some_and(|path| path.name.eq_ignore_ascii_case(name)) => {
+                (self.main.as_mut_slice(), self.main_fmt)
+            }
             Route::Bus(b) => match self.busses.get_mut(b) {
                 Some(d) => (d.buf.as_mut_slice(), d.fmt),
                 None => return,

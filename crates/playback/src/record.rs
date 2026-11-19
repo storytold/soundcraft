@@ -243,10 +243,18 @@ pub(crate) fn input_device(audio: &crate::AudioConfig) -> Result<cpal::Device, S
 
 /// Select the same input format and width for both the recorder and its routing menu.
 #[cfg(not(target_os = "freebsd"))]
-pub(crate) fn input_config(device: &cpal::Device, audio: &crate::AudioConfig) -> Result<cpal::SupportedStreamConfig, String> {
+pub(crate) fn input_config(
+    device: &cpal::Device,
+    audio: &crate::AudioConfig,
+    required_rate: Option<u32>,
+) -> Result<cpal::SupportedStreamConfig, String> {
     use cpal::traits::DeviceTrait;
-    let configs: Vec<_> = device.supported_input_configs().map(|configs| configs.collect()).unwrap_or_default();
-    if let Some(config) = audio.sample_rate.and_then(|rate| pick_input_config(&configs, rate)) {
+    let configs: Vec<_> = match device.supported_input_configs() {
+        Ok(configs) => configs.collect(),
+        Err(err) if required_rate.is_some() => return Err(err.to_string()),
+        Err(_) => Vec::new(),
+    };
+    if let Some(config) = input_config_at_rate(&configs, audio.sample_rate, required_rate)? {
         return Ok(config);
     }
     let default = device.default_input_config().map_err(|e| e.to_string())?;
@@ -256,6 +264,22 @@ pub(crate) fn input_config(device: &cpal::Device, audio: &crate::AudioConfig) ->
     // Some defaults name a sample format the callbacks do not decode (e.g. F64).
     crate::devices::supported_format_config(&configs, default.sample_rate(), default.channels())
         .ok_or_else(|| format!("unsupported input sample format {:?}", default.sample_format()))
+}
+
+#[cfg(any(test, not(target_os = "freebsd")))]
+fn input_config_at_rate(
+    configs: &[cpal::SupportedStreamConfigRange],
+    preferred_rate: Option<u32>,
+    required_rate: Option<u32>,
+) -> Result<Option<cpal::SupportedStreamConfig>, String> {
+    if let Some(rate) = required_rate {
+        if configs.is_empty() {
+            return Err("the active ASIO device reports no input configurations".into());
+        }
+        // An active ASIO input and output share the same driver clock.
+        return pick_input_config(configs, rate).map(Some).ok_or_else(|| format!("ASIO input does not support the active output rate ({rate} Hz)"));
+    }
+    Ok(preferred_rate.and_then(|rate| pick_input_config(configs, rate)))
 }
 
 impl Recorder {
@@ -269,32 +293,34 @@ impl Recorder {
     /// drivers usually are) are converted to f32.
     #[cfg(not(target_os = "freebsd"))]
     pub fn open_with(audio: &crate::AudioConfig) -> Result<Recorder, String> {
-        Self::open_on_device(&input_device(audio)?, audio)
+        Self::open_on_device(&input_device(audio)?, audio, None)
     }
 
     #[cfg(not(target_os = "freebsd"))]
-    pub(crate) fn open_on_device(device: &cpal::Device, audio: &crate::AudioConfig) -> Result<Recorder, String> {
-        Self::open_timed(device, audio, None)
+    pub(crate) fn open_on_device(device: &cpal::Device, audio: &crate::AudioConfig, required_rate: Option<u32>) -> Result<Recorder, String> {
+        Self::open_timed(device, audio, required_rate, None)
     }
 
     #[cfg(all(windows, feature = "asio"))]
     pub(crate) fn open_synced(
         device: &cpal::Device,
         audio: &crate::AudioConfig,
+        required_rate: Option<u32>,
         clock: Arc<crate::record_clock::OutputClock>,
     ) -> Result<Recorder, String> {
-        Self::open_timed(device, audio, Some(clock))
+        Self::open_timed(device, audio, required_rate, Some(clock))
     }
 
     #[cfg(not(target_os = "freebsd"))]
     fn open_timed(
         device: &cpal::Device,
         audio: &crate::AudioConfig,
+        required_rate: Option<u32>,
         clock: Option<Arc<crate::record_clock::OutputClock>>,
     ) -> Result<Recorder, String> {
         use cpal::traits::StreamTrait;
         let name = crate::devices::device_name(device).unwrap_or_else(|| "Input".into());
-        let cfg = input_config(device, audio)?;
+        let cfg = input_config(device, audio, required_rate)?;
         let format = cfg.sample_format();
         let mut config = cfg.config();
         config.buffer_size = crate::devices::buffer_size(audio.buffer_size, cfg.buffer_size());
@@ -589,6 +615,16 @@ mod tests {
         let config = pick_input_config(&configs, 48_000).unwrap();
         assert_eq!(config.channels(), 12);
         assert_eq!(config.sample_format(), cpal::SampleFormat::I24);
+    }
+
+    #[test]
+    fn shared_asio_input_cannot_fall_back_to_another_rate() {
+        assert_eq!(input_config_at_rate(&[], None, Some(48_000)).unwrap_err(), "the active ASIO device reports no input configurations");
+        let configs = [range(12, 44_100, 48_000, cpal::SampleFormat::I24)];
+        let config = input_config_at_rate(&configs, None, Some(48_000)).unwrap().unwrap();
+        assert_eq!(config.sample_rate(), 48_000);
+        assert!(input_config_at_rate(&configs, None, Some(96_000)).is_err());
+        assert!(input_config_at_rate(&configs, Some(96_000), None).unwrap().is_none());
     }
 
     fn recorder(shared: &Arc<Shared>) -> Recorder {

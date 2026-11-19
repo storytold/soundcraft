@@ -842,7 +842,10 @@ fn physical_paths(app: &mut SoundApp, ui: &mut egui::Ui, input: bool, channels: 
                         crate::localization::text(if input { "Input path name" } else { "Output path name" }),
                     );
                     if edit.lost_focus() && name != *path_name {
-                        let _ = app.run("setup.io", json!({"action": format!("rename_{direction}"), "name": path_name, "new_name": name}));
+                        if let Err(error) = app.run("setup.io", json!({"action": format!("rename_{direction}"), "name": path_name, "new_name": name}))
+                        {
+                            app.ui.status = error;
+                        }
                         ui.data_mut(|data| data.remove::<String>(id));
                     } else if edit.has_focus() {
                         ui.data_mut(|data| data.insert_temp(id, name));
@@ -875,7 +878,7 @@ fn physical_paths(app: &mut SoundApp, ui: &mut egui::Ui, input: bool, channels: 
                 }
                 ui.horizontal(|ui| {
                     if channels > 0 && first - 1 + format.channels() > channels && (!main || first > 1) {
-                        ui.label(crate::localization::text("Unavailable"));
+                        ui.label(crate::localization::text(if main { "Playing from channel 1" } else { "Unavailable" }));
                     }
                     if !main && ui.small_button(crate::localization::text("Delete")).clicked() {
                         let _ = app.run("setup.io", json!({"action": format!("delete_{direction}"), "name": path_name}));

@@ -179,6 +179,18 @@ pub struct Player {
     pub silent: bool,
 }
 
+#[cfg(any(test, all(windows, feature = "asio")))]
+fn reuses_output_device(selected_input: Option<&str>, opened_output: &str) -> bool {
+    selected_input.is_none_or(|name| name == opened_output)
+}
+
+#[test]
+fn shared_asio_capture_requires_the_opened_output_or_default_input() {
+    assert!(reuses_output_device(None, "USB Mixer"));
+    assert!(reuses_output_device(Some("USB Mixer"), "USB Mixer"));
+    assert!(!reuses_output_device(Some("Other Input"), "USB Mixer"));
+}
+
 impl Player {
     /// Open the default output device. Never fails: without a device it runs a silent clock.
     pub fn new(session: Arc<Session>) -> Player {
@@ -201,10 +213,12 @@ impl Player {
         #[cfg(not(target_os = "freebsd"))]
         {
             #[cfg(all(windows, feature = "asio"))]
-            if self.asio_device.is_some() && cfg.input.as_deref().is_none_or(|name| name == self.device_name) {
-                return record::Recorder::open_synced(&self.input_device(cfg)?, cfg, Arc::clone(&self.fault.record_clock));
+            if let Some(device) = self.shared_asio_input(cfg) {
+                let rate = cfg.sample_rate.is_none().then_some(self.device_rate);
+                return record::Recorder::open_synced(device, cfg, rate, Arc::clone(&self.fault.record_clock));
             }
-            record::Recorder::open_on_device(&self.input_device(cfg)?, cfg)
+            let (device, rate) = self.input_device(cfg)?;
+            return record::Recorder::open_on_device(&device, cfg, rate);
         }
         #[cfg(target_os = "freebsd")]
         record::Recorder::open_with(cfg)
@@ -213,7 +227,10 @@ impl Player {
     /// Input width at the selected rate without opening a recording stream.
     pub fn input_channels(&self, cfg: &AudioConfig) -> usize {
         #[cfg(not(target_os = "freebsd"))]
-        return self.input_device(cfg).and_then(|device| record::input_config(&device, cfg)).map_or(0, |config| usize::from(config.channels()));
+        return self
+            .input_device(cfg)
+            .and_then(|(device, rate)| record::input_config(&device, cfg, rate))
+            .map_or(0, |config| usize::from(config.channels()));
         #[cfg(target_os = "freebsd")]
         {
             let _ = cfg;
@@ -221,15 +238,19 @@ impl Player {
         }
     }
 
+    #[cfg(all(windows, feature = "asio"))]
+    fn shared_asio_input(&self, cfg: &AudioConfig) -> Option<&cpal::Device> {
+        self.asio_device.as_ref().filter(|_| reuses_output_device(cfg.input.as_deref(), &self.device_name))
+    }
+
     #[cfg(not(target_os = "freebsd"))]
-    fn input_device(&self, cfg: &AudioConfig) -> Result<cpal::Device, String> {
+    fn input_device(&self, cfg: &AudioConfig) -> Result<(cpal::Device, Option<u32>), String> {
         #[cfg(all(windows, feature = "asio"))]
-        if let Some(device) = &self.asio_device
-            && cfg.input.as_deref().is_none_or(|name| name == self.device_name)
-        {
-            return Ok(device.clone());
+        if let Some(device) = self.shared_asio_input(cfg) {
+            let required_rate = cfg.sample_rate.is_none().then_some(self.device_rate);
+            return Ok((device.clone(), required_rate));
         }
-        record::input_device(cfg)
+        record::input_device(cfg).map(|device| (device, None))
     }
 
     /// What stopped the audio output, once: a bug in the engine, or the device went away or
