@@ -555,24 +555,29 @@ impl IAudioProcessorTrait for Synth {
                 }
             }
         }
-        let mut volume = None;
+        let mut points = Vec::new();
         if let Some(changes) = unsafe { ComRef::from_raw(d.inputParameterChanges) } {
             for i in 0..unsafe { changes.getParameterCount() } {
-                let Some(q) = (unsafe { ComRef::from_raw(changes.getParameterData(i)) }) else { continue };
-                let (mut at, mut v) = (0i32, 0f64);
-                if unsafe { q.getParameterId() } == VOLUME_PARAM && unsafe { q.getPoint(0, &mut at, &mut v) } == kResultOk {
-                    volume = Some((at.max(0) as usize, v as f32));
+                let Some(queue) = (unsafe { ComRef::from_raw(changes.getParameterData(i)) }) else { continue };
+                let id = unsafe { queue.getParameterId() };
+                if !matches!(id, VOLUME_PARAM | PROGRAM_PARAM) {
+                    continue;
                 }
-                if unsafe { q.getParameterId() } == PROGRAM_PARAM && unsafe { q.getPoint(0, &mut at, &mut v) } == kResultOk {
-                    // The last test program exposes the process context on the stereo output.
-                    self.context_output.store(v == 1.0, Ordering::Relaxed);
-                    volume = Some((at.max(0) as usize, 10.0 + v as f32 * 7.0));
+                for point in 0..unsafe { queue.getPointCount() } {
+                    let (mut at, mut value) = (0, 0.0);
+                    if unsafe { queue.getPoint(point, &mut at, &mut value) } == kResultOk {
+                        points.push((at.max(0) as usize, id, value));
+                    }
                 }
             }
         }
+        points.sort_by_key(|&(at, _, _)| at);
+        let mut points = points.into_iter().peekable();
+        let context = unsafe { d.processContext.as_ref() }.map(|c| [c.projectTimeSamples as f32, c.projectTimeMusic as f32]);
         let outs = unsafe { channels(&*d.outputs, frames) };
         let mut level = f32::from_bits(self.level.load(Ordering::Relaxed));
-        let mut out = vec![0.0f32; frames];
+        let mut context_output = self.context_output.load(Ordering::Relaxed);
+        let mut out = vec![[0.0f32; 2]; frames];
         for (i, o) in out.iter_mut().enumerate() {
             for e in events.iter().filter(|e| e.sampleOffset as usize == i) {
                 if e.r#type == Event_::EventTypes_::kNoteOnEvent as u16 {
@@ -583,20 +588,22 @@ impl IAudioProcessorTrait for Synth {
                     level = unsafe { e.__field0.polyPressure.pressure };
                 }
             }
-            if let Some((at, v)) = volume
-                && at == i
-            {
-                level = v;
+            while let Some((_, id, value)) = points.next_if(|&(at, _, _)| at == i) {
+                if id == PROGRAM_PARAM {
+                    // The last test program exposes the process context on the stereo output.
+                    context_output = value == 1.0;
+                    level = 10.0 + value as f32 * 7.0;
+                } else {
+                    level = value as f32;
+                }
             }
-            *o = level;
+            *o = context.filter(|_| context_output).unwrap_or([level; 2]);
         }
         self.level.store(level.to_bits(), Ordering::Relaxed);
+        self.context_output.store(context_output, Ordering::Relaxed);
         for (index, ch) in outs.into_iter().enumerate() {
-            if self.context_output.load(Ordering::Relaxed) {
-                let context = unsafe { &*d.processContext };
-                ch.fill(if index == 0 { context.projectTimeSamples as f32 } else { context.projectTimeMusic as f32 });
-            } else {
-                ch.copy_from_slice(&out);
+            for (sample, frame) in ch.iter_mut().zip(&out) {
+                *sample = frame.get(index).copied().unwrap_or(0.0);
             }
         }
         kResultOk

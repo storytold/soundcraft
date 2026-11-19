@@ -27,6 +27,18 @@ fn mapped_program_changes_reach_the_instrument_at_each_event_offset() {
 }
 
 #[test]
+fn mapped_program_and_cc7_both_play_in_one_sub_block() {
+    let mut p = soundcraft_vst3_host::create(&id_of("Fixture Synth")).unwrap();
+    p.prepare(48_000.0, 64, 2);
+    p.midi(0, [0xC0, 5, 0]);
+    p.midi(10, [0xB0, 7, 32]);
+    let mut io = vec![vec![0.0f32; 64]; 2];
+    p.process(&mut io, 64);
+    assert!(io[0][..10].iter().all(|&sample| (sample - 15.0).abs() < 1e-5));
+    assert!(io[0][10..].iter().all(|&sample| (sample - 32.0 / 127.0).abs() < 1e-5));
+}
+
+#[test]
 fn dense_program_changes_keep_each_offset_across_process_splits() {
     let mut p = soundcraft_vst3_host::create(&id_of("Fixture Synth")).unwrap();
     let frames = 1024;
