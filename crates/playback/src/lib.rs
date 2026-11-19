@@ -204,14 +204,14 @@ impl Player {
 
     /// Open recording and monitoring on the configured input. Reuse the active ASIO device
     /// when it is the selected input. Enumerating other drivers can fail with an active stream.
-    pub fn open_input(&self, cfg: &AudioConfig) -> Result<record::Recorder, String> {
+    pub fn open_input(&self, cfg: &AudioConfig) -> Result<record::Recorder, record::InputOpenError> {
         #[cfg(not(target_os = "freebsd"))]
         {
-            let (device, rate) = self.input_device(cfg)?;
-            return record::Recorder::open_on_device(&device, cfg, rate);
+            let (device, shared_output) = self.input_device(cfg)?;
+            return record::Recorder::open_on_device(&device, cfg, shared_output);
         }
         #[cfg(target_os = "freebsd")]
-        record::Recorder::open_with(cfg)
+        record::Recorder::open_with(cfg).map_err(Into::into)
     }
 
     /// Input width at the selected rate without opening a recording stream.
@@ -219,7 +219,7 @@ impl Player {
         #[cfg(not(target_os = "freebsd"))]
         return self
             .input_device(cfg)
-            .and_then(|(device, rate)| record::input_config(&device, cfg, rate))
+            .and_then(|(device, shared_output)| record::input_config(&device, cfg, shared_output.map(|(rate, _)| rate)))
             .map_or(0, |config| usize::from(config.channels()));
         #[cfg(target_os = "freebsd")]
         {
@@ -229,13 +229,13 @@ impl Player {
     }
 
     #[cfg(not(target_os = "freebsd"))]
-    fn input_device(&self, cfg: &AudioConfig) -> Result<(cpal::Device, Option<u32>), String> {
+    fn input_device(&self, cfg: &AudioConfig) -> Result<(cpal::Device, Option<(u32, cpal::BufferSize)>), String> {
         #[cfg(all(windows, feature = "asio"))]
         if let Some(device) = &self.asio_device
             && reuses_output_device(cfg.input.as_deref(), &self.device_name)
         {
-            let required_rate = cfg.sample_rate.is_none().then_some(self.device_rate);
-            return Ok((device.clone(), required_rate));
+            let buffer = self.device_buffer.map_or(cpal::BufferSize::Default, cpal::BufferSize::Fixed);
+            return Ok((device.clone(), Some((self.device_rate, buffer))));
         }
         record::input_device(cfg).map(|device| (device, None))
     }
