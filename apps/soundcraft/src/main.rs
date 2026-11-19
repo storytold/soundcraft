@@ -241,6 +241,13 @@ fn main() -> eframe::Result {
     if let Some(icon) = app_icon() {
         options.viewport = options.viewport.with_icon(icon);
     }
+    // The menu bar's key equivalents for the Mix window, whose input the app's hook doesn't see.
+    #[cfg(target_os = "macos")]
+    let other_viewports = Arc::new(native_menu::OtherViewports::default());
+    #[cfg(target_os = "macos")]
+    {
+        options.viewport_hooks = Some(other_viewports.clone());
+    }
     // Before eframe creates the wgpu instance: default Windows to DirectX 12 with FXC (see graphics.rs).
     #[cfg(target_os = "windows")]
     graphics::configure(&mut options, eframe::wgpu::Backends::from_env(), eframe::wgpu::Dx12Compiler::from_env());
@@ -279,6 +286,7 @@ fn main() -> eframe::Result {
             #[cfg(target_os = "macos")]
             let menu = match native_menu::NativeMenu::new(&app, &cc.egui_ctx) {
                 Ok(m) => {
+                    let m = m.with_other_viewports(other_viewports);
                     app.native_menu_bar = true;
                     Some(m)
                 }
