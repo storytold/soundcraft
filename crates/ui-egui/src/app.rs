@@ -2,8 +2,9 @@ use super::services::Services;
 use super::state::MainWindow;
 use super::{
     ControlRequest, Engine, Gesture, HashMap, MeterDisplay, OutputTrouble, Player, Range, Receiver, Samples, SoundApp, TrackId, TransportRequest,
-    Trouble, UiState, Value, VecDeque, bounce, dialogs, edit_window, extra_windows, fonts, import, json, menus, midi_editor, mix_window, ops_windows,
-    palette, panels, preferences, recovery, sampler_window, score_editor, shortcuts, theme, updates_ui, video_track, video_window, windows,
+    Trouble, UiState, Value, VecDeque, aaf_import, bounce, dialogs, edit_window, extra_windows, fonts, import, json, menus, midi_editor, mix_window,
+    ops_windows, palette, panels, preferences, recovery, sampler_window, score_editor, shortcuts, theme, updates_ui, video_track, video_window,
+    windows,
 };
 
 mod audio;
@@ -11,6 +12,7 @@ mod commands;
 mod control;
 mod files;
 mod input;
+mod midi;
 mod playback;
 mod plugins;
 
@@ -39,6 +41,12 @@ impl SoundApp {
             record_start: 0,
             punch: None,
             recorder_failed: false,
+            midi_inputs: None,
+            midi_scan_at: 0.0,
+            midi_take: Vec::new(),
+            midi_take_lost: 0,
+            midi_take_inputs: Vec::new(),
+            play_loop: None,
             lost_shown: 0,
             take_plan: None,
             ui: UiState::default(),
@@ -54,6 +62,7 @@ impl SoundApp {
             preset_dir: None,
             last_autosave: None,
             dialogs: dialogs::Dialogs::default(),
+            aaf_import: aaf_import::ImportState::default(),
             updates_rt: updates_ui::Runtime::default(),
             meters: HashMap::new(),
             main_meter: MeterDisplay::default(),
@@ -207,10 +216,8 @@ impl SoundApp {
         self.autosave_changes();
         self.write_automation();
         self.autosave();
-        if self.recorder.is_none()
-            && !self.recorder_failed
-            && self.engine.session().tracks.iter().any(|t| t.mixer.input_monitor || t.mixer.record_arm)
-        {
+        self.service_midi(self.uptime);
+        if self.recorder.is_none() && !self.recorder_failed && audio::wants_audio_input(self.engine.session()) {
             self.ensure_input();
         }
         // Autosave and the macOS menu bar only run on frames, and plugin editors are native windows egui never hears from.
@@ -347,6 +354,7 @@ impl SoundApp {
         score_editor::show(self, &ctx);
         palette::show(self, &ctx);
         dialogs::show(self, &ctx);
+        aaf_import::show(self, &ctx);
         updates_ui::show(self, &ctx);
         // The sampler's drop rects are current now, so route any captured drop in this pass.
         self.route_dropped_files();

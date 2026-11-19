@@ -1527,6 +1527,27 @@ fn menu_translate(source: &str) -> Option<&'static str> {
         "Autosave failed: {e}" => "Falha ao salvar automaticamente: {e}",
         "Bounced {} (peak {:.1} dBFS, {:.1} LUFS)" => "Bounce concluído: {} (pico {:.1} dBFS, {:.1} LUFS)",
         "Cannot record: {err}" => "Não foi possível gravar: {err}",
+        "Cannot record: no MIDI input device is connected (Setup > Playback Engine lists them)" => {
+            "Não foi possível gravar: nenhum dispositivo de entrada MIDI está conectado (Configuração > Mecanismo de reprodução mostra a lista)"
+        }
+        "Nothing was recorded: the record-enabled tracks received no input" => {
+            "Nada foi gravado: as faixas habilitadas para gravação não receberam entrada"
+        }
+        "MIDI input was dropped during the take: it is incomplete, and notes held at that point end there" => {
+            "Parte da entrada MIDI foi perdida durante o take: ele está incompleto, e as notas que estavam pressionadas terminam nesse ponto"
+        }
+        "The audio engine did not answer when the pass ended: the last MIDI notes played may be missing from the take" => {
+            "O mecanismo de áudio não respondeu quando a passagem terminou: as últimas notas MIDI tocadas podem estar faltando no take"
+        }
+        "Cannot record: the audio engine has not finished the previous record pass yet (is the audio device running?)" => {
+            "Não foi possível gravar: o mecanismo de áudio ainda não concluiu a passagem de gravação anterior (o dispositivo de áudio está funcionando?)"
+        }
+        "All MIDI" => "Todo MIDI",
+        "Channel" => "Canal",
+        "MIDI input" => "Entrada MIDI",
+        "All devices" => "Todos os dispositivos",
+        "No MIDI input device found" => "Nenhum dispositivo de entrada MIDI encontrado",
+        "{name} (not connected)" => "{name} (não conectado)",
         "Click to add a MIDI clip to {name} at the insertion point." => "Clique para adicionar um clipe MIDI a {name} no ponto de inserção.",
         "Could not open {path}: {e}" => "Não foi possível abrir {path}: {e}",
         "Couldn't recover “{name}”: {e}" => "Não foi possível recuperar “{name}”: {e}",
