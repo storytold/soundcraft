@@ -1,6 +1,6 @@
 # Where SoundCraft falls short of Pro Tools
 
-> **Last reviewed:** 2026-10-25 · **Last updated:** 2026-11-13 · **Change:** trivial (G-09: the pt-BR catalog now covers helper-passed tooltips, the status bar, the remove-session prompt and engine error text; previously trivial: G-04: volume automation read at every sample, #1354; G-01: `setup.playback_engine` applies the device buffer in the desktop app; G-04: Clip Looping crossfade and loop count) · **Target:** Avid Pro Tools Ultimate 2026.4.1
+> **Last reviewed:** 2026-10-25 · **Last updated:** 2026-11-18 · **Change:** minor (G-02 shrunk: MIDI input devices work; previously minor: G-05: plugin editors on Linux/X11; previously trivial: G-09: the pt-BR catalog now covers helper-passed tooltips, the status bar, the remove-session prompt and engine error text; G-08: Frequency Shifter, 28 processors; G-04: volume automation read at every sample, #1354; G-01: `setup.playback_engine` applies the device buffer in the desktop app; G-04: Clip Looping crossfade and loop count) · **Target:** Avid Pro Tools Ultimate 2026.4.1
 
 Every known shortfall, one entry each, ranked by how much it stops a Pro Tools user from doing
 real work in SoundCraft. This is the work list: pick from the top. Rows marked **alpha blocker**
@@ -16,10 +16,10 @@ When you close a gap, delete its entry (or shrink it) in the same PR, and bump t
 | # | Gap | Dimension | Doc | Est. (h) |
 |---|---|---|---|---:|
 | G-01 | **Alpha blocker.** No channel routing or duplex low-latency path (device, rate and buffer choice done; ASIO opt-in) | Hardware | [hardware-parity.md](hardware-parity.md) | 15–25 |
-| G-02 | **Alpha blocker.** No MIDI device input or output | Hardware / MIDI | [hardware-parity.md](hardware-parity.md) | 20–35 |
+| G-02 | **Alpha blocker.** MIDI devices: input works (checked on Linux only); no output, clock or loop/merge recording | Hardware / MIDI | [hardware-parity.md](hardware-parity.md) | 12–22 |
 | G-03 | **Alpha blocker.** Cannot exchange sessions with Pro Tools (no AAF/OMF, no `.ptx`) | File formats | [file-format-parity.md](file-format-parity.md) | 50–90 |
 | G-04 | Open correctness bugs in features counted as done (~25 issues) | Stability | this file | 25–40 |
-| G-05 | (Entitlement part: alpha blocker for the mix row) Third-party VST3s blocked in the signed macOS build; AU editors missing | Ecosystem | [plugin-parity.md](plugin-parity.md) | 15–25 |
+| G-05 | (Entitlement part: alpha blocker for the mix row) Third-party VST3s blocked in the signed macOS build; AU editors missing | Ecosystem | [plugin-parity.md](plugin-parity.md) | 10–15 |
 | G-06 | (Record-to-disk part: alpha blocker for the tracking row) Sources decoded whole into RAM; recording into RAM | Performance | [hardware-parity.md](hardware-parity.md) | 15–25 |
 | G-07 | Nothing is compared against Pro Tools' output (no fidelity harness) | Features | this file | 20–30 |
 | G-08 | Built-in plugin catalogue thin and unverified | Features | [plugin-parity.md](plugin-parity.md) | 80–120 |
@@ -65,13 +65,22 @@ When you close a gap, delete its entry (or shrink it) in the same PR, and bump t
 
 ### G-02. MIDI devices
 
-- **Missing:** all MIDI hardware I/O. No `midir`/CoreMIDI/WinMM/ALSA sequencer code exists;
-  `setup.midi_input_devices` and `setup.midi_studio` only store names. You cannot record from a
-  keyboard, play a hosted instrument live, drive external synths, or send MIDI clock/MTC.
-  `midi_editor.rs:288` notes audition "needs a live MIDI input path".
-- **Impact:** MIDI production is limited to drawing notes and importing SMF.
-- **Estimate:** ≈ 20–35 h (device layer, realtime input to armed tracks and instruments with
-  timestamps, MIDI record/merge/loop, thru, output tracks, clock out).
+- **Done (2026-10-12):** MIDI input devices (`crates/playback/src/midi.rs`, `midir`): keyboards
+  play record-enabled and input-monitored MIDI and instrument tracks live and are recorded into
+  MIDI clips, with a device and channel choice per track. Controllers, pitch bend, aftertouch
+  and program changes reach the instrument live. Notes are kept per device and channel, and a
+  full input queue releases the notes of its device and marks the take incomplete. The device
+  switches (Setup › Playback Engine, also opened by Setup › MIDI › MIDI Input Devices) are app
+  preferences. User guide: [midi-input.md](midi-input.md). On Linux, live play was checked with
+  a hardware keyboard (Akai MPK mini 3) and recording with a virtual one;
+  **not yet on macOS or Windows** (type-checked only).
+- **Missing:** MIDI output (external synths, MIDI tracks without an instrument), MIDI clock/MTC
+  out, loop and merge recording (a MIDI take replaces what it covers; a loop pass piles every
+  pass into one clip), audition from the MIDI editor (`midi_editor.rs:288`), MIDI
+  input on FreeBSD and the web. `setup.midi_input_devices` and `setup.midi_studio` still only
+  store names in the session; the real device switches are app preferences.
+- **Impact:** you can play and record a keyboard, not drive hardware synths or sync other gear.
+- **Estimate:** ≈ 12–22 h (output tracks and thru, clock out, merge/loop takes, controller path).
 
 ### G-03. Session interchange with Pro Tools
 
@@ -126,8 +135,8 @@ launch #142; Linux #45, #107.
 - **Missing:** the `com.apple.security.cs.disable-library-validation` entitlement in the signed
   build, so hardened runtime refuses third-party VST3 bundles (#153, #149). AU editor views
   (`crates/au-host/src/lib.rs` header: "Not hosted yet: Audio Unit editor views"). Embedded CLAP
-  GUIs; VST3 editors on Windows/Linux.
-- **Estimate:** ≈ 15–25 h (entitlement ≈ 1 h; AU Cocoa views and VST3 HWND/X11 views most of it).
+  GUIs on macOS (#485). VST3 and embedded CLAP editors are hosted on Windows and Linux/X11.
+- **Estimate:** ≈ 10–15 h (entitlement ≈ 1 h; AU Cocoa views and embedded CLAP on macOS most of it).
 
 ### G-06. Memory-bound media
 
@@ -148,7 +157,7 @@ launch #142; Linux #45, #107.
 
 ### G-08. Built-in plugins
 
-See [`plugin-parity.md`](plugin-parity.md): 27 processors + 3 instruments against Pro Tools'
+See [`plugin-parity.md`](plugin-parity.md): 28 processors + 3 instruments against Pro Tools'
 roughly 80 bundled processors and instruments; no fidelity checks; generic parameter UIs; EQ
 parametric request #139. ≈ 80–120 h.
 
@@ -239,7 +248,9 @@ missing. Out of scope unless the owner decides otherwise.
 | Date | Change | Summary |
 |---|---|---|
 | 2026-11-13 | trivial | G-09: the pt-BR catalog now covers tooltips localized inside buttons and toggles, the Edit-window status bar, the remove-session question, the send help text and engine errors shown in the status line; estimates unchanged |
+| 2026-11-09 | trivial | G-08: 28 processors + 3 instruments with the Frequency Shifter |
 | 2026-11-04 | trivial | G-04: track and master volume automation read at every sample, so breakpoints act on their own sample in any block size (#1354); estimates unchanged |
+| 2026-10-30 | minor | G-05: VST3 and embedded CLAP editors on Linux/X11 (#527) |
 | 2026-10-25 | trivial | G-04: Clip Looping (#1030) lacks the loop crossfade option, and Number of Loops stops at 512 while length and fill make up to 1000 loops |
 | 2026-10-25 | trivial | G-01: `setup.playback_engine` and `setup.hardware` apply the device and buffer in the desktop app; headless returns `applied: false` |
 | 2026-10-24 | trivial | G-08: 27 processors + 3 instruments, as the plugin registry holds; G-20: the sampler shipped (#108), so it is no longer listed as missing |
@@ -250,5 +261,6 @@ missing. Out of scope unless the owner decides otherwise.
 | 2026-10-16 | trivial | G-04: Split into Mono channel preservation fixed and regression-tested; estimates unchanged |
 | 2026-10-16 | minor | G-16: capture current hosted-plugin state before saving a track preset (#661); broader preset work remains (#639) |
 | 2026-10-12 | minor | G-01 shrunk: audio device, rate and buffer choice; opt-in ASIO |
+| 2026-10-12 | minor | G-02 shrunk: MIDI input devices, live play-through and MIDI recording landed; output, clock and loop/merge recording remain |
 | 2026-10-10 | minor | Marked the alpha blockers (G-01, G-02, G-03; parts of G-05 and G-06) from the core-workflow gate |
 | 2026-10-10 | major | Created from the full re-measure against Pro Tools Ultimate 2026.4.1: 22 ranked gaps with evidence and estimates |

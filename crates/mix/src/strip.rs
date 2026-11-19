@@ -1,9 +1,10 @@
 use super::automation::{Level, apply_gain, transport_at, volume_level};
 use super::clips::{ClipFx, clip_fx_params, render_clip};
 use super::instances::{INSTRUMENT_SLOT, PluginFailures, PreparedInstance, create_instance_for, is_third_party};
+use super::live_midi::{LiveMidi, LiveNotes, MidiPorts, midi_thru};
 use super::midi::{chase_controllers, schedule_notes};
 use super::pan::{PanSpec, apply_matrix, build_matrix, identity_matrix};
-use super::routing::receives_solo;
+use super::routing::solo_muted;
 use super::{
     AutoParam, BusId, ChannelFormat, MAX_CHANNELS, PanLaw, Plugin, Range, Route, Samples, Session, SourceAudio, Track, TrackId, TrackKind, Transport,
     db_to_gain,
@@ -41,8 +42,12 @@ pub(crate) struct Strip {
     pub(crate) sample: Option<Arc<SourceAudio>>,
     /// MIDI notes currently sounding on the instrument (pitch), for note-offs at stops/seek.
     pub(crate) held: Vec<u8>,
+    /// Notes held by live MIDI input.
+    pub(crate) live: LiveNotes,
     /// The instrument's next block starts somewhere new: send it the controllers in effect there.
     pub(crate) chase: bool,
+    /// The last block played the clips: stopped monitoring has their sustain pedal to let go of.
+    pub(crate) clips_played: bool,
     pub(crate) muted: bool,
     pub(crate) gr: f32,
     /// Per-clip effect chains (Clip Effects) and a scratch buffer to render clips into.
@@ -140,7 +145,9 @@ impl Strip {
             instrument: None,
             sample: None,
             held: Vec::new(),
+            live: LiveNotes::default(),
             chase: true,
+            clips_played: false,
             muted: false,
             gr: 0.0,
             clip_fx: HashMap::new(),
@@ -205,6 +212,10 @@ impl SlotCtx<'_> {
 /// Live input routed to monitored tracks.
 pub(crate) struct LiveInput<'a> {
     pub(crate) input: &'a [Vec<f32>],
+    pub(crate) midi: &'a [LiveMidi],
+    pub(crate) ports: Option<&'a MidiPorts>,
+    /// Ports whose events were dropped before this block.
+    pub(crate) midi_lost: u64,
     pub(crate) monitor_only: bool,
     pub(crate) recording: bool,
 }
@@ -295,7 +306,7 @@ fn read_aux_bus(t: &Track, strip: &mut Strip, busses: &HashMap<BusId, BusBuf>, f
 }
 
 /// Render the track's instrument into the strip.
-fn render_instrument(s: &Session, t: &Track, strip: &mut Strip, blk: Block, transport: &Transport) {
+fn render_instrument(s: &Session, t: &Track, strip: &mut Strip, live: &LiveInput<'_>, blk: Block, transport: &Transport) {
     let Block { pos, frames, .. } = blk;
     if let Some(inst) = strip.instrument.as_mut().filter(|i| !i.failed) {
         // #152: push the instrument's stored parameter values into the live plugin
@@ -307,10 +318,55 @@ fn render_instrument(s: &Session, t: &Track, strip: &mut Strip, blk: Block, tran
             apply_params(inst, ins, t, INSTRUMENT_SLOT, pos);
         }
         inst.plugin.set_transport(transport);
-        if std::mem::take(&mut strip.chase) {
-            chase_controllers(s, t, pos, inst);
+        // Whether the clips' controller values were sent to the instrument for this block.
+        let mut chased = std::mem::take(&mut strip.chase);
+        if chased {
+            let from_clips = chase_controllers(s, t, pos, inst);
+            strip.live.restore_defaults(from_clips, inst.plugin.as_mut());
         }
-        schedule_notes(s, t, pos, frames, inst, &mut strip.held);
+        // Live sources that went away (a port that lost input, an input the track no longer
+        // listens to) let go first, before anything of this block reaches the instrument. The
+        // clip notes are the ones held when the block starts (told at the end of the last one).
+        // When such a source had moved the instrument's controllers and the track still plays
+        // live input, nothing else would set them back: the clips' values as they stand at the
+        // start of the block, then those of the devices that are still there. The clips' own
+        // events of this block come after that, so a controller a clip changes right at the
+        // start of the block keeps its new value.
+        strip.live.begin_block();
+        if midi_thru(t) && strip.live.reconcile(t, live.midi_lost, live.ports, inst.plugin.as_mut()) {
+            let from_clips = chase_controllers(s, t, pos, inst);
+            strip.live.restore_defaults(from_clips, inst.plugin.as_mut());
+            strip.live.resend_controllers(inst.plugin.as_mut());
+            chased = true;
+        }
+        if !live.monitor_only {
+            schedule_notes(s, t, pos, frames, inst, &mut strip.held, &mut strip.live);
+            strip.clips_played = true;
+        } else {
+            // Stopped: the clips are silent, only live MIDI input plays. Playback that ran to its
+            // end left the clips' notes without their note-offs: end them here, except a pitch a
+            // live key still holds.
+            for note in strip.held.drain(..) {
+                if !strip.live.holds(note) {
+                    inst.plugin.note_off(0, note);
+                }
+            }
+            // The clips' sustain pedal goes up too (its own pedal-up will not be played), or the
+            // instrument would hold those notes for good. Live input keeps its pedal in
+            // `strip.live`, not on the instrument, so keys held live are not released by this.
+            // The same after the clips' controllers were sent again while stopped (a live device
+            // went away): a pedal the clips hold down there has no pedal-up coming either.
+            if std::mem::take(&mut strip.clips_played) || chased {
+                inst.plugin.midi(0, [0xB0, 64, 0]);
+            }
+        }
+        strip.live.set_clip_notes(&strip.held);
+        if midi_thru(t) {
+            strip.live.play(t, inst.plugin.as_mut(), live.midi, live.ports, frames);
+        } else if strip.live.touched() && strip.live.release(inst.plugin.as_mut()) {
+            // Live controllers moved the instrument: the next block sets them from the clips.
+            strip.chase = true;
+        }
         if strip.buf.len() >= 2 {
             inst.plugin.process(&mut strip.buf, frames);
         } else if let Some(c0) = strip.buf.first_mut() {
@@ -410,10 +466,12 @@ pub(crate) fn process_strip(s: &Session, t: &Track, strip: &mut Strip, busses: &
             monitor_input(t, strip, live, frames);
         }
         TrackKind::Audio if live.monitor_only => {}
-        TrackKind::Instrument | TrackKind::Midi if live.monitor_only => {}
+        // Stopped: only a track that plays live MIDI input sounds (and one that just stopped
+        // doing so, to release its notes).
+        TrackKind::Instrument | TrackKind::Midi if live.monitor_only && !midi_thru(t) && !strip.live.touched() => {}
         TrackKind::Audio => render_audio_clips(s, t, strip, blk),
         TrackKind::Aux | TrackKind::Folder => read_aux_bus(t, strip, busses, frames),
-        TrackKind::Instrument | TrackKind::Midi => render_instrument(s, t, strip, blk, &transport),
+        TrackKind::Instrument | TrackKind::Midi => render_instrument(s, t, strip, live, blk, &transport),
         _ => {}
     }
     let trim = db_to_gain(t.mixer.trim_db) * if t.mixer.phase_invert { -1.0 } else { 1.0 };
@@ -423,7 +481,7 @@ pub(crate) fn process_strip(s: &Session, t: &Track, strip: &mut Strip, busses: &
         }
     }
     run_inserts(t, strip, blk, &transport);
-    let soloed_out = any_solo && !t.mixer.solo && !t.mixer.solo_safe && !receives_solo(s, t);
+    let soloed_out = solo_muted(s, t, any_solo);
     strip.muted = t.mixer.mute || soloed_out;
     if t.mixer.sends.iter().flatten().any(|x| x.pre_fader) {
         strip.pre.resize_with(strip.buf.len(), Vec::new);
