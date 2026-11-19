@@ -258,7 +258,8 @@ fn cut_copy(e: &mut Engine, p: &Value, cut: bool, id: &str) -> Result<Value> {
     let mut cb = Clipboard::of_range(e.session(), range);
     let follow = e.session().edit.automation_follows_edit;
     for t in &tracks {
-        cb.tracks.push(ops::copy_range(e.session(), *t, range));
+        // Cut carries only what it removes; a locked clip stays where it is (see `ops::take_range`).
+        cb.tracks.push(if cut { ops::take_range(e.session(), *t, range) } else { ops::copy_range(e.session(), *t, range) });
         let lanes = e
             .session()
             .track(*t)
@@ -1021,6 +1022,9 @@ fn consolidate(e: &mut Engine, p: &Value) -> Result<Value> {
     let r = range_param(e, "edit.consolidate", p)?;
     if r.is_empty() {
         return Err(bad("edit.consolidate", "selection is empty"));
+    }
+    if tracks.iter().any(|&t| ops::holds_locked(e.session(), t, r)) {
+        return Err(bad("edit.consolidate", ops::LOCKED_IN_RANGE));
     }
     let midi = tracks.iter().filter(|&&t| crate::edit::consolidate_midi(e.session_mut(), t, r)).count();
     let mut n = 0;
