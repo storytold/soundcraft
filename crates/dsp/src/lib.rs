@@ -204,6 +204,19 @@ pub trait Plugin: Send {
     /// Sets a parameter (clamped into range; NaN becomes the default). `false` if `id` is unknown.
     fn set_param(&mut self, id: &str, value: f32) -> bool;
     fn param(&self, id: &str) -> Option<f32>;
+    /// The plugin's own text for a parameter value (SoundCraft units); `None` means format it
+    /// with [`ParamInfo::format`]. Call it on the main thread, as the plugin formats expect:
+    /// the CLAP host answers `None` on any other thread.
+    fn value_text(&mut self, _id: &str, _value: f32) -> Option<String> {
+        None
+    }
+    /// Parses the plugin's own text into a parameter value in SoundCraft units. Threading as
+    /// for [`Plugin::value_text`]. `text` is hostile input: the hosts refuse an embedded NUL and
+    /// more than 256 Unicode scalars before it crosses FFI (VST3 also refuses text that does not
+    /// fit its 128-unit UTF-16 string).
+    fn value_from_text(&mut self, _id: &str, _text: &str) -> Option<f32> {
+        None
+    }
     /// In-place processing of `channels` planar buffers each `frames` long.
     fn process(&mut self, io: &mut [Vec<f32>], frames: usize);
     /// Processing latency in samples (for delay compensation).

@@ -44,6 +44,8 @@ const PROP_PARAMETER_VALUE_STRINGS: u32 = 16;
 const PROP_TAIL_TIME: u32 = 20;
 const PROP_SET_RENDER_CALLBACK: u32 = 23;
 const PROP_HOST_CALLBACKS: u32 = 27;
+const PROP_PARAMETER_STRING_FROM_VALUE: u32 = 33;
+const PROP_PARAMETER_VALUE_FROM_STRING: u32 = 38;
 
 const SCOPE_GLOBAL: u32 = 0;
 const SCOPE_INPUT: u32 = 1;
@@ -319,6 +321,20 @@ struct AudioUnitParameterInfo {
     flags: u32,
 }
 
+#[repr(C)]
+struct AudioUnitParameterStringFromValue {
+    in_param_id: u32,
+    in_value: *const f32,
+    out_string: CFTypeRef,
+}
+
+#[repr(C)]
+struct AudioUnitParameterValueFromString {
+    in_param_id: u32,
+    in_string: CFTypeRef,
+    out_value: f32,
+}
+
 #[link(name = "AudioToolbox", kind = "framework")]
 unsafe extern "C" {
     fn AudioComponentFindNext(component: AudioComponent, desc: *const AudioComponentDescription) -> AudioComponent;
@@ -355,6 +371,7 @@ unsafe extern "C" {
     fn CFStringGetLength(s: CFTypeRef) -> CFIndex;
     fn CFStringGetMaximumSizeForEncoding(length: CFIndex, encoding: u32) -> CFIndex;
     fn CFStringGetCString(s: CFTypeRef, buffer: *mut c_char, size: CFIndex, encoding: u32) -> u8;
+    fn CFStringCreateWithBytes(alloc: CFTypeRef, bytes: *const u8, count: CFIndex, encoding: u32, is_external_representation: u8) -> CFTypeRef;
     fn CFArrayGetCount(a: CFTypeRef) -> CFIndex;
     fn CFArrayGetValueAtIndex(a: CFTypeRef, i: CFIndex) -> CFTypeRef;
     fn CFDataCreate(alloc: CFTypeRef, bytes: *const u8, length: CFIndex) -> CFTypeRef;
@@ -530,6 +547,13 @@ pub struct Instance {
 // contract keeps on one thread at a time. The input state and host time are owned exclusively by
 // it (the host time is all atomics).
 unsafe impl Send for Instance {}
+
+/// Whether parameter text may go to the unit: not empty, no embedded NUL (as CLAP and VST3
+/// refuse), and at most 256 Unicode scalars, counted only as far as the 257th so a huge string
+/// is not scanned to the end.
+fn param_text_fits(text: &str) -> bool {
+    !text.is_empty() && !text.contains('\0') && text.chars().nth(256).is_none()
+}
 
 impl Instance {
     /// Creates (but does not initialize) the component `(ty, subtype, manufacturer)`.
@@ -777,6 +801,58 @@ impl Instance {
         unsafe { AudioUnitSetParameter(self.unit, id, SCOPE_GLOBAL, 0, value, 0) == 0 }
     }
 
+    pub fn value_text(&self, id: u32, value: f32) -> Option<String> {
+        if !value.is_finite() {
+            return None;
+        }
+        let mut request = AudioUnitParameterStringFromValue { in_param_id: id, in_value: &value, out_string: ptr::null() };
+        let mut size = std::mem::size_of::<AudioUnitParameterStringFromValue>() as u32;
+        // SAFETY: the property uses the SDK-documented struct layout; `request` and `size` are
+        // writable locals. A non-null `out_string` is an owned CFString even when the status is
+        // an error, and is released below.
+        let status = unsafe {
+            AudioUnitGetProperty(
+                self.unit,
+                PROP_PARAMETER_STRING_FROM_VALUE,
+                SCOPE_GLOBAL,
+                0,
+                (&mut request as *mut AudioUnitParameterStringFromValue).cast(),
+                &mut size,
+            )
+        };
+        let string = request.out_string;
+        let text = if status == 0 { cf_string(string) } else { String::new() };
+        release(string);
+        (status == 0 && !text.is_empty()).then_some(text)
+    }
+
+    pub fn value_from_text(&self, id: u32, text: &str) -> Option<f32> {
+        if !param_text_fits(text) {
+            return None;
+        }
+        // SAFETY: CoreFoundation copies the live UTF-8 byte slice into a new CFString.
+        let string = unsafe { CFStringCreateWithBytes(ptr::null(), text.as_ptr(), text.len() as CFIndex, CF_STRING_ENCODING_UTF8, 0) };
+        if string.is_null() {
+            return None;
+        }
+        let mut request = AudioUnitParameterValueFromString { in_param_id: id, in_string: string, out_value: 0.0 };
+        let mut size = std::mem::size_of::<AudioUnitParameterValueFromString>() as u32;
+        // SAFETY: the property uses the SDK-documented struct layout; `request` and `size` are
+        // writable locals and `in_string` stays live through the call.
+        let status = unsafe {
+            AudioUnitGetProperty(
+                self.unit,
+                PROP_PARAMETER_VALUE_FROM_STRING,
+                SCOPE_GLOBAL,
+                0,
+                (&mut request as *mut AudioUnitParameterValueFromString).cast(),
+                &mut size,
+            )
+        };
+        release(string);
+        (status == 0 && request.out_value.is_finite()).then_some(request.out_value)
+    }
+
     /// The global-scope parameters.
     pub fn params(&self) -> Vec<RawParam> {
         let mut size = 0u32;
@@ -960,6 +1036,15 @@ impl Drop for Instance {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn parameter_text_is_refused_when_empty_with_a_nul_or_past_256_scalars() {
+        assert!(param_text_fits("12.5 ms"));
+        assert!(param_text_fits(&"é".repeat(256)), "256 scalars still fit, whatever their byte length");
+        assert!(!param_text_fits(&"é".repeat(257)));
+        assert!(!param_text_fits(""));
+        assert!(!param_text_fits("1\0"));
+    }
+
     use super::*;
 
     #[test]
@@ -1002,5 +1087,11 @@ mod tests {
         assert_eq!(std::mem::offset_of!(AudioUnitParameterInfo, cf_name_string), 72);
         assert_eq!(std::mem::offset_of!(AudioUnitParameterInfo, flags), 96);
         assert_eq!(std::mem::size_of::<AudioUnitParameterInfo>(), 104);
+        assert_eq!(std::mem::offset_of!(AudioUnitParameterStringFromValue, in_value), 8);
+        assert_eq!(std::mem::offset_of!(AudioUnitParameterStringFromValue, out_string), 16);
+        assert_eq!(std::mem::size_of::<AudioUnitParameterStringFromValue>(), 24);
+        assert_eq!(std::mem::offset_of!(AudioUnitParameterValueFromString, in_string), 8);
+        assert_eq!(std::mem::offset_of!(AudioUnitParameterValueFromString, out_value), 16);
+        assert_eq!(std::mem::size_of::<AudioUnitParameterValueFromString>(), 24);
     }
 }

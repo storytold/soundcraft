@@ -529,7 +529,7 @@ fn paste_to_current_automation(e: &mut Engine, p: &Value) -> Result<Value> {
     let tracks = tracks_required(e, id, p)?;
     let at = position_param(e, id, p, "at")?.unwrap_or(e.session().edit.selection.start).max(0);
     let forced = match str_param(p, "param") {
-        Some(x) => Some(AutoParam::parse(x).ok_or_else(|| bad(id, format!("unknown automation param `{x}`")))?),
+        Some(x) => Some(soundcraft_model::parse_auto_param(x).ok_or_else(|| bad(id, format!("unknown automation param `{x}`")))?),
         None => None,
     };
     let cb = e.clipboard.clone();
@@ -539,7 +539,7 @@ fn paste_to_current_automation(e: &mut Engine, p: &Value) -> Result<Value> {
         let Some(lanes) = cb.automation.get(i % cb.automation.len().max(1)) else { continue };
         let Some(src) = lanes.iter().max_by_key(|l| l.points.len()).filter(|l| !l.points.is_empty()) else { continue };
         let Some(tr) = s.track_mut(*t) else { continue };
-        let dst = forced.clone().unwrap_or_else(|| AutoParam::parse(&tr.view).unwrap_or(AutoParam::Volume));
+        let dst = forced.clone().unwrap_or_else(|| soundcraft_model::parse_auto_param(&tr.view).unwrap_or(AutoParam::Volume));
         let lane = tr.lane_mut(&dst);
         lane.clear_range(at, at.saturating_add(cb.length));
         for pt in &src.points {

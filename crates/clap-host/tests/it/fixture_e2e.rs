@@ -38,9 +38,22 @@ fn info_exposes_visible_params_with_names() {
     assert_eq!((gain.name, gain.min, gain.max, gain.default), ("Gain", 0.0, 2.0, 1.0));
     let mode = info.param("3").unwrap();
     assert_eq!(mode.unit, Unit::Choice);
-    assert_eq!(mode.choices, &["A", "B", "C"]);
+    // Choice labels come from `value_to_text`, which is [main-thread]. Test threads are not the
+    // main thread on any platform, so the labels fall back to numbers here; the real labels are
+    // checked in `editor_main_thread`.
+    assert_eq!(mode.choices, &["0", "1", "2"], "test threads are not the main thread");
     // Cached: the same leaked info every time.
     assert!(std::ptr::eq(info, soundcraft_clap_host::plugin_info(GAIN).unwrap()));
+}
+
+#[test]
+fn parameter_text_is_refused_off_the_main_thread() {
+    fixture_dir();
+    let mut p = soundcraft_clap_host::create(GAIN).unwrap();
+    // The standard harness never runs tests on the main thread, on any platform. The real round
+    // trip is in `editor_main_thread`.
+    assert_eq!(p.value_text("3", 1.0), None, "test threads are not the main thread");
+    assert_eq!(p.value_from_text("3", "b"), None, "test threads are not the main thread");
 }
 
 #[test]

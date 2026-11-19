@@ -115,7 +115,7 @@ pub(super) fn drive_drag(app: &mut SoundApp, ctx: &egui::Context) {
         }
         Some(Gesture::Pencil { track, points }) => {
             if let Some(t) = s.track(*track)
-                && let Some(param) = AutoParam::parse(&t.view)
+                && let Some(param) = soundcraft_model::parse_auto_param(&t.view)
                 && let Some((_, row)) = rows.iter().find(|(i, _)| *i == t.id.0)
             {
                 let lane = lane_rect(t, rect(*row), tl);
@@ -184,7 +184,7 @@ fn finish_drag(app: &mut SoundApp, s: &Session, tl: Rect, p: Option<Pos2>) {
         Some(Gesture::TrimEnd { clip, to, .. }) => trim_clip(app, clip, to, false),
         Some(Gesture::MidiClip { track, from, to }) => new_midi_clip(app, s, track, from, to),
         Some(Gesture::Pencil { track, points }) => {
-            if let Some(param) = s.track(track).and_then(|t| AutoParam::parse(&t.view)) {
+            if let Some(param) = s.track(track).and_then(|t| soundcraft_model::parse_auto_param(&t.view)) {
                 let pid = automation_id(&param);
                 for (a, v) in points {
                     let _ = app.run("automation.set_point", json!({"track": track.0, "param": pid, "at": a, "value": v}));
