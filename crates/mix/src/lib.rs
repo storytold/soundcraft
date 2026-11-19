@@ -658,6 +658,9 @@ impl MixEngine {
         };
         let (dst, dst_fmt) = match &t.mixer.output {
             Route::Main => (self.main.as_mut_slice(), self.main_fmt),
+            Route::Hardware(name) if s.outputs.first().is_some_and(|path| path.name.eq_ignore_ascii_case(name)) => {
+                (self.main.as_mut_slice(), self.main_fmt)
+            }
             Route::Bus(b) => match self.busses.get_mut(b) {
                 Some(d) => (d.buf.as_mut_slice(), d.fmt),
                 None => return,

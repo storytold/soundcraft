@@ -296,7 +296,7 @@ impl AudioState {
         let quantum = ((callback_frames as f64 * step).ceil() as usize).clamp(1, BLOCK);
         let first = self.session.outputs.first().map_or(0, |path| usize::from(path.first_channel));
         let main_width = self.pending.len();
-        let first = if first == 0 || first + main_width <= channels { first } else { channels };
+        let first = if first + main_width <= channels { first } else { 0 };
         for frame in out.chunks_mut(channels) {
             while self.read >= self.pending_len as f64 {
                 self.read -= self.pending_len as f64;

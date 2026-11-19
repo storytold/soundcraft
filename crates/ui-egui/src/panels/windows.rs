@@ -799,7 +799,10 @@ fn output_paths(app: &mut SoundApp, ui: &mut egui::Ui) {
                     let edit = crate::widgets::named_text_field(field, crate::localization::text("Output path name"));
                     ui.ctx().memory_mut(|memory| memory.data.insert_temp(id, name.clone()));
                     if edit.lost_focus() && name != path.name {
-                        let _ = app.run("setup.io", json!({"action": "rename_output", "name": path.name, "new_name": name}));
+                        if let Err(error) = app.run("setup.io", json!({"action": "rename_output", "name": path.name, "new_name": name})) {
+                            app.ui.status = error;
+                        }
+                        ui.ctx().memory_mut(|memory| memory.data.remove::<String>(id));
                     }
                 });
                 let mut format = path.format;
@@ -829,7 +832,7 @@ fn output_paths(app: &mut SoundApp, ui: &mut egui::Ui) {
                 }
                 ui.horizontal(|ui| {
                     if channels > 0 && first - 1 + format.channels() > usize::from(channels) && (index != 0 || first > 1) {
-                        ui.label(crate::localization::text("Unavailable"));
+                        ui.label(crate::localization::text(if index == 0 { "Playing from channel 1" } else { "Unavailable" }));
                     }
                     if index != 0 && ui.small_button(crate::localization::text("Delete")).clicked() {
                         let _ = app.run("setup.io", json!({"action": "delete_output", "name": path.name}));

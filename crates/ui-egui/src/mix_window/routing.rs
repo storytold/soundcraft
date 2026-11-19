@@ -54,7 +54,8 @@ fn route_menu(app: &mut SoundApp, ui: &mut Ui, id: TrackId, input: bool, inputs:
     let mut fixed = vec![(crate::localization::text(if input { "no input" } else { "no output" }).to_string(), "none".to_string())];
     if input {
         let width = app.engine.session().track(id).map_or(1, |track| track.channels().max(1));
-        fixed.extend((width..=inputs).map(|last| {
+        let channels = if inputs == 0 { 8 } else { inputs };
+        fixed.extend((width..=channels).map(|last| {
             let first = last + 1 - width;
             if width == 1 {
                 (crate::localized_format!("In {}", first), format!("In {first}"))
@@ -62,6 +63,12 @@ fn route_menu(app: &mut SoundApp, ui: &mut Ui, id: TrackId, input: bool, inputs:
                 (crate::localized_format!("In {}-{}", first, last), format!("In {first}-{last}"))
             }
         }));
+        if let Some(track) = app.engine.session().track(id)
+            && let Route::Hardware(name) = &track.mixer.input
+            && !fixed.iter().any(|(_, value)| value.eq_ignore_ascii_case(name))
+        {
+            fixed.push((format!("{name} ({})", crate::localization::text("Unavailable")), name.clone()));
+        }
     } else {
         fixed.push((main_name, "main".to_string()));
         fixed.extend(app.engine.session().outputs.iter().skip(1).map(|path| (path.name.clone(), path.name.clone())));
@@ -95,7 +102,11 @@ fn route_menu(app: &mut SoundApp, ui: &mut Ui, id: TrackId, input: bool, inputs:
     });
     if ui.button(crate::localization::text("new bus...")).clicked() {
         let mut n = busses.len() + 1;
-        while busses.contains(&format!("Bus {n}")) || app.engine.session().track_by_name(&format!("Bus {n}")).is_some() {
+        let session = app.engine.session();
+        while busses.contains(&format!("Bus {n}"))
+            || session.track_by_name(&format!("Bus {n}")).is_some()
+            || session.outputs.iter().any(|path| path.name.eq_ignore_ascii_case(&format!("Bus {n}")))
+        {
             n += 1;
         }
         let _ = app.run(cmd, json!({"track": id.0, key: format!("Bus {n}")}));
@@ -124,21 +135,16 @@ mod tests {
         let _palette = crate::theme::lock_test_palette();
         for ports in [32, 64] {
             let mut engine = soundcraft_engine::Engine::default();
-            if let Some(project) = std::env::var_os(format!("SOUNDCRAFT_ROUTING_PROJECT_{ports}")) {
-                assert!(soundcraft_engine::io::open_session(&mut engine, project).unwrap().is_empty());
-                assert_eq!(engine.session().tracks.len(), ports);
-            } else {
-                engine.execute("track.new", &json!({"format": "mono"})).unwrap();
-                for index in 0..ports {
-                    engine
-                        .execute(
-                            "setup.io",
-                            &json!({
-                                "action": "create_output", "name": format!("USB {:02}", index + 1), "first_channel": index, "format": "mono",
-                            }),
-                        )
-                        .unwrap();
-                }
+            engine.execute("track.new", &json!({"format": "mono"})).unwrap();
+            for index in 0..ports {
+                engine
+                    .execute(
+                        "setup.io",
+                        &json!({
+                            "action": "create_output", "name": format!("USB {:02}", index + 1), "first_channel": index, "format": "mono",
+                        }),
+                    )
+                    .unwrap();
             }
             let id = engine.session().tracks.first().unwrap().id;
             let app = SoundApp::new(engine, None, Services::default());
