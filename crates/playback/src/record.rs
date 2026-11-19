@@ -336,7 +336,11 @@ impl Recorder {
     }
 
     #[cfg(not(target_os = "freebsd"))]
-    pub(crate) fn open_on_device(device: &cpal::Device, audio: &crate::AudioConfig, shared_output: Option<(u32, cpal::BufferSize)>) -> Result<Recorder, InputOpenError> {
+    pub(crate) fn open_on_device(
+        device: &cpal::Device,
+        audio: &crate::AudioConfig,
+        shared_output: Option<(u32, cpal::BufferSize)>,
+    ) -> Result<Recorder, InputOpenError> {
         Self::open_timed(device, audio, shared_output, None)
     }
 
