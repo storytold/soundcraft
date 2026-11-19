@@ -267,12 +267,17 @@ pub(crate) fn lazy_candidates<D: Clone>(
     (first.into_iter().chain(rest), is_default)
 }
 
+/// The device name `cfg` chooses for output, or for input when `output` is false.
+pub(crate) fn choice(cfg: &AudioConfig, output: bool) -> Option<&str> {
+    if output { cfg.output.as_deref() } else { cfg.input.as_deref() }
+}
+
 /// The output (or input) devices to try for `cfg`, in order, and whether the first is the system
 /// default: the device `cfg` names when the host has it, else the default then, on ALSA, the
 /// fallbacks [`fallback_devices`] picks.
 pub(crate) fn candidates(cfg: &AudioConfig, output: bool) -> (impl Iterator<Item = cpal::Device>, bool) {
     let host = host(cfg);
-    let name = if output { cfg.output.as_deref() } else { cfg.input.as_deref() };
+    let name = choice(cfg, output);
     let chosen = chosen_device(&host, name, output);
     let default = if chosen.is_none() { default_device(&host, name, output) } else { None };
     lazy_candidates(chosen, move || default, move |tried| fallback_devices(&host, tried, output))
@@ -508,16 +513,24 @@ mod tests {
         assert_eq!(order_fallbacks(list, Some("default")), ["pipewire", "sysdefault:CARD=PCH"]);
     }
 
-    /// Recording looks up inputs, not outputs: a missing chosen input falls back to the default
-    /// input (and counts as the default, so it may fall back further), whatever output is chosen.
+    /// Recording looks up inputs, not outputs: the input choice is used whatever output is chosen,
+    /// and a missing chosen input falls back to the default input (which counts as the default, so
+    /// it may fall back further). Fake devices: no audio host is touched.
     #[test]
-    fn input_candidates_use_the_input_choice_and_devices() {
-        let h = cpal::default_host();
-        let output = h.default_output_device().as_ref().and_then(device_name);
-        let cfg = AudioConfig { input: Some("No Such Device 1234".into()), output, ..Default::default() };
-        let (mut list, is_default) = candidates(&cfg, false);
+    fn input_candidates_use_the_input_choice() {
+        let cfg = AudioConfig { input: Some("Mic".into()), output: Some("Speakers".into()), ..Default::default() };
+        assert_eq!(choice(&cfg, false), Some("Mic"));
+        assert_eq!(choice(&cfg, true), Some("Speakers"));
+        let inputs = ["Default In", "Line In"];
+        let chosen = inputs.iter().copied().find(|d| Some(*d) == choice(&cfg, false));
+        let (list, is_default) = lazy_candidates(chosen, || Some("Default In"), |_| vec!["pipewire"]);
         assert!(is_default, "a missing chosen input is the default's turn");
-        assert_eq!(list.next().as_ref().and_then(device_name), h.default_input_device().as_ref().and_then(device_name));
+        assert_eq!(list.collect::<Vec<_>>(), ["Default In", "pipewire"]);
+        let present = AudioConfig { input: Some("Line In".into()), ..cfg };
+        let chosen = inputs.iter().copied().find(|d| Some(*d) == choice(&present, false));
+        let (list, is_default) = lazy_candidates(chosen, || panic!("not looked up"), |_| panic!("not looked up"));
+        assert!(!is_default);
+        assert_eq!(list.collect::<Vec<_>>(), ["Line In"]);
     }
 
     #[test]
