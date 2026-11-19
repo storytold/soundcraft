@@ -927,6 +927,49 @@ fn seek_chase_restores_the_program_bank_before_later_bank_selects() {
 }
 
 #[test]
+fn routed_seek_chase_remaps_original_program_bank_and_pending_bank_together() {
+    use soundcraft_midi::{CtrlEvent, Sequence};
+    let mut s = Session::default();
+    let track = s.add_track(TrackKind::Instrument, ChannelFormat::Stereo, None);
+    s.track_mut(track).unwrap().instrument = Some(Insert::new("clap:test.channels"));
+    let source = s.add_track(TrackKind::Midi, ChannelFormat::Mono, None);
+    let id = s.new_clip_id();
+    let t = s.track_mut(source).unwrap();
+    t.midi_destination = Some(soundcraft_model::MidiDestination { track, channel: 10 });
+    let ctrl = |tick, kind, value| CtrlEvent { channel: 3, tick, kind, value };
+    // The later MSB arrives first in traversal, and the later LSB shares the program's tick.
+    let ctrls = vec![
+        ctrl(3, CtrlKind::Cc(0), 4),
+        ctrl(1, CtrlKind::Cc(0), 2),
+        ctrl(1, CtrlKind::Cc(32), 3),
+        ctrl(2, CtrlKind::Program, 24),
+        ctrl(2, CtrlKind::Cc(32), 5),
+    ];
+    t.playlist_mut().unwrap().clips.push(Clip::midi(id, "bank", 0, 48_000, Sequence { notes: vec![], ctrls }));
+    let heard = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let mut eng = MixEngine::new(48_000.0, 512);
+    eng.set_external_instances(true);
+    eng.adopt(vec![PreparedInstance {
+        track,
+        slot: INSTRUMENT_SLOT,
+        id: "clap:test.channels".into(),
+        ch: 2,
+        plugin: Box::new(ChannelEars(Arc::clone(&heard))),
+    }]);
+    render_block(&mut eng, &s, 100);
+    let events = heard.lock().unwrap();
+    assert!(!events.iter().any(|&(_, msg)| matches!(msg, [0xB3, 0 | 32, _] | [0xC3, _, _])));
+    let bank: Vec<_> = events
+        .iter()
+        .filter_map(|&(time, msg)| match msg {
+            [0xB9, 0 | 32, _] | [0xC9, _, _] if time == 0 => Some(msg),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(bank, [[0xB9, 0, 2], [0xB9, 32, 3], [0xC9, 24, 0], [0xB9, 32, 5], [0xB9, 0, 4]]);
+}
+
+#[test]
 fn seek_chase_respects_same_tick_reset_order() {
     use soundcraft_midi::{CtrlEvent, Sequence};
     for bend_after_reset in [false, true] {
