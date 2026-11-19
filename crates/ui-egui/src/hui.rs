@@ -15,6 +15,10 @@ const LOOP: u8 = 0x0f;
 const MARKERS: u8 = 0x14;
 const STRIP_LAMP_PORTS: [u8; 3] = [2, 3, 7];
 const TRANSPORT_LAMP_PORTS: [u8; 3] = [3, 4, 5];
+const PONG: [u8; 3] = [0x90, 0, 0x7f];
+const PING_INTERVAL: Duration = Duration::from_millis(900);
+const HEARTBEAT_TIMEOUT: Duration = Duration::from_secs(3);
+const RETRY_INTERVAL: Duration = Duration::from_secs(1);
 // The Model 12 sends about 50 single steps between the centre and either end.
 const PAN_STEP: f32 = 0.02;
 
@@ -27,7 +31,8 @@ pub struct Ports {
 #[derive(Default)]
 pub(crate) struct Surface {
     link: Option<Link>,
-    opened_preferences: bool,
+    retry_at: Option<Instant>,
+    first_track: usize,
     show: bool,
     draft: Ports,
     enabled: bool,
@@ -42,10 +47,66 @@ struct Link {
     packets: Receiver<[u8; 3]>,
     decoder: Decode,
     ping: Option<Instant>,
-    reply: Option<Instant>,
+    heartbeat: Heartbeat,
     ready: bool,
-    first_track: usize,
     lamps: Option<[[bool; 3]; STRIPS + 1]>,
+}
+
+struct Heartbeat {
+    expires_at: Instant,
+    seen_reply: bool,
+}
+
+impl Heartbeat {
+    fn new(now: Instant) -> Self {
+        Self { expires_at: now + HEARTBEAT_TIMEOUT, seen_reply: false }
+    }
+
+    fn receive(&mut self, now: Instant) {
+        self.seen_reply = true;
+        self.expires_at = now + HEARTBEAT_TIMEOUT;
+    }
+
+    fn expired(&self, now: Instant) -> bool {
+        now >= self.expires_at
+    }
+
+    fn online(&self, now: Instant) -> bool {
+        self.seen_reply && !self.expired(now)
+    }
+}
+
+impl Surface {
+    fn connection_due(&mut self, now: Instant) -> bool {
+        if self.retry_at.is_some_and(|retry_at| now < retry_at) {
+            return false;
+        }
+        self.retry_at = Some(now + RETRY_INTERVAL);
+        true
+    }
+
+    fn take_link(&mut self, ports: &Ports, now: Instant, ctx: &egui::Context) -> Option<Link> {
+        if let Some(link) = self.link.take()
+            && !link.heartbeat.expired(now)
+        {
+            return Some(link);
+        }
+        // A timed-out WinMM handle may stay invalid after USB has re-enumerated.
+        // Drop it before opening both ports again by name.
+        if self.connection_due(now) {
+            match Link::connect(ports) {
+                Ok(link) => {
+                    self.error.clear();
+                    return Some(link);
+                }
+                Err(error) => self.error = error,
+            }
+        }
+        if let Some(retry_at) = self.retry_at {
+            ctx.request_repaint_after(retry_at.saturating_duration_since(now));
+        }
+        None
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -96,7 +157,7 @@ struct Decode {
 impl Decode {
     fn packet(&mut self, packet: [u8; 3]) -> Option<Event> {
         match packet {
-            [0x90, 0, 0x7f] => Some(Event::Pong),
+            PONG => Some(Event::Pong),
             [0xb0, 0x0f, zone @ 0..=127] => {
                 self.zone = Some(zone);
                 None
@@ -181,7 +242,16 @@ impl Link {
                 (),
             )
             .map_err(|e| e.to_string())?;
-        Ok(Self { _input: input, output, packets, decoder: Decode::default(), ping: None, reply: None, ready: false, first_track: 0, lamps: None })
+        Ok(Self {
+            _input: input,
+            output,
+            packets,
+            decoder: Decode::default(),
+            ping: None,
+            heartbeat: Heartbeat::new(Instant::now()),
+            ready: false,
+            lamps: None,
+        })
     }
 
     fn send(&mut self, packet: [u8; 3]) {
@@ -191,7 +261,7 @@ impl Link {
     }
 
     fn online(&self) -> bool {
-        self.reply.is_some_and(|at| at.elapsed() < Duration::from_secs(3))
+        self.heartbeat.online(Instant::now())
     }
 }
 
@@ -205,12 +275,12 @@ fn mapped_tracks(app: &SoundApp, first: usize) -> [Option<TrackId>; STRIPS] {
 }
 
 pub(crate) fn controlled_tracks(app: &SoundApp) -> [Option<TrackId>; STRIPS] {
-    app.hui.link.as_ref().filter(|link| link.online()).map_or([None; STRIPS], |link| mapped_tracks(app, link.first_track))
+    app.hui.link.as_ref().filter(|link| link.online()).map_or([None; STRIPS], |_| mapped_tracks(app, app.hui.first_track))
 }
 
 pub(crate) fn document_replaced(app: &mut SoundApp) {
+    app.hui.first_track = 0;
     if let Some(link) = &mut app.hui.link {
-        link.first_track = 0;
         link.ready = false;
         link.decoder = Decode::default();
         link.lamps = None;
@@ -218,9 +288,9 @@ pub(crate) fn document_replaced(app: &mut SoundApp) {
 }
 
 fn navigate(app: &mut SoundApp, link: &mut Link, direction: Navigation) {
-    let first = direction.target(link.first_track, mixer_tracks(app).count());
-    if first != link.first_track {
-        link.first_track = first;
+    let first = direction.target(app.hui.first_track, mixer_tracks(app).count());
+    if first != app.hui.first_track {
+        app.hui.first_track = first;
         link.decoder.coarse.fill(None);
         let first_id = mixer_tracks(app).nth(first);
         app.mix_scroll_into_view = first_id;
@@ -236,7 +306,8 @@ fn navigate_from_host(app: &mut SoundApp, direction: Navigation) {
 
 fn apply(app: &mut SoundApp, ports: Option<Ports>) -> Result<(), String> {
     app.hui.link = None;
-    app.hui.opened_preferences = true;
+    app.hui.retry_at = None;
+    app.hui.first_track = 0;
     app.ui.hui = None;
     if let Some(p) = ports {
         let link = Link::connect(&p).inspect_err(|e| app.hui.error.clone_from(e))?;
@@ -277,10 +348,9 @@ pub(crate) fn command(app: &mut SoundApp, id: &str, p: &Value) -> Result<Value, 
         navigate_from_host(app, direction);
     }
     let tracks = controlled_tracks(app);
-    let first = app.hui.link.as_ref().map_or(0, |link| link.first_track);
     Ok(json!({
         "tracks": tracks.map(|id| id.map(|id| id.0)),
-        "first_track": tracks[0].map(|_| first + 1),
+        "first_track": tracks[0].map(|_| app.hui.first_track + 1),
         "ports": app.ui.hui,
         "online": app.hui.link.as_ref().is_some_and(Link::online),
         "record_ready": app.hui.link.as_ref().is_some_and(|link| link.ready),
@@ -288,34 +358,26 @@ pub(crate) fn command(app: &mut SoundApp, id: &str, p: &Value) -> Result<Value, 
 }
 
 pub(crate) fn poll(app: &mut SoundApp, ctx: &egui::Context) {
-    if !app.hui.opened_preferences {
-        app.hui.opened_preferences = true;
-        if let Some(ports) = &app.ui.hui {
-            match Link::connect(ports) {
-                Ok(link) => app.hui.link = Some(link),
-                Err(error) => app.hui.error = error,
-            }
-        }
-    }
-    let Some(mut link) = app.hui.link.take() else { return };
+    let Some(ports) = &app.ui.hui else { return };
+    let now = Instant::now();
+    let Some(mut link) = app.hui.take_link(ports, now, ctx) else { return };
     ctx.request_repaint_after(Duration::from_millis(16));
-    if link.ping.is_none_or(|at| at.elapsed() >= Duration::from_millis(900)) {
+    if link.ping.is_none_or(|at| now.saturating_duration_since(at) >= PING_INTERVAL) {
         link.send([0x90, 0, 0]);
-        link.ping = Some(Instant::now());
-    }
-    if !link.online() {
-        link.ready = false;
-        link.lamps = None;
+        link.ping = Some(now);
     }
     let track_count = mixer_tracks(app).count();
     let last_bank = (track_count.saturating_sub(1) / STRIPS) * STRIPS;
-    link.first_track = link.first_track.min(last_bank);
-    let mut tracks = mapped_tracks(app, link.first_track);
+    app.hui.first_track = app.hui.first_track.min(last_bank);
+    let mut tracks = mapped_tracks(app, app.hui.first_track);
     let mut faders = [None; STRIPS];
     let mut pans = [None; STRIPS];
     let mut jog_steps = 0;
     for _ in 0..512 {
         let Ok(packet) = link.packets.try_recv() else { break };
+        if packet != PONG && !link.heartbeat.online(now) {
+            continue;
+        }
         let Some(event) = link.decoder.packet(packet) else { continue };
         if let Event::Jog(steps) = event {
             jog_steps += i32::from(steps);
@@ -325,7 +387,7 @@ pub(crate) fn poll(app: &mut SoundApp, ctx: &egui::Context) {
             jog(app, std::mem::take(&mut jog_steps));
         }
         match event {
-            Event::Pong => link.reply = Some(Instant::now()),
+            Event::Pong => link.heartbeat.receive(now),
             Event::Stop => {
                 link.ready = false;
                 let _ = app.run("transport.stop", json!({}));
@@ -345,7 +407,7 @@ pub(crate) fn poll(app: &mut SoundApp, ctx: &egui::Context) {
                 apply_faders(app, tracks, std::mem::take(&mut faders));
                 apply_pans(app, tracks, std::mem::take(&mut pans));
                 navigate(app, &mut link, direction);
-                tracks = mapped_tracks(app, link.first_track);
+                tracks = mapped_tracks(app, app.hui.first_track);
             }
             Event::Mute(strip) | Event::Solo(strip) => {
                 if let Some(id) = tracks[strip] {
@@ -494,11 +556,12 @@ pub(crate) fn show(app: &mut SoundApp, ctx: &egui::Context) {
             .clicked();
         if !app.hui.error.is_empty() {
             ui.label(&app.hui.error);
-        } else if let Some(link) = &app.hui.link {
+        }
+        if let Some(link) = &app.hui.link {
             ui.label(crate::localization::text(if link.online() { "HUI connected" } else { "Waiting for HUI" }));
             if link.online() {
                 let count = mixer_tracks(app).count();
-                let first = link.first_track;
+                let first = app.hui.first_track;
                 if count > first {
                     ui.label(crate::localized_format!("Tracks {first} to {last}", first = first + 1, last = (first + STRIPS).min(count)));
                 }
@@ -517,6 +580,8 @@ pub(crate) fn show(app: &mut SoundApp, ctx: &egui::Context) {
                     });
                 }
             }
+        } else if app.ui.hui.is_some() {
+            ui.label(crate::localization::text("Waiting for HUI"));
         }
     });
     app.hui.show = open;
@@ -531,6 +596,31 @@ pub(crate) fn show(app: &mut SoundApp, ctx: &egui::Context) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn hui_heartbeat_expires_during_handshake_and_after_usb_loss() {
+        let start = Instant::now();
+        let mut beat = Heartbeat::new(start);
+        assert!(!beat.online(start));
+        assert!(beat.expired(start + HEARTBEAT_TIMEOUT));
+        let reply = start + PING_INTERVAL;
+        beat.receive(reply);
+        assert!(beat.online(start + HEARTBEAT_TIMEOUT));
+        assert!(beat.expired(reply + HEARTBEAT_TIMEOUT));
+        assert!(!beat.online(reply + HEARTBEAT_TIMEOUT));
+        let fresh = Heartbeat::new(reply + HEARTBEAT_TIMEOUT);
+        assert!(!fresh.online(reply + HEARTBEAT_TIMEOUT));
+    }
+
+    #[test]
+    fn hui_port_reopen_is_rate_limited_without_changing_bank() {
+        let start = Instant::now();
+        let mut surface = Surface { first_track: 8, ..Surface::default() };
+        assert!(surface.connection_due(start));
+        assert!(!surface.connection_due(start + PING_INTERVAL));
+        assert!(surface.connection_due(start + RETRY_INTERVAL));
+        assert_eq!(surface.first_track, 8);
+    }
 
     #[test]
     fn model_12_mixing_and_locate_packets_act_only_on_button_press() {
