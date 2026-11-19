@@ -223,6 +223,20 @@ fn main() {
         assert!(focused(), "the field has the keyboard");
         assert!(copy.isEnabled(), "a focus change re-syncs the menu at once");
         assert_eq!(undo.title().to_string(), "Undo", "Undo is the field's, not the session's last edit");
+        // The field's Undo is in the app's language, like the session's.
+        let titled = |app: &mut SoundApp, menu: &mut NativeMenu, text: &mut String, title: &str| {
+            let until = std::time::Instant::now() + std::time::Duration::from_secs(5);
+            typing(app, menu, text);
+            while undo.title().to_string() != title {
+                assert!(std::time::Instant::now() < until, "Undo never became {title:?}");
+                std::thread::sleep(std::time::Duration::from_millis(20));
+                typing(app, menu, text);
+            }
+        };
+        app.ui.language = soundcraft_ui_egui::localization::Language::PortugueseBrazil;
+        titled(app, menu, &mut text, "Desfazer");
+        app.ui.language = soundcraft_ui_egui::localization::Language::English;
+        titled(app, menu, &mut text, "Undo");
         settle(app, menu, &mut text, &copy, true);
         assert!(cut.isEnabled() && paste.isEnabled(), "the field enables Cut and Paste too");
         // Select "world", as a drag over it would.

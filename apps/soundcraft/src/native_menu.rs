@@ -12,11 +12,13 @@
 use muda::accelerator::Accelerator;
 use muda::{CheckMenuItem, Menu, MenuEvent, MenuId, MenuItem, PredefinedMenuItem, Submenu};
 use objc2::MainThreadMarker;
-use objc2_app_kit::{NSApplication, NSEventModifierFlags, NSEventType};
+use objc2_app_kit::{NSApplication, NSEventModifierFlags, NSEventType, NSPasteboard};
+use objc2_foundation::NSString;
 use soundcraft_ui_egui::shortcuts::{self, KeyEquivalentInput};
 use soundcraft_ui_egui::{SoundApp, menus};
 use std::sync::mpsc::{Receiver, channel};
 use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 struct Entry {
     item: CheckMenuItem,
@@ -57,43 +59,71 @@ pub struct NativeMenu {
 /// eframe runs the app's `raw_input_hook` for the main window and deferred viewports only, not for
 /// an immediate viewport like the Mix window, so its keys wait here until eframe's viewport hook
 /// gives that window's input ([`eframe::NativeOptions::viewport_hooks`]).
-#[derive(Default)]
-pub struct OtherViewports(Mutex<Vec<(egui::Key, egui::Modifiers)>>);
+pub struct OtherViewports {
+    waiting: Mutex<Vec<(Instant, egui::Key, egui::Modifiers)>>,
+    /// The text a paste inserts: the general pasteboard's.
+    paste_text: fn() -> Option<String>,
+}
 
-impl eframe::ViewportHooks for OtherViewports {
-    fn raw_input(&self, ctx: &egui::Context, raw: &mut egui::RawInput) {
-        if raw.viewport_id == egui::ViewportId::ROOT || !raw.focused {
-            return;
-        }
-        let keys = std::mem::take(&mut *self.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner));
-        give_keys(ctx, raw, keys);
+impl Default for OtherViewports {
+    fn default() -> Self {
+        Self { waiting: Mutex::default(), paste_text: pasteboard_text }
     }
 }
 
-/// Gives `keys` to the main window when it has the keyboard, otherwise leaves them in `others` for
-/// this frame only: the Mix window, an immediate viewport, takes its input during the main window's
-/// frame, and keys that no window took by the next frame are dropped rather than given late.
+/// How long a key equivalent waits for the window that has the keyboard. The Mix window usually
+/// takes it in the same frame; one that no window took by then is dropped rather than given late.
+const KEY_WAIT: Duration = Duration::from_millis(500);
+
+impl eframe::ViewportHooks for OtherViewports {
+    fn raw_input(&self, _ctx: &egui::Context, raw: &mut egui::RawInput) {
+        if raw.viewport_id == egui::ViewportId::ROOT || !raw.focused {
+            return;
+        }
+        let now = Instant::now();
+        let keys = std::mem::take(&mut *self.waiting.lock().unwrap_or_else(std::sync::PoisonError::into_inner));
+        for (_, key, modifiers) in keys.into_iter().filter(|(at, ..)| now.duration_since(*at) <= KEY_WAIT) {
+            match shortcuts::key_equivalent_input(key, modifiers) {
+                KeyEquivalentInput::Events(events) => raw.events.extend(events),
+                // eframe runs a paste request only in a frame that paints its window by itself,
+                // which an immediate viewport never has, so the text goes into the input here.
+                KeyEquivalentInput::Paste => raw.events.extend((self.paste_text)().map(egui::Event::Paste)),
+            }
+        }
+    }
+}
+
+/// Gives `keys` to the main window when it has the keyboard, otherwise leaves them in `others`
+/// for the window that has it ([`KEY_WAIT`]).
 fn route_keys(others: &OtherViewports, ctx: &egui::Context, raw: &mut egui::RawInput, keys: Vec<(egui::Key, egui::Modifiers)>) {
-    let mut waiting = others.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let mut waiting = others.waiting.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     if raw.focused {
         waiting.clear();
         drop(waiting);
         give_keys(ctx, raw, keys);
     } else {
-        *waiting = keys;
+        let now = Instant::now();
+        waiting.extend(keys.into_iter().map(|(key, modifiers)| (now, key, modifiers)));
     }
 }
 
 /// Each key equivalent becomes the input its key-down would have been without the menu bar (see
-/// `shortcuts::key_equivalent_input`), in the window whose input `raw` is.
+/// `shortcuts::key_equivalent_input`), in the main window.
 fn give_keys(ctx: &egui::Context, raw: &mut egui::RawInput, keys: Vec<(egui::Key, egui::Modifiers)>) {
     for (key, modifiers) in keys {
         match shortcuts::key_equivalent_input(key, modifiers) {
             KeyEquivalentInput::Events(events) => raw.events.extend(events),
-            // The window reads the clipboard and sends the paste with the next frame's input.
+            // The main window reads the clipboard and sends the paste with the next frame's input.
             KeyEquivalentInput::Paste => ctx.send_viewport_cmd_to(raw.viewport_id, egui::ViewportCommand::RequestPaste),
         }
     }
+}
+
+/// The general pasteboard's text, if it has any.
+fn pasteboard_text() -> Option<String> {
+    // `NSPasteboardTypeString`'s value; reading the extern static itself would need `unsafe`.
+    let plain_text = NSString::from_str("public.utf8-plain-text");
+    NSPasteboard::generalPasteboard().stringForType(&plain_text).map(|text| text.to_string())
 }
 
 /// `sync` walks every menu leaf (~500), so it runs a few times a second rather than every frame,
@@ -264,6 +294,8 @@ impl NativeMenu {
         }
         self.last_sync = Some(now);
         self.text_focused = text_focused;
+        // `logic` has left its frame's language by now; the labels need it too.
+        let _language = soundcraft_ui_egui::localization::enter(app.ui.language);
         for entry in &mut self.entries {
             let (mut enabled, checked) = menus::item_state(app, &entry.path, entry.command.as_deref());
             // A focused text field undoes, cuts, copies, pastes and selects its own text.
@@ -308,13 +340,21 @@ mod tests {
         egui::RawInput { viewport_id, focused, ..Default::default() }
     }
 
+    fn others() -> OtherViewports {
+        OtherViewports { waiting: Mutex::default(), paste_text: || Some("pasted".to_owned()) }
+    }
+
+    fn mix() -> egui::ViewportId {
+        egui::ViewportId::from_hash_of("mix")
+    }
+
     const COPY: (egui::Key, egui::Modifiers) = (egui::Key::C, egui::Modifiers::COMMAND);
+    const PASTE: (egui::Key, egui::Modifiers) = (egui::Key::V, egui::Modifiers::COMMAND);
 
     #[test]
     fn key_equivalents_reach_the_focused_mix_window_once() {
         let ctx = egui::Context::default();
-        let others = OtherViewports::default();
-        let mix = egui::ViewportId::from_hash_of("mix");
+        let others = others();
         // The main window doesn't have the keyboard: the key waits.
         let mut main = input(egui::ViewportId::ROOT, false);
         route_keys(&others, &ctx, &mut main, vec![COPY]);
@@ -322,38 +362,50 @@ mod tests {
         // Neither the main window's own hook call nor an unfocused window takes it.
         let mut main = input(egui::ViewportId::ROOT, false);
         others.raw_input(&ctx, &mut main);
-        let mut unfocused = input(mix, false);
+        let mut unfocused = input(mix(), false);
         others.raw_input(&ctx, &mut unfocused);
         assert!(main.events.is_empty() && unfocused.events.is_empty());
         // The window with the keyboard gets it, once.
-        let mut focused = input(mix, true);
+        let mut focused = input(mix(), true);
         others.raw_input(&ctx, &mut focused);
         assert_eq!(focused.events, vec![egui::Event::Copy]);
-        let mut again = input(mix, true);
+        let mut again = input(mix(), true);
         others.raw_input(&ctx, &mut again);
         assert!(again.events.is_empty());
     }
 
     #[test]
-    fn key_equivalents_no_window_took_are_dropped() {
+    fn paste_in_the_mix_window_inserts_the_pasteboard_text() {
         let ctx = egui::Context::default();
-        let others = OtherViewports::default();
-        route_keys(&others, &ctx, &mut input(egui::ViewportId::ROOT, false), vec![COPY]);
-        // The next frame of the main window, with no key chosen, drops it.
-        route_keys(&others, &ctx, &mut input(egui::ViewportId::ROOT, false), Vec::new());
-        let mut focused = input(egui::ViewportId::from_hash_of("mix"), true);
+        let others = others();
+        route_keys(&others, &ctx, &mut input(egui::ViewportId::ROOT, false), vec![PASTE]);
+        let mut focused = input(mix(), true);
+        others.raw_input(&ctx, &mut focused);
+        assert_eq!(focused.events, vec![egui::Event::Paste("pasted".to_owned())]);
+    }
+
+    #[test]
+    fn key_equivalents_no_window_took_in_time_are_dropped() {
+        let ctx = egui::Context::default();
+        let others = others();
+        let long_ago = Instant::now().checked_sub(KEY_WAIT * 2).unwrap();
+        others.waiting.lock().unwrap().push((long_ago, COPY.0, COPY.1));
+        let mut focused = input(mix(), true);
         others.raw_input(&ctx, &mut focused);
         assert!(focused.events.is_empty());
+        assert!(others.waiting.lock().unwrap().is_empty());
     }
 
     #[test]
     fn key_equivalents_go_to_the_main_window_when_it_has_the_keyboard() {
         let ctx = egui::Context::default();
-        let others = OtherViewports::default();
+        let others = others();
+        // A key still waiting from before is dropped once the main window has the keyboard.
+        route_keys(&others, &ctx, &mut input(egui::ViewportId::ROOT, false), vec![PASTE]);
         let mut main = input(egui::ViewportId::ROOT, true);
         route_keys(&others, &ctx, &mut main, vec![COPY]);
         assert_eq!(main.events, vec![egui::Event::Copy]);
-        let mut focused = input(egui::ViewportId::from_hash_of("mix"), true);
+        let mut focused = input(mix(), true);
         others.raw_input(&ctx, &mut focused);
         assert!(focused.events.is_empty());
     }
