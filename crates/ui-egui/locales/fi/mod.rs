@@ -1271,7 +1271,7 @@ fn menu_translate(source: &str) -> Option<&'static str> {
             "Ei vielä mitään, mihin nauhoittaa: lisää raita valinnalla Raita › Uusi… ja napsauta sen R-painiketta."
         }
         "Number" => "Numero",
-        "Number of Places" => "Desimaalien määrä",
+        "Number of Places" => "Numeron vähimmäispituus",
         "On" => "Päällä",
         "PREAMP" => "ESIVAHVISTIN",
         "Playback stopped: {cause} {then}" => "Toisto pysähtyi: {cause} {then}",
@@ -1492,7 +1492,7 @@ fn menu_translate(source: &str) -> Option<&'static str> {
         "Snare Snappy" => "Virvelin terävyys",
         "Snare Tune" => "Virvelin viritys",
         "Spread" => "Levitys",
-        "Strip" => "Kanava",
+        "Strip" => "Poista",
         "SubHarm" => "AliHarm",
         "SubSynth" => "AliSynth",
         "Subharmonic" => "Aliharmoninen",
@@ -1728,7 +1728,7 @@ fn menu_translate(source: &str) -> Option<&'static str> {
         "key:Up" => "Ylänuoli",
         "key:Down" => "Alanuoli",
         "key:Left" => "Vasen nuoli",
-        "key:Right" => "key:Oikea",
+        "key:Right" => "Oikea nuoli",
         "SHUFFLE" => "SHUFFLE",
         "SLIP" => "SLIP",
         "SPOT" => "KOHDISTA",
@@ -2134,7 +2134,10 @@ error_templates! {
     "`{name}` has no parameter(s): {list}" => "kohteella `{name}` ei ole parametr(e)ja: {list}",
     "`{name}` is not a Video track" => "`{name}` ei ole videoraita",
     "`{name}` is not a built-in instrument" => "`{name}` ei ole sisäinen soitin",
-    "`{name}` is used by {n} clip{plural} on the timeline; pass `with_clips: true` to remove them too" => "`{name}` on käytössä {n} aikajanan klipissä{plural}; poista myös ne antamalla `with_clips: true`",
+    // The engine writes this with `clip{plural}`; Finnish has no plural ending to carry over, so
+    // the singular and plural messages are each matched whole.
+    "`{name}` is used by {n} clip on the timeline; pass `with_clips: true` to remove them too" => "`{name}` on käytössä {n} aikajanan klipissä; poista myös ne antamalla `with_clips: true`",
+    "`{name}` is used by {n} clips on the timeline; pass `with_clips: true` to remove them too" => "`{name}` on käytössä {n} aikajanan klipissä; poista myös ne antamalla `with_clips: true`",
     "a bus named `{name}` exists" => "väylä nimeltä `{name}` on jo olemassa",
     "a group named `{name}` already exists" => "ryhmä nimeltä `{name}` on jo olemassa",
     "a group needs at least one track" => "ryhmään tarvitaan vähintään yksi raita",
@@ -2299,7 +2302,4 @@ error_templates! {
     "{path}: too large to import" => "{path}: liian suuri tuotavaksi",
     "{name} (video): {why}" => "{name} (video): {why}",
     "{path} already exists: pass `replace: true` to replace it" => "{path} on jo olemassa: korvaa se antamalla `replace: true`",
-    "“{name}” would need {reps} loops to fill that; a clip loops at most {max} times" => "“{name}” tarvitsisi {reps} silmukkaa sen täyttämiseen; klippi toistuu enintään {max} kertaa",
-    // An English plural ending captured as `{plural}`: Finnish words don't take it, so it is dropped.
-    "s" => "",
-}
+    "“{name}” would need {reps} loops to fill that; a clip loops at most {max} times" => "“{name}” tarvitsisi {reps} silmukkaa sen täyttämiseen; klippi toistuu enintään {max} kertaa",}

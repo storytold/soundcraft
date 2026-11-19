@@ -418,9 +418,14 @@ mod tests {
         assert!(!wrapped.contains("bad parameters") && !wrapped.contains("required"), "{wrapped}");
         let ratio = error_text("stretch ratio 12.500 is outside 0.1..10");
         assert!(ratio.contains("12,500"), "{ratio}");
-        // The English plural ending is dropped, not glued to a Finnish word.
-        let used = error_text("`a.wav` is used by 3 clips on the timeline; pass `with_clips: true` to remove them too");
-        assert!(used.contains("3 aikajanan klipissä;"), "{used}");
+        // One clip and several clips both read as Finnish, with no English plural ending.
+        for n in [1, 3] {
+            let s = if n == 1 { "" } else { "s" };
+            let used = error_text(&format!("`a.wav` is used by {n} clip{s} on the timeline; pass `with_clips: true` to remove them too"));
+            assert!(used.contains(&format!("{n} aikajanan klipissä;")), "{used}");
+        }
+        // A value that is just "s" (a track named `s`, say) stays as it is.
+        assert!(error_text("bad parameters for `track.rename`: s").contains(": s"));
     }
 
     #[test]
