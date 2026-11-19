@@ -23,6 +23,7 @@ pub mod edit_window;
 pub mod fonts;
 pub mod icons;
 pub mod import;
+pub mod localization;
 pub mod menus;
 pub mod mix_window;
 pub mod palette;
@@ -102,6 +103,9 @@ pub struct UiState {
     /// The send in the Send window (track, slot).
     #[serde(skip)]
     pub send_window: Option<(TrackId, usize)>,
+    /// The track in the Output window.
+    #[serde(skip)]
+    pub output_window: Option<TrackId>,
     pub audiosuite: Option<String>,
     pub status: String,
     pub show_automation: bool,
@@ -143,6 +147,8 @@ pub struct UiState {
     pub video_burn_in: bool,
     pub workspace_dir: String,
     pub configurations: Vec<(String, Value)>,
+    /// Interface language (`ui.language`).
+    pub language: localization::Language,
     /// Appearance (`ui.theme`): dark by default, light or follow the system on request.
     pub theme: theme::ThemeMode,
     /// The main window's size (logical points) and maximized state, and the interface scale, as
@@ -150,6 +156,8 @@ pub struct UiState {
     pub window_size: [f32; 2],
     pub window_maximized: bool,
     pub ui_scale: f32,
+    /// MIDI input ports switched off in Setup, by name (all others are used).
+    pub midi_inputs_off: Vec<String>,
 }
 
 impl Default for UiState {
@@ -177,6 +185,7 @@ impl Default for UiState {
             track_tint: 0.5,
             plugin_windows: Vec::new(),
             send_window: None,
+            output_window: None,
             audiosuite: None,
             status: String::new(),
             show_automation: false,
@@ -212,10 +221,12 @@ impl Default for UiState {
             video_burn_in: false,
             workspace_dir: String::new(),
             configurations: Vec::new(),
+            language: localization::Language::default(),
             theme: theme::ThemeMode::Dark,
             window_size: [1600.0, 1000.0],
             window_maximized: false,
             ui_scale: 1.0,
+            midi_inputs_off: Vec::new(),
         }
     }
 }
@@ -289,6 +300,19 @@ pub struct SoundApp {
     /// Punch range to trim the take to (pre/post-roll recordings).
     punch: Option<Range>,
     recorder_failed: bool,
+    /// MIDI device input, opened on the first frame of an app that has an audio engine.
+    pub midi_inputs: Option<soundcraft_playback::midi::MidiInputs>,
+    /// When the MIDI ports were last looked for (app uptime, seconds).
+    midi_scan_at: f64,
+    /// MIDI played during the current record pass.
+    midi_take: Vec<soundcraft_playback::midi::RecordedMidi>,
+    /// Recorded MIDI events of the current pass that were dropped before they got here.
+    midi_take_lost: u64,
+    /// The MIDI input each record-enabled track had when the current pass started: the pass
+    /// records from it even if the track is switched to another device meanwhile.
+    midi_take_inputs: Vec<(TrackId, soundcraft_model::Route)>,
+    /// The loop the transport is playing round, when it was started with one.
+    play_loop: Option<Range>,
     /// Input this take lost to a slow disk, as last reported (ms).
     lost_shown: u64,
     /// Where the takes being recorded go, autosaved with the session so a crash can't lose them.

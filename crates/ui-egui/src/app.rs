@@ -11,6 +11,7 @@ mod commands;
 mod control;
 mod files;
 mod input;
+mod midi;
 mod playback;
 mod plugins;
 
@@ -39,6 +40,12 @@ impl SoundApp {
             record_start: 0,
             punch: None,
             recorder_failed: false,
+            midi_inputs: None,
+            midi_scan_at: 0.0,
+            midi_take: Vec::new(),
+            midi_take_lost: 0,
+            midi_take_inputs: Vec::new(),
+            play_loop: None,
             lost_shown: 0,
             take_plan: None,
             placing: Vec::new(),
@@ -140,6 +147,7 @@ impl SoundApp {
     /// Each host iteration starts with `raw_input_hook`; its editor-poll admission prevents an
     /// empty queue on a discarded pass from ending a still-active plugin gesture.
     pub fn logic(&mut self, ctx: &egui::Context) {
+        let _language = crate::localization::enter(self.ui.language);
         self.ui.undo_levels = self.ui.undo_levels.clamp(1, 64);
         self.engine.set_history_limit(self.ui.undo_levels);
         // Fonts set now take effect next frame, so draw only from the frame after.
@@ -207,10 +215,8 @@ impl SoundApp {
         self.autosave_changes();
         self.write_automation();
         self.autosave();
-        if self.recorder.is_none()
-            && !self.recorder_failed
-            && self.engine.session().tracks.iter().any(|t| t.mixer.input_monitor || t.mixer.record_arm)
-        {
+        self.service_midi(self.uptime);
+        if self.recorder.is_none() && !self.recorder_failed && audio::wants_audio_input(self.engine.session()) {
             self.ensure_input();
         }
         // Autosave and the macOS menu bar only run on frames, and plugin editors are native windows egui never hears from.
@@ -245,6 +251,7 @@ impl SoundApp {
 
     /// Lay out the whole window.
     pub fn ui(&mut self, ui: &mut egui::Ui) {
+        let _language = crate::localization::enter(self.ui.language);
         let ctx = ui.ctx().clone();
         // egui just processed the scripted key events. A scripted release while the host still
         // physically holds the key would report it up; put the host-only state back before any
