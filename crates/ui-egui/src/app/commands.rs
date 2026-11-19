@@ -8,6 +8,7 @@ impl SoundApp {
             return Err(self.ui.status.clone());
         }
         if let Some(r) = menus::run_ui_command(self, id, &params) {
+            self.sync_midi_routes();
             return r;
         }
         if id.starts_with("session.save") || id.starts_with("file.bounce") || id == "track.save_preset" {
@@ -37,6 +38,7 @@ impl SoundApp {
                 if id == "track.clear_clip_indicators" {
                     self.meters.values_mut().chain([&mut self.main_meter]).for_each(|m| m.clip = false);
                 }
+                self.sync_midi_routes();
                 Ok(v)
             }
             Err(e) => {

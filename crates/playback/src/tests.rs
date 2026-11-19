@@ -781,6 +781,26 @@ fn a_midi_keyboard_plays_and_records_through_a_record_enabled_instrument() {
 }
 
 #[test]
+fn midi_learn_only_performance_messages_reach_the_armed_take() {
+    let (mut audio, tx, feed, ..) = keyboard_session();
+    let port = feed.ports().assign("Keys");
+    feed.set_control_sources([("Keys".into(), 1, 71)], false);
+    feed.set_clock(1);
+    tx.send(Cmd::Recording(true, 0)).unwrap();
+    tx.send(Cmd::Play { from: 0, end: None, looped: None }).unwrap();
+    let mut out = vec![0.0; 2048];
+    audio.fill(&mut out, 2);
+    for msg in [[0xb0, 71, 100], [0xb0, 74, 60], [0xb1, 71, 20], [0x90, 60, 100]] {
+        feed.receive(port, &msg);
+    }
+    assert!(heard(&mut audio, 4), "the instrument still receives the note through its render latency");
+    let mut rec = Vec::new();
+    feed.take_recorded(&mut rec);
+    assert_eq!(rec.iter().map(|e| (e.status, e.data1)).collect::<Vec<_>>(), [(0xb0, 74), (0xb1, 71), (0x90, 60)]);
+    assert_eq!(feed.control_changes().map(|e| e.event.data1).collect::<Vec<_>>(), [71]);
+}
+
+#[test]
 fn a_full_midi_queue_releases_the_held_note_and_the_pedal_of_its_port_only() {
     // Either queue overflows: the one from the device (1024 events) and the audio thread's own
     // (256 a callback). The releases are among what is dropped.

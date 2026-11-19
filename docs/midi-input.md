@@ -81,6 +81,16 @@ One **Undo** removes the take.
 **Setup › MIDI › MIDI Input Filter…** keeps kinds of messages (for example aftertouch) out of
 recordings.
 
+## Learn a mixer control
+
+In the Mix window, right-click a track's Volume, Pan, Mute or Solo. In a bus Send window, right-click its fader or pan knob to assign Send Level or Send Pan. Choose **MIDI Learn**, then move the hardware control. A continuous control accepts an absolute 7-bit CC by default. For an encoder that sends 64 at rest and signed increments around 64, choose **MIDI Learn (relative, center 64)**. Mute and Solo toggle on each press. Choose **MIDI Learn (hold button)** to engage the switch while the button is down.
+
+The menu shows the input port, MIDI channel and CC number. Choose **Forget MIDI Assignment** to release the control, or **Escape** to cancel learning. Saving the project preserves the assignments and control modes. A pad that sends CC can control the mixer. Pads that send notes still play the instrument. Keyboard size does not affect assignment.
+
+The assigned CC goes to the mixer. Notes, other channels and unassigned controls still reach monitored instruments and MIDI takes. During Learn, the first eligible unassigned knob is reserved immediately. Bank select (0/32), data entry (6/38), RPN/NRPN (98–101), increment/decrement (96/97) and channel-mode messages (120–127) stay on the performance path.
+
+A knob turn ends after 300 ms without movement. Overlapping turns share one undo step. Volume reaches unity at 95 and pan centers at 64. For track Volume and Pan during playback, Touch writes the moved parameter until release, and Latch and Touch/Latch continue the ride until Stop.
+
 ## If something is lost
 
 The path from a device to the engine has a fixed size. If a device sends more than it holds
