@@ -212,6 +212,51 @@ fn reset_after_all_notes_off_still_releases_held_voices() {
 }
 
 #[test]
+fn queued_notes_are_released_in_playback_order_on_seek_and_reset() {
+    for arrival in [[200, 25, 75], [25, 75, 200]] {
+        for reset in [false, true] {
+            let mut p = soundcraft_vst3_host::create(&id_of("Fixture Synth")).unwrap();
+            p.prepare(48_000.0, 64, 2);
+            let mut io = vec![vec![0.0f32; 256]; 2];
+            for offset in arrival {
+                if offset == 75 {
+                    p.note_off_channel(offset, 9, 60);
+                } else {
+                    p.note_on_channel(offset, 9, 60, 127);
+                }
+            }
+            p.process(&mut io, 256);
+            assert_eq!(io[0][25], 10.0);
+            assert_eq!(io[0][75], 0.0);
+            assert_eq!(io[0][200], 10.0);
+            if reset {
+                p.reset();
+            } else {
+                p.all_notes_off();
+            }
+            p.process(&mut io, 256);
+            assert!(io[0].iter().all(|&sample| sample == 0.0), "arrival {arrival:?}, reset {reset}");
+        }
+    }
+}
+
+#[test]
+fn reset_releases_a_sounding_voice_with_a_full_pending_queue() {
+    let mut p = soundcraft_vst3_host::create(&id_of("Fixture Synth")).unwrap();
+    p.prepare(48_000.0, 64, 2);
+    let mut io = vec![vec![0.0f32; 64]; 2];
+    p.note_on_channel(0, 9, 60, 127);
+    p.process(&mut io, 64);
+    assert_eq!(io[0][63], 10.0);
+    for offset in 0..8192 {
+        p.note_off_channel(offset, 0, (offset % 128) as u8);
+    }
+    p.reset();
+    p.process(&mut io, 64);
+    assert!(io[0].iter().all(|&sample| sample == 0.0));
+}
+
+#[test]
 fn many_instances_create_and_drop_cleanly() {
     let (g, s) = (id_of("Fixture Gain"), id_of("Fixture Synth"));
     for _ in 0..50 {
