@@ -157,6 +157,7 @@ pub(super) fn translate(source: &str) -> Option<&'static str> {
         "Output path name" => "Nome do caminho de saída",
         "First channel" => "Primeiro canal",
         "Unavailable" => "Indisponível",
+        "Playing from channel 1" => "Reproduzindo a partir do canal 1",
         "new bus..." => "novo bus...",
         "New Configuration…" => "Nova configuração…",
         "New Group…" => "Novo grupo…",

@@ -337,10 +337,11 @@ fn io_setup(e: &mut Engine, p: &Value) -> Result<Value> {
             unroute_bus(s, bid);
         }
         "create_output" => {
+            check_output_name(&name)?;
             if s.outputs.iter().any(|o| o.name.eq_ignore_ascii_case(&name)) {
                 return Err(bad(id, format!("an output named `{name}` exists")));
             }
-            let first = i64_or(p, "first_channel", 0).clamp(0, 1023) as u16;
+            let first = output_first_channel(i64_or(p, "first_channel", 0), format)?;
             s.outputs.push(OutputPath { name, first_channel: first, format });
         }
         "rename_output" => {
@@ -348,7 +349,11 @@ fn io_setup(e: &mut Engine, p: &Value) -> Result<Value> {
             if s.outputs.iter().any(|o| o.name.eq_ignore_ascii_case(&to) && !o.name.eq_ignore_ascii_case(&name)) {
                 return Err(bad(id, format!("an output named `{to}` exists")));
             }
-            let o = s.outputs.iter_mut().find(|o| o.name.eq_ignore_ascii_case(&name)).ok_or_else(|| bad(id, format!("no output `{name}`")))?;
+            let index = s.outputs.iter().position(|o| o.name.eq_ignore_ascii_case(&name)).ok_or_else(|| bad(id, format!("no output `{name}`")))?;
+            if index != 0 {
+                check_output_name(&to)?;
+            }
+            let o = &mut s.outputs[index];
             let old = std::mem::replace(&mut o.name, to.clone());
             for t in &mut s.tracks {
                 if matches!(&t.mixer.output, Route::Hardware(path) if path.eq_ignore_ascii_case(&old)) {
@@ -368,21 +373,15 @@ fn io_setup(e: &mut Engine, p: &Value) -> Result<Value> {
             if index == 0 && format != output.format {
                 return Err(bad(id, "use Main output format to change the main mix width"));
             }
-            if first < 0
-                || first.saturating_add(format.channels() as i64) > soundcraft_mix::MAX_HARDWARE_CHANNELS as i64
-                || !(1..=soundcraft_mix::MAX_CHANNELS).contains(&format.channels())
-            {
-                return Err(bad(id, "output path is outside the supported channel range"));
-            }
-            output.first_channel = first as u16;
+            output.first_channel = output_first_channel(first, format)?;
             output.format = format;
         }
         "delete_output" => {
-            let before = s.outputs.len();
-            s.outputs.retain(|o| !o.name.eq_ignore_ascii_case(&name));
-            if s.outputs.len() == before {
-                return Err(bad(id, format!("no output `{name}`")));
+            let index = s.outputs.iter().position(|o| o.name.eq_ignore_ascii_case(&name)).ok_or_else(|| bad(id, format!("no output `{name}`")))?;
+            if index == 0 {
+                return Err(bad(id, "the main output path cannot be deleted"));
             }
+            s.outputs.remove(index);
         }
         other => return Err(bad(id, format!("unknown action `{other}`"))),
     }
@@ -454,6 +453,24 @@ fn input_channel(p: &Value, default: u16, format: ChannelFormat) -> Result<u16> 
         || first.saturating_add(width as i64) > soundcraft_mix::MAX_HARDWARE_CHANNELS as i64
     {
         return Err(bad("setup.io", "input path is outside the supported channel range"));
+    }
+    Ok(first as u16)
+}
+
+fn check_output_name(name: &str) -> Result<()> {
+    if ["none", "no input", "no output", "main", "out 1-2", "master"].iter().any(|word| name.eq_ignore_ascii_case(word)) {
+        return Err(bad("setup.io", format!("`{name}` is reserved for routing")));
+    }
+    Ok(())
+}
+
+fn output_first_channel(first: i64, format: ChannelFormat) -> Result<u16> {
+    let width = format.channels();
+    if first < 0
+        || first.saturating_add(width as i64) > soundcraft_mix::MAX_HARDWARE_CHANNELS as i64
+        || !(1..=soundcraft_mix::MAX_CHANNELS).contains(&width)
+    {
+        return Err(bad("setup.io", "output path is outside the supported channel range"));
     }
     Ok(first as u16)
 }
@@ -855,6 +872,7 @@ mod tests {
         e.execute("file.import_session_data", &args).unwrap();
         assert_eq!(e.session().inputs[0].name, "Room L-R");
         assert_eq!(e.session().inputs[0].first_channel, 8);
+        e.execute("mix.record_arm", &json!({"track":"Room","value":true})).unwrap();
         assert_eq!(crate::io::plan_takes(&e, &dir, 16).unwrap()[0].1, [8, 9]);
         let mut conflict = Engine::default();
         conflict.execute("setup.io", &json!({"action":"create_input","name":"Room L-R","first_channel":0})).unwrap();

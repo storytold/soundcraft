@@ -185,6 +185,15 @@ fn output_menu_searches_main_and_no_output() {
     assert_eq!(h.state().engine.session().tracks[0].mixer.output, Route::Main);
 }
 
+#[test]
+fn offline_input_menu_can_assign_a_numbered_input() {
+    let mut h = harness(vox());
+    open(&mut h, "Input for Vox");
+    type_text(&mut h, "in 3");
+    press(&mut h, Key::Enter);
+    assert_eq!(h.state().engine.session().tracks[0].mixer.input, Route::Hardware("In 3".into()));
+}
+
 /// Scripted typing and Enter reach a menu search even when the host window is unfocused.
 #[test]
 fn scripted_keys_reach_the_search_with_the_window_in_the_background() {

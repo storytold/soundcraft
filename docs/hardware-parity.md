@@ -20,7 +20,7 @@ Legend: ✅ works · 🟡 partial · ❌ missing.
 | Choose input device | ✅ | 🟡 Setup › Playback Engine (not yet verified on macOS) | ✅ (WASAPI, ASIO) | 🟡 (not yet verified) | ❌ no recording | ❌ |
 | Buffer size (32–2048) | ✅ | 🟡 device buffer when the driver allows it (not yet verified); mix in 512-sample blocks | 🟡 device buffer 16–8192 (verified 128 on ASIO, 256 on WASAPI); mix in 512-sample blocks | 🟡 (not yet verified) | 🟡 | ❌ |
 | Duplex stream on one clock | ✅ | ❌ separate input/output streams | ❌ | ❌ | ❌ | ❌ |
-| Hardware I/O mapping (I/O Setup to physical channels) | ✅ | 🟡 output path mapping available within the opened stream; unverified | 🟡 named output paths on ASIO (USB 1–10 verified on Model 12) | 🟡 output path mapping unverified | 🟡 output path mapping unverified | ❌ |
+| Hardware I/O mapping (I/O Setup to physical channels) | ✅ | 🟡 named outputs limited to the opened main-mix width; unverified | 🟡 named output paths on ASIO (USB outputs 1–10 and named inputs 1–12 verified on Model 12); non-ASIO limited to the opened main-mix width | 🟡 named outputs limited to the opened main-mix width; unverified | 🟡 named outputs limited to the opened main-mix width; unverified | ❌ |
 | Low-latency monitoring | ✅ | ❌ (`options.low_latency_monitoring` is a stored flag) | ❌ | ❌ | ❌ | ❌ |
 | Latency reporting and record offset compensation | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ |
 | Sample rate follows the session; resample when it can't | ✅ (switches device) | 🟡 resamples (input pitch bug fixed, #28) | 🟡 | 🟡 | 🟡 | 🟡 |
