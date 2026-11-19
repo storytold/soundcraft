@@ -151,6 +151,7 @@ fn save_prefs(env: &Env, ui: &UiState) {
 fn open_filter(purpose: &str) -> (&'static str, Vec<&'static str>) {
     match purpose {
         "session.open" => ("SoundCraft Session", vec!["scraft"]),
+        "file.import_aaf" => ("AAF session data", vec!["aaf"]),
         "file.import_midi" => ("MIDI", vec!["mid", "midi", "smf"]),
         _ => ("Audio", craft_audio::DECODE_EXTENSIONS.to_vec()),
     }
