@@ -57,6 +57,14 @@ fn range(channels: u16, min: u32, max: u32, format: cpal::SampleFormat) -> cpal:
     cpal::SupportedStreamConfigRange::new(channels, min, max, cpal::SupportedBufferSize::Range { min: 64, max: 1024 }, format)
 }
 
+#[test]
+fn output_config_accepts_packed_pcm() {
+    let configs = [range(2, 44_100, 48_000, cpal::SampleFormat::I24), range(10, 44_100, 48_000, cpal::SampleFormat::I24)];
+    let (config, _, format) = pick_output_config(&configs, &[48_000], 2).unwrap();
+    assert_eq!(config.channels, 2);
+    assert_eq!(format, cpal::SampleFormat::I24);
+}
+
 /// Rates are tried in order, so a stale configured rate falls through to the session rate; when no requested rate
 /// is offered the caller uses the device default and resamples.
 #[test]
@@ -91,6 +99,13 @@ fn output_config_prefers_format_over_channels_and_needs_stereo_within_the_cap() 
     let surround = [range(6, 44_100, 48_000, cpal::SampleFormat::F32)];
     assert!(pick_output_config(&surround, &[48_000], 2).is_none(), "a wider device is not narrowed here");
     assert_eq!(pick_output_config(&surround, &[48_000], 6).map(|(c, _, _)| c.channels), Some(6));
+}
+
+#[test]
+fn output_config_can_use_the_full_device_width() {
+    let configs = [range(2, 48_000, 48_000, cpal::SampleFormat::I32), range(10, 48_000, 48_000, cpal::SampleFormat::I32)];
+    let (config, _, _) = pick_output_config(&configs, &[48_000], soundcraft_mix::MAX_HARDWARE_CHANNELS as u16).unwrap();
+    assert_eq!(config.channels, 10);
 }
 
 #[test]
@@ -144,6 +159,77 @@ fn spike_session(spike_at: usize) -> (Arc<Shared>, AudioState, std::sync::mpsc::
     let st = AudioState::new(rx, Arc::clone(&shared), Arc::new(s), 48_000.0, channel().0);
     tx.send(Cmd::Play { from: 0, end: None, looped: None }).unwrap();
     (shared, st, tx, t)
+}
+
+#[test]
+fn main_mix_falls_back_to_first_channels_on_a_narrow_device() {
+    let (_, mut audio, tx, _) = spike_session(0);
+    let mut session = (*audio.session).clone();
+    session.outputs[0].first_channel = 2;
+    tx.send(Cmd::Session(Arc::new(session), vec![])).unwrap();
+    let mut stereo = [0.0; 2 * 32];
+    audio.fill(&mut stereo, 2);
+    assert!(stereo.iter().all(|sample| *sample > 0.0));
+
+    tx.send(Cmd::Play { from: 0, end: None, looped: None }).unwrap();
+    let mut wide = [0.0; 10 * 32];
+    audio.fill(&mut wide, 10);
+    assert!(
+        wide.as_chunks::<10>()
+            .0
+            .iter()
+            .all(|frame| { frame[..2].iter().chain(&frame[4..]).all(|sample| *sample == 0.0) && frame[2..4].iter().all(|sample| *sample > 0.0) })
+    );
+}
+
+#[test]
+fn named_output_uses_its_physical_channel_and_remaps_on_session_edit() {
+    use soundcraft_model::{ChannelFormat, OutputPath, Route};
+    let (_, mut audio, tx, track) = spike_session(0);
+    audio.mix.set_hardware_channels(10);
+    let mut session = (*audio.session).clone();
+    session.outputs.push(OutputPath { name: "Cue".into(), first_channel: 9, format: ChannelFormat::Mono });
+    session.track_mut(track).unwrap().mixer.output = Route::Hardware("Cue".into());
+    tx.send(Cmd::Session(Arc::new(session.clone()), vec![])).unwrap();
+    let mut frames = [0.0; 10 * 32];
+    audio.fill(&mut frames, 10);
+    assert!(frames.as_chunks::<10>().0.iter().all(|frame| frame[..9].iter().all(|sample| *sample == 0.0) && frame[9] > 0.5));
+
+    session.outputs[1].first_channel = 3;
+    tx.send(Cmd::Session(Arc::new(session.clone()), vec![])).unwrap();
+    audio.fill(&mut frames, 10);
+    assert!(frames.as_chunks::<10>().0.iter().all(|frame| frame[3] > 0.0 && frame[9] == 0.0));
+
+    session.outputs[1].first_channel = 9;
+    session.outputs[1].format = ChannelFormat::Stereo;
+    tx.send(Cmd::Session(Arc::new(session), vec![])).unwrap();
+    audio.fill(&mut frames, 10);
+    assert!(frames.iter().all(|sample| *sample == 0.0), "a path that does not fit must not play on the wrong port");
+}
+
+#[test]
+fn each_of_ten_named_paths_reaches_only_its_assigned_output() {
+    use soundcraft_model::{ChannelFormat, OutputPath, Route};
+    let (_, mut audio, tx, track) = spike_session(0);
+    audio.mix.set_hardware_channels(10);
+    let mut session = (*audio.session).clone();
+    for channel in 0..10 {
+        session.outputs.push(OutputPath { name: format!("USB {}", channel + 1), first_channel: channel, format: ChannelFormat::Mono });
+    }
+    for channel in 0..10 {
+        session.track_mut(track).unwrap().mixer.output = Route::Hardware(format!("USB {}", channel + 1));
+        tx.send(Cmd::Session(Arc::new(session.clone()), vec![])).unwrap();
+        tx.send(Cmd::Play { from: 0, end: None, looped: None }).unwrap();
+        let mut frames = [0.0; 10 * 32];
+        audio.fill(&mut frames, 10);
+        assert!(
+            frames
+                .as_chunks::<10>()
+                .0
+                .iter()
+                .all(|frame| { frame.iter().enumerate().all(|(index, &sample)| if index == channel { sample > 0.5 } else { sample == 0.0 }) })
+        );
+    }
 }
 
 #[test]

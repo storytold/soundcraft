@@ -1029,9 +1029,17 @@ fn route(e: &mut Engine, p: &Value, input: bool) -> Result<Value> {
     let create_bus = bool_or(p, "create_bus", true);
     let s = e.session_mut();
     let mut r = parse_route(s, &v);
+    if !input
+        && matches!(r, Route::Hardware(_) | Route::Bus(_))
+        && (!create_bus || !matches!(r, Route::Bus(_)))
+        && let Some((index, path)) = s.outputs.iter().enumerate().find(|(_, path)| path.name.eq_ignore_ascii_case(&v))
+    {
+        r = if index == 0 { Route::Main } else { Route::Hardware(path.name.clone()) };
+    }
     if let Route::Hardware(name) = &r
         && create_bus
         && !name.to_ascii_lowercase().starts_with("in ")
+        && (input || !s.outputs.iter().any(|path| path.name.eq_ignore_ascii_case(name)))
         // A MIDI input (device and channel) of a MIDI or instrument track, see `MidiInput`.
         && !name.starts_with("MIDI:")
     {
@@ -1099,6 +1107,29 @@ mod tests {
         assert_eq!(MidiInput::of(&set("none")), MidiInput::default());
     }
 
+    #[test]
+    fn output_commands_preserve_main_and_validate_named_paths() {
+        let mut e = crate::demo::demo_engine();
+        let main = e.session().outputs[0].name.clone();
+        let step = |e: &mut Engine, args| e.execute("setup.io", &args);
+        assert!(step(&mut e, json!({"action":"delete_output","name":main})).is_err());
+        assert!(step(&mut e, json!({"action":"create_output","name":"Master"})).is_err());
+        assert!(step(&mut e, json!({"action":"create_output","name":"Cue","first_channel":1023})).is_err());
+        step(&mut e, json!({"action":"create_output","name":"Cue","format":"mono"})).unwrap();
+        step(&mut e, json!({"action":"set_output","name":"Cue","first_channel":7})).unwrap();
+        assert_eq!(e.session().outputs[1].first_channel, 7);
+        assert!(step(&mut e, json!({"action":"set_output","name":"Cue","first_channel":-1})).is_err());
+        assert!(step(&mut e, json!({"action":"set_output","name":main,"format":"mono"})).is_err());
+        assert!(step(&mut e, json!({"action":"rename_output","name":"Cue","new_name":main.to_uppercase()})).is_err());
+        let buses = e.session().busses.len();
+        e.execute("track.output", &json!({"track":"Kick","output":"cue","create_bus":true})).unwrap();
+        assert_eq!(e.session().track_by_name("Kick").unwrap().mixer.output, Route::Hardware("Cue".into()));
+        assert_eq!(e.session().busses.len(), buses);
+        step(&mut e, json!({"action":"rename_output","name":"cUE","new_name":"Headphones"})).unwrap();
+        assert_eq!(e.session().track_by_name("Kick").unwrap().mixer.output, Route::Hardware("Headphones".into()));
+        e.execute("track.output", &json!({"track":"Kick","output":"main","create_bus":false})).unwrap();
+        assert_eq!(e.session().track_by_name("Kick").unwrap().mixer.output, Route::Main);
+    }
     #[test]
     fn comp_from_alternate_playlist() {
         let mut e = crate::demo::demo_engine();

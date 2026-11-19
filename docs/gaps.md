@@ -1,6 +1,6 @@
 # Where SoundCraft falls short of Pro Tools
 
-> **Last reviewed:** 2026-10-25 · **Last updated:** 2026-11-18 · **Change:** minor (G-02 shrunk: MIDI input devices work; previously minor: G-05: plugin editors on Linux/X11; previously trivial: G-09: the pt-BR catalog now covers helper-passed tooltips, the status bar, the remove-session prompt and engine error text; G-08: Frequency Shifter, 28 processors; G-04: volume automation read at every sample, #1354; G-01: `setup.playback_engine` applies the device buffer in the desktop app; G-04: Clip Looping crossfade and loop count) · **Target:** Avid Pro Tools Ultimate 2026.4.1
+> **Last reviewed:** 2026-11-18 · **Last updated:** 2026-11-18 · **Change:** G-01 ASIO hardware output paths and wide input/output selectors, with Main fallback and offline input assignment. Earlier: minor (G-02: MIDI input devices work; G-05: plugin editors on Linux/X11; previously trivial: G-09: the pt-BR catalog now covers helper-passed tooltips, the status bar, the remove-session prompt and engine error text; G-08: Frequency Shifter, 28 processors; G-04: volume automation read at every sample, #1354; G-01: `setup.playback_engine` applies the device buffer in the desktop app; G-04: Clip Looping crossfade and loop count) · **Target:** Avid Pro Tools Ultimate 2026.4.1
 
 Every known shortfall, one entry each, ranked by how much it stops a Pro Tools user from doing
 real work in SoundCraft. This is the work list: pick from the top. Rows marked **alpha blocker**
@@ -52,7 +52,12 @@ When you close a gap, delete its entry (or shrink it) in the same PR, and bump t
   not rounded onto the window's power-of-two list. Headless (CLI, no app) still stores the request
   and returns `applied: false`, with `buffer_size` null when unset; playback does not read those
   session values.
-- **Missing:** routing to physical channels (I/O Setup), one duplex stream on one clock (input and
+- **Done (2026-11-18):** Setup › I/O maps named output paths to physical channels. Track output
+  selectors assign these paths and the ASIO stream keeps all supported outputs open. Verified
+  USB outputs 1–10 at 48 kHz on the TASCAM Model 12.
+- **Done (2026-11-18):** Track input selectors use the selected device's usable recording width.
+  Track input and output lists scroll in the existing Edit and Mix selectors.
+- **Missing:** full hardware input mapping in I/O Setup, one duplex stream on one clock (input and
   output are still separate cpal streams), latency reporting and record-offset compensation, ASIO
   in official builds (owner decision: Steinberg's SDK is proprietary or GPLv3), JACK, and
   verification on macOS and Linux. The mix still runs in fixed 512-sample blocks.

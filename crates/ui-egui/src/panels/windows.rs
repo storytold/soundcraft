@@ -805,7 +805,7 @@ pub fn setup_audio_command(app: &mut SoundApp, id: &str, p: &serde_json::Value) 
 /// Setup › I/O: busses and output paths.
 pub fn io_setup(app: &mut SoundApp, ctx: &egui::Context) {
     let mut open = app.ui.show_io_setup;
-    win(ctx, &mut open, "I/O Setup", vec2(420.0, 300.0), |ui| {
+    win(ctx, &mut open, "I/O Setup", vec2(510.0, 465.0), |ui| {
         ui.label(egui::RichText::new(crate::localization::text("Busses")).strong());
         let busses: Vec<(String, String)> = app.engine.session().busses.iter().map(|b| (b.name.clone(), b.format.label().to_string())).collect();
         egui::Grid::new("busses").num_columns(3).striped(true).show(ui, |ui| {
@@ -846,11 +846,88 @@ pub fn io_setup(app: &mut SoundApp, ctx: &egui::Context) {
             format.response.labelled_by(main_label.id);
             ui.label(egui::RichText::new(crate::localized_format!("{n} ch", n = main.channels())).small());
         });
-        for o in app.engine.session().outputs.clone() {
-            ui.label(crate::localized_format!("{} — {} from channel {}", o.name, o.format.label(), o.first_channel + 1));
-        }
+        output_paths(app, ui);
     });
     app.ui.show_io_setup = open;
+}
+
+fn output_paths(app: &mut SoundApp, ui: &mut egui::Ui) {
+    use soundcraft_model::ChannelFormat;
+    let paths = app.engine.session().outputs.clone();
+    let channels = app.player.as_ref().map_or(0, |player| player.device_channels);
+    if ui.button(crate::localization::text("New Output")).clicked() {
+        let name =
+            (1..=paths.len() + 1).map(|index| format!("Output {index}")).find(|name| !paths.iter().any(|path| path.name.eq_ignore_ascii_case(name)));
+        if let Some(name) = name {
+            let first = (0..channels)
+                .find(|channel| {
+                    !paths.iter().any(|path| {
+                        let first = usize::from(path.first_channel);
+                        (first..first + path.format.channels()).contains(&usize::from(*channel))
+                    })
+                })
+                .unwrap_or(0);
+            let _ = app.run("setup.io", json!({"action": "create_output", "name": name, "format": "mono", "first_channel": first}));
+        }
+    }
+    egui::ScrollArea::vertical().id_salt("output_paths").max_height(300.0).show(ui, |ui| {
+        egui::Grid::new("output_mapping").striped(true).show(ui, |ui| {
+            ui.strong(crate::localization::text("Path"));
+            ui.strong(crate::localization::text("Format"));
+            ui.strong(crate::localization::text("First channel"));
+            ui.label("");
+            ui.end_row();
+            for (index, path) in paths.iter().enumerate() {
+                ui.push_id(index, |ui| {
+                    let id = ui.scope_id().with(("output_name", &path.name));
+                    let mut name: String = ui.ctx().memory(|memory| memory.data.get_temp(id)).unwrap_or_else(|| path.name.clone());
+                    let field = ui.add_sized([155.0, ui.spacing().interact_size.y], egui::TextEdit::singleline(&mut name));
+                    let edit = crate::widgets::named_text_field(field, crate::localization::text("Output path name"));
+                    ui.ctx().memory_mut(|memory| memory.data.insert_temp(id, name.clone()));
+                    if edit.lost_focus() && name != path.name {
+                        if let Err(error) = app.run("setup.io", json!({"action": "rename_output", "name": path.name, "new_name": name})) {
+                            app.ui.status = error;
+                        }
+                        ui.ctx().memory_mut(|memory| memory.data.remove::<String>(id));
+                    }
+                });
+                let mut format = path.format;
+                if index == 0 {
+                    format = app.engine.session().main_format();
+                    ui.label(crate::localization::text(format.label()));
+                } else {
+                    craft_ui::ComboBox::from_id_salt(("output_format", index)).selected_text(crate::localization::text(format.label())).show_ui(
+                        ui,
+                        |ui| {
+                            for option in ChannelFormat::ALL.into_iter().filter(|option| (1..=16).contains(&option.channels())) {
+                                ui.selectable_value(&mut format, option, crate::localization::text(option.label()));
+                            }
+                        },
+                    );
+                }
+                let mut first = usize::from(path.first_channel) + 1;
+                let max_first = if channels == 0 { 1024 } else { usize::from(channels).saturating_sub(format.channels()).saturating_add(1) };
+                let upper = max_first.max(first);
+                let channel = ui.add(egui::DragValue::new(&mut first).range(1..=upper).update_while_editing(false));
+                if (channel.changed() || (index != 0 && format != path.format)) && first > 0 {
+                    let mut args = json!({"action": "set_output", "name": path.name, "first_channel": first - 1});
+                    if index != 0 {
+                        args["format"] = json!(format.label());
+                    }
+                    let _ = app.run("setup.io", args);
+                }
+                ui.horizontal(|ui| {
+                    if channels > 0 && first - 1 + format.channels() > usize::from(channels) && (index != 0 || first > 1) {
+                        ui.label(crate::localization::text(if index == 0 { "Playing from channel 1" } else { "Unavailable" }));
+                    }
+                    if index != 0 && ui.small_button(crate::localization::text("Delete")).clicked() {
+                        let _ = app.run("setup.io", json!({"action": "delete_output", "name": path.name}));
+                    }
+                });
+                ui.end_row();
+            }
+        });
+    });
 }
 
 /// Setup › Keyboard Shortcuts.

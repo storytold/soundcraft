@@ -1,6 +1,12 @@
 use super::{MeterDisplay, OutputTrouble, Player, SoundApp, Trouble};
 
 impl SoundApp {
+    pub(crate) fn available_input_channels(&self) -> usize {
+        self.recorder
+            .as_ref()
+            .map_or_else(|| self.player.as_ref().map_or(0, |player| player.input_channels(&self.ui.audio)), |recorder| recorder.channels)
+    }
+
     /// Whether the meters are live: while playing, and while armed or input-monitored tracks are heard.
     pub(crate) fn meters_live(&self) -> bool {
         self.engine.transport.playing
@@ -36,19 +42,33 @@ impl SoundApp {
 
     /// Open the input device once (for recording and input monitoring) and feed the player.
     pub(super) fn ensure_input(&mut self) {
-        if self.recorder.is_some() || self.recorder_failed || self.player.is_none() {
+        if self.recorder.is_some() || self.recorder_failed {
             return;
         }
-        match soundcraft_playback::record::Recorder::open_with(&self.ui.audio) {
+        let Some(player) = &self.player else { return };
+        match player.open_input(&self.ui.audio) {
             Ok(r) => {
-                if let Some(p) = &self.player {
-                    p.set_input(std::sync::Arc::clone(&r.monitor));
-                }
+                player.set_input(std::sync::Arc::clone(&r.monitor));
                 self.recorder = Some(r);
             }
             Err(e) => {
+                if e.rebuild_output {
+                    let at = self.position();
+                    self.capture_plugin_states();
+                    if self.is_playing() {
+                        self.stop_play();
+                    }
+                    if let Some(player) = self.player.take() {
+                        player.close_editors();
+                        // The old ASIO callback must be dropped before reopening the device.
+                    }
+                    let restored = Player::with_config(self.engine.session_arc(), &self.ui.audio);
+                    self.attach_midi(&restored);
+                    restored.locate(at);
+                    self.player = Some(restored);
+                }
                 self.recorder_failed = true;
-                self.ui.status = crate::localized_format!("No audio input: {e}", e = e);
+                self.ui.status = crate::localized_format!("No audio input: {e}", e = e.message);
             }
         }
     }
