@@ -11,6 +11,12 @@ const NAME: &str = "SoundCraft HUI";
 const STRIPS: usize = 8;
 const TRANSPORT: u8 = 0x0e;
 const NAVIGATION: u8 = 0x0a;
+const LOOP: u8 = 0x0f;
+const MARKERS: u8 = 0x14;
+const STRIP_LAMP_PORTS: [u8; 3] = [2, 3, 7];
+const TRANSPORT_LAMP_PORTS: [u8; 3] = [3, 4, 5];
+// The Model 12 sends about 50 single steps between the centre and either end.
+const PAN_STEP: f32 = 0.02;
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct Ports {
@@ -39,7 +45,7 @@ struct Link {
     reply: Option<Instant>,
     ready: bool,
     first_track: usize,
-    lamps: Option<[bool; STRIPS + 3]>,
+    lamps: Option<[[bool; 3]; STRIPS + 1]>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -48,8 +54,16 @@ enum Event {
     Stop,
     Play,
     Record,
+    Rewind,
+    FastForward,
+    Cycle,
+    SetMarker,
+    Jog(i8),
     Navigate(Navigation),
+    Mute(usize),
+    Solo(usize),
     Arm(usize),
+    Pan(usize, i8),
     Fader(usize, u16),
 }
 
@@ -88,16 +102,24 @@ impl Decode {
                 None
             }
             [0xb0, 0x2f, value] => match (self.zone.take()?, value) {
+                (TRANSPORT, 0x41) => Some(Event::Rewind),
+                (TRANSPORT, 0x42) => Some(Event::FastForward),
                 (TRANSPORT, 0x43) => Some(Event::Stop),
                 (TRANSPORT, 0x44) => Some(Event::Play),
                 (TRANSPORT, 0x45) => Some(Event::Record),
+                (LOOP, 0x43) => Some(Event::Cycle),
+                (MARKERS, 0x40) => Some(Event::SetMarker),
                 (NAVIGATION, 0x40) => Some(Event::Navigate(Navigation::ChannelLeft)),
                 (NAVIGATION, 0x41) => Some(Event::Navigate(Navigation::BankLeft)),
                 (NAVIGATION, 0x42) => Some(Event::Navigate(Navigation::ChannelRight)),
                 (NAVIGATION, 0x43) => Some(Event::Navigate(Navigation::BankRight)),
+                (strip @ 0..=7, 0x42) => Some(Event::Mute(usize::from(strip))),
+                (strip @ 0..=7, 0x43) => Some(Event::Solo(usize::from(strip))),
                 (strip @ 0..=7, 0x47) => Some(Event::Arm(usize::from(strip))),
                 _ => None,
             },
+            [0xb0, 0x0d, value] => relative_steps(value).map(Event::Jog),
+            [0xb0, knob @ 0x40..=0x47, value] => relative_steps(value).map(|steps| Event::Pan(usize::from(knob - 0x40), steps)),
             [0xb0, strip @ 0..=7, coarse @ 0..=127] => {
                 *self.coarse.get_mut(usize::from(strip))? = Some(coarse);
                 None
@@ -109,6 +131,15 @@ impl Decode {
             }
             _ => None,
         }
+    }
+}
+
+fn relative_steps(value: u8) -> Option<i8> {
+    let magnitude = (value & 0x3f) as i8;
+    match value {
+        0 | 0x40 | 0x80..=0xff => None,
+        1..=0x3f => Some(-magnitude),
+        _ => Some(magnitude),
     }
 }
 
@@ -281,9 +312,18 @@ pub(crate) fn poll(app: &mut SoundApp, ctx: &egui::Context) {
     link.first_track = link.first_track.min(last_bank);
     let mut tracks = mapped_tracks(app, link.first_track);
     let mut faders = [None; STRIPS];
+    let mut pans = [None; STRIPS];
+    let mut jog_steps = 0;
     for _ in 0..512 {
         let Ok(packet) = link.packets.try_recv() else { break };
         let Some(event) = link.decoder.packet(packet) else { continue };
+        if let Event::Jog(steps) = event {
+            jog_steps += i32::from(steps);
+            continue;
+        }
+        if event != Event::Pong {
+            jog(app, std::mem::take(&mut jog_steps));
+        }
         match event {
             Event::Pong => link.reply = Some(Instant::now()),
             Event::Stop => {
@@ -299,10 +339,19 @@ pub(crate) fn poll(app: &mut SoundApp, ctx: &egui::Context) {
             }
             Event::Record if !app.is_playing() => link.ready = !link.ready,
             Event::Record => {}
+            Event::Rewind | Event::FastForward | Event::Cycle | Event::SetMarker => transport_control(app, event),
+            Event::Jog(_) => {}
             Event::Navigate(direction) => {
                 apply_faders(app, tracks, std::mem::take(&mut faders));
+                apply_pans(app, tracks, std::mem::take(&mut pans));
                 navigate(app, &mut link, direction);
                 tracks = mapped_tracks(app, link.first_track);
+            }
+            Event::Mute(strip) | Event::Solo(strip) => {
+                if let Some(id) = tracks[strip] {
+                    let command = if matches!(event, Event::Mute(_)) { "mix.mute" } else { "mix.solo" };
+                    let _ = app.run(command, json!({"tracks":[id.0]}));
+                }
             }
             Event::Arm(strip) => {
                 if let Some(track) = tracks.get(strip).and_then(|id| id.and_then(|id| app.engine.session().track(id))) {
@@ -314,10 +363,59 @@ pub(crate) fn poll(app: &mut SoundApp, ctx: &egui::Context) {
                     *fader = Some(value);
                 }
             }
+            Event::Pan(strip, steps) => {
+                if let Some(track) = tracks[strip].and_then(|id| app.engine.session().track(id)) {
+                    let pan = pans[strip].unwrap_or(track.mixer.pan[0]);
+                    pans[strip] = Some((pan + f32::from(steps) * PAN_STEP).clamp(-1.0, 1.0));
+                }
+            }
         }
     }
+    jog(app, jog_steps);
     apply_faders(app, tracks, faders);
+    apply_pans(app, tracks, pans);
     app.hui.link = Some(link);
+}
+
+fn playhead(app: &SoundApp) -> i64 {
+    if app.engine.transport.playing { app.engine.transport.position } else { app.engine.session().edit.playhead }
+}
+
+fn jog(app: &mut SoundApp, steps: i32) {
+    if steps == 0 || app.engine.transport.recording {
+        return;
+    }
+    let session = app.engine.session();
+    let samples = (session.frame_rate.samples_per_frame(session.sample_rate) * f64::from(steps)).round() as i64;
+    let at = playhead(app).saturating_add(samples).max(0);
+    let _ = app.run("transport.locate", json!({"at":at}));
+}
+
+fn transport_control(app: &mut SoundApp, event: Event) {
+    match event {
+        Event::Cycle => {
+            let _ = app.run("options.loop_playback", json!({}));
+        }
+        Event::SetMarker => {
+            let _ = app.run("markers.add", json!({"at":playhead(app)}));
+        }
+        Event::Rewind | Event::FastForward if !app.engine.transport.recording => {
+            let seconds = i64::from(app.engine.session().sample_rate.hz());
+            let offset = if event == Event::Rewind { -seconds } else { seconds };
+            let _ = app.run("transport.locate", json!({"at":playhead(app).saturating_add(offset).max(0)}));
+        }
+        _ => {}
+    }
+}
+
+fn apply_pans(app: &mut SoundApp, tracks: [Option<TrackId>; STRIPS], pans: [Option<f32>; STRIPS]) {
+    for (id, pan) in tracks.into_iter().zip(pans) {
+        if let (Some(id), Some(pan)) = (id, pan)
+            && app.engine.session().track(id).is_some_and(|t| (t.mixer.pan[0] - pan).abs() > 0.000_01)
+        {
+            let _ = app.engine.execute_merged("mix.pan", &json!({"tracks":[id.0], "pan":pan}), &format!("pan:{}:0", id.0));
+        }
+    }
 }
 
 fn apply_faders(app: &mut SoundApp, tracks: [Option<TrackId>; STRIPS], faders: [Option<u16>; STRIPS]) {
@@ -335,20 +433,23 @@ pub(crate) fn feedback(app: &mut SoundApp) {
     let tracks = controlled_tracks(app);
     let Some(link) = app.hui.link.as_mut().filter(|link| link.online()) else { return };
     let transport = &app.engine.transport;
-    let lamps: [bool; STRIPS + 3] = std::array::from_fn(|i| match i {
-        8 => !transport.playing,
-        9 => transport.playing,
-        10 => transport.recording || link.ready,
-        _ => tracks.get(i).and_then(|id| id.and_then(|id| app.engine.session().track(id))).is_some_and(|t| t.mixer.record_arm),
+    let lamps: [[bool; 3]; STRIPS + 1] = std::array::from_fn(|i| {
+        if i == STRIPS {
+            [!transport.playing, transport.playing, transport.recording || link.ready]
+        } else {
+            tracks[i].and_then(|id| app.engine.session().track(id)).map_or([false; 3], |t| [t.mixer.mute, t.mixer.solo, t.mixer.record_arm])
+        }
     });
     let previous = link.lamps.replace(lamps);
-    for (i, lit) in lamps.into_iter().enumerate() {
-        if previous.is_some_and(|old| old.get(i) == Some(&lit)) {
-            continue;
+    for (i, states) in lamps.into_iter().enumerate() {
+        let (zone, ports) = if i < STRIPS { (i as u8, STRIP_LAMP_PORTS) } else { (TRANSPORT, TRANSPORT_LAMP_PORTS) };
+        for (index, (port, lit)) in ports.into_iter().zip(states).enumerate() {
+            if previous.is_some_and(|old| old[i][index] == lit) {
+                continue;
+            }
+            link.send([0xb0, 0x0c, zone]);
+            link.send([0xb0, 0x2c, port | if lit { 0x40 } else { 0 }]);
         }
-        let (zone, port) = if i < STRIPS { (i as u8, 7) } else { (TRANSPORT, (i - STRIPS + 3) as u8) };
-        link.send([0xb0, 0x0c, zone]);
-        link.send([0xb0, 0x2c, port | if lit { 0x40 } else { 0 }]);
     }
 }
 
@@ -430,6 +531,56 @@ pub(crate) fn show(app: &mut SoundApp, ctx: &egui::Context) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn model_12_mixing_and_locate_packets_act_only_on_button_press() {
+        let mut decoder = Decode::default();
+        for (zone, port, event) in [
+            (0x0f, 3, Event::Cycle),
+            (0, 2, Event::Mute(0)),
+            (7, 3, Event::Solo(7)),
+            (0x14, 0, Event::SetMarker),
+            (0x0e, 1, Event::Rewind),
+            (0x0e, 2, Event::FastForward),
+        ] {
+            assert_eq!(decoder.packet([0xb0, 0x0f, zone]), None);
+            assert_eq!(decoder.packet([0xb0, 0x2f, port | 0x40]), Some(event));
+            assert_eq!(decoder.packet([0xb0, 0x0f, zone]), None);
+            assert_eq!(decoder.packet([0xb0, 0x2f, port]), None);
+        }
+        assert_eq!(decoder.packet([0xb0, 0x40, 0x3f]), Some(Event::Pan(0, -63)));
+        assert_eq!(decoder.packet([0xb0, 0x47, 0x7f]), Some(Event::Pan(7, 63)));
+        assert_eq!(decoder.packet([0xb0, 0x0d, 0x41]), Some(Event::Jog(1)));
+        assert_eq!(decoder.packet([0xb0, 0x0d, 0x01]), Some(Event::Jog(-1)));
+        assert_eq!(decoder.packet([0xb0, 0x0d, 0x40]), None);
+    }
+
+    #[test]
+    fn hui_locates_adds_marker_at_playhead_and_toggles_loop() {
+        let mut app = SoundApp::new(soundcraft_engine::Engine::default(), None, crate::Services::default());
+        let session = app.engine.session();
+        let second = i64::from(session.sample_rate.hz());
+        let three_frames = (session.frame_rate.samples_per_frame(session.sample_rate) * 3.0).round() as i64;
+        let initial = second * 2;
+        let looped = session.edit.loop_playback;
+        transport_control(&mut app, Event::Cycle);
+        assert_eq!(app.engine.session().edit.loop_playback, !looped);
+        transport_control(&mut app, Event::Cycle);
+        assert_eq!(app.engine.session().edit.loop_playback, looped);
+        app.run("transport.locate", json!({"at":initial})).unwrap();
+        jog(&mut app, 3);
+        assert_eq!(playhead(&app), initial + three_frames);
+        transport_control(&mut app, Event::SetMarker);
+        assert_eq!(app.engine.session().markers.last().unwrap().start, initial + three_frames);
+        transport_control(&mut app, Event::Rewind);
+        assert_eq!(playhead(&app), initial + three_frames - second);
+        transport_control(&mut app, Event::FastForward);
+        assert_eq!(playhead(&app), initial + three_frames);
+        app.engine.transport.recording = true;
+        jog(&mut app, -3);
+        transport_control(&mut app, Event::Rewind);
+        assert_eq!(playhead(&app), initial + three_frames);
+    }
 
     #[test]
     fn model_12_packets_select_transport_strip_buttons_and_faders() {
