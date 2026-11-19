@@ -1,6 +1,6 @@
 # Localization parity
 
-> **Last reviewed:** 2026-11-13 · **Last updated:** 2026-11-19 · **Change:** minor (added Czech with the same source keys and error templates as pt-BR, language selection, decimal commas and catalog tests; AI-assisted, not native-reviewed) · **Target:** Avid Pro Tools Ultimate 2026.4.1
+> **Last reviewed:** 2026-11-13 · **Last updated:** 2026-11-19 · **Change:** minor (added Czech with the same source keys and error templates as pt-BR, language selection, decimal commas and catalog tests; AI-assisted, skimmed by a native speaker, not reviewed line by line) · **Target:** Avid Pro Tools Ultimate 2026.4.1
 
 SoundCraft defaults to English and supports selecting Brazilian Portuguese and Czech. The pt-BR
 and cs catalogs cover all fixed UI strings found in the current source: command labels, menus,
@@ -11,7 +11,7 @@ accessibility names, the Edit-window status bar, the remove-session question and
 messages. Engine errors are matched against catalog templates at display time by
 `localization::error_text`. Values built at run time (file, track and device names), engine command
 parameter documentation and third-party plugin names stay as they are, and the catalogs have not been
-independently or native-speaker reviewed. Czech is **AI-assisted, not native-reviewed**.
+independently or native-speaker reviewed. Czech is **AI-assisted, skimmed by a native speaker, not reviewed line by line**.
 Pro Tools ships its UI in **8 languages** (bundle
 `.lproj` folders: English, German, Spanish, French, Japanese, Korean, Simplified Chinese,
 Traditional Chinese).
@@ -28,7 +28,7 @@ Language setting), PR #141 (bundled multilingual font fallbacks), issue #67 (Ukr
 | Language | Code | UI strings translated | Dialogs / tooltips / help | Script support | Native review | Status | Est. to full (h) | In Pro Tools |
 |---|---|---|---|---|---|---|---:|---|
 | English | en | all (source) | ✅ | Latin ✅ | — | **full** | 0 | ✅ |
-| Czech | cs | 100 % of the fixed UI source keys in pt-BR, including menus and engine error templates | ✅ fixed UI; runtime values excluded | Latin ✅; Czech diacritics included in the bundled-font test | AI-assisted, not native-reviewed | catalog complete; review pending | 0–4 | ❌ |
+| Czech | cs | 100 % of the fixed UI source keys in pt-BR, including menus and engine error templates | ✅ fixed UI; runtime values excluded | Latin ✅; Czech diacritics included in the bundled-font test | AI-assisted, skimmed by a native speaker, not reviewed line by line | catalog complete; line-by-line review pending | 0–4 | ❌ |
 | Simplified Chinese | zh-Hans | 0 (0 %) | ❌ | ❌ no CJK font fallback, no IME testing | no | none | 6–10 | ✅ |
 | Spanish | es | 0 (0 %) — PR #143 pending | ❌ | Latin ✅ | no | none | 3–5 | ✅ |
 | Hindi | hi | 0 (0 %) | ❌ | ❌ no Devanagari font or shaping | no | none | 8–15 | ❌ |
@@ -61,7 +61,7 @@ Per-language hours exclude the shared catalog and script work above.
 
 | Date | Change | Summary |
 |---|---|---|
-| 2026-11-19 | minor | Added Czech (`cs`): the complete pt-BR source-key set translated from English, engine error templates, persisted selection through `ui.language`, decimal commas, shared catalog/menu/source-coverage tests, Czech dialog and bundled-font coverage; AI-assisted, not native-reviewed |
+| 2026-11-19 | minor | Added Czech (`cs`): the complete pt-BR source-key set translated from English, engine error templates, persisted selection through `ui.language`, decimal commas, shared catalog/menu/source-coverage tests, Czech dialog and bundled-font coverage; AI-assisted, skimmed by a native speaker, not reviewed line by line |
 | 2026-11-13 | minor | Completed the pt-BR catalog: tooltips passed to buttons and toggles, `Not available yet.`, the send hover help, `no instrument`, the search placeholders, the Edit-window status bar (bit depth, track count, undo, ms/frame), the remove-session question and the transport/sample-rate readouts; engine errors now reach the status line through `error_text` |
 | 2026-11-05 | minor | Added persisted language selection, the `ui.language` command, English fallback and a pt-BR catalog (menus, dialogs, tooltips, accessibility text, formatted messages); added a Usage section and catalog tests |
 | 2026-10-10 | major | Created: English only, no catalog; the twelve key languages at 0 %; Pro Tools' 8 languages listed from its bundle |

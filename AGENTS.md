@@ -113,7 +113,7 @@ Parity is measured, not guessed: `crates/engine/catalog/menus.txt` lists the inc
   (`pt-BR`) is selected under `Setup › Appearance › Language` (or the `ui.language` command with
   `{"language":"pt-BR"}`). The pt-BR catalog is complete for every fixed UI string — tests cover
   placeholder parity, unique keys and source coverage, and the `cargo test` suite passes.
-  Czech (`cs`) is also available in the same Language menu or through `ui.language` with `{"language":"cs"}`, with equivalent catalog coverage and tests (AI-assisted, not native-reviewed).
+  Czech (`cs`) is also available in the same Language menu or through `ui.language` with `{"language":"cs"}`, with equivalent catalog coverage and tests (AI-assisted, skimmed by a native speaker, not reviewed line by line).
 - Commands: build `cargo build -p soundcraft --bin soundcraft`; test
   `cargo test -p soundcraft --bin soundcraft`; run `DISPLAY=:0 ./target/debug/soundcraft`. The
   `cargo xtask ci` gate runs formatting, clippy, tests, assets, layering and the WebAssembly build.
