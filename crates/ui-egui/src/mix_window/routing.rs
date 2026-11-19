@@ -14,6 +14,10 @@ pub(crate) fn input_name(app: &SoundApp, track: &Track) -> String {
     if track.kind.has_playlist() && track.mixer.input == Route::None {
         let channels = track.format.channels();
         if channels == 1 { crate::localized_format!("In {}", 1) } else { crate::localized_format!("In 1-{}", channels) }
+    } else if let Route::Input(name) = &track.mixer.input
+        && !app.engine.session().inputs.iter().any(|path| path.name.eq_ignore_ascii_case(name) && path.format == track.format)
+    {
+        format!("{name} ({})", crate::localization::text("Unavailable"))
     } else {
         route_name(app, &track.mixer.input)
     }
@@ -107,7 +111,12 @@ fn route_menu(app: &mut SoundApp, ui: &mut Ui, id: TrackId, input: bool, inputs:
     });
     if ui.button(crate::localization::text("new bus...")).clicked() {
         let mut n = busses.len() + 1;
-        while busses.contains(&format!("Bus {n}")) || app.engine.session().track_by_name(&format!("Bus {n}")).is_some() {
+        let session = app.engine.session();
+        while busses.contains(&format!("Bus {n}"))
+            || session.track_by_name(&format!("Bus {n}")).is_some()
+            || session.inputs.iter().any(|path| path.name.eq_ignore_ascii_case(&format!("Bus {n}")))
+            || session.outputs.iter().any(|path| path.name.eq_ignore_ascii_case(&format!("Bus {n}")))
+        {
             n += 1;
         }
         let _ = app.run(cmd, json!({"track": id.0, key: format!("Bus {n}")}));

@@ -154,7 +154,6 @@ pub(super) fn translate(source: &str) -> Option<&'static str> {
         "New Output" => "Nova saída",
         "New Input" => "Nova entrada",
         "Input path name" => "Nome do caminho de entrada",
-        "Input path unavailable: {name}" => "Caminho de entrada indisponível: {name}",
         "Output path name" => "Nome do caminho de saída",
         "First channel" => "Primeiro canal",
         "Unavailable" => "Indisponível",
