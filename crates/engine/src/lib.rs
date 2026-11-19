@@ -20,10 +20,10 @@ pub mod io;
 pub mod score;
 
 use serde_json::{Value, json};
-use soundcraft_model::{Clip, GroupId, Session, Track, TrackId, ZoomState};
+use soundcraft_model::{Clip, GroupId, Insert, Session, Track, TrackId, ZoomState};
 use soundcraft_time::Samples;
 use std::cell::Cell;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use dirty::same_document;
@@ -180,7 +180,7 @@ struct HistoryEntry {
 }
 
 /// A setting Undo and Redo leave as it is (#492): what `noundo` commands change.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 enum Live {
     Track(TrackId, TrackLive),
     GroupActive(GroupId),
@@ -188,7 +188,7 @@ enum Live {
     ZoomToggle,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 enum TrackLive {
     Mute,
     Solo,
@@ -198,8 +198,8 @@ enum TrackLive {
     Hidden,
     View,
     FolderOpen,
-    /// An insert slot's bypass.
-    Bypass(usize),
+    /// The bypass of the plugin (by id) a command found in an insert slot.
+    Bypass(usize, String),
 }
 
 impl TrackLive {
@@ -214,8 +214,7 @@ impl TrackLive {
         TrackLive::FolderOpen,
     ];
 
-    fn same(self, a: &Track, b: &Track) -> bool {
-        let bypass = |t: &Track, i: usize| t.mixer.inserts.get(i).and_then(Option::as_ref).map(|x| x.bypass);
+    fn same(&self, a: &Track, b: &Track) -> bool {
         match self {
             TrackLive::Mute => a.mixer.mute == b.mixer.mute,
             TrackLive::Solo => a.mixer.solo == b.mixer.solo,
@@ -225,11 +224,12 @@ impl TrackLive {
             TrackLive::Hidden => a.hidden == b.hidden,
             TrackLive::View => a.view == b.view,
             TrackLive::FolderOpen => a.folder_open == b.folder_open,
-            TrackLive::Bypass(i) => bypass(a, i) == bypass(b, i),
+            // Not in `FIELDS`: `live_changes` compares the slots itself.
+            TrackLive::Bypass(..) => true,
         }
     }
 
-    fn copy(self, from: &Track, to: &mut Track) {
+    fn copy(&self, from: &Track, to: &mut Track) {
         match self {
             TrackLive::Mute => to.mixer.mute = from.mixer.mute,
             TrackLive::Solo => to.mixer.solo = from.mixer.solo,
@@ -239,10 +239,9 @@ impl TrackLive {
             TrackLive::Hidden => to.hidden = from.hidden,
             TrackLive::View => to.view.clone_from(&from.view),
             TrackLive::FolderOpen => to.folder_open = from.folder_open,
-            // Only where the slot still holds the same plugin.
-            TrackLive::Bypass(i) => {
-                if let (Some(Some(f)), Some(Some(t))) = (from.mixer.inserts.get(i), to.mixer.inserts.get_mut(i))
-                    && f.plugin == t.plugin
+            TrackLive::Bypass(i, plugin) => {
+                if let Some(f) = insert_at(from, *i).filter(|f| f.plugin == *plugin)
+                    && let Some(t) = same_insert(f, *i, from, to).and_then(|j| to.mixer.inserts.get_mut(j)).and_then(Option::as_mut)
                 {
                     t.bypass = f.bypass;
                 }
@@ -251,13 +250,51 @@ impl TrackLive {
     }
 }
 
+fn insert_at(t: &Track, slot: usize) -> Option<&Insert> {
+    t.mixer.inserts.get(slot).and_then(Option::as_ref)
+}
+
+/// Whether `a` and `b` are the same plugin with the same settings, bypassed or not. The plugin
+/// check first spares cloning the settings of a different plugin.
+fn alike(a: &Insert, b: &Insert) -> bool {
+    a.plugin == b.plugin && Insert { bypass: b.bypass, ..a.clone() } == *b
+}
+
+/// The slot of `to` holding the plugin `f` (in `from`'s `slot`), as far as an insert without an id
+/// can be told apart: where `to` has it with the same settings (it may have moved), else in the
+/// same slot if only its settings differ there. `None` when that slot holds an insert that `from`
+/// has in a slot whose contents differ in `to` (the undone edit moved it), so a bypass never goes to
+/// another instance.
+fn same_insert(f: &Insert, slot: usize, from: &Track, to: &Track) -> Option<usize> {
+    if insert_at(to, slot).is_some_and(|t| alike(t, f)) {
+        return Some(slot);
+    }
+    let moved =
+        (0..to.mixer.inserts.len()).find(|&j| insert_at(to, j).is_some_and(|t| alike(t, f)) && !insert_at(from, j).is_some_and(|c| alike(c, f)));
+    moved.or_else(|| {
+        let t = insert_at(to, slot).filter(|t| t.plugin == f.plugin)?;
+        let moved_here =
+            (0..from.mixer.inserts.len()).any(|j| insert_at(from, j).is_some_and(|c| alike(c, t) && !insert_at(to, j).is_some_and(|u| alike(u, c))));
+        (!moved_here).then_some(slot)
+    })
+}
+
 /// The settings that differ between `a` and `b`.
 fn live_changes(a: &Session, b: &Session) -> Vec<Live> {
     let mut out = Vec::new();
-    for bt in &b.tracks {
-        let Some(at) = a.track(bt.id) else { continue };
-        let slots = (0..at.mixer.inserts.len().max(bt.mixer.inserts.len())).map(TrackLive::Bypass);
-        out.extend(TrackLive::FIELDS.into_iter().chain(slots).filter(|f| !f.same(at, bt)).map(|f| Live::Track(bt.id, f)));
+    // Tracks usually line up; a lookup by id only when they don't (selecting runs this too).
+    let aligned = a.tracks.len() == b.tracks.len() && a.tracks.iter().zip(&b.tracks).all(|(x, y)| x.id == y.id);
+    let by_id: HashMap<TrackId, &Track> = if aligned { HashMap::new() } else { a.tracks.iter().map(|t| (t.id, t)).collect() };
+    for (i, bt) in b.tracks.iter().enumerate() {
+        let Some(at) = (if aligned { a.tracks.get(i) } else { by_id.get(&bt.id).copied() }) else { continue };
+        out.extend(TrackLive::FIELDS.into_iter().filter(|f| !f.same(at, bt)).map(|f| Live::Track(bt.id, f)));
+        for (slot, y) in bt.mixer.inserts.iter().enumerate() {
+            if let Some(y) = y
+                && insert_at(at, slot).map(|x| x.bypass) != Some(y.bypass)
+            {
+                out.push(Live::Track(bt.id, TrackLive::Bypass(slot, y.plugin.clone())));
+            }
+        }
     }
     for bg in &b.groups {
         if a.groups.iter().any(|ag| ag.id == bg.id && ag.active != bg.active) {
@@ -492,7 +529,7 @@ impl Engine {
     /// Undo and Redo must not restore live input states captured in document snapshots. A track
     /// absent from the current document comes back safe rather than inheriting a historical arm.
     fn keep_runtime_track_states(&mut self, from: &Session) {
-        let states: std::collections::HashMap<_, _> = from
+        let states: HashMap<_, _> = from
             .tracks
             .iter()
             .filter(|track| track.mixer.record_arm || track.mixer.input_monitor)
@@ -519,20 +556,26 @@ impl Engine {
         }
         let doc = Arc::make_mut(&mut self.doc);
         for live in touched {
-            match *live {
+            match live {
                 Live::Track(id, field) => {
-                    if let (Some(c), Some(t)) = (cur.track(id), doc.track_mut(id)) {
+                    if let (Some(c), Some(t)) = (cur.track(*id), doc.track_mut(*id)) {
                         field.copy(c, t);
                     }
                 }
                 Live::GroupActive(id) => {
-                    if let (Some(c), Some(g)) = (cur.groups.iter().find(|g| g.id == id), doc.groups.iter_mut().find(|g| g.id == id)) {
+                    if let (Some(c), Some(g)) = (cur.groups.iter().find(|g| g.id == *id), doc.groups.iter_mut().find(|g| g.id == *id)) {
                         g.active = c.active;
                     }
                 }
                 // The way back belongs with the heights and zoom Zoom Toggle set.
                 Live::ZoomToggle => {
-                    doc.edit.zoom_toggle.clone_from(&cur.edit.zoom_toggle);
+                    let mut back = cur.edit.zoom_toggle.clone();
+                    // Not the heights of tracks this step doesn't have: a new track can take
+                    // their ids. Redo brings them back with the step that has the tracks.
+                    if let Some(b) = &mut back {
+                        b.heights.retain(|(id, _)| doc.track(*id).is_some());
+                    }
+                    doc.edit.zoom_toggle = back;
                     doc.edit.zoom.samples_per_px = cur.edit.zoom.samples_per_px;
                     doc.edit.zoom.scroll = cur.edit.zoom.scroll;
                 }
@@ -545,7 +588,7 @@ impl Engine {
     fn touch_live(&mut self, before: &Session) {
         let changed = live_changes(before, &self.doc);
         for h in self.undo.iter_mut().chain(self.redo.iter_mut()) {
-            h.touched.extend(&changed);
+            h.touched.extend(changed.iter().cloned());
         }
     }
 

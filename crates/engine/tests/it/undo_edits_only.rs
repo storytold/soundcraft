@@ -219,3 +219,77 @@ fn undo_and_redo_commands_take_back_each_edits_own_changes() {
     assert!(vox(&e).mixer.mute, "redoing it brings the mute back");
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// Two effects with parameters: the first two that aren't instruments.
+fn two_effects() -> (&'static soundcraft_dsp::PluginInfo, &'static soundcraft_dsp::PluginInfo) {
+    let mut fx = soundcraft_dsp::plugins().iter().copied().filter(|p| !p.is_instrument && !p.params.is_empty());
+    (fx.next().unwrap(), fx.next().unwrap())
+}
+
+#[test]
+fn bypassing_a_replacement_plugin_does_not_keep_the_old_one_bypassed() {
+    let dir = std::env::temp_dir().join(format!("soundcraft-undo-bypass-replaced-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("bypassed.json").to_string_lossy().into_owned();
+    let (a, b) = two_effects();
+    let mut e = engine();
+    run(&mut e, "mix.insert", json!({"track": "Vox", "slot": 0, "plugin": a.id}));
+    run(&mut e, "mix.insert_bypass", json!({"track": "Vox", "slot": 0, "value": true}));
+    run(&mut e, "track.save_preset", json!({"path": path, "track": "Vox"}));
+    run(&mut e, "mix.insert_bypass", json!({"track": "Vox", "slot": 0, "value": false}));
+    run(&mut e, "track.load_preset", json!({"path": path, "tracks": ["Vox"]}));
+    run(&mut e, "mix.insert", json!({"track": "Vox", "slot": 0, "plugin": b.id}));
+    run(&mut e, "mix.insert_bypass", json!({"track": "Vox", "slot": 0, "value": true}));
+    let slot = |e: &Engine| vox(e).mixer.inserts[0].as_ref().map(|i| (i.plugin.clone(), i.bypass));
+    run(&mut e, "edit.undo", json!({}));
+    assert_eq!(slot(&e), Some((a.id.to_string(), true)), "back to the preset's bypassed plugin");
+    run(&mut e, "edit.undo", json!({}));
+    assert_eq!(slot(&e), Some((a.id.to_string(), false)), "the other plugin's bypass doesn't keep the preset's");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn undoing_a_move_keeps_the_bypass_on_the_moved_plugin() {
+    let (fx, _) = two_effects();
+    let param = &fx.params[0];
+    let other = if param.default == param.max { param.min } else { param.max };
+    let mut e = engine();
+    run(&mut e, "mix.insert", json!({"track": "Vox", "slot": 0, "plugin": fx.id}));
+    run(&mut e, "mix.insert", json!({"track": "Vox", "slot": 1, "plugin": fx.id, "params": {param.id: other}}));
+    run(&mut e, "mix.insert_move", json!({"track": "Vox", "from": 0, "to": 1}));
+    run(&mut e, "mix.insert_bypass", json!({"track": "Vox", "slot": 1, "value": true}));
+    run(&mut e, "edit.undo", json!({}));
+    let bypass = |e: &Engine, i: usize| vox(e).mixer.inserts[i].as_ref().map(|x| x.bypass);
+    assert_eq!(bypass(&e, 1), Some(false), "the other instance isn't bypassed");
+    assert_eq!(bypass(&e, 0), Some(true), "the bypassed instance moved back and stays bypassed");
+}
+
+#[test]
+fn zoom_toggle_does_not_size_a_new_track_like_an_undone_one() {
+    let mut e = engine();
+    run(&mut e, "track.new", json!({"name": "Gone", "format": "mono"}));
+    run(&mut e, "track.height", json!({"tracks": ["Gone"], "height": "large"}));
+    run(&mut e, "edit.select", json!({"tracks": ["Vox", "Gone"], "start": 0, "end": 48_000}));
+    run(&mut e, "view.zoom_toggle", json!({}));
+    run(&mut e, "edit.undo", json!({}));
+    run(&mut e, "track.new", json!({"name": "New", "format": "mono"}));
+    let new = |e: &Engine| e.session().track_by_name("New").unwrap().height;
+    let height = new(&e);
+    run(&mut e, "view.zoom_toggle", json!({}));
+    assert_eq!(new(&e), height, "the undone track's height stays with it");
+}
+
+#[test]
+fn undoing_a_setting_keeps_the_bypass_beside_a_second_copy_of_the_plugin() {
+    let (fx, _) = two_effects();
+    let param = &fx.params[0];
+    let other = if param.default == param.max { param.min } else { param.max };
+    let mut e = engine();
+    run(&mut e, "mix.insert", json!({"track": "Vox", "slot": 0, "plugin": fx.id}));
+    run(&mut e, "mix.insert", json!({"track": "Vox", "slot": 1, "plugin": fx.id}));
+    run(&mut e, "mix.insert_param", json!({"track": "Vox", "slot": 0, "param": param.id, "value": other}));
+    run(&mut e, "mix.insert_bypass", json!({"track": "Vox", "slot": 0, "value": true}));
+    run(&mut e, "edit.undo", json!({}));
+    let bypass = |e: &Engine, i: usize| vox(e).mixer.inserts[i].as_ref().map(|x| x.bypass);
+    assert_eq!((bypass(&e, 0), bypass(&e, 1)), (Some(true), Some(false)));
+}
