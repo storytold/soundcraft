@@ -142,10 +142,9 @@ pub fn definitions(system_fonts: bool) -> FontDefinitions {
         bold_family.insert(0, "system-regular".into());
     }
     fonts.families.insert(FontFamily::Name("bold".into()), bold_family);
-    for (name, candidates, pattern, lang) in [
-        ("system-hangul", HANGUL, "sans-serif:lang=ko", "ko"),
-        ("system-hebrew", HEBREW, "sans-serif:lang=he", "he"),
-    ] {
+    for (name, candidates, pattern, lang) in
+        [("system-hangul", HANGUL, "sans-serif:lang=ko", "ko"), ("system-hebrew", HEBREW, "sans-serif:lang=he", "he")]
+    {
         if let Some(font) = load(candidates, pattern, Some(lang), system_fonts) {
             fonts.font_data.insert(name.into(), Arc::new(font));
             for family in fonts.families.values_mut() {

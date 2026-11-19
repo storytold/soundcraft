@@ -1909,53 +1909,105 @@ pub(super) fn translate(source: &str) -> Option<&'static str> {
         " {n} of the files are used by {users}" => " {n} מהקבצים בשימוש על ידי {users}",
         " The file stays on disk." => " הקובץ נשאר בדיסק.",
         " The files stay on disk." => " הקבצים נשארים בדיסק.",
-        "@{}: {} PRs, {} commits, +{} / −{} lines (Δ {}), +{} / −{} binary assets, {} – {}" => "@{}: {} בקשות משיכה, {} הפקדות, +{} / −{} שורות (Δ {}), +{} / −{} נכסים בינאריים, {} – {}",
+        "@{}: {} PRs, {} commits, +{} / −{} lines (Δ {}), +{} / −{} binary assets, {} – {}" => {
+            "@{}: {} בקשות משיכה, {} הפקדות, +{} / −{} שורות (Δ {}), +{} / −{} נכסים בינאריים, {} – {}"
+        }
         "Active audio end time is unknown (invalid session sample rate)" => "זמן הסיום של השמע הפעיל אינו ידוע (קצב דגימה של ההפעלה אינו תקין)",
-        "Adds ±1 LSB triangular dither when writing 16- or 24-bit files. Leave it off when the master chain already dithers." => "מוסיף הרעדת דיטר משולשת של ±1 LSB בעת כתיבת קובצי 16 או 24 סיביות. השאר כבוי אם שרשרת המאסטר כבר מבצעת דיטר.",
+        "Adds ±1 LSB triangular dither when writing 16- or 24-bit files. Leave it off when the master chain already dithers." => {
+            "מוסיף הרעדת דיטר משולשת של ±1 LSB בעת כתיבת קובצי 16 או 24 סיביות. השאר כבוי אם שרשרת המאסטר כבר מבצעת דיטר."
+        }
         "An open-source digital audio workstation from the ArtCraft team." => "תחנת עבודה דיגיטלית לשמע בקוד פתוח מבית צוות ArtCraft.",
-        "Applies across the edit selection (constant: at the insertion point; scale: factor = end / start; stretch: factor = start / end)." => "חל על בחירת העריכה (קבוע: בנקודת ההוספה; קנה מידה: מקדם = סוף / התחלה; מתיחה: מקדם = התחלה / סוף).",
+        "Applies across the edit selection (constant: at the insertion point; scale: factor = end / start; stretch: factor = start / end)." => {
+            "חל על בחירת העריכה (קבוע: בנקודת ההוספה; קנה מידה: מקדם = סוף / התחלה; מתיחה: מקדם = התחלה / סוף)."
+        }
         "Applies to the selected MIDI clips (or those under the selection)." => "חל על קליפי ה-MIDI שנבחרו (או על אלה שתחת הבחירה).",
         "Bounces the edit selection, or the whole session when nothing is selected." => "מייצא את בחירת העריכה, או את ההפעלה כולה כשאין בחירה.",
-        "Cannot record: no MIDI input device is connected (Setup > Playback Engine lists them)" => "לא ניתן להקליט: לא מחובר התקן קלט MIDI (הגדרות > מנוע ניגון מציג אותם)",
-        "Cannot record: the audio engine has not finished the previous record pass yet (is the audio device running?)" => "לא ניתן להקליט: מנוע השמע טרם סיים את מעבר ההקלטה הקודם (האם התקן השמע פועל?)",
-        "Check the audio device, then use Reconnect audio device in Setup › Playback Engine." => "בדוק את התקן השמע, ולאחר מכן השתמש ב״חיבור מחדש של התקן השמע״ תחת הגדרות › מנוע ניגון.",
-        "Checks loaded media only, not files on disk, signal levels, plugins or routing." => "בודק מדיה טעונה בלבד, לא קבצים בדיסק, עוצמות אות, תוספים או ניתוב.",
+        "Cannot record: no MIDI input device is connected (Setup > Playback Engine lists them)" => {
+            "לא ניתן להקליט: לא מחובר התקן קלט MIDI (הגדרות > מנוע ניגון מציג אותם)"
+        }
+        "Cannot record: the audio engine has not finished the previous record pass yet (is the audio device running?)" => {
+            "לא ניתן להקליט: מנוע השמע טרם סיים את מעבר ההקלטה הקודם (האם התקן השמע פועל?)"
+        }
+        "Check the audio device, then use Reconnect audio device in Setup › Playback Engine." => {
+            "בדוק את התקן השמע, ולאחר מכן השתמש ב״חיבור מחדש של התקן השמע״ תחת הגדרות › מנוע ניגון."
+        }
+        "Checks loaded media only, not files on disk, signal levels, plugins or routing." => {
+            "בודק מדיה טעונה בלבד, לא קבצים בדיסק, עוצמות אות, תוספים או ניתוב."
+        }
         "Click a take (or the selection) to promote it to the main playlist" => "לחץ על טייק (או על הבחירה) כדי לקדם אותו לרשימת הניגון הראשית",
-        "Click keys to step-enter notes into the selected MIDI clip at the insertion point." => "לחץ על קלידים כדי להזין תווים בצעדים אל קליפ ה-MIDI שנבחר בנקודת ההוספה.",
+        "Click keys to step-enter notes into the selected MIDI clip at the insertion point." => {
+            "לחץ על קלידים כדי להזין תווים בצעדים אל קליפ ה-MIDI שנבחר בנקודת ההוספה."
+        }
         "Double-click to import audio/MIDI at the insertion point or open a session." => "לחיצה כפולה לייבוא שמע/MIDI בנקודת ההוספה או לפתיחת הפעלה.",
         "Drag to change the tempo (Shift: fine steps), or click to type it" => "גרור לשינוי הקצב (Shift: צעדים עדינים), או לחץ להקלדה",
-        "Grid mode ({fkey}; again for Relative); Shift-click: Snap to Grid in the other modes" => "מצב רשת ({fkey}; שוב עבור יחסי); Shift-לחיצה: הצמדה לרשת במצבים האחרים",
+        "Grid mode ({fkey}; again for Relative); Shift-click: Snap to Grid in the other modes" => {
+            "מצב רשת ({fkey}; שוב עבור יחסי); Shift-לחיצה: הצמדה לרשת במצבים האחרים"
+        }
         "Includes alternate takes and muted clips. Refresh after editing." => "כולל טייקים חלופיים וקליפים מושתקים. רענן לאחר עריכה.",
-        "MIDI input was dropped during the take: it is incomplete, and notes held at that point end there" => "קלט ה-MIDI אבד במהלך הטייק: הוא חלקי, ותווים שהוחזקו באותה נקודה מסתיימים שם",
-        "No object tracks. Use the Object view in the Mix window to route tracks as objects." => "אין רצועות אובייקטים. השתמש בתצוגת האובייקטים בחלון המיקס כדי לנתב רצועות כאובייקטים.",
+        "MIDI input was dropped during the take: it is incomplete, and notes held at that point end there" => {
+            "קלט ה-MIDI אבד במהלך הטייק: הוא חלקי, ותווים שהוחזקו באותה נקודה מסתיימים שם"
+        }
+        "No object tracks. Use the Object view in the Mix window to route tracks as objects." => {
+            "אין רצועות אובייקטים. השתמש בתצוגת האובייקטים בחלון המיקס כדי לנתב רצועות כאובייקטים."
+        }
         "No track is record-enabled: click the R button on the track to record." => "אף רצועה אינה מוכנה להקלטה: לחץ על כפתור R ברצועה כדי להקליט.",
         "Non-destructive, applied at playback to the selected MIDI tracks." => "לא הרסני, מוחל בעת הניגון על רצועות ה-MIDI שנבחרו.",
-        "Notation view of the MIDI clip; edit notes in the MIDI Editor or Event List." => "תצוגת תווים של קליפ ה-MIDI; ערוך תווים בעורך ה-MIDI או ברשימת האירועים.",
-        "Nothing to record on yet: add a track with Track › New…, then click its R button." => "אין עדיין על מה להקליט: הוסף רצועה דרך רצועה › חדש…, ולאחר מכן לחץ על כפתור R שלה.",
+        "Notation view of the MIDI clip; edit notes in the MIDI Editor or Event List." => {
+            "תצוגת תווים של קליפ ה-MIDI; ערוך תווים בעורך ה-MIDI או ברשימת האירועים."
+        }
+        "Nothing to record on yet: add a track with Track › New…, then click its R button." => {
+            "אין עדיין על מה להקליט: הוסף רצועה דרך רצועה › חדש…, ולאחר מכן לחץ על כפתור R שלה."
+        }
         "Nothing was recorded: the record-enabled tracks received no input" => "דבר לא הוקלט: הרצועות המוכנות להקלטה לא קיבלו קלט",
         "Processes the selected clips and replaces them with rendered audio." => "מעבד את הקליפים שנבחרו ומחליף אותם בשמע מרונדר.",
-        "Reconnect it, then use Reconnect audio device in Setup › Playback Engine." => "חבר אותו מחדש, ולאחר מכן השתמש ב״חיבור מחדש של התקן השמע״ תחת הגדרות › מנוע ניגון.",
-        "Recovered “{name}”, but {n} audio file(s) are missing. Save it to keep the changes." => "שוחזרה ההפעלה ״{name}״, אך חסרים {n} קובצי שמע. שמור אותה כדי לשמור את השינויים.",
+        "Reconnect it, then use Reconnect audio device in Setup › Playback Engine." => {
+            "חבר אותו מחדש, ולאחר מכן השתמש ב״חיבור מחדש של התקן השמע״ תחת הגדרות › מנוע ניגון."
+        }
+        "Recovered “{name}”, but {n} audio file(s) are missing. Save it to keep the changes." => {
+            "שוחזרה ההפעלה ״{name}״, אך חסרים {n} קובצי שמע. שמור אותה כדי לשמור את השינויים."
+        }
         "Renders and AudioSuite processes run to completion before returning." => "רינדורים ועיבודי AudioSuite רצים עד להשלמה לפני החזרה.",
-        "Send {which} to {name}: {db} dB\nClick for the send fader · drag vertically to adjust · Shift-drag for fine control · Alt-click for 0 dB · right-click for options" => "שליחה {which} אל {name}: {db} dB\nלחיצה לפיידר השליחה · גרירה אנכית לכוונון · Shift-גרירה לשליטה עדינה · Alt-לחיצה ל-0 dB · לחיצה ימנית לאפשרויות",
+        "Send {which} to {name}: {db} dB\nClick for the send fader · drag vertically to adjust · Shift-drag for fine control · Alt-click for 0 dB · right-click for options" => {
+            "שליחה {which} אל {name}: {db} dB\nלחיצה לפיידר השליחה · גרירה אנכית לכוונון · Shift-גרירה לשליטה עדינה · Alt-לחיצה ל-0 dB · לחיצה ימנית לאפשרויות"
+        }
         "Session media: {} files, {:.1} MB in memory (32-bit float)" => "מדיית הפעלה: {} קבצים, {:.1} מ״ב בזיכרון (32-bit float)",
-        "SoundCraft hit an internal error (see the log). Restart SoundCraft to be safe." => "SoundCraft נתקל בשגיאה פנימית (ראה יומן). הפעל מחדש את SoundCraft ליתר ביטחון.",
-        "SoundCraft hit an internal error (see the log). Your changes were autosaved: save them, then restart SoundCraft." => "SoundCraft נתקל בשגיאה פנימית (ראה יומן). השינויים שלך נשמרו אוטומטית: שמור אותם, ולאחר מכן הפעל מחדש את SoundCraft.",
-        "Surround pan: drag the puck · double-click: front centre · Alt-drag: divergence" => "צידוד סראונד: גרור את הדיסקית · לחיצה כפולה: מרכז קדמי · Alt-גרירה: פיזור",
+        "SoundCraft hit an internal error (see the log). Restart SoundCraft to be safe." => {
+            "SoundCraft נתקל בשגיאה פנימית (ראה יומן). הפעל מחדש את SoundCraft ליתר ביטחון."
+        }
+        "SoundCraft hit an internal error (see the log). Your changes were autosaved: save them, then restart SoundCraft." => {
+            "SoundCraft נתקל בשגיאה פנימית (ראה יומן). השינויים שלך נשמרו אוטומטית: שמור אותם, ולאחר מכן הפעל מחדש את SoundCraft."
+        }
+        "Surround pan: drag the puck · double-click: front centre · Alt-drag: divergence" => {
+            "צידוד סראונד: גרור את הדיסקית · לחיצה כפולה: מרכז קדמי · Alt-גרירה: פיזור"
+        }
         "Text for naming the clips that editing makes from the selected clips:" => "טקסט למתן שמות לקליפים שהעריכה יוצרת מתוך הקליפים שנבחרו:",
-        "The audio engine did not answer when the pass ended: the last MIDI notes played may be missing from the take" => "מנוע השמע לא הגיב עם סיום המעבר: תווי ה-MIDI האחרונים שנוגנו עלולים להיות חסרים בטייק",
+        "The audio engine did not answer when the pass ended: the last MIDI notes played may be missing from the take" => {
+            "מנוע השמע לא הגיב עם סיום המעבר: תווי ה-MIDI האחרונים שנוגנו עלולים להיות חסרים בטייק"
+        }
         "The disk is too slow: this take has lost {lost} ms of input so far." => "הכונן איטי מדי: טייק זה איבד עד כה {lost} מ״ש של קלט.",
-        "The mix runs in 512-sample blocks; the buffer size sets the device's own latency." => "המיקס רץ בבלוקים של 512 דגימות; גודל החוצץ קובע את השהיית ההתקן עצמו.",
-        "Use Reconnect audio device in Setup › Playback Engine, or restart SoundCraft." => "השתמש ב״חיבור מחדש של התקן השמע״ תחת הגדרות › מנוע ניגון, או הפעל מחדש את SoundCraft.",
-        "automation filesystem access is not granted: read authority is absent: {shown_path}" => "גישת האוטומציה למערכת הקבצים לא אושרה: חסרה הרשאת קריאה: {shown_path}",
-        "automation filesystem access is not granted: write authority is absent: {shown_path}" => "גישת האוטומציה למערכת הקבצים לא אושרה: חסרה הרשאת כתיבה: {shown_path}",
+        "The mix runs in 512-sample blocks; the buffer size sets the device's own latency." => {
+            "המיקס רץ בבלוקים של 512 דגימות; גודל החוצץ קובע את השהיית ההתקן עצמו."
+        }
+        "Use Reconnect audio device in Setup › Playback Engine, or restart SoundCraft." => {
+            "השתמש ב״חיבור מחדש של התקן השמע״ תחת הגדרות › מנוע ניגון, או הפעל מחדש את SoundCraft."
+        }
+        "automation filesystem access is not granted: read authority is absent: {shown_path}" => {
+            "גישת האוטומציה למערכת הקבצים לא אושרה: חסרה הרשאת קריאה: {shown_path}"
+        }
+        "automation filesystem access is not granted: write authority is absent: {shown_path}" => {
+            "גישת האוטומציה למערכת הקבצים לא אושרה: חסרה הרשאת כתיבה: {shown_path}"
+        }
         "automation path rejected: outside the read root {root}: {shown_path}" => "נתיב האוטומציה נדחה: מחוץ לשורש הקריאה {root}: {shown_path}",
         "automation path rejected: outside the read roots {}: {shown_path}" => "נתיב האוטומציה נדחה: מחוץ לשורשי הקריאה {}: {shown_path}",
         "automation path rejected: outside the write root {root}: {shown_path}" => "נתיב האוטומציה נדחה: מחוץ לשורש הכתיבה {root}: {shown_path}",
         "automation path rejected: outside the write roots {}: {shown_path}" => "נתיב האוטומציה נדחה: מחוץ לשורשי הכתיבה {}: {shown_path}",
-        "automation path rejected: parent traversal below a folder that doesn't exist: {}" => "נתיב האוטומציה נדחה: מעבר הורה מתחת לתיקייה שאינה קיימת: {}",
+        "automation path rejected: parent traversal below a folder that doesn't exist: {}" => {
+            "נתיב האוטומציה נדחה: מעבר הורה מתחת לתיקייה שאינה קיימת: {}"
+        }
         "automation path rejected: reserved device names are not allowed: {}" => "נתיב האוטומציה נדחה: שמות התקנים שמורים אינם מותרים: {}",
-        "{name} on {track} put out invalid audio, so it is bypassed until playback stops or starts again." => "{name} ברצועה {track} הוציא שמע לא תקין, ולכן נעקף עד לעצירת הניגון או להפעלתו מחדש.",
+        "{name} on {track} put out invalid audio, so it is bypassed until playback stops or starts again." => {
+            "{name} ברצועה {track} הוציא שמע לא תקין, ולכן נעקף עד לעצירת הניגון או להפעלתו מחדש."
+        }
         "“{name}” has {what} from an earlier run, autosaved {age}." => "ל-״{name}״ יש {what} מהפעלה קודמת, שנשמר אוטומטית לפני {age}.",
         _ => return error_translation(source),
     })
