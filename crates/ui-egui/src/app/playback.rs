@@ -299,6 +299,7 @@ impl SoundApp {
         self.autosaved_rev = 0;
         let sources_before = self.engine.session().sources.len();
         let ids = soundcraft_engine::io::place_recording(&mut self.engine, &plan, takes);
+        let saved_audio_source = self.engine.session().sources.len() > sources_before;
         // The audio engine may have confirmed the pass while the audio takes were finished: the
         // stop position and what the user is told go by one answer.
         let midi_confirmed = midi_confirmed || self.midi_pass_stopped_at(midi_pass).is_some();
@@ -317,9 +318,9 @@ impl SoundApp {
         // keys still down are held to the end of the loop (the take is reported as incomplete).
         let (midi_range, midi_kind) =
             super::midi::midi_take_span(midi_loop, plan.punch, self.record_start, stopped_at, self.midi_pass_stopped_at(midi_pass));
-        let (midi_clips, midi_problem) = self.finish_midi_take(midi_range, !ids.is_empty(), midi_confirmed, midi_kind);
+        let (midi_clips, midi_problem) = self.finish_midi_take(midi_range, !ids.is_empty() || saved_audio_source, midi_confirmed, midi_kind);
         self.ui.status = if plan.pass.is_some() && midi_clips == 0 {
-            if ids.is_empty() && self.engine.session().sources.len() > sources_before {
+            if ids.is_empty() && saved_audio_source {
                 crate::localization::text("Short loop take saved in the Clips list").into()
             } else {
                 crate::localized_format!("Loop-recorded {} take(s)", ids.len() / tracks)
