@@ -18,7 +18,7 @@ fn midi_offset(s: &Session, t: &Track) -> i64 {
 }
 
 /// Send note on/offs and controllers for MIDI clips overlapping the block.
-pub(crate) fn schedule_notes(s: &Session, t: &Track, pos: Samples, frames: usize, inst: &mut PluginSlot, held: &mut [[bool; 128]; 16]) {
+pub(crate) fn schedule_notes(s: &Session, t: &Track, pos: Samples, frames: usize, inst: &mut PluginSlot) {
     let sr = s.sample_rate;
     // MIDI Track Offsets: the track's notes sound `offset` samples later (earlier if negative), so
     // the block looks that far back into the clips.
@@ -70,15 +70,9 @@ pub(crate) fn schedule_notes(s: &Session, t: &Track, pos: Samples, frames: usize
             }
             if on >= pos && on < end {
                 inst.plugin.note_on_channel(usize::try_from(on - pos).unwrap_or(0), n.channel, n.pitch, n.velocity);
-                if let Some(h) = held.get_mut(usize::from(n.channel)).and_then(|keys| keys.get_mut(usize::from(n.pitch))) {
-                    *h = true;
-                }
             }
             if off >= pos && off < end {
                 inst.plugin.note_off_channel(usize::try_from(off - pos).unwrap_or(0), n.channel, n.pitch);
-                if let Some(h) = held.get_mut(usize::from(n.channel)).and_then(|keys| keys.get_mut(usize::from(n.pitch))) {
-                    *h = false;
-                }
             }
         }
         // Events before tick 0 are what a start trim hid: they don't play.
@@ -113,17 +107,27 @@ fn ctrl_message(channel: u8, kind: CtrlKind, value: i32, transpose: i64) -> [u8;
     message
 }
 
-/// Before an instrument plays from `pos`: reset its controllers, then send each one the last value
-/// it had on this track before `pos`.
-pub(crate) fn chase_controllers(s: &Session, t: &Track, pos: Samples, inst: &mut PluginSlot) {
+const BEND: usize = 128;
+const PRESSURE: usize = 129;
+const PROGRAM: usize = 130;
+const CHASE_SLOTS: usize = 16 * (PROGRAM + 1);
+
+#[derive(Clone, Default)]
+pub(crate) struct ChaseEvent {
+    time: i64,
+    order: usize,
+    message: [u8; 3],
+}
+
+/// Reset controllers, then replay the latest values and recorded resets in playback order.
+/// Shared or omni receivers therefore hear the latest event regardless of its MIDI channel.
+pub(crate) fn chase_controllers(s: &Session, t: &Track, pos: Samples, inst: &mut PluginSlot, last: &mut Vec<ChaseEvent>) {
     for channel in 0..16u8 {
         inst.plugin.midi(0, [0xB0 | channel, 121, 0]);
     }
     let pos = pos.saturating_sub(midi_offset(s, t));
-    const BEND: usize = 128;
-    const PRESSURE: usize = 129;
-    const PROGRAM: usize = 130;
-    let mut last = [[(i64::MIN, 0usize, 0i32); 131]; 16];
+    last.clear();
+    last.resize_with(CHASE_SLOTS, ChaseEvent::default);
     let mut order = 0usize;
     let sr = s.sample_rate;
     for clip in t.clips() {
@@ -144,39 +148,24 @@ pub(crate) fn chase_controllers(s: &Session, t: &Track, pos: Samples, inst: &mut
                 CtrlKind::PolyPressure(_) => continue,
             };
             let at = s.tempo.tick_to_samples(base.saturating_add(c.tick), sr);
+            let index = usize::from(c.channel) * (PROGRAM + 1) + slot;
             if at < until
-                && let Some(l) = last.get_mut(usize::from(c.channel)).and_then(|controllers| controllers.get_mut(slot))
-                && at >= l.0
+                && let Some(event) = last.get_mut(index)
+                && (event.order == 0 || at >= event.time)
             {
-                *l = (at, order, c.value);
+                *event = ChaseEvent { time: at, order, message: ctrl_message(c.channel, c.kind, c.value, 0) };
             }
         }
     }
-    for (channel, controllers) in last.iter().enumerate() {
-        let reset_at = controllers.get(121).map_or((i64::MIN, 0), |c| (c.0, c.1));
-        for (slot, &(at, order, value)) in controllers.iter().enumerate() {
-            // The opening reset already establishes defaults. Replaying an old reset here could
-            // clear a later expression/modulation value whose slot happens to precede 121.
-            if slot == 121 {
-                continue;
-            }
-            let kind = match slot {
-                BEND => CtrlKind::PitchBend,
-                PRESSURE => CtrlKind::ChannelPressure,
-                PROGRAM => CtrlKind::Program,
-                n => CtrlKind::Cc(u8::try_from(n).unwrap_or(0)),
-            };
-            if at != i64::MIN && !((at, order) < reset_at && reset_by_cc121(kind)) {
-                inst.plugin.midi(0, ctrl_message(u8::try_from(channel).unwrap_or(0), kind, value, 0));
-            }
-        }
+    last.retain(|event| event.order != 0);
+    last.sort_unstable_by_key(|event| (event.time, event.order));
+    for event in last {
+        inst.plugin.midi(0, event.message);
     }
 }
 
-/// RP-015 leaves bank, level/pan, sound/effect settings, channel modes and parameter data intact.
-/// Earlier resettable values must not undo a recorded channel reset when seeking.
-fn reset_by_cc121(kind: CtrlKind) -> bool {
-    !matches!(kind, CtrlKind::Program | CtrlKind::Cc(0 | 6 | 7 | 10 | 32 | 38 | 39 | 42 | 70..=79 | 91..=97 | 120..=127))
+pub(crate) fn chase_scratch() -> Vec<ChaseEvent> {
+    Vec::with_capacity(CHASE_SLOTS)
 }
 
 /// Session audio shared with a sample-playing instrument.

@@ -25,8 +25,9 @@ pub struct AuPlugin {
     /// Audio Unit id of each `info.params` entry (same order).
     ids: Vec<u32>,
     values: Vec<f32>,
-    /// Pending MIDI, kept sorted by time. Never grows past `EVENT_CAP`.
+    /// Pending MIDI, sorted once before processing. Never grows past `EVENT_CAP`.
     events: Vec<MidiEvent>,
+    event_order: Vec<(u32, usize)>,
     held: [[bool; 128]; 16],
     /// Takes audio input (effects); instruments replace the buffer contents.
     has_input: bool,
@@ -47,6 +48,7 @@ impl AuPlugin {
             ids,
             values,
             events: Vec::with_capacity(EVENT_CAP),
+            event_order: vec![(0, 0); EVENT_CAP],
             held: [[false; 128]; 16],
             has_input,
             takes_midi,
@@ -65,7 +67,7 @@ impl AuPlugin {
         }
     }
 
-    /// Inserts keeping the queue time-sorted; drops the event when the queue is full (never
+    /// Appends in arrival order; drops the event when the queue is full (never
     /// allocates on the audio thread).
     fn push_event(&mut self, e: MidiEvent) -> bool {
         let release = e.status & 0xF0 == 0x80;
@@ -73,8 +75,7 @@ impl AuPlugin {
         if !self.takes_midi || self.events.len() >= room {
             return false;
         }
-        let pos = self.events.iter().rposition(|q| q.time <= e.time).map_or(0, |i| i + 1);
-        self.events.insert(pos, e);
+        self.events.push(e);
         true
     }
 }
@@ -145,6 +146,7 @@ impl Plugin for AuPlugin {
         let max = self.inst.max_frames();
         let au_ch = self.inst.channels();
         let last = u32::try_from(frames - 1).unwrap_or(u32::MAX);
+        soundcraft_dsp::sort_timed_events(&mut self.events, &mut self.event_order, |event| event.time);
         for e in &mut self.events {
             e.time = e.time.min(last);
         }

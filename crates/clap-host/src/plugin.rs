@@ -30,8 +30,9 @@ pub struct ClapPlugin {
     /// CLAP id of each `info.params` entry (same order).
     ids: Vec<u32>,
     values: Vec<f32>,
-    /// Pending events, kept sorted by time (stable for equal times). Never grows past `EVENT_CAP`.
+    /// Pending events, sorted once before processing. Never grows past `EVENT_CAP`.
     queue: Vec<Event>,
+    event_order: Vec<(u32, usize)>,
     inputs: PortBuffers,
     outputs: PortBuffers,
     in_main: Option<usize>,
@@ -57,6 +58,7 @@ impl ClapPlugin {
             ids,
             values,
             queue: Vec::with_capacity(EVENT_CAP),
+            event_order: vec![(0, 0); EVENT_CAP],
             inputs: PortBuffers::new(&[], 0),
             outputs: PortBuffers::new(&[], 0),
             in_main: None,
@@ -89,7 +91,7 @@ impl ClapPlugin {
     }
 }
 
-/// Inserts keeping the queue time-sorted; drops the event when the queue is full (never
+/// Appends in arrival order; drops the event when the queue is full (never
 /// allocates on the audio thread). Only a `release` may take the last [`RELEASE_RESERVE`] slots.
 /// Returns whether the event was queued.
 fn push_event(queue: &mut Vec<Event>, e: Event, release: bool) -> bool {
@@ -97,8 +99,7 @@ fn push_event(queue: &mut Vec<Event>, e: Event, release: bool) -> bool {
     if queue.len() >= room {
         return false;
     }
-    let pos = queue.iter().rposition(|q| q.time() <= e.time()).map_or(0, |i| i + 1);
-    queue.insert(pos, e);
+    queue.push(e);
     true
 }
 
@@ -282,6 +283,7 @@ impl Plugin for ClapPlugin {
         // Keep pending releases and release whatever is still held: CLAP asks `reset` to kill
         // voices, but some plugins' doesn't (Surge XT's), and they would sound on with nothing
         // left to release them (#1464).
+        soundcraft_dsp::sort_timed_events(&mut self.queue, &mut self.event_order, Event::time);
         release_on_reset(&mut self.queue, &mut self.held, self.notes);
     }
 
@@ -315,6 +317,7 @@ impl Plugin for ClapPlugin {
         if frames == 0 || ch == 0 {
             return;
         }
+        soundcraft_dsp::sort_timed_events(&mut self.queue, &mut self.event_order, Event::time);
         let last = u32::try_from(frames - 1).unwrap_or(u32::MAX);
         for e in &mut self.queue {
             if e.time() > last {

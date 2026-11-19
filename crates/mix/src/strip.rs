@@ -1,7 +1,7 @@
 use super::automation::{Level, apply_gain, transport_at, volume_level};
 use super::clips::{ClipFx, clip_fx_params, render_clip};
 use super::instances::{INSTRUMENT_SLOT, PluginFailures, PreparedInstance, create_instance_for, is_third_party};
-use super::midi::{chase_controllers, schedule_notes};
+use super::midi::{ChaseEvent, chase_controllers, chase_scratch, schedule_notes};
 use super::pan::{PanSpec, apply_matrix, build_matrix, identity_matrix};
 use super::routing::receives_solo;
 use super::{
@@ -39,8 +39,8 @@ pub(crate) struct Strip {
     pub(crate) instrument: Option<PluginSlot>,
     /// The pool audio handed to the instrument with `set_sample` (sample-playing instruments).
     pub(crate) sample: Option<Arc<SourceAudio>>,
-    /// MIDI notes currently sounding on the instrument (pitch), for note-offs at stops/seek.
-    pub(crate) held: [[bool; 128]; 16],
+    /// Preallocated scratch for controller chase.
+    chase_events: Vec<ChaseEvent>,
     /// The instrument's next block starts somewhere new: send it the controllers in effect there.
     pub(crate) chase: bool,
     pub(crate) muted: bool,
@@ -139,7 +139,7 @@ impl Strip {
             plugins: Vec::new(),
             instrument: None,
             sample: None,
-            held: [[false; 128]; 16],
+            chase_events: chase_scratch(),
             chase: true,
             muted: false,
             gr: 0.0,
@@ -308,9 +308,9 @@ fn render_instrument(s: &Session, t: &Track, strip: &mut Strip, blk: Block, tran
         }
         inst.plugin.set_transport(transport);
         if std::mem::take(&mut strip.chase) {
-            chase_controllers(s, t, pos, inst);
+            chase_controllers(s, t, pos, inst, &mut strip.chase_events);
         }
-        schedule_notes(s, t, pos, frames, inst, &mut strip.held);
+        schedule_notes(s, t, pos, frames, inst);
         if strip.buf.len() >= 2 {
             inst.plugin.process(&mut strip.buf, frames);
         } else if let Some(c0) = strip.buf.first_mut() {

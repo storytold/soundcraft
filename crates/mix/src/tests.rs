@@ -543,7 +543,7 @@ fn midi_channels_reach_notes_controllers_and_seek_chase() {
 }
 
 #[test]
-fn seek_chase_does_not_restore_controllers_reset_by_cc121_on_that_channel() {
+fn seek_chase_replays_controllers_around_the_recorded_reset() {
     use soundcraft_midi::{CtrlEvent, Note, Sequence};
     let mut s = Session::default();
     let t = s.add_track(TrackKind::Instrument, ChannelFormat::Stereo, None);
@@ -556,12 +556,16 @@ fn seek_chase_does_not_restore_controllers_reset_by_cc121_on_that_channel() {
             ctrl(9, 1, CtrlKind::PitchBend, 8191),
             ctrl(9, 1, CtrlKind::ChannelPressure, 100),
             ctrl(9, 1, CtrlKind::Cc(1), 90),
+            ctrl(9, 1, CtrlKind::Cc(2), 100),
+            ctrl(9, 1, CtrlKind::Cc(64), 0),
             ctrl(9, 1, CtrlKind::Cc(7), 80),
             ctrl(9, 1, CtrlKind::Cc(10), 40),
             ctrl(9, 1, CtrlKind::Cc(0), 1),
             ctrl(9, 1, CtrlKind::Program, 24),
             ctrl(9, 2, CtrlKind::Cc(121), 0),
             ctrl(9, 3, CtrlKind::Cc(11), 70),
+            ctrl(0, 3, CtrlKind::Cc(64), 127),
+            ctrl(0, 3, CtrlKind::Program, 42),
         ],
     };
     let clip = s.new_clip_id();
@@ -580,10 +584,13 @@ fn seek_chase_does_not_restore_controllers_reset_by_cc121_on_that_channel() {
     heard.lock().unwrap().clear();
     render_block(&mut eng, &s, 90);
     let events = heard.lock().unwrap();
-    assert!(
-        !events.iter().any(|(_, m)| matches!(m[0], 0xE9 | 0xD9) || m[..2] == [0xB9, 1]),
-        "pre-reset bend/pressure/modulation restored: {events:?}"
-    );
+    let position = |message| events.iter().position(|event| *event == (0, message)).unwrap();
+    let reset = events.iter().rposition(|event| *event == (0, [0xB9, 121, 0])).unwrap();
+    for message in [[0xE9, 127, 127], [0xD9, 100, 0], [0xB9, 1, 90], [0xB9, 2, 100]] {
+        assert!(position(message) < reset, "controller must reach the receiver before the recorded reset: {events:?}");
+    }
+    assert!(position([0xB9, 64, 0]) < position([0xB0, 64, 127]));
+    assert!(position([0xC9, 24, 0]) < position([0xC0, 42, 0]));
     for message in [[0xE0, 104, 71], [0xB9, 7, 80], [0xB9, 10, 40], [0xB9, 0, 1], [0xC9, 24, 0], [0xB9, 11, 70]] {
         assert!(events.contains(&(0, message)), "persistent, other-channel or post-reset state missing: {message:?}");
     }
@@ -622,7 +629,9 @@ fn seek_chase_respects_same_tick_reset_order() {
         heard.lock().unwrap().clear();
         render_block(&mut eng, &s, 90);
         let events = heard.lock().unwrap();
-        assert_eq!(events.contains(&(0, [0xE9, 104, 71])), bend_after_reset, "same-tick event order lost: {events:?}");
+        let bend = events.iter().position(|event| *event == (0, [0xE9, 104, 71])).unwrap();
+        let reset = events.iter().rposition(|event| *event == (0, [0xB9, 121, 0])).unwrap();
+        assert_eq!(bend > reset, bend_after_reset, "same-tick event order lost: {events:?}");
     }
 }
 
