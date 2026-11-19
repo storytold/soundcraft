@@ -1137,6 +1137,28 @@ fn input_monitoring_replaces_clips() {
 }
 
 #[test]
+fn direct_monitor_does_not_remove_the_tracks_latency_from_compensation() {
+    let (mut session, track_id) = session_with_dc(0.5, 4_800);
+    let track = session.track_mut(track_id).unwrap();
+    track.mixer.record_arm = true;
+    let mut comp = Insert::new("compressor");
+    comp.params.insert("lookahead".into(), 5.0);
+    track.mixer.inserts[0] = Some(comp);
+    session.edit.set_flag("options.delay_compensation", true);
+    let mut mix = MixEngine::new(48_000.0, 512);
+    mix.input = vec![vec![0.25; 512]];
+    mix.recording = true;
+    render_block(&mut mix, &session, 0);
+    let latency = mix.track_latency;
+    assert!(latency > 0);
+
+    session.edit.set_flag("options.low_latency_monitoring", true);
+    mix.direct_monitor_available = true;
+    render_block(&mut mix, &session, 512);
+    assert_eq!(mix.track_latency, latency);
+}
+
+#[test]
 fn low_latency_monitoring_blocks_the_live_software_copy_and_sends() {
     let (mut s, backing) = session_with_dc(0.5, 4800);
     let live = s.add_track(TrackKind::Audio, ChannelFormat::Mono, None);
@@ -1161,6 +1183,9 @@ fn low_latency_monitoring_blocks_the_live_software_copy_and_sends() {
     assert!(with_send > 0.1);
 
     s.edit.set_flag("options.low_latency_monitoring", true);
+    eng.render(&s, 512, 512, &mut out);
+    assert!((out[0][100] - with_monitor).abs() < 1e-6, "an input without a direct-monitor path still uses software monitoring");
+    eng.direct_monitor_available = true;
     s.track_mut(live).unwrap().mixer.inserts[0] = Some(Insert::new("clap:test.nan"));
     eng.set_external_instances(true);
     eng.adopt(nan(live, 0, 1));

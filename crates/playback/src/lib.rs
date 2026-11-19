@@ -118,7 +118,7 @@ enum Cmd {
     Session(Arc<Session>, Vec<PreparedInstance>),
     /// Where the callback sends the snapshots it replaces (freeing one takes thousands of frees).
     OldSessions(SyncSender<Arc<Session>>),
-    Input(Arc<record::InputRing>),
+    Input(Arc<record::InputRing>, bool),
     Recording(bool),
     Play {
         from: Samples,
@@ -541,7 +541,12 @@ impl Player {
 
     /// Feed live input (from a `record::Recorder`) into the mix for input monitoring.
     pub fn set_input(&self, ring: Arc<record::InputRing>) {
-        let _ = self.tx.send(Cmd::Input(ring));
+        let _ = self.tx.send(Cmd::Input(ring, false));
+    }
+
+    /// Use direct monitoring only when the recorder shares the running ASIO output.
+    pub fn set_recorder_input(&self, recorder: &record::Recorder) {
+        let _ = self.tx.send(Cmd::Input(Arc::clone(&recorder.monitor), recorder.shares_asio_output()));
     }
 
     pub fn set_recording(&self, on: bool) {

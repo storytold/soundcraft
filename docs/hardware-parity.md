@@ -21,8 +21,8 @@ Legend: ✅ works · 🟡 partial · ❌ missing.
 | Buffer size (32–2048) | ✅ | 🟡 device buffer when the driver allows it (not yet verified); mix in 512-sample blocks | 🟡 device buffer 16–8192 (verified 128 on ASIO, 256 on WASAPI); mix in 512-sample blocks | 🟡 (not yet verified) | 🟡 | ❌ |
 | Duplex stream on one clock | ✅ | ❌ separate input/output streams | ❌ | ❌ | ❌ | ❌ |
 | Hardware I/O mapping (I/O Setup to physical channels) | ✅ | 🟡 output path mapping available within the opened stream; unverified | 🟡 named output paths on ASIO (USB 1–10 verified on Model 12) | 🟡 output path mapping unverified | 🟡 output path mapping unverified | ❌ |
-| Low-latency monitoring | ✅ | ❌ (`options.low_latency_monitoring` is a stored flag) | ❌ | ❌ | ❌ | ❌ |
-| Latency reporting and record offset compensation | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ |
+| Low-latency monitoring | ✅ | ❌ | 🟡 software monitoring can hand off to same-device ASIO hardware monitoring when enabled on the interface | ❌ | ❌ | ❌ |
+| Latency reporting and record offset compensation | ✅ | ❌ | 🟡 same-device, matching-rate ASIO timestamps and driver latency; plugin delay is excluded | ❌ | ❌ | ❌ |
 | Sample rate follows the session; resample when it can't | ✅ (switches device) | 🟡 resamples (input pitch bug fixed, #28) | 🟡 | 🟡 | 🟡 | 🟡 |
 | Avid HDX / HD Native DSP, Hybrid Engine DSP mode | ✅ | ❌ (out of reach: Avid hardware) | ❌ | ❌ | ❌ | ❌ |
 | Disk allocation / record to disk | ✅ | ❌ recording into RAM (PR #84) | ❌ | ❌ | ❌ | ❌ |

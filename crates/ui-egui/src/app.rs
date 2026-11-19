@@ -42,6 +42,7 @@ impl SoundApp {
             lost_shown: 0,
             take_plan: None,
             record_alignment_pending: false,
+            punch_tail_deadline: None,
             ui: UiState::default(),
             audio_health_report: None,
             services,

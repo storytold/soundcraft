@@ -162,6 +162,20 @@ fn spike_session(spike_at: usize) -> (Arc<Shared>, AudioState, std::sync::mpsc::
 }
 
 #[test]
+fn recording_clock_arms_once_only_when_play_starts_with_recording_on() {
+    let (_, mut audio, tx, _) = spike_session(0);
+    let mut out = [0.0; 64];
+    audio.fill(&mut out, 2);
+    assert!(!audio.started_now);
+    tx.send(Cmd::Recording(true)).unwrap();
+    tx.send(Cmd::Play { from: 0, end: None, looped: None }).unwrap();
+    audio.fill(&mut out, 2);
+    assert!(audio.started_now);
+    audio.fill(&mut out, 2);
+    assert!(!audio.started_now);
+}
+
+#[test]
 fn named_output_uses_its_physical_channel_and_remaps_on_session_edit() {
     use soundcraft_model::{ChannelFormat, OutputPath, Route};
     let (_, mut audio, tx, track) = spike_session(0);
@@ -787,7 +801,7 @@ fn armed_tracks_are_heard_and_metered_after_playback_stops() {
     let (tx, rx) = channel();
     let mut st = AudioState::new(rx, Arc::clone(&shared), Arc::new(s), 48_000.0, channel().0);
     let ring = record::InputRing::new(1, 48_000);
-    tx.send(Cmd::Input(Arc::clone(&ring))).unwrap();
+    tx.send(Cmd::Input(Arc::clone(&ring), false)).unwrap();
     tx.send(Cmd::Play { from: 0, end: Some(1000), looped: None }).unwrap();
     let mut out = vec![0.0f32; 4096];
     st.fill(&mut out, 2);

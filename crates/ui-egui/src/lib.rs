@@ -293,6 +293,7 @@ pub struct SoundApp {
     /// Where the takes being recorded go, autosaved with the session so a crash can't lose them.
     take_plan: Option<soundcraft_engine::io::Recording>,
     record_alignment_pending: bool,
+    punch_tail_deadline: Option<f64>,
     pub ui: UiState,
     pub audio_health_report: Option<Result<Value, String>>,
     pub services: Services,

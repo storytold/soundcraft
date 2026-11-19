@@ -410,6 +410,10 @@ impl Recorder {
     pub fn captured_frames(&self) -> u64 {
         self.shared.frames_captured.load(Ordering::Acquire)
     }
+
+    pub fn shares_asio_output(&self) -> bool {
+        self.shared.clock.is_some()
+    }
 }
 
 impl Drop for Recorder {

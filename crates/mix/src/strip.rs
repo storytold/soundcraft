@@ -210,6 +210,7 @@ pub(crate) struct LiveInput<'a> {
     pub(crate) input: &'a [Vec<f32>],
     pub(crate) monitor_only: bool,
     pub(crate) recording: bool,
+    pub(crate) direct_monitor_available: bool,
 }
 
 /// The block being rendered: where it starts, its length, and whether any track is soloed.
@@ -408,6 +409,7 @@ pub(crate) fn process_strip(s: &Session, t: &Track, strip: &mut Strip, busses: &
     // The device mixes its physical input with DAW playback. Suppress only the software copy
     // of a live input, retaining clip playback when an armed track is in Auto Input playback.
     let direct_monitor = monitors_input
+        && live.direct_monitor_available
         && s.edit.flag("options.low_latency_monitoring")
         && matches!(&t.mixer.input, Route::Input(_) | Route::Hardware(_) | Route::None);
     if direct_monitor && !strip.direct_monitor {
@@ -419,7 +421,7 @@ pub(crate) fn process_strip(s: &Session, t: &Track, strip: &mut Strip, busses: &
     if direct_monitor {
         monitor_input(s, t, strip, live, frames);
         strip.gr = 0.0;
-        strip.latency = 0;
+        note_insert_latency(t, strip, pos);
         return;
     }
     let transport = transport_at(s, pos, !live.monitor_only, live.recording);
