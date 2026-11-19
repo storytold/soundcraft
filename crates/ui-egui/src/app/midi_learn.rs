@@ -3,7 +3,7 @@ use crate::localization::text;
 use soundcraft_engine::midi_learn::{self, Binding, ControlMode, Parameter, Source, Target};
 use std::sync::Arc;
 
-const GESTURE_KEY: &str = "midi_cc_gesture";
+pub(super) const GESTURE_KEY: &str = "midi_cc_gesture";
 const RELEASE_SECONDS: f64 = 0.3;
 
 impl SoundApp {
@@ -54,7 +54,8 @@ impl SoundApp {
         self.midi_learn_target = Some(target);
         self.midi_route_revision = None;
         self.sync_midi_routes();
-        self.ui.status = text("MIDI Learn: move a control").to_owned();
+        self.ui.status =
+            text("MIDI Learn: move a control that sends a CC. Bank, parameter, switch pedal and channel-mode messages pass through.").to_owned();
         Ok(())
     }
 
@@ -97,11 +98,17 @@ impl SoundApp {
                 self.reset_midi_learn();
                 ui.close();
             }
-        } else if ui.button(text("MIDI Learn")).clicked() {
-            if let Err(err) = self.start_midi_learn(target) {
-                self.ui.status = err;
+        } else {
+            let mut button = ui.button(text("MIDI Learn"));
+            if matches!(target.parameter, Parameter::Mute | Parameter::Solo) {
+                button = button.on_hover_text(text("Toggle requires a press and release. For a latching button, choose hold mode."));
             }
-            ui.close();
+            if button.clicked() {
+                if let Err(err) = self.start_midi_learn(target) {
+                    self.ui.status = err;
+                }
+                ui.close();
+            }
         }
         if self.midi_learn_target != Some(target) {
             let (label, mode) = if matches!(target.parameter, Parameter::Mute | Parameter::Solo) {
@@ -170,7 +177,24 @@ impl SoundApp {
         for (binding, change) in updates {
             let target = binding.target;
             let Some((id, params)) = mixer_move(self.engine.session(), &binding, change) else { continue };
-            if let Err(err) = self.engine.execute_merged(id, &params, GESTURE_KEY) {
+            // A switch is a discrete edit. Each press keeps its own undo step.
+            if matches!(target.parameter, Parameter::Mute | Parameter::Solo) {
+                if let Err(err) = self.engine.execute(id, &params) {
+                    self.ui.status = crate::localization::error_text(&err.to_string());
+                }
+                continue;
+            }
+            // While the pointer drags a mixer control, join that gesture's undo step.
+            let key = self
+                .engine
+                .merge_key()
+                .filter(|key| {
+                    self.pointer_down
+                        && key.split_once(':').is_some_and(|(kind, _)| matches!(kind, "fader" | "pan" | "span" | "trim" | "send" | "send-pan"))
+                })
+                .unwrap_or(GESTURE_KEY)
+                .to_owned();
+            if let Err(err) = self.engine.execute_merged(id, &params, &key) {
                 self.ui.status = crate::localization::error_text(&err.to_string());
             } else {
                 self.midi_moves.retain(|(other, _)| *other != target);
@@ -215,18 +239,21 @@ fn mixer_move(
     } else {
         change.event.data2
     };
-    let db = || {
-        if value == (soundcraft_model::fader_db_to_pos(0.0) * 127.0).round() as u8 {
-            0.0
-        } else {
-            soundcraft_model::fader_pos_to_db(f32::from(value) / 127.0)
-        }
+    let db = if value == (soundcraft_model::fader_db_to_pos(0.0) * 127.0).round() as u8 {
+        0.0
+    } else {
+        soundcraft_model::fader_pos_to_db(f32::from(value) / 127.0)
     };
+    let pan = pan(value);
     Some(match parameter {
-        Parameter::Volume => ("mix.volume", json!({"track":track,"db":db()})),
-        Parameter::Pan(i) => ("mix.pan", json!({"track":track,"index":i,"pan":pan(value)})),
-        Parameter::SendLevel { slot, .. } => ("mix.send_level", json!({"track":track,"slot":slot,"db":db()})),
-        Parameter::SendPan { slot, .. } => ("mix.send_level", json!({"track":track,"slot":slot,"pan":pan(value)})),
+        Parameter::Volume if mix.volume_db != db => ("mix.volume", json!({"track":track,"db":db})),
+        Parameter::Pan(i) if *mix.pan.get(i)? != pan => ("mix.pan", json!({"track":track,"index":i,"pan":pan})),
+        Parameter::SendLevel { slot, .. } if mix.sends.get(slot)?.as_ref()?.level_db != db => {
+            ("mix.send_level", json!({"track":track,"slot":slot,"db":db}))
+        }
+        Parameter::SendPan { slot, .. } if mix.sends.get(slot)?.as_ref()?.pan != pan => {
+            ("mix.send_level", json!({"track":track,"slot":slot,"pan":pan}))
+        }
         _ => return None,
     })
 }
@@ -316,11 +343,18 @@ mod tests {
     }
 
     #[test]
-    fn midi_learn_writes_volume_and_pan_until_touch_release_or_latch_stop() {
+    fn midi_learn_writes_volume_pan_and_send_until_touch_release_or_latch_stop() {
         use soundcraft_model::AutoParam;
         for mode in ["touch", "latch", "touch_latch"] {
             let (mut app, feed, id, port) = controller();
             app.run("midi.learn.bind", json!({"target":{"track":id,"parameter":{"pan":0}},"source":{"device":"Keys","channel":1,"cc":75}})).unwrap();
+            app.run("mix.new_bus", json!({"name":"FX"})).unwrap();
+            let send = app.run("mix.send", json!({"track":id,"slot":0,"bus":"FX"})).unwrap();
+            app.run(
+                "midi.learn.bind",
+                json!({"target":{"track":id,"parameter":{"send_level":{"slot":0,"bus":send["bus"]}}},"source":{"device":"Keys","channel":1,"cc":76}}),
+            )
+            .unwrap();
             app.run("mix.automation_mode", json!({"tracks":[id],"mode":mode})).unwrap();
             app.run("transport.play", json!({})).unwrap();
             let ctx = egui::Context::default();
@@ -332,19 +366,22 @@ mod tests {
             let before = app.engine.undo_history().len();
             feed.receive(port, &[0xb0, 71, 80]);
             feed.receive(port, &[0xb0, 75, 127]);
+            feed.receive(port, &[0xb0, 76, 60]);
             frame(&mut app, 50);
             frame(&mut app, 50);
             let points = |app: &SoundApp, param: AutoParam| app.engine.session().track(id).unwrap().lane(&param).unwrap().points.len();
             let volumes = points(&app, AutoParam::Volume);
             let pans = points(&app, AutoParam::Pan(0));
-            assert!(volumes > 0 && pans > 0);
+            let sends = points(&app, AutoParam::SendLevel(0));
+            assert!(volumes > 0 && pans > 0 && sends > 0);
             frame(&mut app, 400);
             assert_eq!(points(&app, AutoParam::Volume) > volumes, mode != "touch");
             assert_eq!(points(&app, AutoParam::Pan(0)) > pans, mode != "touch");
+            assert_eq!(points(&app, AutoParam::SendLevel(0)) > sends, mode != "touch");
             assert_eq!(app.engine.undo_history().len(), before + 1);
             app.run("transport.stop", json!({})).unwrap();
             frame(&mut app, 20);
-            assert!(app.midi_pan_latches.is_empty());
+            assert!(app.touched_pans.is_empty());
             assert!(app.engine.undo());
             assert!(app.engine.session().track(id).unwrap().lane(&AutoParam::Pan(0)).is_none_or(|l| l.points.is_empty()));
         }
@@ -492,5 +529,110 @@ mod tests {
         app.service_midi_learn();
         assert_eq!(app.engine.session().track(target).unwrap().mixer.pan, [0.0]);
         std::fs::remove_dir_all(dir).unwrap();
+    }
+    #[test]
+    fn midi_learn_knob_and_overlapping_mouse_drag_preserve_undo() {
+        let (mut app, feed, id, port) = controller();
+        let other = app
+            .engine
+            .session()
+            .tracks
+            .iter()
+            .find(|t| t.id != id && !t.mixer.pan.is_empty() && t.kind != soundcraft_model::TrackKind::Master)
+            .unwrap()
+            .id;
+        let initial_volume = app.engine.session().track(id).unwrap().mixer.volume_db;
+        let initial_pan = app.engine.session().track(other).unwrap().mixer.pan[0];
+        let before = app.engine.undo_history().len();
+        let ctx = egui::Context::default();
+        for v in 10..40u8 {
+            feed.receive(port, &[0xb0, 71, v]);
+            app.advance_test_clock(std::time::Duration::from_millis(16));
+            app.pointer_down = true;
+            let _ = ctx.run_logic(&egui::RawInput::default(), |ctx| app.logic(ctx));
+            app.pointer_down = true;
+            app.engine
+                .execute_merged("mix.pan", &json!({"track": other.0, "pan": f32::from(v) / 100.0, "index": 0}), &format!("pan:{}:0", other.0))
+                .unwrap();
+        }
+        let steps = app.engine.undo_history().len() - before;
+        assert!((1..=2).contains(&steps), "{steps} undo steps");
+        assert_ne!(app.engine.session().track(id).unwrap().mixer.volume_db, initial_volume);
+        assert_ne!(app.engine.session().track(other).unwrap().mixer.pan[0], initial_pan);
+        for _ in 0..steps {
+            assert!(app.engine.undo());
+        }
+        assert_eq!(app.engine.session().track(id).unwrap().mixer.volume_db, initial_volume);
+        assert_eq!(app.engine.session().track(other).unwrap().mixer.pan[0], initial_pan);
+    }
+
+    #[test]
+    fn midi_learn_repeated_values_do_not_hold_a_touch_or_merge_a_switch() {
+        let (mut app, feed, id, port) = controller();
+        app.run("mix.new_bus", json!({"name":"FX"})).unwrap();
+        let bus = app.run("mix.send", json!({"track":id,"slot":0,"bus":"FX"})).unwrap()["bus"].clone();
+        for (cc, parameter) in [
+            (75, json!({"pan":0})),
+            (76, json!({"send_level":{"slot":0,"bus":bus}})),
+            (77, json!({"send_pan":{"slot":0,"bus":bus}})),
+            (22, json!("mute")),
+        ] {
+            app.run("midi.learn.bind", json!({"target":{"track":id,"parameter":parameter}, "source":{"device":"Keys","channel":1,"cc":cc}})).unwrap();
+        }
+        let ctx = egui::Context::default();
+        let frame = |app: &mut SoundApp, ms| {
+            app.advance_test_clock(std::time::Duration::from_millis(ms));
+            let _ = ctx.run_logic(&egui::RawInput::default(), |ctx| app.logic(ctx));
+        };
+        for cc in [71, 75, 76, 77] {
+            feed.receive(port, &[0xb0, cc, 32]);
+        }
+        frame(&mut app, 20);
+        assert_eq!(app.midi_moves.len(), 4);
+        let before_switch = app.engine.undo_history().len();
+        feed.receive(port, &[0xb0, 22, 127]);
+        frame(&mut app, 20);
+        assert_eq!(app.engine.undo_history().len(), before_switch + 1);
+        for _ in 0..6 {
+            for cc in [71, 75, 76, 77] {
+                feed.receive(port, &[0xb0, cc, 32]);
+            }
+            frame(&mut app, 100);
+        }
+        assert!(app.midi_moves.is_empty());
+        assert_eq!(app.engine.undo_history().len(), before_switch + 1);
+        assert!(app.engine.undo());
+        let mix = &app.engine.session().track(id).unwrap().mixer;
+        assert!(!mix.mute);
+        assert_eq!(mix.pan[0], pan(32));
+    }
+
+    #[test]
+    fn mouse_pan_touches_one_side_and_write_starts_before_any_input() {
+        use soundcraft_model::AutoParam;
+        for mode in ["touch", "latch", "touch_latch", "write"] {
+            let (mut app, _, _, _) = controller();
+            let id = app.engine.session().tracks.iter().find(|t| t.mixer.pan.len() == 2).unwrap().id;
+            app.run("mix.automation_mode", json!({"tracks":[id],"mode":mode})).unwrap();
+            app.run("transport.play", json!({})).unwrap();
+            let ctx = egui::Context::default();
+            let frame = |app: &mut SoundApp| {
+                app.advance_test_clock(std::time::Duration::from_millis(50));
+                let _ = ctx.run_logic(&egui::RawInput::default(), |ctx| app.logic(ctx));
+            };
+            let points = |app: &SoundApp, side| app.engine.session().track(id).unwrap().lane(&AutoParam::Pan(side)).map_or(0, |l| l.points.len());
+            frame(&mut app);
+            assert_eq!(points(&app, 0) > 0, mode == "write");
+            assert_eq!(points(&app, 1) > 0, mode == "write");
+            app.pointer_down = true;
+            app.gesture = Some(crate::Gesture::Pan { track: id, index: 1 });
+            frame(&mut app);
+            let touched = points(&app, 1);
+            assert!(touched > 0);
+            app.pointer_down = false;
+            frame(&mut app);
+            assert_eq!(points(&app, 0) > 0, mode == "write");
+            assert_eq!(points(&app, 1) > touched, mode != "touch");
+        }
     }
 }

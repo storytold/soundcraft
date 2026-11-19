@@ -538,6 +538,9 @@ fn pan_section(app: &mut SoundApp, ui: &mut Ui, cx: &StripCtx<'_>, mut y: f32) -
             let mut v = track.mixer.pan.get(i).copied().unwrap_or(0.0);
             let before = v;
             let resp = pan_knob(&mut c, ks, &mut v, "Pan (drag; double-click centres)");
+            if resp.dragged() {
+                app.gesture = Some(crate::Gesture::Pan { track: id, index: i });
+            }
             if (v - before).abs() > f32::EPSILON {
                 let _ = app.engine.execute_merged("mix.pan", &json!({"track": id.0, "pan": v, "index": i}), &format!("pan:{}:{i}", id.0));
             }

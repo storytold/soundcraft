@@ -68,7 +68,10 @@ fn output_window_contents(app: &mut SoundApp, ctx: &egui::Context) {
                             ui.vertical(|ui| {
                                 let mut v = track.mixer.pan.get(i).copied().unwrap_or(0.0);
                                 let before = v;
-                                pan_knob(ui, 32.0, &mut v, &format!("{name} output pan {} (drag; double-click centres)", i + 1));
+                                let resp = pan_knob(ui, 32.0, &mut v, &format!("{name} output pan {} (drag; double-click centres)", i + 1));
+                                if resp.dragged() {
+                                    app.gesture = Some(crate::Gesture::Pan { track: id, index: i });
+                                }
                                 if (v - before).abs() > f32::EPSILON {
                                     let _ = app.engine.execute_merged(
                                         "mix.pan",

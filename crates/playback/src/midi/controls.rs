@@ -16,6 +16,7 @@ pub struct ControlChange {
 impl ControlChange {
     /// Preserve the effect of hitting either endpoint and then reversing between UI frames.
     pub fn relative_value(&self, position: u8) -> u8 {
+        // capture() shifts both endpoints by the same delta and clamps monotonically.
         (i32::from(position) + self.steps).clamp(self.range.0, self.range.1) as u8
     }
 }
@@ -177,5 +178,19 @@ mod tests {
         assert_eq!(std::iter::from_fn(|| feed.next()).map(|(_, e)| e.data1).collect::<Vec<_>>(), [99, 22]);
         feed.receive(port, &[0xb0, 71, 20]);
         assert_eq!(wakes.load(Ordering::Relaxed), 2);
+    }
+    #[test]
+    fn switch_pedal_release_reaches_performance_during_learn() {
+        let feed = MidiFeed::default();
+        let port = feed.ports().assign("Keys");
+        for cc in 64..=69 {
+            feed.set_control_sources([], false);
+            feed.receive(port, &[0xb0, cc, 127]);
+            feed.set_control_sources([], true);
+            feed.receive(port, &[0xb0, cc, 0]);
+            let performance: Vec<_> = std::iter::from_fn(|| feed.next()).map(|(_, e)| (e.data1, e.data2)).collect();
+            assert_eq!(performance, [(cc, 127), (cc, 0)]);
+            assert!(feed.control_changes().next().is_none());
+        }
     }
 }
