@@ -22,7 +22,14 @@
 //! through handles taken from each instance before it leaves ([`Player::open_editor`]).
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
 
+/// Whether playback goes round `range` as a loop: a range of 64 frames or less is too short,
+/// and is played once.
+pub fn loops(range: Range) -> bool {
+    range.len() > 64
+}
+
 pub mod devices;
+pub mod midi;
 pub mod record;
 
 pub use devices::AudioConfig;
@@ -118,7 +125,10 @@ enum Cmd {
     /// Where the callback sends the snapshots it replaces (freeing one takes thousands of frees).
     OldSessions(SyncSender<Arc<Session>>),
     Input(Arc<record::InputRing>),
-    Recording(bool),
+    Midi(Arc<midi::MidiFeed>),
+    /// Recording on or off. Switching it off carries the number of the pass that ends
+    /// (`MidiFeed::end_pass`; 0: nobody waits for it), which the callback acknowledges.
+    Recording(bool, u64),
     Play {
         from: Samples,
         end: Option<Samples>,
@@ -476,8 +486,20 @@ impl Player {
         let _ = self.tx.send(Cmd::Input(ring));
     }
 
+    /// Play MIDI devices through record-enabled and input-monitored MIDI and instrument tracks.
+    pub fn set_midi(&self, feed: Arc<midi::MidiFeed>) {
+        let _ = self.tx.send(Cmd::Midi(feed));
+    }
+
     pub fn set_recording(&self, on: bool) {
-        let _ = self.tx.send(Cmd::Recording(on));
+        let _ = self.tx.send(Cmd::Recording(on, 0));
+    }
+
+    /// Switch recording off at the end of record pass `pass` ([`midi::MidiFeed::end_pass`]). The
+    /// audio thread answers on the feed once the MIDI played up to here is written down
+    /// ([`midi::MidiFeed::captured`]).
+    pub fn end_recording(&self, pass: u64) {
+        let _ = self.tx.send(Cmd::Recording(false, pass));
     }
 
     pub fn stop(&self) {
