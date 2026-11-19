@@ -42,6 +42,7 @@ impl SoundApp {
             punch: None,
             recorder_failed: false,
             midi_inputs: None,
+            midi_learn_mode: Default::default(),
             midi_learn_target: None,
             midi_route_revision: None,
             midi_moves: Vec::new(),

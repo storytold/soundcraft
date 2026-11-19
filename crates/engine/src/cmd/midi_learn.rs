@@ -5,8 +5,16 @@ use serde_json::{Value, json};
 
 pub(crate) fn specs() -> Vec<CommandSpec> {
     vec![
-        cmd!("midi.learn.bind", "Assign MIDI Controller", [], None, "{source: {device, channel, cc}, target: {track, parameter}}", always, bind),
-        cmd!("midi.learn.remove", "Remove MIDI Assignment", [], None, "{track, parameter}", always, remove),
+        cmd!(
+            "midi.learn.bind",
+            "Assign MIDI Controller",
+            [],
+            None,
+            "{source: {device, channel, cc}, target: {track, parameter}, mode?}",
+            always,
+            bind
+        ),
+        cmd!("midi.learn.remove", "Forget MIDI Assignment", [], None, "{track, parameter}", always, remove),
     ]
 }
 
@@ -16,8 +24,11 @@ fn bind(e: &mut Engine, p: &Value) -> Result<Value> {
     if !binding.target.available(e.session()) {
         return Err(bad(id, "the mixer control is unavailable"));
     }
+    if !binding.mode.supports(binding.target.parameter) {
+        return Err(bad(id, "unsupported MIDI controller mode for this target"));
+    }
     if !binding.source.valid() {
-        return Err(bad(id, "expected a device name of up to 256 bytes without control characters, channel 1–16, and an absolute mixer CC"));
+        return Err(bad(id, "expected a device name of up to 256 bytes without control characters, channel 1–16, and an eligible mixer CC"));
     }
     if bindings(e.session()).any(|old| old.source == binding.source && old.target != binding.target) {
         return Err(bad(id, "this MIDI control is already assigned"));
@@ -47,6 +58,23 @@ fn remove_where(e: &mut Engine, matches: impl Fn(&Binding) -> bool) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn midi_learn_send_assignment_follows_the_bus_when_undo_restores_it() {
+        let mut e = crate::demo::demo_engine();
+        let track = e.session().track_by_name("Kick").unwrap().id;
+        for name in ["First bus", "Second bus"] {
+            e.execute("mix.new_bus", &json!({"name":name})).unwrap();
+        }
+        let send = e.execute("mix.send", &json!({"track":track,"slot":0,"bus":"First bus"})).unwrap();
+        let binding = json!({"target":{"track":track,"parameter":{"send_pan":{"slot":0,"bus":send["bus"]}}},
+            "source":{"device":"Controller","channel":1,"cc":74},"mode":"relative_64"});
+        e.execute("midi.learn.bind", &binding).unwrap();
+        e.execute("mix.send", &json!({"track":track,"slot":0,"bus":"Second bus"})).unwrap();
+        assert_eq!(bindings(e.session()).count(), 0);
+        assert!(e.undo());
+        assert_eq!(bindings(e.session()).count(), 1);
+    }
 
     #[test]
     fn midi_learn_validates_command_input_and_keeps_noops_out_of_undo() {

@@ -836,6 +836,7 @@ fn menu_translate(source: &str) -> Option<&'static str> {
         "Input trim (dB)" => "Trim de entrada (dB)",
         "Score composer" => "Compositor da partitura",
         "Score title" => "Título da partitura",
+        "Send pan" => "Pan do envio",
         "Send level" => "Nível do envio",
         "Surround pan: drag the puck · double-click: front centre · Alt-drag: divergence" => {
             "Panorama surround: arraste o controle · clique duplo: centro frontal · Alt+arraste: divergência"
@@ -1027,9 +1028,12 @@ fn menu_translate(source: &str) -> Option<&'static str> {
         "MIDI Learn" => "Aprender MIDI",
         "Cancel MIDI Learn" => "Cancelar aprendizado MIDI",
         "Assign MIDI Controller" => "Atribuir controlador MIDI",
-        "Remove MIDI Assignment" => "Remover atribuição MIDI",
+        "Forget MIDI Assignment" => "Remover atribuição MIDI",
         "The mixer control is unavailable" => "O controle do mixer está indisponível",
-        "MIDI Learn: turn an absolute CC control" => "Aprender MIDI: gire um controle CC absoluto",
+        "MIDI Learn: move a control" => "Aprender MIDI: mova um controle",
+        "Unsupported control mode" => "Modo de controle incompatível",
+        "MIDI Learn (hold button)" => "Aprender MIDI (manter o botão pressionado)",
+        "MIDI Learn (relative, center 64)" => "Aprender MIDI (relativo, centro em 64)",
         "MIDI Learn: this control is already assigned. Turn another control." => {
             "Aprender MIDI: este controle já está atribuído. Gire outro controle."
         }

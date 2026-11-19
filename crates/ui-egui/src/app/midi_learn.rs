@@ -1,6 +1,6 @@
 use super::{SoundApp, Value, json};
 use crate::localization::text;
-use soundcraft_engine::midi_learn::{self, Binding, Parameter, Source, Target};
+use soundcraft_engine::midi_learn::{self, Binding, ControlMode, Parameter, Source, Target};
 use std::sync::Arc;
 
 const GESTURE_KEY: &str = "midi_cc_gesture";
@@ -49,10 +49,12 @@ impl SoundApp {
             return Err(text("The mixer control is unavailable").to_owned());
         }
         self.reset_midi_learn();
+        self.midi_learn_mode =
+            if matches!(target.parameter, Parameter::Mute | Parameter::Solo) { ControlMode::Toggle } else { ControlMode::Absolute };
         self.midi_learn_target = Some(target);
         self.midi_route_revision = None;
         self.sync_midi_routes();
-        self.ui.status = text("MIDI Learn: turn an absolute CC control").to_owned();
+        self.ui.status = text("MIDI Learn: move a control").to_owned();
         Ok(())
     }
 
@@ -60,7 +62,16 @@ impl SoundApp {
         if params["cancel"] == true {
             self.reset_midi_learn();
         } else if let Some(target) = params.get("target") {
-            self.start_midi_learn(serde_json::from_value(target.clone()).map_err(|err| err.to_string())?)?;
+            let target: Target = serde_json::from_value(target.clone()).map_err(|err| err.to_string())?;
+            let mode: Option<ControlMode> =
+                params.get("mode").map(|v| serde_json::from_value(v.clone())).transpose().map_err(|err| err.to_string())?;
+            if mode.is_some_and(|m| !m.supports(target.parameter)) {
+                return Err(text("Unsupported control mode").into());
+            }
+            self.start_midi_learn(target)?;
+            if let Some(m) = mode {
+                self.midi_learn_mode = m;
+            }
         }
         Ok(json!({
             "pending": self.midi_learn_target,
@@ -72,31 +83,48 @@ impl SoundApp {
         if cfg!(target_arch = "wasm32") {
             return;
         }
-        response.context_menu(|ui| {
-            let binding = midi_learn::bindings(self.engine.session()).find(|binding| binding.target == target);
-            if let Some(binding) = &binding {
-                let source = &binding.source;
-                ui.label(crate::localized_format!("{} · Ch {} · CC {}", source.device, source.channel, source.cc));
+        response.context_menu(|ui| self.midi_learn_options(ui, target));
+    }
+
+    pub(crate) fn midi_learn_options(&mut self, ui: &mut egui::Ui, target: Target) {
+        let binding = midi_learn::bindings(self.engine.session()).find(|binding| binding.target == target);
+        if let Some(binding) = &binding {
+            let source = &binding.source;
+            ui.label(crate::localized_format!("{} · Ch {} · CC {}", source.device, source.channel, source.cc));
+        }
+        if self.midi_learn_target == Some(target) {
+            if ui.button(text("Cancel MIDI Learn")).clicked() {
+                self.reset_midi_learn();
+                ui.close();
             }
-            if self.midi_learn_target == Some(target) {
-                if ui.button(text("Cancel MIDI Learn")).clicked() {
-                    self.reset_midi_learn();
-                    ui.close();
-                }
-            } else if ui.button(text("MIDI Learn")).clicked() {
+        } else if ui.button(text("MIDI Learn")).clicked() {
+            if let Err(err) = self.start_midi_learn(target) {
+                self.ui.status = err;
+            }
+            ui.close();
+        }
+        if self.midi_learn_target != Some(target) {
+            let (label, mode) = if matches!(target.parameter, Parameter::Mute | Parameter::Solo) {
+                ("MIDI Learn (hold button)", ControlMode::Absolute)
+            } else {
+                ("MIDI Learn (relative, center 64)", ControlMode::Relative64)
+            };
+            if ui.button(text(label)).clicked() {
                 if let Err(err) = self.start_midi_learn(target) {
                     self.ui.status = err;
+                } else {
+                    self.midi_learn_mode = mode;
                 }
                 ui.close();
             }
-            if binding.is_some() && ui.button(text("Remove MIDI Assignment")).clicked() {
-                if self.midi_learn_target == Some(target) {
-                    self.reset_midi_learn();
-                }
-                let _ = self.run("midi.learn.remove", json!(target));
-                ui.close();
+        }
+        if binding.is_some() && ui.button(text("Forget MIDI Assignment")).clicked() {
+            if self.midi_learn_target == Some(target) {
+                self.reset_midi_learn();
             }
-        });
+            let _ = self.run("midi.learn.remove", json!(target));
+            ui.close();
+        }
     }
 
     pub(super) fn service_midi_learn(&mut self) -> bool {
@@ -110,7 +138,8 @@ impl SoundApp {
         // Encoders may send many values between frames. Keep the last value for each target,
         // with updates in the order of those last values (groups may share mixer controls).
         let mut updates = Vec::new();
-        for event in changes {
+        for change in changes {
+            let event = change.event;
             let Some(device) = feed.ports().name(event.port) else { continue };
             let channel = (event.status & 0x0F) + 1;
             let cc = event.data1;
@@ -122,7 +151,7 @@ impl SoundApp {
                 }
                 self.midi_learn_target = None;
                 self.midi_route_revision = None;
-                let binding = Binding { source: Source { device: device.to_owned(), channel, cc }, target };
+                let binding = Binding { mode: self.midi_learn_mode, source: Source { device: device.to_owned(), channel, cc }, target };
                 if self.run("midi.learn.bind", json!(binding)).is_ok() {
                     bindings.retain(|old| old.target != target && old.source != binding.source);
                     bindings.push(binding);
@@ -132,23 +161,15 @@ impl SoundApp {
                 continue;
             }
             if let Some(binding) = existing {
-                updates.retain(|(target, _)| *target != binding.target);
-                updates.push((binding.target, event.data2));
+                updates.push((binding.clone(), change));
             }
         }
         if !updates.is_empty() {
             self.prepare_automation_merge();
         }
-        for (target, value) in updates {
-            let track = target.track.0;
-            let (id, params) = match target.parameter {
-                Parameter::Volume => {
-                    let unity = (soundcraft_model::fader_db_to_pos(0.0) * 127.0).round() as u8;
-                    let db = if value == unity { 0.0 } else { soundcraft_model::fader_pos_to_db(f32::from(value) / 127.0) };
-                    ("mix.volume", json!({"track": track, "db": db}))
-                }
-                Parameter::Pan(index) => ("mix.pan", json!({"track": track, "index": index, "pan": pan(value)})),
-            };
+        for (binding, change) in updates {
+            let target = binding.target;
+            let Some((id, params)) = mixer_move(self.engine.session(), &binding, change) else { continue };
             if let Err(err) = self.engine.execute_merged(id, &params, GESTURE_KEY) {
                 self.ui.status = crate::localization::error_text(&err.to_string());
             } else {
@@ -158,6 +179,59 @@ impl SoundApp {
         }
         true
     }
+}
+
+fn mixer_move(
+    session: &soundcraft_model::Session,
+    binding: &Binding,
+    change: soundcraft_playback::midi::ControlChange,
+) -> Option<(&'static str, Value)> {
+    let target = binding.target;
+    if !target.available(session) {
+        return None;
+    }
+    let track = target.track.0;
+    let mix = &session.track(target.track)?.mixer;
+    let parameter = target.parameter;
+    if matches!(parameter, Parameter::Mute | Parameter::Solo) {
+        let (cmd, old) = if parameter == Parameter::Mute { ("mix.mute", mix.mute) } else { ("mix.solo", mix.solo) };
+        let value = if binding.mode == ControlMode::Toggle { old ^ (change.presses % 2 == 1) } else { change.event.data2 >= 64 };
+        return (old != value).then(|| (cmd, json!({"track":track,"value":value})));
+    }
+    let value = if binding.mode == ControlMode::Relative64 {
+        let pos = match parameter {
+            Parameter::Volume => soundcraft_model::fader_db_to_pos(mix.volume_db) * 127.0,
+            Parameter::Pan(i) => pan_cc(*mix.pan.get(i)?),
+            Parameter::SendLevel { slot, .. } => soundcraft_model::fader_db_to_pos(mix.sends.get(slot)?.as_ref()?.level_db) * 127.0,
+            Parameter::SendPan { slot, .. } => pan_cc(mix.sends.get(slot)?.as_ref()?.pan),
+            _ => return None,
+        };
+        let before = pos.round().clamp(0.0, 127.0) as u8;
+        let after = change.relative_value(before);
+        if before == after {
+            return None;
+        }
+        after
+    } else {
+        change.event.data2
+    };
+    let db = || {
+        if value == (soundcraft_model::fader_db_to_pos(0.0) * 127.0).round() as u8 {
+            0.0
+        } else {
+            soundcraft_model::fader_pos_to_db(f32::from(value) / 127.0)
+        }
+    };
+    Some(match parameter {
+        Parameter::Volume => ("mix.volume", json!({"track":track,"db":db()})),
+        Parameter::Pan(i) => ("mix.pan", json!({"track":track,"index":i,"pan":pan(value)})),
+        Parameter::SendLevel { slot, .. } => ("mix.send_level", json!({"track":track,"slot":slot,"db":db()})),
+        Parameter::SendPan { slot, .. } => ("mix.send_level", json!({"track":track,"slot":slot,"pan":pan(value)})),
+        _ => return None,
+    })
+}
+fn pan_cc(pan: f32) -> f32 {
+    64.0 + pan * if pan < 0.0 { 64.0 } else { 63.0 }
 }
 
 fn pan(value: u8) -> f32 {
@@ -181,6 +255,38 @@ mod tests {
         app.midi_inputs = Some(inputs);
         app.run("midi.learn.bind", json!({"target":{"track":id,"parameter":"volume"},"source":{"device":"Keys","channel":1,"cc":71}})).unwrap();
         (app, feed, id, port)
+    }
+
+    #[test]
+    fn midi_learn_pad_edges_and_relative_steps_survive_a_stalled_frame() {
+        let (mut app, feed, id, port) = controller();
+        for (cc, parameter, mode) in [(22, json!("mute"), "toggle"), (23, json!("solo"), "toggle"), (112, json!({"pan":0}), "relative_64")] {
+            app.run(
+                "midi.learn.bind",
+                json!({"target":{"track":id,"parameter":parameter}, "source":{"device":"Keys","channel":1,"cc":cc}, "mode":mode}),
+            )
+            .unwrap();
+        }
+        let pan_before = app.engine.session().track(id).unwrap().mixer.pan[0];
+        for cc in [22, 23] {
+            for value in [127, 127, 0] {
+                feed.receive(port, &[0xb0, cc, value]);
+            }
+        }
+        for v in [65, 64, 67, 64, 63, 64] {
+            feed.receive(port, &[0xb0, 112, v]);
+        }
+        app.service_midi_learn();
+        let mix = &app.engine.session().track(id).unwrap().mixer;
+        assert!(mix.mute && mix.solo);
+        assert!(mix.pan[0] > pan_before);
+        for cc in [22, 23] {
+            feed.receive(port, &[0xb0, cc, 127]);
+            feed.receive(port, &[0xb0, cc, 0]);
+        }
+        app.service_midi_learn();
+        let mix = &app.engine.session().track(id).unwrap().mixer;
+        assert!(!mix.mute && !mix.solo);
     }
 
     #[test]

@@ -1,4 +1,4 @@
-//! Per-session assignments from absolute MIDI CC to existing mixer controls.
+//! Per-session assignments from MIDI CC to existing mixer controls.
 
 use serde::{Deserialize, Serialize};
 use soundcraft_model::{Session, TrackId, TrackKind};
@@ -12,6 +12,10 @@ pub(crate) const PREFIX: &str = "midi.learn.v1=";
 pub enum Parameter {
     Volume,
     Pan(usize),
+    Mute,
+    Solo,
+    SendLevel { slot: usize, bus: soundcraft_model::BusId },
+    SendPan { slot: usize, bus: soundcraft_model::BusId },
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -24,6 +28,10 @@ impl Target {
     pub fn available(self, session: &Session) -> bool {
         session.track(self.track).is_some_and(|track| match self.parameter {
             Parameter::Volume => true,
+            Parameter::Mute | Parameter::Solo => track.kind != TrackKind::Master,
+            Parameter::SendLevel { slot, bus } | Parameter::SendPan { slot, bus } => {
+                track.mixer.sends.get(slot).and_then(Option::as_ref).is_some_and(|send| send.target == soundcraft_model::Route::Bus(bus))
+            }
             Parameter::Pan(index) => index < 2 && track.kind != TrackKind::Vca && index < track.mixer.pan.len(),
         })
     }
@@ -46,8 +54,33 @@ impl Source {
     }
 }
 
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ControlMode {
+    #[default]
+    Absolute,
+    #[serde(rename = "relative_64")]
+    Relative64,
+    Toggle,
+}
+impl ControlMode {
+    pub fn supports(self, parameter: Parameter) -> bool {
+        let switch = matches!(parameter, Parameter::Mute | Parameter::Solo);
+        match self {
+            Self::Absolute => true,
+            Self::Relative64 => !switch,
+            Self::Toggle => switch,
+        }
+    }
+    fn is_absolute(&self) -> bool {
+        *self == Self::Absolute
+    }
+}
+
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct Binding {
+    #[serde(default, skip_serializing_if = "ControlMode::is_absolute")]
+    pub mode: ControlMode,
     pub source: Source,
     pub target: Target,
 }
@@ -66,5 +99,7 @@ pub fn configured(session: &Session) -> bool {
 }
 
 pub fn bindings(session: &Session) -> impl Iterator<Item = Binding> {
-    stored(session).map(|(_, binding)| binding).filter(|binding| binding.source.valid() && binding.target.available(session))
+    stored(session)
+        .map(|(_, binding)| binding)
+        .filter(|binding| binding.source.valid() && binding.mode.supports(binding.target.parameter) && binding.target.available(session))
 }

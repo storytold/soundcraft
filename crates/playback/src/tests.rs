@@ -797,7 +797,7 @@ fn midi_learn_only_performance_messages_reach_the_armed_take() {
     let mut rec = Vec::new();
     feed.take_recorded(&mut rec);
     assert_eq!(rec.iter().map(|e| (e.status, e.data1)).collect::<Vec<_>>(), [(0xb0, 74), (0xb1, 71), (0x90, 60)]);
-    assert_eq!(feed.control_changes().map(|e| e.data1).collect::<Vec<_>>(), [71]);
+    assert_eq!(feed.control_changes().map(|e| e.event.data1).collect::<Vec<_>>(), [71]);
 }
 
 #[test]

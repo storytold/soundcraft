@@ -592,11 +592,15 @@ fn toggle_rows(app: &mut SoundApp, ui: &mut Ui, cx: &StripCtx<'_>, mut y: f32) -
     row.spacing_mut().item_spacing.x = 6.0;
     if track.kind != TrackKind::Master {
         let solo_label = crate::localized_format!("Solo for {}", track.name);
-        if text_toggle(&mut row, vec2(bw, 18.0), "S", track.mixer.solo, t.solo, &solo_label).clicked() {
+        let response = text_toggle(&mut row, vec2(bw, 18.0), "S", track.mixer.solo, t.solo, &solo_label);
+        app.midi_learn_menu(&response, Target { track: id, parameter: Parameter::Solo });
+        if response.clicked() {
             let _ = app.run("mix.solo", json!({"track": id.0}));
         }
         let mute_label = crate::localized_format!("Mute for {}", track.name);
-        if text_toggle(&mut row, vec2(bw, 18.0), "M", track.mixer.mute, t.mute, &mute_label).clicked() {
+        let response = text_toggle(&mut row, vec2(bw, 18.0), "M", track.mixer.mute, t.mute, &mute_label);
+        app.midi_learn_menu(&response, Target { track: id, parameter: Parameter::Mute });
+        if response.clicked() {
             let _ = app.run("mix.mute", json!({"track": id.0}));
         }
     }

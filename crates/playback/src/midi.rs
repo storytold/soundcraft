@@ -34,6 +34,7 @@
 
 mod controls;
 
+pub use controls::ControlChange;
 use controls::ControlTap;
 use soundcraft_mix::{LiveMidi, MidiPorts, midi_port_bit};
 use soundcraft_time::Samples;
@@ -351,6 +352,7 @@ impl MidiFeed {
     pub fn close_port(&self, open: &AtomicBool, port: u8) {
         let _writers = self.writers.lock().unwrap_or_else(PoisonError::into_inner);
         open.store(false, Ordering::Release);
+        self.controls.lock().unwrap_or_else(PoisonError::into_inner).disconnect(port);
         self.port_lost(port);
     }
 

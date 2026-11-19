@@ -296,6 +296,7 @@ pub struct SoundApp {
     midi_route_revision: Option<u64>,
     midi_moves: Vec<(soundcraft_engine::midi_learn::Target, f64)>,
     midi_pan_latches: std::collections::HashSet<(TrackId, usize)>,
+    midi_learn_mode: soundcraft_engine::midi_learn::ControlMode,
     midi_learn_target: Option<soundcraft_engine::midi_learn::Target>,
     /// When the MIDI ports were last looked for (app uptime, seconds).
     midi_scan_at: f64,
