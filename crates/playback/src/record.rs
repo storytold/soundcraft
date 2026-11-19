@@ -122,6 +122,20 @@ impl Shared {
     }
 }
 
+/// Why capture could not be opened on the player's audio device.
+#[derive(Debug)]
+pub struct InputOpenError {
+    pub message: String,
+    /// CPAL may have discarded the active ASIO output buffers while opening capture.
+    pub rebuild_output: bool,
+}
+
+impl From<String> for InputOpenError {
+    fn from(message: String) -> Self {
+        Self { message, rebuild_output: false }
+    }
+}
+
 pub struct Recorder {
     shared: Arc<Shared>,
     /// Live input for monitoring (always fed while the input stream runs).
@@ -224,6 +238,31 @@ fn input_config_at_rate(
     Ok(preferred_rate.and_then(|rate| pick_input_config(configs, rate)))
 }
 
+#[cfg(any(test, not(target_os = "freebsd")))]
+fn start_capture<S, E: std::fmt::Display>(
+    mut config: cpal::StreamConfig,
+    shared_asio: bool,
+    mut build: impl FnMut(cpal::StreamConfig) -> Result<S, E>,
+    play: impl FnOnce(&S) -> Result<(), E>,
+) -> Result<S, InputOpenError> {
+    let stream = match build(config) {
+        Err(e) if !shared_asio && config.buffer_size != cpal::BufferSize::Default => {
+            log::warn!("cannot open the input with buffer {:?}: {e}; using the device default", config.buffer_size);
+            config.buffer_size = cpal::BufferSize::Default;
+            build(config)
+        }
+        result => result,
+    };
+    // CPAL 0.18 may remove the output buffers before a duplex build fails. Retrying here
+    // could succeed with capture only. Let the player restore output before another attempt.
+    stream
+        .and_then(|stream| {
+            play(&stream)?;
+            Ok(stream)
+        })
+        .map_err(|error| InputOpenError { message: error.to_string(), rebuild_output: shared_asio })
+}
+
 impl Recorder {
     /// Open the default input device. Errors when there is none (the caller shows a message).
     pub fn open() -> Result<Recorder, String> {
@@ -237,18 +276,23 @@ impl Recorder {
     pub fn open_with(audio: &crate::AudioConfig) -> Result<Recorder, String> {
         let host = crate::devices::host(audio);
         let device = crate::devices::device(&host, audio.input.as_deref(), false).ok_or("no audio input device")?;
-        Self::open_on_device(&device, audio, None)
+        Self::open_on_device(&device, audio, None).map_err(|error| error.message)
     }
 
     #[cfg(not(target_os = "freebsd"))]
-    pub(crate) fn open_on_device(device: &cpal::Device, audio: &crate::AudioConfig, required_rate: Option<u32>) -> Result<Recorder, String> {
+    pub(crate) fn open_on_device(
+        device: &cpal::Device,
+        audio: &crate::AudioConfig,
+        shared_output: Option<(u32, cpal::BufferSize)>,
+    ) -> Result<Recorder, InputOpenError> {
         use cpal::traits::{DeviceTrait, StreamTrait};
+        let required_rate = shared_output.map(|(rate, _)| rate);
         let name = crate::devices::device_name(device).unwrap_or_else(|| "Input".into());
         // At the chosen rate when the device offers it, so input and output run together: the
         // best format first, then the most channels.
         let configs: Vec<_> = match device.supported_input_configs() {
             Ok(configs) => configs.collect(),
-            Err(err) if required_rate.is_some() => return Err(err.to_string()),
+            Err(err) if required_rate.is_some() => return Err(err.to_string().into()),
             Err(_) => Vec::new(),
         };
         let cfg = match input_config_at_rate(&configs, audio.sample_rate, required_rate)? {
@@ -267,10 +311,10 @@ impl Recorder {
         };
         let format = cfg.sample_format();
         if crate::devices::format_rank(format).is_none() {
-            return Err(format!("unsupported input sample format {format:?}"));
+            return Err(format!("unsupported input sample format {format:?}").into());
         }
         let mut config = cfg.config();
-        config.buffer_size = crate::devices::buffer_size(audio.buffer_size, cfg.buffer_size());
+        config.buffer_size = shared_output.map_or_else(|| crate::devices::buffer_size(audio.buffer_size, cfg.buffer_size()), |(_, buffer)| buffer);
         let channels = usize::from(config.channels).max(1);
         let ring = CaptureRing::new((config.sample_rate as usize).saturating_mul(channels * RING_SECONDS).min(1 << 25));
         let shared = Arc::new(Shared::new(ring));
@@ -281,17 +325,7 @@ impl Recorder {
             cpal::SampleFormat::I16 => build_input::<i16>(device, config, &shared, &monitor),
             _ => build_input::<f32>(device, config, &shared, &monitor),
         };
-        // The chosen buffer size first; if the device refuses it, its default.
-        let stream = match build(config) {
-            Ok(s) => s,
-            Err(e) if config.buffer_size != cpal::BufferSize::Default => {
-                log::warn!("cannot open the input with buffer {:?}: {e}; using the device default", config.buffer_size);
-                config.buffer_size = cpal::BufferSize::Default;
-                build(config).map_err(|e| e.to_string())?
-            }
-            Err(e) => return Err(e.to_string()),
-        };
-        stream.play().map_err(|e| e.to_string())?;
+        let stream = start_capture(config, shared_output.is_some(), build, StreamTrait::play)?;
         let seen = (0, Instant::now());
         Ok(Recorder { monitor, shared, _stream: Some(stream), device_name: name, sample_rate: config.sample_rate, channels, writer: None, seen })
     }
@@ -549,6 +583,37 @@ mod tests {
         assert_eq!(config.sample_rate(), 48_000);
         assert!(input_config_at_rate(&configs, None, Some(96_000)).is_err());
         assert!(input_config_at_rate(&configs, Some(96_000), None).unwrap().is_none());
+    }
+
+    #[test]
+    fn shared_asio_build_failure_requires_output_restore_before_retry() {
+        let config = cpal::StreamConfig { channels: 2, sample_rate: 48_000, buffer_size: cpal::BufferSize::Fixed(256) };
+        let mut attempted = Vec::new();
+        let build = |config: cpal::StreamConfig| {
+            attempted.push(config.buffer_size);
+            if config.buffer_size == cpal::BufferSize::Default { Ok(()) } else { Err("duplex build refused") }
+        };
+        let error = start_capture(config, true, build, |()| Ok(())).unwrap_err();
+        assert!(error.rebuild_output);
+        assert_eq!(error.message, "duplex build refused");
+        assert_eq!(attempted, [cpal::BufferSize::Fixed(256)]);
+    }
+
+    #[test]
+    fn standalone_capture_can_retry_and_shared_capture_can_succeed() {
+        let config = cpal::StreamConfig { channels: 2, sample_rate: 48_000, buffer_size: cpal::BufferSize::Fixed(256) };
+        let fallback = start_capture(
+            config,
+            false,
+            |attempt| match attempt.buffer_size {
+                cpal::BufferSize::Default => Ok(attempt.buffer_size),
+                cpal::BufferSize::Fixed(_) => Err("fixed buffer refused"),
+            },
+            |_| Ok(()),
+        );
+        assert_eq!(fallback.unwrap(), cpal::BufferSize::Default);
+        let duplex = start_capture(config, true, |attempt| Ok(attempt.buffer_size), |_| Ok::<(), &str>(()));
+        assert_eq!(duplex.unwrap(), cpal::BufferSize::Fixed(256));
     }
 
     fn recorder(shared: &Arc<Shared>) -> Recorder {

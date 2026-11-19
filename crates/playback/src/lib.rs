@@ -204,15 +204,15 @@ impl Player {
 
     /// Open recording and monitoring on the configured input. Reuse the active ASIO device
     /// when it is the selected input. Enumerating other drivers can fail with an active stream.
-    pub fn open_input(&self, cfg: &AudioConfig) -> Result<record::Recorder, String> {
+    pub fn open_input(&self, cfg: &AudioConfig) -> Result<record::Recorder, record::InputOpenError> {
         #[cfg(all(windows, feature = "asio"))]
         if let Some(device) = &self.asio_device
             && reuses_output_device(cfg.input.as_deref(), &self.device_name)
         {
-            let required_rate = cfg.sample_rate.is_none().then_some(self.device_rate);
-            return record::Recorder::open_on_device(device, cfg, required_rate);
+            let buffer = self.device_buffer.map_or(cpal::BufferSize::Default, cpal::BufferSize::Fixed);
+            return record::Recorder::open_on_device(device, cfg, Some((self.device_rate, buffer)));
         }
-        record::Recorder::open_with(cfg)
+        record::Recorder::open_with(cfg).map_err(Into::into)
     }
 
     /// What stopped the audio output, once: a bug in the engine, or the device went away or
