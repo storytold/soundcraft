@@ -16,6 +16,8 @@ mod midi;
 mod playback;
 mod plugins;
 
+pub(crate) const AUTOMATION_PASS: &str = "automation_pass";
+
 impl SoundApp {
     pub(crate) fn finish_idle_mixer_gesture(&mut self) {
         if self.pointer_down {
@@ -28,8 +30,9 @@ impl SoundApp {
         let surface_gesture = crate::hui::gesture_active(self);
         #[cfg(not(windows))]
         let surface_gesture = false;
-        // Keep a running automation pass merged until playback stops.
-        if !self.wants_keyboard && self.touched.is_empty() && self.touched_sends.is_empty() && !surface_gesture {
+        // A pass may already contain a mixer gesture on a Read track before it writes a point.
+        let ongoing_pass = self.engine.merge_key() == Some(AUTOMATION_PASS) && self.is_playing();
+        if !ongoing_pass && !self.wants_keyboard && self.touched.is_empty() && self.touched_sends.is_empty() && !surface_gesture {
             self.engine.end_merge();
         }
     }

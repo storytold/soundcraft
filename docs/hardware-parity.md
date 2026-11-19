@@ -42,7 +42,7 @@ Legend: ✅ works · 🟡 partial · ❌ missing.
 | Feature | Pro Tools | SoundCraft |
 |---|---|---|
 | EUCON (S1/S3/S4/S6, Dock, Control app) | ✅ | ❌ Avid-proprietary SDK; owner decision |
-| HUI | ✅ | 🟡 Windows via WinMM. Eight mixer strips, banks, transport and lamp feedback. Model 12 hardware acceptance covers banked mixing and transport. Protocol tests cover SELECT input and lamp feedback. |
+| HUI | ✅ | 🟡 Windows via WinMM. Eight mixer strips, banks, transport and lamp feedback. Motorized fader feedback is optional. Model 12 hardware acceptance covers banked mixing and transport. Protocol tests cover SELECT input and lamp feedback. |
 | Mackie Control Universal | ✅ (via HUI emulation and personalities) | 🟡 Windows via WinMM. Eight mixer strips, banks, transport and lamp feedback. Protocol tests cover SELECT input and lamp feedback. The dedicated MCU master fader stays on the single active Master Fader track when changing banks. On the Model 12 in MCU - Reaper mode, this is the FX fader. Motorized fader feedback is optional. Meter, screen and timecode feedback remain open. |
 | Generic MIDI controller personalities | ✅ | ❌ |
 
