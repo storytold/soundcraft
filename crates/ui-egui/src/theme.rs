@@ -2,10 +2,62 @@
 
 use egui::{Color32, FontFamily, FontId};
 use soundcraft_model::EditMode;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU32, Ordering};
 
 /// Whether the Light palette is active. Dark is the default (the incumbent is dark-only).
 static LIGHT_THEME: AtomicBool = AtomicBool::new(false);
+static ACCENT_COLOR: AtomicU32 = AtomicU32::new(0x4084c4);
+static ACTIVE_PRESET: AtomicU8 = AtomicU8::new(0);
+
+/// Built-in color palettes available in the Appearance theme editor.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ThemePreset {
+    #[default]
+    Studio,
+    Ocean,
+    Amber,
+}
+
+impl ThemePreset {
+    pub const ALL: [Self; 3] = [Self::Studio, Self::Ocean, Self::Amber];
+
+    pub const fn id(self) -> &'static str {
+        match self {
+            Self::Studio => "studio",
+            Self::Ocean => "ocean",
+            Self::Amber => "amber",
+        }
+    }
+
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Studio => "Studio",
+            Self::Ocean => "Ocean",
+            Self::Amber => "Amber",
+        }
+    }
+
+    pub const fn accent(self) -> [u8; 3] {
+        match self {
+            Self::Studio => [64, 132, 196],
+            Self::Ocean => [34, 160, 160],
+            Self::Amber => [196, 126, 48],
+        }
+    }
+
+    const fn value(self) -> u8 {
+        match self {
+            Self::Studio => 0,
+            Self::Ocean => 1,
+            Self::Amber => 2,
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|preset| preset.id().eq_ignore_ascii_case(value.trim()))
+    }
+}
 
 /// Unit tests that change or read the process-wide palette must own it until their assertions
 /// finish. The lock is re-entrant per thread, so a test may hold it and still build apps
@@ -407,7 +459,25 @@ impl Tokens {
     };
 
     pub fn current() -> Tokens {
-        if is_light() { Self::LIGHT } else { Self::DARK }
+        let mut tokens = if is_light() { Self::LIGHT } else { Self::DARK };
+        let preset = match ACTIVE_PRESET.load(Ordering::Relaxed) {
+            1 => ThemePreset::Ocean,
+            2 => ThemePreset::Amber,
+            _ => ThemePreset::Studio,
+        };
+        apply_preset_surfaces(&mut tokens, preset, is_light());
+        let accent = ACCENT_COLOR.load(Ordering::Relaxed);
+        let r = ((accent >> 16) & 0xff) as u8;
+        let g = ((accent >> 8) & 0xff) as u8;
+        let b = (accent & 0xff) as u8;
+        tokens.accent = Color32::from_rgb(r, g, b);
+        tokens.accent_dark = Color32::from_rgb((u16::from(r) * 2 / 3) as u8, (u16::from(g) * 2 / 3) as u8, (u16::from(b) * 2 / 3) as u8);
+        tokens.selection = Color32::from_rgba_unmultiplied(r, g, b, 110);
+        tokens.mode_grid = tokens.accent;
+        tokens.row_selected = tokens.panel_bg2.lerp_to_gamma(tokens.accent, 0.35);
+        tokens.header_selected = tokens.panel_bg2.lerp_to_gamma(tokens.accent, 0.22);
+        tokens.strip_selected = tokens.strip_bg.lerp_to_gamma(tokens.accent, 0.22);
+        tokens
     }
 
     /// Fill of the edit-mode key while `mode` is the active one.
@@ -427,6 +497,91 @@ impl Tokens {
 /// Whether the Light palette is the active one.
 pub fn is_light() -> bool {
     LIGHT_THEME.load(Ordering::Relaxed)
+}
+
+/// Sets the user-selected palette and accent used by all themed controls.
+pub fn set_palette(preset: ThemePreset, color: [u8; 3]) {
+    let [r, g, b] = color;
+    ACCENT_COLOR.store((u32::from(r) << 16) | (u32::from(g) << 8) | u32::from(b), Ordering::Relaxed);
+    ACTIVE_PRESET.store(preset.value(), Ordering::Relaxed);
+}
+
+fn apply_preset_surfaces(tokens: &mut Tokens, preset: ThemePreset, light: bool) {
+    let surfaces: [[u8; 3]; 11] = match (preset, light) {
+        (ThemePreset::Studio, _) => return,
+        (ThemePreset::Ocean, false) => [
+            [20, 27, 35],
+            [28, 37, 47],
+            [37, 49, 62],
+            [22, 30, 39],
+            [17, 24, 32],
+            [31, 41, 52],
+            [25, 34, 44],
+            [19, 27, 36],
+            [28, 37, 47],
+            [33, 43, 55],
+            [13, 20, 28],
+        ],
+        (ThemePreset::Ocean, true) => [
+            [178, 191, 204],
+            [194, 207, 220],
+            [211, 223, 234],
+            [187, 200, 213],
+            [202, 215, 227],
+            [195, 209, 222],
+            [207, 220, 232],
+            [181, 195, 209],
+            [197, 211, 224],
+            [188, 203, 217],
+            [224, 232, 238],
+        ],
+        (ThemePreset::Amber, false) => [
+            [34, 29, 25],
+            [43, 36, 30],
+            [54, 45, 37],
+            [31, 27, 24],
+            [24, 20, 17],
+            [49, 40, 32],
+            [39, 32, 27],
+            [29, 25, 21],
+            [38, 31, 26],
+            [48, 39, 31],
+            [18, 15, 13],
+        ],
+        (ThemePreset::Amber, true) => [
+            [205, 197, 187],
+            [220, 211, 199],
+            [233, 223, 209],
+            [210, 201, 190],
+            [224, 215, 203],
+            [216, 205, 191],
+            [228, 217, 202],
+            [201, 191, 178],
+            [217, 206, 191],
+            [207, 196, 181],
+            [238, 230, 217],
+        ],
+    };
+    let color = |index: usize| Color32::from_rgb(surfaces[index][0], surfaces[index][1], surfaces[index][2]);
+    tokens.window_bg = color(0);
+    tokens.panel_bg = color(1);
+    tokens.panel_bg2 = color(2);
+    tokens.toolbar_bg = color(3);
+    tokens.toolbar_group = color(4);
+    tokens.strip_bg = color(5);
+    tokens.strip_section = color(6);
+    tokens.slot_bg = color(7);
+    tokens.slot_well = color(8);
+    tokens.playlist_bg = color(9);
+    tokens.playlist_alt = color(6);
+    tokens.ruler_bg = color(6);
+    tokens.ruler_label_bg = color(6);
+    tokens.marker_ruler = color(6);
+    tokens.menu_bar = color(4);
+    tokens.big_counter_bg = color(10);
+    tokens.counter_bg = color(10);
+    tokens.header_selected = color(2).lerp_to_gamma(tokens.accent, 0.22);
+    tokens.strip_selected = color(5).lerp_to_gamma(tokens.accent, 0.22);
 }
 
 /// Resolve each frame from the integration's current OS appearance, or on Linux the desktop's own
@@ -551,6 +706,8 @@ mod tests {
         // Prefs saved before the setting existed load as Dark.
         let old: UiState = serde_json::from_value(json!({"show_tracks_list": false})).unwrap();
         assert_eq!(old.theme, ThemeMode::Dark);
+        assert_eq!(old.theme_preset, ThemePreset::Studio);
+        assert_eq!(old.theme_accent, ThemePreset::Studio.accent());
         assert_eq!(old.language, crate::localization::Language::English);
         assert!(!old.show_tracks_list);
     }
@@ -571,6 +728,13 @@ mod tests {
         }
         assert_eq!(ThemeMode::parse(" Light "), Some(ThemeMode::Light));
         assert_eq!(ThemeMode::parse("sepia"), None);
+        for preset in ThemePreset::ALL {
+            assert_eq!(ThemePreset::parse(preset.id()), Some(preset));
+            let ui = UiState { theme_preset: preset, theme_accent: preset.accent(), ..UiState::default() };
+            let back: UiState = serde_json::from_value(serde_json::to_value(&ui).unwrap_or_default()).unwrap_or_default();
+            assert_eq!(back.theme_preset, preset);
+            assert_eq!(back.theme_accent, preset.accent());
+        }
     }
 
     #[test]
@@ -582,7 +746,28 @@ mod tests {
         assert!(app.run("ui.theme", json!({"mode": "sepia"})).is_err());
         assert_eq!(app.ui.theme, ThemeMode::Light);
         assert_eq!(app.run("ui.theme", json!({"mode": "system"})), Ok(json!({"mode": "system"})));
+        assert_eq!(
+            app.run("ui.theme", json!({"palette": "ocean", "accent": [12, 144, 156]})),
+            Ok(json!({"mode": "system", "palette": "ocean", "accent": [12, 144, 156]}))
+        );
+        assert_eq!(app.ui.theme_preset, ThemePreset::Ocean);
+        assert_eq!(app.ui.theme_accent, [12, 144, 156]);
+        assert!(app.run("ui.theme", json!({"palette": "unknown"})).is_err());
+        assert!(app.run("ui.theme", json!({"accent": [0, 256, 1]})).is_err());
         assert!(crate::menus::UI_COMMANDS.iter().any(|c| c.0 == "ui.theme"));
+    }
+
+    #[test]
+    fn accent_editor_updates_the_shared_theme_tokens() {
+        let _palette = lock_test_palette();
+        set_palette(ThemePreset::Studio, ThemePreset::Studio.accent());
+        let studio_surface = Tokens::current().panel_bg;
+        set_palette(ThemePreset::Ocean, [10, 120, 180]);
+        let tokens = Tokens::current();
+        assert_eq!(tokens.accent, Color32::from_rgb(10, 120, 180));
+        assert_eq!(tokens.mode_grid, tokens.accent);
+        assert_ne!(tokens.panel_bg, studio_surface);
+        set_palette(ThemePreset::Studio, ThemePreset::Studio.accent());
     }
 
     #[test]
