@@ -1193,9 +1193,9 @@ dependencies = [
 [[package]]
 name = "craft-audio"
 version = "0.1.0"
-source = "git+https://github.com/mtlcl410/craft-libs?rev=425645dc2ccb075620939ea4c1cf16b9948c2956#425645dc2ccb075620939ea4c1cf16b9948c2956"
+source = "git+https://github.com/mtlcl410/craft-libs?rev=986136526666ed0c137167b78b4e2f9f2ed3d954#986136526666ed0c137167b78b4e2f9f2ed3d954"
 dependencies = [
- "craft-media 0.1.0 (git+https://github.com/mtlcl410/craft-libs?rev=425645dc2ccb075620939ea4c1cf16b9948c2956)",
+ "craft-media 0.1.0 (git+https://github.com/mtlcl410/craft-libs?rev=986136526666ed0c137167b78b4e2f9f2ed3d954)",
  "log",
  "serde",
  "symphonia",
@@ -1251,7 +1251,7 @@ dependencies = [
 [[package]]
 name = "craft-media"
 version = "0.1.0"
-source = "git+https://github.com/mtlcl410/craft-libs?rev=425645dc2ccb075620939ea4c1cf16b9948c2956#425645dc2ccb075620939ea4c1cf16b9948c2956"
+source = "git+https://github.com/mtlcl410/craft-libs?rev=986136526666ed0c137167b78b4e2f9f2ed3d954#986136526666ed0c137167b78b4e2f9f2ed3d954"
 dependencies = [
  "serde",
  "thiserror 2.0.21",
@@ -1265,7 +1265,7 @@ source = "git+https://github.com/storytold/craft-libs?rev=ddbe78231b5b23273b3d19
 [[package]]
 name = "craft-midi"
 version = "0.1.0"
-source = "git+https://github.com/mtlcl410/craft-libs?rev=425645dc2ccb075620939ea4c1cf16b9948c2956#425645dc2ccb075620939ea4c1cf16b9948c2956"
+source = "git+https://github.com/mtlcl410/craft-libs?rev=986136526666ed0c137167b78b4e2f9f2ed3d954#986136526666ed0c137167b78b4e2f9f2ed3d954"
 dependencies = [
  "serde",
  "thiserror 2.0.21",
@@ -1292,7 +1292,7 @@ dependencies = [
 [[package]]
 name = "craft-scraft-format"
 version = "0.1.0"
-source = "git+https://github.com/mtlcl410/craft-libs?rev=425645dc2ccb075620939ea4c1cf16b9948c2956#425645dc2ccb075620939ea4c1cf16b9948c2956"
+source = "git+https://github.com/mtlcl410/craft-libs?rev=986136526666ed0c137167b78b4e2f9f2ed3d954#986136526666ed0c137167b78b4e2f9f2ed3d954"
 dependencies = [
  "craft-audio",
  "craft-midi",
@@ -1301,13 +1301,12 @@ dependencies = [
  "serde",
  "serde_json",
  "thiserror 2.0.21",
- "unicode-casefold",
 ]
 
 [[package]]
 name = "craft-time"
 version = "0.1.0"
-source = "git+https://github.com/mtlcl410/craft-libs?rev=425645dc2ccb075620939ea4c1cf16b9948c2956#425645dc2ccb075620939ea4c1cf16b9948c2956"
+source = "git+https://github.com/mtlcl410/craft-libs?rev=986136526666ed0c137167b78b4e2f9f2ed3d954#986136526666ed0c137167b78b4e2f9f2ed3d954"
 dependencies = [
  "serde",
  "thiserror 2.0.21",
@@ -1395,7 +1394,7 @@ dependencies = [
 [[package]]
 name = "craft-zip"
 version = "0.1.0"
-source = "git+https://github.com/mtlcl410/craft-libs?rev=425645dc2ccb075620939ea4c1cf16b9948c2956#425645dc2ccb075620939ea4c1cf16b9948c2956"
+source = "git+https://github.com/mtlcl410/craft-libs?rev=986136526666ed0c137167b78b4e2f9f2ed3d954#986136526666ed0c137167b78b4e2f9f2ed3d954"
 dependencies = [
  "flate2",
  "thiserror 2.0.21",
@@ -5047,7 +5046,6 @@ name = "soundcraft-model"
 version = "0.20.1"
 dependencies = [
  "craft-scraft-format",
- "unicode-casefold",
 ]
 
 [[package]]
@@ -5108,7 +5106,7 @@ dependencies = [
 name = "soundcraft-video"
 version = "0.20.1"
 dependencies = [
- "craft-media 0.1.0 (git+https://github.com/mtlcl410/craft-libs?rev=425645dc2ccb075620939ea4c1cf16b9948c2956)",
+ "craft-media 0.1.0 (git+https://github.com/mtlcl410/craft-libs?rev=986136526666ed0c137167b78b4e2f9f2ed3d954)",
  "craft-video",
  "proptest",
  "serde",
@@ -5748,12 +5746,6 @@ name = "unicode-bidi"
 version = "0.3.18"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5c1cb5db39152898a79168971543b1cb5020dff7fe43c8dc468b0885f5e29df5"
-
-[[package]]
-name = "unicode-casefold"
-version = "0.2.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b7f66b1c8f8caa2ab31dc6d3f35386f16efdab89668f93411e565ac368908e8f"
 
 [[package]]
 name = "unicode-general-category"

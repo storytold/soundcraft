@@ -10,18 +10,12 @@ mod midi_input;
 
 pub use midi_input::MidiInput;
 
-/// Compares named hardware input keys using the same Unicode fold as the session format.
-pub fn input_path_name_eq(a: &str, b: &str) -> bool {
-    use unicode_casefold::UnicodeCaseFold;
-    a.case_fold().eq(b.case_fold())
-}
-
 /// Start of the track's hardware input. Named paths need a complete, matching
 /// range on the current device. Legacy numbered routes keep their wrap behaviour.
 pub fn hardware_input_start(session: &Session, track: &Track, device_channels: usize) -> Option<usize> {
     match &track.mixer.input {
         Route::Input(name) => {
-            let path = session.inputs.iter().find(|path| input_path_name_eq(&path.name, name))?;
+            let path = session.inputs.iter().find(|path| path.name.eq_ignore_ascii_case(name))?;
             let first = usize::from(path.first_channel);
             (path.format == track.format && first + path.format.channels() <= device_channels).then_some(first)
         }

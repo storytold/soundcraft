@@ -1112,7 +1112,7 @@ pub fn plan_takes(e: &Engine, unsaved_dir: &Path, input_channels: usize) -> std:
         .map(|t| {
             let first = soundcraft_model::hardware_input_start(s, t, input_channels).ok_or_else(|| {
                 if let soundcraft_model::Route::Input(name) = &t.mixer.input {
-                    let reason = match s.inputs.iter().find(|input| soundcraft_model::input_path_name_eq(&input.name, name)) {
+                    let reason = match s.inputs.iter().find(|input| input.name.eq_ignore_ascii_case(name)) {
                         None => "the path is missing",
                         Some(path) if path.format != t.format => "the path format differs from the track",
                         Some(_) => "the path is outside the device range",

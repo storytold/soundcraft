@@ -1032,7 +1032,7 @@ fn route(e: &mut Engine, p: &Value, input: bool) -> Result<Value> {
     if input
         && !matches!(r, Route::None)
         && (!create_bus || !matches!(r, Route::Bus(_)))
-        && let Some(path) = s.inputs.iter().find(|path| soundcraft_model::input_path_name_eq(&path.name, &v))
+        && let Some(path) = s.inputs.iter().find(|path| path.name.eq_ignore_ascii_case(&v))
     {
         if tracks.iter().any(|id| s.track(*id).is_some_and(|track| track.kind != TrackKind::Audio || track.format != path.format)) {
             return Err(bad("track.input", "the named input must match the audio track format"));

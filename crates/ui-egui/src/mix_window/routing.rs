@@ -75,7 +75,7 @@ pub(crate) fn input_name(app: &SoundApp, track: &Track) -> String {
         let channels = track.format.channels();
         if channels == 1 { crate::localized_format!("In {}", 1) } else { crate::localized_format!("In 1-{}", channels) }
     } else if let Route::Input(name) = &track.mixer.input
-        && !app.engine.session().inputs.iter().any(|path| soundcraft_model::input_path_name_eq(&path.name, name) && path.format == track.format)
+        && !app.engine.session().inputs.iter().any(|path| path.name.eq_ignore_ascii_case(name) && path.format == track.format)
     {
         format!("{name} ({})", crate::localization::text("Unavailable"))
     } else {
@@ -186,7 +186,7 @@ fn route_menu(app: &mut SoundApp, ui: &mut Ui, id: TrackId, input: bool, inputs:
         let session = app.engine.session();
         while busses.contains(&format!("Bus {n}"))
             || session.track_by_name(&format!("Bus {n}")).is_some()
-            || session.inputs.iter().any(|path| soundcraft_model::input_path_name_eq(&path.name, &format!("Bus {n}")))
+            || session.inputs.iter().any(|path| path.name.eq_ignore_ascii_case(&format!("Bus {n}")))
             || session.outputs.iter().any(|path| path.name.eq_ignore_ascii_case(&format!("Bus {n}")))
         {
             n += 1;
