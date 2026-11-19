@@ -22,6 +22,7 @@ pub(crate) enum Event {
     SetMarker,
     Jog(i8),
     Navigate(Navigation),
+    Select(usize),
     Mute(usize),
     Solo(usize),
     Arm(usize),
@@ -76,6 +77,7 @@ impl Decode {
                 (NAVIGATION, 0x41) => Some(Event::Navigate(Navigation::BankLeft)),
                 (NAVIGATION, 0x42) => Some(Event::Navigate(Navigation::ChannelRight)),
                 (NAVIGATION, 0x43) => Some(Event::Navigate(Navigation::BankRight)),
+                (strip @ 0..=7, 0x41) => Some(Event::Select(usize::from(strip))),
                 (strip @ 0..=7, 0x42) => Some(Event::Mute(usize::from(strip))),
                 (strip @ 0..=7, 0x43) => Some(Event::Solo(usize::from(strip))),
                 (strip @ 0..=7, 0x47) => Some(Event::Arm(usize::from(strip))),
@@ -155,6 +157,21 @@ mod tests {
         assert_eq!(decoder.packet([0xb0, 0x0d, 0x41]), Some(Event::Jog(1)));
         assert_eq!(decoder.packet([0xb0, 0x0d, 0x01]), Some(Event::Jog(-1)));
         assert_eq!(decoder.packet([0xb0, 0x0d, 0x40]), None);
+    }
+
+    #[test]
+    fn select_buttons_cover_all_strips_only_on_press() {
+        let mut hui = Decode::default();
+        for strip in 0..8 {
+            let selected = Some(Event::Select(usize::from(strip)));
+            assert_eq!(hui.packet([0xb0, 0x0f, strip]), None);
+            assert_eq!(hui.packet([0xb0, 0x2f, 0x41]), selected);
+            assert_eq!(hui.packet([0xb0, 0x0f, strip]), None);
+            assert_eq!(hui.packet([0xb0, 0x2f, 0x01]), None);
+            assert_eq!(mcu::decode([0x90, 0x18 + strip, 127]), selected);
+            assert_eq!(mcu::decode([0x90, 0x18 + strip, 0]), None);
+            assert_eq!(mcu::decode([0x80, 0x18 + strip, 64]), None);
+        }
     }
 
     #[test]

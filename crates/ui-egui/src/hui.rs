@@ -14,7 +14,7 @@ use std::sync::mpsc::{Receiver, sync_channel};
 use std::time::{Duration, Instant};
 
 const NAME: &str = "SoundCraft HUI";
-const STRIP_LAMP_PORTS: [u8; 3] = [2, 3, 7];
+const STRIP_LAMP_PORTS: [u8; 4] = [2, 3, 7, 1];
 const TRANSPORT_LAMP_PORTS: [u8; 3] = [3, 4, 5];
 const PING_INTERVAL: Duration = Duration::from_millis(900);
 const HEARTBEAT_TIMEOUT: Duration = Duration::from_secs(3);
@@ -97,7 +97,9 @@ struct Link {
     ping: Option<Instant>,
     heartbeat: Heartbeat,
     ready: bool,
-    lamps: Option<[[bool; 3]; STRIPS + 1]>,
+    lamps: Option<[[bool; 4]; STRIPS + 1]>,
+    #[cfg(test)]
+    sent: Vec<[u8; 3]>,
 }
 
 struct Heartbeat {
@@ -231,6 +233,8 @@ impl Link {
             heartbeat: Heartbeat::new(Instant::now()),
             ready: false,
             lamps: None,
+            #[cfg(test)]
+            sent: Vec::new(),
         })
     }
 
@@ -238,6 +242,8 @@ impl Link {
         if self.failed {
             return;
         }
+        #[cfg(test)]
+        self.sent.push(packet);
         if let Some(output) = &mut self.output
             && let Err(error) = guarded(|| output.send(&packet).map_err(|error| error.to_string()))
         {
@@ -247,7 +253,7 @@ impl Link {
     }
 
     fn lamp(&mut self, strip: usize, index: usize, lit: bool) {
-        let ports = if strip == STRIPS { TRANSPORT_LAMP_PORTS } else { STRIP_LAMP_PORTS };
+        let ports: &[u8] = if strip == STRIPS { &TRANSPORT_LAMP_PORTS } else { &STRIP_LAMP_PORTS };
         if strip > STRIPS {
             return;
         }
@@ -528,6 +534,11 @@ pub(crate) fn poll(app: &mut SoundApp, ctx: &egui::Context) {
                 tracks = mapped_tracks(app, app.hui.first_track);
                 app.hui.motion.map(tracks, master);
             }
+            Event::Select(strip) => {
+                if let Some(id) = tracks.get(strip).copied().flatten() {
+                    let _ = app.run("edit.select", json!({"tracks":[id.0]}));
+                }
+            }
             Event::Mute(strip) | Event::Solo(strip) => {
                 if let Some(id) = tracks.get(strip).copied().flatten() {
                     let command = if matches!(event, Event::Mute(_)) { "mix.mute" } else { "mix.solo" };
@@ -632,24 +643,20 @@ pub(crate) fn feedback(app: &mut SoundApp) {
     let tracks = controlled_tracks(app);
     let Some(link) = app.hui.link.as_mut().filter(|link| link.online()) else { return };
     let transport = &app.engine.transport;
-    let lamps: [[bool; 3]; STRIPS + 1] = std::array::from_fn(|i| {
+    let session = app.engine.session();
+    let lamps: [[bool; 4]; STRIPS + 1] = std::array::from_fn(|i| {
         if i == STRIPS {
-            [!transport.playing, transport.playing, transport.recording || link.ready]
+            [!transport.playing, transport.playing, transport.recording || link.ready, false]
         } else {
             tracks
                 .get(i)
                 .copied()
                 .flatten()
-                .and_then(|id| app.engine.session().track(id))
-                .map_or([false; 3], |t| [t.mixer.mute, t.mixer.solo, t.mixer.record_arm])
+                .and_then(|id| session.track(id))
+                .map_or([false; 4], |t| [t.mixer.mute, t.mixer.solo, t.mixer.record_arm, session.edit.selected_tracks.contains(&t.id)])
         }
     });
     let previous = link.lamps.replace(lamps);
-    if previous.is_none() && link.protocol == Protocol::Mcu {
-        for note in 0x18..=0x1f {
-            link.send([0x90, note, 0]);
-        }
-    }
     for (i, states) in lamps.into_iter().enumerate() {
         for (index, lit) in states.into_iter().enumerate() {
             if previous.is_some_and(|old| old[i][index] == lit) {
@@ -835,6 +842,7 @@ mod tests {
                 heartbeat: Heartbeat::new(now),
                 ready: false,
                 lamps: None,
+                sent: Vec::new(),
             },
             send,
         )
@@ -848,6 +856,114 @@ mod tests {
         let (link, packets) = test_link(Protocol::Mcu, app.clock_now());
         app.hui.link = Some(link);
         (app, TrackId(track), packets)
+    }
+
+    #[test]
+    fn simulated_select_buttons_and_lamps_follow_the_host_selection() {
+        fn select_button(protocol: Protocol, strip: u8, down: bool) -> Vec<[u8; 3]> {
+            match protocol {
+                Protocol::Hui => vec![[0xb0, 0x0f, strip], [0xb0, 0x2f, if down { 0x41 } else { 0x01 }]],
+                Protocol::Mcu => vec![[0x90, 0x18 + strip, if down { 127 } else { 0 }]],
+            }
+        }
+
+        // Read the SELECT lamps from the actual output stream, including HUI's zone.
+        fn select_lamps(app: &mut SoundApp, protocol: Protocol) -> Vec<(u8, bool)> {
+            feedback(app);
+            let mut zone = None;
+            let mut lamps = Vec::new();
+            for packet in app.hui.link.as_mut().unwrap().sent.drain(..) {
+                match (protocol, packet) {
+                    (Protocol::Hui, [0xb0, 0x0c, value]) => zone = Some(value),
+                    (Protocol::Hui, [0xb0, 0x2c, value @ (0x01 | 0x41)]) => {
+                        if let Some(strip @ 0..=7) = zone {
+                            lamps.push((strip, value == 0x41));
+                        }
+                    }
+                    (Protocol::Mcu, [0x90, note @ 0x18..=0x1f, value]) => lamps.push((note - 0x18, value == 127)),
+                    _ => {}
+                }
+            }
+            lamps
+        }
+
+        for protocol in [Protocol::Hui, Protocol::Mcu] {
+            let (mut app, first, _) = test_app();
+            app.run("track.new", json!({"count":9,"kind":"audio","format":"mono"})).unwrap();
+            let ninth = app.engine.session().tracks[8].id;
+            let tenth = app.engine.session().tracks[9].id;
+            app.run("edit.select", json!({"tracks":[tenth.0]})).unwrap();
+            app.ui.hui.as_mut().unwrap().protocol = protocol;
+            let (link, input) = test_link(protocol, app.clock_now());
+            app.hui.link = Some(link);
+            let ctx = egui::Context::default();
+            let press = |strip| {
+                for packet in select_button(protocol, strip, true) {
+                    input.send(packet).unwrap();
+                }
+            };
+            if protocol.is_hui() {
+                input.send(PONG).unwrap();
+            }
+            poll(&mut app, &ctx);
+            assert_eq!(select_lamps(&mut app, protocol), (0..8).map(|i| (i, false)).collect::<Vec<_>>());
+            press(0);
+            poll(&mut app, &ctx);
+            assert_eq!(app.engine.session().edit.selected_tracks, [first]);
+            assert_eq!(select_lamps(&mut app, protocol), [(0, true)]);
+
+            match protocol {
+                Protocol::Hui => {
+                    input.send([0xb0, 0x0f, 0x0a]).unwrap();
+                    input.send([0xb0, 0x2f, 0x43]).unwrap();
+                }
+                Protocol::Mcu => input.send([0x90, 0x2f, 127]).unwrap(),
+            }
+            poll(&mut app, &ctx);
+            assert_eq!(select_lamps(&mut app, protocol), [(0, false)]);
+            press(0);
+            poll(&mut app, &ctx);
+            assert_eq!(app.engine.session().edit.selected_tracks, [ninth]);
+            assert_eq!(select_lamps(&mut app, protocol), [(0, true)]);
+
+            app.run("edit.select", json!({"tracks":[first.0,tenth.0]})).unwrap();
+            for packet in select_button(protocol, 0, false) {
+                input.send(packet).unwrap();
+            }
+            press(7); // Empty strip in the final bank.
+            poll(&mut app, &ctx);
+            assert_eq!(app.engine.session().edit.selected_tracks, [first, tenth]);
+            assert_eq!(select_lamps(&mut app, protocol), [(0, false), (1, true)]);
+            assert!(select_lamps(&mut app, protocol).is_empty());
+
+            let (replacement, input) = test_link(protocol, app.clock_now());
+            app.hui.link = Some(replacement);
+            if protocol.is_hui() {
+                input.send(PONG).unwrap();
+            }
+            poll(&mut app, &ctx);
+            assert_eq!(select_lamps(&mut app, protocol), (0..8).map(|i| (i, i == 1)).collect::<Vec<_>>());
+        }
+    }
+
+    #[test]
+    fn hui_bank_maps_channel_one_to_the_ninth_master_track_only() {
+        let (mut app, _, _) = test_app();
+        app.run("track.new", json!({"count":7,"kind":"audio"})).unwrap();
+        let master = app.run("track.new", json!({"kind":"master","format":"stereo"})).unwrap()["tracks"][0].as_u64().unwrap();
+        app.run("track.new", json!({"kind":"audio"})).unwrap();
+        app.run("track.move", json!({"track":master,"to":8})).unwrap();
+        app.ui.hui.as_mut().unwrap().protocol = Protocol::Hui;
+        let (link, input) = test_link(Protocol::Hui, app.clock_now());
+        app.hui.link = Some(link);
+        for packet in [PONG, [0xb0, 0x0f, 0x0a], [0xb0, 0x2f, 0x43], [0xb0, 0, 0], [0xb0, 0x20, 0], [0xb0, 0, 127], [0xb0, 0x20, 127]] {
+            input.send(packet).unwrap();
+        }
+        poll(&mut app, &egui::Context::default());
+        assert_eq!(controlled_tracks(&app)[0], Some(TrackId(master)));
+        for track in &app.engine.session().tracks {
+            assert_eq!(track.mixer.volume_db, if track.id == TrackId(master) { 12.0 } else { 0.0 });
+        }
     }
 
     #[test]

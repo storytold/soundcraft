@@ -16,6 +16,7 @@ pub(crate) fn decode(packet: [u8; 3]) -> Option<Event> {
         [0x90, note @ 0x00..=0x07, 1..=127] => Some(Event::Arm(usize::from(note))),
         [0x90, note @ 0x08..=0x0f, 1..=127] => Some(Event::Solo(usize::from(note - 0x08))),
         [0x90, note @ 0x10..=0x17, 1..=127] => Some(Event::Mute(usize::from(note - 0x10))),
+        [0x90, note @ 0x18..=0x1f, 1..=127] => Some(Event::Select(usize::from(note - 0x18))),
         [0x90, 0x54, 1..=127] => Some(Event::SetMarker),
         [0x90, 0x56, 1..=127] => Some(Event::Cycle),
         [0x90, 0x5b, 1..=127] => Some(Event::Rewind),
@@ -43,7 +44,7 @@ fn relative(value: u8) -> Option<i8> {
 pub(crate) fn lamp(strip: usize, index: usize, lit: bool) -> Option<[u8; 3]> {
     let note = match strip {
         STRIPS => *[STOP, PLAY, 0x5f].get(index)?,
-        0..STRIPS => *[0x10, 0x08, 0].get(index)? + strip as u8,
+        0..STRIPS => *[0x10, 0x08, 0, 0x18].get(index)? + strip as u8,
         _ => return None,
     };
     Some([0x90, note, if lit { 0x7f } else { 0 }])

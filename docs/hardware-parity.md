@@ -42,8 +42,8 @@ Legend: ✅ works · 🟡 partial · ❌ missing.
 | Feature | Pro Tools | SoundCraft |
 |---|---|---|
 | EUCON (S1/S3/S4/S6, Dock, Control app) | ✅ | ❌ Avid-proprietary SDK; owner decision |
-| HUI | ✅ | 🟡 Windows via WinMM. Eight mixer strips, banks, transport and lamp feedback. Initial acceptance used a TASCAM Model 12 in HUI mode. |
-| Mackie Control Universal | ✅ (via HUI emulation and personalities) | 🟡 Windows via WinMM. Eight mixer strips, banks, transport and lamp feedback. The dedicated MCU master fader stays on the single active Master Fader track when changing banks. On the Model 12 in MCU - Reaper mode, this is the FX fader. Motorized fader feedback is optional. Meter, screen and timecode feedback remain open. |
+| HUI | ✅ | 🟡 Windows via WinMM. Eight mixer strips, banks, transport and lamp feedback. Model 12 hardware acceptance covers banked mixing and transport. Protocol tests cover SELECT input and lamp feedback. |
+| Mackie Control Universal | ✅ (via HUI emulation and personalities) | 🟡 Windows via WinMM. Eight mixer strips, banks, transport and lamp feedback. Protocol tests cover SELECT input and lamp feedback. The dedicated MCU master fader stays on the single active Master Fader track when changing banks. On the Model 12 in MCU - Reaper mode, this is the FX fader. Motorized fader feedback is optional. Meter, screen and timecode feedback remain open. |
 | Generic MIDI controller personalities | ✅ | ❌ |
 
 ## Sync and video hardware
@@ -71,7 +71,7 @@ Legend: ✅ works · 🟡 partial · ❌ missing.
 
 | Date | Change | Summary |
 |---|---|---|
-| 2026-11-20 | minor | Dedicated MCU master fader on Windows. |
+| 2026-11-20 | minor | Dedicated MCU master fader and bidirectional HUI/MCU track selection on Windows. |
 | 2026-11-19 | minor | Windows HUI and MCU support for eight mixer strips and transport. |
 | 2026-11-18 | minor | MIDI input devices (`midir`): live play-through to record-enabled MIDI and instrument tracks (notes, pedal, controllers, pitch bend, aftertouch), MIDI recording into clips, per-track device and channel, device switches in Playback Engine; guide in `midi-input.md` |
 | 2026-10-13 | trivial | bounces of a bus fed by an aux compensate its latency (#246) |

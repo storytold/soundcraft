@@ -102,6 +102,8 @@ Scroll Into View in the track name menu. A window not on screen catches up when 
 The default protocol is `hui`. Enable `"motorized":true` for fader position feedback on hardware
 with motorized faders. Otherwise, a fader takes control as it reaches or crosses the assigned
 track's current position. The mapped tracks follow Bank and Channel navigation.
+Press a strip's SELECT button to select its mapped track. The SELECT lamps mirror the
+session's selected tracks within the current bank, including selections made in SoundCraft.
 
 The dedicated MCU master fader controls the session's single active Master Fader track
 across banks. Sessions with zero or multiple active Master Fader tracks leave this
