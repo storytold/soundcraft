@@ -1137,6 +1137,24 @@ fn input_monitoring_replaces_clips() {
 }
 
 #[test]
+fn monitor_follows_named_hardware_path_and_silences_unavailable_routes() {
+    let (mut s, t) = session_with_dc(0.5, 4800);
+    s.inputs.push(soundcraft_model::InputPath { name: "Last".into(), first_channel: 63, format: ChannelFormat::Mono });
+    let track = s.track_mut(t).unwrap();
+    track.mixer.input_monitor = true;
+    track.mixer.input = Route::Input("Last".into());
+    let mut eng = MixEngine::new(48_000.0, 512);
+    eng.input = vec![vec![0.125; 512]; 64];
+    eng.input[63].fill(0.75);
+    let mut out = vec![vec![0.0; 512]; 2];
+    eng.render(&s, 0, 512, &mut out);
+    assert!((out[0][100] - 0.75 * std::f32::consts::FRAC_1_SQRT_2).abs() < 1e-3);
+    eng.input.pop();
+    eng.render(&s, 512, 512, &mut out);
+    assert_eq!(out[0][100], 0.0);
+}
+
+#[test]
 fn empty_session_is_silent() {
     let s = Session::default();
     let out = render_range(&s, Range::new(0, 1000), 128);

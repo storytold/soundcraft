@@ -196,7 +196,7 @@ impl SoundApp {
             None => self.fallback_take_dir()?,
         };
         let Some(r) = &mut self.recorder else { return Err(crate::localization::text("no audio input device").into()) };
-        let plan = soundcraft_engine::io::plan_takes(&self.engine, &unsaved_dir, r.channels);
+        let plan = soundcraft_engine::io::plan_takes(&self.engine, &unsaved_dir, r.channels)?;
         if plan.is_empty() {
             return Err(crate::localization::text("no audio track is record-enabled").into());
         }
