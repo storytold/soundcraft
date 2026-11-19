@@ -69,3 +69,8 @@ sync_github_name = true
 [people.kk376]
 real_name = "Kushagra Kumar"
 sync_github_name = true
+
+[people.sanderdewijs]
+real_name = "Sander de Wijs"
+display_name = "Sander de Wijs"
+sync_github_name = false

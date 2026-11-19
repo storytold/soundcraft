@@ -101,7 +101,7 @@ fn every_track_comments_field_is_named_for_its_track() {
 fn automation_id_round_trips_for_high_slots() {
     for slot in [0u8, 25, 26, 155, 156, 255] {
         for p in [AutoParam::SendLevel(slot), AutoParam::SendPan(slot), AutoParam::SendMute(slot), AutoParam::Plugin { slot, param: "trim".into() }] {
-            assert_eq!(AutoParam::parse(&automation_id(&p)), Some(p));
+            assert_eq!(soundcraft_model::parse_auto_param(&automation_id(&p)), Some(p));
         }
     }
 }
