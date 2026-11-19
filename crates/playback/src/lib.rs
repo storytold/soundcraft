@@ -218,7 +218,7 @@ impl Player {
         #[cfg(not(target_os = "freebsd"))]
         {
             let (device, shared_output) = self.input_device(cfg)?;
-            return record::Recorder::open_on_device(&device, cfg, shared_output);
+            record::Recorder::open_on_device(&device, cfg, shared_output)
         }
         #[cfg(target_os = "freebsd")]
         record::Recorder::open_with(cfg).map_err(Into::into)
