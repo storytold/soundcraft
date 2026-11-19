@@ -160,9 +160,14 @@ impl SoundApp {
             }
         }
         let light = theme::wants_light(ctx, self.ui.theme);
-        if self.theme_applied != Some(light) || theme::is_light() != light {
+        let theme_changed = self.theme_applied != Some(light) || theme::is_light() != light;
+        if theme_changed {
             theme::apply(ctx, light);
             self.theme_applied = Some(light);
+        }
+        let direction = self.ui.language.direction();
+        if theme_changed || craft_ui::direction::HasDirection::direction(ctx) != direction {
+            craft_ui::direction::apply(ctx, direction);
         }
         // A logic-only tick while hidden gets no fresh events: `ctx.input` still says what the last
         // completed pass saw. Do not let that stale pointer/keyboard state keep writing automation

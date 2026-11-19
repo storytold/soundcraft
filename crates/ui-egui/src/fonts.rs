@@ -42,6 +42,22 @@ const HANGUL: &[(&str, u32)] = &[
     ("/usr/share/fonts/truetype/nanum/NanumGothic.ttf", 0),
     ("/usr/share/fonts/naver-nanum/NanumGothic.ttf", 0),
 ];
+/// Hebrew fallback, appended after every family so Hebrew menus and labels draw on desktop OSes.
+const HEBREW: &[(&str, u32)] = &[
+    ("/System/Library/Fonts/SFHebrew.ttf", 0),
+    ("/System/Library/Fonts/Supplemental/ArialHB.ttc", 0),
+    ("/System/Library/Fonts/Supplemental/Raanana.ttc", 0),
+    ("C:\\Windows\\Fonts\\segoeui.ttf", 0),
+    ("C:\\Windows\\Fonts\\tahoma.ttf", 0),
+    ("C:\\Windows\\Fonts\\arial.ttf", 0),
+    ("C:\\Windows\\Fonts\\david.ttf", 0),
+    ("/usr/share/fonts/truetype/noto/NotoSansHebrew-Regular.ttf", 0),
+    ("/usr/share/fonts/noto/NotoSansHebrew-Regular.ttf", 0),
+    ("/usr/share/fonts/google-noto/NotoSansHebrew-Regular.ttf", 0),
+    ("/usr/share/fonts/truetype/culmus/NachlieliCLM-Regular.otf", 0),
+    ("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", 0),
+    ("/usr/share/fonts/dejavu/DejaVuSans.ttf", 0),
+];
 /// Font files larger than this are skipped: egui keeps the whole file in memory.
 #[cfg(not(target_arch = "wasm32"))]
 const MAX_FONT_BYTES: u64 = 64 << 20;
@@ -126,10 +142,15 @@ pub fn definitions(system_fonts: bool) -> FontDefinitions {
         bold_family.insert(0, "system-regular".into());
     }
     fonts.families.insert(FontFamily::Name("bold".into()), bold_family);
-    if let Some(h) = load(HANGUL, "sans-serif:lang=ko", Some("ko"), system_fonts) {
-        fonts.font_data.insert("system-hangul".into(), Arc::new(h));
-        for family in fonts.families.values_mut() {
-            family.push("system-hangul".into());
+    for (name, candidates, pattern, lang) in [
+        ("system-hangul", HANGUL, "sans-serif:lang=ko", "ko"),
+        ("system-hebrew", HEBREW, "sans-serif:lang=he", "he"),
+    ] {
+        if let Some(font) = load(candidates, pattern, Some(lang), system_fonts) {
+            fonts.font_data.insert(name.into(), Arc::new(font));
+            for family in fonts.families.values_mut() {
+                family.push(name.into());
+            }
         }
     }
     fonts
@@ -175,12 +196,17 @@ mod tests {
         }
     }
 
-    /// Korean names draw in every family, not as boxes; skipped when the system has no Korean font.
     #[test]
-    fn every_family_draws_hangul_with_a_system_korean_font() {
+    fn hebrew_candidates_cover_every_desktop_platform() {
+        for prefix in ["/System/Library/Fonts/", "C:\\Windows\\Fonts\\", "/usr/share/fonts/"] {
+            assert!(HEBREW.iter().any(|(p, _)| p.starts_with(prefix)), "no Hebrew candidate under {prefix}");
+        }
+    }
+
+    fn assert_family_draws_script(font_key: &str, script: &str, sample: &str) {
         let defs = definitions(true);
-        if !defs.font_data.contains_key("system-hangul") {
-            eprintln!("skipping: no Korean system font");
+        if !defs.font_data.contains_key(font_key) {
+            eprintln!("skipping: no {script} system font");
             return;
         }
         let families: Vec<FontFamily> = defs.families.keys().cloned().collect();
@@ -190,7 +216,19 @@ mod tests {
         output.textures_delta.clear();
         for family in families {
             let font = egui::FontId::new(13.0, family.clone());
-            assert!(ctx.fonts_mut(|f| f.has_glyphs(&font, "가한국어세션")), "{family:?} has no Hangul");
+            assert!(ctx.fonts_mut(|f| f.has_glyphs(&font, sample)), "{family:?} has no {script}");
         }
+    }
+
+    /// Korean names draw in every family, not as boxes; skipped when the system has no Korean font.
+    #[test]
+    fn every_family_draws_hangul_with_a_system_korean_font() {
+        assert_family_draws_script("system-hangul", "Hangul", "가한국어세션");
+    }
+
+    /// Hebrew labels draw in every family, not as boxes; skipped when the system has no Hebrew font.
+    #[test]
+    fn every_family_draws_hebrew_with_a_system_hebrew_font() {
+        assert_family_draws_script("system-hebrew", "Hebrew", "אבעברית");
     }
 }

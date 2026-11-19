@@ -2,6 +2,8 @@
 
 #[path = "../locales/pt-BR/mod.rs"]
 mod pt_br;
+#[path = "../locales/he/mod.rs"]
+mod he;
 
 use std::cell::Cell;
 
@@ -17,17 +19,20 @@ pub enum Language {
     English,
     #[serde(rename = "pt-BR")]
     PortugueseBrazil,
+    #[serde(rename = "he")]
+    Hebrew,
 }
 
 impl Language {
     /// All supported languages, in the order they are shown in the language menu.
-    pub const ALL: [Self; 2] = [Self::English, Self::PortugueseBrazil];
+    pub const ALL: [Self; 3] = [Self::English, Self::PortugueseBrazil, Self::Hebrew];
 
     /// Stable language tag used in preferences and control commands.
     pub const fn id(self) -> &'static str {
         match self {
             Self::English => "en",
             Self::PortugueseBrazil => "pt-BR",
+            Self::Hebrew => "he",
         }
     }
 
@@ -36,18 +41,31 @@ impl Language {
         match self {
             Self::English => "English",
             Self::PortugueseBrazil => "Portuguese (Brazil)",
+            Self::Hebrew => "Hebrew",
         }
     }
 
     pub fn parse(tag: &str) -> Option<Self> {
-        Self::ALL.into_iter().find(|language| language.id().eq_ignore_ascii_case(tag.trim()))
+        let trimmed = tag.trim();
+        if trimmed.eq_ignore_ascii_case("iw") {
+            return Some(Self::Hebrew);
+        }
+        Self::ALL.into_iter().find(|language| language.id().eq_ignore_ascii_case(trimmed))
     }
 
     /// Rewrites the decimal point of a rendered number for this language.
     pub fn localize_decimal(self, number: &str) -> String {
         match self {
-            Self::English => number.to_owned(),
+            Self::English | Self::Hebrew => number.to_owned(),
             Self::PortugueseBrazil => number.replace('.', ","),
+        }
+    }
+
+    /// Writing direction of the language; layouts mirror when this is `Direction::Rtl`.
+    pub const fn direction(self) -> craft_ui::direction::Direction {
+        match self {
+            Self::English | Self::PortugueseBrazil => craft_ui::direction::Direction::Ltr,
+            Self::Hebrew => craft_ui::direction::Direction::Rtl,
         }
     }
 
@@ -56,6 +74,7 @@ impl Language {
         match self {
             Self::English => source,
             Self::PortugueseBrazil => pt_br::translate(source).unwrap_or(source),
+            Self::Hebrew => he::translate(source).unwrap_or(source),
         }
     }
 }
@@ -89,6 +108,7 @@ fn error_text_in(language: Language, message: &str, depth: usize) -> String {
     let templates: &[(&str, &str)] = match language {
         Language::English => &[],
         Language::PortugueseBrazil => pt_br::ERROR_TEMPLATES,
+        Language::Hebrew => he::ERROR_TEMPLATES,
     };
     let mut best: Option<(usize, &str, Vec<(String, String)>)> = None;
     for (template, translation) in templates {
@@ -209,10 +229,14 @@ fn fill_captures(language: Language, translation: &str, captures: &[(String, Str
     out
 }
 
-/// Whether the Brazilian Portuguese catalog has an entry for `source`, even an identical one.
+/// Whether `language`'s catalog has an entry for `source`, even an identical one.
 #[cfg(test)]
-pub(crate) fn has_pt_br_entry(source: &str) -> bool {
-    pt_br::translate(source).is_some()
+pub(crate) fn has_catalog_entry(language: Language, source: &str) -> bool {
+    match language {
+        Language::English => true,
+        Language::PortugueseBrazil => pt_br::translate(source).is_some(),
+        Language::Hebrew => he::translate(source).is_some(),
+    }
 }
 
 /// Guard that restores the previously active language when dropped.
@@ -354,13 +378,24 @@ mod tests {
             assert_eq!(decoded, language);
         }
         assert_eq!(Language::parse(" PT-br "), Some(Language::PortugueseBrazil));
+        assert_eq!(Language::parse(" he "), Some(Language::Hebrew));
+        assert_eq!(Language::parse("iw"), Some(Language::Hebrew));
         assert_eq!(Language::parse("fr"), None);
+    }
+
+    #[test]
+    fn language_direction_marks_hebrew_as_rtl() {
+        assert_eq!(Language::English.direction(), craft_ui::direction::Direction::Ltr);
+        assert_eq!(Language::PortugueseBrazil.direction(), craft_ui::direction::Direction::Ltr);
+        assert_eq!(Language::Hebrew.direction(), craft_ui::direction::Direction::Rtl);
     }
 
     #[test]
     fn language_translations_fall_back_to_the_english_source() {
         assert_ne!(Language::PortugueseBrazil.text("Appearance"), "Appearance");
         assert_eq!(Language::PortugueseBrazil.text("A source string with no catalog entry"), "A source string with no catalog entry");
+        assert_ne!(Language::Hebrew.text("Appearance"), "Appearance");
+        assert_eq!(Language::Hebrew.text("A source string with no catalog entry"), "A source string with no catalog entry");
         assert_eq!(Language::English.text("Appearance"), "Appearance");
     }
 
@@ -380,10 +415,13 @@ mod tests {
     }
 
     #[test]
-    fn portuguese_catalog_covers_every_menu_label() {
-        for path in include_str!("../../engine/catalog/menus.txt").lines() {
-            for label in path.split(" > ").map(str::trim).filter(|label| !label.is_empty()) {
-                assert!(super::pt_br::translate(label).is_some(), "missing pt-BR menu label: {label}");
+    fn catalogs_cover_every_menu_label() {
+        let catalogs: [(&str, fn(&str) -> Option<&'static str>); 2] = [("pt-BR", super::pt_br::translate), ("he", super::he::translate)];
+        for (lang, translate) in catalogs {
+            for path in include_str!("../../engine/catalog/menus.txt").lines() {
+                for label in path.split(" > ").map(str::trim).filter(|label| !label.is_empty()) {
+                    assert!(translate(label).is_some(), "missing {lang} menu label: {label}");
+                }
             }
         }
     }
@@ -391,14 +429,25 @@ mod tests {
     #[test]
     fn engine_errors_are_translated_with_their_values() {
         assert_eq!(error_text("select a clip"), "select a clip");
-        let _scope = enter(Language::PortugueseBrazil);
+        {
+            let _scope = enter(Language::PortugueseBrazil);
+            assert_ne!(error_text("select a clip"), "select a clip");
+            assert_ne!(error_text("no track"), "no track");
+            let wrapped = error_text("bad parameters for `track.new`: `name` required");
+            assert!(wrapped.contains("`track.new`") && wrapped.contains("`name`"), "{wrapped}");
+            assert!(!wrapped.contains("bad parameters") && !wrapped.contains("required"), "{wrapped}");
+            let ratio = error_text("stretch ratio 12.500 is outside 0.1..10");
+            assert!(ratio.contains("12,500"), "{ratio}");
+            assert_eq!(error_text("some unknown library failure"), "some unknown library failure");
+        }
+        let _scope = enter(Language::Hebrew);
         assert_ne!(error_text("select a clip"), "select a clip");
         assert_ne!(error_text("no track"), "no track");
         let wrapped = error_text("bad parameters for `track.new`: `name` required");
         assert!(wrapped.contains("`track.new`") && wrapped.contains("`name`"), "{wrapped}");
         assert!(!wrapped.contains("bad parameters") && !wrapped.contains("required"), "{wrapped}");
         let ratio = error_text("stretch ratio 12.500 is outside 0.1..10");
-        assert!(ratio.contains("12,500"), "{ratio}");
+        assert!(ratio.contains("12.500"), "{ratio}");
         assert_eq!(error_text("some unknown library failure"), "some unknown library failure");
     }
 
@@ -460,9 +509,13 @@ mod tests {
         None
     }
 
-    /// Every `"source" => "translation"` pair of the catalog, read from its source file.
-    fn catalog_entries() -> Vec<(String, String)> {
-        let text = include_str!("../locales/pt-BR/mod.rs");
+    const CATALOGS: [(&str, &str, fn(&str) -> Option<&'static str>); 2] = [
+        ("pt-BR", include_str!("../locales/pt-BR/mod.rs"), super::pt_br::translate),
+        ("he", include_str!("../locales/he/mod.rs"), super::he::translate),
+    ];
+
+    /// Every `"source" => "translation"` pair of a catalog, read from its source file.
+    fn catalog_entries(text: &str) -> Vec<(String, String)> {
         let mut lines = text.lines().map(str::trim);
         let mut entries = Vec::new();
         while let Some(line) = lines.next() {
@@ -495,20 +548,24 @@ mod tests {
 
     #[test]
     fn catalog_entries_are_parsed_and_unique() {
-        let entries = catalog_entries();
-        assert!(entries.len() > 1000, "parsed only {} catalog entries", entries.len());
-        let mut keys: Vec<&str> = entries.iter().map(|(key, _)| key.as_str()).collect();
-        keys.sort_unstable();
-        let before = keys.len();
-        keys.dedup();
-        assert_eq!(before, keys.len(), "duplicate catalog keys");
+        for (lang, text, _) in CATALOGS {
+            let entries = catalog_entries(text);
+            assert!(entries.len() > 1000, "{lang}: parsed only {} catalog entries", entries.len());
+            let mut keys: Vec<&str> = entries.iter().map(|(key, _)| key.as_str()).collect();
+            keys.sort_unstable();
+            let before = keys.len();
+            keys.dedup();
+            assert_eq!(before, keys.len(), "{lang}: duplicate catalog keys");
+        }
     }
 
     #[test]
     fn catalog_translations_keep_the_english_placeholders() {
-        for (source, translation) in catalog_entries() {
-            assert_eq!(placeholders(&source), placeholders(&translation), "placeholders differ for {source:?}");
-            assert_eq!(super::pt_br::translate(&source), Some(translation.as_str()), "lookup differs for {source:?}");
+        for (lang, text, translate) in CATALOGS {
+            for (source, translation) in catalog_entries(text) {
+                assert_eq!(placeholders(&source), placeholders(&translation), "{lang}: placeholders differ for {source:?}");
+                assert_eq!(translate(&source), Some(translation.as_str()), "{lang}: lookup differs for {source:?}");
+            }
         }
     }
 
@@ -525,10 +582,12 @@ mod tests {
                     for marker in ["localization::text(\"", "localized_format!(\""] {
                         for (at, _) in text.match_indices(marker) {
                             let start = at + marker.len() - 1;
-                            if let Some((source, _)) = literal(&text[start..])
-                                && super::pt_br::translate(&source).is_none()
-                            {
-                                missing.push(format!("{}: {source:?}", path.display()));
+                            if let Some((source, _)) = literal(&text[start..]) {
+                                for (lang, _, translate) in CATALOGS {
+                                    if translate(&source).is_none() {
+                                        missing.push(format!("{lang}: {}: {source:?}", path.display()));
+                                    }
+                                }
                             }
                         }
                     }
@@ -537,6 +596,6 @@ mod tests {
         }
         let mut missing = Vec::new();
         visit(&std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src"), &mut missing);
-        assert!(missing.is_empty(), "strings without a pt-BR entry:\n{}", missing.join("\n"));
+        assert!(missing.is_empty(), "strings without a catalog entry:\n{}", missing.join("\n"));
     }
 }
