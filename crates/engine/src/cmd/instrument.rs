@@ -1,7 +1,10 @@
 //! An instrument track's instrument (`mix.instrument`): the plugin that turns the track's MIDI
 //! into audio, built in or hosted (CLAP, VST3, Audio Units). The mixer plays `Track::instrument`;
-//! the instrument is otherwise only set when the track is created (`track.new`).
-use super::{CommandSpec, bad, has_selection, str_param, tracks_required};
+//! the instrument is otherwise only set when the track is created (`track.new`). Its parameters
+//! (`mix.instrument_param`, or `mix.insert_param` with `slot: "instrument"`) are applied on top
+//! of a hosted instrument's stored state, like an insert's.
+use super::mix::ParameterValueResolver;
+use super::{CommandSpec, bad, has_selection, param_id, str_param, tracks_required};
 
 use crate::{Engine, Result, cmd};
 use serde_json::{Value, json};
@@ -14,7 +17,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Set Instrument",
             [],
             None,
-            "{track?, plugin: id, params?: {id: value}} — an instrument track's instrument: built-in, `clap:`, `vst3:` or `au:` id; `params` sets built-in parameters (clamped into range; unknown ids and other fields are errors)",
+            "{track?, plugin: id, params?: {id: value}} — an instrument track's instrument: built-in, `clap:`, `vst3:` or `au:` id. value: number, or text: a Toggle/Choice label or the plugin's own text, e.g. \"29\"; text that needs the plugin's own parsing uses the live instance when the app has that plugin loaded in the slot, and otherwise instantiates it temporarily. Values are clamped; unknown ids, invalid values and other fields are errors.",
             has_selection,
             set_instrument
         ),
@@ -23,7 +26,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Set Instrument Parameter",
             [],
             None,
-            "{track?, param, value}: one parameter of an instrument track's built-in instrument (clamped into range)",
+            "{track?, param: id (string or number), value: number, or text: a Toggle/Choice label or the plugin's own text, e.g. \"29\"; text that needs the plugin's own parsing uses the live instance when the app has that plugin loaded in the slot, and otherwise instantiates it temporarily}. One parameter of an instrument track's instrument, built in or hosted (clamped into range, and rounded to the step for toggle, choice and stepped parameters). The same as mix.insert_param with slot \"instrument\".",
             has_selection,
             set_instrument_param
         ),
@@ -50,19 +53,25 @@ fn set_instrument(e: &mut Engine, p: &Value) -> Result<Value> {
     if e.session().track(t).map(|tr| tr.kind) != Some(TrackKind::Instrument) {
         return Err(bad("mix.instrument", "only instrument tracks have an instrument"));
     }
-    // Validate the parameters before touching the session.
-    let mut values = Vec::new();
-    if let Some(v) = p.get("params") {
-        let obj = v.as_object().ok_or_else(|| bad("mix.instrument", "`params` must be an object"))?;
-        for (k, v) in obj {
-            let pi = info.params.iter().find(|pi| pi.id == k).ok_or_else(|| bad("mix.instrument", format!("`{plugin}` has no parameter `{k}`")))?;
-            let x = v.as_f64().filter(|x| x.is_finite()).ok_or_else(|| bad("mix.instrument", format!("`{k}` must be a number")))?;
-            values.push((k.clone(), pi.clamp(x as f32)));
-        }
-    }
     let mut ins = Insert::new(info.id);
     for pi in info.params {
         ins.params.insert(pi.id.to_string(), pi.default);
+    }
+    // Validate and parse the parameters before touching the session. The resolver borrows the
+    // live plugins, so it ends before the session is mutated.
+    let mut values = Vec::new();
+    let rate = e.session().sample_rate.as_f64() as f32;
+    {
+        let live = e.live_plugins_mut();
+        let mut resolver = ParameterValueResolver::new("mix.instrument", &ins, rate, t, soundcraft_mix::INSTRUMENT_SLOT, live);
+        if let Some(v) = p.get("params") {
+            let obj = v.as_object().ok_or_else(|| bad("mix.instrument", "`params` must be an object"))?;
+            for (k, v) in obj {
+                let pi =
+                    info.params.iter().find(|pi| pi.id == k).ok_or_else(|| bad("mix.instrument", format!("`{plugin}` has no parameter `{k}`")))?;
+                values.push((k.clone(), resolver.resolve(pi, v)?));
+            }
+        }
     }
     for (k, v) in values {
         ins.params.insert(k, v);
@@ -75,14 +84,22 @@ fn set_instrument(e: &mut Engine, p: &Value) -> Result<Value> {
 
 fn set_instrument_param(e: &mut Engine, p: &Value) -> Result<Value> {
     let id = "mix.instrument_param";
-    let param = str_param(p, "param").ok_or_else(|| bad(id, "`param` required"))?.to_string();
-    let value = p.get("value").and_then(Value::as_f64).filter(|v| v.is_finite()).ok_or_else(|| bad(id, "`value` must be a number"))? as f32;
+    let param = param_id(id, p, "param")?;
+    let value = p.get("value").ok_or_else(|| bad(id, "`value` must be a finite number or string"))?;
     let t = tracks_required(e, id, p)?.first().copied().ok_or_else(|| bad(id, "no track"))?;
-    let ins = e.session_mut().track_mut(t).and_then(|tr| tr.instrument.as_mut()).ok_or_else(|| bad(id, "the track has no instrument"))?;
-    // Hosted instruments keep their parameters in their own state.
-    let info = soundcraft_dsp::plugin_info(&ins.plugin).ok_or_else(|| bad(id, format!("`{}` is not a built-in instrument", ins.plugin)))?;
+    let ins = e.session().track(t).and_then(|tr| tr.instrument.as_ref()).cloned().ok_or_else(|| bad(id, "the track has no instrument"))?;
+    let plugin_name = ins.plugin.clone();
+    let Some(info) = super::clap::plugin_info(&ins.plugin) else {
+        return Err(bad(id, format!("unknown plugin `{plugin_name}`")));
+    };
     let pi = info.param(&param).ok_or_else(|| bad(id, format!("`{}` has no parameter `{param}`", info.id)))?;
-    let v = pi.clamp(value);
+    let rate = e.session().sample_rate.as_f64() as f32;
+    let v = {
+        let live = e.live_plugins_mut();
+        let mut resolver = ParameterValueResolver::new(id, &ins, rate, t, soundcraft_mix::INSTRUMENT_SLOT, live);
+        resolver.resolve(pi, value)?
+    };
+    let ins = e.session_mut().track_mut(t).and_then(|tr| tr.instrument.as_mut()).ok_or_else(|| bad(id, "the track has no instrument"))?;
     ins.params.insert(param.clone(), v);
     Ok(json!({"track": t, "param": param, "value": v}))
 }
@@ -191,6 +208,20 @@ mod tests {
         }
         let err = e.execute("mix.instrument", &json!({"track": t.0, "plugin": "drum_synth", "cutoff": 200})).unwrap_err().to_string();
         assert!(err.contains("cutoff") && err.contains("params"), "{err}");
+    }
+
+    #[test]
+    fn instrument_param_and_instrument_accept_cutoff_as_text() {
+        let mut e = Engine::default();
+        let t = track(&mut e, "instrument");
+        let r = e.execute("mix.instrument_param", &json!({"track": t.0, "param": "cutoff", "value": "5000"})).unwrap();
+        assert_eq!(r["value"], 5000.0);
+        let stored = e.session().track(t).and_then(|tr| tr.instrument.as_ref()).and_then(|i| i.params.get("cutoff").copied());
+        assert_eq!(stored, Some(5000.0));
+
+        e.execute("mix.instrument", &json!({"track": t.0, "plugin": "subtractive_synth", "params": {"cutoff": "5000"}})).unwrap();
+        let stored = e.session().track(t).and_then(|tr| tr.instrument.as_ref()).and_then(|i| i.params.get("cutoff").copied());
+        assert_eq!(stored, Some(5000.0));
     }
 
     #[test]

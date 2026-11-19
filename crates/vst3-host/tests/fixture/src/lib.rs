@@ -373,8 +373,17 @@ impl IEditControllerTrait for GainController {
         copy_c16(&text, s);
         kResultOk
     }
-    unsafe fn getParamValueByString(&self, _id: u32, _s: *mut TChar, _v: *mut f64) -> tresult {
-        kNotImplemented
+    unsafe fn getParamValueByString(&self, id: u32, s: *mut TChar, v: *mut f64) -> tresult {
+        if id != 13 || s.is_null() || v.is_null() {
+            return kNotImplemented;
+        }
+        let len = (0..128).position(|i| unsafe { *s.add(i) } == 0).unwrap_or(128);
+        let text = String::from_utf16_lossy(unsafe { std::slice::from_raw_parts(s, len) }).replace('\u{2212}', "-");
+        // The number only. `units` carries "dB"; this parser does not strip it, so a host that
+        // appended the unit has to take that one suffix off before the text will parse.
+        let Ok(db) = text.trim().parse::<f64>() else { return kInvalidArgument };
+        unsafe { *v = ((db + 24.0) / 48.0).clamp(0.0, 1.0) };
+        kResultOk
     }
     unsafe fn normalizedParamToPlain(&self, id: u32, n: f64) -> f64 {
         match id {
