@@ -574,6 +574,8 @@ pub struct MidiInputs {
     feed: Arc<MidiFeed>,
     /// Ports the user switched off, by name.
     disabled: Vec<String>,
+    /// System port name reserved by a control surface, separate from the user's switches.
+    reserved: Option<String>,
     ports: Vec<MidiPort>,
     error: Option<String>,
     backend: backend::Backend,
@@ -584,9 +586,15 @@ pub struct MidiInputs {
 impl MidiInputs {
     /// Connects to every input port except the `disabled` ones.
     pub fn open(disabled: Vec<String>) -> MidiInputs {
+        Self::open_reserving(disabled, None)
+    }
+
+    /// Open the performance inputs, excluding a named control-surface input.
+    pub fn open_reserving(disabled: Vec<String>, reserved: Option<&str>) -> MidiInputs {
         let mut m = MidiInputs {
             feed: Arc::new(MidiFeed::default()),
             disabled,
+            reserved: reserved.map(str::to_owned),
             ports: Vec::new(),
             error: None,
             backend: backend::Backend::default(),
@@ -604,6 +612,7 @@ impl MidiInputs {
         let mut m = MidiInputs {
             feed: Arc::new(MidiFeed::default()),
             disabled,
+            reserved: None,
             ports: Vec::new(),
             error: None,
             backend: backend::Backend::default(),
@@ -640,6 +649,14 @@ impl MidiInputs {
         &self.disabled
     }
 
+    /// Transfer a port to or from the control surface without modifying saved input preferences.
+    pub fn reserve_for_surface(&mut self, reserved: Option<&str>) {
+        if self.reserved.as_deref() != reserved {
+            self.reserved = reserved.map(str::to_owned);
+            self.rescan();
+        }
+    }
+
     /// Switch a port on or off (it stays off across rescans and, through the prefs, launches).
     pub fn set_enabled(&mut self, name: &str, on: bool) {
         self.disabled.retain(|d| d != name);
@@ -656,6 +673,7 @@ impl MidiInputs {
         let found = match &self.stand_in {
             Some(names) => Ok(names
                 .iter()
+                .filter(|name| Some(name.as_str()) != self.reserved.as_deref())
                 .map(|name| {
                     let enabled = !self.disabled.contains(name);
                     // Give the port its index, as connecting to a device does.
@@ -663,7 +681,7 @@ impl MidiInputs {
                     MidiPort { name: name.clone(), enabled, open: enabled }
                 })
                 .collect()),
-            None => self.backend.sync(&self.disabled, &self.feed),
+            None => self.backend.sync(&self.disabled, self.reserved.as_deref(), &self.feed),
         };
         match found {
             Ok(ports) => {
@@ -836,28 +854,31 @@ mod backend {
         }
 
         /// Open the enabled ports that are not open yet, close the rest, and return the list.
-        pub(super) fn sync(&mut self, disabled: &[String], feed: &Arc<MidiFeed>) -> Result<Vec<MidiPort>, String> {
+        pub(super) fn sync(&mut self, disabled: &[String], reserved: Option<&str>, feed: &Arc<MidiFeed>) -> Result<Vec<MidiPort>, String> {
             // midir panics on a few failures of the MIDI system (it unwraps them); those become
             // errors here.
-            catch_unwind(AssertUnwindSafe(|| self.sync_inner(disabled, feed))).unwrap_or_else(|_| {
+            catch_unwind(AssertUnwindSafe(|| self.sync_inner(disabled, reserved, feed))).unwrap_or_else(|_| {
                 self.scanner = None;
                 Err("the system's MIDI service failed".to_string())
             })
         }
 
-        fn sync_inner(&mut self, disabled: &[String], feed: &Arc<MidiFeed>) -> Result<Vec<MidiPort>, String> {
+        fn sync_inner(&mut self, disabled: &[String], reserved: Option<&str>, feed: &Arc<MidiFeed>) -> Result<Vec<MidiPort>, String> {
             let scanner = match self.scanner.take() {
                 Some(s) => s,
                 None => MidiInput::new(CLIENT).map_err(|e| format!("MIDI is not available: {e}"))?,
             };
-            let found: Vec<MidiInputPort> = scanner.ports();
-            let listed: Vec<(String, String)> = found
-                .iter()
-                .map(|p| {
-                    let raw = scanner.port_name(p).unwrap_or_default();
-                    (identity(p, &raw), raw)
+            let (found, listed): (Vec<_>, Vec<_>) = scanner
+                .ports()
+                .into_iter()
+                .filter_map(|p| {
+                    let raw = scanner.port_name(&p).unwrap_or_default();
+                    (Some(raw.as_str()) != reserved).then(|| {
+                        let id = identity(&p, &raw);
+                        (p, (id, raw))
+                    })
                 })
-                .collect();
+                .unzip();
             let names = assign_names(&mut self.names, &listed);
             self.scanner = Some(scanner);
             // A connection belongs to its port, not to a name: it stays while that port is there
@@ -911,7 +932,7 @@ mod backend {
     impl Backend {
         pub(super) fn close_all(&mut self, _feed: &MidiFeed) {}
 
-        pub(super) fn sync(&mut self, _disabled: &[String], _feed: &Arc<MidiFeed>) -> Result<Vec<MidiPort>, String> {
+        pub(super) fn sync(&mut self, _disabled: &[String], _reserved: Option<&str>, _feed: &Arc<MidiFeed>) -> Result<Vec<MidiPort>, String> {
             Err("MIDI devices are not supported on this system yet".to_string())
         }
     }
@@ -920,6 +941,21 @@ mod backend {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn surface_reservation_survives_rescan_and_keeps_the_users_switches() {
+        let name = "DAW Control";
+        let mut inputs = MidiInputs::with_port_names(vec!["Spare".into()], vec![name.into(), "Keys".into(), "Spare".into()]);
+        assert!(inputs.ports().iter().any(|port| port.name == name && port.open));
+        inputs.reserve_for_surface(Some(name));
+        inputs.rescan();
+        assert!(inputs.ports().iter().all(|port| port.name != name));
+        assert!(inputs.ports().iter().any(|port| port.name == "Keys" && port.open));
+        assert_eq!(inputs.disabled(), ["Spare"]);
+        inputs.reserve_for_surface(None);
+        assert!(inputs.ports().iter().any(|port| port.name == name && port.open));
+        assert!(inputs.ports().iter().any(|port| port.name == "Spare" && !port.open));
+    }
 
     #[test]
     fn port_names_lose_addresses_and_repeated_client_names() {

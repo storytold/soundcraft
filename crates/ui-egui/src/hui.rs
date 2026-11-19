@@ -32,6 +32,12 @@ pub struct Ports {
     protocol: Protocol,
 }
 
+impl Ports {
+    pub(crate) fn input(&self) -> &str {
+        &self.input
+    }
+}
+
 #[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "lowercase")]
 enum Protocol {
@@ -369,8 +375,16 @@ fn apply(app: &mut SoundApp, ports: Option<Ports>) -> Result<(), String> {
     app.hui.retry_at = None;
     app.hui.first_track = 0;
     app.ui.hui = None;
+    if let Some(inputs) = &mut app.midi_inputs {
+        inputs.reserve_for_surface(ports.as_ref().map(Ports::input));
+    }
     if let Some(p) = ports {
-        let link = Link::connect(&p).inspect_err(|e| app.hui.error.clone_from(e))?;
+        let link = Link::connect(&p).inspect_err(|e| {
+            app.hui.error.clone_from(e);
+            if let Some(inputs) = &mut app.midi_inputs {
+                inputs.reserve_for_surface(None);
+            }
+        })?;
         app.hui.link = Some(link);
         app.ui.hui = Some(p);
     }

@@ -50,7 +50,8 @@ rustfft = "6"
 zip = { version = "9", default-features = false }
 cpal = "0.18"
 # MIDI input devices. Pinned: it talks to the system's MIDI service and runs on its threads.
-# Only soundcraft-playback depends on it, and only on Linux, macOS and Windows; there it builds
+# Live MIDI input uses it on Linux, macOS and Windows, and control surfaces use it on Windows.
+# There it builds
 # alsa (already used by cpal), coremidi + coremidi-sys, or the `windows` crate (already in the
 # tree). Its Android and web dependencies (jni, android-build, java-locator, dlopen2,
 # process_path, wasm-bindgen) are in Cargo.lock because the lock file covers every target, and
