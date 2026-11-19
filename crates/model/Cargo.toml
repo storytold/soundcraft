@@ -9,7 +9,6 @@ repository.workspace = true
 
 [dependencies]
 craft-scraft-format.workspace = true
-unicode-casefold = "0.2"
 
 [lints]
 workspace = true

@@ -393,7 +393,7 @@ fn io_setup(e: &mut Engine, p: &Value) -> Result<Value> {
 
 fn edit_input_path(s: &mut Session, p: &Value, action: &str, name: &str, new_name: Option<String>, format: ChannelFormat) -> Result<()> {
     let id = "setup.io";
-    let index = s.inputs.iter().position(|path| soundcraft_model::input_path_name_eq(&path.name, name));
+    let index = s.inputs.iter().position(|path| path.name.eq_ignore_ascii_case(name));
     if action == "rename_input" || action == "create_input" {
         let proposed = if action == "create_input" { name } else { new_name.as_deref().ok_or_else(|| bad(id, "`new_name` required"))? };
         if proposed.chars().count() > soundcraft_model::MAX_NAME_CHARS
@@ -402,15 +402,11 @@ fn edit_input_path(s: &mut Session, p: &Value, action: &str, name: &str, new_nam
         {
             return Err(bad(id, "choose a distinct input path name"));
         }
-        if s.inputs
-            .iter()
-            .enumerate()
-            .any(|(i, path)| (action == "create_input" || Some(i) != index) && soundcraft_model::input_path_name_eq(&path.name, proposed))
-        {
+        if s.inputs.iter().enumerate().any(|(i, path)| (action == "create_input" || Some(i) != index) && path.name.eq_ignore_ascii_case(proposed)) {
             return Err(bad(id, format!("an input named `{proposed}` exists")));
         }
-        if index.is_none_or(|current| !soundcraft_model::input_path_name_eq(&s.inputs[current].name, proposed))
-            && s.tracks.iter().any(|track| matches!(&track.mixer.input, Route::Input(path) if soundcraft_model::input_path_name_eq(path, proposed)))
+        if index.is_none_or(|current| !s.inputs[current].name.eq_ignore_ascii_case(proposed))
+            && s.tracks.iter().any(|track| matches!(&track.mixer.input, Route::Input(path) if path.eq_ignore_ascii_case(proposed)))
         {
             return Err(bad(id, format!("tracks still refer to the unavailable input `{proposed}`; change their inputs first")));
         }
@@ -426,9 +422,7 @@ fn edit_input_path(s: &mut Session, p: &Value, action: &str, name: &str, new_nam
             let input = &s.inputs[index];
             let format = if p.get("format").is_some() { format } else { input.format };
             if format != input.format
-                && s.tracks
-                    .iter()
-                    .any(|track| matches!(&track.mixer.input, Route::Input(path) if soundcraft_model::input_path_name_eq(path, &input.name)))
+                && s.tracks.iter().any(|track| matches!(&track.mixer.input, Route::Input(path) if path.eq_ignore_ascii_case(&input.name)))
             {
                 return Err(bad(id, "tracks use this input; change their inputs first to change its format"));
             }
@@ -441,7 +435,7 @@ fn edit_input_path(s: &mut Session, p: &Value, action: &str, name: &str, new_nam
             let input = s.inputs.get_mut(index).ok_or_else(|| bad(id, "input path is missing"))?;
             let old = std::mem::replace(&mut input.name, to.clone());
             for track in &mut s.tracks {
-                if matches!(&track.mixer.input, Route::Input(path) if soundcraft_model::input_path_name_eq(path, &old)) {
+                if matches!(&track.mixer.input, Route::Input(path) if path.eq_ignore_ascii_case(&old)) {
                     track.mixer.input = Route::Input(to.clone());
                 }
             }
@@ -687,8 +681,8 @@ fn import_session_data(e: &mut Engine, p: &Value) -> Result<Value> {
             }
         };
         tr.mixer.input = if let Route::Input(name) = &tr.mixer.input {
-            let local = s.inputs.iter().find(|input| soundcraft_model::input_path_name_eq(&input.name, name));
-            let donor = other.inputs.iter().find(|input| soundcraft_model::input_path_name_eq(&input.name, name));
+            let local = s.inputs.iter().find(|input| input.name.eq_ignore_ascii_case(name));
+            let donor = other.inputs.iter().find(|input| input.name.eq_ignore_ascii_case(name));
             match (local, donor) {
                 (Some(local), Some(donor)) if local.format == donor.format && local.first_channel == donor.first_channel => {
                     Route::Input(local.name.clone())
@@ -733,16 +727,17 @@ mod tests {
         assert_eq!(e.session().track_by_name("Vox").unwrap().mixer.input, Route::Input("Mic".into()));
     }
     #[test]
-    fn named_inputs_share_unicode_key_rules_with_the_format() {
-        let mut e = Engine::default();
-        e.execute("track.new", &json!({"name":"Vox","format":"mono"})).unwrap();
-        e.execute("setup.io", &json!({"action":"create_input","name":"\u{c9}tage","format":"mono"})).unwrap();
-        assert!(e.execute("setup.io", &json!({"action":"create_input","name":"\u{e9}tage","format":"mono"})).is_err());
-        e.execute("track.input", &json!({"track":"Vox","input":"\u{e9}tage"})).unwrap();
-        assert_eq!(e.session().track_by_name("Vox").unwrap().mixer.input, Route::Input("\u{c9}tage".into()));
-        e.execute("setup.io", &json!({"action":"rename_input","name":"\u{e9}tage","new_name":"Stage"})).unwrap();
-        assert_eq!(e.session().track_by_name("Vox").unwrap().mixer.input, Route::Input("Stage".into()));
-        assert!(Session::from_json(&e.session().to_json().unwrap()).is_ok());
+    fn named_inputs_round_trip_distinct_non_ascii_keys() {
+        let mut engine = Engine::default();
+        for (track, name, first_channel) in [("Upper", "Étage", 1), ("Lower", "étage", 2)] {
+            engine.execute("track.new", &json!({"name":track,"format":"mono"})).unwrap();
+            engine.execute("setup.io", &json!({"action":"create_input","name":name,"format":"mono","first_channel":first_channel})).unwrap();
+            engine.execute("track.input", &json!({"track":track,"input":name})).unwrap();
+        }
+        assert!(engine.execute("setup.io", &json!({"action":"create_input","name":"ÉTAGE","format":"mono"})).is_err());
+        let reopened = Session::from_json(&engine.session().to_json().unwrap()).unwrap();
+        assert_eq!(reopened.track_by_name("Upper").unwrap().mixer.input, Route::Input("Étage".into()));
+        assert_eq!(reopened.track_by_name("Lower").unwrap().mixer.input, Route::Input("étage".into()));
     }
 
     #[test]
