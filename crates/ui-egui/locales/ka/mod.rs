@@ -1392,7 +1392,9 @@ fn menu_translate(source: &str) -> Option<&'static str> {
         "Fine Tune" => "ზუსტი აწყობა",
         "Flanger" => "ფლენჯერი",
         "Freq" => "სიხშ.",
+        "FreqShft" => "სიხშ. წანაც.",
         "Frequency" => "სიხშირე",
+        "Frequency Shifter" => "სიხშირის წანაცვლება",
         "Gate" => "გეიტი",
         "Gate Range" => "გეიტის დიაპაზონი",
         "Gate Release" => "გეიტის გაშვება",
@@ -1517,6 +1519,27 @@ fn menu_translate(source: &str) -> Option<&'static str> {
         "Autosave failed: {e}" => "ავტოშენახვა ვერ მოხერხდა: {e}",
         "Bounced {} (peak {:.1} dBFS, {:.1} LUFS)" => "დარენდერდა: {} (პიკი {:.1} dBFS, {:.1} LUFS)",
         "Cannot record: {err}" => "ჩაწერა ვერ ხერხდება: {err}",
+        "Cannot record: no MIDI input device is connected (Setup > Playback Engine lists them)" => {
+            "ჩაწერა ვერ ხერხდება: MIDI შეყვანის მოწყობილობა მიერთებული არ არის (ისინი ჩამოთვლილია აქ: მომართვა > დაკვრის ძრავა)"
+        }
+        "Nothing was recorded: the record-enabled tracks received no input" => {
+            "არაფერი ჩაიწერა: ჩასაწერად მომზადებულ ტრეკებს სიგნალი არ მიუღიათ"
+        }
+        "MIDI input was dropped during the take: it is incomplete, and notes held at that point end there" => {
+            "დუბლის დროს MIDI შეყვანის ნაწილი დაიკარგა: დუბლი არასრულია, ხოლო იმ მომენტში დაჭერილი ნოტები იქვე მთავრდება"
+        }
+        "The audio engine did not answer when the pass ended: the last MIDI notes played may be missing from the take" => {
+            "გავლის დასრულებისას აუდიოძრავამ არ უპასუხა: დუბლს შეიძლება აკლდეს ბოლოს დაკრული MIDI ნოტები"
+        }
+        "Cannot record: the audio engine has not finished the previous record pass yet (is the audio device running?)" => {
+            "ჩაწერა ვერ ხერხდება: აუდიოძრავას ჯერ არ დაუსრულებია ჩაწერის წინა გავლა (აუდიომოწყობილობა მუშაობს?)"
+        }
+        "All MIDI" => "ყველა MIDI",
+        "Channel" => "არხი",
+        "MIDI input" => "MIDI შეყვანა",
+        "All devices" => "ყველა მოწყობილობა",
+        "No MIDI input device found" => "MIDI შეყვანის მოწყობილობა ვერ მოიძებნა",
+        "{name} (not connected)" => "{name} (მიერთებული არ არის)",
         "Click to add a MIDI clip to {name} at the insertion point." => "დაწკაპეთ, რომ {name} ტრეკს ჩასმის წერტილში დაემატოს MIDI კლიპი.",
         "Could not open {path}: {e}" => "ვერ გაიხსნა {path}: {e}",
         "Couldn't recover “{name}”: {e}" => "ვერ აღდგა „{name}“: {e}",
