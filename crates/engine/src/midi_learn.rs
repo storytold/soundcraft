@@ -7,9 +7,10 @@ use soundcraft_model::{Session, TrackId, TrackKind};
 // Store one binding per entry so tracks, MIDI ports and values need no schema change.
 pub(crate) const PREFIX: &str = "midi.learn.v1=";
 
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Parameter {
+    Plugin { slot: Option<usize>, plugin: String, id: String },
     Volume,
     Pan(usize),
     Mute,
@@ -18,15 +19,22 @@ pub enum Parameter {
     SendPan { slot: usize, bus: soundcraft_model::BusId },
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct Target {
     pub track: TrackId,
     pub parameter: Parameter,
 }
 
 impl Target {
-    pub fn available(self, session: &Session) -> bool {
+    pub fn available(&self, session: &Session) -> bool {
         session.track(self.track).is_some_and(|track| match self.parameter {
+            Parameter::Plugin { slot, ref plugin, ref id } => {
+                let insert = match slot {
+                    Some(i) => track.mixer.inserts.get(i).and_then(Option::as_ref),
+                    None => track.instrument.as_ref(),
+                };
+                insert.is_some_and(|ins| ins.plugin == *plugin) && crate::cmd::clap::plugin_info(plugin).and_then(|info| info.param(id)).is_some()
+            }
             Parameter::Volume => true,
             Parameter::Mute | Parameter::Solo => track.kind != TrackKind::Master,
             Parameter::SendLevel { slot, bus } | Parameter::SendPan { slot, bus } => {
@@ -64,7 +72,7 @@ pub enum ControlMode {
     Toggle,
 }
 impl ControlMode {
-    pub fn supports(self, parameter: Parameter) -> bool {
+    pub fn supports(self, parameter: &Parameter) -> bool {
         let switch = matches!(parameter, Parameter::Mute | Parameter::Solo);
         match self {
             Self::Absolute => true,
@@ -77,12 +85,19 @@ impl ControlMode {
     }
 }
 
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 pub struct Binding {
+    /// Normalized parameter endpoints. Descending endpoints invert the controller.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub range: Option<[f32; 2]>,
     #[serde(default, skip_serializing_if = "ControlMode::is_absolute")]
     pub mode: ControlMode,
     pub source: Source,
     pub target: Target,
+}
+
+pub fn valid_range(binding: &Binding) -> bool {
+    binding.range.is_none_or(|ends| matches!(binding.target.parameter, Parameter::Plugin { .. }) && ends.iter().all(|v| (0.0..=1.0).contains(v)))
 }
 
 pub(crate) fn stored(session: &Session) -> impl Iterator<Item = (&String, Binding)> {
@@ -99,7 +114,7 @@ pub fn configured(session: &Session) -> bool {
 }
 
 pub fn bindings(session: &Session) -> impl Iterator<Item = Binding> {
-    stored(session)
-        .map(|(_, binding)| binding)
-        .filter(|binding| binding.source.valid() && binding.mode.supports(binding.target.parameter) && binding.target.available(session))
+    stored(session).map(|(_, binding)| binding).filter(|binding| {
+        valid_range(binding) && binding.source.valid() && binding.mode.supports(&binding.target.parameter) && binding.target.available(session)
+    })
 }

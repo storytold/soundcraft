@@ -95,6 +95,9 @@ pub(crate) fn attach(e: &mut Engine, t: TrackId, name: &str, bytes: &[u8], path:
             ins.params.insert(k, v);
         }
     }
+    if !keep {
+        super::midi_learn::slot_changed(e, t, None, None);
+    }
     Ok(json!({"track": t, "source": src, "name": stem, "frames": frames, "channels": channels, "sample_rate": rate}))
 }
 

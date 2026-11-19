@@ -9,7 +9,7 @@ use std::sync::OnceLock;
 mod audio_midi;
 mod audiosuite;
 mod auto_rename;
-mod clap;
+pub(crate) mod clap;
 mod clip;
 mod clip_list;
 mod clip_more;

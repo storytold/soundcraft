@@ -35,7 +35,7 @@ Legend: ✅ works · 🟡 partial · ❌ missing.
 | MIDI output to external gear | ✅ | ❌ |
 | MIDI Thru, input filter | ✅ | 🟡 record-enabled and input-monitored MIDI/instrument tracks play the keyboard through their instrument (notes, the sustain pedal, controllers, pitch bend, aftertouch and program changes); the input filter keeps the filtered kinds out of recordings. No thru to external gear |
 | MIDI Beat Clock out, MTC generate/chase | ✅ | ❌ |
-| MIDI learn / controller mapping | ✅ (via surfaces and plug-in maps) | 🟡 Track Volume, Pan, Mute, Solo and bus Send Level/Pan. Absolute CC, center-64 relative encoders and CC buttons, saved per project. Plug-in mapping remains open |
+| MIDI learn / controller mapping | ✅ (via surfaces and plug-in maps) | 🟡 Track Volume, Pan, Mute, Solo and bus Send Level/Pan. Absolute CC, center-64 relative encoders and CC buttons, saved per project. Hosted and built-in plug-in parameters support Learn, manual CC assignment and adjustable ranges |
 | Virtual MIDI keyboard | ✅ (MIDI Keyboard window) | 🟡 window exists, no live audition path |
 
 ## Control surfaces

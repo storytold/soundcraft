@@ -87,6 +87,8 @@ In the Mix window, right-click a track's Volume, Pan, Mute or Solo. In a bus Sen
 
 The menu shows the input port, MIDI channel and CC number. Choose **Forget MIDI Assignment** to release the control, or **Escape** to cancel learning. Saving the project preserves the assignments and control modes. A pad that sends CC can control the mixer. Pads that send notes still play the instrument. Keyboard size does not affect assignment.
 
+Choose **Edit Parameters…** from the instrument or insert menu. In the SoundCraft parameter window, right-click a parameter and choose **MIDI Learn**. For large parameter lists, use **Find parameter**. The menu also offers **Assign MIDI CC** to enter an input, channel and CC directly. Move the parameter to a desired endpoint and choose **Set Min** or **Set Max**, or choose **Invert Range** to reverse the direction. **Forget MIDI Assignment** releases the control. Assignments and ranges travel with the session. Moving an insert carries its bindings, and replacing it releases them. This workflow uses the parameter list exposed to the host.
+
 The assigned CC goes to the mixer. Notes, other channels and unassigned controls still reach monitored instruments and MIDI takes. During Learn, the first eligible unassigned knob is reserved immediately. Bank select (0/32), data entry (6/38), RPN/NRPN (98–101), increment/decrement (96/97) and channel-mode messages (120–127) stay on the performance path.
 
 A knob turn ends after 300 ms without movement. Overlapping turns share one undo step. Volume reaches unity at 95 and pan centers at 64. For track Volume and Pan during playback, Touch writes the moved parameter until release, and Latch and Touch/Latch continue the ride until Stop.

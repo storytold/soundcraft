@@ -15,7 +15,7 @@ impl SoundApp {
     }
 
     pub(super) fn sync_midi_routes(&mut self) {
-        if self.midi_learn_target.is_some_and(|t| !t.available(self.engine.session())) {
+        if self.midi_learn_target.as_ref().is_some_and(|t| !t.available(self.engine.session())) {
             self.midi_learn_target = None;
             self.midi_route_revision = None;
             self.ui.status = text("The mixer control is unavailable").to_owned();
@@ -65,7 +65,7 @@ impl SoundApp {
             let target: Target = serde_json::from_value(target.clone()).map_err(|err| err.to_string())?;
             let mode: Option<ControlMode> =
                 params.get("mode").map(|v| serde_json::from_value(v.clone())).transpose().map_err(|err| err.to_string())?;
-            if mode.is_some_and(|m| !m.supports(target.parameter)) {
+            if mode.is_some_and(|m| !m.supports(&target.parameter)) {
                 return Err(text("Unsupported control mode").into());
             }
             self.start_midi_learn(target)?;
@@ -83,7 +83,7 @@ impl SoundApp {
         if cfg!(target_arch = "wasm32") {
             return;
         }
-        response.context_menu(|ui| self.midi_learn_options(ui, target));
+        response.context_menu(|ui| self.midi_learn_options(ui, target.clone()));
     }
 
     pub(crate) fn midi_learn_options(&mut self, ui: &mut egui::Ui, target: Target) {
@@ -92,25 +92,25 @@ impl SoundApp {
             let source = &binding.source;
             ui.label(crate::localized_format!("{} · Ch {} · CC {}", source.device, source.channel, source.cc));
         }
-        if self.midi_learn_target == Some(target) {
+        if self.midi_learn_target.as_ref() == Some(&target) {
             if ui.button(text("Cancel MIDI Learn")).clicked() {
                 self.reset_midi_learn();
                 ui.close();
             }
         } else if ui.button(text("MIDI Learn")).clicked() {
-            if let Err(err) = self.start_midi_learn(target) {
+            if let Err(err) = self.start_midi_learn(target.clone()) {
                 self.ui.status = err;
             }
             ui.close();
         }
-        if self.midi_learn_target != Some(target) {
+        if self.midi_learn_target.as_ref() != Some(&target) {
             let (label, mode) = if matches!(target.parameter, Parameter::Mute | Parameter::Solo) {
                 ("MIDI Learn (hold button)", ControlMode::Absolute)
             } else {
                 ("MIDI Learn (relative, center 64)", ControlMode::Relative64)
             };
             if ui.button(text(label)).clicked() {
-                if let Err(err) = self.start_midi_learn(target) {
+                if let Err(err) = self.start_midi_learn(target.clone()) {
                     self.ui.status = err;
                 } else {
                     self.midi_learn_mode = mode;
@@ -118,12 +118,66 @@ impl SoundApp {
                 ui.close();
             }
         }
+        if let Parameter::Plugin { .. } = target.parameter {
+            self.plugin_assignment_options(ui, &target, binding.as_ref());
+        }
         if binding.is_some() && ui.button(text("Forget MIDI Assignment")).clicked() {
-            if self.midi_learn_target == Some(target) {
+            if self.midi_learn_target.as_ref() == Some(&target) {
                 self.reset_midi_learn();
             }
             let _ = self.run("midi.learn.remove", json!(target));
             ui.close();
+        }
+    }
+
+    fn plugin_assignment_options(&mut self, ui: &mut egui::Ui, target: &Target, binding: Option<&Binding>) {
+        ui.menu_button(text("Assign MIDI CC"), |ui| {
+            let ports: Vec<_> = self
+                .midi_inputs
+                .as_ref()
+                .map(|inputs| inputs.ports().iter().filter(|p| p.enabled).map(|p| p.name.clone()).collect())
+                .unwrap_or_default();
+            for device in ports {
+                ui.menu_button(&device, |ui| {
+                    let key = ui.scope_id().with("manual CC");
+                    let (mut channel, mut cc) = ui.data(|d| d.get_temp::<(u8, u8)>(key)).unwrap_or((1, 1));
+                    ui.horizontal(|ui| {
+                        ui.label(text("Channel"));
+                        ui.add(egui::DragValue::new(&mut channel).range(1..=16));
+                    });
+                    ui.horizontal(|ui| {
+                        ui.label("CC");
+                        ui.add(egui::DragValue::new(&mut cc).range(0..=119));
+                    });
+                    ui.data_mut(|d| d.insert_temp(key, (channel, cc)));
+                    if ui.add_enabled(soundcraft_model::is_mixer_cc(cc), egui::Button::new(text("Assign"))).clicked() {
+                        let _ = self.run("midi.learn.bind", json!({"source":{"device":device,"channel":channel,"cc":cc},"target":target}));
+                        ui.close();
+                    }
+                });
+            }
+        });
+        if let Some(binding) = binding {
+            let Parameter::Plugin { slot, plugin, id } = &target.parameter else { return };
+            let Some(track) = self.engine.session().track(target.track) else { return };
+            let Some(insert) = (match slot {
+                Some(i) => track.mixer.inserts.get(*i).and_then(Option::as_ref),
+                None => track.instrument.as_ref(),
+            }) else {
+                return;
+            };
+            let Some(pi) = crate::mix_window::plugin_info(plugin).and_then(|info| info.param(id)) else { return };
+            let current = pi.to_normalized(insert.params.get(id).copied().unwrap_or(pi.default));
+            let [low, high] = binding.range.unwrap_or([0.0, 1.0]);
+            ui.label(format!("{} – {}", pi.format(pi.from_normalized(low)), pi.format(pi.from_normalized(high))));
+            for (label, range) in [("Set Min", [current, high]), ("Set Max", [low, current]), ("Invert Range", [high, low])] {
+                if ui.button(text(label)).clicked() {
+                    let mut edited = binding.clone();
+                    edited.range = Some(range);
+                    let _ = self.run("midi.learn.bind", json!(edited));
+                    ui.close();
+                }
+            }
         }
     }
 
@@ -144,14 +198,19 @@ impl SoundApp {
             let channel = (event.status & 0x0F) + 1;
             let cc = event.data1;
             let existing = bindings.iter().find(|b| b.source.cc == cc && b.source.channel == channel && b.source.device == device);
-            if let Some(target) = self.midi_learn_target {
+            if let Some(target) = self.midi_learn_target.clone() {
                 if existing.is_some_and(|b| b.target != target) {
                     self.ui.status = text("MIDI Learn: this control is already assigned. Turn another control.").to_owned();
                     continue;
                 }
                 self.midi_learn_target = None;
                 self.midi_route_revision = None;
-                let binding = Binding { mode: self.midi_learn_mode, source: Source { device: device.to_owned(), channel, cc }, target };
+                let binding = Binding {
+                    range: None,
+                    mode: self.midi_learn_mode,
+                    source: Source { device: device.to_owned(), channel, cc },
+                    target: target.clone(),
+                };
                 if self.run("midi.learn.bind", json!(binding)).is_ok() {
                     bindings.retain(|old| old.target != target && old.source != binding.source);
                     bindings.push(binding);
@@ -168,7 +227,7 @@ impl SoundApp {
             self.prepare_automation_merge();
         }
         for (binding, change) in updates {
-            let target = binding.target;
+            let target = binding.target.clone();
             let Some((id, params)) = mixer_move(self.engine.session(), &binding, change) else { continue };
             if let Err(err) = self.engine.execute_merged(id, &params, GESTURE_KEY) {
                 self.ui.status = crate::localization::error_text(&err.to_string());
@@ -186,13 +245,32 @@ fn mixer_move(
     binding: &Binding,
     change: soundcraft_playback::midi::ControlChange,
 ) -> Option<(&'static str, Value)> {
-    let target = binding.target;
+    let target = binding.target.clone();
     if !target.available(session) {
         return None;
     }
     let track = target.track.0;
     let mix = &session.track(target.track)?.mixer;
     let parameter = target.parameter;
+    if let Parameter::Plugin { slot, ref plugin, ref id } = parameter {
+        let descriptor = crate::mix_window::plugin_info(plugin)?.param(id)?;
+        let insert = match slot {
+            Some(i) => mix.inserts.get(i)?.as_ref()?,
+            None => session.track(target.track)?.instrument.as_ref()?,
+        };
+        let [lo, hi] = binding.range.unwrap_or([0.0, 1.0]);
+        let position = if binding.mode == ControlMode::Relative64 {
+            let start = descriptor.to_normalized(insert.params.get(id).copied().unwrap_or(descriptor.default));
+            if lo == hi { 0 } else { change.relative_value((((start - lo) / (hi - lo)).clamp(0.0, 1.0) * 127.0).round() as u8) }
+        } else {
+            change.event.data2
+        };
+        let value = descriptor.from_normalized(lo + (hi - lo) * f32::from(position) / 127.0);
+        return Some(match slot {
+            Some(slot) => ("mix.insert_param", json!({"track":track,"slot":slot,"param":id,"value":value})),
+            None => ("mix.instrument_param", json!({"track":track,"param":id,"value":value})),
+        });
+    }
     if matches!(parameter, Parameter::Mute | Parameter::Solo) {
         let (cmd, old) = if parameter == Parameter::Mute { ("mix.mute", mix.mute) } else { ("mix.solo", mix.solo) };
         let value = if binding.mode == ControlMode::Toggle { old ^ (change.presses % 2 == 1) } else { change.event.data2 >= 64 };
@@ -255,6 +333,29 @@ mod tests {
         app.midi_inputs = Some(inputs);
         app.run("midi.learn.bind", json!({"target":{"track":id,"parameter":"volume"},"source":{"device":"Keys","channel":1,"cc":71}})).unwrap();
         (app, feed, id, port)
+    }
+
+    #[test]
+    fn midi_learn_plugin_applies_an_inverted_range_to_one_instance() {
+        let (mut app, feed, track, port) = controller();
+        for slot in [0, 1] {
+            app.run("mix.insert", json!({"track":track,"slot":slot,"plugin":"gain"})).unwrap();
+        }
+        let info = crate::mix_window::plugin_info("gain").unwrap();
+        let param = &info.params[0];
+        let target = json!({"track":track,"parameter":{"plugin":{"slot":0,"plugin":info.id,"id":param.id}}});
+        app.run("midi.learn.bind", json!({"target":target,"source":{"device":"Keys","channel":1,"cc":75},"range":[0.75,0.25]})).unwrap();
+
+        app.sync_midi_routes();
+        feed.receive(port, &[0xb0, 75, 127]);
+        assert!(app.service_midi_learn());
+        let inserts = &app.engine.session().track(track).unwrap().mixer.inserts;
+        assert_eq!(inserts[0].as_ref().unwrap().params[param.id], param.from_normalized(0.25));
+        assert_eq!(inserts[1].as_ref().unwrap().params[param.id], param.default);
+        app.run("mix.insert", json!({"track":track,"slot":0,"plugin":"gain"})).unwrap();
+        assert!(!midi_learn::bindings(app.engine.session()).any(|b| b.source.cc == 75));
+        assert!(app.engine.undo());
+        assert!(midi_learn::bindings(app.engine.session()).any(|b| b.source.cc == 75));
     }
 
     #[test]
@@ -366,13 +467,13 @@ mod tests {
     fn midi_learn_ignores_parameter_sequences_and_cancels_deleted_target() {
         let (mut app, feed, id, port) = controller();
         let target = Target { track: id, parameter: Parameter::Pan(0) };
-        app.start_midi_learn(target).unwrap();
+        app.start_midi_learn(target.clone()).unwrap();
         for cc in [0, 32, 99, 98, 6, 38, 100, 101, 96, 97, 21] {
             feed.receive(port, &[0xb0, cc, 42]);
         }
         app.service_midi_learn();
         assert!(midi_learn::bindings(app.engine.session()).any(|b| b.target == target && b.source.cc == 21));
-        app.start_midi_learn(target).unwrap();
+        app.start_midi_learn(target.clone()).unwrap();
         app.run("track.delete", json!({"tracks":[id]})).unwrap();
         app.service_midi_learn();
         assert!(app.midi_learn_target.is_none());
@@ -390,14 +491,14 @@ mod tests {
     fn midi_learn_errors_and_escape_release_the_capture() {
         let (mut app, feed, id, port) = controller();
         let target = Target { track: id, parameter: Parameter::Pan(0) };
-        app.start_midi_learn(target).unwrap();
+        app.start_midi_learn(target.clone()).unwrap();
         let invalid = feed.ports().assign(&"x".repeat(257));
         feed.receive(invalid, &[0xb0, 75, 12]);
         app.service_midi_learn();
         assert!(app.midi_learn_target.is_none());
         assert!(app.ui.status.contains("256"), "{}", app.ui.status);
         assert_eq!(midi_learn::bindings(app.engine.session()).count(), 1);
-        app.start_midi_learn(target).unwrap();
+        app.start_midi_learn(target.clone()).unwrap();
         let ctx = egui::Context::default();
         let mut input = egui::RawInput::default();
         input.events.push(egui::Event::Key {

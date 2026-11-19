@@ -11,6 +11,7 @@ pub fn plugin_menu(app: &mut SoundApp, ui: &mut Ui, id: TrackId, slot: usize, oc
         return;
     }
     if occupied {
+        edit_parameters(app, ui, id, slot);
         if ui.button(crate::localization::text("Bypass")).clicked() {
             run_pick(app, ui, "mix.insert_bypass", json!({"track": id.0, "slot": slot}));
         }
@@ -54,14 +55,7 @@ pub fn instrument_menu(app: &mut SoundApp, ui: &mut Ui, id: TrackId) {
     let current = app.engine.session().track(id).and_then(|t| t.instrument.clone());
     if let Some(info) = current.as_ref().and_then(|i| plugin_info(&i.plugin)) {
         ui.label(egui::RichText::new(info.name).strong());
-        if current.as_ref().is_some_and(|i| !soundcraft_mix::is_third_party(&i.plugin))
-            && ui.button(crate::localization::text("Edit Parameters…")).clicked()
-        {
-            if !app.ui.plugin_windows.contains(&(id, slot)) {
-                app.ui.plugin_windows.push((id, slot));
-            }
-            ui.close();
-        }
+        edit_parameters(app, ui, id, slot);
         if let Some(p) = &app.player
             && p.has_editor(id, slot)
         {
@@ -106,6 +100,15 @@ fn pick_insert(app: &mut SoundApp, ui: &Ui, id: TrackId, slot: usize, plugin: &s
 }
 
 /// Runs a menu's pick, shows its error in the status line and closes the menu.
+fn edit_parameters(app: &mut SoundApp, ui: &mut Ui, id: TrackId, slot: usize) {
+    if ui.button(crate::localization::text("Edit Parameters…")).clicked() {
+        if !app.ui.plugin_windows.contains(&(id, slot)) {
+            app.ui.plugin_windows.push((id, slot));
+        }
+        ui.close();
+    }
+}
+
 fn run_pick(app: &mut SoundApp, ui: &Ui, cmd: &str, params: serde_json::Value) {
     if let Err(e) = app.run(cmd, params) {
         app.ui.status = e;

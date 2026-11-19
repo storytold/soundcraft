@@ -301,6 +301,7 @@ fn load_preset(e: &mut Engine, p: &Value) -> Result<Value> {
             }
         }
     }
+    super::midi_learn::forget_preset_plugins(e, &tracks, instrument.is_some());
     Ok(json!({"tracks": tracks}))
 }
 

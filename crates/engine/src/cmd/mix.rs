@@ -375,6 +375,7 @@ fn insert(e: &mut Engine, p: &Value) -> Result<Value> {
     }
     if let Some(sl) = tr.mixer.inserts.get_mut(slot) {
         *sl = Some(ins);
+        super::midi_learn::slot_changed(e, t, Some(slot), None);
     }
     Ok(json!({"track": t, "slot": slot, "plugin": info.id}))
 }
@@ -385,6 +386,7 @@ fn insert_remove(e: &mut Engine, p: &Value) -> Result<Value> {
         && let Some(s) = tr.mixer.inserts.get_mut(slot)
     {
         *s = None;
+        super::midi_learn::slot_changed(e, t, Some(slot), None);
     }
     Ok(json!({}))
 }
@@ -467,6 +469,7 @@ fn insert_move(e: &mut Engine, p: &Value) -> Result<Value> {
     let to = slot_of(p, "to", INSERT_SLOTS).ok_or_else(|| bad("mix.insert_move", "`to` slot"))?;
     if let Some(tr) = e.session_mut().track_mut(t) {
         tr.mixer.inserts.swap(from, to);
+        super::midi_learn::slot_changed(e, t, Some(from), Some(to));
     }
     Ok(json!({}))
 }

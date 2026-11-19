@@ -24,7 +24,10 @@ fn bind(e: &mut Engine, p: &Value) -> Result<Value> {
     if !binding.target.available(e.session()) {
         return Err(bad(id, "the mixer control is unavailable"));
     }
-    if !binding.mode.supports(binding.target.parameter) {
+    if !crate::midi_learn::valid_range(&binding) {
+        return Err(bad(id, "expected normalized plugin parameter endpoints"));
+    }
+    if !binding.mode.supports(&binding.target.parameter) {
         return Err(bad(id, "unsupported MIDI controller mode for this target"));
     }
     if !binding.source.valid() {
@@ -47,6 +50,43 @@ fn remove(e: &mut Engine, p: &Value) -> Result<Value> {
     Ok(json!({"removed": remove_where(e, |old| old.target == target)}))
 }
 
+// Insert moves swap the two instances, including their MIDI assignments. Replacement
+// discards the old instance's bindings even if the next instance has the same plugin ID.
+pub(super) fn slot_changed(e: &mut Engine, track: soundcraft_model::TrackId, slot: Option<usize>, swap: Option<usize>) {
+    use crate::midi_learn::Parameter;
+    let changed: Vec<_> = stored(e.session())
+        .filter_map(|(old, mut binding)| {
+            if binding.target.track != track {
+                return None;
+            }
+            let Parameter::Plugin { slot: current, .. } = &mut binding.target.parameter else { return None };
+            if *current == slot {
+                *current = swap;
+            } else if swap.is_some() && *current == swap {
+                *current = slot;
+            } else {
+                return None;
+            }
+            let replacement = if swap.is_some() { Some(format!("{PREFIX}{}", serde_json::to_string(&binding).ok()?)) } else { None };
+            Some((old.clone(), replacement))
+        })
+        .collect();
+    if changed.is_empty() {
+        return;
+    }
+    let flags = &mut e.session_mut().edit.flags;
+    for (old, _) in &changed {
+        flags.remove(old);
+    }
+    flags.extend(changed.into_iter().filter_map(|(_, new)| new));
+}
+
+pub(super) fn forget_preset_plugins(e: &mut Engine, tracks: &[soundcraft_model::TrackId], instrument: bool) {
+    remove_where(e, |b| {
+        tracks.contains(&b.target.track) && matches!(b.target.parameter,crate::midi_learn::Parameter::Plugin{slot,..} if slot.is_some() || instrument)
+    });
+}
+
 fn remove_where(e: &mut Engine, matches: impl Fn(&Binding) -> bool) -> usize {
     let flags: Vec<_> = stored(e.session()).filter(|(_, binding)| matches(binding)).map(|(flag, _)| flag.clone()).collect();
     for flag in &flags {
@@ -58,6 +98,20 @@ fn remove_where(e: &mut Engine, matches: impl Fn(&Binding) -> bool) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn midi_learn_plugin_swap_carries_bindings_between_identical_effects() {
+        let mut e = crate::demo::demo_engine();
+        let t = e.session().track_by_name("Kick").unwrap().id;
+        for slot in [0, 1] {
+            e.execute("mix.insert", &json!({"track":t,"slot":slot,"plugin":"gain"})).unwrap();
+        }
+        e.execute("midi.learn.bind",&json!({"target":{"track":t,"parameter":{"plugin":{"slot":0,"plugin":"gain","id":"gain"}}},"source":{"device":"Keys","channel":1,"cc":75}})).unwrap();
+        e.execute("mix.insert_move", &json!({"track":t,"from":0,"to":1})).unwrap();
+        assert_eq!(json!(bindings(e.session()).next().unwrap())["target"]["parameter"]["plugin"]["slot"], 1);
+        assert!(e.undo());
+        assert_eq!(json!(bindings(e.session()).next().unwrap())["target"]["parameter"]["plugin"]["slot"], 0);
+    }
 
     #[test]
     fn midi_learn_send_assignment_follows_the_bus_when_undo_restores_it() {
