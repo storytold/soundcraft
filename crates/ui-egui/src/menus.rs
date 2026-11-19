@@ -526,6 +526,7 @@ const MENU_WINDOWS: &[(&str, &str)] = &[
     ("Setup > Appearance", "window.ui_customization"),
     ("Setup > Hardware...", "window.playback_engine"),
     ("Setup > Playback Engine...", "window.playback_engine"),
+    ("Setup > MIDI > MIDI Input Devices...", "window.playback_engine"),
     ("Setup > I/O...", "window.io_setup"),
     ("Setup > Keyboard Shortcuts...", "window.shortcuts"),
     ("Setup > Session", "setup.session"),
@@ -757,6 +758,7 @@ pub fn run_ui_command(app: &mut SoundApp, id: &str, p: &Value) -> Option<Result<
             app.preferences.discard_draft();
             app.ui.show_automation = false;
             app.ui.plugin_windows.clear();
+            app.ui.output_window = None;
             app.ui.audiosuite = None;
             json!({})
         }

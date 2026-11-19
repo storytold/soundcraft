@@ -1,4 +1,6 @@
 use super::clips::Key;
+use super::instances::is_third_party;
+use super::live_midi::LiveNotes;
 use super::strip::{PluginSlot, Strip};
 use super::{ClipContent, CtrlKind, Range, SampleSource, Samples, Session, SourceAudio, Track};
 use std::sync::Arc;
@@ -18,7 +20,19 @@ fn midi_offset(s: &Session, t: &Track) -> i64 {
 }
 
 /// Send note on/offs and controllers for MIDI clips overlapping the block.
-pub(crate) fn schedule_notes(s: &Session, t: &Track, pos: Samples, frames: usize, inst: &mut PluginSlot) {
+///
+/// Live MIDI uses the instrument's first channel. The clip and a live key may share
+/// a pitch there (or on a single-part instrument), so defer that clip's release.
+pub(crate) fn schedule_notes(
+    s: &Session,
+    t: &Track,
+    pos: Samples,
+    frames: usize,
+    inst: &mut PluginSlot,
+    held: &mut [u128; 16],
+    live: &mut LiveNotes,
+) {
+    let multichannel = is_third_party(&inst.id);
     let sr = s.sample_rate;
     // MIDI Track Offsets: the track's notes sound `offset` samples later (earlier if negative), so
     // the block looks that far back into the clips.
@@ -68,11 +82,23 @@ pub(crate) fn schedule_notes(s: &Session, t: &Track, pos: Samples, frames: usize
             if on >= clip.end() {
                 continue;
             }
+            let held_channel = if multichannel { usize::from(n.channel) } else { 0 };
             if on >= pos && on < end {
                 inst.plugin.note_on_channel(usize::try_from(on - pos).unwrap_or(0), n.channel, n.pitch, n.velocity);
+                if let Some(notes) = held.get_mut(held_channel) {
+                    *notes |= 1u128 << n.pitch;
+                }
             }
             if off >= pos && off < end {
-                inst.plugin.note_off_channel(usize::try_from(off - pos).unwrap_or(0), n.channel, n.pitch);
+                let at = usize::try_from(off - pos).unwrap_or(0);
+                if held_channel == 0 && live.holds(n.pitch) {
+                    live.clip_off_held_back(n.pitch, at);
+                } else {
+                    inst.plugin.note_off_channel(at, n.channel, n.pitch);
+                }
+                if let Some(notes) = held.get_mut(held_channel) {
+                    *notes &= !(1u128 << n.pitch);
+                }
             }
         }
         // Events before tick 0 are what a start trim hid: they don't play.
@@ -121,14 +147,24 @@ pub(crate) struct ChaseEvent {
 
 /// Reset controllers, then replay the latest values and recorded resets in playback order.
 /// Shared or omni receivers therefore hear the latest event regardless of its MIDI channel.
-pub(crate) fn chase_controllers(s: &Session, t: &Track, pos: Samples, inst: &mut PluginSlot, last: &mut Vec<ChaseEvent>) {
-    for channel in 0..16u8 {
+pub(crate) fn chase_controllers(s: &Session, t: &Track, pos: Samples, inst: &mut PluginSlot, last: &mut Vec<ChaseEvent>, channels: u16) -> u128 {
+    let multichannel = is_third_party(&inst.id);
+    let reset = if multichannel { channels } else { channels & 1 };
+    for channel in (0..16u8).filter(|channel| reset & (1 << channel) != 0) {
         inst.plugin.midi(0, [0xB0 | channel, 121, 0]);
     }
     let pos = pos.saturating_sub(midi_offset(s, t));
     last.clear();
     last.resize_with(CHASE_SLOTS, ChaseEvent::default);
     let mut order = 0usize;
+    // MIDI Real-Time Properties: the delay moves the track's controllers as it does when they
+    // are played (`schedule_notes`), so a value is in the past here when it was already sent.
+    let delay = if s.edit.values.is_empty() {
+        0i64
+    } else {
+        Key::new(format_args!("rtp.{}.delay", t.id.0)).map_or(0.0, |k| s.edit.value(k.as_str(), 0.0)).clamp(-1e7, 1e7) as i64
+    };
+    let mut sent = 0u128;
     let sr = s.sample_rate;
     for clip in t.clips() {
         let ClipContent::Midi { sequence } = &clip.content else { continue };
@@ -137,7 +173,7 @@ pub(crate) fn chase_controllers(s: &Session, t: &Track, pos: Samples, inst: &mut
         }
         let base = s.tempo.samples_to_ticks(clip.start, sr);
         let until = pos.min(clip.end());
-        for c in sequence.ctrls.iter().filter(|c| c.tick >= 0 && c.channel < 16) {
+        for c in sequence.ctrls.iter().filter(|c| c.tick >= 0 && c.channel < 16 && (!multichannel || channels & (1 << c.channel) != 0)) {
             // Match the scheduler's clip/event traversal order when messages share a timestamp.
             order = order.saturating_add(1);
             let slot = match c.kind {
@@ -147,7 +183,7 @@ pub(crate) fn chase_controllers(s: &Session, t: &Track, pos: Samples, inst: &mut
                 CtrlKind::Program => PROGRAM,
                 CtrlKind::PolyPressure(_) => continue,
             };
-            let at = s.tempo.tick_to_samples(base.saturating_add(c.tick), sr);
+            let at = s.tempo.tick_to_samples(base.saturating_add(c.tick.saturating_add(delay).max(0)), sr);
             let index = usize::from(c.channel) * (PROGRAM + 1) + slot;
             if at < until
                 && let Some(event) = last.get_mut(index)
@@ -161,7 +197,12 @@ pub(crate) fn chase_controllers(s: &Session, t: &Track, pos: Samples, inst: &mut
     last.sort_unstable_by_key(|event| (event.time, event.order));
     for event in last {
         inst.plugin.midi(0, event.message);
+        let [status, cc, _] = event.message;
+        if status & 0xF0 == 0xB0 && (status & 0x0F == 0 || !multichannel) {
+            sent |= 1u128 << cc;
+        }
     }
+    sent
 }
 
 pub(crate) fn chase_scratch() -> Vec<ChaseEvent> {
