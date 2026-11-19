@@ -851,6 +851,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "cfb"
+version = "0.15.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0f13298d9178622b7916ec5d01d470425c04273c8ed07e87b1c38b34c4f4612b"
+dependencies = [
+ "fnv",
+ "uuid",
+ "web-time",
+]
+
+[[package]]
 name = "cfg-if"
 version = "1.0.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1246,6 +1257,14 @@ version = "0.1.0"
 source = "git+https://github.com/storytold/craft-libs?rev=ddbe78231b5b23273b3d191f04b1a38f4c0445b3#ddbe78231b5b23273b3d191f04b1a38f4c0445b3"
 dependencies = [
  "thiserror 2.0.21",
+]
+
+[[package]]
+name = "craft-mcp-server"
+version = "0.1.0"
+source = "git+https://github.com/storytold/craft-libs?rev=08da5e1486ee640de1d2cccd8fe8dd32b1d3b62c#08da5e1486ee640de1d2cccd8fe8dd32b1d3b62c"
+dependencies = [
+ "serde_json",
 ]
 
 [[package]]
@@ -4939,6 +4958,7 @@ version = "0.20.1"
 dependencies = [
  "clap",
  "craft-audio",
+ "craft-mcp-server",
  "log",
  "serde_json",
  "soundcraft-engine",
@@ -4994,6 +5014,7 @@ dependencies = [
 name = "soundcraft-engine"
 version = "0.20.1"
 dependencies = [
+ "cfb",
  "craft-audio",
  "craft-docpath",
  "craft-score",
@@ -5006,6 +5027,7 @@ dependencies = [
  "soundcraft-au-host",
  "soundcraft-clap-host",
  "soundcraft-dsp",
+ "soundcraft-interchange",
  "soundcraft-midi",
  "soundcraft-mix",
  "soundcraft-model",
@@ -5015,6 +5037,18 @@ dependencies = [
  "thiserror 2.0.21",
  "winsafe",
  "zip",
+]
+
+[[package]]
+name = "soundcraft-interchange"
+version = "0.20.1"
+dependencies = [
+ "cfb",
+ "serde",
+ "serde_json",
+ "soundcraft-model",
+ "soundcraft-time",
+ "thiserror 2.0.21",
 ]
 
 [[package]]
