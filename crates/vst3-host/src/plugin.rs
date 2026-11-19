@@ -598,9 +598,9 @@ mod tests {
         assert!(!notes.is_sorted_by_key(NoteEvent::time));
         let mut order = vec![(0, 0); EVENT_CAP];
         soundcraft_dsp::sort_timed_events(&mut notes, &mut order, NoteEvent::time);
-        for (time, pair) in notes.chunks_exact(2).enumerate() {
+        for (time, pair) in notes.as_chunks::<2>().0.iter().enumerate() {
             let time = time as u32;
-            assert_eq!(pair, [NoteEvent::Off { channel: 9, time, key: 60 }, NoteEvent::Off { channel: 0, time, key: 60 }]);
+            assert_eq!(*pair, [NoteEvent::Off { channel: 9, time, key: 60 }, NoteEvent::Off { channel: 0, time, key: 60 }]);
         }
     }
 
