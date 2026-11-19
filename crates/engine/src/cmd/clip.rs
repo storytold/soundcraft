@@ -352,7 +352,8 @@ fn loop_clips(e: &mut Engine, p: &Value) -> Result<Value> {
                 // `start` is 0 here, so the end is the length; the trim also shortens the fades to fit and removes a sync point past the cut.
                 nc.trim_end_to(last);
             }
-            copies.push((c.start + c.length * k, nc));
+            // Saturating, as the length and fill path is: a clip length read from a file can be absurd.
+            copies.push((c.start.saturating_add(c.length.saturating_mul(k)), nc));
         }
         for (at, nc) in copies {
             let length = nc.length;
