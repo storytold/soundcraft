@@ -1317,7 +1317,6 @@ fn menu_translate(source: &str) -> Option<&'static str> {
         "Type" => "Tipo",
         "Channels" => "Canais",
         "Bank" => "Banco",
-        "Channel" => "Canal",
         "Tracks {first} to {last}" => "Faixas {first} a {last}",
         "HUI connected" => "HUI conectado",
         "MCU connected" => "MCU conectado",
