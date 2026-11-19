@@ -521,9 +521,24 @@ impl PluginEditor for Vst3Editor {
     }
 
     fn idle(&mut self) -> Vec<(String, f32)> {
+        let was_open = self.link.is_open();
         self.link.idle();
+        let edits = self.host.take_edits();
+        let refreshed = self.host.parameter_values_changed.swap(false, Ordering::Relaxed);
+        if self.info.is_instrument && was_open && refreshed {
+            let latest: HashMap<_, _> = edits.into_iter().collect();
+            return self
+                .ids
+                .iter()
+                .enumerate()
+                .filter_map(|(i, &id)| {
+                    let n = latest.get(&id).copied().or_else(|| self.link.normalized_value(id))?;
+                    Some((self.info.params.get(i)?.id.to_string(), self.plain(i, n)?))
+                })
+                .collect();
+        }
         let mut out = Vec::new();
-        for (vid, n) in self.host.take_edits() {
+        for (vid, n) in edits {
             let Some(i) = self.ids.iter().position(|&x| x == vid) else { continue };
             if let (Some(p), Some(v)) = (self.info.params.get(i), self.plain(i, n)) {
                 out.push((p.id.to_string(), v));

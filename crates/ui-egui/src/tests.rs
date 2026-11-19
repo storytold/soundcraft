@@ -1618,6 +1618,8 @@ fn editor_gesture_polling_survives_discarded_and_hidden_host_iterations() {
         run_host_frame(&mut app, &ctx, raw());
     }
     let keys = app.engine.session().track_by_name("Keys").unwrap().id;
+    app.engine.execute("mix.instrument_param", &json!({"track": keys.0, "param": "cutoff", "value": 500.0})).unwrap();
+    app.engine.mark_clean();
     let original = instrument_state(&app, keys);
     let revision = app.engine.revision;
     let undo = app.engine.undo_history().len();
@@ -1631,7 +1633,7 @@ fn editor_gesture_polling_survives_discarded_and_hidden_host_iterations() {
     let polls = Rc::new(Cell::new(0));
     let captures = Rc::new(RefCell::new(Vec::new()));
     app.editor_poll_fixture = Some(poll_fixture(&reports, &latest, &polls, &captures));
-    reports.borrow_mut().push((keys, soundcraft_mix::INSTRUMENT_SLOT, "cutoff".into(), 1.0));
+    reports.borrow_mut().push((keys, soundcraft_mix::INSTRUMENT_SLOT, "cutoff".into(), 100.0));
     let mut input = raw();
     app.raw_input_hook(&ctx, &mut input);
     let passes = run_host_frame_discarding_first_pass(&mut app, &ctx, input);
@@ -1647,7 +1649,7 @@ fn editor_gesture_polling_survives_discarded_and_hidden_host_iterations() {
     // The next host hook is hidden: it still polls the continuing gesture despite a stale
     // discarded-pass index and without drawing any UI.
     latest.set(2);
-    reports.borrow_mut().push((keys, soundcraft_mix::INSTRUMENT_SLOT, "cutoff".into(), 2.0));
+    reports.borrow_mut().push((keys, soundcraft_mix::INSTRUMENT_SLOT, "cutoff".into(), 200.0));
     let mut hidden = raw();
     hidden.viewports.get_mut(&egui::ViewportId::ROOT).unwrap().minimized = Some(true);
     app.raw_input_hook(&ctx, &mut hidden);
@@ -1666,6 +1668,7 @@ fn editor_gesture_polling_survives_discarded_and_hidden_host_iterations() {
     assert_eq!(*captures.borrow(), [(keys, soundcraft_mix::INSTRUMENT_SLOT)]);
     assert!(app.editor_states.is_empty());
     assert_eq!(instrument_state(&app, keys), Some(vec![2, 1]));
+    assert_eq!(app.engine.session().track(keys).unwrap().instrument.as_ref().unwrap().params["cutoff"], 200.0);
     assert_eq!(app.engine.revision, revision.wrapping_add(1), "the completed gesture persists exactly one document revision");
     assert!(app.engine.is_dirty(), "captured instrument state is unsaved document work");
     assert_eq!(app.engine.undo_history().len(), undo, "state-only instrument persistence does not create an undo step");

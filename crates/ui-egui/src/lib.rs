@@ -445,6 +445,8 @@ pub struct SoundApp {
     last_write_at: Samples,
     /// Plugins changed in their editors whose state the session hasn't taken yet (see `editor_states_due`).
     editor_states: Vec<(TrackId, usize)>,
+    /// Latest native instrument values in the pending gesture, committed with its state.
+    instrument_edits: HashMap<TrackId, (String, serde_json::Map<String, Value>)>,
     /// One editor poll per host raw-input iteration, including a hidden logic-only iteration.
     /// A discarded layout pass must not mistake its already-drained queue for a gesture end.
     editor_poll_due: bool,

@@ -316,7 +316,7 @@ unsafe extern "C" fn process(p: *const clap_plugin, pr: *const clap_process) -> 
 // ---- extensions ----
 
 unsafe extern "C" fn params_count(p: *const clap_plugin) -> u32 {
-    if unsafe { fx(p) }.synth { 0 } else { 3 }
+    if unsafe { fx(p) }.synth { 1 } else { 3 }
 }
 
 fn write_name(dst: &mut [c_char], s: &CStr) {

@@ -41,6 +41,7 @@ fn window_api() -> Option<&'static CStr> {
 pub(super) struct GuiInner {
     pub(super) plugin: *const clap_plugin,
     pub(super) gui: *const clap_plugin_gui,
+    pub(super) params: *const super::clap_plugin_params,
     pub(super) state: *const clap_plugin_state,
     /// The plugin instance exists (cleared by `Instance::drop` before it destroys the plugin).
     pub(super) alive: bool,
@@ -72,6 +73,7 @@ impl Default for GuiLink {
             inner: Mutex::new(GuiInner {
                 plugin: std::ptr::null(),
                 gui: std::ptr::null(),
+                params: std::ptr::null(),
                 state: std::ptr::null(),
                 alive: false,
                 created: false,
@@ -108,6 +110,23 @@ impl GuiLink {
     fn vt(g: &GuiInner) -> Option<clap_plugin_gui> {
         // SAFETY: `gui` is null or the plugin's static extension vtable, valid while `alive`.
         (g.alive).then(|| unsafe { g.gui.as_ref() }.copied()).flatten()
+    }
+
+    /// A preset can request a parameter rescan without emitting individual edits.
+    pub fn parameter_values(&self, ids: &[u32]) -> Vec<(u32, f64)> {
+        let g = self.lock();
+        if !g.alive || !on_main_thread() {
+            return Vec::new();
+        }
+        // SAFETY: the extension lives as long as the instance, protected by this lock.
+        let Some(get) = (unsafe { g.params.as_ref() }).and_then(|p| p.get_value) else { return Vec::new() };
+        ids.iter()
+            .filter_map(|&id| {
+                let mut value = 0.0;
+                // SAFETY: live instance, valid writable output, on the main thread.
+                (unsafe { get(g.plugin, id, &mut value) } && value.is_finite()).then_some((id, value))
+            })
+            .collect()
     }
 
     /// Opens (creates and shows) the plugin's floating editor window.

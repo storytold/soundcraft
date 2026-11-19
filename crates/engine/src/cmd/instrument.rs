@@ -14,7 +14,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Set Instrument",
             [],
             None,
-            "{track?, plugin: id, params?: {id: value}} — an instrument track's instrument: built-in, `clap:`, `vst3:` or `au:` id; `params` sets built-in parameters (clamped into range; unknown ids and other fields are errors)",
+            "{track?, plugin: id, params?: {id: value}} — an instrument track's instrument: built-in, `clap:`, `vst3:` or `au:` id; `params` sets explicit parameters (clamped into range; unknown ids and other fields are errors)",
             has_selection,
             set_instrument
         ),
@@ -61,8 +61,11 @@ fn set_instrument(e: &mut Engine, p: &Value) -> Result<Value> {
         }
     }
     let mut ins = Insert::new(info.id);
-    for pi in info.params {
-        ins.params.insert(pi.id.to_string(), pi.default);
+    // A hosted instrument supplies its own patch. Only explicit host values override its state.
+    if !soundcraft_mix::is_third_party(info.id) {
+        for pi in info.params {
+            ins.params.insert(pi.id.to_string(), pi.default);
+        }
     }
     for (k, v) in values {
         ins.params.insert(k, v);

@@ -12,6 +12,8 @@ impl SoundApp {
         self.midi_moves.clear();
         self.midi_pan_latches.clear();
         self.reset_midi_learn();
+        self.editor_states.clear();
+        self.instrument_edits.clear();
         // The Output window shows a track of the old session: a track of the new one can have
         // the same id.
         self.ui.output_window = None;

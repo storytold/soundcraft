@@ -44,6 +44,20 @@ fn install_fixture_now() {
 }
 
 #[test]
+fn hosted_instrument_keeps_native_defaults_until_the_host_sets_a_parameter() {
+    install_fixture();
+    let mut e = Engine::default();
+    e.execute("track.new", &json!({"kind": "instrument"})).unwrap();
+    let track = e.session().tracks[0].id;
+    let plugin = "clap:org.soundcraft.test.synth";
+    assert!(soundcraft_clap_host::plugin_info(plugin).unwrap().param("7").is_some());
+    e.execute("mix.instrument", &json!({"track": track.0, "plugin": plugin})).unwrap();
+    assert!(e.session().track(track).unwrap().instrument.as_ref().unwrap().params.is_empty());
+    e.execute("mix.instrument", &json!({"track": track.0, "plugin": plugin, "params": {"7": 0.5}})).unwrap();
+    assert_eq!(e.session().track(track).unwrap().instrument.as_ref().unwrap().params["7"], 0.5);
+}
+
+#[test]
 fn clap_insert_renders_through_the_mix() {
     install_fixture();
     let mut e = Engine::default();

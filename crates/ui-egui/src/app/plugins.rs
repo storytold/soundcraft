@@ -41,24 +41,45 @@ impl SoundApp {
     /// Reads every live third-party plugin's state and stores it on its insert
     /// (`mix.insert_state`), so saves and bounces include it.
     pub fn capture_plugin_states(&mut self) {
-        let Some(p) = &self.player else { return };
-        let states = p.capture_states();
-        self.store_plugin_states(states);
+        if let Some(p) = &self.player {
+            // A save or bounce can arrive between editor polls, even during a gesture.
+            let edits = p.idle();
+            let states = p.capture_states();
+            self.store_editor_changes(edits, states);
+        }
+        let pending: Vec<_> = self.instrument_edits.keys().copied().collect();
+        for t in pending {
+            self.store_plugin_state(t, soundcraft_mix::INSTRUMENT_SLOT, None);
+        }
     }
 
     pub(crate) fn store_plugin_states(&mut self, states: soundcraft_playback::PluginStates) {
         for (t, slot, data) in states {
-            let slot = if slot == soundcraft_mix::INSTRUMENT_SLOT { json!("instrument") } else { json!(slot) };
-            let params = json!({"track": t.0, "slot": slot, "state": soundcraft_model::b64::encode(&data)});
-            // A state read while a knob is dragged (or a pass recorded) joins that gesture, so it
-            // stays one undo step.
-            let stored = match self.engine.merge_key().map(str::to_string) {
-                Some(key) => self.engine.execute_merged("mix.insert_state", &params, &key),
-                None => self.engine.execute("mix.insert_state", &params),
-            };
-            if let Err(e) = stored {
-                log::warn!("storing plugin state: {e}");
-            }
+            self.store_plugin_state(t, slot, Some(&data));
+        }
+    }
+
+    fn store_plugin_state(&mut self, t: TrackId, slot: usize, data: Option<&[u8]>) {
+        let instrument = slot == soundcraft_mix::INSTRUMENT_SLOT;
+        let mut params = json!({"track": t.0, "slot": if instrument { json!("instrument") } else { json!(slot) }});
+        if let Some(data) = data {
+            params["state"] = json!(soundcraft_model::b64::encode(data));
+        }
+        if instrument
+            && let Some((plugin, values)) = self.instrument_edits.remove(&t)
+            && self.engine.session().track(t).and_then(|tr| tr.instrument.as_ref()).is_some_and(|ins| ins.plugin == plugin)
+        {
+            params["params"] = serde_json::Value::Object(values);
+        }
+        if data.is_none() && params.get("params").is_none() {
+            return;
+        }
+        let stored = match self.engine.merge_key().map(str::to_string) {
+            Some(key) => self.engine.execute_merged("mix.insert_state", &params, &key),
+            None => self.engine.execute("mix.insert_state", &params),
+        };
+        if let Err(e) = stored {
+            log::warn!("storing plugin state: {e}");
         }
     }
 
@@ -88,10 +109,8 @@ impl SoundApp {
     }
 
     /// Parameter edits made in plugin editors go into the session (one undo step per gesture).
-    /// Hosted instruments keep their parameters in their own state, which the session takes
-    /// instead, as it does for plugins that said their state changed: either way the session is
-    /// modified, so it is autosaved and asks to be saved. The state is read once per gesture (see
-    /// `editor_states_due`).
+    /// Native instrument edits are stored with their patch once per gesture, so the generic
+    /// editor, MIDI Learn and newly restored instances see the same parameter values.
     pub(super) fn apply_editor_edits(&mut self) {
         if !std::mem::take(&mut self.editor_poll_due) {
             return;
@@ -119,12 +138,26 @@ impl SoundApp {
     pub(crate) fn store_editor_changes(&mut self, edits: Vec<soundcraft_playback::EditorEdit>, states: soundcraft_playback::PluginStates) {
         for (t, slot, param, value) in edits {
             if slot == soundcraft_mix::INSTRUMENT_SLOT {
+                if let Some(ins) = self.engine.session().track(t).and_then(|tr| tr.instrument.as_ref()) {
+                    let (plugin, values) = self.instrument_edits.entry(t).or_default();
+                    if *plugin != ins.plugin {
+                        plugin.clone_from(&ins.plugin);
+                        values.clear();
+                    }
+                    values.insert(param, json!(value));
+                }
                 continue;
             }
             let key = format!("param:{}:{slot}:{param}", t.0);
             let _ = self.engine.execute_merged("mix.insert_param", &json!({"track": t.0, "slot": slot, "param": param, "value": value}), &key);
         }
         self.store_plugin_states(states);
+        // A plug-in may expose parameters without supporting opaque state.
+        let completed: Vec<_> =
+            self.instrument_edits.keys().copied().filter(|&t| !self.editor_states.contains(&(t, soundcraft_mix::INSTRUMENT_SLOT))).collect();
+        for t in completed {
+            self.store_plugin_state(t, soundcraft_mix::INSTRUMENT_SLOT, None);
+        }
     }
 }
 

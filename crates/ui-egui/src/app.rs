@@ -123,6 +123,7 @@ impl SoundApp {
             touched_sends: std::collections::HashSet::new(),
             last_write_at: i64::MIN,
             editor_states: Vec::new(),
+            instrument_edits: HashMap::new(),
             editor_poll_due: true,
             #[cfg(test)]
             editor_poll_fixture: None,

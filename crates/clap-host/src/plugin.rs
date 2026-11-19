@@ -453,9 +453,18 @@ impl PluginEditor for ClapEditor {
     }
 
     fn idle(&mut self) -> Vec<(String, f32)> {
-        let raw = self.link.idle();
+        let was_open = self.link.is_open();
+        let events = self.link.idle();
+        let rescan = self.link.host().params_rescan.swap(false, Ordering::Relaxed);
+        if self.info.is_instrument && was_open && (rescan || self.link.host().dirty.load(Ordering::Relaxed)) {
+            // Native patch changes may report only a dirty/rescan notification. Prefer explicit
+            // edits from this poll when present, as the processor may still have an old value.
+            let mut values: std::collections::HashMap<_, _> = self.link.parameter_values(&self.ids).into_iter().collect();
+            values.extend(events);
+            return self.ids.iter().zip(self.info.params).filter_map(|(id, p)| Some((p.id.to_string(), p.clamp(*values.get(id)? as f32)))).collect();
+        }
         let mut out: Vec<(String, f32)> = Vec::new();
-        for (cid, v) in raw {
+        for (cid, v) in events {
             let Some(i) = self.ids.iter().position(|&x| x == cid) else { continue };
             let Some(p) = self.info.params.get(i) else { continue };
             let v = p.clamp(v as f32);
