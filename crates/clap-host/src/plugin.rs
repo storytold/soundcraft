@@ -524,6 +524,21 @@ mod tests {
         );
     }
 
+    #[test]
+    fn a_full_controller_chase_leaves_room_for_bend_and_note_releases() {
+        let mut queue = Vec::with_capacity(EVENT_CAP);
+        for channel in 0..16u8 {
+            assert!(push_event(&mut queue, Event::Midi { time: 0, data: [0xB0 | channel, 121, 0] }, false));
+            for cc in 0..=127u8 {
+                assert!(push_event(&mut queue, Event::Midi { time: 0, data: [0xB0 | channel, cc, 1] }, false));
+            }
+        }
+        assert!(push_event(&mut queue, Event::Midi { time: 0, data: [0xEF, 0, 64] }, false));
+        let mut held = [[true; 128]; 16];
+        release_on_reset(&mut queue, &mut held, NoteMode::Clap);
+        assert_eq!(queue.iter().filter(|event| matches!(event, Event::NoteOff { .. })).count(), RELEASE_RESERVE);
+    }
+
     /// A queue that parameter changes filled still releases every held key on a reset, once
     /// each, and keeps the parameter changes.
     #[test]

@@ -39,6 +39,9 @@ pub(crate) fn schedule_notes(
     let offset = midi_offset(s, t);
     let pos = pos.saturating_sub(offset);
     let end = pos.saturating_add(frames as i64);
+    // Offsets can arrive out of order when clips overlap. Keep the final event by
+    // sample for the block-end bitmap, with a later traversal event winning ties.
+    let mut latest = [[0usize; 128]; 16];
     for clip in t.clips() {
         if clip.muted {
             continue;
@@ -84,10 +87,9 @@ pub(crate) fn schedule_notes(
             }
             let held_channel = if multichannel { usize::from(n.channel) } else { 0 };
             if on >= pos && on < end {
-                inst.plugin.note_on_channel(usize::try_from(on - pos).unwrap_or(0), n.channel, n.pitch, n.velocity);
-                if let Some(notes) = held.get_mut(held_channel) {
-                    *notes |= 1u128 << n.pitch;
-                }
+                let at = usize::try_from(on - pos).unwrap_or(0);
+                inst.plugin.note_on_channel(at, n.channel, n.pitch, n.velocity);
+                update_clip_held(&mut latest, held, held_channel, n.pitch, at, true);
             }
             if off >= pos && off < end {
                 let at = usize::try_from(off - pos).unwrap_or(0);
@@ -96,9 +98,7 @@ pub(crate) fn schedule_notes(
                 } else {
                     inst.plugin.note_off_channel(at, n.channel, n.pitch);
                 }
-                if let Some(notes) = held.get_mut(held_channel) {
-                    *notes &= !(1u128 << n.pitch);
-                }
+                update_clip_held(&mut latest, held, held_channel, n.pitch, at, false);
             }
         }
         // Events before tick 0 are what a start trim hid: they don't play.
@@ -112,6 +112,16 @@ pub(crate) fn schedule_notes(
                 inst.plugin.midi(usize::try_from(at - pos).unwrap_or(0), ctrl_message(c.channel, c.kind, c.value, dp));
             }
         }
+    }
+}
+
+fn update_clip_held(latest: &mut [[usize; 128]; 16], held: &mut [u128; 16], channel: usize, pitch: u8, offset: usize, sounding: bool) {
+    let Some(previous) = latest.get_mut(channel).and_then(|keys| keys.get_mut(usize::from(pitch))) else { return };
+    let Some(held) = held.get_mut(channel) else { return };
+    if offset >= *previous {
+        *previous = offset;
+        let bit = 1u128 << pitch;
+        *held = (*held & !bit) | if sounding { bit } else { 0 };
     }
 }
 
@@ -136,9 +146,12 @@ fn ctrl_message(channel: u8, kind: CtrlKind, value: i32, transpose: i64) -> [u8;
 const BEND: usize = 128;
 const PRESSURE: usize = 129;
 const PROGRAM: usize = 130;
-const CHASE_SLOTS: usize = 16 * (PROGRAM + 1);
+const PROGRAM_BANK_MSB: usize = 131;
+const PROGRAM_BANK_LSB: usize = 132;
+const CHASE_PER_CHANNEL: usize = PROGRAM_BANK_LSB + 1;
+const CHASE_SLOTS: usize = 16 * CHASE_PER_CHANNEL;
 
-#[derive(Clone, Default)]
+#[derive(Clone, Copy, Default)]
 pub(crate) struct ChaseEvent {
     time: i64,
     order: usize,
@@ -156,7 +169,6 @@ pub(crate) fn chase_controllers(s: &Session, t: &Track, pos: Samples, inst: &mut
     let pos = pos.saturating_sub(midi_offset(s, t));
     last.clear();
     last.resize_with(CHASE_SLOTS, ChaseEvent::default);
-    let mut order = 0usize;
     // MIDI Real-Time Properties: the delay moves the track's controllers as it does when they
     // are played (`schedule_notes`), so a value is in the past here when it was already sent.
     let delay = if s.edit.values.is_empty() {
@@ -166,30 +178,70 @@ pub(crate) fn chase_controllers(s: &Session, t: &Track, pos: Samples, inst: &mut
     };
     let mut sent = 0u128;
     let sr = s.sample_rate;
-    for clip in t.clips() {
-        let ClipContent::Midi { sequence } = &clip.content else { continue };
-        if clip.muted || clip.start >= pos {
-            continue;
+    let candidates = || {
+        t.clips()
+            .iter()
+            .filter_map(|clip| {
+                let ClipContent::Midi { sequence } = &clip.content else { return None };
+                if clip.muted || clip.start >= pos {
+                    return None;
+                }
+                let base = s.tempo.samples_to_ticks(clip.start, sr);
+                let until = pos.min(clip.end());
+                Some(sequence.ctrls.iter().filter_map(move |c| {
+                    if c.tick < 0 || c.channel >= 16 || (multichannel && channels & (1 << c.channel) == 0) {
+                        return None;
+                    }
+                    let at = s.tempo.tick_to_samples(base.saturating_add(c.tick.saturating_add(delay).max(0)), sr);
+                    (at < until).then_some((c, at))
+                }))
+            })
+            .flatten()
+            .enumerate()
+    };
+    for (order, (c, at)) in candidates() {
+        let slot = match c.kind {
+            CtrlKind::Cc(n) => usize::from(n & 0x7F),
+            CtrlKind::PitchBend => BEND,
+            CtrlKind::ChannelPressure => PRESSURE,
+            CtrlKind::Program => PROGRAM,
+            CtrlKind::PolyPressure(_) => continue,
+        };
+        let index = usize::from(c.channel) * CHASE_PER_CHANNEL + slot;
+        if let Some(event) = last.get_mut(index)
+            && (event.order == 0 || at >= event.time)
+        {
+            *event = ChaseEvent { time: at, order: order.saturating_add(1), message: ctrl_message(c.channel, c.kind, c.value, 0) };
         }
-        let base = s.tempo.samples_to_ticks(clip.start, sr);
-        let until = pos.min(clip.end());
-        for c in sequence.ctrls.iter().filter(|c| c.tick >= 0 && c.channel < 16 && (!multichannel || channels & (1 << c.channel) != 0)) {
-            // Match the scheduler's clip/event traversal order when messages share a timestamp.
-            order = order.saturating_add(1);
-            let slot = match c.kind {
-                CtrlKind::Cc(n) => usize::from(n & 0x7F),
-                CtrlKind::PitchBend => BEND,
-                CtrlKind::ChannelPressure => PRESSURE,
-                CtrlKind::Program => PROGRAM,
-                CtrlKind::PolyPressure(_) => continue,
+    }
+    // A newer Bank Select stays pending for the next Program Change. Recover the older
+    // selection separately when it was overwritten, even when clips overlap in time.
+    let mut needs_bank = [[false; 2]; 16];
+    for (needed, slots) in needs_bank.iter_mut().zip(last.as_chunks::<CHASE_PER_CHANNEL>().0) {
+        let Some(program) = slots.get(PROGRAM).filter(|program| program.order != 0) else { continue };
+        for (needed, cc) in needed.iter_mut().zip([0, 32]) {
+            *needed = slots.get(cc).is_some_and(|bank| bank.order != 0 && (bank.time, bank.order) > (program.time, program.order));
+        }
+    }
+    if needs_bank.iter().flatten().any(|&needed| needed) {
+        for (order, (c, at)) in candidates() {
+            let (component, slot) = match c.kind {
+                CtrlKind::Cc(0) => (0, PROGRAM_BANK_MSB),
+                CtrlKind::Cc(32) => (1, PROGRAM_BANK_LSB),
+                _ => continue,
             };
-            let at = s.tempo.tick_to_samples(base.saturating_add(c.tick.saturating_add(delay).max(0)), sr);
-            let index = usize::from(c.channel) * (PROGRAM + 1) + slot;
-            if at < until
-                && let Some(event) = last.get_mut(index)
-                && (event.order == 0 || at >= event.time)
+            let channel = usize::from(c.channel);
+            if !needs_bank.get(channel).and_then(|parts| parts.get(component)).copied().unwrap_or(false) {
+                continue;
+            }
+            let base = channel * CHASE_PER_CHANNEL;
+            let Some(program) = last.get(base + PROGRAM).copied() else { continue };
+            let order = order.saturating_add(1);
+            if (at, order) < (program.time, program.order)
+                && let Some(bank) = last.get_mut(base + slot)
+                && (bank.order == 0 || at >= bank.time)
             {
-                *event = ChaseEvent { time: at, order, message: ctrl_message(c.channel, c.kind, c.value, 0) };
+                *bank = ChaseEvent { time: at, order, message: ctrl_message(c.channel, c.kind, c.value, 0) };
             }
         }
     }

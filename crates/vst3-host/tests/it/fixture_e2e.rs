@@ -241,6 +241,22 @@ fn queued_notes_are_released_in_playback_order_on_seek_and_reset() {
 }
 
 #[test]
+fn reset_releases_a_sounding_voice_with_a_full_pending_queue() {
+    let mut p = soundcraft_vst3_host::create(&id_of("Fixture Synth")).unwrap();
+    p.prepare(48_000.0, 64, 2);
+    let mut io = vec![vec![0.0f32; 64]; 2];
+    p.note_on_channel(0, 9, 60, 127);
+    p.process(&mut io, 64);
+    assert_eq!(io[0][63], 10.0);
+    for offset in 0..8192 {
+        p.note_off_channel(offset, 0, (offset % 128) as u8);
+    }
+    p.reset();
+    p.process(&mut io, 64);
+    assert!(io[0].iter().all(|&sample| sample == 0.0));
+}
+
+#[test]
 fn many_instances_create_and_drop_cleanly() {
     let (g, s) = (id_of("Fixture Gain"), id_of("Fixture Synth"));
     for _ in 0..50 {

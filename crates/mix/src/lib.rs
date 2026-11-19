@@ -270,6 +270,7 @@ impl MixEngine {
                 i.plugin.reset();
                 i.failed = false;
             }
+            s.held.fill(0);
             s.chase = true;
             s.live.clear();
             s.align.clear();
