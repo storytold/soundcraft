@@ -133,6 +133,9 @@ pub struct Recorder {
     pub channels: usize,
     /// The take writer, and what each track's take holds so far.
     writer: Option<(std::thread::JoinHandle<Takes>, Vec<(TrackId, Arc<Mutex<LiveTake>>)>)>,
+    /// Armed takes' instrument-input taps (`Route::Instrument`), for the audio host to
+    /// hand to the mix so it can push those strips' monitored input each block.
+    taps: std::collections::HashMap<TrackId, Arc<soundcraft_mix::TakeTap>>,
     /// The callback count last seen, and since when.
     seen: (u64, Instant),
 }
@@ -268,7 +271,17 @@ impl Recorder {
         };
         stream.play().map_err(|e| e.to_string())?;
         let seen = (0, Instant::now());
-        Ok(Recorder { monitor, shared, _stream: Some(stream), device_name: name, sample_rate: config.sample_rate, channels, writer: None, seen })
+        Ok(Recorder {
+            monitor,
+            shared,
+            _stream: Some(stream),
+            device_name: name,
+            sample_rate: config.sample_rate,
+            channels,
+            writer: None,
+            taps: std::collections::HashMap::new(),
+            seen,
+        })
     }
 
     #[cfg(target_os = "freebsd")]
@@ -276,14 +289,30 @@ impl Recorder {
         Err("recording is not supported on this platform yet".into())
     }
 
-    /// Create each take's file and start recording into them: a track's take records the given
-    /// input channels into a new file.
-    pub fn arm(&mut self, takes: Vec<(TrackId, Vec<usize>, PathBuf)>) -> Result<(), String> {
+    /// Create each take's file and start recording into them: a take records either the
+    /// given input channels or, for a `Route::Instrument` input, the track's monitored
+    /// strip tapped in the mix (the armed `TakeTap`s are handed to the audio thread via
+    /// `Recorder::take_taps`).
+    pub fn arm(&mut self, takes: Vec<(TrackId, soundcraft_mix::TakePlan, PathBuf)>) -> Result<(), String> {
         if self.writer.is_some() {
             return Err("already recording".into());
         }
-        let takes =
-            takes.into_iter().map(|(id, inputs, path)| TakeWriter::create(id, inputs, path, self.sample_rate)).collect::<Result<Vec<_>, _>>()?;
+        let mut taps = std::collections::HashMap::new();
+        let takes = takes
+            .into_iter()
+            .map(|(id, plan, path)| {
+                let source = match plan {
+                    soundcraft_mix::TakePlan::Input(inputs) => Source::Inputs(inputs),
+                    soundcraft_mix::TakePlan::Instrument(channels) => {
+                        let tap = soundcraft_mix::TakeTap::new(channels, self.sample_rate);
+                        taps.insert(id, Arc::clone(&tap));
+                        Source::Tap(tap)
+                    }
+                };
+                TakeWriter::create(id, source, path, self.sample_rate)
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        self.taps = taps;
         let live = takes.iter().map(|t| (t.id, Arc::clone(&t.live))).collect();
         let ring = &self.shared.ring;
         ring.tail.store(ring.head.load(Ordering::Acquire), Ordering::Release);
@@ -298,6 +327,11 @@ impl Recorder {
             }
         }
         Ok(())
+    }
+
+    /// The armed instrument-input taps, for the audio host to hand to the mix.
+    pub fn take_taps(&self) -> &std::collections::HashMap<TrackId, Arc<soundcraft_mix::TakeTap>> {
+        &self.taps
     }
 
     /// What the take recording onto `track` holds so far.
@@ -333,6 +367,7 @@ impl Recorder {
 
     pub fn finish(&mut self) -> Takes {
         self.shared.armed.store(false, Ordering::Release);
+        self.taps.clear();
         let (takes, problem) = self.writer.take().and_then(|(w, _)| w.join().ok()).unwrap_or_default();
         let lost = self.shared.dropped.swap(0, Ordering::Relaxed) / self.channels.max(1);
         let slow =
@@ -348,11 +383,21 @@ impl Drop for Recorder {
 }
 
 fn write_takes(shared: &Shared, mut takes: Vec<TakeWriter>, channels: usize) -> Takes {
-    let (mut block, mut header_written, mut reported) = (Vec::new(), Instant::now(), false);
+    let (mut block, mut tap_block) = (Vec::new(), Vec::new());
+    let (mut header_written, mut reported) = (Instant::now(), false);
     loop {
         let stopping = !shared.armed.load(Ordering::Acquire);
         // The ring holds interleaved samples and a pop can end mid-frame: write whole frames and
         // keep the remainder for the next pop, so channels never shift.
+        // Tapped instrument-route strips push into each take's `TakeTap` from the audio
+        // thread; drain them into their writers the same way, one take at a time.
+        for t in takes.iter_mut().filter(|t| matches!(t.source, Source::Tap(_))) {
+            let Source::Tap(tap) = &t.source else { continue };
+            tap.pop_all(&mut tap_block);
+            t.write_tap(&tap_block);
+            tap_block.clear();
+        }
+
         shared.ring.pop_all(&mut block);
         let whole = block.len() - block.len() % channels.max(1);
         takes.iter_mut().for_each(|t| t.write(&block[..whole], channels));
@@ -383,10 +428,19 @@ fn write_takes(shared: &Shared, mut takes: Vec<TakeWriter>, channels: usize) -> 
     (done, problem)
 }
 
+/// What a take's writer reads: input-ring channels, or the track's monitored strip
+/// shared by the mix (`Route::Instrument` input — the instrument's tapped output).
+enum Source {
+    /// Channel indices into the shared input ring.
+    Inputs(Vec<usize>),
+    /// Interleaved audio the mix pushes each block.
+    Tap(Arc<soundcraft_mix::TakeTap>),
+}
+
 /// One take's file. After an error it stops writing; its header keeps covering what was written.
 struct TakeWriter {
     id: TrackId,
-    inputs: Vec<usize>,
+    source: Source,
     path: PathBuf,
     file: File,
     rate: u32,
@@ -396,25 +450,53 @@ struct TakeWriter {
 }
 
 impl TakeWriter {
-    fn create(id: TrackId, inputs: Vec<usize>, path: PathBuf, rate: u32) -> Result<TakeWriter, String> {
+    fn create(id: TrackId, source: Source, path: PathBuf, rate: u32) -> Result<TakeWriter, String> {
         let file = path.parent().map_or(Ok(()), std::fs::create_dir_all).and_then(|()| File::create_new(&path));
         let file = file.map_err(|e| format!("{}: {e}", path.display()))?;
-        let live = Arc::new(Mutex::new(vec![Vec::new(); inputs.len()]));
-        let mut take = TakeWriter { id, inputs, path, file, rate, frames: 0, error: None, live };
+        let channels = match &source {
+            Source::Inputs(inputs) => inputs.len(),
+            Source::Tap(tap) => tap.channels.load(Ordering::Relaxed),
+        };
+        let live = Arc::new(Mutex::new(vec![Vec::new(); channels]));
+        let mut take = TakeWriter { id, source, path, file, rate, frames: 0, error: None, live };
         take.write_header();
         take.error.take().map_or(Ok(take), Err)
     }
 
+    /// This take's channel count (input indices or the tapped strip's channels).
+    fn channels(&self) -> usize {
+        match &self.source {
+            Source::Inputs(inputs) => inputs.len(),
+            Source::Tap(tap) => tap.channels.load(Ordering::Relaxed),
+        }
+        .max(1)
+    }
+
+    /// Append `block`, already this take's channels interleaved (a tapped strip).
+    fn write_tap(&mut self, block: &[f32]) {
+        if self.error.is_some() {
+            return;
+        }
+        let channels = self.channels();
+        let bytes: Vec<u8> = block.iter().flat_map(|x| x.to_le_bytes()).collect();
+        match self.file.write_all(&bytes) {
+            Ok(()) => {
+                self.summarize(block, channels);
+                self.frames += (block.len() / channels) as u64;
+            }
+            Err(e) => self.fail(e),
+        }
+    }
+
     /// Append this take's channels of `block` (interleaved, `channels` wide).
     fn write(&mut self, block: &[f32], channels: usize) {
+        let Source::Inputs(inputs) = &self.source else { return };
         let channels = channels.max(1);
         if self.error.is_some() {
             return;
         }
-        let bytes: Vec<u8> = block
-            .chunks_exact(channels)
-            .flat_map(|f| self.inputs.iter().flat_map(move |&i| f.get(i).copied().unwrap_or(0.0).to_le_bytes()))
-            .collect();
+        let bytes: Vec<u8> =
+            block.chunks_exact(channels).flat_map(|f| inputs.iter().flat_map(move |&i| f.get(i).copied().unwrap_or(0.0).to_le_bytes())).collect();
         match self.file.write_all(&bytes) {
             Ok(()) => {
                 self.summarize(block, channels);
@@ -429,7 +511,11 @@ impl TakeWriter {
         let mut live = self.live.lock().unwrap_or_else(PoisonError::into_inner);
         for (f, n) in block.chunks_exact(channels).zip(self.frames..) {
             let at = (n / LIVE_BLOCK as u64) as usize;
-            for (blocks, &i) in live.iter_mut().zip(&self.inputs) {
+            for (ch, blocks) in live.iter_mut().enumerate() {
+                let i = match &self.source {
+                    Source::Inputs(inputs) => inputs.get(ch).copied().unwrap_or(0),
+                    Source::Tap(_) => ch,
+                };
                 let v = f.get(i).copied().unwrap_or(0.0);
                 match blocks.get_mut(at) {
                     Some(b) => *b = (b.0.min(v), b.1.max(v)),
@@ -441,7 +527,7 @@ impl TakeWriter {
     }
 
     fn write_header(&mut self) {
-        let header = match craft_audio::wav_float_header(self.rate, u16::try_from(self.inputs.len()).unwrap_or(u16::MAX), self.frames) {
+        let header = match craft_audio::wav_float_header(self.rate, u16::try_from(self.channels()).unwrap_or(u16::MAX), self.frames) {
             Ok(h) => h,
             Err(e) => return self.fail(e),
         };
@@ -518,6 +604,7 @@ mod tests {
             sample_rate: 48_000,
             channels: 1,
             writer: None,
+            taps: std::collections::HashMap::new(),
             seen: (0, Instant::now()),
         }
     }
@@ -551,7 +638,7 @@ mod tests {
     fn a_failed_write_is_trouble_while_still_recording() {
         let dir = std::env::temp_dir().join(format!("soundcraft-failed-take-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
-        let mut take = TakeWriter::create(TrackId(1), vec![0], dir.join("Vox_01.wav"), 48_000).unwrap();
+        let mut take = TakeWriter::create(TrackId(1), Source::Inputs(vec![0]), dir.join("Vox_01.wav"), 48_000).unwrap();
         take.file = File::open(&take.path).unwrap();
         let shared = Arc::new(Shared::new(CaptureRing::new(1 << 12)));
         shared.armed.store(true, Ordering::Release);
@@ -574,9 +661,9 @@ mod tests {
     fn takes_stream_into_their_files() {
         let dir = std::env::temp_dir().join(format!("soundcraft-takes-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
-        let gtr = TakeWriter::create(TrackId(1), vec![1, 2], dir.join("Gtr_01.wav"), 48_000).unwrap();
-        let mut vox = TakeWriter::create(TrackId(2), vec![0], dir.join("Vox_01.wav"), 48_000).unwrap();
-        assert!(TakeWriter::create(TrackId(3), vec![0], dir.join("Vox_01.wav"), 48_000).is_err(), "never overwrites a file");
+        let gtr = TakeWriter::create(TrackId(1), Source::Inputs(vec![1, 2]), dir.join("Gtr_01.wav"), 48_000).unwrap();
+        let mut vox = TakeWriter::create(TrackId(2), Source::Inputs(vec![0]), dir.join("Vox_01.wav"), 48_000).unwrap();
+        assert!(TakeWriter::create(TrackId(3), Source::Inputs(vec![0]), dir.join("Vox_01.wav"), 48_000).is_err(), "never overwrites a file");
         vox.write(&[0.5; 300], 3);
         vox.write_header();
         vox.write(&[0.25; 150], 3);
@@ -599,10 +686,35 @@ mod tests {
     }
 
     #[test]
+    fn an_instrument_take_streams_the_tapped_strip_not_the_input_ring() {
+        // #1549: a `Route::Instrument` take reads the track's monitored strip, pushed by
+        // the mix into its `TakeTap`, interleaved — never the hardware input ring.
+        let dir = std::env::temp_dir().join(format!("soundcraft-inst-takes-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let tap = soundcraft_mix::TakeTap::new(2, 48_000);
+        let take = TakeWriter::create(TrackId(2), Source::Tap(Arc::clone(&tap)), dir.join("Kit_01.wav"), 48_000).unwrap();
+        let shared = Arc::new(Shared::new(CaptureRing::new(1 << 16)));
+        shared.armed.store(true, Ordering::Release);
+        let sh = Arc::clone(&shared);
+        let writer = std::thread::spawn(move || write_takes(&sh, vec![take], 2));
+        // Hardware noise arrives but must never reach this take; the tap carries the take.
+        shared.capture(&[9.0; 2 * 480], &mut 0);
+        let strip: Vec<Vec<f32>> = vec![vec![0.5; 480], vec![-0.5; 480]];
+        tap.push(&strip, 480);
+        shared.capture(&[9.0; 2 * 480], &mut 0);
+        tap.push(&strip, 480);
+        shared.armed.store(false, Ordering::Release);
+        let (done, problem) = writer.join().unwrap();
+        assert_eq!((done.len(), problem), (1, None));
+        assert_eq!(decode(&done[0].1), vec![vec![0.5; 480 * 2], vec![-0.5; 480 * 2]]);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn a_take_sums_itself_up_for_drawing_while_it_records() {
         let dir = std::env::temp_dir().join(format!("soundcraft-live-take-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
-        let mut take = TakeWriter::create(TrackId(4), vec![2, 0], dir.join("Gtr_01.wav"), 48_000).unwrap();
+        let mut take = TakeWriter::create(TrackId(4), Source::Inputs(vec![2, 0]), dir.join("Gtr_01.wav"), 48_000).unwrap();
         let input: Vec<f32> = (0..300).flat_map(|f| [f as f32, -1.0, -(f as f32)]).collect();
         take.write(&input[..3 * 100], 3);
         take.write(&input[3 * 100..], 3);

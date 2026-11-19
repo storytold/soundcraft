@@ -225,6 +225,16 @@ pub(crate) struct LiveInput<'a> {
     pub(crate) input: &'a [Vec<f32>],
     pub(crate) monitor_only: bool,
     pub(crate) recording: bool,
+    /// Armed takes capturing a monitored `Route::Instrument` input, by track.
+    pub(crate) record_taps: &'a HashMap<TrackId, std::sync::Arc<crate::TakeTap>>,
+}
+
+/// The track hears an instrument's output bus instead of clips or hardware this block: it
+/// renders after the instruments, alongside the auxes.
+pub(crate) fn inst_monitored(t: &Track, monitor_only: bool, recording: bool) -> bool {
+    t.kind == TrackKind::Audio
+        && matches!(t.mixer.input, Route::Instrument { .. })
+        && (t.mixer.input_monitor || (t.mixer.record_arm && (monitor_only || recording)))
 }
 
 /// The block being rendered: where it starts, its length, and whether any track is soloed.
@@ -517,6 +527,18 @@ pub(crate) fn process_strip(
     zero_buf(&mut strip.buf, frames);
     let transport = transport_at(s, pos, !live.monitor_only, live.recording);
     match t.kind {
+        TrackKind::Audio if inst_monitored(t, live.monitor_only, live.recording) => {
+            // The input is another track's instrument output, tapped when that strip
+            // rendered: record it into an armed take, else just monitor it.
+            if let Some(strips) = taps {
+                read_instrument_out(t, strip, strips, frames);
+            }
+            if live.recording
+                && let Some(tap) = live.record_taps.get(&t.id)
+            {
+                tap.push(&strip.buf, frames);
+            }
+        }
         TrackKind::Audio if !live.input.is_empty() && (t.mixer.input_monitor || (t.mixer.record_arm && (live.monitor_only || live.recording))) => {
             monitor_input(t, strip, live, frames);
         }

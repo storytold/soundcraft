@@ -118,6 +118,9 @@ enum Cmd {
     /// Where the callback sends the snapshots it replaces (freeing one takes thousands of frees).
     OldSessions(SyncSender<Arc<Session>>),
     Input(Arc<record::InputRing>),
+    /// Armed takes' instrument-input taps (`Route::Instrument` records): the mix pushes
+    /// those tracks' monitored input into each so the take writer can drain it.
+    TakeTaps(std::collections::HashMap<TrackId, std::sync::Arc<soundcraft_mix::TakeTap>>),
     Recording(bool),
     Play {
         from: Samples,
@@ -481,6 +484,11 @@ impl Player {
 
     pub fn set_recording(&self, on: bool) {
         let _ = self.tx.send(Cmd::Recording(on));
+    }
+
+    /// Hand an armed recorder's instrument-input taps to the mix (`Recorder::take_taps`).
+    pub fn set_take_taps(&self, taps: std::collections::HashMap<TrackId, std::sync::Arc<soundcraft_mix::TakeTap>>) {
+        let _ = self.tx.send(Cmd::TakeTaps(taps));
     }
 
     pub fn stop(&self) {

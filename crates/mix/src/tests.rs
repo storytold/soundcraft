@@ -1776,6 +1776,63 @@ fn an_unrouted_auxiliary_output_renders_nothing_on_the_aux() {
 }
 
 #[test]
+fn an_audio_track_monitors_and_records_an_instruments_output() {
+    // #1549: an audio track may also take `inst:<track>:<bus>` as its input — input
+    // monitoring hears that bus, and while recording the take captures the monitored
+    // strip through the engine's `record_taps` (the writer drains it).
+    let mut s = Session::default();
+    let inst = s.add_track(TrackKind::Instrument, ChannelFormat::Stereo, None);
+    s.track_mut(inst).unwrap().instrument = Some(Insert::new("clap:test.multiout"));
+    let aud = s.add_track(TrackKind::Audio, ChannelFormat::Stereo, None);
+    s.track_mut(aud).unwrap().mixer.input = Route::Instrument { track: inst, bus: 1 };
+    s.track_mut(aud).unwrap().mixer.record_arm = true;
+    let mut eng = MixEngine::new(48_000.0, 512);
+    eng.set_external_instances(true);
+    eng.adopt(vec![PreparedInstance {
+        track: inst,
+        slot: INSTRUMENT_SLOT,
+        id: "clap:test.multiout".into(),
+        ch: 2,
+        plugin: {
+            let mut p = MultiOut {
+                inner: soundcraft_dsp::create("gain").unwrap(),
+                buses: vec![
+                    soundcraft_dsp::OutputBus { name: "Main".into(), channels: 2 },
+                    soundcraft_dsp::OutputBus { name: "Kick".into(), channels: 2 },
+                ],
+                outs: Vec::new(),
+                active: Vec::new(),
+            };
+            p.prepare(48_000.0, 512, 2);
+            Box::new(p)
+        },
+    }]);
+    // Recording: the armed track's strip feeds its take tap.
+    eng.recording = true;
+    let tap = TakeTap::new(2, 48_000);
+    eng.record_taps.insert(aud, std::sync::Arc::clone(&tap));
+    // First block renders the instrument before the track's tap is heard; from the
+    // second block on the monitored bus reaches both the output and the take tap.
+    let _ = render_block(&mut eng, &s, 0);
+    let heard = render_block(&mut eng, &s, 512);
+    assert!((heard - 0.75).abs() < 1e-6, "main (0.25) + monitored bus (0.5): got {heard}");
+    let mut drained = Vec::new();
+    tap.pop_all(&mut drained);
+    // Two blocks: the first pushed silence (the routed bus activated after that block's
+    // plugin pass), the second carries the monitored output.
+    assert_eq!(drained.len(), 2 * 512 * 2, "two interleaved stereo blocks were captured");
+    assert!(drained[..512 * 2].iter().all(|&x| x == 0.0), "block one predates the activated bus");
+    assert!(drained[512 * 2..].iter().all(|&x| (x - 0.5).abs() < 1e-6), "the tapped bus audio, not the main out");
+    // With the transport not recording an armed-but-not-monitored track plays its clips
+    // and nothing reaches the tap.
+    eng.recording = false;
+    let _ = render_block(&mut eng, &s, 1024);
+    drained.clear();
+    tap.pop_all(&mut drained);
+    assert!(drained.is_empty(), "no take while stopped");
+}
+
+#[test]
 fn idle_plugins_services_inserts_and_instruments() {
     let (mut s, t) = session_with_dc(0.5, 48_000);
     s.track_mut(t).unwrap().mixer.inserts[0] = Some(Insert::new("clap:test.serviced"));

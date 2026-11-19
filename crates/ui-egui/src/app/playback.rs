@@ -178,9 +178,14 @@ impl SoundApp {
         }
         let takes = plan
             .iter()
-            .map(|(track, inputs, path)| soundcraft_engine::io::Take { track: *track, path: path.clone(), channels: inputs.len() })
+            .map(|(track, inputs, path)| soundcraft_engine::io::Take { track: *track, path: path.clone(), channels: inputs.channels() })
             .collect();
         r.arm(plan)?;
+        // An instrument-input take taps its track's monitored input in the mix, not a
+        // hardware channel: hand the armed taps to the player (an empty map clears them).
+        if let Some(p) = &self.player {
+            p.set_take_taps(r.take_taps().clone());
+        }
         Ok(takes)
     }
 
@@ -201,6 +206,7 @@ impl SoundApp {
         self.engine.transport.recording = false;
         if let Some(p) = &self.player {
             p.set_recording(false);
+            p.set_take_taps(std::collections::HashMap::new());
         }
         let plan = self.take_plan.take();
         let Some(r) = &mut self.recorder else { return };

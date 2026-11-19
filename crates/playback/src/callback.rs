@@ -144,7 +144,13 @@ impl AudioState {
                     }
                     self.forget_meters();
                 }
-                Cmd::Recording(r) => self.recording = r,
+                Cmd::TakeTaps(taps) => self.mix.record_taps = taps,
+                Cmd::Recording(r) => {
+                    self.recording = r;
+                    if !r {
+                        self.mix.record_taps.clear();
+                    }
+                }
                 Cmd::Session(s, instances) => {
                     changed = true;
                     if (s.sample_rate.as_f64() - self.session.sample_rate.as_f64()).abs() > 0.5 {

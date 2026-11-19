@@ -116,7 +116,7 @@ pub fn live_span(start: Samples, pass: Option<Samples>, punch: Option<Range>, le
 
 #[cfg(test)]
 mod record_tests {
-    use super::super::{AudioBuffer, Path, plan_takes};
+    use super::super::{AudioBuffer, Path, TakePlan, plan_takes};
     use super::*;
     use serde_json::json;
 
@@ -143,8 +143,14 @@ mod record_tests {
         let gtr = armed(&mut e, "Gtr", "stereo", "In 3-4");
         write_take(&dir.join("Audio Files/Vox_01.wav"), 10);
         let plan = plan_takes(&e, &dir, 4);
-        assert_eq!(plan, vec![(vox, vec![1], dir.join("Audio Files/Vox_02.wav")), (gtr, vec![2, 3], dir.join("Audio Files/Gtr_01.wav"))]);
-        assert_eq!(plan_takes(&e, &dir, 2)[1].1, vec![0, 1]);
+        assert_eq!(
+            plan,
+            vec![
+                (vox, TakePlan::Input(vec![1]), dir.join("Audio Files/Vox_02.wav")),
+                (gtr, TakePlan::Input(vec![2, 3]), dir.join("Audio Files/Gtr_01.wav"))
+            ]
+        );
+        assert_eq!(plan_takes(&e, &dir, 2)[1].1, TakePlan::Input(vec![0, 1]));
 
         let session = dir.join("Song.scraft").to_string_lossy().into_owned();
         e.execute("session.save_as", &json!({"path": session})).unwrap();
@@ -157,6 +163,22 @@ mod record_tests {
         assert_eq!((src.name.as_str(), src.path.as_str(), src.unsaved, src.frames), ("Vox_02", "Audio Files/Vox_02.wav", false, 4_800));
         e.execute("edit.undo", &json!({})).unwrap();
         assert!(e.session().find_clip(clips[0]).is_none());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn an_instrument_input_take_records_the_strip_not_a_device_channel() {
+        // #1549: an armed audio track whose input is a multi-out instrument's output records
+        // that tapped strip, not an input-device channel.
+        let dir = std::env::temp_dir().join(format!("soundcraft-inst-take-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let mut e = Engine::default();
+        let inst = e.execute("track.new", &json!({"kind": "instrument", "name": "Kit"})).unwrap()["tracks"][0].as_u64().unwrap();
+        let kit = e.execute("track.new", &json!({"name": "KitPrint", "format": "stereo"})).unwrap()["tracks"][0].as_u64().unwrap();
+        e.execute("track.input", &json!({"tracks": [kit], "input": format!("inst:{inst}:1")})).unwrap();
+        e.execute("mix.record_arm", &json!({"tracks": [kit], "value": true})).unwrap();
+        let plan = plan_takes(&e, &dir, 4);
+        assert_eq!(plan, vec![(TrackId(kit), TakePlan::Instrument(2), dir.join("Audio Files/KitPrint_01.wav"))]);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

@@ -59,6 +59,7 @@ use soundcraft_model::{
 use soundcraft_time::{Range, Samples, TICKS_PER_QUARTER};
 use std::collections::HashMap;
 use std::ops::Bound;
+use std::sync::Mutex;
 
 mod automation;
 mod clips;
@@ -82,7 +83,8 @@ pub use pan::itu_stereo_fold;
 use pan::{PanSpec, apply_matrix, apply_matrix_span, build_matrix};
 use routing::{processing_order, structure_fingerprint};
 use strip::{
-    Block, BusBuf, LiveInput, SlotCtx, Strip, apply_params, contain_failure, note_insert_latency, process_strip, strip_channels, strip_format,
+    Block, BusBuf, LiveInput, SlotCtx, Strip, apply_params, contain_failure, inst_monitored, note_insert_latency, process_strip, strip_channels,
+    strip_format,
 };
 #[cfg(test)]
 use strip::{DelayLine, MAX_LATENCY};
@@ -153,8 +155,84 @@ pub struct MixEngine {
     /// Each track's instrument output buses, rebuilt on `sync`, for the input picker
     /// (`Route::Instrument` targets).
     pub instrument_outs: Vec<(TrackId, Vec<OutputBus>)>,
+    /// Takes capturing a record-armed track's monitored input (`Route::Instrument` sources
+    /// record their strip, not a hardware input). The audio host fills this when it arms the
+    /// recorder and clears it when the take finishes; the writer thread drains each ring.
+    pub record_taps: HashMap<TrackId, std::sync::Arc<TakeTap>>,
     /// Ownership workspace reused for parallel strip processing.
     work: Vec<(usize, Strip)>,
+}
+
+/// What an armed take records.
+#[derive(Debug, Clone, PartialEq)]
+pub enum TakePlan {
+    /// Channels of the input device's ring.
+    Input(Vec<usize>),
+    /// The track's monitored input itself (`Route::Instrument` — a multi-out instrument's
+    /// output tapped in the mix), with the track's channel count.
+    Instrument(usize),
+}
+
+impl TakePlan {
+    /// How many channels the take file holds.
+    pub fn channels(&self) -> usize {
+        match self {
+            TakePlan::Input(inputs) => inputs.len(),
+            TakePlan::Instrument(channels) => *channels,
+        }
+    }
+}
+
+/// A track's monitored input captured for a take, shared with the take-writer thread: the
+/// audio thread pushes each rendered block interleaved, the writer drains it. Both sides
+/// only `try_lock`, so a contended block is skipped rather than blocking the callback —
+/// the writer keeps at most ~0.5 s buffered and drops the oldest frames over that.
+#[derive(Debug)]
+pub struct TakeTap {
+    state: Mutex<std::collections::VecDeque<f32>>,
+    /// Interleaved channel count (the track's channel count).
+    pub channels: std::sync::atomic::AtomicUsize,
+    cap: usize,
+}
+
+impl TakeTap {
+    /// A tap holding at most half a second of `channels`-wide interleaved audio at `rate`.
+    pub fn new(channels: usize, rate: u32) -> std::sync::Arc<Self> {
+        let ch = channels.max(1);
+        let frames = if rate == 0 { 24_000 } else { rate as usize / 2 };
+        std::sync::Arc::new(TakeTap {
+            state: Mutex::new(std::collections::VecDeque::with_capacity(frames * ch)),
+            channels: std::sync::atomic::AtomicUsize::new(ch),
+            cap: frames * ch,
+        })
+    }
+
+    /// Push `frames` frames of planar audio, interleaved. Audio thread; never blocks.
+    /// Room is made before pushing so the queue never grows past `cap` (and never
+    /// reallocates on this thread) — a slow writer loses the oldest audio instead.
+    pub fn push(&self, planar: &[Vec<f32>], frames: usize) {
+        let Ok(mut s) = self.state.try_lock() else { return };
+        let ch = planar.len().max(1);
+        // A block bigger than `cap` keeps only its newest `cap` samples.
+        let skip = (frames * ch).saturating_sub(self.cap) / ch;
+        let over = (s.len() + frames.saturating_sub(skip) * ch).saturating_sub(self.cap);
+        let drop_n = over.min(s.len());
+        if drop_n > 0 {
+            s.drain(..drop_n);
+        }
+        for f in skip..frames {
+            for c in planar.iter() {
+                s.push_back(c.get(f).copied().unwrap_or(0.0));
+            }
+        }
+    }
+
+    /// Drain everything pushed so far. Writer thread; never blocks the pusher.
+    pub fn pop_all(&self, out: &mut Vec<f32>) {
+        if let Ok(mut s) = self.state.try_lock() {
+            out.extend(s.drain(..));
+        }
+    }
 }
 
 impl MixEngine {
@@ -186,6 +264,7 @@ impl MixEngine {
             adopt: HashMap::new(),
             retired: Vec::new(),
             instrument_outs: Vec::new(),
+            record_taps: HashMap::new(),
             work: Vec::new(),
         }
     }
@@ -398,7 +477,11 @@ impl MixEngine {
         let mut work = std::mem::take(&mut self.work);
         work.clear();
         for &i in &order {
-            let Some(t) = s.tracks.get(i).filter(|t| is_live(t) && !is_aux(t)) else { continue };
+            // Tracks whose input is an instrument's output render in phase 2a, after the
+            // instruments they tap (see render_auxes).
+            let Some(t) = s.tracks.get(i).filter(|t| is_live(t) && !is_aux(t) && !inst_monitored(t, self.monitor_only, self.recording)) else {
+                continue;
+            };
             if let Some(st) = self.strips.remove(&t.id) {
                 work.push((i, st));
             }
@@ -409,7 +492,7 @@ impl MixEngine {
             }
         }
         let busses = std::mem::take(&mut self.busses);
-        let live_in = LiveInput { input: &self.input, monitor_only: self.monitor_only, recording: self.recording };
+        let live_in = LiveInput { input: &self.input, monitor_only: self.monitor_only, recording: self.recording, record_taps: &self.record_taps };
         run_strips(&mut work, |(i, st)| {
             if let Some(t) = s.tracks.get(*i) {
                 process_strip(s, t, st, &busses, None, &live_in, blk);
@@ -527,17 +610,35 @@ impl MixEngine {
         }
     }
 
-    /// Phase 2: auxes in dependency order (they read busses).
+    /// Phase 2: instrument-output consumers first (their taps exist once phase 1 ran),
+    /// then auxes in dependency order (they read busses).
     fn render_auxes(&mut self, s: &Session, order: &[usize], blk: Block) {
         let Block { pos, frames, .. } = blk;
         let pdc = s.edit.delay_compensation;
         let lmax_a = self.aux_latency;
+        let (mon, rec) = (self.monitor_only, self.recording);
+        for t in order.iter().filter_map(|&i| s.tracks.get(i)).filter(|t| is_live(t)).filter(|t| inst_monitored(t, mon, rec)) {
+            let Some(mut st) = self.strips.remove(&t.id) else { continue };
+            if st.scratch.len() < self.max_block {
+                st.scratch.resize(self.max_block, 0.0);
+            }
+            let live_in =
+                LiveInput { input: &self.input, monitor_only: self.monitor_only, recording: self.recording, record_taps: &self.record_taps };
+            process_strip(s, t, &mut st, &self.busses, Some(&self.strips), &live_in, blk);
+            let ch = st.buf.len();
+            st.align.set(if pdc { lmax_a.saturating_sub(st.latency) } else { 0 }, ch);
+            st.align.process(&mut st.buf, frames);
+            st.out_extra.set(0, ch);
+            self.route_strip(t, &mut st, pos, frames);
+            self.strips.insert(t.id, st);
+        }
         for t in order.iter().filter_map(|&i| s.tracks.get(i)).filter(|t| is_live(t)).filter(|t| is_aux(t)) {
             let Some(mut st) = self.strips.remove(&t.id) else { continue };
             if st.scratch.len() < self.max_block {
                 st.scratch.resize(self.max_block, 0.0);
             }
-            let live_in = LiveInput { input: &self.input, monitor_only: self.monitor_only, recording: self.recording };
+            let live_in =
+                LiveInput { input: &self.input, monitor_only: self.monitor_only, recording: self.recording, record_taps: &self.record_taps };
             process_strip(s, t, &mut st, &self.busses, Some(&self.strips), &live_in, blk);
             let ch = st.buf.len();
             st.align.set(if pdc { lmax_a.saturating_sub(st.latency) } else { 0 }, ch);

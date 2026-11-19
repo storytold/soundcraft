@@ -1053,15 +1053,10 @@ fn route(e: &mut Engine, p: &Value, input: bool) -> Result<Value> {
     if v.starts_with("inst:") && !matches!(r, Route::Instrument { .. }) {
         return Err(bad("track.route", format!("`{v}` is not an instrument output (inst:<track>:<bus>)")));
     }
-    // An instrument's output bus can only be read as an aux or folder input: regular
-    // strips render before consumers are known, and it is never an output or send target.
-    if matches!(r, Route::Instrument { .. })
-        && (!input
-            || tracks
-                .iter()
-                .any(|t| s.track(*t).is_none_or(|tr| !matches!(tr.kind, soundcraft_model::TrackKind::Aux | soundcraft_model::TrackKind::Folder))))
-    {
-        return Err(bad("track.route", "an instrument output can only feed an aux or folder input"));
+    // An instrument's output bus is only ever an input (it can feed an aux, folder or an
+    // audio track that monitors or records it): it is never an output or send target.
+    if matches!(r, Route::Instrument { .. }) && !input {
+        return Err(bad("track.route", "an instrument output can only be a track input"));
     }
     if let Route::Hardware(name) = &r
         && create_bus
@@ -1240,9 +1235,9 @@ mod tests {
     }
 
     #[test]
-    fn an_instrument_output_routes_to_an_aux_input_only() {
+    fn an_instrument_output_routes_to_a_track_input_only() {
         // #1549: `inst:<track>:<bus>` picks a multi-out instrument's auxiliary output as an
-        // aux/folder input; it is rejected on audio tracks, outputs and sends.
+        // aux, folder or audio-track input; it is rejected as an output or send target.
         let mut e = crate::demo::demo_engine();
         let inst = e.execute("track.new", &json!({"kind": "instrument", "name": "Kit"})).unwrap();
         let inst = TrackId(inst["tracks"][0].as_u64().unwrap());
@@ -1255,8 +1250,11 @@ mod tests {
         e.execute("track.input", &json!({"tracks": [aux.0], "input": "inst:Kit:2"})).unwrap();
         assert_eq!(e.session().track(aux).unwrap().mixer.input, Route::Instrument { track: inst, bus: 2 });
 
+        // An audio track takes it too: it monitors or records that output.
         let kick = e.session().track_by_name("Kick").unwrap().id;
-        assert!(e.execute("track.input", &json!({"tracks": [kick.0], "input": format!("inst:{}:1", inst.0)})).is_err());
+        e.execute("track.input", &json!({"tracks": [kick.0], "input": format!("inst:{}:1", inst.0)})).unwrap();
+        assert_eq!(e.session().track(kick).unwrap().mixer.input, Route::Instrument { track: inst, bus: 1 });
+
         assert!(e.execute("track.output", &json!({"tracks": [aux.0], "output": format!("inst:{}:1", inst.0)})).is_err());
         assert!(e.execute("track.input", &json!({"tracks": [aux.0], "input": "inst:nosuch:1"})).is_err());
     }

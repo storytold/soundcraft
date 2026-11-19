@@ -139,6 +139,7 @@ fn spike_session(spike_at: usize) -> (Arc<Shared>, AudioState, std::sync::mpsc::
         playing: AtomicBool::new(false),
         speed: AtomicU32::new(1000),
         meters: Mutex::new(MeterSnapshot::default()),
+        instrument_outs: Mutex::new(Vec::new()),
     });
     let (tx, rx) = channel();
     let st = AudioState::new(rx, Arc::clone(&shared), Arc::new(s), 48_000.0, channel().0);
@@ -246,6 +247,7 @@ fn a_block_that_panics_goes_silent_and_is_reported_once() {
         playing: AtomicBool::new(true),
         speed: AtomicU32::new(1000),
         meters: Mutex::new(MeterSnapshot::default()),
+        instrument_outs: Mutex::new(Vec::new()),
     };
     let fault = Fault::default();
     let mut out = [0.5f32; 8];
@@ -287,6 +289,7 @@ fn audio_state_plays_and_stops_at_end() {
         playing: AtomicBool::new(false),
         speed: AtomicU32::new(1000),
         meters: Mutex::new(MeterSnapshot::default()),
+        instrument_outs: Mutex::new(Vec::new()),
     });
     let (tx, rx) = channel();
     let mut st = AudioState::new(rx, Arc::clone(&shared), s, 48_000.0, channel().0);
@@ -305,6 +308,7 @@ fn short_device_callbacks_render_short_mix_blocks() {
         playing: AtomicBool::new(false),
         speed: AtomicU32::new(1000),
         meters: Mutex::new(MeterSnapshot::default()),
+        instrument_outs: Mutex::new(Vec::new()),
     });
     let (tx, rx) = channel();
     let mut st = AudioState::new(rx, Arc::clone(&shared), s, 48_000.0, channel().0);
@@ -329,6 +333,7 @@ fn audio_output_state(format: soundcraft_model::ChannelFormat, channels: Vec<Vec
         playing: AtomicBool::new(false),
         speed: AtomicU32::new(1000),
         meters: Mutex::new(MeterSnapshot::default()),
+        instrument_outs: Mutex::new(Vec::new()),
     });
     let (tx, rx) = channel();
     let st = AudioState::new(rx, shared, Arc::new(s), 48_000.0, channel().0);
@@ -436,6 +441,7 @@ fn surround_main_maps_to_device_channels_or_folds_down() {
         playing: AtomicBool::new(false),
         speed: AtomicU32::new(1000),
         meters: Mutex::new(MeterSnapshot::default()),
+        instrument_outs: Mutex::new(Vec::new()),
     });
     let (tx, rx) = channel();
     let mut st = AudioState::new(rx, Arc::clone(&shared), Arc::clone(&s), 48_000.0, channel().0);
@@ -469,6 +475,7 @@ fn instances_arrive_with_the_session_and_leave_through_the_return_channel() {
         playing: AtomicBool::new(false),
         speed: AtomicU32::new(1000),
         meters: Mutex::new(MeterSnapshot::default()),
+        instrument_outs: Mutex::new(Vec::new()),
     });
     let (tx, rx) = channel();
     let (gtx, grx) = channel();
@@ -610,6 +617,7 @@ fn replaced_sessions_are_freed_on_the_ui_thread() {
         playing: AtomicBool::new(false),
         speed: AtomicU32::new(1000),
         meters: Mutex::new(MeterSnapshot::default()),
+        instrument_outs: Mutex::new(Vec::new()),
     });
     let (tx, rx) = channel();
     let (gtx, grx) = channel();
@@ -639,6 +647,7 @@ fn looping_wraps() {
         playing: AtomicBool::new(false),
         speed: AtomicU32::new(1000),
         meters: Mutex::new(MeterSnapshot::default()),
+        instrument_outs: Mutex::new(Vec::new()),
     });
     let (tx, rx) = channel();
     let mut st = AudioState::new(rx, Arc::clone(&shared), s, 48_000.0, channel().0);
@@ -671,6 +680,7 @@ fn locate_while_playing_drops_the_old_position_audio() {
             playing: AtomicBool::new(false),
             speed: AtomicU32::new(1000),
             meters: Mutex::new(MeterSnapshot::default()),
+            instrument_outs: Mutex::new(Vec::new()),
         });
         let (tx, rx) = channel();
         let mut st = AudioState::new(rx, Arc::clone(&shared), Arc::new(s), 48_000.0, channel().0);
@@ -723,6 +733,7 @@ fn armed_tracks_are_heard_and_metered_after_playback_stops() {
         playing: AtomicBool::new(false),
         speed: AtomicU32::new(1000),
         meters: Mutex::new(MeterSnapshot::default()),
+        instrument_outs: Mutex::new(Vec::new()),
     });
     let (tx, rx) = channel();
     let mut st = AudioState::new(rx, Arc::clone(&shared), Arc::new(s), 48_000.0, channel().0);
@@ -755,6 +766,7 @@ fn stopping_discards_unread_playback_frames() {
         playing: AtomicBool::new(false),
         speed: AtomicU32::new(1000),
         meters: Mutex::new(MeterSnapshot::default()),
+        instrument_outs: Mutex::new(Vec::new()),
     });
     let (tx, rx) = channel();
     let mut st = AudioState::new(rx, Arc::clone(&shared), Arc::new(s), 48_000.0, channel().0);
