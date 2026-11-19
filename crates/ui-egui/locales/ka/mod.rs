@@ -1522,9 +1522,7 @@ fn menu_translate(source: &str) -> Option<&'static str> {
         "Cannot record: no MIDI input device is connected (Setup > Playback Engine lists them)" => {
             "ჩაწერა ვერ ხერხდება: MIDI შეყვანის მოწყობილობა მიერთებული არ არის (ისინი ჩამოთვლილია აქ: მომართვა > დაკვრის ძრავა)"
         }
-        "Nothing was recorded: the record-enabled tracks received no input" => {
-            "არაფერი ჩაიწერა: ჩასაწერად მომზადებულ ტრეკებს სიგნალი არ მიუღიათ"
-        }
+        "Nothing was recorded: the record-enabled tracks received no input" => "არაფერი ჩაიწერა: ჩასაწერად მომზადებულ ტრეკებს სიგნალი არ მიუღიათ",
         "MIDI input was dropped during the take: it is incomplete, and notes held at that point end there" => {
             "დუბლის დროს MIDI შეყვანის ნაწილი დაიკარგა: დუბლი არასრულია, ხოლო იმ მომენტში დაჭერილი ნოტები იქვე მთავრდება"
         }
