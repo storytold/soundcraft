@@ -329,6 +329,31 @@ impl Cfb {
     }
 }
 
+/// Whether the preview found the dialogue file in the media folder, relinked from `locator`.
+fn found_in_media_folder(f: &AafFolder, preview: &Value) {
+    let plan = &preview["plan"];
+    let warnings: Vec<_> = plan["warnings"].as_array().unwrap().iter().filter_map(|w| w.as_str()).collect();
+    assert!(!warnings.iter().any(|w| w.starts_with("Missing media")), "{warnings:?}");
+    assert_eq!(plan["sources"].as_array().unwrap().len(), 2, "{warnings:?}");
+    let found = std::fs::canonicalize(&f.dir).unwrap().join("Diálogo á #1.wav");
+    assert_eq!(plan["sources"][0]["path"], json!(found.display().to_string()));
+    assert!(warnings.iter().any(|w| w.starts_with("Relinked ")), "{warnings:?}");
+}
+
+#[test]
+fn a_locator_from_a_mac_finds_its_file_in_the_chosen_media_folder() {
+    let f = AafFolder::new();
+    let preview = with_locator(&f, "file:///Users/Diálogo á %231.wav").unwrap();
+    found_in_media_folder(&f, &preview);
+}
+
+#[test]
+fn a_locator_from_windows_finds_its_file_in_the_chosen_media_folder() {
+    let f = AafFolder::new();
+    let preview = with_locator(&f, "file:///C:/me/Diálogo á %231.wav").unwrap();
+    found_in_media_folder(&f, &preview);
+}
+
 #[test]
 fn looped_sector_chains_fail_instead_of_hanging() {
     let fixture = std::fs::read(concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/synthetic-two-tracks.aaf")).unwrap();
