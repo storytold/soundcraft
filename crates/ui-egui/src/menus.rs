@@ -528,6 +528,7 @@ const MENU_WINDOWS: &[(&str, &str)] = &[
     ("File > Import > Session Data...", "file.import_aaf"),
     ("Setup > Hardware...", "window.playback_engine"),
     ("Setup > Playback Engine...", "window.playback_engine"),
+    ("Setup > MIDI > MIDI Input Devices...", "window.playback_engine"),
     ("Setup > I/O...", "window.io_setup"),
     ("Setup > Keyboard Shortcuts...", "window.shortcuts"),
     ("Setup > Session", "setup.session"),
