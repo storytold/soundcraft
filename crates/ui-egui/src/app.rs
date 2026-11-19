@@ -46,7 +46,7 @@ impl SoundApp {
             midi_learn_target: None,
             midi_route_revision: None,
             midi_moves: Vec::new(),
-            midi_pan_latches: Default::default(),
+            touched_pans: Default::default(),
             midi_scan_at: 0.0,
             midi_take: Vec::new(),
             midi_take_lost: 0,
@@ -120,7 +120,7 @@ impl SoundApp {
             quit_requested: false,
             arrange_request: false,
             touched: std::collections::HashSet::new(),
-            touched_sends: std::collections::HashSet::new(),
+            touched_sends: Default::default(),
             last_write_at: i64::MIN,
             editor_states: Vec::new(),
             instrument_edits: HashMap::new(),
@@ -179,7 +179,7 @@ impl SoundApp {
         if hidden {
             self.pointer_down = false;
             self.wants_keyboard = false;
-            if matches!(self.gesture, Some(Gesture::Fader { .. } | Gesture::SendFader { .. })) {
+            if matches!(self.gesture, Some(Gesture::Fader { .. } | Gesture::SendFader { .. } | Gesture::Pan { .. })) {
                 self.gesture = None;
             }
         }
@@ -200,15 +200,15 @@ impl SoundApp {
         }
         self.expire_midi_moves();
         if !self.pointer_down {
-            if matches!(self.gesture, Some(Gesture::Fader { .. } | Gesture::SendFader { .. })) {
+            if matches!(self.gesture, Some(Gesture::Fader { .. } | Gesture::SendFader { .. } | Gesture::Pan { .. })) {
                 self.gesture = None;
             }
             // Keep a running automation pass merged until playback stops.
             if !self.wants_keyboard
                 && self.touched.is_empty()
                 && self.touched_sends.is_empty()
-                && self.midi_pan_latches.is_empty()
-                && self.midi_moves.is_empty()
+                && self.touched_pans.is_empty()
+                && (self.midi_moves.is_empty() || self.engine.merge_key() != Some(midi_learn::GESTURE_KEY))
                 && self.engine.merge_key() != Some("automation_pass")
             {
                 self.engine.end_merge();

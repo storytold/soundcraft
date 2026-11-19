@@ -21,6 +21,7 @@ impl ControlChange {
 
     /// Moves a fractional starting position over this source's configured tick range.
     pub fn relative_position(&self, position: f64) -> f64 {
+        // Capture shifts both endpoints by the same delta and clamps them monotonically.
         (position + self.steps as f64).clamp(self.range.0 as f64, self.range.1 as f64)
     }
 }
@@ -201,5 +202,19 @@ mod tests {
         assert_eq!(std::iter::from_fn(|| feed.next()).map(|(_, e)| e.data1).collect::<Vec<_>>(), [99, 22]);
         feed.receive(port, &[0xb0, 71, 20]);
         assert_eq!(wakes.load(Ordering::Relaxed), 2);
+    }
+    #[test]
+    fn switch_pedal_release_reaches_performance_during_learn() {
+        let feed = MidiFeed::default();
+        let port = feed.ports().assign("Keys");
+        for cc in 64..=69 {
+            feed.set_control_sources([], false);
+            feed.receive(port, &[0xb0, cc, 127]);
+            feed.set_control_sources([], true);
+            feed.receive(port, &[0xb0, cc, 0]);
+            let performance: Vec<_> = std::iter::from_fn(|| feed.next()).map(|(_, e)| (e.data1, e.data2)).collect();
+            assert_eq!(performance, [(cc, 127), (cc, 0)]);
+            assert!(feed.control_changes().next().is_none());
+        }
     }
 }

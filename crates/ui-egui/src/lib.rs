@@ -269,6 +269,7 @@ pub enum Gesture {
     Scrub { last: Samples },
     Fader { track: TrackId, start_db: f32 },
     SendFader { track: TrackId, slot: usize },
+    Pan { track: TrackId, index: usize },
     ClipGain { clip: soundcraft_model::ClipId, track: TrackId, pos: f32, anchor: (f32, f32), fine: bool, fader_bottom: egui::Pos2 },
     Pencil { track: TrackId, points: Vec<(Samples, f32)> },
     Breakpoint { track: TrackId, param: soundcraft_model::AutoParam, at: Samples },
@@ -295,7 +296,7 @@ pub struct SoundApp {
     pub midi_inputs: Option<soundcraft_playback::midi::MidiInputs>,
     midi_route_revision: Option<u64>,
     midi_moves: Vec<(soundcraft_engine::midi_learn::Target, f64)>,
-    midi_pan_latches: std::collections::HashSet<(TrackId, usize)>,
+    touched_pans: std::collections::HashSet<(TrackId, usize)>,
     midi_learn_mode: soundcraft_engine::midi_learn::ControlMode,
     midi_learn_target: Option<soundcraft_engine::midi_learn::Target>,
     /// When the MIDI ports were last looked for (app uptime, seconds).
@@ -439,8 +440,8 @@ pub struct SoundApp {
     pub arrange_request: bool,
     /// Tracks whose automation was touched during this pass (Touch/Latch writing).
     touched: std::collections::HashSet<TrackId>,
-    /// Sends whose level was touched during this pass (Touch/Latch writing), as (track, slot).
-    touched_sends: std::collections::HashSet<(TrackId, usize)>,
+    /// Destination touched in each send slot during this pass. Retargeting a send releases the latch.
+    touched_sends: std::collections::HashMap<(TrackId, usize), soundcraft_model::Route>,
     /// The pass's last point; `i64::MIN` after a stop or a jump, so the next point erases nothing it skipped.
     last_write_at: Samples,
     /// Plugins changed in their editors whose state the session hasn't taken yet (see `editor_states_due`).

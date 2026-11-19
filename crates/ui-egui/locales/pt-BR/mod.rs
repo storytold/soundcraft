@@ -1036,7 +1036,12 @@ fn menu_translate(source: &str) -> Option<&'static str> {
         "Forget MIDI Assignment" => "Remover atribuição MIDI",
         "This control is unavailable" => "Este controle está indisponível",
         "(inverted)" => "(invertido)",
-        "MIDI Learn: move a control" => "Aprender MIDI: mova um controle",
+        "MIDI Learn: move a control that sends a CC. Bank, parameter, switch pedal and channel-mode messages pass through." => {
+            "Aprender MIDI: mova um controle que envie CC. Mensagens de banco, parâmetro, pedal de chave e modo de canal passam para o instrumento."
+        }
+        "Toggle requires a press and release. For a latching button, choose hold mode." => {
+            "O modo de alternância requer pressionar e soltar. Para um botão com trava, escolha o modo de manter pressionado."
+        }
         "Unsupported control mode" => "Modo de controle incompatível",
         "MIDI Learn (hold button)" => "Aprender MIDI (manter o botão pressionado)",
         "MIDI Learn (relative, center 64)" => "Aprender MIDI (relativo, centro em 64)",
