@@ -12,6 +12,13 @@ pub(crate) fn automation_step_due(pos: Samples, last: Samples, step: Samples) ->
     last == i64::MIN || pos.saturating_sub(last) >= step || last.saturating_sub(pos) >= step
 }
 
+fn punch_tail_pending(plan: &soundcraft_engine::io::Recording, captured: u64, now: f64, deadline: &mut Option<f64>) -> bool {
+    let Some(selection) = plan.punch.filter(|_| plan.pass.is_none() && plan.placement_offset > 0 && plan.rate > 0) else { return false };
+    let required = u64::try_from(selection.end.saturating_sub(plan.origin())).unwrap_or(0);
+    let remaining = required.saturating_sub(captured);
+    remaining > 0 && now < *deadline.get_or_insert_with(|| now + remaining as f64 / f64::from(plan.rate) + 2.0)
+}
+
 impl SoundApp {
     pub fn is_playing(&self) -> bool {
         self.engine.transport.playing
@@ -148,39 +155,64 @@ impl SoundApp {
             // Punch in on the fly at the current playhead.
             self.record_start = self.position();
             self.punch = None;
-            self.plan_recording(takes, None);
+            self.plan_recording(takes, None, false);
             return;
         }
         let e = self.engine.session().edit.clone();
         let sel = e.selection;
+        let (pre, post) = if e.pre_post_roll { (e.pre_roll, e.post_roll) } else { (0, 0) };
+        let from = (sel.start - pre).max(0);
         // Loop recording needs a selection the transport will loop: one too short for that is
         // recorded as a punch, like any other selection.
         if e.loop_record && !sel.is_empty() && soundcraft_playback::loops(sel) {
-            self.record_start = sel.start;
-            self.punch = None;
-            self.start_play(sel.start, None, Some(sel));
-            self.plan_recording(takes, Some(sel.len()));
+            self.record_start = from;
+            self.punch = Some(sel);
+            self.start_play(from, None, Some(sel));
+            self.plan_recording(takes, Some(sel.len()), true);
         } else {
             // Record into the selection when there is one (punch), with pre/post-roll if enabled;
             // the take is trimmed back to the punch range afterwards.
-            let (pre, post) = if e.pre_post_roll { (e.pre_roll, e.post_roll) } else { (0, 0) };
-            let from = (sel.start - pre).max(0);
             self.record_start = from;
             self.punch = (!sel.is_empty()).then_some(sel);
             let end = (!sel.is_empty()).then_some(sel.end + post);
             self.start_play(from, end, None);
-            self.plan_recording(takes, None);
+            self.plan_recording(takes, None, true);
         }
     }
 
     /// Remember where the armed `takes` go (split into passes of `pass` when loop recording) and
     /// autosave that plan with the session.
-    fn plan_recording(&mut self, takes: Vec<soundcraft_engine::io::Take>, pass: Option<Samples>) {
+    fn plan_recording(&mut self, takes: Vec<soundcraft_engine::io::Take>, pass: Option<Samples>, align_from_stop: bool) {
+        self.punch_tail_deadline = None;
         let rate = self.recorder.as_ref().map_or(0, |r| r.sample_rate);
-        self.take_plan = Some(soundcraft_engine::io::Recording { start: self.record_start, pass, punch: self.punch, rate, takes });
+        self.record_alignment_pending = align_from_stop
+            && self.recorder.as_ref().is_some_and(|r| r.shares_asio_output())
+            && rate == self.engine.session().sample_rate.hz()
+            && self.player.as_ref().is_some_and(|p| p.device_rate == rate);
+        self.take_plan =
+            Some(soundcraft_engine::io::Recording { start: self.record_start, pass, punch: self.punch, placement_offset: 0, rate, takes });
         if let Some(root) = self.autosave_dir.clone() {
             self.queue_autosave(root);
         }
+    }
+
+    /// Record the compensated take origin before placing or autosaving any clip.
+    fn align_recording(&mut self) {
+        if !self.record_alignment_pending {
+            return;
+        }
+        let (Some(plan), Some(offset)) = (&mut self.take_plan, self.recorder.as_ref().and_then(|r| r.placement_offset())) else { return };
+        plan.placement_offset = offset;
+        self.record_alignment_pending = false;
+        if let Some(root) = self.autosave_dir.clone() {
+            self.queue_autosave(root);
+        }
+    }
+
+    /// Once playback ends, wait for the remaining capture with a fixed deadline.
+    fn waiting_for_punch_tail(&mut self, now: f64) -> bool {
+        let (Some(plan), Some(recorder)) = (&self.take_plan, &self.recorder) else { return false };
+        punch_tail_pending(plan, recorder.captured_frames(), now, &mut self.punch_tail_deadline)
     }
 
     /// Arm the input for the record-enabled tracks; a session never saved records into its
@@ -196,7 +228,7 @@ impl SoundApp {
             None => self.fallback_take_dir()?,
         };
         let Some(r) = &mut self.recorder else { return Err(crate::localization::text("no audio input device").into()) };
-        let plan = soundcraft_engine::io::plan_takes(&self.engine, &unsaved_dir, r.channels);
+        let plan = soundcraft_engine::io::plan_takes(&self.engine, &unsaved_dir, r.channels)?;
         if plan.is_empty() {
             return Err(crate::localization::text("no audio track is record-enabled").into());
         }
@@ -230,6 +262,12 @@ impl SoundApp {
     }
 
     fn finish_recording(&mut self) {
+        self.align_recording();
+        if self.record_alignment_pending {
+            log::info!("placing the take without device-latency correction: no usable synchronized timestamps");
+        }
+        self.record_alignment_pending = false;
+        self.punch_tail_deadline = None;
         self.engine.transport.recording = false;
         let midi_pass = self.end_midi_pass();
         if let Some(p) = &self.player {
@@ -253,19 +291,25 @@ impl SoundApp {
             start: self.record_start,
             pass: None,
             punch: self.punch,
+            placement_offset: 0,
             rate: 0,
             takes: Vec::new(),
         });
         self.punch = None;
         self.autosaved_rev = 0;
+        let sources_before = self.engine.session().sources.len();
         let ids = soundcraft_engine::io::place_recording(&mut self.engine, &plan, takes);
+        let saved_audio_source = self.engine.session().sources.len() > sources_before;
         // The audio engine may have confirmed the pass while the audio takes were finished: the
         // stop position and what the user is told go by one answer.
         let midi_confirmed = midi_confirmed || self.midi_pass_stopped_at(midi_pass).is_some();
         // MIDI goes where the audio of the pass goes: the loop, the punch range, or all of it. A
         // pass punched in while a loop was playing went on round that loop.
         let midi_loop = match plan.pass {
-            Some(len) => Some(Range::new(plan.start, plan.start.saturating_add(len))),
+            Some(len) => {
+                let start = plan.punch.map_or(plan.start, |range| range.start);
+                Some(Range::new(start, start.saturating_add(len)))
+            }
             None => self.play_loop,
         };
         // A loop pass stopped somewhere inside the loop: where, the audio engine said with its
@@ -274,9 +318,13 @@ impl SoundApp {
         // keys still down are held to the end of the loop (the take is reported as incomplete).
         let (midi_range, midi_kind) =
             super::midi::midi_take_span(midi_loop, plan.punch, self.record_start, stopped_at, self.midi_pass_stopped_at(midi_pass));
-        let (midi_clips, midi_problem) = self.finish_midi_take(midi_range, !ids.is_empty(), midi_confirmed, midi_kind);
+        let (midi_clips, midi_problem) = self.finish_midi_take(midi_range, !ids.is_empty() || saved_audio_source, midi_confirmed, midi_kind);
         self.ui.status = if plan.pass.is_some() && midi_clips == 0 {
-            crate::localized_format!("Loop-recorded {} take(s)", ids.len() / tracks)
+            if ids.is_empty() && saved_audio_source {
+                crate::localization::text("Short loop take saved in the Clips list").into()
+            } else {
+                crate::localized_format!("Loop-recorded {} take(s)", ids.len() / tracks)
+            }
         } else if ids.is_empty() && midi_clips == 0 {
             crate::localization::text("Nothing was recorded: the record-enabled tracks received no input").to_string()
         } else {
@@ -418,6 +466,8 @@ impl SoundApp {
                     // The old capture belongs to the replaced document, never to the new one.
                     self.recorder = None;
                     self.recorder_failed = false;
+                    self.record_alignment_pending = false;
+                    self.punch_tail_deadline = None;
                     self.punch = None;
                     self.gesture = None;
                     self.touched.clear();
@@ -489,6 +539,7 @@ impl SoundApp {
                 TransportRequest::AllNotesOff => {}
             }
         }
+        self.align_recording();
         // Read back the position.
         if let Some(p) = &self.player {
             let playing = p.is_playing();
@@ -518,7 +569,7 @@ impl SoundApp {
             }
             let main = snap.main.peak;
             feed_meter(&mut self.main_meter, main, 0.0, dt);
-            if ended {
+            if ended && !self.waiting_for_punch_tail(now) {
                 self.stop_play();
             }
         } else if let Some((pos, end, looped)) = &mut self.sim {
@@ -546,6 +597,26 @@ impl SoundApp {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn punch_tail_wait_ends_after_capture_or_a_stall() {
+        let mut plan = soundcraft_engine::io::Recording {
+            start: 0,
+            pass: None,
+            punch: Some(super::Range::new(0, 400)),
+            placement_offset: 128,
+            rate: 48_000,
+            takes: vec![],
+        };
+        let mut deadline = None;
+        assert!(super::punch_tail_pending(&plan, 400, 1.0, &mut deadline));
+        assert!(!super::punch_tail_pending(&plan, 528, 1.5, &mut deadline));
+        assert!(!super::punch_tail_pending(&plan, 400, 3.1, &mut deadline));
+        plan.pass = Some(400);
+        assert!(!super::punch_tail_pending(&plan, 400, 1.0, &mut None));
+        plan.pass = None;
+        plan.placement_offset = 0;
+        assert!(!super::punch_tail_pending(&plan, 1, 1.0, &mut None));
+    }
     use super::*;
 
     #[test]

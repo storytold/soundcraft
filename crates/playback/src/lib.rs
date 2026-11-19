@@ -31,6 +31,7 @@ pub fn loops(range: Range) -> bool {
 pub mod devices;
 pub mod midi;
 pub mod record;
+mod record_clock;
 
 pub use devices::AudioConfig;
 
@@ -124,7 +125,7 @@ enum Cmd {
     Session(Arc<Session>, Vec<PreparedInstance>),
     /// Where the callback sends the snapshots it replaces (freeing one takes thousands of frees).
     OldSessions(SyncSender<Arc<Session>>),
-    Input(Arc<record::InputRing>),
+    Input(Arc<record::InputRing>, bool),
     Midi(Arc<midi::MidiFeed>),
     /// Recording on or off. Switching it off carries the number of the pass that ends
     /// (`MidiFeed::end_pass`; 0: nobody waits for it), which the callback acknowledges.
@@ -157,6 +158,8 @@ pub enum OutputTrouble {
     Gone,
     /// The device stopped asking for audio while playing.
     Stalled,
+    /// The ASIO driver is still calling back but is no longer keeping up with its audio clock.
+    ClockTooSlow,
 }
 
 /// The transport and audio device.
@@ -173,6 +176,10 @@ pub struct Player {
     #[cfg(target_arch = "wasm32")]
     _stream: Option<cpal::Stream>,
     pub device_name: String,
+    #[cfg(all(windows, feature = "asio"))]
+    asio_device: Option<cpal::Device>,
+    #[cfg(all(windows, feature = "asio"))]
+    asio_watch: Mutex<Option<(u64, std::time::Instant)>>,
     pub device_rate: u32,
     /// Output channels the device was opened with (0 for the silent clock).
     pub device_channels: u16,
@@ -180,6 +187,18 @@ pub struct Player {
     pub device_buffer: Option<u32>,
     /// True when no audio device could be opened (silent clock).
     pub silent: bool,
+}
+
+#[cfg(any(test, all(windows, feature = "asio")))]
+fn reuses_output_device(selected_input: Option<&str>, opened_output: &str) -> bool {
+    selected_input.is_none_or(|name| name == opened_output)
+}
+
+#[test]
+fn shared_asio_capture_requires_the_opened_output_or_default_input() {
+    assert!(reuses_output_device(None, "USB Mixer"));
+    assert!(reuses_output_device(Some("USB Mixer"), "USB Mixer"));
+    assert!(!reuses_output_device(Some("Other Input"), "USB Mixer"));
 }
 
 impl Player {
@@ -198,17 +217,74 @@ impl Player {
         p
     }
 
+    /// Open recording and monitoring on the configured input. Reuse the active ASIO device
+    /// when it is the selected input. Enumerating other drivers can fail with an active stream.
+    pub fn open_input(&self, cfg: &AudioConfig) -> Result<record::Recorder, record::InputOpenError> {
+        #[cfg(not(target_os = "freebsd"))]
+        {
+            let (device, shared_output) = self.input_device(cfg)?;
+            #[cfg(all(windows, feature = "asio"))]
+            if let Some(config) = shared_output {
+                return record::Recorder::open_synced(&device, cfg, config, Arc::clone(&self.fault.record_clock));
+            }
+            record::Recorder::open_on_device(&device, cfg, shared_output)
+        }
+        #[cfg(target_os = "freebsd")]
+        record::Recorder::open_with(cfg).map_err(Into::into)
+    }
+
+    /// Input width at the selected rate without opening a recording stream.
+    pub fn input_channels(&self, cfg: &AudioConfig) -> usize {
+        #[cfg(not(target_os = "freebsd"))]
+        return self
+            .input_device(cfg)
+            .and_then(|(device, shared_output)| record::input_config(&device, cfg, shared_output.map(|(rate, _)| rate)))
+            .map_or(0, |config| usize::from(config.channels()));
+        #[cfg(target_os = "freebsd")]
+        {
+            let _ = cfg;
+            0
+        }
+    }
+
+    #[cfg(all(windows, feature = "asio"))]
+    fn shared_asio_input(&self, cfg: &AudioConfig) -> Option<&cpal::Device> {
+        self.asio_device.as_ref().filter(|_| reuses_output_device(cfg.input.as_deref(), &self.device_name))
+    }
+
+    #[cfg(not(target_os = "freebsd"))]
+    fn input_device(&self, cfg: &AudioConfig) -> Result<(cpal::Device, Option<(u32, cpal::BufferSize)>), String> {
+        #[cfg(all(windows, feature = "asio"))]
+        if let Some(device) = self.shared_asio_input(cfg) {
+            let buffer = self.device_buffer.map_or(cpal::BufferSize::Default, cpal::BufferSize::Fixed);
+            return Ok((device.clone(), Some((self.device_rate, buffer))));
+        }
+        record::input_device(cfg).map(|device| (device, None))
+    }
+
     /// What stopped the audio output, once: a bug in the engine, or the device went away or
     /// stopped asking for audio while playing.
     pub fn trouble(&self) -> Option<OutputTrouble> {
         #[cfg(not(target_arch = "wasm32"))]
-        let stalled = {
+        let clock = {
             let playing = self.shared.playing.load(Ordering::Relaxed) && !self.silent;
-            stalled(&mut self.watch.lock().unwrap_or_else(PoisonError::into_inner), self.fault.beats.load(Ordering::Relaxed), playing)
+            let stopped = stalled(&mut self.watch.lock().unwrap_or_else(PoisonError::into_inner), self.fault.beats.load(Ordering::Relaxed), playing);
+            #[cfg(all(windows, feature = "asio"))]
+            let slow = self.asio_device.is_some()
+                && callback::asio_clock_slow(
+                    &mut self.asio_watch.lock().unwrap_or_else(PoisonError::into_inner),
+                    self.fault.asio_frames.load(Ordering::Relaxed),
+                    std::time::Instant::now(),
+                    self.device_rate,
+                    playing,
+                );
+            #[cfg(not(all(windows, feature = "asio")))]
+            let slow = false;
+            if stopped { Some(OutputTrouble::Stalled) } else { slow.then_some(OutputTrouble::ClockTooSlow) }
         };
         #[cfg(target_arch = "wasm32")]
-        let stalled = false;
-        self.fault.trouble(stalled)
+        let clock = None;
+        self.fault.trouble(clock)
     }
 
     fn side(&self) -> std::sync::MutexGuard<'_, Side> {
@@ -251,6 +327,7 @@ impl Player {
                         let fault = Arc::new(Fault::default());
                         let stream = match format {
                             cpal::SampleFormat::I32 => build_output::<i32>(&device, *config, state, channels, &fault, &shared),
+                            cpal::SampleFormat::I24 => build_output::<cpal::I24>(&device, *config, state, channels, &fault, &shared),
                             cpal::SampleFormat::I16 => build_output::<i16>(&device, *config, state, channels, &fault, &shared),
                             _ => build_output::<f32>(&device, *config, state, channels, &fault, &shared),
                         }?;
@@ -278,6 +355,13 @@ impl Player {
                             tx,
                             side: new_side(grx),
                             _stream: Some(stream),
+                            #[cfg(all(windows, feature = "asio"))]
+                            asio_device: {
+                                use cpal::traits::DeviceTrait;
+                                device.id().ok().filter(|id| id.host() == cpal::HostId::Asio).map(|_| device)
+                            },
+                            #[cfg(all(windows, feature = "asio"))]
+                            asio_watch: Mutex::new(None),
                             device_name: name,
                             device_rate: rate,
                             device_channels: config.channels,
@@ -355,6 +439,10 @@ impl Player {
             tx,
             side,
             _stream: None,
+            #[cfg(all(windows, feature = "asio"))]
+            asio_device: None,
+            #[cfg(all(windows, feature = "asio"))]
+            asio_watch: Mutex::new(None),
             device_name: "No audio device (silent)".into(),
             device_rate: rate,
             device_channels: 0,
@@ -483,7 +571,12 @@ impl Player {
 
     /// Feed live input (from a `record::Recorder`) into the mix for input monitoring.
     pub fn set_input(&self, ring: Arc<record::InputRing>) {
-        let _ = self.tx.send(Cmd::Input(ring));
+        let _ = self.tx.send(Cmd::Input(ring, false));
+    }
+
+    /// Use direct monitoring only when the recorder shares the running ASIO output.
+    pub fn set_recorder_input(&self, recorder: &record::Recorder) {
+        let _ = self.tx.send(Cmd::Input(Arc::clone(&recorder.monitor), recorder.shares_asio_output()));
     }
 
     /// Play MIDI devices through record-enabled and input-monitored MIDI and instrument tracks.

@@ -9,30 +9,50 @@ use soundcraft_model::TrackKind;
 /// How the audio output is doing, for the UI.
 #[derive(Default)]
 pub(crate) struct Fault {
+    #[cfg(all(windows, feature = "asio"))]
+    pub(crate) record_clock: std::sync::Arc<crate::record_clock::OutputClock>,
     /// A block panicked: output stays silent from then on.
     failed: AtomicBool,
     /// The device went away or the stream was invalidated: only a reconnect can restore audio.
     pub(crate) gone: AtomicBool,
     /// Blocks so far, to tell a device that stopped asking for audio.
     pub(crate) beats: std::sync::atomic::AtomicU64,
+    #[cfg(all(windows, feature = "asio"))]
+    pub(crate) asio_frames: std::sync::atomic::AtomicU64,
     /// The UI has been told.
     reported: AtomicBool,
 }
 
 impl Fault {
     /// What stopped the output, once.
-    pub(crate) fn trouble(&self, stalled: bool) -> Option<OutputTrouble> {
+    pub(crate) fn trouble(&self, clock: Option<OutputTrouble>) -> Option<OutputTrouble> {
         let trouble = if self.failed.load(Ordering::Relaxed) {
             OutputTrouble::Bug
         } else if self.gone.load(Ordering::Relaxed) {
             OutputTrouble::Gone
-        } else if stalled {
-            OutputTrouble::Stalled
         } else {
-            return None;
+            clock?
         };
         (!self.reported.swap(true, Ordering::Relaxed)).then_some(trouble)
     }
+}
+
+/// Some ASIO drivers keep calling back sporadically after USB removal. Count actual device frames
+/// over a full stall interval so those callbacks cannot indefinitely mask a dead audio clock.
+#[cfg(any(test, all(windows, feature = "asio")))]
+pub(crate) fn asio_clock_slow(seen: &mut Option<(u64, std::time::Instant)>, frames: u64, now: std::time::Instant, rate: u32, playing: bool) -> bool {
+    if !playing {
+        *seen = None;
+        return false;
+    }
+    let (previous, since) = *seen.get_or_insert((frames, now));
+    let elapsed = now.saturating_duration_since(since);
+    if elapsed < STALL {
+        return false;
+    }
+    *seen = Some((frames, now));
+    // Allow normal callback jitter and brief load spikes; only a severe, sustained slowdown counts.
+    (frames.wrapping_sub(previous) as f64) < f64::from(rate) * elapsed.as_secs_f64() * 0.5
 }
 
 /// How long a playing output may go without a block before it counts as stalled.
@@ -82,6 +102,7 @@ pub(crate) struct AudioState {
     pub(crate) device_rate: f64,
     input: Option<Arc<record::InputRing>>,
     recording: bool,
+    pub(crate) started_now: bool,
     midi: Option<Arc<midi::MidiFeed>>,
     /// Live MIDI events of this callback not played yet: frames (session rate) until each is due.
     midi_pending: Vec<(i64, LiveMidi)>,
@@ -176,6 +197,7 @@ impl AudioState {
             device_rate,
             input: None,
             recording: false,
+            started_now: false,
             midi: None,
             midi_pending: Vec::with_capacity(MIDI_EVENTS),
             midi_delay: 0,
@@ -200,7 +222,10 @@ impl AudioState {
         let mut changed = false;
         while let Ok(c) = self.rx.try_recv() {
             match c {
-                Cmd::Input(r) => self.input = Some(r),
+                Cmd::Input(r, direct) => {
+                    self.input = Some(r);
+                    self.mix.direct_monitor_available = direct;
+                }
                 Cmd::Midi(f) => {
                     self.mix.midi_ports = Some(Arc::clone(f.ports()));
                     self.midi = Some(f);
@@ -240,6 +265,8 @@ impl AudioState {
                     changed = true;
                     if (s.sample_rate.as_f64() - self.session.sample_rate.as_f64()).abs() > 0.5 {
                         let mut old = std::mem::replace(&mut self.mix, new_engine(s.sample_rate.as_f64() as f32));
+                        self.mix.direct_monitor_available = old.direct_monitor_available;
+                        self.mix.set_hardware_channels(old.hardware_output().len());
                         let _ = self.garbage.send(old.drain_plugins());
                         self.mix.midi_ports = self.midi.as_ref().map(|f| Arc::clone(f.ports()));
                     }
@@ -248,6 +275,8 @@ impl AudioState {
                     let nch = main_channels(&s);
                     if self.pending.len() != nch {
                         self.pending = vec![vec![0.0; BLOCK]; nch];
+                    }
+                    if self.pending.len() != main_channels(&self.session) || s.outputs != self.session.outputs {
                         self.pending_len = 0;
                         self.read = 0.0;
                     }
@@ -259,6 +288,7 @@ impl AudioState {
                 }
                 Cmd::OldSessions(tx) => self.old_sessions = Some(tx),
                 Cmd::Play { from, end, looped } => {
+                    self.started_now = self.recording;
                     self.pos = from;
                     self.end = end;
                     self.looped = looped.filter(|r| super::loops(*r));
@@ -576,6 +606,7 @@ impl AudioState {
             for c in &mut self.pending {
                 c.iter_mut().for_each(|x| *x = 0.0);
             }
+            self.mix.clear_hardware_output(BLOCK);
             self.pending_len = BLOCK;
             return;
         }
@@ -622,6 +653,7 @@ impl AudioState {
 
     /// Fill an interleaved device buffer.
     pub(crate) fn fill(&mut self, out: &mut [f32], channels: usize) {
+        self.started_now = false;
         let channels = channels.max(1);
         let callback_frames = out.len() / channels;
         // The speed is read once: the callback renders at the speed it keeps for the ages of
@@ -693,6 +725,9 @@ impl AudioState {
             return;
         }
         let quantum = ((callback_frames as f64 * step).ceil() as usize).clamp(1, BLOCK);
+        let first = self.session.outputs.first().map_or(0, |path| usize::from(path.first_channel));
+        let main_width = self.pending.len();
+        let first = if first + main_width <= channels { first } else { 0 };
         if !midi_live {
             self.drop_midi();
         }
@@ -711,14 +746,14 @@ impl AudioState {
             let fr = (self.read - i0 as f64) as f32;
             let sounding = self.playing || monitoring;
             let nch = self.pending.len();
-            let sample = |c: usize| {
-                let ch = self.pending.get(c);
+            let sample = |buf: &[Vec<f32>], c: usize| {
+                let ch = buf.get(c);
                 let a = ch.and_then(|v| v.get(i0)).copied().unwrap_or(0.0);
                 // `pending` is BLOCK long; only `pending_len` frames are valid. Hold the last one at the edge.
                 let b = if i0 + 1 < self.pending_len { ch.and_then(|v| v.get(i0 + 1)).copied().unwrap_or(a) } else { a };
                 a * (1.0 - fr) + b * fr
             };
-            write_frame(frame, channels, nch, sounding, &self.fold, sample);
+            write_frame(frame, first..channels, nch, sounding, &self.fold, |c| sample(&self.pending, c), |c| sample(self.mix.hardware_output(), c));
             self.read += step;
         }
     }
@@ -875,32 +910,46 @@ impl TakeWriter<'_> {
 
 /// Write one device frame from `nch` rendered channels: fold surround to stereo (a mono device
 /// averages the two sides), or copy the channels straight through. `sample(c)` is channel `c`.
-fn write_frame(frame: &mut [f32], channels: usize, nch: usize, sounding: bool, fold: &[(f32, f32)], sample: impl Fn(usize) -> f32) {
-    if channels < nch {
+fn write_frame(
+    frame: &mut [f32],
+    main_range: std::ops::Range<usize>,
+    nch: usize,
+    sounding: bool,
+    fold: &[(f32, f32)],
+    sample: impl Fn(usize) -> f32,
+    physical: impl Fn(usize) -> f32,
+) {
+    if !sounding {
+        frame.fill(0.0);
+        return;
+    }
+    let first = main_range.start;
+    let channels = main_range.len();
+    if channels > 0 && channels < nch {
         // Fold surround to stereo first; a mono device averages the two sides.
         let (mut l, mut r) = (0.0f32, 0.0f32);
-        if sounding {
-            if nch == 2 {
-                (l, r) = (sample(0), sample(1));
-            } else {
-                for (c, (gl, gr)) in fold.iter().enumerate().take(nch) {
-                    let v = sample(c);
-                    l += v * gl;
-                    r += v * gr;
-                }
+        if nch == 2 {
+            (l, r) = (sample(0), sample(1));
+        } else {
+            for (c, (gl, gr)) in fold.iter().enumerate().take(nch) {
+                let v = sample(c);
+                l += v * gl;
+                r += v * gr;
             }
         }
         for (c, o) in frame.iter_mut().enumerate() {
-            *o = match c {
-                0 if channels == 1 => out_sample(0.5 * l + 0.5 * r),
-                0 => out_sample(l),
-                1 => out_sample(r),
+            let main = match c.checked_sub(first) {
+                Some(0) if channels == 1 => 0.5 * l + 0.5 * r,
+                Some(0) => l,
+                Some(1) => r,
                 _ => 0.0,
             };
+            *o = out_sample(main + physical(c));
         }
     } else {
         for (c, o) in frame.iter_mut().enumerate() {
-            *o = if c < nch.max(1) && sounding { out_sample(sample(c)) } else { 0.0 };
+            let main = c.checked_sub(first).filter(|&index| channels > 0 && index < nch).map_or(0.0, &sample);
+            *o = out_sample(main + physical(c));
         }
     }
 }

@@ -128,9 +128,9 @@ pub(super) fn draw_live_take(app: &SoundApp, painter: &egui::Painter, s: &Sessio
     let Some(take) = rec.live_take(track.id) else { return };
     let block_len = soundcraft_playback::record::LIVE_BLOCK as f64 * s.sample_rate.as_f64() / f64::from(rec.sample_rate.max(1));
     let len = soundcraft_time::to_samples(take.first().map_or(0, Vec::len) as f64 * block_len);
-    let sel = s.edit.selection;
-    let (start, pass) = if s.edit.loop_record && !sel.is_empty() { (sel.start, Some(sel.len())) } else { (app.record_start, None) };
-    let Some((origin, span)) = soundcraft_engine::io::live_span(start, pass, app.punch, len) else { return };
+    let (start, pass) = app.take_plan.as_ref().map_or((app.record_start, None), |plan| (plan.origin(), plan.pass));
+    let crop = app.take_plan.as_ref().and_then(|plan| plan.crop()).or(app.punch);
+    let Some((origin, span)) = soundcraft_engine::io::live_span(start, pass, crop, len) else { return };
     let r = Rect::from_min_max(pos2(x_of(s, tl, span.start), lane.min.y + 1.0), pos2(x_of(s, tl, span.end), lane.max.y - 1.0));
     let t = Tokens::current();
     let (body, _, wave) = clip_colors([t.rec.r(), t.rec.g(), t.rec.b()], false);

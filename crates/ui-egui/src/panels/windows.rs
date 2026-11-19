@@ -802,11 +802,46 @@ pub fn setup_audio_command(app: &mut SoundApp, id: &str, p: &serde_json::Value) 
     }))
 }
 
-/// Setup › I/O: busses and output paths.
+/// Setup › I/O: physical paths and internal busses.
 pub fn io_setup(app: &mut SoundApp, ctx: &egui::Context) {
     let mut open = app.ui.show_io_setup;
-    win(ctx, &mut open, "I/O Setup", vec2(420.0, 300.0), |ui| {
-        ui.label(egui::RichText::new(crate::localization::text("Busses")).strong());
+    let width_key = egui::Id::unique("io_setup_input_width");
+    if !open {
+        ctx.data_mut(|data| data.remove::<(AudioConfig, usize)>(width_key));
+    }
+    win(ctx, &mut open, "I/O Setup", vec2(510.0, 465.0), |ui| {
+        let tab_key = ui.scope_id().with("io_setup_tab");
+        let mut tab = ui.data(|data| data.get_temp(tab_key)).unwrap_or(0);
+        ui.horizontal(|ui| {
+            for (index, label) in ["Inputs", "Outputs", "Busses"].into_iter().enumerate() {
+                ui.selectable_value(&mut tab, index, crate::localization::text(label));
+            }
+        });
+        ui.data_mut(|data| data.insert_temp(tab_key, tab));
+        ui.separator();
+        match tab {
+            0 => {
+                let cached: Option<(AudioConfig, usize)> = ctx.data(|data| data.get_temp(width_key));
+                let channels = cached.filter(|(config, _)| *config == app.ui.audio).map(|(_, width)| width).unwrap_or_else(|| {
+                    let width = app.available_input_channels();
+                    ctx.data_mut(|data| data.insert_temp(width_key, (app.ui.audio.clone(), width)));
+                    width
+                });
+                physical_paths(app, ui, true, channels);
+            }
+            1 => {
+                main_output(app, ui);
+                let channels = app.player.as_ref().map_or(0, |player| usize::from(player.device_channels));
+                physical_paths(app, ui, false, channels);
+            }
+            _ => bus_paths(app, ui),
+        }
+    });
+    app.ui.show_io_setup = open;
+}
+
+fn bus_paths(app: &mut SoundApp, ui: &mut egui::Ui) {
+    egui::ScrollArea::vertical().max_height(340.0).show(ui, |ui| {
         let busses: Vec<(String, String)> = app.engine.session().busses.iter().map(|b| (b.name.clone(), b.format.label().to_string())).collect();
         egui::Grid::new("busses").num_columns(3).striped(true).show(ui, |ui| {
             for (name, fmt) in busses {
@@ -829,28 +864,116 @@ pub fn io_setup(app: &mut SoundApp, ctx: &egui::Context) {
             let n = app.engine.session().busses.len() + 1;
             let _ = app.run("mix.new_bus", json!({"name": format!("Bus {n}")}));
         }
-        ui.separator();
-        ui.label(egui::RichText::new(crate::localization::text("Outputs")).strong());
-        // Main output format: stereo, or a surround format (the mix and master faders follow).
-        let main = app.engine.session().main_format();
-        ui.horizontal(|ui| {
-            let main_label = ui.label(crate::localization::text("Main output"));
-            let format =
-                craft_ui::ComboBox::from_id_salt("main_output_format").selected_text(crate::localization::text(main.label())).show_ui(ui, |ui| {
-                    for f in soundcraft_model::ChannelFormat::ALL.into_iter().filter(|f| (2..=16).contains(&f.channels())) {
-                        if ui.selectable_label(f == main, crate::localization::text(f.label())).clicked() && f != main {
-                            let _ = app.run("setup.main_format", json!({"format": f.label()}));
+    });
+}
+
+fn main_output(app: &mut SoundApp, ui: &mut egui::Ui) {
+    let main = app.engine.session().main_format();
+    ui.horizontal(|ui| {
+        let main_label = ui.label(crate::localization::text("Main output"));
+        let format =
+            craft_ui::ComboBox::from_id_salt("main_output_format").selected_text(crate::localization::text(main.label())).show_ui(ui, |ui| {
+                for f in soundcraft_model::ChannelFormat::ALL.into_iter().filter(|f| (2..=16).contains(&f.channels())) {
+                    if ui.selectable_label(f == main, crate::localization::text(f.label())).clicked() && f != main {
+                        let _ = app.run("setup.main_format", json!({"format": f.label()}));
+                    }
+                }
+            });
+        format.response.labelled_by(main_label.id);
+        ui.label(egui::RichText::new(crate::localized_format!("{n} ch", n = main.channels())).small());
+    });
+}
+
+fn physical_paths(app: &mut SoundApp, ui: &mut egui::Ui, input: bool, channels: usize) {
+    use soundcraft_model::ChannelFormat;
+    let session = app.engine.session();
+    let paths: Vec<_> = if input {
+        session.inputs.iter().map(|p| (p.name.clone(), p.first_channel, p.format)).collect()
+    } else {
+        session.outputs.iter().map(|p| (p.name.clone(), p.first_channel, p.format)).collect()
+    };
+    let direction = if input { "input" } else { "output" };
+    if ui.button(crate::localization::text(if input { "New Input" } else { "New Output" })).clicked() {
+        let prefix = if input { "Input" } else { "Output" };
+        let name = (1..=paths.len() + 1)
+            .map(|index| format!("{prefix} {index}"))
+            .find(|name| !paths.iter().any(|(path, _, _)| path.eq_ignore_ascii_case(name)));
+        if let Some(name) = name {
+            let first = (0..channels)
+                .find(|channel| {
+                    !paths.iter().any(|(_, first, format)| {
+                        let first = usize::from(*first);
+                        (first..first + format.channels()).contains(channel)
+                    })
+                })
+                .unwrap_or(0);
+            let _ = app.run("setup.io", json!({"action": format!("create_{direction}"), "name": name, "format": "mono", "first_channel": first}));
+        }
+    }
+    egui::ScrollArea::vertical().id_salt(direction).max_height(300.0).show(ui, |ui| {
+        egui::Grid::new(("io_mapping", direction)).striped(true).show(ui, |ui| {
+            ui.strong(crate::localization::text("Path"));
+            let format_label = ui.strong(crate::localization::text("Format"));
+            let channel_label = ui.strong(crate::localization::text("First channel"));
+            ui.label("");
+            ui.end_row();
+            for (index, (path_name, first_channel, path_format)) in paths.iter().enumerate() {
+                let main = !input && index == 0;
+                ui.push_id(index, |ui| {
+                    let id = ui.scope_id().with((direction, path_name));
+                    let mut name: String = ui.ctx().memory(|memory| memory.data.get_temp(id)).unwrap_or_else(|| path_name.clone());
+                    let field = ui.add_sized([155.0, ui.spacing().interact_size.y], egui::TextEdit::singleline(&mut name));
+                    let edit = crate::widgets::named_text_field(
+                        field,
+                        crate::localization::text(if input { "Input path name" } else { "Output path name" }),
+                    );
+                    if edit.lost_focus() && name != *path_name {
+                        if let Err(error) = app.run("setup.io", json!({"action": format!("rename_{direction}"), "name": path_name, "new_name": name}))
+                        {
+                            app.ui.status = error;
                         }
+                        ui.data_mut(|data| data.remove::<String>(id));
+                    } else if edit.has_focus() {
+                        ui.data_mut(|data| data.insert_temp(id, name));
                     }
                 });
-            format.response.labelled_by(main_label.id);
-            ui.label(egui::RichText::new(crate::localized_format!("{n} ch", n = main.channels())).small());
+                let mut format = *path_format;
+                if main {
+                    format = app.engine.session().main_format();
+                    ui.label(crate::localization::text(format.label()));
+                } else {
+                    let options = craft_ui::ComboBox::from_id_salt((direction, index))
+                        .selected_text(crate::localization::text(format.label()))
+                        .show_ui(ui, |ui| {
+                            for option in ChannelFormat::ALL.into_iter().filter(|option| (1..=16).contains(&option.channels())) {
+                                ui.selectable_value(&mut format, option, crate::localization::text(option.label()));
+                            }
+                        });
+                    options.response.labelled_by(format_label.id);
+                }
+                let mut first = usize::from(*first_channel) + 1;
+                let max_first = if channels == 0 { 1024 } else { channels.saturating_sub(format.channels()).saturating_add(1) };
+                let upper = max_first.max(first);
+                let channel = ui.add(egui::DragValue::new(&mut first).range(1..=upper).update_while_editing(false)).labelled_by(channel_label.id);
+                if (channel.changed() || (!main && format != *path_format)) && first > 0 {
+                    let mut args = json!({"action": format!("set_{direction}"), "name": path_name, "first_channel": first - 1});
+                    if !main {
+                        args["format"] = json!(format.label());
+                    }
+                    let _ = app.run("setup.io", args);
+                }
+                ui.horizontal(|ui| {
+                    if channels > 0 && first - 1 + format.channels() > channels && (!main || first > 1) {
+                        ui.label(crate::localization::text(if main { "Playing from channel 1" } else { "Unavailable" }));
+                    }
+                    if !main && ui.small_button(crate::localization::text("Delete")).clicked() {
+                        let _ = app.run("setup.io", json!({"action": format!("delete_{direction}"), "name": path_name}));
+                    }
+                });
+                ui.end_row();
+            }
         });
-        for o in app.engine.session().outputs.clone() {
-            ui.label(crate::localized_format!("{} — {} from channel {}", o.name, o.format.label(), o.first_channel + 1));
-        }
     });
-    app.ui.show_io_setup = open;
 }
 
 /// Setup › Keyboard Shortcuts.
@@ -976,5 +1099,38 @@ mod audio_health_tests {
         let mut output = ctx.run_ui(egui::RawInput::default(), |ui| audio_health(&mut app, ui.ctx()));
         output.textures_delta.clear();
         assert!(app.audio_health_report.is_some());
+    }
+}
+
+#[cfg(test)]
+mod io_setup_tests {
+    use super::*;
+    use egui_kittest::{Harness, kittest::Queryable};
+
+    #[test]
+    fn input_tab_creates_a_named_path_in_the_existing_setup_window() {
+        let _palette = crate::theme::lock_test_palette();
+        let mut app = SoundApp::new(soundcraft_engine::Engine::default(), None, crate::Services::default());
+        app.ui.show_io_setup = true;
+        let mut initialized = false;
+        let mut h = Harness::builder().with_size(egui::vec2(800.0, 520.0)).with_max_steps(24).build_ui_state(
+            move |ui, app: &mut SoundApp| {
+                if !initialized {
+                    crate::fonts::install(ui.ctx(), true);
+                    crate::theme::apply(ui.ctx(), false);
+                    initialized = true;
+                }
+                io_setup(app, ui.ctx());
+            },
+            app,
+        );
+        h.run();
+        h.get_by_label("New Input").click();
+        h.run();
+        assert_eq!(h.state().engine.session().inputs[0].name, "Input 1");
+        h.get_by_label("Outputs").click();
+        h.run();
+        assert!(h.query_by_label("New Output").is_some());
+        assert!(h.query_by_label("New Input").is_none());
     }
 }

@@ -1,6 +1,6 @@
 # Where SoundCraft falls short of Pro Tools
 
-> **Last reviewed:** 2026-10-25 · **Last updated:** 2026-11-18 · **Change:** minor (G-02 shrunk: MIDI input devices work; previously minor: G-05: plugin editors on Linux/X11; previously trivial: G-09: the pt-BR catalog now covers helper-passed tooltips, the status bar, the remove-session prompt and engine error text; G-08: Frequency Shifter, 28 processors; G-04: volume automation read at every sample, #1354; G-01: `setup.playback_engine` applies the device buffer in the desktop app; G-04: Clip Looping crossfade and loop count) · **Target:** Avid Pro Tools Ultimate 2026.4.1
+> **Last reviewed:** 2026-11-18 · **Last updated:** 2026-11-18 · **Change:** G-01 ASIO take placement, loop retention and monitoring; named hardware inputs and ASIO hardware output paths and wide input/output selectors, with Main fallback and offline input assignment. Earlier: minor (G-02: MIDI input devices work; G-05: plugin editors on Linux/X11; previously trivial: G-09: the pt-BR catalog now covers helper-passed tooltips, the status bar, the remove-session prompt and engine error text; G-08: Frequency Shifter, 28 processors; G-04: volume automation read at every sample, #1354; G-01: `setup.playback_engine` applies the device buffer in the desktop app; G-04: Clip Looping crossfade and loop count) · **Target:** Avid Pro Tools Ultimate 2026.4.1
 
 Every known shortfall, one entry each, ranked by how much it stops a Pro Tools user from doing
 real work in SoundCraft. This is the work list: pick from the top. Rows marked **alpha blocker**
@@ -52,8 +52,18 @@ When you close a gap, delete its entry (or shrink it) in the same PR, and bump t
   not rounded onto the window's power-of-two list. Headless (CLI, no app) still stores the request
   and returns `applied: false`, with `buffer_size` null when unset; playback does not read those
   session values.
-- **Missing:** routing to physical channels (I/O Setup), one duplex stream on one clock (input and
-  output are still separate cpal streams), latency reporting and record-offset compensation, ASIO
+- **Done (2026-11-18):** Setup › I/O maps named output paths to physical channels. Track output
+  selectors assign these paths and the ASIO stream keeps all supported outputs open. Verified
+  USB outputs 1–10 at 48 kHz on the TASCAM Model 12.
+- **Done (2026-11-18):** Track input selectors use the selected device's usable recording width.
+  Track input and output lists scroll in the existing Edit and Mix selectors.
+- **Done (2026-11-18):** Setup › I/O stores named inputs with a contiguous hardware range and
+  format. Audio tracks select them by name for recording and input monitoring.
+- **Done (2026-11-18):** Takes started from stop on one matching-rate ASIO device use the
+  capture/playback callback anchors and reported device latency before cropping the take.
+  Selection punch records any needed input tail after the playback end.
+- **Missing:** hardware input sub-paths and noncontiguous mappings, one duplex stream on one clock (input and
+  output are still separate cpal streams), latency reporting and compensation for other capture modes and backends, ASIO
   in official builds (owner decision: Steinberg's SDK is proprietary or GPLv3), JACK, and
   verification on macOS and Linux. The mix still runs in fixed 512-sample blocks.
 - **Evidence:** code above; Playback Engine window says "Mix block size: 512 samples"; issue #42
@@ -247,6 +257,8 @@ missing. Out of scope unless the owner decides otherwise.
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-11-18 | minor | G-01: same-device ASIO take alignment, bounded punch tail, clock-failure stop, loop-pass retention and direct monitoring |
+| 2026-11-18 | minor | G-01: named hardware input paths for recording and monitoring |
 | 2026-11-13 | trivial | G-09: the pt-BR catalog now covers tooltips localized inside buttons and toggles, the Edit-window status bar, the remove-session question, the send help text and engine errors shown in the status line; estimates unchanged |
 | 2026-11-09 | trivial | G-08: 28 processors + 3 instruments with the Frequency Shifter |
 | 2026-11-04 | trivial | G-04: track and master volume automation read at every sample, so breakpoints act on their own sample in any block size (#1354); estimates unchanged |
