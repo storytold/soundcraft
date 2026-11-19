@@ -285,7 +285,8 @@ time. All these entries are covered by a test, placeholders match, keys are uniq
 `pt-BR` catalog is chosen automatically when `ui.language` is `pt-BR` (or "Portuguese (Brazil)")
 under `Setup › Appearance`. Engine errors keep their run-time values and a decimal comma in
 `pt-BR`. The remaining localization work is a native-speaker (human) review of wording plus CJK /
-Devanagari / Arabic font fallbacks and RTL layout — not new UI translation. The status, the stage
+Devanagari / Arabic font fallbacks and RTL layout — not new UI translation. A Finnish (`fi`) catalog
+covers the same strings and is checked by the same tests. The status, the stage
 and our effort estimates are in [`ROADMAP.md`](ROADMAP.md); the full assessment is in
 [`docs/target-app-parity.md`](docs/target-app-parity.md), the ranked list of what's missing in
 [`docs/gaps.md`](docs/gaps.md), and the menu-by-menu comparison in

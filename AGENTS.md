@@ -110,8 +110,8 @@ Parity is measured, not guessed: `crates/engine/catalog/menus.txt` lists the inc
 - Offscreen UI render (no window, no focus stealing): `cargo run -p soundcraft-ui-egui --example ui_shot -- out.png [script.jsonl]`.
 - Headless: `soundcraft-cli run --demo --cmd 'mix.volume={"track":"Kick","db":-6}' --bounce out.wav`; MCP: `soundcraft-cli mcp [--connect PORT]`.
 - **Language / localization:** the interface is English by default; Brazilian Portuguese
-  (`pt-BR`) is selected under `Setup › Appearance › Language` (or the `ui.language` command with
-  `{"language":"pt-BR"}`). The pt-BR catalog is complete for every fixed UI string — tests cover
+  (`pt-BR`) or Finnish (`fi`) is selected under `Setup › Appearance › Language` (or the `ui.language` command with
+  `{"language":"pt-BR"}`). The pt-BR and fi catalogs are complete for every fixed UI string — tests cover
   placeholder parity, unique keys and source coverage, and the `cargo test` suite passes.
 - Commands: build `cargo build -p soundcraft --bin soundcraft`; test
   `cargo test -p soundcraft --bin soundcraft`; run `DISPLAY=:0 ./target/debug/soundcraft`. The
