@@ -103,6 +103,10 @@ The default protocol is `hui`. Enable `"motorized":true` for fader position feed
 with motorized faders. Otherwise, a fader takes control as it reaches or crosses the assigned
 track's current position. The mapped tracks follow Bank and Channel navigation.
 
+The dedicated MCU master fader controls the session's single active Master Fader track
+across banks. Sessions with zero or multiple active Master Fader tracks leave this
+control unassigned. On a TASCAM Model 12 in MCU - Reaper mode, use the FX fader.
+
 Call `ui.hui {}` to read `online`, the one-based `first_track`, eight `tracks` slots
 (track IDs or null), `ports` and `record_ready`. A `navigate` value of `bank_left`,
 `bank_right`, `channel_left` or `channel_right` shifts the mapping. Use

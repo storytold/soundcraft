@@ -345,6 +345,17 @@ fn mapped_tracks(app: &SoundApp, first: usize) -> [Option<TrackId>; STRIPS] {
     std::array::from_fn(|_| tracks.next())
 }
 
+fn master_fader_target(app: &SoundApp, protocol: Protocol) -> Option<TrackId> {
+    if protocol != Protocol::Mcu {
+        return None;
+    }
+    // SoundCraft can process several master tracks in series. A single physical
+    // fader has an unambiguous target only when exactly one is active.
+    let mut masters = app.engine.session().tracks.iter().filter(|t| t.kind == TrackKind::Master && !t.inactive);
+    let master = masters.next()?;
+    masters.next().is_none().then_some(master.id)
+}
+
 pub(crate) fn controlled_tracks(app: &SoundApp) -> [Option<TrackId>; STRIPS] {
     app.hui.link.as_ref().filter(|link| link.online()).map_or([None; STRIPS], |_| mapped_tracks(app, app.hui.first_track))
 }
@@ -373,7 +384,8 @@ fn navigate(app: &mut SoundApp, link: &mut Link, direction: Navigation) {
     if first != app.hui.first_track {
         app.hui.first_track = first;
         link.decoder.coarse.fill(None);
-        app.hui.motion = Motion::default();
+        app.hui.motion.strips[..STRIPS].fill_with(Default::default);
+        app.hui.motion.pan_until = None;
         if app.engine.merge_key() == Some(MIX_GESTURE) {
             app.engine.end_merge();
         }
@@ -474,8 +486,9 @@ pub(crate) fn poll(app: &mut SoundApp, ctx: &egui::Context) {
     let last_bank = (track_count.saturating_sub(1) / STRIPS) * STRIPS;
     app.hui.first_track = app.hui.first_track.min(last_bank);
     let mut tracks = mapped_tracks(app, app.hui.first_track);
-    app.hui.motion.map(tracks);
-    let mut faders = [None; STRIPS];
+    let master = master_fader_target(app, link.protocol);
+    app.hui.motion.map(tracks, master);
+    let mut faders = [None; mcu::FADERS];
     let mut pans = [None; STRIPS];
     let mut jog_steps = 0;
     for index in 0..512 {
@@ -509,11 +522,11 @@ pub(crate) fn poll(app: &mut SoundApp, ctx: &egui::Context) {
             Event::Rewind | Event::FastForward | Event::Cycle | Event::SetMarker => transport_control(app, event),
             Event::Jog(_) => {}
             Event::Navigate(direction) => {
-                apply_faders(app, tracks, std::mem::take(&mut faders));
+                apply_faders(app, std::mem::take(&mut faders));
                 apply_pans(app, tracks, std::mem::take(&mut pans));
                 navigate(app, &mut link, direction);
                 tracks = mapped_tracks(app, app.hui.first_track);
-                app.hui.motion.map(tracks);
+                app.hui.motion.map(tracks, master);
             }
             Event::Mute(strip) | Event::Solo(strip) => {
                 if let Some(id) = tracks.get(strip).copied().flatten() {
@@ -552,7 +565,7 @@ pub(crate) fn poll(app: &mut SoundApp, ctx: &egui::Context) {
         }
     }
     jog(app, jog_steps);
-    apply_faders(app, tracks, faders);
+    apply_faders(app, faders);
     apply_pans(app, tracks, pans);
     for at in [Some(link.check_at), link.ping.map(|at| at + PING_INTERVAL), app.hui.motion.deadline(now)].into_iter().flatten() {
         ctx.request_repaint_after(at.saturating_duration_since(now));
@@ -604,9 +617,9 @@ fn apply_pans(app: &mut SoundApp, tracks: [Option<TrackId>; STRIPS], pans: [Opti
     }
 }
 
-fn apply_faders(app: &mut SoundApp, tracks: [Option<TrackId>; STRIPS], faders: [Option<u16>; STRIPS]) {
-    for (id, value) in tracks.into_iter().zip(faders) {
-        if let (Some(value), Some(track)) = (value, id.and_then(|id| app.engine.session().track(id))) {
+fn apply_faders(app: &mut SoundApp, faders: [Option<u16>; mcu::FADERS]) {
+    for (strip, value) in app.hui.motion.strips.iter().zip(faders) {
+        if let (Some(value), Some(track)) = (value, strip.track.and_then(|id| app.engine.session().track(id))) {
             let db = soundcraft_model::fader_pos_to_db(f32::from(value) / FADER_MAX);
             if (track.mixer.volume_db - db).abs() > 0.001 {
                 let _ = app.engine.execute_merged("mix.volume", &json!({"tracks":[track.id.0], "db":db}), MIX_GESTURE);
@@ -862,6 +875,39 @@ mod tests {
             assert_eq!(track.mixer.volume_db, 0.0);
             assert_eq!(track.mixer.pan[0], 0.0);
         }
+    }
+
+    #[test]
+    fn mcu_master_fader_follows_the_main_mix_across_banks() {
+        let (mut app, _, packets) = test_app();
+        app.run("track.new", json!({"count": 15, "kind":"audio","format":"mono"})).unwrap();
+        let ctx = egui::Context::default();
+        let move_to = |position: u16| packets.send([0xe8, (position & 127) as u8, (position >> 7) as u8]).unwrap();
+        move_to(16_383);
+        poll(&mut app, &ctx);
+        assert!(app.engine.session().tracks.iter().all(|t| t.mixer.volume_db == 0.0));
+
+        let add_master =
+            |app: &mut SoundApp| TrackId(app.run("track.new", json!({"kind":"master","format":"stereo"})).unwrap()["tracks"][0].as_u64().unwrap());
+        let master = add_master(&mut app);
+        move_to(0);
+        poll(&mut app, &ctx);
+        assert_eq!(app.engine.session().track(master).unwrap().mixer.volume_db, 0.0);
+        move_to(16_383);
+        poll(&mut app, &ctx);
+        assert_eq!(app.engine.session().track(master).unwrap().mixer.volume_db, 12.0);
+        packets.send([0x90, 0x2f, 127]).unwrap();
+        move_to(0);
+        poll(&mut app, &ctx);
+        assert_eq!(app.hui.first_track, 8);
+        assert_eq!(app.engine.session().track(master).unwrap().mixer.volume_db, -144.0);
+        assert!(app.engine.session().tracks.iter().filter(|t| t.id != master).all(|t| t.mixer.volume_db == 0.0));
+
+        let second = add_master(&mut app);
+        move_to(16_383);
+        poll(&mut app, &ctx);
+        assert_eq!(app.engine.session().track(master).unwrap().mixer.volume_db, -144.0);
+        assert_eq!(app.engine.session().track(second).unwrap().mixer.volume_db, 0.0);
     }
 
     #[test]

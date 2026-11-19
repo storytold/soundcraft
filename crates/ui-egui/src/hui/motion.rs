@@ -1,4 +1,4 @@
-use crate::surface_protocol::STRIPS;
+use crate::surface_protocol::{STRIPS, mcu};
 use soundcraft_model::TrackId;
 use std::time::{Duration, Instant};
 
@@ -8,7 +8,7 @@ const PICKUP_TOLERANCE: u16 = 164;
 
 #[derive(Default)]
 pub(super) struct Motion {
-    pub(super) strips: [Strip; STRIPS],
+    pub(super) strips: [Strip; mcu::FADERS],
     pub(super) pan_until: Option<Instant>,
 }
 
@@ -23,8 +23,8 @@ pub(super) struct Strip {
 }
 
 impl Motion {
-    pub(super) fn map(&mut self, tracks: [Option<TrackId>; STRIPS]) {
-        for (strip, track) in self.strips.iter_mut().zip(tracks) {
+    pub(super) fn map(&mut self, tracks: [Option<TrackId>; STRIPS], master: Option<TrackId>) {
+        for (strip, track) in self.strips.iter_mut().zip(tracks.into_iter().chain([master])) {
             if strip.track != track {
                 *strip = Strip { track, ..Strip::default() };
             }
@@ -106,7 +106,7 @@ mod tests {
         let mut motion = Motion::default();
         let mut tracks = [None; STRIPS];
         tracks[0] = Some(TrackId(1));
-        motion.map(tracks);
+        motion.map(tracks, None);
         let strip = &mut motion.strips[0];
         assert!(!strip.accept(3_000, 12_000, false, now));
         assert!(!strip.accept(8_000, 12_000, false, now));
@@ -116,7 +116,7 @@ mod tests {
         assert!(!strip.accept(12_000, 12_000, true, now + GESTURE_GAP));
 
         tracks[0] = Some(TrackId(9));
-        motion.map(tracks);
+        motion.map(tracks, None);
         let strip = &mut motion.strips[0];
         assert!(strip.should_send(12_000, now));
         assert!(!strip.accept(8_000, 12_000, false, now));

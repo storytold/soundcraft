@@ -3,6 +3,7 @@ use super::{Event, Navigation, STRIPS, fader_bytes};
 
 const STOP: u8 = 0x5d;
 const PLAY: u8 = 0x5e;
+pub(crate) const FADERS: usize = STRIPS + 1;
 
 pub(crate) fn decode(packet: [u8; 3]) -> Option<Event> {
     match packet {
@@ -20,11 +21,11 @@ pub(crate) fn decode(packet: [u8; 3]) -> Option<Event> {
         [0x90, 0x5b, 1..=127] => Some(Event::Rewind),
         [0x90, 0x5c, 1..=127] => Some(Event::FastForward),
         [0x90, 0x5f, 1..=127] => Some(Event::Record),
-        [0x90, note @ 0x68..=0x6f, value @ 0..=127] => Some(Event::Touch(usize::from(note - 0x68), value != 0)),
-        [0x80, note @ 0x68..=0x6f, 0..=127] => Some(Event::Touch(usize::from(note - 0x68), false)),
+        [0x90, note @ 0x68..=0x70, value @ 0..=127] => Some(Event::Touch(usize::from(note - 0x68), value != 0)),
+        [0x80, note @ 0x68..=0x70, 0..=127] => Some(Event::Touch(usize::from(note - 0x68), false)),
         [0xb0, cc @ 0x10..=0x17, value] => relative(value).map(|steps| Event::Pan(usize::from(cc - 0x10), steps)),
         [0xb0, 0x3c, value] => relative(value).map(Event::Jog),
-        [channel @ 0xe0..=0xe7, low @ 0..=127, high @ 0..=127] => {
+        [channel @ 0xe0..=0xe8, low @ 0..=127, high @ 0..=127] => {
             Some(Event::Fader(usize::from(channel - 0xe0), u16::from(low) | (u16::from(high) << 7)))
         }
         _ => None,
@@ -49,7 +50,7 @@ pub(crate) fn lamp(strip: usize, index: usize, lit: bool) -> Option<[u8; 3]> {
 }
 
 pub(crate) fn fader(strip: usize, position: u16) -> Option<[u8; 3]> {
-    let strip = u8::try_from(strip).ok().filter(|strip| *strip < STRIPS as u8)?;
+    let strip = u8::try_from(strip).ok().filter(|strip| usize::from(*strip) < FADERS)?;
     let [low, high] = fader_bytes(position);
     Some([0xe0 + strip, low, high])
 }
@@ -71,7 +72,12 @@ mod tests {
         for strip in 0..8 {
             assert_eq!(decode([0xe0 + strip, 1, 0x40]), Some(Event::Fader(usize::from(strip), 8193)));
         }
-        assert_eq!(decode([0xe8, 0, 0]), None);
+        assert_eq!(decode([0xe8, 127, 127]), Some(Event::Fader(8, 16_383)));
+        assert_eq!(fader(8, 16_383), Some([0xe8, 127, 127]));
+        assert_eq!(decode([0x90, 0x70, 127]), Some(Event::Touch(8, true)));
+        assert_eq!(decode([0x80, 0x70, 0]), Some(Event::Touch(8, false)));
+        assert_eq!(decode([0xe9, 0, 0]), None);
+        assert_eq!(fader(9, 0), None);
         assert_eq!(decode([0xe0, 0x80, 0]), None);
     }
 
