@@ -379,7 +379,7 @@ fn shared_codec_playback_and_seek_parity() {
         let mut seq_movie = Movie::open(bytes.clone()).unwrap();
         let info = seq_movie.info().clone();
         assert_eq!(info.codec, expected_codec, "{label}: unexpected codec");
-        let count = info.frame_count as usize;
+        let count = info.frame_count;
         let mut sequential = Vec::with_capacity(count);
         for i in 0..count {
             let t = seq_movie.frame_time(i).unwrap() + 0.001;
