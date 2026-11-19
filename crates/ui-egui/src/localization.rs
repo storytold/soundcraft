@@ -1,5 +1,8 @@
 //! Language selection and source-language fallback for UI strings.
 
+#[path = "../locales/cs/mod.rs"]
+mod cs;
+
 #[path = "../locales/pt-BR/mod.rs"]
 mod pt_br;
 
@@ -17,17 +20,20 @@ pub enum Language {
     English,
     #[serde(rename = "pt-BR")]
     PortugueseBrazil,
+    #[serde(rename = "cs")]
+    Czech,
 }
 
 impl Language {
     /// All supported languages, in the order they are shown in the language menu.
-    pub const ALL: [Self; 2] = [Self::English, Self::PortugueseBrazil];
+    pub const ALL: [Self; 3] = [Self::English, Self::PortugueseBrazil, Self::Czech];
 
     /// Stable language tag used in preferences and control commands.
     pub const fn id(self) -> &'static str {
         match self {
             Self::English => "en",
             Self::PortugueseBrazil => "pt-BR",
+            Self::Czech => "cs",
         }
     }
 
@@ -36,6 +42,7 @@ impl Language {
         match self {
             Self::English => "English",
             Self::PortugueseBrazil => "Portuguese (Brazil)",
+            Self::Czech => "Czech",
         }
     }
 
@@ -47,7 +54,7 @@ impl Language {
     pub fn localize_decimal(self, number: &str) -> String {
         match self {
             Self::English => number.to_owned(),
-            Self::PortugueseBrazil => number.replace('.', ","),
+            Self::PortugueseBrazil | Self::Czech => number.replace('.', ","),
         }
     }
 
@@ -56,6 +63,7 @@ impl Language {
         match self {
             Self::English => source,
             Self::PortugueseBrazil => pt_br::translate(source).unwrap_or(source),
+            Self::Czech => cs::translate(source).unwrap_or(source),
         }
     }
 }
@@ -89,6 +97,7 @@ fn error_text_in(language: Language, message: &str, depth: usize) -> String {
     let templates: &[(&str, &str)] = match language {
         Language::English => &[],
         Language::PortugueseBrazil => pt_br::ERROR_TEMPLATES,
+        Language::Czech => cs::ERROR_TEMPLATES,
     };
     let mut best: Option<(usize, &str, Vec<(String, String)>)> = None;
     for (template, translation) in templates {
@@ -195,6 +204,9 @@ fn fill_captures(language: Language, translation: &str, captures: &[(String, Str
             Piece::Field(field) => {
                 let name = field.split(':').next().unwrap_or_default();
                 match captures.iter().find(|(captured, _)| captured == name) {
+                    // The English error embeds an inflection suffix, not user data. The Czech
+                    // template uses an invariant count phrase, so it must not inherit English "s".
+                    Some((_, value)) if language == Language::Czech && name == "plural" && value == "s" => {}
                     Some((_, value)) if value.parse::<f64>().is_ok() => out.push_str(&language.localize_decimal(value)),
                     Some((_, value)) => out.push_str(value),
                     None => {
@@ -209,10 +221,14 @@ fn fill_captures(language: Language, translation: &str, captures: &[(String, Str
     out
 }
 
-/// Whether the Brazilian Portuguese catalog has an entry for `source`, even an identical one.
+/// Whether the selected catalog has an entry for `source`, even an identical one.
 #[cfg(test)]
-pub(crate) fn has_pt_br_entry(source: &str) -> bool {
-    pt_br::translate(source).is_some()
+pub(crate) fn has_entry(language: Language, source: &str) -> bool {
+    match language {
+        Language::English => true,
+        Language::PortugueseBrazil => pt_br::translate(source).is_some(),
+        Language::Czech => cs::translate(source).is_some(),
+    }
 }
 
 /// Guard that restores the previously active language when dropped.
@@ -350,40 +366,48 @@ mod tests {
         for language in Language::ALL {
             assert_eq!(Language::parse(language.id()), Some(language));
             let encoded = serde_json::to_value(language).unwrap_or_default();
+            assert_eq!(encoded, serde_json::json!(language.id()));
             let decoded: Language = serde_json::from_value(encoded).unwrap_or_default();
             assert_eq!(decoded, language);
         }
         assert_eq!(Language::parse(" PT-br "), Some(Language::PortugueseBrazil));
+        assert_eq!(Language::parse(" CS "), Some(Language::Czech));
         assert_eq!(Language::parse("fr"), None);
     }
 
     #[test]
     fn language_translations_fall_back_to_the_english_source() {
-        assert_ne!(Language::PortugueseBrazil.text("Appearance"), "Appearance");
-        assert_eq!(Language::PortugueseBrazil.text("A source string with no catalog entry"), "A source string with no catalog entry");
-        assert_eq!(Language::English.text("Appearance"), "Appearance");
+        for language in Language::ALL.into_iter().filter(|language| *language != Language::English) {
+            assert_ne!(language.text("Appearance"), "Appearance");
+            assert_eq!(language.text("A source string with no catalog entry"), "A source string with no catalog entry");
+            assert_eq!(Language::English.text("Appearance"), "Appearance");
+        }
     }
 
     #[test]
     fn language_scope_restores_the_previous_language() {
-        assert_eq!(text("Appearance"), "Appearance");
-        {
-            let _scope = enter(Language::PortugueseBrazil);
-            assert_ne!(text("Appearance"), "Appearance");
+        for language in Language::ALL.into_iter().filter(|language| *language != Language::English) {
+            assert_eq!(text("Appearance"), "Appearance");
             {
-                let _inner = enter(Language::English);
-                assert_eq!(text("Appearance"), "Appearance");
+                let _scope = enter(language);
+                assert_ne!(text("Appearance"), "Appearance");
+                {
+                    let _inner = enter(Language::English);
+                    assert_eq!(text("Appearance"), "Appearance");
+                }
+                assert_ne!(text("Appearance"), "Appearance");
             }
-            assert_ne!(text("Appearance"), "Appearance");
+            assert_eq!(text("Appearance"), "Appearance");
         }
-        assert_eq!(text("Appearance"), "Appearance");
     }
 
     #[test]
-    fn portuguese_catalog_covers_every_menu_label() {
-        for path in include_str!("../../engine/catalog/menus.txt").lines() {
-            for label in path.split(" > ").map(str::trim).filter(|label| !label.is_empty()) {
-                assert!(super::pt_br::translate(label).is_some(), "missing pt-BR menu label: {label}");
+    fn catalogs_cover_every_menu_label() {
+        for language in Language::ALL.into_iter().filter(|language| *language != Language::English) {
+            for path in include_str!("../../engine/catalog/menus.txt").lines() {
+                for label in path.split(" > ").map(str::trim).filter(|label| !label.is_empty()) {
+                    assert!(super::has_entry(language, label), "missing {language:?} menu label: {label}");
+                }
             }
         }
     }
@@ -391,15 +415,17 @@ mod tests {
     #[test]
     fn engine_errors_are_translated_with_their_values() {
         assert_eq!(error_text("select a clip"), "select a clip");
-        let _scope = enter(Language::PortugueseBrazil);
-        assert_ne!(error_text("select a clip"), "select a clip");
-        assert_ne!(error_text("no track"), "no track");
-        let wrapped = error_text("bad parameters for `track.new`: `name` required");
-        assert!(wrapped.contains("`track.new`") && wrapped.contains("`name`"), "{wrapped}");
-        assert!(!wrapped.contains("bad parameters") && !wrapped.contains("required"), "{wrapped}");
-        let ratio = error_text("stretch ratio 12.500 is outside 0.1..10");
-        assert!(ratio.contains("12,500"), "{ratio}");
-        assert_eq!(error_text("some unknown library failure"), "some unknown library failure");
+        for language in Language::ALL.into_iter().filter(|language| *language != Language::English) {
+            let _scope = enter(language);
+            assert_ne!(error_text("select a clip"), "select a clip");
+            assert_ne!(error_text("no track"), "no track");
+            let wrapped = error_text("bad parameters for `track.new`: `name` required");
+            assert!(wrapped.contains("`track.new`") && wrapped.contains("`name`"), "{wrapped}");
+            assert!(!wrapped.contains("bad parameters") && !wrapped.contains("required"), "{wrapped}");
+            let ratio = error_text("stretch ratio 12.500 is outside 0.1..10");
+            assert!(ratio.contains("12,500"), "{ratio}");
+            assert_eq!(error_text("some unknown library failure"), "some unknown library failure");
+        }
     }
 
     #[test]
@@ -435,12 +461,14 @@ mod tests {
     }
 
     #[test]
-    fn portuguese_numbers_use_a_decimal_comma_only_with_a_precision() {
-        let _scope = enter(Language::PortugueseBrazil);
-        assert_eq!(format_positional("{:.1} dB", &[Arg::new(&-6.04_f64)]), "-6,0 dB");
-        assert_eq!(format_positional("{}", &[Arg::new(&"v1.2")]), "v1.2");
-        let _english = enter(Language::English);
-        assert_eq!(format_positional("{:.1}", &[Arg::new(&2.5_f64)]), "2.5");
+    fn localized_numbers_use_a_decimal_comma_only_with_a_precision() {
+        for language in Language::ALL.into_iter().filter(|language| *language != Language::English) {
+            let _scope = enter(language);
+            assert_eq!(format_positional("{:.1} dB", &[Arg::new(&-6.04_f64)]), "-6,0 dB");
+            assert_eq!(format_positional("{}", &[Arg::new(&"v1.2")]), "v1.2");
+            let _english = enter(Language::English);
+            assert_eq!(format_positional("{:.1}", &[Arg::new(&2.5_f64)]), "2.5");
+        }
     }
 
     /// Parses a Rust string literal at the start of `s`; returns its value and the rest.
@@ -461,8 +489,12 @@ mod tests {
     }
 
     /// Every `"source" => "translation"` pair of the catalog, read from its source file.
-    fn catalog_entries() -> Vec<(String, String)> {
-        let text = include_str!("../locales/pt-BR/mod.rs");
+    fn catalog_entries(language: Language) -> Vec<(String, String)> {
+        let text = match language {
+            Language::English => "",
+            Language::PortugueseBrazil => include_str!("../locales/pt-BR/mod.rs"),
+            Language::Czech => include_str!("../locales/cs/mod.rs"),
+        };
         let mut lines = text.lines().map(str::trim);
         let mut entries = Vec::new();
         while let Some(line) = lines.next() {
@@ -495,38 +527,43 @@ mod tests {
 
     #[test]
     fn catalog_entries_are_parsed_and_unique() {
-        let entries = catalog_entries();
-        assert!(entries.len() > 1000, "parsed only {} catalog entries", entries.len());
-        let mut keys: Vec<&str> = entries.iter().map(|(key, _)| key.as_str()).collect();
-        keys.sort_unstable();
-        let before = keys.len();
-        keys.dedup();
-        assert_eq!(before, keys.len(), "duplicate catalog keys");
+        for language in Language::ALL.into_iter().filter(|language| *language != Language::English) {
+            let entries = catalog_entries(language);
+            assert!(entries.len() > 1000, "parsed only {} catalog entries", entries.len());
+            let mut keys: Vec<&str> = entries.iter().map(|(key, _)| key.as_str()).collect();
+            keys.sort_unstable();
+            let before = keys.len();
+            keys.dedup();
+            assert_eq!(before, keys.len(), "duplicate catalog keys");
+        }
     }
 
     #[test]
     fn catalog_translations_keep_the_english_placeholders() {
-        for (source, translation) in catalog_entries() {
-            assert_eq!(placeholders(&source), placeholders(&translation), "placeholders differ for {source:?}");
-            assert_eq!(super::pt_br::translate(&source), Some(translation.as_str()), "lookup differs for {source:?}");
+        for language in Language::ALL.into_iter().filter(|language| *language != Language::English) {
+            for (source, translation) in catalog_entries(language) {
+                assert_eq!(placeholders(&source), placeholders(&translation), "placeholders differ for {source:?}");
+                assert!(super::has_entry(language, &source), "missing {language:?} entry for {source:?}");
+                assert_eq!(language.text(&source), translation, "{language:?} lookup differs for {source:?}");
+            }
         }
     }
 
     #[test]
     fn every_localized_source_string_has_a_catalog_entry() {
-        fn visit(dir: &std::path::Path, missing: &mut Vec<String>) {
+        fn visit(language: Language, dir: &std::path::Path, missing: &mut Vec<String>) {
             let Ok(read) = std::fs::read_dir(dir) else { return };
             for entry in read.flatten() {
                 let path = entry.path();
                 if path.is_dir() {
-                    visit(&path, missing);
+                    visit(language, &path, missing);
                 } else if path.extension().is_some_and(|e| e == "rs") && !path.ends_with("localization.rs") {
                     let Ok(text) = std::fs::read_to_string(&path) else { continue };
                     for marker in ["localization::text(\"", "localized_format!(\""] {
                         for (at, _) in text.match_indices(marker) {
                             let start = at + marker.len() - 1;
                             if let Some((source, _)) = literal(&text[start..])
-                                && super::pt_br::translate(&source).is_none()
+                                && !super::has_entry(language, &source)
                             {
                                 missing.push(format!("{}: {source:?}", path.display()));
                             }
@@ -535,8 +572,217 @@ mod tests {
                 }
             }
         }
-        let mut missing = Vec::new();
-        visit(&std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src"), &mut missing);
-        assert!(missing.is_empty(), "strings without a pt-BR entry:\n{}", missing.join("\n"));
+        for language in Language::ALL.into_iter().filter(|language| *language != Language::English) {
+            let mut missing = Vec::new();
+            visit(language, &std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src"), &mut missing);
+            assert!(missing.is_empty(), "strings without a {language:?} entry:\n{}", missing.join("\n"));
+        }
+    }
+
+    #[test]
+    fn translated_catalogs_have_exactly_the_same_source_keys() {
+        let keys = |language| catalog_entries(language).into_iter().map(|(key, _)| key).collect::<std::collections::BTreeSet<_>>();
+        let expected = keys(Language::PortugueseBrazil);
+        assert!(expected.contains("Czech"));
+        for language in Language::ALL.into_iter().filter(|language| *language != Language::English) {
+            assert_eq!(keys(language), expected, "{language:?} catalog source keys differ");
+            for choice in Language::ALL {
+                assert!(super::has_entry(language, choice.native_name()), "{language:?} is missing a language name");
+            }
+        }
+        assert_eq!(Language::Czech.native_name(), "Czech");
+        assert_eq!(Language::Czech.text("Czech"), "Čeština");
+        assert_eq!(Language::PortugueseBrazil.text("Czech"), "Tcheco");
+    }
+
+    #[test]
+    fn error_templates_have_matching_unique_sources_and_placeholders() {
+        let expected = super::pt_br::ERROR_TEMPLATES.iter().map(|(source, _)| *source).collect::<std::collections::BTreeSet<_>>();
+        assert!(expected.len() > 200);
+        for language in Language::ALL.into_iter().filter(|language| *language != Language::English) {
+            let templates = match language {
+                Language::English => &[][..],
+                Language::PortugueseBrazil => super::pt_br::ERROR_TEMPLATES,
+                Language::Czech => super::cs::ERROR_TEMPLATES,
+            };
+            let sources = templates.iter().map(|(source, _)| *source).collect::<std::collections::BTreeSet<_>>();
+            assert_eq!(sources.len(), templates.len(), "{language:?} duplicate error template");
+            assert_eq!(sources, expected, "{language:?} missing error template");
+            for (source, translation) in templates {
+                assert_eq!(placeholders(source), placeholders(translation), "{language:?}: {source}");
+                assert_eq!(language.text(source), *translation, "{language:?} error lookup differs");
+            }
+        }
+    }
+
+    #[test]
+    fn decimal_separators_follow_the_selected_language() {
+        for language in Language::ALL {
+            let expected = if language == Language::English { "-1234.50" } else { "-1234,50" };
+            assert_eq!(language.localize_decimal("-1234.50"), expected);
+            assert_eq!(language.localize_decimal("192000"), "192000");
+        }
+    }
+
+    #[test]
+    fn czech_error_counts_do_not_inherit_an_english_plural_suffix() {
+        let _scope = enter(Language::Czech);
+        assert_eq!(
+            error_text("`Kick` is used by 3 clips on the timeline; pass `with_clips: true` to remove them too"),
+            "`Kick` používají klipy na časové ose (počet: 3); pro jejich odebrání zadejte `with_clips: true`"
+        );
+        // A user-provided name that happens to be "s" must remain unchanged.
+        assert_eq!(error_text("no bus `s`"), "žádná sběrnice `s`");
+    }
+
+    /// Borrowed audio/size names, product names, abbreviations, numbers and readout notation are
+    /// deliberately identical. Keep this explicit: a new English sentence needs a translation.
+    #[test]
+    fn czech_identity_entries_are_only_names_abbreviations_and_numeric_notation() {
+        const ALLOWED: &[&str] = &[
+            "+",
+            "/",
+            "0 dB",
+            "CLAP",
+            "VST3",
+            "bpm",
+            "·",
+            "−",
+            "−∞",
+            "⬆",
+            "Audio Units",
+            "Dither (TPDF)",
+            "Legato",
+            "OK",
+            "Renderer",
+            "SoundCraft",
+            "Swing %",
+            "Transport",
+            "Video",
+            "Sub",
+            "Tempo",
+            "Model",
+            "1",
+            "2",
+            "3",
+            "4",
+            "5",
+            "5.0",
+            "5.0.2",
+            "5.0.4",
+            "5.1",
+            "5.1.2",
+            "5.1.4",
+            "6.0",
+            "6.1",
+            "7.0",
+            "7.0 SDDS",
+            "7.0.2",
+            "7.0.4",
+            "7.0.6",
+            "7.1",
+            "7.1 SDDS",
+            "7.1.2",
+            "7.1.4",
+            "7.1.6",
+            "9.0.4",
+            "9.0.6",
+            "9.1.4",
+            "9.1.6",
+            "Ableton Link",
+            "AudioSuite",
+            "BF-76",
+            "D-Verb",
+            "Dyn3 Compressor/Limiter",
+            "Dyn3 De-Esser",
+            "Dyn3 Expander/Gate",
+            "EQ",
+            "EQ3 1-Band",
+            "EQ3 7-Band",
+            "Eleven Lite",
+            "HEAT",
+            "LCR",
+            "LCRS",
+            "Lo-Fi",
+            "MIDI",
+            "Maxim",
+            "Melodyne",
+            "Mix",
+            "Mod Delay III",
+            "Mono",
+            "Pitch II",
+            "QuickPunch",
+            "Recti-Fi",
+            "SansAmp PSA-1",
+            "Sci-Fi",
+            "Sibelius",
+            "SoundFlow",
+            "Splice",
+            "TrackPunch",
+            "Vari-Fi",
+            "Tempo (BPM)",
+            "+LOC",
+            "−LOC",
+            "ΔLOC",
+            "+Bin",
+            "−Bin",
+            "trim",
+            "Stereo",
+            "mini",
+            "AudioSuite · {title}",
+            "{v} {unit}",
+            "1 ms",
+            "10 ms",
+            "100 ms",
+            "Chorus",
+            "Dither",
+            "EQ1",
+            "EQ7",
+            "Flanger",
+            "LoFi",
+            "Phaser",
+            "Q",
+            "Sampler",
+            "{sr} Hz{note}",
+            "ARA",
+            "C3",
+            "C4",
+            "K-12",
+            "K-14",
+            "K-20",
+            "PPM BBC",
+            "PPM DIN",
+            "PPM EBU",
+            "RMS",
+            "VU",
+            "Hz",
+            "MusicXML",
+            "midi",
+            "vca",
+            "video",
+            "{} · {} Hz · {} · {} · {}",
+            "{seconds:.2} s",
+            "♩ = {bpm:.2}   {n}/{d}",
+            "{name} (video): {why}",
+            "BED",
+            "GRID",
+            "Grid",
+            "MIDI Beat Clock",
+            "REL GRID",
+            "SHUFFLE",
+            "SLIP",
+            "SPOT",
+            "Soundbase",
+            "Spot",
+            "latch",
+            "touch",
+            "touch/latch",
+        ];
+        let actual = catalog_entries(Language::Czech)
+            .into_iter()
+            .filter_map(|(source, translated)| (source == translated).then_some(source))
+            .collect::<std::collections::BTreeSet<_>>();
+        let allowed = ALLOWED.iter().map(|s| (*s).to_owned()).collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(actual, allowed, "review any new identity entry; remove obsolete allowances");
     }
 }
