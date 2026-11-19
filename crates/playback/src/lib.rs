@@ -237,7 +237,7 @@ impl Player {
             Mutex::new(side)
         };
         match open_device(want, want_ch, cfg) {
-            Ok((host, device, config, format, name)) => {
+            Ok((host, device, config, format, name, wired)) => {
                 let host_name = host.id().name().to_string();
                 let attempts = stream::output_attempts(config, host.id().to_string() == "jack");
                 let opened = first_started(
@@ -260,7 +260,8 @@ impl Player {
                 );
                 // On JACK the stream opened on the system ports: wire it to the chosen interface.
                 // One that is not on it is not the output that was chosen: it is given up.
-                let opened = opened.filter(|_| match host::wire_stream(host::Direction::Output, &host, cfg.output.as_deref()) {
+                // An interface that was already gone is not wired: the default output plays.
+                let opened = opened.filter(|_| match host::wire_stream(host::Direction::Output, &host, wired.as_deref()) {
                     Ok(()) => true,
                     Err(e) => {
                         log::warn!("audio output: {e}");

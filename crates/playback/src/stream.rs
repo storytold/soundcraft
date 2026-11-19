@@ -110,7 +110,7 @@ pub(crate) fn open_device(
     want_rate: u32,
     want_ch: u16,
     cfg: &AudioConfig,
-) -> Result<(cpal::Host, cpal::Device, cpal::StreamConfig, cpal::SampleFormat, String), String> {
+) -> Result<(cpal::Host, cpal::Device, cpal::StreamConfig, cpal::SampleFormat, String, Option<String>), String> {
     use cpal::traits::DeviceTrait;
     let host = devices::host(cfg, true);
     let device = devices::device(&host, cfg.output.as_deref(), true).ok_or_else(|| "no output device".to_string())?;
@@ -121,7 +121,9 @@ pub(crate) fn open_device(
     let configs: Vec<cpal::SupportedStreamConfigRange> = device.supported_output_configs().map(|configs| configs.collect()).unwrap_or_default();
     // On JACK with an interface chosen: as many channels as the interface has ports (up to what
     // the session plays), so a one-port interface gets a mono stream the mix folds into.
-    let grouped = crate::host::group_ports(crate::host::Direction::Output, &host, cfg.output.as_deref()).and_then(|ports| {
+    let ports = crate::host::group_ports(crate::host::Direction::Output, &host, cfg.output.as_deref());
+    let wired = wire_target(cfg.output.as_deref(), ports).map(str::to_string);
+    let grouped = ports.and_then(|ports| {
         let rates: Vec<u32> = rates.iter().copied().chain(device.default_output_config().ok().map(|d| d.sample_rate())).collect();
         devices::port_group_config(&configs, &rates, ports.min(want_ch))
     });
@@ -152,7 +154,16 @@ pub(crate) fn open_device(
                 (stream_config, c.sample_format())
             }
         };
-    Ok((host, device, config, format, name))
+    Ok((host, device, config, format, name, wired))
+}
+
+/// The output a stream is wired to once it is open (see [`crate::host::wire_stream`]): the chosen
+/// one while it has `ports`. One that was already gone when the device was picked is not wired:
+/// the stream opened on the default output instead (see [`devices::device`]), and wiring it to
+/// ports that are not there would fail and cost that output too. An interface that goes away
+/// after this still fails the wiring.
+pub(crate) fn wire_target(chosen: Option<&str>, ports: Option<u16>) -> Option<&str> {
+    chosen.filter(|_| ports.is_some())
 }
 
 /// Pick the output configuration for the first requested rate the device offers (the configured

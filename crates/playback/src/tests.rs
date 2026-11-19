@@ -76,6 +76,16 @@ fn a_jack_output_is_tried_again_before_it_is_given_up() {
     assert_eq!(won.map(|(c, _)| c), Some(fixed));
 }
 
+/// A remembered JACK interface that is unplugged leaves the stream on the default output, as an
+/// unavailable device does on other hosts: wiring it to the missing ports would fail and end on
+/// the silent clock.
+#[test]
+fn an_output_that_was_already_gone_is_not_wired() {
+    assert_eq!(stream::wire_target(Some("jack-ports:Scarlett"), None), None);
+    assert_eq!(stream::wire_target(Some("jack-ports:Scarlett"), Some(2)), Some("jack-ports:Scarlett"));
+    assert_eq!(stream::wire_target(None, None), None);
+}
+
 /// Build a cpal configuration range for tests with a 64..1024-frame buffer.
 fn range(channels: u16, min: u32, max: u32, format: cpal::SampleFormat) -> cpal::SupportedStreamConfigRange {
     cpal::SupportedStreamConfigRange::new(channels, min, max, cpal::SupportedBufferSize::Range { min: 64, max: 1024 }, format)
