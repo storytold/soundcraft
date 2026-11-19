@@ -70,6 +70,20 @@ impl eframe::ViewportHooks for OtherViewports {
     }
 }
 
+/// Gives `keys` to the main window when it has the keyboard, otherwise leaves them in `others` for
+/// this frame only: the Mix window, an immediate viewport, takes its input during the main window's
+/// frame, and keys that no window took by the next frame are dropped rather than given late.
+fn route_keys(others: &OtherViewports, ctx: &egui::Context, raw: &mut egui::RawInput, keys: Vec<(egui::Key, egui::Modifiers)>) {
+    let mut waiting = others.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    if raw.focused {
+        waiting.clear();
+        drop(waiting);
+        give_keys(ctx, raw, keys);
+    } else {
+        *waiting = keys;
+    }
+}
+
 /// Each key equivalent becomes the input its key-down would have been without the menu bar (see
 /// `shortcuts::key_equivalent_input`), in the window whose input `raw` is.
 fn give_keys(ctx: &egui::Context, raw: &mut egui::RawInput, keys: Vec<(egui::Key, egui::Modifiers)>) {
@@ -95,8 +109,17 @@ impl NativeMenu {
     pub fn new(app: &SoundApp, ctx: &egui::Context) -> muda::Result<Self> {
         let menu = Menu::new();
         let (tx, events) = channel();
-        let mut native =
-            Self { menu, entries: Vec::new(), events, clicks: Vec::new(), keys: Vec::new(), last_sync: None, text_focused: false, ctx: ctx.clone(), others: Arc::default() };
+        let mut native = Self {
+            menu,
+            entries: Vec::new(),
+            events,
+            clicks: Vec::new(),
+            keys: Vec::new(),
+            last_sync: None,
+            text_focused: false,
+            ctx: ctx.clone(),
+            others: Arc::default(),
+        };
         let app_menu = Submenu::new("SoundCraft", true);
         native.add_item(app, &app_menu, "About SoundCraft", "", Some("window.about".into()))?;
         native.add_item(app, &app_menu, "Preferences...", "", Some("setup.preferences".into()))?;
@@ -206,11 +229,7 @@ impl NativeMenu {
     pub fn raw_input(&mut self, ctx: &egui::Context, raw: &mut egui::RawInput) {
         self.drain();
         let keys = std::mem::take(&mut self.keys);
-        if raw.focused {
-            give_keys(ctx, raw, keys);
-        } else {
-            self.others.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner).extend(keys);
-        }
+        route_keys(&self.others, ctx, raw, keys);
     }
 
     /// Run the items chosen by a click, like in-window menu clicks.
@@ -277,5 +296,65 @@ impl Drop for NativeMenu {
     fn drop(&mut self) {
         self.menu.remove_for_nsapp();
         MenuEvent::set_event_handler(None::<fn(MenuEvent)>);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use eframe::ViewportHooks as _;
+
+    fn input(viewport_id: egui::ViewportId, focused: bool) -> egui::RawInput {
+        egui::RawInput { viewport_id, focused, ..Default::default() }
+    }
+
+    const COPY: (egui::Key, egui::Modifiers) = (egui::Key::C, egui::Modifiers::COMMAND);
+
+    #[test]
+    fn key_equivalents_reach_the_focused_mix_window_once() {
+        let ctx = egui::Context::default();
+        let others = OtherViewports::default();
+        let mix = egui::ViewportId::from_hash_of("mix");
+        // The main window doesn't have the keyboard: the key waits.
+        let mut main = input(egui::ViewportId::ROOT, false);
+        route_keys(&others, &ctx, &mut main, vec![COPY]);
+        assert!(main.events.is_empty());
+        // Neither the main window's own hook call nor an unfocused window takes it.
+        let mut main = input(egui::ViewportId::ROOT, false);
+        others.raw_input(&ctx, &mut main);
+        let mut unfocused = input(mix, false);
+        others.raw_input(&ctx, &mut unfocused);
+        assert!(main.events.is_empty() && unfocused.events.is_empty());
+        // The window with the keyboard gets it, once.
+        let mut focused = input(mix, true);
+        others.raw_input(&ctx, &mut focused);
+        assert_eq!(focused.events, vec![egui::Event::Copy]);
+        let mut again = input(mix, true);
+        others.raw_input(&ctx, &mut again);
+        assert!(again.events.is_empty());
+    }
+
+    #[test]
+    fn key_equivalents_no_window_took_are_dropped() {
+        let ctx = egui::Context::default();
+        let others = OtherViewports::default();
+        route_keys(&others, &ctx, &mut input(egui::ViewportId::ROOT, false), vec![COPY]);
+        // The next frame of the main window, with no key chosen, drops it.
+        route_keys(&others, &ctx, &mut input(egui::ViewportId::ROOT, false), Vec::new());
+        let mut focused = input(egui::ViewportId::from_hash_of("mix"), true);
+        others.raw_input(&ctx, &mut focused);
+        assert!(focused.events.is_empty());
+    }
+
+    #[test]
+    fn key_equivalents_go_to_the_main_window_when_it_has_the_keyboard() {
+        let ctx = egui::Context::default();
+        let others = OtherViewports::default();
+        let mut main = input(egui::ViewportId::ROOT, true);
+        route_keys(&others, &ctx, &mut main, vec![COPY]);
+        assert_eq!(main.events, vec![egui::Event::Copy]);
+        let mut focused = input(egui::ViewportId::from_hash_of("mix"), true);
+        others.raw_input(&ctx, &mut focused);
+        assert!(focused.events.is_empty());
     }
 }

@@ -7,10 +7,11 @@
 //! open menu. In a focused text field, ⌘C, ⌘X, ⌘V and ⌘Z edit the text, and the session's own
 //! Undo doesn't run.
 
-// The app's own module, built into this test.
+// The app's own module, built into this test. Without libtest's harness its `#[test]` functions
+// aren't built, so their imports are unused here.
 #[cfg(target_os = "macos")]
 #[path = "../src/native_menu.rs"]
-#[allow(dead_code)]
+#[allow(dead_code, unused_imports)]
 mod native_menu;
 
 /// The menu bar is macOS's: elsewhere there is nothing to check.
