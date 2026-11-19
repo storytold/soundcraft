@@ -87,7 +87,10 @@ impl eframe::ViewportHooks for OtherViewports {
                 KeyEquivalentInput::Events(events) => raw.events.extend(events),
                 // eframe runs a paste request only in a frame that paints its window by itself,
                 // which an immediate viewport never has, so the text goes into the input here.
-                KeyEquivalentInput::Paste => raw.events.extend((self.paste_text)().map(egui::Event::Paste)),
+                // Cleaned as egui-winit cleans the main window's paste.
+                KeyEquivalentInput::Paste => raw
+                    .events
+                    .extend((self.paste_text)().map(|text| text.replace("\r\n", "\n")).filter(|text| !text.is_empty()).map(egui::Event::Paste)),
             }
         }
     }
@@ -382,6 +385,21 @@ mod tests {
         let mut focused = input(mix(), true);
         others.raw_input(&ctx, &mut focused);
         assert_eq!(focused.events, vec![egui::Event::Paste("pasted".to_owned())]);
+    }
+
+    #[test]
+    fn paste_in_the_mix_window_is_cleaned_like_the_main_windows() {
+        let ctx = egui::Context::default();
+        let paste = |paste_text: fn() -> Option<String>| {
+            let others = OtherViewports { waiting: Mutex::default(), paste_text };
+            route_keys(&others, &ctx, &mut input(egui::ViewportId::ROOT, false), vec![PASTE]);
+            let mut focused = input(mix(), true);
+            others.raw_input(&ctx, &mut focused);
+            focused.events
+        };
+        assert_eq!(paste(|| Some("a\r\nb".to_owned())), vec![egui::Event::Paste("a\nb".to_owned())]);
+        assert!(paste(|| Some(String::new())).is_empty());
+        assert!(paste(|| None).is_empty());
     }
 
     #[test]
