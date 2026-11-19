@@ -116,7 +116,7 @@ fn send_window_contents(app: &mut SoundApp, ctx: &egui::Context) {
                     }
                 });
                 let mut pan = send.pan;
-                pan_knob(ui, 32.0, &mut pan, "Send pan (drag; double-click centres)");
+                pan_knob(ui, 32.0, &mut pan, "Send pan (drag; Alt-click centres)");
                 if (pan - send.pan).abs() > f32::EPSILON {
                     let _ = app.engine.execute_merged(
                         "mix.send_level",

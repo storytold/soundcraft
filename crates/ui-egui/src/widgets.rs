@@ -231,7 +231,8 @@ pub(crate) fn selector_box_named(ui: &mut Ui, width: f32, height: f32, text: &st
     resp.on_hover_text(tooltip)
 }
 
-/// Rotary knob for pan / send pan (-1..1). Drag vertically; double-click resets.
+/// Rotary knob for pan / send pan (-1..1). Drag vertically; Alt-click (Option-click) centres it.
+/// A double-click does nothing, so it stays free for other uses (#1393).
 pub fn pan_knob(ui: &mut Ui, size: f32, value: &mut f32, tip: &str) -> Response {
     let t = Tokens::current();
     let (r, resp) = ui.allocate_exact_size(vec2(size, size), Sense::click_and_drag());
@@ -240,7 +241,7 @@ pub fn pan_knob(ui: &mut Ui, size: f32, value: &mut f32, tip: &str) -> Response 
         let d = resp.drag_delta();
         *value = (*value + (d.x - d.y) * 0.01).clamp(-1.0, 1.0);
     }
-    if resp.double_clicked() {
+    if resp.clicked() && ui.input(|i| i.modifiers.alt) {
         *value = 0.0;
     }
     let p = ui.painter();
@@ -417,7 +418,8 @@ pub fn fader(ui: &mut Ui, r: Rect, db: f32, id: egui::Id, name: &str) -> Option<
     for (x, dx) in [(cap.min.x, 2.5), (cap.max.x, -2.5)] {
         p.add(egui::Shape::convex_polygon(vec![pos2(x, y - 3.0), pos2(x + dx, y), pos2(x, y + 3.0)], g(34), Stroke::NONE));
     }
-    if resp.double_clicked() || (resp.clicked() && ui.input(|i| i.modifiers.alt)) {
+    // Alt-click (Option-click) resets to 0 dB; a double-click does not (#1393).
+    if resp.clicked() && ui.input(|i| i.modifiers.alt) {
         return Some(0.0);
     }
     if resp.dragged() {
@@ -622,7 +624,7 @@ pub enum PannerEdit {
 }
 
 /// Pro Tools-style X/Y surround panner: a square room with speaker dots and a draggable puck.
-/// Drag moves the puck; double-click returns it to front centre; Alt-drag (or the slider below)
+/// Drag moves the puck; Alt-click (Option-click) returns it to front centre; Alt-drag (or the slider below)
 /// sets divergence; height layouts get a second slider for elevation. Returns the edit, if any.
 pub fn surround_panner(ui: &mut Ui, size: f32, speakers: &[PannerSpeaker], puck: (f32, f32), divergence: f32, z: Option<f32>) -> Option<PannerEdit> {
     let t = Tokens::current();
@@ -654,7 +656,7 @@ pub fn surround_panner(ui: &mut Ui, size: f32, speakers: &[PannerSpeaker], puck:
         }
     }
     let alt = ui.input(|i| i.modifiers.alt);
-    if resp.double_clicked() {
+    if resp.clicked() && alt {
         edit = Some(PannerEdit::Position(0.0, 1.0));
     } else if resp.dragged() && alt {
         let d = (divergence - resp.drag_delta().y * 0.01).clamp(0.0, 1.0);
@@ -680,7 +682,7 @@ pub fn surround_panner(ui: &mut Ui, size: f32, speakers: &[PannerSpeaker], puck:
         painter.circle(pp, 5.0 + div * half, Color32::from_rgba_unmultiplied(80, 160, 230, 28), Stroke::new(1.0, Color32::from_rgb(70, 130, 190)));
     }
     painter.circle(pp, 5.0, t.counter_text, Stroke::new(1.0, Color32::BLACK));
-    let tip = crate::localization::text("Surround pan: drag the puck · double-click: front centre · Alt-drag: divergence");
+    let tip = crate::localization::text("Surround pan: drag the puck · Alt-click: front centre · Alt-drag: divergence");
     let _ = resp.on_hover_text(tip);
     // Sliders below: divergence, then elevation for height formats.
     let mut sliders: Vec<(&str, f32, u8)> = vec![("div", div, 0)];
@@ -697,14 +699,14 @@ pub fn surround_panner(ui: &mut Ui, size: f32, speakers: &[PannerSpeaker], puck:
             1.0,
             t.counter_text,
         );
-        if (sresp.dragged() || sresp.clicked())
+        let alt = ui.input(|i| i.modifiers.alt);
+        if sresp.clicked() && alt {
+            edit = Some(if kind == 0 { PannerEdit::Divergence(0.0) } else { PannerEdit::Height(0.0) });
+        } else if (sresp.dragged() || sresp.clicked())
             && let Some(p) = sresp.interact_pointer_pos()
         {
             let nv = ((p.x - track.min.x) / track.width().max(1.0)).clamp(0.0, 1.0);
             edit = Some(if kind == 0 { PannerEdit::Divergence(nv) } else { PannerEdit::Height(nv) });
-        }
-        if sresp.double_clicked() {
-            edit = Some(if kind == 0 { PannerEdit::Divergence(0.0) } else { PannerEdit::Height(0.0) });
         }
         let _ =
             sresp.on_hover_text(crate::localization::text(if kind == 0 { "Divergence (0 = point source)" } else { "Elevation (height speakers)" }));
@@ -1108,5 +1110,212 @@ mod selector_visual_regressions {
                 }
             }
         }
+    }
+}
+
+/// #1393: Alt-click (Option-click on macOS) resets a control to its default; a double-click does
+/// not, so it stays free for other uses such as typing a value. A plain click or drag still works.
+#[cfg(test)]
+mod parameter_reset {
+    use super::{PannerEdit, PannerSpeaker, fader, pan_knob, surround_panner};
+    use egui::{Event, Modifiers, PointerButton, Pos2, Rect, pos2, vec2};
+    use egui_kittest::Harness;
+
+    fn hold<S>(h: &mut Harness<'_, S>, modifiers: Modifiers) {
+        h.event(Event::ModifiersChanged(modifiers));
+        h.run_steps(1);
+    }
+
+    fn press<S>(h: &mut Harness<'_, S>, pos: Pos2, pressed: bool, modifiers: Modifiers) {
+        h.event(Event::PointerMoved(pos));
+        h.event(Event::PointerButton { pos, button: PointerButton::Primary, pressed, modifiers });
+        h.run_steps(1);
+    }
+
+    fn click_with<S>(h: &mut Harness<'_, S>, at: Pos2, modifiers: Modifiers) {
+        hold(h, modifiers);
+        press(h, at, true, modifiers);
+        press(h, at, false, modifiers);
+        hold(h, Modifiers::NONE);
+        h.run_steps(2);
+    }
+
+    fn double_click<S>(h: &mut Harness<'_, S>, at: Pos2) {
+        for pressed in [true, false, true, false] {
+            press(h, at, pressed, Modifiers::NONE);
+        }
+        h.run_steps(2);
+    }
+
+    fn drag<S>(h: &mut Harness<'_, S>, from: Pos2, by: egui::Vec2) {
+        press(h, from, true, Modifiers::NONE);
+        for i in 1..=8 {
+            h.event(Event::PointerMoved(from + by * (i as f32 / 8.0)));
+            h.run_steps(1);
+        }
+        press(h, from + by, false, Modifiers::NONE);
+        h.run_steps(2);
+    }
+
+    const FADER: Rect = Rect { min: pos2(20.0, 20.0), max: pos2(60.0, 220.0) };
+
+    fn fader_harness(db: f32) -> Harness<'static, f32> {
+        let mut h = Harness::builder().with_step_dt(1.0 / 60.0).build_ui_state(
+            |ui, db: &mut f32| {
+                if let Some(v) = fader(ui, FADER, *db, egui::Id::unique("fader"), "Level") {
+                    *db = v;
+                }
+            },
+            db,
+        );
+        h.run_steps(2);
+        h
+    }
+
+    #[test]
+    fn a_double_click_leaves_a_fader_alone() {
+        let mut h = fader_harness(-20.0);
+        double_click(&mut h, FADER.center());
+        assert_eq!(*h.state(), -20.0, "a double-click does not reset the fader to 0 dB");
+    }
+
+    #[test]
+    fn an_alt_click_resets_a_fader_to_0_db() {
+        let mut h = fader_harness(-20.0);
+        click_with(&mut h, FADER.center(), Modifiers::ALT);
+        assert_eq!(*h.state(), 0.0);
+    }
+
+    #[test]
+    fn dragging_a_fader_still_moves_it() {
+        let mut h = fader_harness(-20.0);
+        drag(&mut h, FADER.center(), vec2(0.0, -40.0));
+        assert!(*h.state() > -20.0, "dragging up raises the level, got {}", h.state());
+    }
+
+    /// The pan value and the knob's rect, as last drawn.
+    type Knob = (f32, Rect);
+
+    fn knob_harness(pan: f32) -> (Harness<'static, Knob>, Pos2) {
+        let mut h = Harness::builder().with_step_dt(1.0 / 60.0).build_ui_state(
+            |ui, s: &mut Knob| {
+                s.1 = pan_knob(ui, 32.0, &mut s.0, "Pan").rect;
+            },
+            (pan, Rect::NOTHING),
+        );
+        h.run_steps(2);
+        let at = h.state().1.center();
+        (h, at)
+    }
+
+    #[test]
+    fn a_double_click_leaves_a_pan_knob_alone() {
+        let (mut h, at) = knob_harness(0.5);
+        double_click(&mut h, at);
+        assert_eq!(h.state().0, 0.5, "a double-click does not centre the knob");
+    }
+
+    #[test]
+    fn an_alt_click_centres_a_pan_knob() {
+        let (mut h, at) = knob_harness(0.5);
+        click_with(&mut h, at, Modifiers::ALT);
+        assert_eq!(h.state().0, 0.0);
+    }
+
+    #[test]
+    fn dragging_a_pan_knob_still_turns_it() {
+        let (mut h, at) = knob_harness(0.0);
+        drag(&mut h, at, vec2(0.0, -20.0));
+        assert!(h.state().0 > 0.0, "dragging up turns the knob right, got {}", h.state().0);
+    }
+
+    const ROOM: f32 = 100.0;
+    const SPEAKERS: [PannerSpeaker; 2] =
+        [PannerSpeaker { label: "L", x: -1.0, y: 1.0, height: false }, PannerSpeaker { label: "R", x: 1.0, y: 1.0, height: false }];
+
+    /// The panner's top-left corner and the last edit it returned.
+    type Panner = (Pos2, Option<PannerEdit>);
+
+    fn panner_harness() -> Harness<'static, Panner> {
+        let mut h = Harness::builder().with_step_dt(1.0 / 60.0).build_ui_state(
+            |ui, s: &mut Panner| {
+                ui.spacing_mut().item_spacing = egui::Vec2::ZERO;
+                s.0 = ui.cursor().min;
+                if let Some(edit) = surround_panner(ui, ROOM, &SPEAKERS, (0.5, -0.5), 0.3, Some(0.4)) {
+                    s.1 = Some(edit);
+                }
+            },
+            (Pos2::ZERO, None),
+        );
+        h.run_steps(2);
+        h
+    }
+
+    /// A point in the room right of and below its centre, away from front centre.
+    fn off_centre(h: &Harness<'_, Panner>) -> Pos2 {
+        h.state().0 + vec2(ROOM * 0.75, ROOM * 0.75)
+    }
+
+    /// A point a quarter along the slider `row` (0 divergence, 1 elevation) below the room.
+    fn slider_point(h: &Harness<'_, Panner>, row: f32) -> Pos2 {
+        let top = h.state().0 + vec2(0.0, ROOM + row * 11.0);
+        let (lo, hi) = (top.x + 16.0, top.x + ROOM - 2.0);
+        pos2(lo + (hi - lo) * 0.25, top.y + 5.5)
+    }
+
+    fn is_front_centre(edit: Option<PannerEdit>) -> bool {
+        edit == Some(PannerEdit::Position(0.0, 1.0))
+    }
+
+    #[test]
+    fn a_double_click_on_the_surround_room_does_not_reset_the_puck() {
+        let mut h = panner_harness();
+        let at = off_centre(&h);
+        double_click(&mut h, at);
+        let edit = h.state().1;
+        assert!(matches!(edit, Some(PannerEdit::Position(x, y)) if x > 0.0 && y < 0.0), "the puck goes where clicked, got {edit:?}");
+    }
+
+    #[test]
+    fn an_alt_click_on_the_surround_room_returns_the_puck_to_front_centre() {
+        let mut h = panner_harness();
+        let at = off_centre(&h);
+        click_with(&mut h, at, Modifiers::ALT);
+        assert!(is_front_centre(h.state().1), "got {:?}", h.state().1);
+    }
+
+    #[test]
+    fn a_click_on_the_surround_room_still_moves_the_puck() {
+        let mut h = panner_harness();
+        let at = off_centre(&h);
+        click_with(&mut h, at, Modifiers::NONE);
+        let edit = h.state().1;
+        assert!(matches!(edit, Some(PannerEdit::Position(x, y)) if x > 0.0 && y < 0.0), "got {edit:?}");
+    }
+
+    #[test]
+    fn a_double_click_on_a_surround_slider_does_not_zero_it() {
+        for row in [0.0, 1.0] {
+            let mut h = panner_harness();
+            let at = slider_point(&h, row);
+            double_click(&mut h, at);
+            let edit = h.state().1;
+            assert!(
+                matches!(edit, Some(PannerEdit::Divergence(v) | PannerEdit::Height(v)) if (v - 0.25).abs() < 0.05),
+                "row {row}: the value goes where clicked, got {edit:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn an_alt_click_on_a_surround_slider_zeroes_it() {
+        let mut h = panner_harness();
+        let at = slider_point(&h, 0.0);
+        click_with(&mut h, at, Modifiers::ALT);
+        assert_eq!(h.state().1, Some(PannerEdit::Divergence(0.0)));
+        let mut h = panner_harness();
+        let at = slider_point(&h, 1.0);
+        click_with(&mut h, at, Modifiers::ALT);
+        assert_eq!(h.state().1, Some(PannerEdit::Height(0.0)));
     }
 }

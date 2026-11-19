@@ -837,8 +837,8 @@ fn menu_translate(source: &str) -> Option<&'static str> {
         "Score composer" => "Compositor da partitura",
         "Score title" => "Título da partitura",
         "Send level" => "Nível do envio",
-        "Surround pan: drag the puck · double-click: front centre · Alt-drag: divergence" => {
-            "Panorama surround: arraste o controle · clique duplo: centro frontal · Alt+arraste: divergência"
+        "Surround pan: drag the puck · Alt-click: front centre · Alt-drag: divergence" => {
+            "Panorama surround: arraste o controle · Alt+clique: centro frontal · Alt+arraste: divergência"
         }
         "Tempo (BPM)" => "Andamento (BPM)",
         "Ticks" => "Ticks",
