@@ -1,5 +1,5 @@
 use super::clips::Key;
-use super::routing::soloed;
+use super::routing::{routed_source_muted, soloed};
 use super::strip::{PluginSlot, Strip};
 use super::{ClipContent, CtrlKind, Range, SampleSource, Samples, Session, SourceAudio, Track, TrackId};
 use std::sync::Arc;
@@ -34,12 +34,15 @@ impl RoutedMidi {
     }
 
     pub(crate) fn render(&mut self, s: &Session, source: &Track, dest: &Track, inst: &mut PluginSlot, blk: super::strip::Block, chase: bool) {
-        if source.inactive || source.mixer.mute || (blk.any_solo && !soloed(s, source) && !source.mixer.solo_safe && !soloed(s, dest)) {
+        if source.inactive
+            || routed_source_muted(s, source, blk.pos)
+            || (blk.any_solo && !soloed(s, source) && !source.mixer.solo_safe && !soloed(s, dest))
+        {
             self.release(inst);
             return;
         }
         if chase || !self.enabled {
-            chase_controllers(s, source, blk.pos, inst, Some(self.channel));
+            chase_controllers(s, source, blk.pos, inst, Some(self.channel), 1 << self.channel);
         }
         self.enabled = true;
         schedule_notes(s, source, blk.pos, blk.frames, inst, &mut self.held, Some(self.channel));
@@ -169,8 +172,8 @@ fn ctrl_message(channel: u8, kind: CtrlKind, value: i32, transpose: i64) -> [u8;
 
 /// Before an instrument plays from `pos`: reset its controllers, then send each one the last value
 /// it had on this track before `pos`.
-pub(crate) fn chase_controllers(s: &Session, t: &Track, pos: Samples, inst: &mut PluginSlot, channel: Option<u8>) {
-    for ch in channel.map_or(0..16, |ch| ch..ch.saturating_add(1)) {
+pub(crate) fn chase_controllers(s: &Session, t: &Track, pos: Samples, inst: &mut PluginSlot, channel: Option<u8>, channels: u16) {
+    for ch in (0..16).filter(|ch| channels & (1 << ch) != 0) {
         inst.plugin.midi(0, [0xB0 | ch, 121, 0]);
     }
     let pos = pos.saturating_sub(midi_offset(s, t));
@@ -197,9 +200,13 @@ pub(crate) fn chase_controllers(s: &Session, t: &Track, pos: Samples, inst: &mut
                 CtrlKind::Program => PROGRAM,
                 CtrlKind::PolyPressure(_) => continue,
             };
+            let output_channel = channel.unwrap_or(c.channel);
+            if channels & (1 << output_channel) == 0 {
+                continue;
+            }
             let at = s.tempo.tick_to_samples(base.saturating_add(c.tick), sr);
             if at < until
-                && let Some(l) = last.get_mut(usize::from(channel.unwrap_or(c.channel))).and_then(|controllers| controllers.get_mut(slot))
+                && let Some(l) = last.get_mut(usize::from(output_channel)).and_then(|controllers| controllers.get_mut(slot))
                 && at >= l.0
             {
                 *l = (at, order, c.value);

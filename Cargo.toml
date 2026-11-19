@@ -54,16 +54,16 @@ cpal = "0.18"
 craft-docpath = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "ea24422ae9859dc5da398d0462bc87f8e02e0d10" }
 
 # Video containers and bitstreams, shared with the other craft apps.
-craft-media = { version = "0.1.0", git = "https://github.com/mtlcl410/craft-libs", rev = "44935f1b289398ac1dd4d55cbf0e5108094254d7" }
+craft-media = { version = "0.1.0", git = "https://github.com/mtlcl410/craft-libs", rev = "9272869d759690c46d57664cc4dc260fbb93c069" }
 # H.264 and ProRes codecs shared with the other Craft apps.
 craft-video = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "ddbe78231b5b23273b3d191f04b1a38f4c0445b3", default-features = false, features = ["h264-decode", "prores", "mjpeg"] }
 # Audio file formats, codecs and waveform overviews, shared with the other craft apps. It shares
 # types with craft-media, so both stay on one rev.
 # Standard MIDI Files and the note/controller model, shared with the other craft apps.
-craft-midi = { version = "0.1.0", git = "https://github.com/mtlcl410/craft-libs", rev = "44935f1b289398ac1dd4d55cbf0e5108094254d7", features = ["serde"] }
-craft-audio = { version = "0.1.0", git = "https://github.com/mtlcl410/craft-libs", rev = "44935f1b289398ac1dd4d55cbf0e5108094254d7", features = ["decode", "lossless-encode", "peaks", "serde"] }
-craft-time = { version = "0.1.0", git = "https://github.com/mtlcl410/craft-libs", rev = "44935f1b289398ac1dd4d55cbf0e5108094254d7" }
-craft-scraft-format = { version = "0.1.0", git = "https://github.com/mtlcl410/craft-libs", rev = "44935f1b289398ac1dd4d55cbf0e5108094254d7" }
+craft-midi = { version = "0.1.0", git = "https://github.com/mtlcl410/craft-libs", rev = "9272869d759690c46d57664cc4dc260fbb93c069", features = ["serde"] }
+craft-audio = { version = "0.1.0", git = "https://github.com/mtlcl410/craft-libs", rev = "9272869d759690c46d57664cc4dc260fbb93c069", features = ["decode", "lossless-encode", "peaks", "serde"] }
+craft-time = { version = "0.1.0", git = "https://github.com/mtlcl410/craft-libs", rev = "9272869d759690c46d57664cc4dc260fbb93c069" }
+craft-scraft-format = { version = "0.1.0", git = "https://github.com/mtlcl410/craft-libs", rev = "9272869d759690c46d57664cc4dc260fbb93c069" }
 # craft-update: app-specific pretend versions apply to startup and manual checks.
 craft-update = { version = "=0.1.0", git = "https://github.com/storytold/craft-libs", rev = "ea24422ae9859dc5da398d0462bc87f8e02e0d10", features = ["egui"] }
 

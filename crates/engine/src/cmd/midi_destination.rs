@@ -30,7 +30,7 @@ fn set(e: &mut Engine, p: &Value) -> Result<Value> {
         None
     } else {
         let target = track_param(e, ID, p, "to")?.ok_or_else(|| bad(ID, "supply a destination track or null"))?;
-        if !e.session().track(target).is_some_and(|t| t.kind == TrackKind::Instrument && t.instrument.is_some()) {
+        if !e.session().track(target).is_some_and(|t| t.kind == TrackKind::Instrument && !t.inactive && t.instrument.is_some()) {
             return Err(bad(ID, "the destination must have an instrument"));
         }
         let channel = p
@@ -38,7 +38,13 @@ fn set(e: &mut Engine, p: &Value) -> Result<Value> {
             .and_then(Value::as_u64)
             .filter(|ch| (1..=16).contains(ch))
             .ok_or_else(|| bad(ID, "MIDI channel must be an integer from 1 to 16"))?;
-        Some(MidiDestination { track: target, channel: channel as u8 })
+        let route = MidiDestination { track: target, channel: channel as u8 };
+        if track.midi_destination != Some(route)
+            && e.session().tracks.iter().any(|other| other.kind == TrackKind::Midi && other.id != source && other.midi_destination == Some(route))
+        {
+            return Err(bad(ID, "the destination channel is already assigned to another MIDI track"));
+        }
+        Some(route)
     };
     if track.midi_destination != destination
         && let Some(t) = e.session_mut().track_mut(source)
@@ -63,7 +69,9 @@ mod tests {
         assert!(engine.execute(ID, &json!({"track": source, "to": target, "channel": 17})).is_err());
         assert!(engine.execute(ID, &json!({"track": source, "to": source, "channel": 2})).is_err());
         engine.execute(ID, &json!({"track": source, "to": "Shared", "channel": 2})).unwrap();
-        let saved: Session = serde_json::from_str(&serde_json::to_string(engine.session()).unwrap()).unwrap();
+        let other = engine.session_mut().add_track(TrackKind::Midi, ChannelFormat::Mono, Some("Other MIDI"));
+        assert!(engine.execute(ID, &json!({"track": other, "to": target, "channel": 2})).is_err());
+        let saved = Session::from_json(&engine.session().to_json().unwrap()).unwrap();
         assert_eq!(saved.track(source).unwrap().midi_destination, Some(MidiDestination { track: target, channel: 2 }));
         engine.execute("track.delete", &json!({"tracks": [target]})).unwrap();
         assert_eq!(engine.session().track(source).unwrap().midi_destination, None);

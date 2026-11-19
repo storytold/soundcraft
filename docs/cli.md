@@ -88,6 +88,11 @@ track to the Shared Synth instrument on channel 2:
 track.midi_destination {"track":"Bass MIDI","to":"Shared Synth","channel":2}
 ```
 
+Each destination channel can be assigned to one MIDI track. Mute automation for routed
+MIDI is read at the start of each processing block. Stem bounce includes routed clips in
+the receiving instrument stem, and Import Session Data preserves the route when both
+tracks are imported together.
+
 Set `"to":null` to disconnect the track. The route is saved in the session.
 
 ## Environment variables

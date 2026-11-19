@@ -352,6 +352,7 @@ impl MixEngine {
                     strip.midi_sources.push(midi::RoutedMidi::new(track, channel));
                 }
             }
+            strip.midi_sources.sort_unstable_by_key(|route| wanted.iter().position(|entry| *entry == (route.track, route.channel)));
             sync_sample(strip, want, s);
         }
         // Instances nobody claimed (the session changed again before they arrived).

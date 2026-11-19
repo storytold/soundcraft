@@ -1,4 +1,4 @@
-use super::{BusId, Route, Session, Track, TrackKind};
+use super::{AutoParam, BusId, Route, Samples, Session, Track, TrackKind};
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -151,26 +151,34 @@ fn bounded_aux_depths(s: &Session) -> Vec<usize> {
     depths
 }
 
+/// A routed MIDI track has no audio fader to apply its VCA or automated mute.
+pub(crate) fn routed_source_muted(s: &Session, source: &Track, pos: Samples) -> bool {
+    source.mixer.mute
+        || source.mixer.vca.is_some_and(|id| s.tracks.iter().any(|t| t.id.0 == id && t.kind == TrackKind::Vca && t.mixer.mute))
+        || (source.mixer.automation_mode.reads()
+            && source.lane(&AutoParam::Mute).is_some_and(|lane| !lane.points.is_empty() && lane.value_at(pos, 0.0) >= 0.5))
+}
+
 /// A soloed MIDI source must keep its receiving instrument audible.
-pub(crate) fn midi_receives_solo(s: &Session, t: &Track) -> bool {
+pub(crate) fn midi_receives_solo(s: &Session, t: &Track, pos: Samples) -> bool {
     t.kind == TrackKind::Instrument
         && !t.inactive
         && t.instrument.is_some()
         && s.tracks.iter().any(|source| {
             source.kind == TrackKind::Midi
                 && !source.inactive
-                && !source.mixer.mute
+                && !routed_source_muted(s, source, pos)
                 && (soloed(s, source) || source.mixer.solo_safe)
                 && source.midi_destination.is_some_and(|route| route.track == t.id && (1..=16).contains(&route.channel))
         })
 }
 
 /// Implicit solo: an aux is not muted when a soloed track feeds its input bus.
-pub(crate) fn receives_solo(s: &Session, t: &Track) -> bool {
+pub(crate) fn receives_solo(s: &Session, t: &Track, pos: Samples) -> bool {
     let Route::Bus(b) = &t.mixer.input else { return false };
     s.tracks.iter().any(|o| {
         (o.mixer.output == Route::Bus(*b) || o.mixer.sends.iter().flatten().any(|sn| sn.target == Route::Bus(*b)))
-            && (solo_source(s, o) || midi_receives_solo(s, o))
+            && (solo_source(s, o) || midi_receives_solo(s, o, pos))
     })
 }
 
@@ -191,13 +199,13 @@ pub(crate) fn any_solo(s: &Session) -> bool {
 
 /// The solo mutes `t`: it is on (`any_solo`, see [`any_solo`]) and `t` is neither soloed, Solo Safe nor fed by a
 /// soloed track. A VCA passes no audio, so the solo never mutes it: its fader still drives the members that sound.
-pub(crate) fn solo_muted(s: &Session, t: &Track, any_solo: bool) -> bool {
-    any_solo && t.kind != TrackKind::Vca && !t.mixer.solo_safe && !soloed(s, t) && !midi_receives_solo(s, t) && !receives_solo(s, t)
+pub(crate) fn solo_muted(s: &Session, t: &Track, any_solo: bool, pos: Samples) -> bool {
+    any_solo && t.kind != TrackKind::Vca && !t.mixer.solo_safe && !soloed(s, t) && !midi_receives_solo(s, t, pos) && !receives_solo(s, t, pos)
 }
 
 /// [`solo_muted`] for displays, such as the implied-mute shade of a track's Mute key.
 pub fn solo_mutes(s: &Session, t: &Track) -> bool {
-    solo_muted(s, t, any_solo(s))
+    solo_muted(s, t, any_solo(s), s.edit.playhead)
 }
 
 #[cfg(test)]

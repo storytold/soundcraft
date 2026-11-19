@@ -528,10 +528,23 @@ fn import_session_data(e: &mut Engine, p: &Value) -> Result<Value> {
         s.sources.push(ns);
     }
     let mut out = Vec::new();
+    let mut donor_tracks = std::collections::HashMap::new();
+    let picked: Vec<_> = picked
+        .into_iter()
+        .map(|mut track| {
+            let new_id = TrackId(s.alloc());
+            donor_tracks.entry(track.id).or_insert(new_id);
+            track.id = new_id;
+            track
+        })
+        .collect();
     // The donor's Auto Rename schemes come along under new keys, shared as they were.
     let mut names: std::collections::BTreeMap<u64, u64> = Default::default();
     for mut tr in picked {
-        tr.id = TrackId(s.alloc());
+        tr.midi_destination = tr.midi_destination.and_then(|mut route| {
+            route.track = *donor_tracks.get(&route.track)?;
+            Some(route)
+        });
         tr.name = s.unique_track_name(&tr.name);
         tr.folder = None;
         tr.mixer.vca = None;
@@ -729,6 +742,36 @@ mod tests {
         assert!(e.session().pool.get(src).is_some());
         assert_eq!(e.session().track_by_name("Keys").unwrap().clips().len(), 1);
         assert!(e.execute("file.import_session_data", &json!({"path": path, "tracks": ["Nope"]})).is_err());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn import_session_data_remaps_midi_destinations_only_when_imported() {
+        use soundcraft_model::{ChannelFormat, Insert, MidiDestination};
+
+        let dir = std::env::temp_dir().join(format!("sc-import-midi-route-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("donor.scraft").to_string_lossy().into_owned();
+        let mut donor = Session::default();
+        let synth = donor.add_track(TrackKind::Instrument, ChannelFormat::Stereo, Some("Shared"));
+        donor.track_mut(synth).unwrap().instrument = Some(Insert::new("subtractive_synth"));
+        let bass = donor.add_track(TrackKind::Midi, ChannelFormat::Mono, Some("Bass"));
+        donor.track_mut(bass).unwrap().midi_destination = Some(MidiDestination { track: synth, channel: 2 });
+        crate::io::save_session(&mut Engine::new(donor), &path).unwrap();
+
+        let mut local = Session::default();
+        let other = local.add_track(TrackKind::Instrument, ChannelFormat::Stereo, Some("Other"));
+        assert_eq!(other, synth);
+        local.track_mut(other).unwrap().instrument = Some(Insert::new("subtractive_synth"));
+        let mut e = Engine::new(local.clone());
+        e.execute("file.import_session_data", &json!({"path": path, "tracks": ["Bass"]})).unwrap();
+        assert_eq!(e.session().track_by_name("Bass").unwrap().midi_destination, None);
+
+        let mut e = Engine::new(local);
+        e.execute("file.import_session_data", &json!({"path": path, "tracks": ["Bass", "Shared"]})).unwrap();
+        let dest = e.session().track_by_name("Shared").unwrap().id;
+        assert_ne!(dest, other);
+        assert_eq!(e.session().track_by_name("Bass").unwrap().midi_destination, Some(MidiDestination { track: dest, channel: 2 }));
         let _ = std::fs::remove_dir_all(&dir);
     }
 

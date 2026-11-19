@@ -609,7 +609,10 @@ fn routed_midi_clips_use_distinct_channels_and_release_only_muted_source() {
         let clip = s.new_clip_id();
         let sequence = Sequence {
             notes: vec![Note { channel: 0, pitch: 60, velocity: 100, release_velocity: 64, start: 1, length: 64 }],
-            ctrls: vec![CtrlEvent { tick: 0, channel: 0, kind: CtrlKind::Program, value: 33 }],
+            ctrls: vec![
+                CtrlEvent { tick: 0, channel: 0, kind: CtrlKind::Program, value: 33 },
+                CtrlEvent { tick: 0, channel: 0, kind: CtrlKind::Cc(11), value: 30 },
+            ],
         };
         let track = s.track_mut(id).unwrap();
         track.midi_destination = Some(MidiDestination { track: target, channel });
@@ -625,10 +628,15 @@ fn routed_midi_clips_use_distinct_channels_and_release_only_muted_source() {
         ch: 2,
         plugin: Box::new(ChannelEars(Arc::clone(&heard))),
     }]);
+    let early_route = s.track_mut(sources[0]).unwrap().midi_destination.take();
+    render_block(&mut eng, &s, 0);
+    heard.lock().unwrap().clear();
+    s.track_mut(sources[0]).unwrap().midi_destination = early_route;
     render_block(&mut eng, &s, 0);
     let first = std::mem::take(&mut *heard.lock().unwrap());
-    assert!(first.contains(&(25, [0x91, 60, 100])));
-    assert!(first.contains(&(25, [0x99, 60, 100])));
+    let bass = first.iter().position(|event| *event == (25, [0x91, 60, 100])).unwrap();
+    let drums = first.iter().position(|event| *event == (25, [0x99, 60, 100])).unwrap();
+    assert!(bass < drums, "equal-offset events must follow session order after a route is added");
     assert!(first.contains(&(0, [0xC1, 33, 0])));
     assert!(first.contains(&(0, [0xC9, 33, 0])));
 
@@ -643,9 +651,57 @@ fn routed_midi_clips_use_distinct_channels_and_release_only_muted_source() {
     assert!(second.contains(&(0, [0x81, 60, 0])));
     assert!(!second.iter().any(|(_, message)| *message == [0x89, 60, 0]));
 
-    s.track_mut(sources[1]).unwrap().midi_destination = None;
+    s.track_mut(vca).unwrap().mixer.solo = false;
     render_block(&mut eng, &s, 1024);
-    assert!(heard.lock().unwrap().contains(&(0, [0x89, 60, 0])));
+    let unsoloed = std::mem::take(&mut *heard.lock().unwrap());
+    assert!(!unsoloed.contains(&(0, [0xB9, 121, 0])), "own MIDI chase reset the still-playing route: {unsoloed:?}");
+
+    s.track_mut(vca).unwrap().mixer.mute = true;
+    render_block(&mut eng, &s, 1536);
+    let muted_vca = std::mem::take(&mut *heard.lock().unwrap());
+    assert!(muted_vca.contains(&(0, [0x89, 60, 0])), "VCA mute did not release the routed notes");
+
+    s.track_mut(sources[1]).unwrap().midi_destination = None;
+    render_block(&mut eng, &s, 2048);
+    assert!(!heard.lock().unwrap().contains(&(0, [0x89, 60, 0])));
+}
+
+#[test]
+fn routed_midi_mute_automation_gates_notes_at_the_block_start() {
+    use soundcraft_midi::{Note, Sequence};
+    use soundcraft_model::{AutoParam, AutomationMode, AutomationPoint, MidiDestination};
+
+    let mut s = Session::default();
+    let target = s.add_track(TrackKind::Instrument, ChannelFormat::Stereo, None);
+    s.track_mut(target).unwrap().instrument = Some(Insert::new("clap:test.channels"));
+    let source = s.add_track(TrackKind::Midi, ChannelFormat::Mono, None);
+    let clip = s.new_clip_id();
+    let source_track = s.track_mut(source).unwrap();
+    source_track.midi_destination = Some(MidiDestination { track: target, channel: 2 });
+    source_track.mixer.automation_mode = AutomationMode::Read;
+    source_track.lane_mut(&AutoParam::Mute).points.push(AutomationPoint { at: 0, value: 1.0 });
+    source_track.playlist_mut().unwrap().clips.push(Clip::midi(
+        clip,
+        "part",
+        0,
+        48_000,
+        Sequence { notes: vec![Note { channel: 0, pitch: 60, velocity: 100, release_velocity: 64, start: 0, length: 96 }], ctrls: vec![] },
+    ));
+    let heard = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let mut eng = MixEngine::new(48_000.0, 512);
+    eng.set_external_instances(true);
+    eng.adopt(vec![PreparedInstance {
+        track: target,
+        slot: INSTRUMENT_SLOT,
+        id: "clap:test.channels".into(),
+        ch: 2,
+        plugin: Box::new(ChannelEars(Arc::clone(&heard))),
+    }]);
+    render_block(&mut eng, &s, 0);
+    assert!(!heard.lock().unwrap().contains(&(0, [0x91, 60, 100])));
+    s.track_mut(source).unwrap().lane_mut(&AutoParam::Mute).points[0].value = 0.0;
+    render_block(&mut eng, &s, 0);
+    assert!(heard.lock().unwrap().contains(&(0, [0x91, 60, 100])));
 }
 
 #[test]

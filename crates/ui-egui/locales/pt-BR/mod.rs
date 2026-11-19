@@ -307,7 +307,7 @@ pub(super) fn translate(source: &str) -> Option<&'static str> {
         "Count Off" => "Contagem inicial",
         "Meter" => "Compasso",
         "Tempo" => "Andamento",
-        "MIDI in: all" => "Entrada MIDI: todas",
+        "Destination has no active instrument" => "O destino não tem um instrumento ativo",
         "MIDI Destination" => "Destino MIDI",
         "MIDI EDITOR" => "EDITOR MIDI",
         "Velocity" => "Velocidade",
