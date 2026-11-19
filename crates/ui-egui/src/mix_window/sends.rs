@@ -2,10 +2,11 @@ use super::plugin_menu::{MenuSearch, menu_row};
 use super::routing::route_name;
 use super::slots::{COMPACT_SLOT, Mark, empty_slot, level_icon, used_slot};
 use super::{
-    Align2, Rect, Route, Sense, SoundApp, Stroke, StrokeKind, Tokens, Track, TrackId, TrackKind, Ui, db_text, fader, json, pan_knob, pan_text, pos2,
-    regular, text_toggle, vec2,
+    Align2, Rect, Route, Sense, SoundApp, Stroke, StrokeKind, Tokens, Track, TrackId, TrackKind, Ui, db_text, fader_response, json, pan_knob,
+    pan_text, pos2, regular, text_toggle, vec2,
 };
 use craft_ui::combo::Menu;
+use soundcraft_engine::midi_learn::{Parameter, Target};
 
 /// Draw one send slot: the route area picks a destination, while the level area opens or edits the send level.
 pub(crate) fn send_slot(app: &mut SoundApp, ui: &mut Ui, track: &Track, slot: usize, r: Rect) {
@@ -63,7 +64,16 @@ pub(crate) fn send_slot(app: &mut SoundApp, ui: &mut Ui, track: &Track, slot: us
                 name = name,
                 db = db_text(s.level_db)
             ));
-            level_resp.context_menu(|ui| send_options_menu(app, ui, id, slot, s));
+            level_resp.context_menu(|ui| {
+                send_options_menu(app, ui, id, slot, s);
+                if !cfg!(target_arch = "wasm32")
+                    && let Route::Bus(bus) = s.target
+                {
+                    for (label, parameter) in [("Send level", Parameter::SendLevel { slot, bus }), ("Send pan", Parameter::SendPan { slot, bus })] {
+                        ui.menu_button(crate::localization::text(label), |ui| app.midi_learn_options(ui, Target { track: id, parameter }));
+                    }
+                }
+            });
         }
         None => empty_slot(ui.painter(), r, ui.rect_contains_pointer(r), mark),
     }
@@ -116,7 +126,10 @@ fn send_window_contents(app: &mut SoundApp, ctx: &egui::Context) {
                     }
                 });
                 let mut pan = send.pan;
-                pan_knob(ui, 32.0, &mut pan, "Send pan (drag; double-click centres)");
+                let response = pan_knob(ui, 32.0, &mut pan, "Send pan (drag; double-click centres)");
+                if let Route::Bus(bus) = send.target {
+                    app.midi_learn_menu(&response, Target { track: id, parameter: Parameter::SendPan { slot, bus } });
+                }
                 if (pan - send.pan).abs() > f32::EPSILON {
                     let _ = app.engine.execute_merged(
                         "mix.send_level",
@@ -129,7 +142,11 @@ fn send_window_contents(app: &mut SoundApp, ctx: &egui::Context) {
                 fresp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Slider, true, crate::localization::text("Send level")));
                 // Distinct from the strip's "Send A level for <track>" icon and from the slot's "Send level", so a
                 // label query while the window is open still picks one node.
-                if let Some(db) = fader(ui, fr, send.level_db, ui.scope_id().with("send_fader"), "Send level fader") {
+                let (response, moved) = fader_response(ui, fr, send.level_db, ui.scope_id().with("send_fader"), "Send level fader");
+                if let Route::Bus(bus) = send.target {
+                    app.midi_learn_menu(&response, Target { track: id, parameter: Parameter::SendLevel { slot, bus } });
+                }
+                if let Some(db) = moved {
                     app.gesture = Some(crate::Gesture::SendFader { track: id, slot });
                     let _ = app.engine.execute_merged(
                         "mix.send_level",

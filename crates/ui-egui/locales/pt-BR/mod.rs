@@ -836,6 +836,7 @@ fn menu_translate(source: &str) -> Option<&'static str> {
         "Input trim (dB)" => "Trim de entrada (dB)",
         "Score composer" => "Compositor da partitura",
         "Score title" => "Título da partitura",
+        "Send pan" => "Pan do envio",
         "Send level" => "Nível do envio",
         "Surround pan: drag the puck · double-click: front centre · Alt-drag: divergence" => {
             "Panorama surround: arraste o controle · clique duplo: centro frontal · Alt+arraste: divergência"
@@ -1024,6 +1025,26 @@ fn menu_translate(source: &str) -> Option<&'static str> {
         "Add MIDI Note" => "Adicionar nota MIDI",
         "Add Note" => "Adicionar nota",
         "Arrange Panel" => "Organizar painel",
+        "Find parameter" => "Buscar parâmetro",
+        "Assign MIDI CC" => "Atribuir CC MIDI",
+        "Assign" => "Atribuir",
+        "Set Min" => "Definir mínimo",
+        "Set Max" => "Definir máximo",
+        "Invert Range" => "Inverter intervalo",
+        "MIDI Learn" => "Aprender MIDI",
+        "Cancel MIDI Learn" => "Cancelar aprendizado MIDI",
+        "Assign MIDI Controller" => "Atribuir controlador MIDI",
+        "Forget MIDI Assignment" => "Remover atribuição MIDI",
+        "The mixer control is unavailable" => "O controle do mixer está indisponível",
+        "MIDI Learn: move a control" => "Aprender MIDI: mova um controle",
+        "Unsupported control mode" => "Modo de controle incompatível",
+        "MIDI Learn (hold button)" => "Aprender MIDI (manter o botão pressionado)",
+        "MIDI Learn (relative, center 64)" => "Aprender MIDI (relativo, centro em 64)",
+        "MIDI Learn: this control is already assigned. Turn another control." => {
+            "Aprender MIDI: este controle já está atribuído. Gire outro controle."
+        }
+        "MIDI Learn: assigned {} · Ch {} · CC {}" => "MIDI atribuído: {} · Canal {} · CC {}",
+        "{} · Ch {} · CC {}" => "{} · Canal {} · CC {}",
         "Assign Send" => "Atribuir envio",
         "Assign to VCA" => "Atribuir ao VCA",
         "Audio Device" => "Dispositivo de áudio",

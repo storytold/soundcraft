@@ -1,6 +1,6 @@
 # Where SoundCraft falls short of Pro Tools
 
-> **Last reviewed:** 2026-10-25 · **Last updated:** 2026-11-18 · **Change:** minor (G-02 shrunk: MIDI input devices work; previously minor: G-05: plugin editors on Linux/X11; previously trivial: G-09: the pt-BR catalog now covers helper-passed tooltips, the status bar, the remove-session prompt and engine error text; G-08: Frequency Shifter, 28 processors; G-04: volume automation read at every sample, #1354; G-01: `setup.playback_engine` applies the device buffer in the desktop app; G-04: Clip Looping crossfade and loop count) · **Target:** Avid Pro Tools Ultimate 2026.4.1
+> **Last reviewed:** 2026-10-25 · **Last updated:** 2026-11-19 · **Change:** minor (Mix MIDI Learn for track and send controls; previously minor: G-02 shrunk: MIDI input devices work; previously minor: G-05: plugin editors on Linux/X11; previously trivial: G-09: the pt-BR catalog now covers helper-passed tooltips, the status bar, the remove-session prompt and engine error text; G-08: Frequency Shifter, 28 processors; G-04: volume automation read at every sample, #1354; G-01: `setup.playback_engine` applies the device buffer in the desktop app; G-04: Clip Looping crossfade and loop count) · **Target:** Avid Pro Tools Ultimate 2026.4.1
 
 Every known shortfall, one entry each, ranked by how much it stops a Pro Tools user from doing
 real work in SoundCraft. This is the work list: pick from the top. Rows marked **alpha blocker**
@@ -34,7 +34,7 @@ When you close a gap, delete its entry (or shrink it) in the same PR, and bump t
 | G-17 | Video: HEVC/DNx decode, video export, external timecode | Features / Formats | [file-format-parity.md](file-format-parity.md) | 30–50 |
 | G-18 | Speech-to-text transcription | AI | this file | 30–50 |
 | G-19 | UI feel: generic plugin windows, shortcut collisions, pro-grade meters and scaling | UI/UX | [ui-parity.md](ui-parity.md) | 60–100 |
-| G-20 | MIDI/instrument depth: MIDI learn, notation editing | Features | [target-app-parity.md](target-app-parity.md) | 40–60 |
+| G-20 | MIDI/instrument depth: more mapping targets, notation editing | Features | [target-app-parity.md](target-app-parity.md) | 40–60 |
 | G-21 | Compressed export (MP3, AAC/M4A, Ogg/Opus) | File formats | [file-format-parity.md](file-format-parity.md) | 10–20 |
 | G-22 | Avid cloud services (collaboration, Sketch, Splice, sign-in) | Ecosystem | — | not estimated (owner decision) |
 
@@ -175,8 +175,7 @@ native-speaker review.
 
 ### G-10. Control surfaces
 
-None: no HUI or Mackie Control, no EUCON (Avid-proprietary, needs Avid's SDK: owner decision),
-no generic MIDI controller mapping. Pro Tools users on S1/S3/S4/S6/Dock or HUI devices can't
+Generic MIDI Learn covers track Volume, Pan, Mute, Solo and bus Send Level/Pan. The host parameter window supports plug-in MIDI Learn and explicit CC assignments. HUI, Mackie Control and EUCON remain open on this base. EUCON requires Avid's SDK and an owner decision. Pro Tools users on S1/S3/S4/S6/Dock or HUI devices can't
 switch. ≈ 40–70 h for HUI/MCU plus a mapping layer; hardware needed to verify.
 
 ### G-11. Sync
@@ -230,7 +229,7 @@ See [`ui-parity.md`](ui-parity.md). ≈ 60–100 h.
 
 ### G-20. MIDI and instrument depth
 
-MIDI learn, drum machine depth, notation editing (tuplets, lyrics,
+More MIDI Learn targets (faders outside Mix), drum machine depth, notation editing (tuplets, lyrics,
 articulations, parts). ≈ 40–60 h.
 
 ### G-21. Compressed export
@@ -247,6 +246,7 @@ missing. Out of scope unless the owner decides otherwise.
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-11-19 | minor | Project-scoped MIDI Learn for track Volume, Pan, Mute, Solo and bus Send Level/Pan |
 | 2026-11-13 | trivial | G-09: the pt-BR catalog now covers tooltips localized inside buttons and toggles, the Edit-window status bar, the remove-session question, the send help text and engine errors shown in the status line; estimates unchanged |
 | 2026-11-09 | trivial | G-08: 28 processors + 3 instruments with the Frequency Shifter |
 | 2026-11-04 | trivial | G-04: track and master volume automation read at every sample, so breakpoints act on their own sample in any block size (#1354); estimates unchanged |

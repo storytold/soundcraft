@@ -12,6 +12,7 @@ mod control;
 mod files;
 mod input;
 mod midi;
+mod midi_learn;
 mod playback;
 mod plugins;
 
@@ -41,6 +42,11 @@ impl SoundApp {
             punch: None,
             recorder_failed: false,
             midi_inputs: None,
+            midi_learn_mode: Default::default(),
+            midi_learn_target: None,
+            midi_route_revision: None,
+            midi_moves: Vec::new(),
+            midi_pan_latches: Default::default(),
             midi_scan_at: 0.0,
             midi_take: Vec::new(),
             midi_take_lost: 0,
@@ -191,12 +197,19 @@ impl SoundApp {
             import::step(self, ctx);
             updates_ui::tick(self, ctx);
         }
+        self.expire_midi_moves();
         if !self.pointer_down {
             if matches!(self.gesture, Some(Gesture::Fader { .. } | Gesture::SendFader { .. })) {
                 self.gesture = None;
             }
             // Keep a running automation pass merged until playback stops.
-            if !self.wants_keyboard && self.touched.is_empty() && self.touched_sends.is_empty() {
+            if !self.wants_keyboard
+                && self.touched.is_empty()
+                && self.touched_sends.is_empty()
+                && self.midi_pan_latches.is_empty()
+                && self.midi_moves.is_empty()
+                && self.engine.merge_key() != Some("automation_pass")
+            {
                 self.engine.end_merge();
             }
         }
@@ -204,6 +217,19 @@ impl SoundApp {
         self.watch_input();
         // Stop the old playback before sending a replacement session to the audio thread.
         self.handle_transport(dt);
+        self.service_midi(self.uptime);
+        if let Some(input) = &self.midi_inputs {
+            input.feed().set_control_wake({
+                let ctx = ctx.clone();
+                move || ctx.request_repaint()
+            });
+        }
+        if self.service_midi_learn() {
+            ctx.request_repaint();
+        }
+        if let Some(deadline) = self.midi_moves.iter().map(|(_, deadline)| *deadline).min_by(f64::total_cmp) {
+            ctx.request_repaint_after_secs((deadline - self.uptime).max(0.0) as f32);
+        }
         if self.engine.revision != self.last_rev {
             self.last_rev = self.engine.revision;
             if let Some(p) = &self.player {
@@ -214,7 +240,6 @@ impl SoundApp {
         self.autosave_changes();
         self.write_automation();
         self.autosave();
-        self.service_midi(self.uptime);
         if self.recorder.is_none() && !self.recorder_failed && audio::wants_audio_input(self.engine.session()) {
             self.ensure_input();
         }
@@ -329,6 +354,9 @@ impl SoundApp {
         // `DragValue` and text completion), so checking afterwards would see them missing, leave
         // the batch pending, and inject the same edit/navigation/cut again next frame.
         let received_synthetic = self.pass_received_synthetic(&ctx);
+        if self.midi_learn_target.is_some() && ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape)) {
+            self.reset_midi_learn();
+        }
         shortcuts::handle(self, &ctx);
         self.sample_drop_targets.clear();
         if !self.native_menu_bar {

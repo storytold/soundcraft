@@ -292,6 +292,13 @@ impl SoundApp {
         }
     }
 
+    pub(super) fn prepare_automation_merge(&mut self) {
+        use soundcraft_model::AutomationMode as M;
+        let may_write = self.is_playing()
+            && self.engine.session().tracks.iter().any(|t| matches!(t.mixer.automation_mode, M::Write | M::Touch | M::Latch | M::TouchLatch));
+        self.engine.hold_merge(may_write.then_some("automation_pass"));
+    }
+
     /// While playing, record volume automation from fader positions for tracks in Write mode, and
     /// for Touch/Latch tracks whose fader is (or, for Latch, was) being moved. Send levels follow the
     /// same rules, per send, from its slot or its floating send window. Each point replaces the
@@ -301,11 +308,12 @@ impl SoundApp {
         use soundcraft_model::AutomationMode as M;
         const PASS: &str = "automation_pass";
         let playing = self.is_playing();
-        let may_write =
-            playing && self.engine.session().tracks.iter().any(|t| matches!(t.mixer.automation_mode, M::Write | M::Touch | M::Latch | M::TouchLatch));
-        self.engine.hold_merge(may_write.then_some(PASS));
-        if !playing && self.touched.is_empty() && self.touched_sends.is_empty() {
+        self.prepare_automation_merge();
+        if !playing && self.touched.is_empty() && self.touched_sends.is_empty() && self.midi_pan_latches.is_empty() {
             self.last_write_at = i64::MIN;
+            if self.engine.merge_key() == Some(PASS) {
+                self.engine.end_merge();
+            }
             return;
         }
         let pos = self.engine.transport.position;
@@ -331,7 +339,11 @@ impl SoundApp {
             .iter()
             .filter_map(|t| {
                 let m = t.mixer.automation_mode;
-                let touched_now = dragging && fader_track == Some(t.id);
+                let touched_now = (dragging && fader_track == Some(t.id))
+                    || self
+                        .midi_moves
+                        .iter()
+                        .any(|(target, _)| target.track == t.id && target.parameter == soundcraft_engine::midi_learn::Parameter::Volume);
                 let write = match m {
                     M::Write => true,
                     M::Touch => touched_now,
@@ -361,9 +373,35 @@ impl SoundApp {
             })
             .map(|(t, _, slot, db)| (t, slot, db))
             .collect();
+        // A MIDI encoder has no touch switch. Its final CC keeps Touch active for the
+        // release interval; Latch and TouchLatch keep the individual pan side until Stop.
+        let mut pan_points = Vec::new();
+        for t in &self.engine.session().tracks {
+            for (index, &value) in t.mixer.pan.iter().take(2).enumerate() {
+                let moved = self
+                    .midi_moves
+                    .iter()
+                    .any(|(target, _)| target.track == t.id && target.parameter == soundcraft_engine::midi_learn::Parameter::Pan(index));
+                let key = (t.id, index);
+                let write = match t.mixer.automation_mode {
+                    M::Touch => moved,
+                    M::Latch | M::TouchLatch | M::Write => {
+                        if moved {
+                            self.midi_pan_latches.insert(key);
+                        }
+                        self.midi_pan_latches.contains(&key)
+                    }
+                    _ => false,
+                };
+                if write {
+                    pan_points.push((t.id, if index == 0 { "pan" } else { "pan2" }.to_owned(), value));
+                }
+            }
+        }
         let points: Vec<(TrackId, String, f32)> = writes
             .iter()
             .map(|&(t, v)| (t, "volume".to_string(), v))
+            .chain(pan_points)
             .chain(send_writes.iter().map(|&(t, slot, v)| (t, format!("send_{}_level", (b'a' + slot as u8) as char), v)))
             .collect();
         for &(t, _) in &writes {
@@ -382,6 +420,7 @@ impl SoundApp {
         if !playing {
             self.touched.clear();
             self.touched_sends.clear();
+            self.midi_pan_latches.clear();
             self.engine.end_merge();
         }
     }
