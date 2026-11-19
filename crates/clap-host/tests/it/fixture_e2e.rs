@@ -152,6 +152,32 @@ fn reset_delivers_the_releases_of_held_notes() {
 }
 
 #[test]
+fn out_of_order_clap_notes_release_the_sounding_channel_and_key() {
+    fixture_dir();
+    for arrival in [[200, 25, 75], [25, 75, 200]] {
+        let mut p = soundcraft_clap_host::create(SYNTH).unwrap();
+        p.prepare(48_000.0, 64, 2);
+        let mut io = vec![vec![0.0f32; 256]; 2];
+        for offset in arrival {
+            if offset == 75 {
+                p.note_off_channel(offset, 9, 60);
+            } else {
+                p.note_on_channel(offset, 9, 60, 127);
+            }
+        }
+        p.process(&mut io, 256);
+        assert_eq!(io[0][25], 1.0);
+        assert_eq!(io[0][75], 0.0);
+        assert_eq!(io[0][200], 1.0);
+        p.note_off_channel(0, 0, 60);
+        p.note_off_channel(0, 9, 61);
+        assert!(render_block(p.as_mut()).iter().all(|&sample| sample == 1.0));
+        p.all_notes_off();
+        assert!(render_block(p.as_mut()).iter().all(|&sample| sample == 0.0), "arrival {arrival:?}");
+    }
+}
+
+#[test]
 fn layouts_beyond_the_host_limits_are_rejected_not_truncated() {
     fixture_dir();
     // Control: exactly at the limits (16 ports of 64 channels) activates and gets its full layout.

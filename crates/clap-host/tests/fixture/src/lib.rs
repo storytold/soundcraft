@@ -22,18 +22,18 @@ use clap_sys::entry::clap_plugin_entry;
 use clap_sys::events::*;
 use clap_sys::ext::audio_ports::*;
 use clap_sys::ext::gui::*;
-use clap_sys::ext::state::*;
-use clap_sys::stream::*;
 use clap_sys::ext::latency::*;
 use clap_sys::ext::log::*;
 use clap_sys::ext::note_ports::*;
 use clap_sys::ext::params::*;
 use clap_sys::ext::render::*;
+use clap_sys::ext::state::*;
 use clap_sys::factory::plugin_factory::*;
 use clap_sys::host::clap_host;
 use clap_sys::id::clap_id;
 use clap_sys::plugin::*;
 use clap_sys::process::*;
+use clap_sys::stream::*;
 use clap_sys::version::CLAP_VERSION;
 use std::ffi::{CStr, c_char, c_void};
 
@@ -99,6 +99,7 @@ struct Fx {
     gain: f64,
     mode: f64,
     level: f64,
+    note: Option<(i16, i16)>,
     active: bool,
     processing: bool,
     gui_created: bool,
@@ -186,8 +187,15 @@ fn apply(f: &mut Fx, h: &clap_event_header) {
         CLAP_EVENT_NOTE_ON => {
             let e = unsafe { &*(h as *const clap_event_header as *const clap_event_note) };
             f.level = e.velocity;
+            f.note = Some((e.channel, e.key));
         }
-        CLAP_EVENT_NOTE_OFF => f.level = 0.0,
+        CLAP_EVENT_NOTE_OFF => {
+            let e = unsafe { &*(h as *const clap_event_header as *const clap_event_note) };
+            if f.note == Some((e.channel, e.key)) {
+                f.level = 0.0;
+                f.note = None;
+            }
+        }
         CLAP_EVENT_MIDI => {
             let e = unsafe { &*(h as *const clap_event_header as *const clap_event_midi) };
             if e.data[0] & 0xF0 == 0xB0 && e.data[1] == 7 {
@@ -200,9 +208,7 @@ fn apply(f: &mut Fx, h: &clap_event_header) {
 
 /// Fill every output channel with `fit` when all ports have the wide layout, else -1.0.
 unsafe fn fill_wide(pr: &clap_process, ports: u32, channels: u32, n: usize, fit: f32) {
-    let fits = |bufs: *const clap_audio_buffer, n: u32| {
-        n == ports && (0..n as usize).all(|i| unsafe { &*bufs.add(i) }.channel_count == channels)
-    };
+    let fits = |bufs: *const clap_audio_buffer, n: u32| n == ports && (0..n as usize).all(|i| unsafe { &*bufs.add(i) }.channel_count == channels);
     let ok = fits(pr.audio_inputs, pr.audio_inputs_count) && fits(pr.audio_outputs, pr.audio_outputs_count);
     if pr.audio_outputs_count > 0 {
         let out = unsafe { &*pr.audio_outputs };
@@ -641,6 +647,7 @@ unsafe extern "C" fn factory_create(_f: *const clap_plugin_factory, host: *const
         gain: 1.0,
         mode: 0.0,
         level: 0.0,
+        note: None,
         active: false,
         processing: false,
         gui_created: false,
