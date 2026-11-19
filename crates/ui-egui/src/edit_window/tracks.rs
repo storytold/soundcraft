@@ -88,7 +88,7 @@ pub(super) fn track_row(app: &mut SoundApp, ui: &mut Ui, id: TrackId, row: Rect,
         grid.draw(&painter, lane);
     }
     let view = Range::new(sample_at(&s, tl, tl.min.x), sample_at(&s, tl, tl.max.x));
-    let auto_view = AutoParam::parse(&track.view);
+    let auto_view = soundcraft_model::parse_auto_param(&track.view);
     let sorted = track.clips().is_sorted_by_key(|c| c.start);
     let cut_of = clip_cuts(track.clips());
     for clip in track.clips() {
@@ -169,8 +169,8 @@ fn playlist_lanes(app: &mut SoundApp, ui: &mut Ui, track: &Track, row: Rect, mai
 }
 
 pub(super) fn view_label(v: &str) -> String {
-    match AutoParam::parse(v) {
-        Some(p) => p.label(),
+    match soundcraft_model::parse_auto_param(v) {
+        Some(p) => soundcraft_model::auto_param_label(&p),
         None => v.to_string(),
     }
 }

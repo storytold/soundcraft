@@ -14,10 +14,11 @@ impl SoundApp {
         self.ui.output_window = None;
     }
 
-    /// The session is modified, or a plugin editor gesture still holds a state the session hasn't
-    /// taken (see `editor_states_due`): both read the plugins' states before autosaving.
+    /// The session is modified, a plugin editor gesture still holds a state the session hasn't
+    /// taken (see `editor_states_due`), or held instrument parameters are still queued outside
+    /// the document. Closing must not discard that queue.
     pub(crate) fn has_unsaved_changes(&self) -> bool {
-        self.engine.is_dirty() || !self.editor_states.is_empty()
+        self.engine.is_dirty() || !self.editor_states.is_empty() || !self.editor_instrument_params.is_empty()
     }
 
     /// Every two minutes, copy a modified session to the autosave folder (not while recording).
