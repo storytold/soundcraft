@@ -270,7 +270,8 @@ impl MixEngine {
                 i.plugin.reset();
                 i.failed = false;
             }
-            s.held.clear();
+            s.held.fill(0);
+            s.midi_sources.iter_mut().for_each(midi::RoutedMidi::clear);
             s.chase = true;
             s.live.clear();
             s.align.clear();
@@ -307,6 +308,12 @@ impl MixEngine {
                 cx.retire(st.instrument.take());
             }
         }
+        let mut midi_sources = HashMap::<TrackId, Vec<(TrackId, u8)>>::new();
+        for source in s.tracks.iter().filter(|t| t.kind == TrackKind::Midi && !t.inactive) {
+            if let Some(route) = source.midi_destination.filter(|r| (1..=16).contains(&r.channel)) {
+                midi_sources.entry(route.track).or_default().push((source.id, route.channel - 1));
+            }
+        }
         for t in &s.tracks {
             let ch = strip_channels(t, main_ch);
             let strip = self.strips.entry(t.id).or_insert_with(Strip::new);
@@ -341,7 +348,26 @@ impl MixEngine {
                 cx.retire(old);
                 strip.instrument = want.and_then(|i| cx.make(t.id, INSTRUMENT_SLOT, i, ich));
                 strip.sample = None;
+                strip.midi_sources.iter_mut().for_each(midi::RoutedMidi::clear);
             }
+            let wanted = if t.kind == TrackKind::Instrument && !t.inactive && want.is_some() {
+                midi_sources.get(&t.id).map_or(&[][..], Vec::as_slice)
+            } else {
+                &[]
+            };
+            strip.midi_sources.retain_mut(|route| {
+                let keep = wanted.contains(&(route.track, route.channel));
+                if !keep && let Some(inst) = strip.instrument.as_mut() {
+                    route.release(inst, &strip.live);
+                }
+                keep
+            });
+            for &(track, channel) in wanted {
+                if !strip.midi_sources.iter().any(|r| r.track == track && r.channel == channel) {
+                    strip.midi_sources.push(midi::RoutedMidi::new(track, channel));
+                }
+            }
+            strip.midi_sources.sort_unstable_by_key(|route| wanted.iter().position(|entry| *entry == (route.track, route.channel)));
             sync_sample(strip, want, s);
         }
         // Instances nobody claimed (the session changed again before they arrived).
@@ -439,7 +465,8 @@ impl MixEngine {
                     if let Some(i) = &mut st.instrument {
                         i.plugin.all_notes_off();
                     }
-                    st.held.clear();
+                    st.held.fill(0);
+                    st.midi_sources.iter_mut().for_each(midi::RoutedMidi::clear);
                     st.chase = true;
                     st.live.clear();
                 }

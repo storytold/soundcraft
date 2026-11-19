@@ -604,6 +604,15 @@ pub fn bounce_stems_with(e: &Engine, dir: &str, r: Range, opts: &EncodeOptions, 
         .tracks
         .iter()
         .filter(|t| matches!(t.kind, TrackKind::Audio | TrackKind::Instrument | TrackKind::Midi) && !t.inactive && !t.mixer.mute)
+        // The receiving instrument's stem already contains these MIDI clips.
+        .filter(|t| {
+            t.kind != TrackKind::Midi
+                || !t.midi_destination.is_some_and(|route| {
+                    (1..=16).contains(&route.channel)
+                        && s.track(route.track)
+                            .is_some_and(|target| target.kind == TrackKind::Instrument && !target.inactive && target.instrument.is_some())
+                })
+        })
         .map(|t| (t.id, t.name.clone()))
         .collect();
     for (id, name) in stems {
@@ -1121,7 +1130,10 @@ pub fn plan_takes(e: &Engine, unsaved_dir: &Path, input_channels: usize) -> Vec<
         .collect()
 }
 
+// Every test here plants a link, so the module and its helper are Unix-only. `cfg(test)` stays an
+// attribute of its own: clippy allows `unwrap` in tests only under a plain `#[cfg(test)]`.
 #[cfg(test)]
+#[cfg(unix)]
 mod exclusive_tests {
     use super::*;
 
@@ -1215,6 +1227,32 @@ mod stem_tests {
             .unwrap();
         let n = r["files"].as_array().map_or(0, Vec::len);
         assert_eq!(n, 7, "{r}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn routed_midi_has_only_the_receiving_instrument_stem() {
+        use crate::Engine;
+        use soundcraft_model::{ChannelFormat, Insert, MidiDestination, Session, TrackKind};
+
+        let mut session = Session::default();
+        let dest = session.add_track(TrackKind::Instrument, ChannelFormat::Stereo, Some("Shared"));
+        session.track_mut(dest).unwrap().instrument = Some(Insert::new("subtractive_synth"));
+        let source = session.add_track(TrackKind::Midi, ChannelFormat::Mono, Some("Routed"));
+        session.track_mut(source).unwrap().midi_destination = Some(MidiDestination { track: dest, channel: 2 });
+        let mut e = Engine::new(session);
+        let dir = std::env::temp_dir().join(format!("sc-route-stems-{}", std::process::id()));
+        let r = e
+            .execute(
+                "file.bounce_stems",
+                &serde_json::json!({
+                    "dir": dir.to_string_lossy(), "start": {"seconds": 0.0}, "end": {"seconds": 0.01}
+                }),
+            )
+            .unwrap();
+        let files = r["files"].as_array().unwrap();
+        assert_eq!(files.len(), 1, "{files:?}");
+        assert!(files[0].as_str().unwrap().ends_with(" - Shared.wav"));
         let _ = std::fs::remove_dir_all(&dir);
     }
 

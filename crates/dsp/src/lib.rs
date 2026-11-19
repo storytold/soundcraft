@@ -30,6 +30,32 @@ pub use plugins::eq::{eq1_response, eq7_response};
 
 use std::sync::Arc;
 
+/// Sort queued events by offset without allocating, keeping arrival order at equal offsets.
+/// The caller provides scratch space for at least the length of the queue.
+pub fn sort_timed_events<T>(events: &mut [T], scratch: &mut [(u32, usize)], offset: impl Fn(&T) -> u32) {
+    if events.is_sorted_by_key(&offset) {
+        return;
+    }
+    let Some(order) = scratch.get_mut(..events.len()) else { return };
+    for (index, (slot, event)) in order.iter_mut().zip(events.iter()).enumerate() {
+        *slot = (offset(event), index);
+    }
+    order.sort_unstable();
+
+    // The sorted entries name their original positions. Walk each permutation cycle once.
+    for start in 0..order.len() {
+        let mut position = start;
+        while let Some((_, source)) = order.get_mut(position) {
+            let next = std::mem::replace(source, position);
+            if next == start {
+                break;
+            }
+            events.swap(position, next);
+            position = next;
+        }
+    }
+}
+
 /// Plugin category, used to group the insert menu.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum Category {
@@ -223,6 +249,18 @@ pub trait Plugin: Send {
     /// Instruments: note events at sample offsets within the next block.
     fn note_on(&mut self, _offset: usize, _note: u8, _velocity: u8) {}
     fn note_off(&mut self, _offset: usize, _note: u8) {}
+    /// Channel-aware instrument events (MIDI channels 0–15). Built-in instruments keep their
+    /// existing single-part behavior; hosted instruments override these to preserve channels.
+    fn note_on_channel(&mut self, offset: usize, channel: u8, note: u8, velocity: u8) {
+        if channel < 16 {
+            self.note_on(offset, note, velocity);
+        }
+    }
+    fn note_off_channel(&mut self, offset: usize, channel: u8, note: u8) {
+        if channel < 16 {
+            self.note_off(offset, note);
+        }
+    }
     /// Instruments: any other MIDI 1.0 channel message (control change, pitch bend, pressure,
     /// program change) at a sample offset within the next block.
     fn midi(&mut self, _offset: usize, _msg: [u8; 3]) {}

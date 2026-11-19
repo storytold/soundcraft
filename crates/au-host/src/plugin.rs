@@ -4,7 +4,7 @@ use crate::ffi::Instance;
 use soundcraft_dsp::{Plugin, PluginInfo, Transport};
 
 /// Most MIDI events queued between two blocks (extra events are dropped).
-const EVENT_CAP: usize = 1024;
+const EVENT_CAP: usize = 4096;
 /// Most channels a host strip may ask for.
 const MAX_CHANNELS: usize = 64;
 
@@ -25,9 +25,10 @@ pub struct AuPlugin {
     /// Audio Unit id of each `info.params` entry (same order).
     ids: Vec<u32>,
     values: Vec<f32>,
-    /// Pending MIDI, kept sorted by time. Never grows past `EVENT_CAP`.
+    /// Pending MIDI, sorted once before processing. Never grows past `EVENT_CAP`.
     events: Vec<MidiEvent>,
-    held: [bool; 128],
+    event_order: Vec<(u32, usize)>,
+    held: [[bool; 128]; 16],
     /// Takes audio input (effects); instruments replace the buffer contents.
     has_input: bool,
     /// Accepts MIDI (instruments and music effects).
@@ -47,7 +48,8 @@ impl AuPlugin {
             ids,
             values,
             events: Vec::with_capacity(EVENT_CAP),
-            held: [false; 128],
+            event_order: vec![(0, 0); EVENT_CAP],
+            held: [[false; 128]; 16],
             has_input,
             takes_midi,
             channels: 2,
@@ -65,14 +67,16 @@ impl AuPlugin {
         }
     }
 
-    /// Inserts keeping the queue time-sorted; drops the event when the queue is full (never
+    /// Appends in arrival order; drops the event when the queue is full (never
     /// allocates on the audio thread).
-    fn push_event(&mut self, e: MidiEvent) {
-        if !self.takes_midi || self.events.len() >= self.events.capacity() {
-            return;
+    fn push_event(&mut self, e: MidiEvent) -> bool {
+        let release = e.status & 0xF0 == 0x80;
+        let room = if release { self.events.capacity() } else { self.events.capacity().saturating_sub(16 * 128) };
+        if !self.takes_midi || self.events.len() >= room {
+            return false;
         }
-        let pos = self.events.iter().rposition(|q| q.time <= e.time).map_or(0, |i| i + 1);
-        self.events.insert(pos, e);
+        self.events.push(e);
+        true
     }
 }
 
@@ -103,7 +107,7 @@ impl Plugin for AuPlugin {
 
     fn reset(&mut self) {
         self.events.clear();
-        self.held = [false; 128];
+        self.held = [[false; 128]; 16];
         self.inst.reset();
     }
 
@@ -142,6 +146,7 @@ impl Plugin for AuPlugin {
         let max = self.inst.max_frames();
         let au_ch = self.inst.channels();
         let last = u32::try_from(frames - 1).unwrap_or(u32::MAX);
+        soundcraft_dsp::sort_timed_events(&mut self.events, &mut self.event_order, |event| event.time);
         for e in &mut self.events {
             e.time = e.time.min(last);
         }
@@ -208,24 +213,34 @@ impl Plugin for AuPlugin {
     }
 
     fn note_on(&mut self, offset: usize, note: u8, velocity: u8) {
-        if note > 127 {
+        self.note_on_channel(offset, 0, note, velocity);
+    }
+
+    fn note_on_channel(&mut self, offset: usize, channel: u8, note: u8, velocity: u8) {
+        if channel >= 16 || note > 127 {
             return;
         }
         let time = u32::try_from(offset).unwrap_or(u32::MAX);
         // Velocity 0 would be a note-off.
-        self.push_event(MidiEvent { time, status: 0x90, data1: note, data2: velocity.clamp(1, 127) });
-        if let Some(h) = self.held.get_mut(note as usize) {
+        if self.push_event(MidiEvent { time, status: 0x90 | channel, data1: note, data2: velocity.clamp(1, 127) })
+            && let Some(h) = self.held.get_mut(usize::from(channel)).and_then(|keys| keys.get_mut(usize::from(note)))
+        {
             *h = true;
         }
     }
 
     fn note_off(&mut self, offset: usize, note: u8) {
-        if note > 127 {
+        self.note_off_channel(offset, 0, note);
+    }
+
+    fn note_off_channel(&mut self, offset: usize, channel: u8, note: u8) {
+        if channel >= 16 || note > 127 {
             return;
         }
         let time = u32::try_from(offset).unwrap_or(u32::MAX);
-        self.push_event(MidiEvent { time, status: 0x80, data1: note, data2: 0 });
-        if let Some(h) = self.held.get_mut(note as usize) {
+        if self.push_event(MidiEvent { time, status: 0x80 | channel, data1: note, data2: 0 })
+            && let Some(h) = self.held.get_mut(usize::from(channel)).and_then(|keys| keys.get_mut(usize::from(note)))
+        {
             *h = false;
         }
     }
@@ -238,13 +253,14 @@ impl Plugin for AuPlugin {
     }
 
     fn all_notes_off(&mut self) {
-        for k in 0..128u8 {
-            if self.held.get(k as usize).copied().unwrap_or(false) {
-                self.note_off(0, k);
+        for channel in 0..16u8 {
+            for k in 0..128u8 {
+                if self.held.get(usize::from(channel)).and_then(|keys| keys.get(usize::from(k))).copied().unwrap_or(false) {
+                    self.note_off_channel(0, channel, k);
+                }
             }
+            self.push_event(MidiEvent { time: 0, status: 0xB0 | channel, data1: 123, data2: 0 });
         }
-        // CC 123: All Notes Off (catches anything the unit still sustains).
-        self.push_event(MidiEvent { time: 0, status: 0xB0, data1: 123, data2: 0 });
     }
 
     fn load_state(&mut self, data: &[u8]) -> bool {
