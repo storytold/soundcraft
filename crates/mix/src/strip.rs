@@ -1,7 +1,8 @@
 use super::automation::{Level, apply_gain, transport_at, volume_level};
 use super::clips::{ClipFx, clip_fx_params, render_clip};
 use super::instances::{INSTRUMENT_SLOT, PluginFailures, PreparedInstance, create_instance_for, is_third_party};
-use super::midi::{HeldNotes, RoutedMidi, chase_controllers, release_notes, schedule_notes};
+use super::live_midi::{LiveMidi, LiveNotes, MidiPorts, midi_thru};
+use super::midi::{ChaseEvent, HeldNotes, RouteBlock, RoutedMidi, chase_controllers, chase_scratch, release_notes, schedule_notes};
 use super::pan::{PanSpec, apply_matrix, build_matrix, identity_matrix};
 use super::routing::{receives_solo, solo_muted, soloed};
 use super::{
@@ -39,12 +40,20 @@ pub(crate) struct Strip {
     pub(crate) instrument: Option<PluginSlot>,
     /// The pool audio handed to the instrument with `set_sample` (sample-playing instruments).
     pub(crate) sample: Option<Arc<SourceAudio>>,
-    /// MIDI notes currently sounding on the instrument (pitch), for note-offs at stops/seek.
+    /// Preallocated scratch for controller chase.
+    chase_events: Vec<ChaseEvent>,
+    /// MIDI notes currently sounding on the instrument (channel and pitch), for note-offs at stops/seek.
     pub(crate) held: HeldNotes,
+    /// Notes held by live MIDI input.
+    pub(crate) live: LiveNotes,
+    /// MIDI notes currently sounding on the instrument (pitch), for note-offs at stops/seek.
     pub(crate) midi_sources: Vec<RoutedMidi>,
     own_midi_enabled: bool,
     /// The instrument's next block starts somewhere new: send it the controllers in effect there.
     pub(crate) chase: bool,
+    live_chase: bool,
+    /// The last block played the clips: stopped monitoring has their sustain pedal to let go of.
+    pub(crate) clips_played: bool,
     pub(crate) muted: bool,
     pub(crate) gr: f32,
     /// Per-clip effect chains (Clip Effects) and a scratch buffer to render clips into.
@@ -141,10 +150,14 @@ impl Strip {
             plugins: Vec::new(),
             instrument: None,
             sample: None,
-            held: [[false; 128]; 16],
+            chase_events: chase_scratch(),
+            held: [0; 16],
+            live: LiveNotes::default(),
             midi_sources: Vec::new(),
             own_midi_enabled: true,
             chase: true,
+            live_chase: false,
+            clips_played: false,
             muted: false,
             gr: 0.0,
             clip_fx: HashMap::new(),
@@ -209,6 +222,10 @@ impl SlotCtx<'_> {
 /// Live input routed to monitored tracks.
 pub(crate) struct LiveInput<'a> {
     pub(crate) input: &'a [Vec<f32>],
+    pub(crate) midi: &'a [LiveMidi],
+    pub(crate) ports: Option<&'a MidiPorts>,
+    /// Ports whose events were dropped before this block.
+    pub(crate) midi_lost: u64,
     pub(crate) monitor_only: bool,
     pub(crate) recording: bool,
 }
@@ -299,7 +316,7 @@ fn read_aux_bus(t: &Track, strip: &mut Strip, busses: &HashMap<BusId, BusBuf>, f
 }
 
 /// Render the track's instrument into the strip.
-fn render_instrument(s: &Session, t: &Track, strip: &mut Strip, blk: Block, transport: &Transport) {
+fn render_instrument(s: &Session, t: &Track, strip: &mut Strip, live: &LiveInput<'_>, blk: Block, transport: &Transport) {
     let Block { pos, frames, .. } = blk;
     if let Some(inst) = strip.instrument.as_mut().filter(|i| !i.failed) {
         // #152: push the instrument's stored parameter values into the live plugin
@@ -311,23 +328,71 @@ fn render_instrument(s: &Session, t: &Track, strip: &mut Strip, blk: Block, tran
             apply_params(inst, ins, t, INSTRUMENT_SLOT, pos);
         }
         inst.plugin.set_transport(transport);
-        let chase = std::mem::take(&mut strip.chase);
-        let own_midi_enabled = strip.midi_sources.is_empty() || !blk.any_solo || soloed(s, t) || t.mixer.solo_safe || receives_solo(s, t, pos);
-        if own_midi_enabled {
-            if chase || !strip.own_midi_enabled {
-                // The routes own their channels' chase state, including across solo changes.
-                let routed = strip.midi_sources.iter().fold(0u16, |mask, route| mask | (1 << route.channel));
-                chase_controllers(s, t, pos, inst, None, !routed);
-            }
-            schedule_notes(s, t, pos, frames, inst, &mut strip.held, None);
-        } else if strip.own_midi_enabled {
-            release_notes(inst, &mut strip.held);
+        // Reconcile live input before any of this block's clip events. Live MIDI owns
+        // channel 1; a lost device only requires chase on the channel it could alter.
+        strip.live.begin_block();
+        let reconnected = midi_thru(t) && strip.live.reconcile(t, live.midi_lost, live.ports, inst.plugin.as_mut());
+        let restore_live = std::mem::take(&mut strip.live_chase) || reconnected;
+        let seek = std::mem::take(&mut strip.chase);
+        let channels = if seek { u16::MAX } else { u16::from(restore_live) };
+        let own_midi_enabled =
+            !live.monitor_only && (strip.midi_sources.is_empty() || !blk.any_solo || soloed(s, t) || t.mixer.solo_safe || receives_solo(s, t, pos));
+        let routed = strip.midi_sources.iter().fold(0u16, |mask, route| mask | (1 << route.channel));
+        let own_channels = if live.monitor_only { u16::MAX } else { !routed };
+        // An instrument's own chase leaves its routes' channel state intact.
+        let own_chase = if own_midi_enabled && !strip.own_midi_enabled {
+            own_channels
+        } else if own_midi_enabled || live.monitor_only {
+            own_channels & channels
+        } else {
+            0
+        };
+        let mut from_clips = 0;
+        if own_chase != 0 {
+            from_clips = chase_controllers(s, t, pos, inst, &mut strip.chase_events, own_chase, None);
         }
-        strip.own_midi_enabled = own_midi_enabled;
+        if channels & 1 != 0 && own_chase & 1 == 0 {
+            // Clear controller state left by live input even if its destination route is muted.
+            inst.plugin.midi(0, [0xB0, 121, 0]);
+        }
+        let mut route_block = RouteBlock { stopped: live.monitor_only, chase: channels, live: &strip.live, scratch: &mut strip.chase_events };
         for route in &mut strip.midi_sources {
             if let Some(source) = s.track(route.track) {
-                route.render(s, source, t, inst, blk, chase);
+                from_clips |= route.update(s, source, t, inst, blk, &mut route_block);
             }
+        }
+        if channels != 0 {
+            strip.live.restore_defaults(from_clips, inst.plugin.as_mut());
+        }
+        if reconnected {
+            strip.live.resend_controllers(inst.plugin.as_mut());
+        }
+        if own_midi_enabled {
+            schedule_notes(s, t, blk, inst, &mut strip.held, &mut strip.live, None);
+            strip.clips_played = true;
+        } else if strip.own_midi_enabled {
+            release_notes(inst, &mut strip.held, &strip.live);
+        }
+        strip.own_midi_enabled = own_midi_enabled;
+        if live.monitor_only && (std::mem::take(&mut strip.clips_played) || channels != 0) {
+            let count = if is_third_party(&inst.id) { 16 } else { 1 };
+            for channel in 0..count {
+                inst.plugin.midi(0, [0xB0 | channel, 64, 0]);
+            }
+        }
+        let mut first_channel_notes = strip.held.first().copied().unwrap_or(0);
+        for route in &mut strip.midi_sources {
+            if let Some(source) = s.track(route.track) {
+                route.schedule(s, source, blk, inst, &mut strip.live);
+                first_channel_notes |= route.live_pitches();
+            }
+        }
+        strip.live.set_clip_notes((0..128u8).filter(|note| first_channel_notes & (1u128 << note) != 0));
+        if midi_thru(t) {
+            strip.live.play(t, inst.plugin.as_mut(), live.midi, live.ports, frames);
+        } else if strip.live.touched() && strip.live.release(inst.plugin.as_mut()) {
+            // Live controllers only addressed the first channel.
+            strip.live_chase = true;
         }
         if strip.buf.len() >= 2 {
             inst.plugin.process(&mut strip.buf, frames);
@@ -428,10 +493,12 @@ pub(crate) fn process_strip(s: &Session, t: &Track, strip: &mut Strip, busses: &
             monitor_input(t, strip, live, frames);
         }
         TrackKind::Audio if live.monitor_only => {}
-        TrackKind::Instrument | TrackKind::Midi if live.monitor_only => {}
+        // Stopped: only a track that plays live MIDI input sounds (and one that just stopped
+        // doing so, to release its notes).
+        TrackKind::Instrument | TrackKind::Midi if live.monitor_only && !midi_thru(t) && !strip.live.touched() => {}
         TrackKind::Audio => render_audio_clips(s, t, strip, blk),
         TrackKind::Aux | TrackKind::Folder => read_aux_bus(t, strip, busses, frames),
-        TrackKind::Instrument | TrackKind::Midi => render_instrument(s, t, strip, blk, &transport),
+        TrackKind::Instrument | TrackKind::Midi => render_instrument(s, t, strip, live, blk, &transport),
         _ => {}
     }
     let trim = db_to_gain(t.mixer.trim_db) * if t.mixer.phase_invert { -1.0 } else { 1.0 };

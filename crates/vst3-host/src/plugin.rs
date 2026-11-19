@@ -42,8 +42,9 @@ pub struct Vst3Plugin {
     /// of an `f64`, or [`SYNCED`]). `set_param` may run on the audio thread, so it never calls the
     /// controller; the state reader, which already does, hands them over first.
     unsynced: Arc<[AtomicU64]>,
-    /// Pending notes, kept sorted by time. Never grows past `EVENT_CAP`.
+    /// Pending notes, sorted once before processing. Never grows past `EVENT_CAP`.
     notes: Vec<NoteEvent>,
+    note_order: Vec<(u32, usize)>,
     /// The parameter each MIDI controller drives (see `Instance::midi_mapping`).
     midi_map: Vec<Option<u32>>,
     /// Controller points for the next block: (time, param id, normalized value). Bounded.
@@ -92,6 +93,7 @@ impl Vst3Plugin {
             pending: Vec::with_capacity(ids.len().min(PARAM_QUEUE_CAP)),
             unsynced: ids.iter().map(|_| AtomicU64::new(SYNCED)).collect(),
             notes: Vec::with_capacity(EVENT_CAP),
+            note_order: vec![(0, 0); EVENT_CAP],
             midi_map: Vec::new(),
             controls: Vec::with_capacity(EVENT_CAP),
             inputs: BusBuffers::new(&[], 0),
@@ -175,17 +177,9 @@ impl Vst3Plugin {
         if self.notes.len() >= room {
             return false;
         }
-        push_sorted(&mut self.notes, e);
+        self.notes.push(e);
         true
     }
-}
-
-fn push_sorted(notes: &mut Vec<NoteEvent>, e: NoteEvent) {
-    if notes.len() >= notes.capacity() {
-        return;
-    }
-    let pos = notes.iter().rposition(|q| q.time() <= e.time()).map_or(0, |i| i + 1);
-    notes.insert(pos, e);
 }
 
 /// Keeps only the pending releases, one per key and moved to the start of the next block, so at
@@ -276,6 +270,7 @@ impl Plugin for Vst3Plugin {
     fn reset(&mut self) {
         // Keep pending releases and release whatever is still held, so the processor's voices stop
         // on the next block instead of sounding on while the host forgets them.
+        soundcraft_dsp::sort_timed_events(&mut self.notes, &mut self.note_order, NoteEvent::time);
         keep_releases(&mut self.notes);
         self.controls.clear();
         self.all_notes_off();
@@ -318,6 +313,7 @@ impl Plugin for Vst3Plugin {
         if self.inst.host().latency_changed.swap(false, Ordering::Relaxed) {
             self.latency = self.inst.latency() as usize;
         }
+        soundcraft_dsp::sort_timed_events(&mut self.notes, &mut self.note_order, NoteEvent::time);
         let last = u32::try_from(frames - 1).unwrap_or(u32::MAX);
         for e in &mut self.notes {
             if e.time() > last {
@@ -592,16 +588,32 @@ mod tests {
         assert_eq!(notes, vec![NoteEvent::Off { time: 0, channel: 0, key: 60 }, NoteEvent::Off { time: 0, channel: 9, key: 60 }]);
     }
 
+    #[test]
+    fn dense_descending_notes_keep_arrival_order_at_tied_offsets() {
+        let mut notes = Vec::with_capacity(EVENT_CAP);
+        for time in (0..EVENT_CAP as u32 / 2).rev() {
+            notes.push(NoteEvent::Off { channel: 9, time, key: 60 });
+            notes.push(NoteEvent::Off { channel: 0, time, key: 60 });
+        }
+        assert!(!notes.is_sorted_by_key(NoteEvent::time));
+        let mut order = vec![(0, 0); EVENT_CAP];
+        soundcraft_dsp::sort_timed_events(&mut notes, &mut order, NoteEvent::time);
+        for (time, pair) in notes.as_chunks::<2>().0.iter().enumerate() {
+            let time = time as u32;
+            assert_eq!(*pair, [NoteEvent::Off { channel: 9, time, key: 60 }, NoteEvent::Off { channel: 0, time, key: 60 }]);
+        }
+    }
+
     /// A queue full of releases still has room to release every held key after a reset.
     #[test]
     fn reset_keeps_room_to_release_every_held_key() {
         let mut notes = Vec::with_capacity(EVENT_CAP);
         for i in 0..EVENT_CAP {
-            push_sorted(&mut notes, NoteEvent::Off { channel: 0, time: i as u32, key: (i % 4) as u8 });
+            notes.push(NoteEvent::Off { channel: 0, time: i as u32, key: (i % 4) as u8 });
         }
         keep_releases(&mut notes);
         for key in 0..128u8 {
-            push_sorted(&mut notes, NoteEvent::Off { channel: 0, time: 0, key });
+            notes.push(NoteEvent::Off { channel: 0, time: 0, key });
         }
         for key in 0..128u8 {
             assert!(notes.iter().any(|e| matches!(*e, NoteEvent::Off { key: k, .. } if k == key)), "key {key} was never released");

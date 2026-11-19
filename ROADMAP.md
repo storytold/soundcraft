@@ -2,7 +2,7 @@
 
 **Stage: pre-alpha** · next: alpha, ~5% and ~110–180 h away (the alpha gate's three failing workflows)
 
-> **Last reviewed:** 2026-10-24 · **Last updated:** 2026-11-09 · **Change:** trivial (Frequency Shifter plugin, Command-click target priority and cursor, Command-click automation points, plugin editors on Linux/X11, Cancel Zoom Toggle, side panels in dock columns, Auto Pan stereo balance, Alt-click returns a plugin parameter to its default, Clip List Auto Rename, Strip Silence rectangles, Strip Silence Rename, Strip Silence Extract and Separate, Clip Looping dialog, AudioSuite Vari-Fi speed ramps, Auto Pan plugin, Subharmonic plugin, Ring Modulator plugin, Float32 file headroom) · **Target:** Avid Pro Tools Ultimate 2026.4.1
+> **Last reviewed:** 2026-10-24 · **Last updated:** 2026-11-18 · **Change:** minor (MIDI input in the progress log; previously trivial: Frequency Shifter plugin, Command-click target priority and cursor, Command-click automation points, plugin editors on Linux/X11, Cancel Zoom Toggle, side panels in dock columns, Auto Pan stereo balance, Alt-click returns a plugin parameter to its default, Clip List Auto Rename, Strip Silence rectangles, Strip Silence Rename, Strip Silence Extract and Separate, Clip Looping dialog, AudioSuite Vari-Fi speed ramps, Auto Pan plugin, Subharmonic plugin, Ring Modulator plugin, Float32 file headroom) · **Target:** Avid Pro Tools Ultimate 2026.4.1
 
 SoundCraft is a clean-room, pure-Rust digital audio workstation that aims at full parity with
 Avid Pro Tools, and then beyond it: faster, open, scriptable and agent-controllable. This page is
@@ -36,8 +36,10 @@ Detail: [target-app-parity.md](docs/target-app-parity.md#readiness-by-audience).
 **Why pre-alpha:** the core-workflow gate in [docs/roadmap.md](docs/roadmap.md#alpha-gate) fails.
 Editing, mixing, bouncing, and saving and reopening work end to end. But a Pro Tools user can't
 record from a chosen audio interface at a chosen buffer size (only the default devices, a fixed
-512-sample block, and takes held in RAM). They can't record MIDI from a keyboard (there is no
-MIDI device layer). And they can't bring a session in or hand one back (no AAF/OMF/`.ptx`).
+512-sample block, and takes held in RAM). Recording MIDI from a keyboard is built but checked on
+Linux only: macOS and Windows are type-checked and have not been tried with a device, and there
+is no MIDI input on FreeBSD or the web. And they can't bring a session in or hand one back (no
+AAF/OMF/`.ptx`).
 Readiness (~40 %) sits right at the alpha bar, but a gate failure keeps the app pre-alpha. The
 2026-10-07 estimate ("~65 % overall, 110–150 h to 100 %") counted feature presence. This one
 measures readiness and adds hardware, localization and field bug reports.
@@ -103,7 +105,7 @@ Other languages shipped: 0 complete. Brazilian Portuguese covers the fixed UI st
 Ranked; the alpha gate, the alpha checklist and the beta plan are in [docs/roadmap.md](docs/roadmap.md).
 
 1. **Alpha blocker:** audio interfaces: device and buffer-size choice, duplex stream, ASIO; record to disk (G-01, G-06). 35–55 h.
-2. **Alpha blocker:** MIDI devices: record from keyboards, play instruments live, output (G-02). 20–35 h.
+2. **Alpha blocker:** MIDI devices: keyboard input, live play and recording are in (checked on Linux only; macOS and Windows type-checked, none on FreeBSD or the web); output, clock and loop/merge recording remain (G-02). 12–22 h.
 3. **Alpha blocker:** AAF/OMF import and export (G-03). 50–90 h.
 4. macOS plugin entitlement (#153), then AU editors and embedded CLAP editors on macOS (G-05). 1 h for the entitlement (needed for the mix row), then 10–15 h.
 5. Land the open bug-fix PRs and clear the correctness backlog (G-04). 15–25 h.
@@ -122,6 +124,7 @@ mutated and truncated movies. Field reports from the first public week are track
 
 ## Progress log
 
+- **2026-11-18 (MIDI input):** MIDI input devices: keyboards play record-enabled and input-monitored MIDI and instrument tracks live and are recorded into MIDI clips, with a device and channel choice per track. The device switches are in the MIDI inputs section of Setup › Playback Engine (Setup › MIDI › MIDI Input Devices opens the same window) and are kept in the app preferences, per computer, not in the session. Controllers, pitch bend and aftertouch reach the instrument live; a pitch held on two devices or channels sounds until both release it; a full input queue releases the notes of its device and marks the take incomplete. On Linux, live play was checked with a hardware keyboard (Akai MPK mini 3) and recording with a virtual one; macOS and Windows are type-checked only, and there is no MIDI input on FreeBSD or the web. Guide: `docs/midi-input.md`. No readiness percentage change until that is measured.
 - **2026-11-09:** A built-in Frequency Shifter (`freq_shifter`) moves every frequency in the signal by the same number of hertz, from 0.01 Hz to 5 kHz: up, down, both ways at once, or down on the left and up on the right of a stereo track. The unwanted sideband stays at least 100 dB down from 20 Hz to 20 Hz below Nyquist at 44.1 to 96 kHz. Feedback sends the output round again for a trail of further shifts, Mix blends in the dry signal, and every change glides without a click. No readiness percentage change.
 - **2026-11-08:** Command-click near an existing automation breakpoint keeps that point as the click target with every active tool, and existing fade and clip-gain controls retain their normal priority. Empty automation space shows a crosshair and an insertion hint while Command is held. The active tool's drag gestures stay unchanged. No readiness percentage change.
 - **2026-11-05:** Command-click in an automation lane adds a point at the clicked time and value with the current editing tool (#1394), using the existing Pencil mapping. Command-click preserves the existing selection and also works on the fallback volume lanes of Master, Aux and VCA tracks. Plain clicks and clip contents stay unchanged, and one Undo removes the new point. No readiness percentage change.

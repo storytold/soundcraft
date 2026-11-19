@@ -1,10 +1,12 @@
 use super::clips::Key;
+use super::instances::is_third_party;
+use super::live_midi::LiveNotes;
 use super::routing::{routed_source_muted, soloed};
-use super::strip::{PluginSlot, Strip};
+use super::strip::{Block, PluginSlot, Strip};
 use super::{ClipContent, CtrlKind, Range, SampleSource, Samples, Session, SourceAudio, Track, TrackId};
 use std::sync::Arc;
 
-pub(crate) type HeldNotes = [[bool; 128]; 16];
+pub(crate) type HeldNotes = [u128; 16];
 
 /// Note state for one source, so disabling it releases its notes on the shared instrument.
 pub(crate) struct RoutedMidi {
@@ -16,44 +18,74 @@ pub(crate) struct RoutedMidi {
 
 impl RoutedMidi {
     pub(crate) fn new(track: TrackId, channel: u8) -> Self {
-        Self { track, channel, enabled: false, held: [[false; 128]; 16] }
+        Self { track, channel, enabled: false, held: [0; 16] }
     }
 
     pub(crate) fn clear(&mut self) {
         self.enabled = false;
-        self.held.fill([false; 128]);
+        self.held.fill(0);
     }
 
-    pub(crate) fn release(&mut self, inst: &mut PluginSlot) {
+    pub(crate) fn release(&mut self, inst: &mut PluginSlot, live: &LiveNotes) {
         if self.enabled {
             inst.plugin.midi(0, [0xB0 | self.channel, 64, 0]);
             inst.plugin.midi(0, [0xB0 | self.channel, 66, 0]);
-            release_notes(inst, &mut self.held);
+            release_notes(inst, &mut self.held, live);
         }
         self.enabled = false;
     }
 
-    pub(crate) fn render(&mut self, s: &Session, source: &Track, dest: &Track, inst: &mut PluginSlot, blk: super::strip::Block, chase: bool) {
-        if source.inactive
-            || routed_source_muted(s, source, blk.pos)
-            || (blk.any_solo && !soloed(s, source) && !source.mixer.solo_safe && !soloed(s, dest))
+    /// Prepare controller state before the current block or live input changes it.
+    pub(crate) fn update(
+        &mut self,
+        s: &Session,
+        source: &Track,
+        dest: &Track,
+        inst: &mut PluginSlot,
+        block: Block,
+        state: &mut RouteBlock<'_>,
+    ) -> u128 {
+        if state.stopped
+            || source.inactive
+            || routed_source_muted(s, source, block.pos)
+            || (block.any_solo && !soloed(s, source) && !source.mixer.solo_safe && !soloed(s, dest))
         {
-            self.release(inst);
-            return;
+            self.release(inst, state.live);
+            return 0;
         }
-        if chase || !self.enabled {
-            chase_controllers(s, source, blk.pos, inst, Some(self.channel), 1 << self.channel);
+        let entering = !std::mem::replace(&mut self.enabled, true);
+        let channel = 1 << self.channel;
+        if entering || state.chase & channel != 0 {
+            chase_controllers(s, source, block.pos, inst, state.scratch, channel, Some(self.channel))
+        } else {
+            0
         }
-        self.enabled = true;
-        schedule_notes(s, source, blk.pos, blk.frames, inst, &mut self.held, Some(self.channel));
+    }
+
+    pub(crate) fn schedule(&mut self, s: &Session, t: &Track, blk: Block, inst: &mut PluginSlot, live: &mut LiveNotes) {
+        if self.enabled {
+            schedule_notes(s, t, blk, inst, &mut self.held, live, Some(self.channel));
+        }
+    }
+
+    pub(crate) fn live_pitches(&self) -> u128 {
+        self.held.first().copied().unwrap_or(0)
     }
 }
 
-pub(crate) fn release_notes(inst: &mut PluginSlot, held: &mut HeldNotes) {
+pub(crate) struct RouteBlock<'a> {
+    pub(crate) stopped: bool,
+    pub(crate) chase: u16,
+    pub(crate) live: &'a LiveNotes,
+    pub(crate) scratch: &'a mut Vec<ChaseEvent>,
+}
+
+pub(crate) fn release_notes(inst: &mut PluginSlot, held: &mut HeldNotes, live: &LiveNotes) {
     for (channel, notes) in held.iter_mut().enumerate() {
-        for (key, sounding) in notes.iter_mut().enumerate() {
-            if std::mem::take(sounding) {
-                inst.plugin.note_off_channel(0, channel as u8, key as u8);
+        let notes = std::mem::take(notes);
+        for note in (0..128u8).filter(|note| notes & (1u128 << note) != 0) {
+            if channel != 0 || !live.holds(note) {
+                inst.plugin.note_off_channel(0, channel as u8, note);
             }
         }
     }
@@ -74,7 +106,20 @@ fn midi_offset(s: &Session, t: &Track) -> i64 {
 }
 
 /// Send note on/offs and controllers for MIDI clips overlapping the block.
-pub(crate) fn schedule_notes(s: &Session, t: &Track, pos: Samples, frames: usize, inst: &mut PluginSlot, held: &mut HeldNotes, channel: Option<u8>) {
+///
+/// Live MIDI uses the instrument's first channel. The clip and a live key may share
+/// a pitch there (or on a single-part instrument), so defer that clip's release.
+pub(crate) fn schedule_notes(
+    s: &Session,
+    t: &Track,
+    blk: Block,
+    inst: &mut PluginSlot,
+    held: &mut HeldNotes,
+    live: &mut LiveNotes,
+    channel: Option<u8>,
+) {
+    let Block { pos, frames, .. } = blk;
+    let multichannel = is_third_party(&inst.id);
     let sr = s.sample_rate;
     // MIDI Track Offsets: the track's notes sound `offset` samples later (earlier if negative), so
     // the block looks that far back into the clips.
@@ -125,16 +170,22 @@ pub(crate) fn schedule_notes(s: &Session, t: &Track, pos: Samples, frames: usize
             if on >= clip.end() {
                 continue;
             }
+            let held_channel = if multichannel { usize::from(n.channel) } else { 0 };
             if on >= pos && on < end {
                 inst.plugin.note_on_channel(usize::try_from(on - pos).unwrap_or(0), n.channel, n.pitch, n.velocity);
-                if let Some(h) = held.get_mut(usize::from(n.channel)).and_then(|keys| keys.get_mut(usize::from(n.pitch))) {
-                    *h = true;
+                if let Some(notes) = held.get_mut(held_channel) {
+                    *notes |= 1u128 << n.pitch;
                 }
             }
             if off >= pos && off < end {
-                inst.plugin.note_off_channel(usize::try_from(off - pos).unwrap_or(0), n.channel, n.pitch);
-                if let Some(h) = held.get_mut(usize::from(n.channel)).and_then(|keys| keys.get_mut(usize::from(n.pitch))) {
-                    *h = false;
+                let at = usize::try_from(off - pos).unwrap_or(0);
+                if held_channel == 0 && live.holds(n.pitch) {
+                    live.clip_off_held_back(n.pitch, at);
+                } else {
+                    inst.plugin.note_off_channel(at, n.channel, n.pitch);
+                }
+                if let Some(notes) = held.get_mut(held_channel) {
+                    *notes &= !(1u128 << n.pitch);
                 }
             }
         }
@@ -170,18 +221,46 @@ fn ctrl_message(channel: u8, kind: CtrlKind, value: i32, transpose: i64) -> [u8;
     message
 }
 
-/// Before an instrument plays from `pos`: reset its controllers, then send each one the last value
-/// it had on this track before `pos`.
-pub(crate) fn chase_controllers(s: &Session, t: &Track, pos: Samples, inst: &mut PluginSlot, channel: Option<u8>, channels: u16) {
-    for ch in (0..16).filter(|ch| channels & (1 << ch) != 0) {
-        inst.plugin.midi(0, [0xB0 | ch, 121, 0]);
+const BEND: usize = 128;
+const PRESSURE: usize = 129;
+const PROGRAM: usize = 130;
+const CHASE_SLOTS: usize = 16 * (PROGRAM + 1);
+
+#[derive(Clone, Default)]
+pub(crate) struct ChaseEvent {
+    time: i64,
+    order: usize,
+    message: [u8; 3],
+}
+
+/// Reset controllers, then replay the latest values and recorded resets in playback order.
+/// Shared or omni receivers therefore hear the latest event regardless of its MIDI channel.
+pub(crate) fn chase_controllers(
+    s: &Session,
+    t: &Track,
+    pos: Samples,
+    inst: &mut PluginSlot,
+    last: &mut Vec<ChaseEvent>,
+    channels: u16,
+    remap: Option<u8>,
+) -> u128 {
+    let multichannel = is_third_party(&inst.id);
+    let reset = if multichannel || remap.is_some() { channels } else { channels & 1 };
+    for channel in (0..16u8).filter(|channel| reset & (1 << channel) != 0) {
+        inst.plugin.midi(0, [0xB0 | channel, 121, 0]);
     }
     let pos = pos.saturating_sub(midi_offset(s, t));
-    const BEND: usize = 128;
-    const PRESSURE: usize = 129;
-    const PROGRAM: usize = 130;
-    let mut last = [[(i64::MIN, 0usize, 0i32); 131]; 16];
+    last.clear();
+    last.resize_with(CHASE_SLOTS, ChaseEvent::default);
     let mut order = 0usize;
+    // MIDI Real-Time Properties: the delay moves the track's controllers as it does when they
+    // are played (`schedule_notes`), so a value is in the past here when it was already sent.
+    let delay = if s.edit.values.is_empty() {
+        0i64
+    } else {
+        Key::new(format_args!("rtp.{}.delay", t.id.0)).map_or(0.0, |k| s.edit.value(k.as_str(), 0.0)).clamp(-1e7, 1e7) as i64
+    };
+    let mut sent = 0u128;
     let sr = s.sample_rate;
     for clip in t.clips() {
         let ClipContent::Midi { sequence } = &clip.content else { continue };
@@ -191,6 +270,10 @@ pub(crate) fn chase_controllers(s: &Session, t: &Track, pos: Samples, inst: &mut
         let base = s.tempo.samples_to_ticks(clip.start, sr);
         let until = pos.min(clip.end());
         for c in sequence.ctrls.iter().filter(|c| c.tick >= 0 && c.channel < 16) {
+            let output_channel = remap.unwrap_or(c.channel);
+            if (multichannel || remap.is_some()) && channels & (1 << output_channel) == 0 {
+                continue;
+            }
             // Match the scheduler's clip/event traversal order when messages share a timestamp.
             order = order.saturating_add(1);
             let slot = match c.kind {
@@ -200,44 +283,30 @@ pub(crate) fn chase_controllers(s: &Session, t: &Track, pos: Samples, inst: &mut
                 CtrlKind::Program => PROGRAM,
                 CtrlKind::PolyPressure(_) => continue,
             };
-            let output_channel = channel.unwrap_or(c.channel);
-            if channels & (1 << output_channel) == 0 {
-                continue;
-            }
-            let at = s.tempo.tick_to_samples(base.saturating_add(c.tick), sr);
+            let at = s.tempo.tick_to_samples(base.saturating_add(c.tick.saturating_add(delay).max(0)), sr);
+            let index = usize::from(output_channel) * (PROGRAM + 1) + slot;
             if at < until
-                && let Some(l) = last.get_mut(usize::from(output_channel)).and_then(|controllers| controllers.get_mut(slot))
-                && at >= l.0
+                && let Some(event) = last.get_mut(index)
+                && (event.order == 0 || at >= event.time)
             {
-                *l = (at, order, c.value);
+                *event = ChaseEvent { time: at, order, message: ctrl_message(output_channel, c.kind, c.value, 0) };
             }
         }
     }
-    for (channel, controllers) in last.iter().enumerate() {
-        let reset_at = controllers.get(121).map_or((i64::MIN, 0), |c| (c.0, c.1));
-        for (slot, &(at, order, value)) in controllers.iter().enumerate() {
-            // The opening reset already establishes defaults. Replaying an old reset here could
-            // clear a later expression/modulation value whose slot happens to precede 121.
-            if slot == 121 {
-                continue;
-            }
-            let kind = match slot {
-                BEND => CtrlKind::PitchBend,
-                PRESSURE => CtrlKind::ChannelPressure,
-                PROGRAM => CtrlKind::Program,
-                n => CtrlKind::Cc(u8::try_from(n).unwrap_or(0)),
-            };
-            if at != i64::MIN && !((at, order) < reset_at && reset_by_cc121(kind)) {
-                inst.plugin.midi(0, ctrl_message(u8::try_from(channel).unwrap_or(0), kind, value, 0));
-            }
+    last.retain(|event| event.order != 0);
+    last.sort_unstable_by_key(|event| (event.time, event.order));
+    for event in last {
+        inst.plugin.midi(0, event.message);
+        let [status, cc, _] = event.message;
+        if status & 0xF0 == 0xB0 && (status & 0x0F == 0 || !multichannel) {
+            sent |= 1u128 << cc;
         }
     }
+    sent
 }
 
-/// RP-015 leaves bank, level/pan, sound/effect settings, channel modes and parameter data intact.
-/// Earlier resettable values must not undo a recorded channel reset when seeking.
-fn reset_by_cc121(kind: CtrlKind) -> bool {
-    !matches!(kind, CtrlKind::Program | CtrlKind::Cc(0 | 6 | 7 | 10 | 32 | 38 | 39 | 42 | 70..=79 | 91..=97 | 120..=127))
+pub(crate) fn chase_scratch() -> Vec<ChaseEvent> {
+    Vec::with_capacity(CHASE_SLOTS)
 }
 
 /// Session audio shared with a sample-playing instrument.

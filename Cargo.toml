@@ -49,6 +49,13 @@ rustfft = "6"
 # Session bundles (one file holding a session and its audio, for the browser): stored entries only.
 zip = { version = "9", default-features = false }
 cpal = "0.18"
+# MIDI input devices. Pinned: it talks to the system's MIDI service and runs on its threads.
+# Only soundcraft-playback depends on it, and only on Linux, macOS and Windows; there it builds
+# alsa (already used by cpal), coremidi + coremidi-sys, or the `windows` crate (already in the
+# tree). Its Android and web dependencies (jni, android-build, java-locator, dlopen2,
+# process_path, wasm-bindgen) are in Cargo.lock because the lock file covers every target, and
+# are never compiled for SoundCraft.
+midir = "=0.11.1"
 
 # Which file paths stored in a session may be opened.
 craft-docpath = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "ea24422ae9859dc5da398d0462bc87f8e02e0d10" }
