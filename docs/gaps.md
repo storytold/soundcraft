@@ -176,7 +176,7 @@ native-speaker review.
 ### G-10. Control surfaces
 
 Generic MIDI Learn covers track Volume, Pan, Mute, Solo and bus Send Level/Pan. HUI, Mackie Control and EUCON remain open on this base. EUCON requires Avid's SDK and an owner decision. Pro Tools users on S1/S3/S4/S6/Dock or HUI devices can't
-switch. ≈ 40–70 h for HUI/MCU plus a mapping layer; hardware needed to verify.
+switch. The original 40–70 h estimate included the mixer mapping delivered here. HUI/MCU support still needs separate hardware verification.
 
 ### G-11. Sync
 
