@@ -256,7 +256,7 @@ fn draw_clip_content(cl: &ClipLane<'_>, clip: &Clip, g: &ClipGeom<'_>) {
                         body_r,
                         wave,
                     );
-                    let n = track.channels().min(audio.peaks.len()).max(1);
+                    let n = track.channels().min(crate::waveform::lanes(audio)).max(1);
                     for k in 1..n {
                         let y = body_r.min.y + body_r.height() / n as f32 * k as f32;
                         painter.line_segment([pos2(vis.min.x, y), pos2(vis.max.x, y)], Stroke::new(1.0, body.gamma_multiply(0.7)));

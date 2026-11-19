@@ -86,10 +86,53 @@ pub(crate) fn decode_file(files: &mut DecodedFiles, p: &Path, rate: u32) -> std:
     files
         .entry(file_key(p))
         .or_insert_with(|| {
+            if let Ok(Some(audio)) = stream_file(p, rate) {
+                return Ok(audio);
+            }
             let bytes = read_file(p).map_err(|_| p.display().to_string())?;
             decode_source(&bytes, p.extension().and_then(OsStr::to_str), rate).map_err(|err| format!("{}: {err}", p.display()))
         })
         .clone()
+}
+
+pub(crate) const STREAM_MIN_SAMPLES: u64 = 1 << 23;
+
+#[cfg(test)]
+thread_local! {
+    static TEST_STREAM_MIN: std::cell::Cell<Option<u64>> = const { std::cell::Cell::new(None) };
+}
+
+fn stream_min_samples() -> u64 {
+    #[cfg(test)]
+    if let Some(n) = TEST_STREAM_MIN.with(std::cell::Cell::get) {
+        return n;
+    }
+    STREAM_MIN_SAMPLES
+}
+
+#[cfg(test)]
+pub(crate) struct StreamThreshold;
+
+#[cfg(test)]
+impl StreamThreshold {
+    pub(crate) fn set(samples: u64) -> StreamThreshold {
+        TEST_STREAM_MIN.with(|l| l.set(Some(samples)));
+        StreamThreshold
+    }
+}
+
+#[cfg(test)]
+impl Drop for StreamThreshold {
+    fn drop(&mut self) {
+        TEST_STREAM_MIN.with(|l| l.set(None));
+    }
+}
+
+fn stream_file(p: &Path, rate: u32) -> std::result::Result<Option<Arc<SourceAudio>>, String> {
+    if cfg!(target_arch = "wasm32") {
+        return Ok(None);
+    }
+    soundcraft_mix::open_streamed(p, rate, stream_min_samples())
 }
 
 #[cfg(test)]
@@ -220,6 +263,58 @@ mod save_tests {
         let mut r = Engine::default();
         assert_eq!(open_session(&mut r, path).unwrap(), Vec::<String>::new());
         r
+    }
+
+    fn long_takes(dir: &Scratch, tracks: usize, frames: usize) -> String {
+        let mut e = Engine::default();
+        let s = e.session_mut();
+        for k in 0..tracks {
+            let t = s.add_track(TrackKind::Audio, ChannelFormat::Stereo, None);
+            let wave = |c: usize| (0..frames).map(|i| ((i * (k + 3) + c * 7) % 2_001) as f32 / 1_000.0 - 1.0).collect();
+            let buf = AudioBuffer { sample_rate: 48_000, channels: vec![wave(0), wave(1)] };
+            let src = add_source(s, &format!("Take {k}"), buf, None, FileFormat::Wav);
+            let id = s.new_clip_id();
+            let mut clip = Clip::audio(id, "Take", src, 300 * k as i64, 1_000 * k as i64, frames as i64 - 5_000);
+            clip.fade_in.len = 2_000;
+            crate::edit::place_clip(s, t, clip);
+        }
+        let path = dir.0.join("Long/Long.scraft").to_string_lossy().into_owned();
+        save_session(&mut e, &path).unwrap();
+        path
+    }
+
+    fn sample_bytes(e: &Engine) -> usize {
+        let s = e.session();
+        s.sources.iter().filter_map(|src| s.pool.get(src.id)).map(|a| a.buffer.channels.iter().map(|c| c.len() * 4).sum::<usize>()).sum()
+    }
+
+    #[test]
+    fn long_takes_play_from_disk_within_a_memory_bound_and_sound_as_decoded() {
+        // #1403: long PCM files at the session rate are not decoded into memory on open.
+        let dir = Scratch::new("stream-open");
+        let (tracks, frames) = (3, 96 * soundcraft_mix::STREAM_BLOCK);
+        let path = long_takes(&dir, tracks, frames);
+        let decoded = reopen(&path);
+        assert_eq!(sample_bytes(&decoded), tracks * 2 * frames * 4, "below the threshold a file is decoded");
+        let _threshold = StreamThreshold::set(1 << 20);
+        let mut disk = reopen(&path);
+        assert_eq!(sample_bytes(&disk), 0, "the pool holds no samples of a streamed file");
+        let range = Range::new(0, frames as i64 + 10_000);
+        assert_eq!(soundcraft_mix::render_range(disk.session(), range, 1_024), soundcraft_mix::render_range(decoded.session(), range, 1_024));
+        let streams: Vec<_> = disk.session().sources.iter().filter_map(|src| soundcraft_mix::streamed(disk.session().pool.get(src.id)?)).collect();
+        assert_eq!(streams.len(), tracks);
+        let cache_bound = soundcraft_mix::STREAM_CACHE_BLOCKS * soundcraft_mix::STREAM_BLOCK * 2 * 4;
+        let held: usize = streams.iter().map(|st| st.cached_bytes() + st.overview_bytes()).sum();
+        let overview: usize = streams.iter().map(|st| st.overview_bytes()).sum();
+        assert!(held <= tracks * cache_bound + overview, "{held} bytes held");
+        assert!(held * 2 < sample_bytes(&decoded), "{held} bytes held for {} decoded", sample_bytes(&decoded));
+        let health = disk.execute("session.audio_health", &json!({})).unwrap();
+        assert_eq!(health["healthy"], true, "{health}");
+        let copy = dir.0.join("Copy/Long.scraft").to_string_lossy().into_owned();
+        save_session_copy(&disk, &copy).unwrap();
+        drop(_threshold);
+        let copied = reopen(&copy);
+        assert_eq!(soundcraft_mix::render_range(copied.session(), range, 1_024), soundcraft_mix::render_range(decoded.session(), range, 1_024));
     }
 
     #[test]
