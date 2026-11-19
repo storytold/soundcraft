@@ -129,10 +129,12 @@ fn release_on_reset(queue: &mut Vec<Event>, held: &[[bool; 128]; 16], notes: Not
     }
 }
 
-/// Records the note state reached by events the plugin processed, in sample order.
-fn track_delivered_notes(held: &mut [[bool; 128]; 16], events: &[Event]) {
+/// Records note state in sample order. On error the plugin may have processed only a
+/// prefix of the events, so attacks may have sounded but releases are unconfirmed.
+fn track_delivered_notes(held: &mut [[bool; 128]; 16], events: &[Event], complete: bool) {
     for event in events {
         if let Some((channel, key, sounding)) = note_state(*event)
+            && (complete || sounding)
             && let Some(slot) = held.get_mut(usize::from(channel)).and_then(|keys| keys.get_mut(usize::from(key)))
         {
             *slot = sounding;
@@ -338,9 +340,7 @@ impl Plugin for ClapPlugin {
                 offset,
                 transport: self.transport.as_ref(),
             });
-            if r.is_ok() {
-                track_delivered_notes(&mut self.held, events);
-            }
+            track_delivered_notes(&mut self.held, events, r.is_ok());
             self.queue.drain(..k);
             self.steady = self.steady.saturating_add(i64::try_from(n).unwrap_or(0));
             match (r, self.out_main) {
@@ -545,7 +545,7 @@ mod tests {
             }
             let mut held = [[true; 128]; 16];
             release_on_reset(&mut q, &held, notes);
-            track_delivered_notes(&mut held, &q);
+            track_delivered_notes(&mut held, &q, true);
             assert_eq!(held, [[false; 128]; 16]);
             assert_eq!(q.iter().filter(|e| matches!(e, Event::Param { .. })).count(), EVENT_CAP - RELEASE_RESERVE, "{notes:?}");
             for key in 0..128u8 {
@@ -580,7 +580,7 @@ mod tests {
                 let want = release_event(notes, 0, 0, key).unwrap();
                 assert_eq!(q.iter().filter(|e| **e == want).count(), 1, "{notes:?}: key {key} is released once");
             }
-            track_delivered_notes(&mut held, &q);
+            track_delivered_notes(&mut held, &q, true);
             assert_eq!(held, [[false; 128]; 16]);
         }
     }

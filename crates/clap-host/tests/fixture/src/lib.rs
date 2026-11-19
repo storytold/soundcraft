@@ -171,9 +171,9 @@ unsafe extern "C" fn stop_processing(p: *const clap_plugin) {
 /// (Surge XT's), so the host must send the releases itself.
 unsafe extern "C" fn reset(_p: *const clap_plugin) {}
 
-fn apply(f: &mut Fx, h: &clap_event_header) {
+fn apply(f: &mut Fx, h: &clap_event_header) -> bool {
     if h.space_id != CLAP_CORE_EVENT_SPACE_ID {
-        return;
+        return true;
     }
     match h.type_ {
         CLAP_EVENT_PARAM_VALUE => {
@@ -198,12 +198,17 @@ fn apply(f: &mut Fx, h: &clap_event_header) {
         }
         CLAP_EVENT_MIDI => {
             let e = unsafe { &*(h as *const clap_event_header as *const clap_event_midi) };
+            if e.data == [0xB0, 119, 1] {
+                // Let the fixture abort after consuming a prefix of the input events.
+                return false;
+            }
             if e.data[0] & 0xF0 == 0xB0 && e.data[1] == 7 {
                 f.level = f64::from(e.data[2]) / 127.0;
             }
         }
         _ => {}
     }
+    true
 }
 
 /// Fill every output channel with `fit` when all ports have the wide layout, else -1.0.
@@ -301,7 +306,9 @@ unsafe extern "C" fn process(p: *const clap_plugin, pr: *const clap_process) -> 
                 break;
             }
             last_time = h.time;
-            apply(f, h);
+            if !apply(f, h) {
+                return CLAP_PROCESS_ERROR;
+            }
             next += 1;
         }
         for c in 0..out.channel_count as usize {

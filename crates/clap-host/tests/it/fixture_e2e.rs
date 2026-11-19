@@ -178,6 +178,34 @@ fn out_of_order_clap_notes_release_the_sounding_channel_and_key() {
 }
 
 #[test]
+fn all_notes_off_recovers_a_note_started_before_a_clap_process_error() {
+    fixture_dir();
+    let mut p = soundcraft_clap_host::create(SYNTH).unwrap();
+    p.prepare(48_000.0, 64, 2);
+    p.note_on_channel(0, 9, 60, 127);
+    p.midi(1, [0xB0, 119, 1]);
+    p.note_off_channel(2, 9, 60);
+    render_block(p.as_mut());
+    assert!(render_block(p.as_mut()).iter().all(|&sample| sample == 1.0), "fixture aborted before the release");
+    p.all_notes_off();
+    assert!(render_block(p.as_mut()).iter().all(|&sample| sample == 0.0));
+}
+
+#[test]
+fn all_notes_off_retries_a_release_unconfirmed_after_a_clap_process_error() {
+    fixture_dir();
+    let mut p = soundcraft_clap_host::create(SYNTH).unwrap();
+    p.prepare(48_000.0, 64, 2);
+    p.note_on_channel(0, 9, 60, 127);
+    assert!(render_block(p.as_mut()).iter().all(|&sample| sample == 1.0));
+    p.midi(0, [0xB0, 119, 1]);
+    p.note_off_channel(1, 9, 60);
+    render_block(p.as_mut());
+    p.all_notes_off();
+    assert!(render_block(p.as_mut()).iter().all(|&sample| sample == 0.0));
+}
+
+#[test]
 fn layouts_beyond_the_host_limits_are_rejected_not_truncated() {
     fixture_dir();
     // Control: exactly at the limits (16 ports of 64 channels) activates and gets its full layout.

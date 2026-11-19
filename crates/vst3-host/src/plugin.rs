@@ -340,16 +340,17 @@ impl Plugin for Vst3Plugin {
                 project_time: self.position,
                 transport: self.transport.as_ref(),
             });
-            if r.is_ok() {
-                for event in notes {
-                    let (channel, key, playing) = match *event {
-                        NoteEvent::On { channel, key, .. } => (channel, key, true),
-                        NoteEvent::Off { channel, key, .. } => (channel, key, false),
-                        NoteEvent::Pressure { .. } => continue,
-                    };
-                    if let Some(held) = self.held.get_mut(usize::from(channel)).and_then(|keys| keys.get_mut(usize::from(key))) {
-                        *held = playing;
-                    }
+            // The processor can return an error after consuming a prefix of the block.
+            // Remember possible attacks and leave unconfirmed releases available for reset.
+            let complete = r.is_ok();
+            for event in notes {
+                let (channel, key, sounding) = match *event {
+                    NoteEvent::On { channel, key, .. } => (channel, key, true),
+                    NoteEvent::Off { channel, key, .. } if complete => (channel, key, false),
+                    _ => continue,
+                };
+                if let Some(held) = self.held.get_mut(usize::from(channel)).and_then(|keys| keys.get_mut(usize::from(key))) {
+                    *held = sounding;
                 }
             }
             self.pending.clear();
