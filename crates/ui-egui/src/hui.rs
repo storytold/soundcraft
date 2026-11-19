@@ -1,4 +1,6 @@
-//! Eight HUI strips connected to the existing desktop transport and mixer commands.
+//! Eight MIDI surface strips connected to the existing desktop transport and mixer commands.
+mod mcu;
+
 use crate::{SoundApp, json};
 use midir::{MidiInput, MidiInputConnection, MidiOutput, MidiOutputConnection};
 use serde::{Deserialize, Serialize};
@@ -26,6 +28,38 @@ const PAN_STEP: f32 = 0.02;
 pub struct Ports {
     input: String,
     output: String,
+    #[serde(default, skip_serializing_if = "Protocol::is_hui")]
+    protocol: Protocol,
+}
+
+#[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
+enum Protocol {
+    #[default]
+    Hui,
+    Mcu,
+}
+
+impl Protocol {
+    fn is_hui(&self) -> bool {
+        *self == Self::Hui
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::Hui => "HUI",
+            Self::Mcu => "MCU",
+        }
+    }
+
+    fn status(self, online: bool) -> &'static str {
+        match (self, online) {
+            (Self::Hui, true) => "HUI connected",
+            (Self::Hui, false) => "Waiting for HUI",
+            (Self::Mcu, true) => "MCU connected",
+            (Self::Mcu, false) => "Waiting for MCU",
+        }
+    }
 }
 
 #[derive(Default)]
@@ -45,6 +79,8 @@ struct Link {
     _input: MidiInputConnection<()>,
     output: MidiOutputConnection,
     packets: Receiver<[u8; 3]>,
+    protocol: Protocol,
+    mcu_output_failed: bool,
     decoder: Decode,
     ping: Option<Instant>,
     heartbeat: Heartbeat,
@@ -87,7 +123,7 @@ impl Surface {
 
     fn take_link(&mut self, ports: &Ports, now: Instant, ctx: &egui::Context) -> Option<Link> {
         if let Some(link) = self.link.take()
-            && !link.heartbeat.expired(now)
+            && !link.needs_reopen(now)
         {
             return Some(link);
         }
@@ -246,6 +282,8 @@ impl Link {
             _input: input,
             output,
             packets,
+            protocol: ports.protocol,
+            mcu_output_failed: false,
             decoder: Decode::default(),
             ping: None,
             heartbeat: Heartbeat::new(Instant::now()),
@@ -255,13 +293,35 @@ impl Link {
     }
 
     fn send(&mut self, packet: [u8; 3]) {
+        if self.mcu_output_failed {
+            return;
+        }
         if let Err(error) = self.output.send(&packet) {
-            log::debug!("HUI MIDI output: {error}");
+            log::debug!("{} MIDI output: {error}", self.protocol.label());
+            self.mcu_output_failed = self.protocol == Protocol::Mcu;
+        }
+    }
+
+    fn needs_reopen(&self, now: Instant) -> bool {
+        match self.protocol {
+            Protocol::Hui => self.heartbeat.expired(now),
+            Protocol::Mcu => self.mcu_output_failed,
         }
     }
 
     fn online(&self) -> bool {
-        self.heartbeat.online(Instant::now())
+        match self.protocol {
+            Protocol::Hui => self.heartbeat.online(Instant::now()),
+            Protocol::Mcu => !self.mcu_output_failed,
+        }
+    }
+
+    fn decode(&mut self, packet: [u8; 3], now: Instant) -> Option<Event> {
+        match self.protocol {
+            Protocol::Hui if packet == PONG || self.heartbeat.online(now) => self.decoder.packet(packet),
+            Protocol::Hui => None,
+            Protocol::Mcu => mcu::decode(packet),
+        }
     }
 }
 
@@ -335,7 +395,8 @@ pub(crate) fn command(app: &mut SoundApp, id: &str, p: &Value) -> Result<Value, 
     if p.get("enabled").and_then(Value::as_bool) == Some(false) {
         apply(app, None)?;
     } else if let (Some(input), Some(output)) = (p.get("input").and_then(Value::as_str), p.get("output").and_then(Value::as_str)) {
-        apply(app, Some(Ports { input: input.into(), output: output.into() }))?;
+        let protocol = p.get("protocol").map(|value| serde_json::from_value(value.clone())).transpose().map_err(|error| error.to_string())?;
+        apply(app, Some(Ports { input: input.into(), output: output.into(), protocol: protocol.unwrap_or_default() }))?;
     }
     if let Some(action) = p.get("navigate").and_then(Value::as_str) {
         let direction = match action {
@@ -362,7 +423,7 @@ pub(crate) fn poll(app: &mut SoundApp, ctx: &egui::Context) {
     let now = Instant::now();
     let Some(mut link) = app.hui.take_link(ports, now, ctx) else { return };
     ctx.request_repaint_after(Duration::from_millis(16));
-    if link.ping.is_none_or(|at| now.saturating_duration_since(at) >= PING_INTERVAL) {
+    if link.protocol.is_hui() && link.ping.is_none_or(|at| now.saturating_duration_since(at) >= PING_INTERVAL) {
         link.send([0x90, 0, 0]);
         link.ping = Some(now);
     }
@@ -375,10 +436,7 @@ pub(crate) fn poll(app: &mut SoundApp, ctx: &egui::Context) {
     let mut jog_steps = 0;
     for _ in 0..512 {
         let Ok(packet) = link.packets.try_recv() else { break };
-        if packet != PONG && !link.heartbeat.online(now) {
-            continue;
-        }
-        let Some(event) = link.decoder.packet(packet) else { continue };
+        let Some(event) = link.decode(packet, now) else { continue };
         if let Event::Jog(steps) = event {
             jog_steps += i32::from(steps);
             continue;
@@ -509,8 +567,13 @@ pub(crate) fn feedback(app: &mut SoundApp) {
             if previous.is_some_and(|old| old[i][index] == lit) {
                 continue;
             }
-            link.send([0xb0, 0x0c, zone]);
-            link.send([0xb0, 0x2c, port | if lit { 0x40 } else { 0 }]);
+            match link.protocol {
+                Protocol::Hui => {
+                    link.send([0xb0, 0x0c, zone]);
+                    link.send([0xb0, 0x2c, port | if lit { 0x40 } else { 0 }]);
+                }
+                Protocol::Mcu => link.send(mcu::lamp(i, index, lit)),
+            }
         }
     }
 }
@@ -532,10 +595,16 @@ pub(crate) fn show(app: &mut SoundApp, ctx: &egui::Context) {
         egui::Grid::new("hui-peripherals").show(ui, |ui| {
             ui.label(crate::localization::text("Type"));
             craft_ui::ComboBox::from_id_salt("hui-type")
-                .selected_text(if app.hui.enabled { "HUI" } else { crate::localization::text("None") })
+                .selected_text(if app.hui.enabled { app.hui.draft.protocol.label() } else { crate::localization::text("None") })
                 .show_ui(ui, |ui| {
                     ui.selectable_value(&mut app.hui.enabled, false, crate::localization::text("None"));
-                    ui.selectable_value(&mut app.hui.enabled, true, "HUI");
+                    for protocol in [Protocol::Hui, Protocol::Mcu] {
+                        let selected = app.hui.enabled && app.hui.draft.protocol == protocol;
+                        if ui.selectable_label(selected, protocol.label()).clicked() {
+                            app.hui.enabled = true;
+                            app.hui.draft.protocol = protocol;
+                        }
+                    }
                 });
             ui.end_row();
             ui.label(crate::localization::text("Receive From"));
@@ -558,7 +627,7 @@ pub(crate) fn show(app: &mut SoundApp, ctx: &egui::Context) {
             ui.label(&app.hui.error);
         }
         if let Some(link) = &app.hui.link {
-            ui.label(crate::localization::text(if link.online() { "HUI connected" } else { "Waiting for HUI" }));
+            ui.label(crate::localization::text(link.protocol.status(link.online())));
             if link.online() {
                 let count = mixer_tracks(app).count();
                 let first = app.hui.first_track;
@@ -580,8 +649,8 @@ pub(crate) fn show(app: &mut SoundApp, ctx: &egui::Context) {
                     });
                 }
             }
-        } else if app.ui.hui.is_some() {
-            ui.label(crate::localization::text("Waiting for HUI"));
+        } else if let Some(ports) = &app.ui.hui {
+            ui.label(crate::localization::text(ports.protocol.status(false)));
         }
     });
     app.hui.show = open;
@@ -596,6 +665,18 @@ pub(crate) fn show(app: &mut SoundApp, ctx: &egui::Context) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn old_hui_preferences_keep_their_protocol_and_mcu_round_trips() {
+        let old = json!({"input":"in","output":"out"});
+        let mut ports: Ports = serde_json::from_value(old.clone()).unwrap();
+        assert_eq!(ports.protocol, Protocol::Hui);
+        assert_eq!(serde_json::to_value(&ports).unwrap(), old);
+        ports.protocol = Protocol::Mcu;
+        let saved = serde_json::to_value(&ports).unwrap();
+        assert_eq!(saved["protocol"], "mcu");
+        assert_eq!(serde_json::from_value::<Ports>(saved).unwrap().protocol, Protocol::Mcu);
+    }
 
     #[test]
     fn hui_heartbeat_expires_during_handshake_and_after_usb_loss() {

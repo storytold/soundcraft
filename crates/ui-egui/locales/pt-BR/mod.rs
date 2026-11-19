@@ -1320,11 +1320,13 @@ fn menu_translate(source: &str) -> Option<&'static str> {
         "Channel" => "Canal",
         "Tracks {first} to {last}" => "Faixas {first} a {last}",
         "HUI connected" => "HUI conectado",
+        "MCU connected" => "MCU conectado",
         "MIDI Controllers" => "Controladores MIDI",
         "Peripherals" => "Periféricos",
         "Receive From" => "Receber de",
         "Send To" => "Enviar para",
         "Waiting for HUI" => "Aguardando HUI",
+        "Waiting for MCU" => "Aguardando MCU",
         "Use Reconnect audio device in Setup › Playback Engine, or restart SoundCraft." => {
             "Use Reconectar dispositivo de áudio em Configurar › Mecanismo de reprodução, ou reinicie o SoundCraft."
         }
