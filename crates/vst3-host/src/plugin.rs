@@ -253,20 +253,43 @@ impl Vst3Plugin {
     }
 }
 
-/// Moves up to `room` waiting values into `batch` and returns how many it moved. Scans from
-/// `cursor` and wraps around; a batch that fills up leaves `cursor` at the next index to scan, so
-/// every waiting value gets a turn even while others keep being rewritten. Never grows `batch`
-/// past its capacity.
-fn take_batch(queued: &mut [Option<(f64, u64)>], ids: &[u32], batch: &mut Vec<(u32, f64, u64)>, room: usize, cursor: &mut usize) -> usize {
+/// Moves waiting values into `batch` and returns how many it moved. First the values of `shared`,
+/// the parameters with a controller point in this sub-block: they go in the queue reserved for
+/// that point, so they take no `room` and are never held back behind the scan. Then up to `room`
+/// others, scanning from `cursor` and wrapping around; a batch that fills up leaves `cursor` at
+/// the next index to scan, so every waiting value gets a turn even while others keep being
+/// rewritten. Never grows `batch` past its capacity.
+fn take_batch(
+    queued: &mut [Option<(f64, u64)>],
+    ids: &[u32],
+    batch: &mut Vec<(u32, f64, u64)>,
+    room: usize,
+    cursor: &mut usize,
+    shared: impl IntoIterator<Item = usize>,
+) -> usize {
     batch.clear();
-    let room = room.min(batch.capacity());
     let len = queued.len().min(ids.len());
-    if room == 0 || len == 0 {
+    if len == 0 {
         return 0;
+    }
+    for i in shared {
+        if batch.len() >= batch.capacity() {
+            break;
+        }
+        if let (Some(q), Some(&id)) = (queued.get_mut(i), ids.get(i))
+            && let Some((n, seq)) = q.take()
+        {
+            batch.push((id, n, seq));
+        }
+    }
+    let reserved = batch.len();
+    let room = room.min(batch.capacity() - reserved);
+    if room == 0 {
+        return reserved;
     }
     let first = if *cursor < len { *cursor } else { 0 };
     for i in (first..len).chain(0..first) {
-        if batch.len() >= room {
+        if batch.len() - reserved >= room {
             *cursor = i;
             break;
         }
@@ -455,7 +478,10 @@ impl Plugin for Vst3Plugin {
             // next sub-block.
             let room = PARAM_QUEUE_CAP.saturating_sub(self.controls.len().min(self.midi_map.len()));
             if self.queued_count > 0 {
-                self.queued_count -= take_batch(&mut self.queued, &self.ids, &mut self.batch, room, &mut self.batch_cursor);
+                // A waiting value for a parameter with a point in this sub-block shares that
+                // point's queue, so it goes out now, at the start, before the point.
+                let shared = self.controls.iter().zip(&self.control_index).filter(|(c, _)| c.0 >= offset && c.0 < end).filter_map(|(_, i)| *i);
+                self.queued_count -= take_batch(&mut self.queued, &self.ids, &mut self.batch, room, &mut self.batch_cursor, shared);
             } else {
                 self.batch.clear();
             }
@@ -708,16 +734,16 @@ mod tests {
         let mut queued: Vec<Option<(f64, u64)>> = (0..10u32).map(|i| (i % 3 != 1).then_some((f64::from(i), u64::from(i)))).collect();
         let mut batch = Vec::with_capacity(4);
         let mut cursor = 0;
-        assert_eq!(take_batch(&mut queued, &ids, &mut batch, 3, &mut cursor), 3);
+        assert_eq!(take_batch(&mut queued, &ids, &mut batch, 3, &mut cursor, []), 3);
         assert_eq!(batch, [(100, 0.0, 0), (102, 2.0, 2), (103, 3.0, 3)]);
         // The room is capped by the batch's capacity, so it never grows.
-        assert_eq!(take_batch(&mut queued, &ids, &mut batch, 99, &mut cursor), 4);
+        assert_eq!(take_batch(&mut queued, &ids, &mut batch, 99, &mut cursor, []), 4);
         assert_eq!(batch, [(105, 5.0, 5), (106, 6.0, 6), (108, 8.0, 8), (109, 9.0, 9)]);
         assert_eq!(batch.capacity(), 4);
-        assert_eq!(take_batch(&mut queued, &ids, &mut batch, 3, &mut cursor), 0);
+        assert_eq!(take_batch(&mut queued, &ids, &mut batch, 3, &mut cursor, []), 0);
         assert!(batch.is_empty() && queued.iter().all(Option::is_none));
         queued[0] = Some((1.0, 10));
-        assert_eq!(take_batch(&mut queued, &ids, &mut batch, 0, &mut cursor), 0, "no room this block");
+        assert_eq!(take_batch(&mut queued, &ids, &mut batch, 0, &mut cursor, []), 0, "no room this block");
         assert_eq!(queued[0], Some((1.0, 10)));
     }
 
@@ -736,11 +762,28 @@ mod tests {
                 seq += 1;
                 *q = Some((0.5, seq));
             }
-            take_batch(&mut queued, &ids, &mut batch, 4, &mut cursor);
+            take_batch(&mut queued, &ids, &mut batch, 4, &mut cursor, []);
             sent |= batch.iter().any(|b| b.0 == 5);
         }
         assert!(sent, "parameter 5 starved behind 0..4");
         assert!(queued[5].is_none());
+    }
+
+    /// A waiting value for a parameter with a controller point in this sub-block goes out in that
+    /// point's queue, however far the scan is from it and even when no other room is left.
+    #[test]
+    fn take_batch_sends_a_waiting_value_next_to_its_controller_point() {
+        let ids: Vec<u32> = (0..6).collect();
+        let mut queued: Vec<Option<(f64, u64)>> = (0..6u32).map(|i| Some((f64::from(i), u64::from(i)))).collect();
+        // One queue of four is reserved for the point on parameter 2; the scan resumes at 4.
+        let mut batch = Vec::with_capacity(4);
+        let mut cursor = 4;
+        assert_eq!(take_batch(&mut queued, &ids, &mut batch, 3, &mut cursor, [2, 2]), 4);
+        assert_eq!(batch, [(2, 2.0, 2), (4, 4.0, 4), (5, 5.0, 5), (0, 0.0, 0)]);
+        assert_eq!(cursor, 1, "the scan carries on where it stopped");
+        assert_eq!(take_batch(&mut queued, &ids, &mut batch, 0, &mut cursor, [3]), 1, "no other room");
+        assert_eq!(batch, [(3, 3.0, 3)]);
+        assert_eq!(queued.iter().flatten().count(), 1, "parameter 1 waits its turn");
     }
 
     /// A queue full of releases still has room to release every held key after a reset.

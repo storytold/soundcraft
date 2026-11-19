@@ -284,13 +284,15 @@ fn an_older_controller_point_does_not_retire_a_value_a_later_one_supersedes() {
     let id = id_of("Fixture Many Params");
     let mut p = soundcraft_vst3_host::create(&id).unwrap();
     p.prepare(48_000.0, 64, 2);
-    // Right after prepare the resend fills the first sub-block, so parameter 1499 waits.
+    // Right after prepare the resend fills the first sub-block, but parameter 1499 has a
+    // controller point there, so its waiting value goes out in that point's queue. At sample 0
+    // the host value is the later call and wins.
     p.midi(0, [0xB0, 5, 32]);
     assert!(p.set_param("1499", 1.0));
     p.midi(164, [0xB0, 5, 64]);
     let mut io = vec![vec![0.0f32; 192], vec![0.0f32; 192]];
     p.process(&mut io, 192);
-    assert!((io[0][63] - 32.0 / 127.0).abs() < 1e-6, "the first controller point: {}", io[0][63]);
+    assert!((io[0][63] - 1.0).abs() < 1e-6, "the host's value, the later call at sample 0: {}", io[0][63]);
     assert!((io[0][127] - 1.0).abs() < 1e-6, "the host's value was retired by an older point: {}", io[0][127]);
     assert!((io[0][191] - 64.0 / 127.0).abs() < 1e-6, "the later controller did not win: {}", io[0][191]);
 }
