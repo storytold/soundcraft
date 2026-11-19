@@ -59,6 +59,7 @@ pub enum Unit {
     Seconds,
     Toggle,
     Choice,
+    Integer,
 }
 
 /// How a control maps its 0..1 travel onto the parameter range.
@@ -78,18 +79,30 @@ pub struct ParamInfo {
     pub default: f32,
     pub unit: Unit,
     pub taper: Taper,
+    /// Number of intervals in a hosted parameter's normalized grid. Toggle and Choice
+    /// already describe their grid through their integer ranges.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub steps: Option<u32>,
     /// Labels for `Unit::Choice` parameters (value is the index).
     pub choices: &'static [&'static str],
 }
 
 impl ParamInfo {
+    /// Number of intervals between the minimum and maximum for a discrete control.
+    pub fn step_count(&self) -> Option<u32> {
+        match self.unit {
+            Unit::Toggle | Unit::Choice | Unit::Integer => Some((self.max - self.min) as u32),
+            _ => self.steps,
+        }
+    }
+
     /// Clamps any value (including NaN/inf) into this parameter's legal range.
     /// NaN becomes the default; toggles and choices round to whole numbers.
     pub fn clamp(&self, value: f32) -> f32 {
         let v = if value.is_nan() { self.default } else { value };
         let v = v.clamp(self.min, self.max);
         match self.unit {
-            Unit::Toggle | Unit::Choice => v.round().clamp(self.min, self.max),
+            Unit::Toggle | Unit::Choice | Unit::Integer => v.round().clamp(self.min, self.max),
             _ => v,
         }
     }
@@ -110,11 +123,29 @@ impl ParamInfo {
     /// Maps 0..1 control travel back to a value honoring the taper.
     pub fn from_normalized(&self, t: f32) -> f32 {
         let t = if t.is_nan() { 0.0 } else { t.clamp(0.0, 1.0) };
-        let v = match self.taper {
+        self.clamp(self.value_at(self.snap_normalized(f64::from(t)) as f32))
+    }
+
+    /// VST3 reports its grid in normalized units. Snap there so a native editor's
+    /// plain value can be kept without imposing a guessed linear grid on it.
+    pub fn snap_normalized(&self, position: f64) -> f64 {
+        match self.steps {
+            Some(count) if count > 0 => (position * f64::from(count)).round() / f64::from(count),
+            _ => position,
+        }
+    }
+
+    fn value_at(&self, t: f32) -> f32 {
+        if t == 0.0 {
+            return self.min;
+        }
+        if t == 1.0 {
+            return self.max;
+        }
+        match self.taper {
             Taper::Log if self.min > 0.0 => self.min * (self.max / self.min).powf(t),
             _ => self.min + (self.max - self.min) * t,
-        };
-        self.clamp(v)
+        }
     }
 
     /// Human-readable label for a value (choice label, On/Off, or number with unit).
@@ -144,6 +175,7 @@ impl ParamInfo {
             Unit::Cents => format!("{v:.0} ct"),
             Unit::Seconds => format!("{v:.2} s"),
             Unit::None => format!("{v:.2}"),
+            Unit::Integer => format!("{v:.0}"),
         }
     }
 }

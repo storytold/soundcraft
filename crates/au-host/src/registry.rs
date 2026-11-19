@@ -132,6 +132,7 @@ pub(crate) fn param_info(p: &RawParam) -> Option<ParamInfo> {
         default,
         unit: Unit::None,
         taper: Taper::Linear,
+        steps: None,
         choices: &[],
     };
     if p.unit == U_BOOLEAN && p.min == 0.0 && p.max == 1.0 {

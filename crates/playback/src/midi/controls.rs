@@ -8,22 +8,27 @@ use std::collections::{BTreeMap, BTreeSet};
 #[derive(Clone, Copy)]
 pub struct ControlChange {
     pub event: LiveMidi,
-    steps: i32,
-    range: (i32, i32),
+    steps: i64,
+    range: (i64, i64),
     pub presses: u32,
 }
 
 impl ControlChange {
     /// Preserve the effect of hitting either endpoint and then reversing between UI frames.
     pub fn relative_value(&self, position: u8) -> u8 {
-        (i32::from(position) + self.steps).clamp(self.range.0, self.range.1) as u8
+        self.relative_position(f64::from(position)) as u8
+    }
+
+    /// Moves a fractional starting position over this source's configured tick range.
+    pub fn relative_position(&self, position: f64) -> f64 {
+        (position + self.steps as f64).clamp(self.range.0 as f64, self.range.1 as f64)
     }
 }
 
 #[derive(Default)]
 pub(super) struct ControlTap {
-    sources: BTreeMap<String, BTreeSet<(u8, u8)>>,
-    learning: bool,
+    sources: BTreeMap<String, BTreeMap<(u8, u8), u32>>,
+    learn_span: Option<u32>,
     candidate: Option<(u8, u8, u8)>,
     first: Option<ControlChange>,
     pending: Vec<ControlChange>,
@@ -47,11 +52,9 @@ impl ControlTap {
     pub(super) fn capture(&mut self, device: &str, event: LiveMidi) -> Option<bool> {
         let channel = (event.status & 15) + 1;
         let source = (event.port, channel, event.data1);
-        if !self.sources.get(device).is_some_and(|ccs| ccs.contains(&(channel, event.data1)))
-            && (!self.learning || *self.candidate.get_or_insert(source) != source)
-        {
-            return None;
-        }
+        let assigned = self.sources.get(device).and_then(|ccs| ccs.get(&(channel, event.data1))).copied();
+        let span = assigned.or_else(|| self.learn_span.filter(|_| *self.candidate.get_or_insert(source) == source))?;
+        let span = i64::from(span);
         let empty = self.first.is_none() && self.pending.is_empty();
         let down = event.data2 >= 64;
         let pressed = if down {
@@ -60,9 +63,10 @@ impl ControlTap {
             self.held.remove(&source);
             false
         };
-        let delta = i32::from(event.data2) - 64;
-        let mut change = ControlChange { event, steps: delta, range: (delta.max(0), (127 + delta).min(127)), presses: u32::from(pressed) };
-        if self.learning && empty {
+        let delta = i64::from(event.data2) - 64;
+        let mut change =
+            ControlChange { event, steps: delta, range: (delta.clamp(0, span), (span + delta).clamp(0, span)), presses: u32::from(pressed) };
+        if self.learn_span.is_some() && empty {
             self.first = Some(change);
         } else {
             // One latest move per source, ordered by its last movement. The first learn
@@ -71,8 +75,8 @@ impl ControlTap {
                 self.pending.iter().position(|c| (c.event.port, c.event.status, c.event.data1) == (event.port, event.status, event.data1))
             {
                 let old = self.pending.remove(i);
-                change.range = ((old.range.0 + delta).clamp(0, 127), (old.range.1 + delta).clamp(0, 127));
-                change.steps = (old.steps + delta).clamp(-127, 127);
+                change.range = ((old.range.0 + delta).clamp(0, span), (old.range.1 + delta).clamp(0, span));
+                change.steps = (old.steps + delta).clamp(-span, span);
                 change.presses = old.presses.saturating_add(change.presses);
             }
             self.pending.push(change);
@@ -85,23 +89,29 @@ impl MidiFeed {
     /// Publish all valid project assignments by device name. A newly arriving port uses
     /// this table on its first message, without waiting for the next UI rescan.
     pub fn set_control_sources(&self, sources: impl IntoIterator<Item = (String, u8, u8)>, learning: bool) {
-        let mut table = BTreeMap::<_, BTreeSet<_>>::new();
-        for (device, channel, cc) in sources {
-            table.entry(device).or_default().insert((channel, cc));
+        self.set_control_spans(sources.into_iter().map(|(device, ch, cc)| (device, ch, cc, 127)), learning.then_some(127));
+    }
+
+    /// Set the number of relative detents from one endpoint to the other, so a stalled
+    /// UI preserves endpoint reversals for discrete parameters as well as 7-bit controls.
+    pub fn set_control_spans(&self, sources: impl IntoIterator<Item = (String, u8, u8, u32)>, learn_span: Option<u32>) {
+        let mut table = BTreeMap::<_, BTreeMap<_, _>>::new();
+        for (device, channel, cc, span) in sources {
+            table.entry(device).or_default().insert((channel, cc), span);
         }
         let mut tap = self.controls.lock().unwrap_or_else(PoisonError::into_inner);
         // Reserve on the UI thread for each mapped source and one learn candidate.
-        let capacity = table.values().map(BTreeSet::len).sum::<usize>() + 1;
+        let capacity = table.values().map(BTreeMap::len).sum::<usize>() + 1;
         let extra = capacity.saturating_sub(tap.pending.len());
         tap.pending.reserve(extra);
         let candidate = tap.candidate;
         tap.held.retain(|&(port, ch, cc)| {
-            (learning && candidate == Some((port, ch, cc)))
-                || self.ports().name(port).is_some_and(|name| table.get(name).is_some_and(|keys| keys.contains(&(ch, cc))))
+            (learn_span.is_some() && candidate == Some((port, ch, cc)))
+                || self.ports().name(port).is_some_and(|name| table.get(name).is_some_and(|keys| keys.contains_key(&(ch, cc))))
         });
         tap.sources = table;
-        tap.learning = learning;
-        if !learning {
+        tap.learn_span = learn_span;
+        if learn_span.is_none() {
             tap.candidate = None;
         }
     }
@@ -113,7 +123,7 @@ impl MidiFeed {
         tap.first = None;
         tap.pending.clear();
         tap.candidate = None;
-        tap.learning = false;
+        tap.learn_span = None;
     }
 
     pub fn set_control_wake(&self, wake: impl Fn() + Send + Sync + 'static) {
@@ -135,6 +145,20 @@ mod tests {
         Arc,
         atomic::{AtomicUsize, Ordering},
     };
+
+    #[test]
+    fn relative_control_uses_the_parameter_span_even_above_127_ticks() {
+        let feed = MidiFeed::default();
+        let port = feed.ports().assign("Keys");
+        feed.set_control_spans([("Keys".into(), 1, 22, 512)], None);
+        for _ in 0..4 {
+            feed.receive(port, &[0xb0, 22, 127]);
+        }
+        feed.receive(port, &[0xb0, 22, 63]);
+        let burst = feed.control_changes().next().unwrap();
+        assert_eq!(burst.relative_position(0.0), 251.0);
+        assert_eq!(burst.relative_position(400.0), 511.0);
+    }
 
     #[test]
     fn midi_learn_relative_turn_keeps_endpoint_reversal_and_unplug_releases_buttons() {

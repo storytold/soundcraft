@@ -142,6 +142,7 @@ fn param_info(inst: &Instance, p: &RawParam) -> ParamInfo {
         default: 0.0,
         unit: Unit::None,
         taper: Taper::Linear,
+        steps: (p.step_count > 0).then_some(p.step_count as u32),
         choices: &[],
     };
     if p.step_count == 1 {

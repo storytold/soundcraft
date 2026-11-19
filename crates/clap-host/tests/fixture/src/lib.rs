@@ -316,7 +316,7 @@ unsafe extern "C" fn process(p: *const clap_plugin, pr: *const clap_process) -> 
 // ---- extensions ----
 
 unsafe extern "C" fn params_count(p: *const clap_plugin) -> u32 {
-    if unsafe { fx(p) }.synth { 1 } else { 3 }
+    if unsafe { fx(p) }.synth { 1 } else { 4 }
 }
 
 fn write_name(dst: &mut [c_char], s: &CStr) {
@@ -331,6 +331,7 @@ unsafe extern "C" fn params_get_info(_p: *const clap_plugin, index: u32, info: *
         0 => (7, c"Gain", CLAP_PARAM_IS_AUTOMATABLE, 0.0, 2.0, 1.0),
         1 => (3, c"Mode", CLAP_PARAM_IS_STEPPED | CLAP_PARAM_IS_ENUM, 0.0, 2.0, 0.0),
         2 => (9, c"Secret", CLAP_PARAM_IS_HIDDEN, 0.0, 1.0, 0.0),
+        3 => (15, c"Transpose", CLAP_PARAM_IS_STEPPED, -12.0, 12.0, 0.0),
         _ => return false,
     };
     info.id = id;

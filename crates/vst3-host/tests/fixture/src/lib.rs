@@ -308,7 +308,7 @@ impl IConnectionPointTrait for GainController {
     }
 }
 
-const GAIN_PARAMS: [(u32, &str, &str, i32, f64, i32); 7] = [
+const GAIN_PARAMS: [(u32, &str, &str, i32, f64, i32); 8] = [
     (7, "Gain", "dB", 0, 0.5, ParameterInfo_::ParameterFlags_::kCanAutomate),
     (9, "Secret", "", 0, 0.0, ParameterInfo_::ParameterFlags_::kIsHidden),
     (3, "Mode", "", 2, 0.0, ParameterInfo_::ParameterFlags_::kIsList),
@@ -319,6 +319,7 @@ const GAIN_PARAMS: [(u32, &str, &str, i32, f64, i32); 7] = [
     (13, "Level", "dB", 0, 0.375, ParameterInfo_::ParameterFlags_::kCanAutomate),
     // Identity too, but its text already carries the units (0..12 dB).
     (14, "Drive", "dB", 0, 0.0, ParameterInfo_::ParameterFlags_::kCanAutomate),
+    (15, "Delay", "ms", 512, 0.5, ParameterInfo_::ParameterFlags_::kCanAutomate),
 ];
 
 impl IEditControllerTrait for GainController {
@@ -381,6 +382,7 @@ impl IEditControllerTrait for GainController {
             7 => 2.0 * n,
             3 => (n * 2.0).round(),
             12 => 20.0 * 1000f64.powf(n),
+            15 => 8.0 + n * 256.0,
             _ => n,
         }
     }
@@ -389,6 +391,7 @@ impl IEditControllerTrait for GainController {
             7 => v / 2.0,
             3 => v / 2.0,
             12 => (v / 20.0).ln() / 1000f64.ln(),
+            15 => (v - 8.0) / 256.0,
             _ => v,
         }
     }

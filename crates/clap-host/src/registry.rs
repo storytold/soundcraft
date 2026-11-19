@@ -125,6 +125,8 @@ fn param_info(inst: &Instance, p: &RawParam) -> ParamInfo {
             (0..=p.max as u32).map(|i| leak(inst.value_text(p.id, f64::from(i)).unwrap_or_else(|| i.to_string()))).collect();
         unit = Unit::Choice;
         choices = Box::leak(labels.into_boxed_slice());
+    } else if stepped {
+        unit = Unit::Integer;
     }
     let name = match (p.module.is_empty(), p.name.is_empty()) {
         (_, true) => format!("Param {}", p.id),
@@ -139,6 +141,7 @@ fn param_info(inst: &Instance, p: &RawParam) -> ParamInfo {
         default: p.default as f32,
         unit,
         taper: Taper::Linear,
+        steps: None,
         choices,
     }
 }

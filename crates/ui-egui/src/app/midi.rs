@@ -132,7 +132,7 @@ impl SoundApp {
         match &mut self.midi_inputs {
             None => {
                 let feed = std::sync::Arc::new(soundcraft_playback::midi::MidiFeed::default());
-                feed.set_control_sources(self.midi_sources(), self.midi_learn_target.is_some());
+                self.configure_control_sources(&feed);
                 let m = MidiInputs::open_with_feed(self.ui.midi_inputs_off.clone(), feed);
                 p.set_midi(std::sync::Arc::clone(m.feed()));
                 self.midi_inputs = Some(m);

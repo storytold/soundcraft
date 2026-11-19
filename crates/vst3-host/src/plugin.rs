@@ -140,7 +140,7 @@ impl Vst3Plugin {
             Mapping::Plain => self.inst.to_normalized(id, f64::from(v)).unwrap_or(linear),
             Mapping::Linear => linear,
         };
-        n.is_finite().then(|| n.clamp(0.0, 1.0))
+        n.is_finite().then(|| pi.snap_normalized(n.clamp(0.0, 1.0)))
     }
 
     /// The editor's size in pixels without opening it (creates and releases a view). For
@@ -501,7 +501,7 @@ impl Vst3Editor {
             Mapping::Plain => self.link.to_normalized(id, f64::from(v)).unwrap_or(linear),
             Mapping::Linear => linear,
         };
-        n.is_finite().then(|| n.clamp(0.0, 1.0))
+        n.is_finite().then(|| pi.snap_normalized(n.clamp(0.0, 1.0)))
     }
 }
 

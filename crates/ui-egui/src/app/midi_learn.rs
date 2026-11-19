@@ -18,19 +18,32 @@ impl SoundApp {
         if self.midi_learn_target.as_ref().is_some_and(|t| !t.available(self.engine.session())) {
             self.midi_learn_target = None;
             self.midi_route_revision = None;
-            self.ui.status = text("The mixer control is unavailable").to_owned();
+            self.ui.status = text("This control is unavailable").to_owned();
         }
         if self.midi_route_revision == Some(self.engine.revision) {
             return;
         }
         if let Some(inputs) = &self.midi_inputs {
-            inputs.feed().set_control_sources(self.midi_sources(), self.midi_learn_target.is_some());
+            self.configure_control_sources(inputs.feed());
             self.midi_route_revision = Some(self.engine.revision);
         }
     }
 
-    pub(super) fn midi_sources(&self) -> impl Iterator<Item = (String, u8, u8)> + '_ {
-        midi_learn::bindings(self.engine.session()).map(|b| (b.source.device, b.source.channel, b.source.cc))
+    pub(super) fn configure_control_sources(&self, feed: &soundcraft_playback::midi::MidiFeed) {
+        let tick_span = |target: &Target, range: Option<[f32; 2]>| {
+            if let Parameter::Plugin { plugin, id, .. } = &target.parameter
+                && let Some(desc) = crate::mix_window::plugin_info(plugin).and_then(|p| p.param(id))
+                && let Some((_, [lo, hi])) = discrete_endpoints(desc, range.unwrap_or([0.0, 1.0]))
+            {
+                return lo.abs_diff(hi);
+            }
+            127
+        };
+        let sources = midi_learn::bindings(self.engine.session()).map(|b| {
+            let span = if b.mode == ControlMode::Relative64 { tick_span(&b.target, b.range) } else { 127 };
+            (b.source.device, b.source.channel, b.source.cc, span)
+        });
+        feed.set_control_spans(sources, self.midi_learn_target.as_ref().map(|target| tick_span(target, None)));
     }
 
     pub(super) fn reset_midi_learn(&mut self) {
@@ -46,7 +59,7 @@ impl SoundApp {
 
     fn start_midi_learn(&mut self, target: Target) -> Result<(), String> {
         if !target.available(self.engine.session()) {
-            return Err(text("The mixer control is unavailable").to_owned());
+            return Err(text("This control is unavailable").to_owned());
         }
         self.reset_midi_learn();
         self.midi_learn_mode =
@@ -169,7 +182,8 @@ impl SoundApp {
             let Some(pi) = crate::mix_window::plugin_info(plugin).and_then(|info| info.param(id)) else { return };
             let current = pi.to_normalized(insert.params.get(id).copied().unwrap_or(pi.default));
             let [low, high] = binding.range.unwrap_or([0.0, 1.0]);
-            ui.label(format!("{} – {}", pi.format(pi.from_normalized(low)), pi.format(pi.from_normalized(high))));
+            let endpoints = format!("{} – {}", pi.format(pi.from_normalized(low)), pi.format(pi.from_normalized(high)));
+            ui.label(if low > high { format!("{endpoints} {}", text("(inverted)")) } else { endpoints });
             for (label, range) in [("Set Min", [current, high]), ("Set Max", [low, current]), ("Invert Range", [high, low])] {
                 if ui.button(text(label)).clicked() {
                     let mut edited = binding.clone();
@@ -240,6 +254,29 @@ impl SoundApp {
     }
 }
 
+fn discrete_endpoints(desc: &soundcraft_dsp::ParamInfo, range: [f32; 2]) -> Option<(f64, [u32; 2])> {
+    let steps = f64::from(desc.step_count()?);
+    Some((steps, range.map(|n| (f64::from(n) * steps).round() as u32)))
+}
+
+fn relative_plugin_value(desc: &soundcraft_dsp::ParamInfo, current: f32, range: [f32; 2], change: soundcraft_playback::midi::ControlChange) -> f32 {
+    let start = f64::from(desc.to_normalized(current));
+    let (first, last, width) = match discrete_endpoints(desc, range) {
+        Some((0.0, _)) => return desc.min,
+        Some((count, [lo, hi])) => (f64::from(lo) / count, f64::from(hi) / count, f64::from(lo.abs_diff(hi))),
+        None => (f64::from(range[0]), f64::from(range[1]), 127.0),
+    };
+    if first == last {
+        return desc.from_normalized(first as f32);
+    }
+    let tick = ((start - first) / (last - first)).clamp(0.0, 1.0) * width;
+    let next = change.relative_position(tick);
+    if next == tick && (first.min(last)..=first.max(last)).contains(&start) {
+        return current;
+    }
+    desc.from_normalized((first + (last - first) * next / width) as f32)
+}
+
 fn mixer_move(
     session: &soundcraft_model::Session,
     binding: &Binding,
@@ -259,13 +296,15 @@ fn mixer_move(
             None => session.track(target.track)?.instrument.as_ref()?,
         };
         let [lo, hi] = binding.range.unwrap_or([0.0, 1.0]);
-        let position = if binding.mode == ControlMode::Relative64 {
-            let start = descriptor.to_normalized(insert.params.get(id).copied().unwrap_or(descriptor.default));
-            if lo == hi { 0 } else { change.relative_value((((start - lo) / (hi - lo)).clamp(0.0, 1.0) * 127.0).round() as u8) }
+        let current = insert.params.get(id).copied().unwrap_or(descriptor.default);
+        let value = if binding.mode == ControlMode::Relative64 {
+            relative_plugin_value(descriptor, current, [lo, hi], change)
         } else {
-            change.event.data2
+            descriptor.from_normalized(lo + (hi - lo) * f32::from(change.event.data2) / 127.0)
         };
-        let value = descriptor.from_normalized(lo + (hi - lo) * f32::from(position) / 127.0);
+        if value == current {
+            return None;
+        }
         return Some(match slot {
             Some(slot) => ("mix.insert_param", json!({"track":track,"slot":slot,"param":id,"value":value})),
             None => ("mix.instrument_param", json!({"track":track,"param":id,"value":value})),
@@ -333,6 +372,49 @@ mod tests {
         app.midi_inputs = Some(inputs);
         app.run("midi.learn.bind", json!({"target":{"track":id,"parameter":"volume"},"source":{"device":"Keys","channel":1,"cc":71}})).unwrap();
         (app, feed, id, port)
+    }
+
+    #[test]
+    fn midi_learn_plugin_relative_switch_choices_and_continuous_precision() {
+        let (mut app, feed, track, port) = controller();
+        app.run("mix.insert", json!({"track":track,"slot":0,"plugin":"auto_pan"})).unwrap();
+        for (cc, id, range) in [(72, "link_tempo", [0.0, 1.0]), (73, "waveform", [0.5, 0.0]), (74, "width", [0.0, 1.0])] {
+            app.run(
+                "midi.learn.bind",
+                json!({"target":{"track":track,"parameter":{"plugin":{"slot":0,"plugin":"auto_pan","id":id}}},
+                    "source":{"device":"Keys","channel":1,"cc":cc},"range":range,"mode":"relative_64"}),
+            )
+            .unwrap();
+        }
+        app.run("mix.insert_param", json!({"track":track,"slot":0,"param":"width","value":42.1})).unwrap();
+        app.sync_midi_routes();
+        let turn = |app: &mut SoundApp, cc, values: &[u8], param: &str| {
+            for &value in values {
+                feed.receive(port, &[0xb0, cc, value]);
+            }
+            assert!(app.service_midi_learn());
+            app.engine.session().track(track).unwrap().mixer.inserts[0].as_ref().unwrap().params[param]
+        };
+        assert_eq!(turn(&mut app, 72, &[65], "link_tempo"), 1.0);
+        assert_eq!(turn(&mut app, 72, &[63], "link_tempo"), 0.0);
+        for expected in [1.0, 2.0, 3.0] {
+            assert_eq!(turn(&mut app, 73, &[63], "waveform"), expected);
+        }
+        // Hit both ends of the inverted subrange before the UI drains the batch.
+        assert_eq!(turn(&mut app, 73, &[70, 61], "waveform"), 3.0);
+        let moved = turn(&mut app, 74, &[65], "width");
+        assert!((moved - (42.1 + 100.0 / 127.0)).abs() < 0.0001, "{moved}");
+    }
+
+    #[test]
+    fn midi_learn_manual_assignment_conflict_is_visible_and_keeps_previous_binding() {
+        let (mut app, _, track, _) = controller();
+        let conflict = json!({"source":{"device":"Keys","channel":1,"cc":71},"target":{"track":track,"parameter":{"pan":0}}});
+        let _ = app.run("midi.learn.bind", conflict);
+        assert!(app.ui.status.contains("already assigned"), "{}", app.ui.status);
+        let assigned: Vec<_> = midi_learn::bindings(app.engine.session()).collect();
+        assert_eq!(assigned.len(), 1);
+        assert_eq!(assigned[0].target.parameter, Parameter::Volume);
     }
 
     #[test]

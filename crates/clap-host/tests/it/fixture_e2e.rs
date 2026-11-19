@@ -33,12 +33,17 @@ fn info_exposes_visible_params_with_names() {
     assert_eq!(info.id, GAIN);
     assert_eq!(info.short_name, "Fixture ");
     let ids: Vec<&str> = info.params.iter().map(|p| p.id).collect();
-    assert_eq!(ids, vec!["7", "3"], "hidden param 9 is skipped");
+    assert_eq!(ids, vec!["7", "3", "15"], "hidden param 9 is skipped");
     let gain = info.param("7").unwrap();
     assert_eq!((gain.name, gain.min, gain.max, gain.default), ("Gain", 0.0, 2.0, 1.0));
     let mode = info.param("3").unwrap();
     assert_eq!(mode.unit, Unit::Choice);
     assert_eq!(mode.choices, &["A", "B", "C"]);
+    let transpose = info.param("15").unwrap();
+    assert_eq!(transpose.from_normalized(126.0 / 127.0), 12.0);
+    for cc in 0..=127 {
+        assert_eq!(transpose.from_normalized(cc as f32 / 127.0).fract(), 0.0);
+    }
     // Cached: the same leaked info every time.
     assert!(std::ptr::eq(info, soundcraft_clap_host::plugin_info(GAIN).unwrap()));
 }
