@@ -126,6 +126,55 @@ fn mtc_quarters_use_the_mixer_delay_and_report_limited_negative_advances() {
     }
 }
 
+#[test]
+fn mtc_rate_and_start_change_at_the_first_rendered_block_of_the_new_generation() {
+    use soundcraft_time::{FrameRate, SampleRate};
+    let base = Instant::now();
+    let mut first = Session::new("old", SampleRate::HZ_48000);
+    first.timecode_start = 0;
+    first.frame_rate = FrameRate::Fps30;
+    let first = Arc::new(first);
+    let mut edited = (*first).clone();
+    edited.timecode_start = 48000 * 3600;
+    edited.frame_rate = FrameRate::Fps25;
+    let edited = Arc::new(edited);
+    let view = View::default();
+    view.lock().unwrap().register(SessionRevision { generation: 1, doc: first, remap: true }, true);
+    let mut routes = BTreeMap::new();
+    set_route(&mut routes, 1, "MTC".into(), Route { map: None, offset: 0, compensate: false, encoder: Box::<crate::mtc::Encoder>::default() });
+    let cable = routes.get_mut("MTC").unwrap();
+    let packets = Arc::new(Mutex::new(Vec::new()));
+    cable.link = Some(Capture(packets.clone()));
+    let stats = Stats::default();
+    for ms in 0..220u64 {
+        let now = base + Duration::from_millis(ms);
+        if ms == 50 {
+            view.lock().unwrap().register(SessionRevision { generation: 2, doc: edited.clone(), remap: true }, true);
+        }
+        if ms % 10 == 0 {
+            view.lock().unwrap().push(Presentation {
+                generation: if ms >= 150 { 2 } else { 1 },
+                sample_rate: SampleRate::HZ_48000,
+                system_delay_samples: 0,
+                pass: 1,
+                origin: 0,
+                playing: true,
+                sample: ms as f64 * 48.,
+                limit: ms as f64 * 48. + 480.,
+                heard_at: now,
+                lead: Duration::ZERO,
+                samples_per_second: 48000.,
+                looped: None,
+                end: None,
+            });
+        }
+        cable.poll("MTC", now, &edited, &view, &stats, &mut Vec::new());
+    }
+    let locates: Vec<_> =
+        packets.lock().unwrap().iter().filter(|(_, _, b)| b[0] == 0xf0).map(|(at, _, b)| (at.duration_since(base).as_millis(), b[5])).collect();
+    assert_eq!(locates, vec![(0, 0x60), (150, 0x21)]);
+}
+
 /// Route the real encoder through the worker's SyncPort boundary into a second
 /// transport. Each device queues 30 ms of audio after its callback. Compare the
 /// sound heard at the same instant rather than either device's render cursor.

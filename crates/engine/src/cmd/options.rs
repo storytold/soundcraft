@@ -240,6 +240,29 @@ mod sync_session_tests {
     }
 
     #[test]
+    fn signed_one_hour_uses_the_existing_sample_limit_at_each_mtc_rate() {
+        let mut e = Engine::default();
+        for (rate, allowed) in [
+            (FrameRate::Fps24, true),
+            (FrameRate::Fps25, true),
+            (FrameRate::Fps30, true),
+            (FrameRate::Fps29_97Drop, true),
+            (FrameRate::Fps23_976, false),
+            (FrameRate::Fps29_97, false),
+        ] {
+            e.session_mut().frame_rate = rate;
+            for sign in ["+", "-"] {
+                let label = format!("{sign}01:00:00{}00", if rate.is_drop() { ';' } else { ':' });
+                let result = e.execute("setup.external_timecode_offset", &json!({"timecode":label}));
+                assert_eq!(result.is_ok(), allowed, "{rate:?}, {label}");
+                if let Ok(v) = result {
+                    assert_eq!(v["timecode"], label);
+                }
+            }
+        }
+    }
+
+    #[test]
     fn freewheel_mode_accepts_legacy_keys_and_remembers_frame_count() {
         let mut e = Engine::default();
         let state = e.execute("setup.session", &json!({"freewheel":"none","freewheel_frames":19})).unwrap();
@@ -250,6 +273,25 @@ mod sync_session_tests {
         assert_eq!(changed["freewheel"], "frames");
         assert_eq!(changed["freewheel_frames"], 19);
         assert!(e.execute("setup.session", &json!({"freewheel":"other"})).is_err());
+    }
+
+    #[test]
+    fn old_freewheel_sessions_restore_default_frames_saved_frames_or_jam() {
+        for (jam, frames, expected_mode, expected_frames) in
+            [(false, None, "frames", 8), (false, Some(17), "frames", 17), (true, Some(21), "jam_sync", 21)]
+        {
+            let mut old = Engine::default().session().clone();
+            if jam {
+                old.edit.flags.insert("midi.mtc.jam_sync".into());
+            }
+            if let Some(n) = frames {
+                old.edit.values.insert("midi.mtc.freewheel_frames".into(), n as f64);
+            }
+            let engine = Engine::new(old);
+            assert_eq!(engine.mtc_freewheel_mode(), expected_mode);
+            assert_eq!(engine.mtc_freewheel_frames(), expected_frames);
+            assert!(!engine.session().edit.flags.contains("midi.mtc.jam_sync"));
+        }
     }
 
     #[test]

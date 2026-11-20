@@ -87,12 +87,13 @@ impl Spot {
     }
 
     pub(super) fn timecode_error(&self, s: &Session) -> Option<String> {
-        if self.format != TimeFormat::Timecode || self.start >= 0 {
+        if self.format != TimeFormat::Timecode {
             return None;
         }
+        let position = (0..3).filter(|&field| self.editable(field)).map(|field| self.value(field)).find(|&value| value < 0)?;
         Some(crate::localized_format!(
             "{value} is before the session start ({start})",
-            value = s.format_position(self.start, self.format),
+            value = s.format_position(position, self.format),
             start = s.format_position(0, self.format)
         ))
     }
@@ -206,6 +207,9 @@ mod timecode_tests {
         s.edit.main_counter = TimeFormat::Timecode;
         let clip = s.tracks.iter().filter_map(|t| t.playlist()).flat_map(|p| &p.clips).next().unwrap().id;
         let old = s.find_clip(clip).unwrap().1.start;
+        let mut trim = Spot::trim(s, clip, false, old + 1).unwrap();
+        trim.set(2, s.parse_position("00:59:59:00", TimeFormat::Timecode).unwrap());
+        assert!(trim.timecode_error(s).unwrap().contains("01:00:00:00"));
         let mut d = Spot::clips(s, vec![clip], None, 0).unwrap();
         d.set(0, s.parse_position("00:59:59:00", TimeFormat::Timecode).unwrap());
         assert!(d.timecode_error(s).unwrap().contains("01:00:00:00"));

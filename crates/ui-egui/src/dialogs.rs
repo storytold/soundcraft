@@ -28,6 +28,7 @@ pub mod new_tracks;
 pub mod ops_windows;
 pub(super) mod recent;
 pub mod recovery;
+mod session_setup;
 pub mod spot;
 
 #[derive(Debug, Clone, Copy)]
@@ -98,7 +99,7 @@ pub enum Dialog {
     Group { id: Option<GroupId>, name: String, edit: bool, mix: bool, members: Vec<(u64, String, bool)> },
     Synchronization,
     ExternalOffset { value: String },
-    Session { frame_rate: String, bit_depth: String, start: String, external: String, freewheel: u8, mode: String, confirm_start: bool },
+    Session(session_setup::SessionSetup),
     MidiBeatClock(midi_beat_clock::MidiBeatClock),
     // Clip › Loop…: `length` is typed in `format`, measured from `start` (the first selected clip's).
     // `filled` is the text the field opened with and the exact length it stands for.
@@ -159,7 +160,7 @@ impl Dialogs {
             Dialog::Synchronization => "synchronization",
             Dialog::Counter { .. } => "counter",
             Dialog::ExternalOffset { .. } => "external_offset",
-            Dialog::Session { .. } => "session",
+            Dialog::Session(_) => "session",
             Dialog::MidiBeatClock(_) => "midi_beat_clock",
             Dialog::Loop { .. } => "clip_looping",
             Dialog::ScoreSetup { .. } => "score_setup",
@@ -294,20 +295,7 @@ impl Dialogs {
             }
             "setup.peripherals" => Dialog::Synchronization,
             "setup.external_timecode_offset" => Dialog::ExternalOffset { value: external_offset_label(e.session()) },
-            "setup.session" => Dialog::Session {
-                frame_rate: e.session().frame_rate.label().into(),
-                bit_depth: match e.session().bit_depth {
-                    soundcraft_model::BitDepthSetting::Int16 => "16",
-                    soundcraft_model::BitDepthSetting::Float32 => "32f",
-                    _ => "24",
-                }
-                .into(),
-                start: e.session().format_position(0, soundcraft_time::TimeFormat::Timecode),
-                freewheel: e.mtc_freewheel_frames(),
-                mode: e.mtc_freewheel_mode().into(),
-                confirm_start: false,
-                external: external_offset_label(e.session()),
-            },
+            "setup.session" => Dialog::Session(session_setup::SessionSetup::new(e)),
             "file.score_setup" => {
                 let s = soundcraft_engine::score::ScoreSetup::from_session(e.session());
                 Dialog::ScoreSetup { title: s.title, composer: s.composer, bars_per_system: s.bars_per_system, show_track_names: s.show_track_names }
@@ -598,7 +586,7 @@ pub fn show(app: &mut SoundApp, ctx: &egui::Context) {
         Dialog::Group { id: Some(_), .. } => "Modify Group",
         Dialog::Synchronization => "Synchronization",
         Dialog::ExternalOffset { .. } => "External Timecode Offset",
-        Dialog::Session { .. } => "Session Setup",
+        Dialog::Session(_) => "Session Setup",
         Dialog::MidiBeatClock(_) => "MIDI Beat Clock",
         Dialog::Loop { .. } => "Clip Looping",
         Dialog::ScoreSetup { .. } => "Score Setup",
@@ -816,74 +804,9 @@ pub fn show(app: &mut SoundApp, ctx: &egui::Context) {
                         else { action=Some(("setup.external_timecode_offset".into(),json!({"timecode":value}))); }
                     }
                 }
-                Dialog::Session { frame_rate, bit_depth,start,external,freewheel,mode,confirm_start } => {
-                    let s=app.engine.session();
-                    let old_start=s.format_position(0,soundcraft_time::TimeFormat::Timecode);
-                    let mut params=json!({"frame_rate": frame_rate,"bit_depth":bit_depth,"freewheel_frames":freewheel,"freewheel":mode});
-                    if *confirm_start {
-                        ui.label(crate::localization::text("When changing the session start"));
-                        for (key, caption) in [("relative","Keep clips' distance from the session start"),("timecode","Keep clips at their timecode")] {
-                            if ui.button(crate::localization::text(caption)).clicked() {
-                                params["keep"]=json!(key);
-                                params["start_timecode"]=json!(start);
-                                if *external!=external_offset_label(s) { params["external_offset_timecode"]=json!(external); }
-                                action=Some(("setup.session".into(),params.clone()));
-                            }
-                        }
-                        if ui.button(crate::localization::text("Cancel")).clicked() { keep=false; }
-                        return;
-                    }
-                    ui.horizontal(|ui| {
-                        ui.label(crate::localization::text("Freewheel"));
-                        for (value,label) in [("none","None"),("frames","Frames"),("jam_sync","Jam Sync")] {
-                            ui.radio_value(mode,value.to_string(),crate::localization::text(label));
-                        }
-                        if mode=="frames" {
-                            let caption=ui.label(crate::localization::text("Freewheel (frames)"));
-                            ui.add(egui::DragValue::new(freewheel).range(4..=40)).labelled_by(caption.id);
-                        }
-                    });
-                    let incoming=app.midi_inputs.as_ref().and_then(|m|m.feed().mtc_input_status().0).map(|p|p.label());
-                    if app.mtc_online { ui.ctx().request_repaint_after(std::time::Duration::from_millis(33)); }
-                    ui.horizontal(|ui| {
-                        ui.label(crate::localization::text("Received timecode"));
-                        ui.monospace(incoming.as_deref().unwrap_or(crate::localization::text("No timecode received")));
-                        if let Some(warning)=app.mtc_rate_warning() { ui.label(warning); }
-                    });
-                    ui.horizontal(|ui| {
-                        let caption=ui.label(crate::localization::text("Session Start"));
-                        let id=ui.make_persistent_id("session_start_label");
-                        let capture=ui.memory(|m|m.has_focus(id)) && ui.input_mut(|i| {
-                            let capture=i.consume_key(egui::Modifiers::NONE,egui::Key::Equals);
-                            if capture { i.events.retain(|event| !matches!(event, egui::Event::Text(t) if t=="=")); }
-                            capture
-                        });
-                        ui.add(egui::TextEdit::singleline(start).id(id)).labelled_by(caption.id);
-                        let clicked=ui.add_enabled(incoming.is_some(),egui::Button::new(crate::localization::text("Use received position"))).clicked();
-                        if (capture || clicked) && let Some(label)=incoming { *start=label; }
-                    });
-                    ui.horizontal(|ui| {
-                        let caption=ui.label(crate::localization::text("External Timecode Offset"));
-                        ui.text_edit_singleline(external).labelled_by(caption.id);
-                    });
-                    craft_ui::ComboBox::from_label(crate::localization::text("Timecode Rate")).selected_text(crate::localization::text(frame_rate.as_str())).show_ui(ui, |ui| {
-                        for r in soundcraft_time::FrameRate::ALL {
-                            ui.selectable_value(frame_rate, r.label().to_string(), crate::localization::text(r.label()));
-                        }
-                    });
-                    craft_ui::ComboBox::from_label(crate::localization::text("Bit Depth")).selected_text(crate::localization::text(bit_depth.as_str())).show_ui(ui, |ui| {
-                        for b in ["16", "24", "32f"] {
-                            ui.selectable_value(bit_depth, b.to_string(), crate::localization::text(b));
-                        }
-                    });
-                    if buttons(ui, "OK", enter) {
-                        if *start!=old_start && !s.tracks.is_empty() { *confirm_start=true; }
-                        else {
-                            let mut params=json!({"frame_rate":frame_rate,"bit_depth":bit_depth,"freewheel_frames":freewheel,"freewheel":mode});
-                            if *start!=old_start { params["start_timecode"]=json!(start); }
-                            if *external!=external_offset_label(s) { params["external_offset_timecode"]=json!(external); }
-                            action=Some(("setup.session".into(),params));
-                        }
+                Dialog::Session(setup) => {
+                    if let Some(params) = setup.show(app, ui, enter) {
+                        action = Some(("setup.session".into(), params));
                     }
                 }
                 Dialog::Loop { by, count, length, format, start, filled } => {
@@ -1139,8 +1062,17 @@ mod tests {
             app.run("setup.mtc", json!({"input":"Clock","online":true})).unwrap();
             app.service_mtc_chase();
             let feed = app.midi_inputs.as_ref().unwrap().feed().clone();
+            if !use_keyboard {
+                app.run("track.new", json!({"name":"Track before capture"})).unwrap();
+            }
             assert!(app.dialogs.open_for_command(&app.engine, "setup.session"));
-            let mut h = Harness::builder().with_size(egui::vec2(1400., 850.)).build_ui_state(|ui, app: &mut SoundApp| { app.logic(ui.ctx()); app.ui(ui); }, app);
+            let mut h = Harness::builder().with_size(egui::vec2(1400., 850.)).build_ui_state(
+                |ui, app: &mut SoundApp| {
+                    app.logic(ui.ctx());
+                    app.ui(ui);
+                },
+                app,
+            );
             h.run_steps(3);
             assert!(h.get_by_label("Use received position").accesskit_node().is_disabled());
             let port = feed.ports().assign("Clock");
@@ -1154,11 +1086,16 @@ mod tests {
                 h.get_by_label("Use received position").click();
             }
             h.run_steps(2);
-            let Some(Dialog::Session { start, .. }) = &h.state().dialogs.open else { panic!("Session Setup closed") };
-            assert_eq!(start, "00:00:05:00");
+            let Some(Dialog::Session(setup)) = &h.state().dialogs.open else { panic!("Session Setup closed") };
+            assert_eq!(setup.start, "00:00:05:00");
             assert_eq!(h.state().engine.session().timecode_start, 172_800_000);
             h.get_by_label(if use_keyboard { "Cancel" } else { "OK" }).click();
             h.run_steps(3);
+            if !use_keyboard {
+                assert_eq!(h.state().engine.session().timecode_start, 172_800_000);
+                h.get_by_label("Keep clips' distance from the session start").click();
+                h.run_steps(3);
+            }
             assert_eq!(h.state().engine.session().timecode_start, if use_keyboard { 172_800_000 } else { 240000 });
         }
     }
