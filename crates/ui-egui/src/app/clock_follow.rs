@@ -399,6 +399,11 @@ mod tests {
         let settings = app.run("setup.midi_sync_status", json!({})).unwrap()["settings"].clone();
         assert_eq!(settings["ports"]["DIN"]["out_offset_samples"], 0);
         assert_eq!(app.run("setup.midi_clock_follow", json!({})).unwrap()["input_offset_samples"], -480);
+        // Recalibrating then releasing the MTC Generator must preserve the same input.
+        app.run("setup.mtc_output", json!({"port":"DIN","offset_samples":120})).unwrap();
+        app.run("setup.mtc_output", json!({"offset_samples":0})).unwrap();
+        app.run("setup.mtc_output", json!({"port":null})).unwrap();
+        assert_eq!(app.run("setup.midi_clock_follow", json!({})).unwrap()["input_offset_samples"], -480);
         // An input-only calibration also survives when a different input is selected.
         app.run("setup.midi_clock_follow", json!({"input":"USB"})).unwrap();
         app.run("setup.midi_beat_clock", json!({"ports":{}})).unwrap();

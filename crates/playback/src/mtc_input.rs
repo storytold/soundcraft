@@ -368,7 +368,9 @@ impl Reader {
                             self.pending = Some(ChaseEvent::Roll(live, stamp));
                         } else {
                             self.discontinuity();
-                            if self.locked { self.seek_candidate=Some(position); }
+                            if self.locked {
+                                self.seek_candidate = Some(position);
+                            }
                         }
                     } else if let Some(start) = self.located_start {
                         // A sender can label the first group at the locate or up to two frames ahead.
@@ -631,15 +633,20 @@ mod dropout_tests {
             r.read(&b, 0);
         }
         assert_eq!(r.diagnostics().rate_mismatch.map(|m| (m.incoming, m.speed_deviation_ppm)), Some(("25", None)));
-        for (session, source) in
-            [(FrameRate::Fps29_97, FrameRate::Fps30), (FrameRate::Fps30, FrameRate::Fps29_97), (FrameRate::Fps30, FrameRate::Fps30)]
-        {
+        for (session, source) in [
+            (FrameRate::Fps29_97, FrameRate::Fps30),
+            (FrameRate::Fps30, FrameRate::Fps29_97),
+            (FrameRate::Fps30, FrameRate::Fps30),
+            (FrameRate::Fps23_976, FrameRate::Fps24),
+            (FrameRate::Fps24, FrameRate::Fps23_976),
+            (FrameRate::Fps24, FrameRate::Fps24),
+        ] {
             let mut r = Reader::default();
             r.reset(Some(1));
             r.options.rate = session;
             let same = session == source;
-            for n in 0..if same { 9000 } else { 420 } {
-                for (piece, b) in crate::mtc::quarters(n * 2, FrameRate::Fps30).into_iter().enumerate() {
+            for n in 0..if same { source.nominal() * 300 } else { source.nominal() * 14 } {
+                for (piece, b) in crate::mtc::quarters(n * 2, source).into_iter().enumerate() {
                     let (num, den) = source.rational();
                     let us = ((n * 8 + piece as i64) * 1_000_000 * i64::from(den)) / (4 * i64::from(num));
                     r.read(&b, us + if n % 2 == 0 { 1200 } else { -1200 });

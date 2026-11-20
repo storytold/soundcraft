@@ -325,34 +325,46 @@ fn ui_stop_from_an_earlier_lock_cannot_restart_the_new_roll() {
 
 #[test]
 fn jam_sync_audio_free_runs_for_ten_seconds_and_seeks_only_on_the_second_new_group() {
-    let (mut audio,tx,_) = callback(session(FrameRate::Fps25),48000.);
-    let feed=Arc::new(crate::midi::MidiFeed::default());
-    feed.set_mtc_options(FrameRate::Fps25,8,true,0);
+    let (mut audio, tx, _) = callback(session(FrameRate::Fps25), 48000.);
+    let feed = Arc::new(crate::midi::MidiFeed::default());
+    feed.set_mtc_options(FrameRate::Fps25, 8, true, 0);
     feed.set_mtc_source(Some(0));
     tx.send(Cmd::Midi(feed.clone())).unwrap();
-    audio.fill(&mut [0.;480],2);
+    audio.fill(&mut [0.; 480], 2);
     assert!(!audio.shared.playing.load(Ordering::Acquire));
-    let mut first=0;
-    let mut before_jump=0;
+    let mut first = 0;
+    let mut before_jump = 0;
     for block in 0..=2094 {
-        let piece=block/2;
-        feed.set_clock(block*5000);
-        if block%2==0 && !(16..1016).contains(&piece) {
-            let frame=piece/8*2+if piece>=1032 {25} else {0};
-            feed.receive(0,&quarters(frame,FrameRate::Fps25)[(piece%8) as usize]);
+        let piece = block / 2;
+        feed.set_clock(block * 5000);
+        if block % 2 == 0 && !(16..1016).contains(&piece) {
+            let frame = piece / 8 * 2 + if piece >= 1032 { 25 } else { 0 };
+            feed.receive(0, &quarters(frame, FrameRate::Fps25)[(piece % 8) as usize]);
         }
-        audio.fill(&mut [0.;480],2);
-        let cursor=audio.shared.position.load(Ordering::Acquire);
+        audio.fill(&mut [0.; 480], 2);
+        let cursor = audio.shared.position.load(Ordering::Acquire);
         match block {
-            30 => {assert!(audio.shared.playing.load(Ordering::Acquire));first=cursor;}
-            2030 => {assert_eq!(cursor-first,480_000);assert_eq!(feed.mtc_diagnostics().freewheel_state,"jam sync running on internal clock");}
-            2062 => {assert_eq!(feed.mtc_diagnostics().hard_relocates,0);assert_eq!(feed.mtc_diagnostics().freewheel_state,"locked");}
-            2078 => {assert_eq!(feed.mtc_diagnostics().hard_relocates,0);before_jump=cursor;}
-            2094 => {
-                assert_eq!(feed.mtc_diagnostics().hard_relocates,1);
-                assert!(cursor-before_jump>=48000);
+            30 => {
+                assert!(audio.shared.playing.load(Ordering::Acquire));
+                first = cursor;
             }
-            _=>{}
+            2030 => {
+                assert_eq!(cursor - first, 480_000);
+                assert_eq!(feed.mtc_diagnostics().freewheel_state, "jam sync running on internal clock");
+            }
+            2062 => {
+                assert_eq!(feed.mtc_diagnostics().hard_relocates, 0);
+                assert_eq!(feed.mtc_diagnostics().freewheel_state, "locked");
+            }
+            2078 => {
+                assert_eq!(feed.mtc_diagnostics().hard_relocates, 0);
+                before_jump = cursor;
+            }
+            2094 => {
+                assert_eq!(feed.mtc_diagnostics().hard_relocates, 1);
+                assert!(cursor - before_jump >= 48000);
+            }
+            _ => {}
         }
     }
 }

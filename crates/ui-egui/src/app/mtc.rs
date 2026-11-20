@@ -272,13 +272,14 @@ mod tests {
             host.service_mtc_chase();
             host.handle_transport(0.);
             let status = host.run("setup.midi_sync_status", json!({})).unwrap();
-            assert_eq!(status["mtc_chase"]["incoming_timecode"], "00:00:10:00");
             if let Some(pos) = expected {
                 assert_eq!(host.position(), pos);
             } else {
                 assert_eq!(status["mtc_chase"]["state"], "Before session start");
             }
         }
+        let final_status = host.run("setup.midi_sync_status", json!({})).unwrap();
+        assert_eq!(final_status["mtc_chase"]["incoming_timecode"], "00:00:10:00");
     }
 
     #[test]

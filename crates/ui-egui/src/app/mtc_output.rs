@@ -84,18 +84,26 @@ impl SoundApp {
             }
         }
         let ports = if list { Some(soundcraft_playback::midi_sync_outputs()?) } else { None };
-        if let Some(value) = args.get("offset_samples") {
-            let name = selected.as_ref().ok_or("Choose an MTC output port")?;
-            let limit = soundcraft_playback::max_sync_offset_samples(self.engine.session().sample_rate);
-            let offset = value
-                .as_i64()
-                .filter(|n| n.unsigned_abs() <= limit as u64 || self.ui.midi_sync.ports.get(name).is_some_and(|p| p.out_offset_samples == *n))
-                .ok_or("MIDI port calibration must be within 250 ms at the session sample rate")?;
-            let ports = &mut self.ui.midi_sync.ports;
-            if !ports.contains_key(name) && ports.len() >= 256 {
-                return Err("Invalid MIDI sync port name, count or sample offset".into());
+        if args.contains_key("offset_samples") || selected != self.ui.mtc_output_port {
+            let mut next = self.ui.midi_sync.clone();
+            next.retain_calibrated_ports([self.ui.clock_follow_input.as_deref(), self.ui.mtc_input_port.as_deref(), selected.as_deref()]);
+            if let Some(value) = args.get("offset_samples") {
+                let name = selected.as_ref().ok_or("Choose an MTC output port")?;
+                let limit = soundcraft_playback::max_sync_offset_samples(self.engine.session().sample_rate);
+                let offset = value
+                    .as_i64()
+                    .filter(|n| n.unsigned_abs() <= limit as u64 || next.ports.get(name).is_some_and(|p| p.out_offset_samples == *n))
+                    .ok_or("MIDI port calibration must be within 250 ms at the session sample rate")?;
+                if let Some(port) = next.ports.get_mut(name) {
+                    port.out_offset_samples = offset;
+                } else if offset != 0 {
+                    if next.ports.len() >= 256 {
+                        return Err("Invalid MIDI sync port name, count or sample offset".into());
+                    }
+                    next.ports.entry(name.clone()).or_default().out_offset_samples = offset;
+                }
             }
-            ports.entry(name.clone()).or_default().out_offset_samples = offset;
+            self.ui.midi_sync = next;
         }
         self.ui.gen_mtc = enabled;
         self.ui.mtc_output_port = selected;
@@ -116,6 +124,19 @@ impl SoundApp {
 mod tests {
     use super::*;
     use soundcraft_time::FrameRate;
+
+    #[test]
+    fn clearing_unused_mtc_calibration_frees_the_shared_port_slot() {
+        let mut host = SoundApp::new(crate::Engine::default(), None, crate::Services::default());
+        for i in 0..256 {
+            host.run("setup.mtc_output", json!({"port":format!("Port {i}"),"offset_samples":1})).unwrap();
+        }
+        host.run("setup.mtc_output", json!({"port":"Extra","offset_samples":0})).unwrap();
+        host.run("setup.mtc_output", json!({"port":"Port 0","offset_samples":0})).unwrap();
+        host.run("setup.mtc_output", json!({"port":"Extra","offset_samples":1})).unwrap();
+        assert_eq!(host.ui.midi_sync.ports.len(), 256);
+        assert!(!host.ui.midi_sync.ports.contains_key("Port 0"));
+    }
 
     #[test]
     fn saved_output_calibration_survives_a_lower_rate_and_rejects_new_out_of_range_values() {
