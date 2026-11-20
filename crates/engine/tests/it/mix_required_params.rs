@@ -18,7 +18,7 @@ fn kick_trim(e: &Engine) -> f32 {
 #[test]
 fn mix_pan_rejects_a_missing_or_non_numeric_pan_and_keeps_the_pan() {
     let mut e = engine_with_kick();
-    e.execute("mix.pan", &json!({"tracks": ["Kick"], "pan": -1.0})).unwrap();
+    e.execute("mix.pan", &json!({"tracks": ["Kick"], "pan": -1.0, "index": 0})).unwrap();
     assert_eq!(kick_pan(&e)[0], -1.0);
 
     for params in [json!({"tracks": ["Kick"]}), json!({"tracks": ["Kick"], "pan": "left"}), json!({"tracks": ["Kick"], "pan": null})] {
