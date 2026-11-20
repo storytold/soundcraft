@@ -346,6 +346,10 @@ pub struct SoundApp {
     pub preferences: preferences::PreferencesState,
     /// Bring the separate Mix window to the front on the next frame.
     pub(crate) focus_mix: bool,
+    /// Whether a text field had the keyboard in the separate Mix window when it last drew. egui
+    /// keeps keyboard focus per window, so the main window's `text_edit_focused` can't see it,
+    /// and the macOS menu bar needs to. Counts only while Mix is in its own window.
+    pub text_focused_in_other_window: bool,
     /// Scroll Into View: the track each window brings to its top (Edit) or left (Mix) when it
     /// next draws, so a window not on screen catches up when it is shown.
     pub(crate) edit_scroll_into_view: Option<TrackId>,

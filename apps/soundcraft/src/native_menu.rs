@@ -291,7 +291,10 @@ impl NativeMenu {
     /// Refresh after engine/control changes; avoid touching Cocoa items with unchanged state.
     pub fn sync(&mut self, app: &SoundApp) {
         let now = std::time::Instant::now();
-        let text_focused = self.ctx.text_edit_focused();
+        // A text field in the window that has the keyboard: the main window's, or another one's
+        // (egui keeps focus per window, and a field keeps it while its window is in the back).
+        let text_focused =
+            (self.ctx.input(|i| i.focused) && self.ctx.text_edit_focused()) || (app.ui.mix_separate && app.text_focused_in_other_window);
         if text_focused == self.text_focused && self.last_sync.is_some_and(|t| now.duration_since(t) < SYNC_EVERY) {
             return;
         }

@@ -155,6 +155,17 @@ fn main() {
         .expect("a key event")
     }
 
+    /// Runs `frame` until `done`, for at most five seconds; `what` says what never happened.
+    fn frames_until(mut frame: impl FnMut(), done: impl Fn() -> bool, what: &str) {
+        let until = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        frame();
+        while !done() {
+            assert!(std::time::Instant::now() < until, "{what}");
+            std::thread::sleep(std::time::Duration::from_millis(20));
+            frame();
+        }
+    }
+
     /// In a focused text field the menu's keys edit the text, as they do without the menu bar:
     /// ⌘C copies the selection, ⌘X cuts it, ⌘V asks for the clipboard and ⌘Z undoes the cut in
     /// the field, while the session's own Undo stays where it was (shortcuts stand aside while a
@@ -166,7 +177,11 @@ fn main() {
         let bar = nsapp.mainMenu().expect("a main menu");
         let press = |chars: &str, code: u16| bar.performKeyEquivalent(&dequeue(nsapp, &key_down(chars, code, NSEventModifierFlags::Command, false)));
         let field = egui::Id::unique("native_menu_appkit text field");
-        // One frame as `main.rs` runs it, with a focused text field over the app.
+        // Whether a text field has the keyboard in the separate Mix window, as that window records
+        // it when it draws.
+        let other_window_field = std::cell::Cell::new(false);
+        // One frame much as `main.rs` runs it, with a focused text field over the app. Here `sync`
+        // runs after `ui`, so it sees this frame's state; `main.rs` runs it in `logic`.
         let typing = |app: &mut SoundApp, menu: &mut NativeMenu, text: &mut String| {
             let rect = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1400.0, 900.0));
             let mut raw = egui::RawInput { screen_rect: Some(rect), ..Default::default() };
@@ -176,6 +191,7 @@ fn main() {
                 menu.process(app);
                 app.logic(ui.ctx());
                 app.ui(ui);
+                app.text_focused_in_other_window |= other_window_field.get();
                 egui::Area::new(egui::Id::unique("native_menu_appkit text field area")).show(ui.ctx(), |ui| {
                     ui.add(egui::TextEdit::singleline(text).id(field));
                 });
@@ -188,13 +204,14 @@ fn main() {
         // Frames, each with the field (one without it would take its focus), until the menu has
         // refreshed `item` to `enabled`, for at most five seconds.
         let settle = |app: &mut SoundApp, menu: &mut NativeMenu, text: &mut String, item: &objc2_app_kit::NSMenuItem, enabled: bool| {
-            let until = std::time::Instant::now() + std::time::Duration::from_secs(5);
-            typing(app, menu, text);
-            while item.isEnabled() != enabled {
-                assert!(std::time::Instant::now() < until, "{} never became {}", item.title(), if enabled { "enabled" } else { "disabled" });
-                std::thread::sleep(std::time::Duration::from_millis(20));
-                typing(app, menu, text);
-            }
+            let what = format!("{} never became {}", item.title(), ["disabled", "enabled"][usize::from(enabled)]);
+            frames_until(
+                || {
+                    typing(app, menu, text);
+                },
+                || item.isEnabled() == enabled,
+                &what,
+            );
         };
 
         // Nothing selected in the session, so Edit › Copy and Cut are disabled for the session and
@@ -205,7 +222,8 @@ fn main() {
         assert!(soundcraft_engine::cmd::has_range(&app.engine).is_err(), "no session selection to copy");
         let session_undo = Some(app.engine.undo_label().expect("the session has something to undo").to_owned());
         let undo = items()
-            .find(|it| it.keyEquivalent().to_string() == "z" && it.keyEquivalentModifierMask() == NSEventModifierFlags::Command)
+            .filter(|it| it.keyEquivalent().to_string() == "z")
+            .find(|it| it.keyEquivalentModifierMask() == NSEventModifierFlags::Command)
             .expect("Edit › Undo is ⌘Z");
         let tracks = app.engine.session().tracks.len();
 
@@ -216,22 +234,21 @@ fn main() {
         settle(app, menu, &mut text, &copy, false);
         assert!(press("c", 8), "AppKit takes a disabled item's key equivalent");
         ctx.memory_mut(|m| m.request_focus(field));
-        for _ in 0..2 {
-            typing(app, menu, &mut text);
-        }
+        typing(app, menu, &mut text);
+        typing(app, menu, &mut text);
         let focused = || ctx.memory(|m| m.has_focus(field));
         assert!(focused(), "the field has the keyboard");
         assert!(copy.isEnabled(), "a focus change re-syncs the menu at once");
         assert_eq!(undo.title().to_string(), "Undo", "Undo is the field's, not the session's last edit");
         // The field's Undo is in the app's language, like the session's.
         let titled = |app: &mut SoundApp, menu: &mut NativeMenu, text: &mut String, title: &str| {
-            let until = std::time::Instant::now() + std::time::Duration::from_secs(5);
-            typing(app, menu, text);
-            while undo.title().to_string() != title {
-                assert!(std::time::Instant::now() < until, "Undo never became {title:?}");
-                std::thread::sleep(std::time::Duration::from_millis(20));
-                typing(app, menu, text);
-            }
+            frames_until(
+                || {
+                    typing(app, menu, text);
+                },
+                || undo.title().to_string() == title,
+                &format!("Undo never became {title:?}"),
+            );
         };
         app.ui.language = soundcraft_ui_egui::localization::Language::PortugueseBrazil;
         titled(app, menu, &mut text, "Desfazer");
@@ -302,6 +319,20 @@ fn main() {
         typing(app, menu, &mut text);
         assert_eq!(text, "hello world", "the field is untouched");
         assert_eq!(app.engine.session().tracks.len(), tracks - 1, "⌘Z undid the new track");
+
+        // A field with the keyboard in another window counts too: egui keeps focus per window,
+        // so the main window's own focus can't show it.
+        app.ui.mix_separate = true;
+        other_window_field.set(true);
+        typing(app, menu, &mut text);
+        app.engine.execute("edit.select_none", &json!({})).expect("nothing selected");
+        settle(app, menu, &mut text, &copy, true);
+        assert_eq!(undo.title().to_string(), "Undo", "Undo is the other window's field's");
+        // With Mix back in the main window, what that window last recorded no longer counts.
+        other_window_field.set(false);
+        app.ui.mix_separate = false;
+        app.engine.execute("edit.select_none", &json!({})).expect("nothing selected");
+        settle(app, menu, &mut text, &copy, false);
     }
 
     let aliases = menus::ui_aliases();

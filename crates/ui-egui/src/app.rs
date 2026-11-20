@@ -75,6 +75,7 @@ impl SoundApp {
             palette: palette::PaletteState::default(),
             preferences: preferences::PreferencesState::default(),
             focus_mix: false,
+            text_focused_in_other_window: false,
             edit_scroll_into_view: None,
             mix_scroll_into_view: None,
             synthetic: Vec::new(),
