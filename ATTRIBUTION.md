@@ -61,3 +61,4 @@ here. The subset uses default_fonts; the parent face uses monochrome_emoji_fonts
 | `docs/images/midi-clock-main-return.png` | SoundCraft contributors | original stage measurements of the digital loopback, ASIO monitor and Model 12 MAIN return | MIT OR Apache-2.0 |
 | `docs/images/midi-clock-direct-asio.png` | SoundCraft contributors | original comparison of direct ASIO and monitored playback on the Model 12 MAIN return | MIT OR Apache-2.0 |
 | `docs/images/midi-clock-asio-buffer-sizes.png` | SoundCraft contributors | original per-take comparison of measured ASIO callback sizes and MIDI Clock to Model 12 MAIN latency | MIT OR Apache-2.0 |
+| `docs/images/midi-clock-asio-waveform-detail.png` | SoundCraft contributors | original comparison of rendered and recorded waveforms at two Model 12 ASIO buffer sizes | MIT OR Apache-2.0 |
