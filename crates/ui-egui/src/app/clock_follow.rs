@@ -55,10 +55,10 @@ impl SoundApp {
             Some(Value::String(s)) if s == "stop" => true,
             _ => return Err("loss_policy must be coast or stop".into()),
         };
-        let offset = args
-            .get("input_offset_samples")
-            .map(|v| v.as_i64().filter(|n| n.unsigned_abs() <= 10_000_000).ok_or("input_offset_samples must be an integer within ±10000000 samples"))
-            .transpose()?;
+        let limit = soundcraft_playback::max_sync_offset_samples(self.engine.session().sample_rate);
+        let offset = args.get("input_offset_samples").map(|v| {
+            v.as_i64().filter(|n| n.unsigned_abs() <= limit as u64).ok_or("MIDI input calibration must be within the sync timing horizon")
+        }).transpose()?;
         if enabled && source.is_none() || offset.is_some() && source.is_none() {
             return Err("Select a MIDI clock input".into());
         }
@@ -136,7 +136,8 @@ impl SoundApp {
         let sr = self.engine.session().sample_rate;
         let initial_pulse = self.engine.transport_tempo().samples_to_ticks(self.position(), sr) / TICKS_PER_PULSE;
         feed.set_clock_follow(Some(id), !self.ui.clock_follow_stop_on_loss, initial_pulse);
-        let offset = self.ui.clock_follow_input_offsets.get(name).copied().unwrap_or_default();
+        let limit = soundcraft_playback::max_sync_offset_samples(sr);
+        let offset = self.ui.clock_follow_input_offsets.get(name).copied().unwrap_or_default().clamp(-limit, limit);
         let mut events = std::mem::take(&mut self.clock_follow.actions);
         let s = feed.clock_follow_status(&mut events);
         self.clock_follow.snapshot = s;
@@ -224,7 +225,8 @@ impl SoundApp {
             let mut offset = self.ui.clock_follow_input_offsets.get(name).copied().unwrap_or_default();
             ui.horizontal(|ui| {
                 ui.label(crate::localization::text("MIDI input offset (samples)"));
-                if ui.add(egui::DragValue::new(&mut offset).range(-10_000_000..=10_000_000)).changed() {
+                let limit = soundcraft_playback::max_sync_offset_samples(self.engine.session().sample_rate);
+                if ui.add(egui::DragValue::new(&mut offset).range(-limit..=limit)).changed() {
                     let _ = self.clock_follow_command(&json!({"input_offset_samples":offset}));
                 }
             });

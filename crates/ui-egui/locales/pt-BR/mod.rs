@@ -2131,6 +2131,7 @@ error_templates! {
     "Multiple MIDI outputs named {name}; using the first" => "Várias saídas MIDI com o nome {name}; usando a primeira",
     "MIDI output {name} unavailable" => "Saída MIDI {name} indisponível",
     "MIDI sync settings require the desktop host" => "As configurações de sincronização MIDI exigem o aplicativo de desktop",
+    "MIDI port calibration must be within 250 ms at the session sample rate" => "A calibração da porta MIDI deve estar dentro de 250 ms na taxa de amostragem da sessão",
     "Invalid MIDI sync port name, count or sample offset" => "Nome, quantidade de portas ou deslocamento de amostras MIDI inválido",
     "Position exceeds the MIDI Song Position Pointer range." => "A posição excede o limite do ponteiro de posição MIDI.",
     "{path} is not valid Unicode" => "{path} não é Unicode válido",

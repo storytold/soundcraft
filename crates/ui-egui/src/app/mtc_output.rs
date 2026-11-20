@@ -77,7 +77,8 @@ impl SoundApp {
             && self.player.as_ref().zip(self.ui.mtc_output_port.as_ref()).is_some_and(|(player, name)| {
                 player.midi_sync_status().ports.get(name).is_some_and(|port| port.connected && port.mtc_total_us.is_some())
             });
-        let mut state = json!({"port":self.ui.mtc_output_port,"enabled":enabled,"active":active,"frame_rate":self.engine.session().frame_rate.label()});
+        let mut state =
+            json!({"port":self.ui.mtc_output_port,"enabled":enabled,"active":active,"frame_rate":self.engine.session().frame_rate.label()});
         if let Some(ports) = ports {
             state["ports"] = json!(ports);
         }

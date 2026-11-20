@@ -1,5 +1,5 @@
-//! Forward MIDI Time Code chase. The selected input's callback assembles pieces; the UI
-//! consumes the newest complete position, so a busy frame cannot replay a backlog of locates.
+//! Forward MIDI Time Code chase. The selected input assembles pieces. The audio callback
+//! reads the latest position directly, and the UI mirrors transitions without replaying a backlog.
 use soundcraft_time::{FrameRate, SampleRate, Samples, Timecode};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

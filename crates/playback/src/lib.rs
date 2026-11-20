@@ -38,6 +38,10 @@ mod sync_output;
 mod sync_status;
 pub use sync_status::MidiSyncStatus;
 
+/// Bound per-device compensation in time when a session changes sample rate.
+pub fn max_sync_offset_samples(sr: soundcraft_time::SampleRate) -> i64 {
+    sr.samples(0.25)
+}
 /// Named destinations offered by the native MIDI Beat Clock setup dialog.
 pub fn midi_clock_outputs() -> Result<Vec<String>, String> {
     midi_sync_outputs()

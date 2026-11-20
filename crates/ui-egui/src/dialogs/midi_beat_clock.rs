@@ -28,15 +28,16 @@ impl MidiBeatClock {
             ui.label(text("No MIDI output devices found"));
         }
         let names: BTreeSet<_> = available.iter().chain(self.settings.ports.keys()).cloned().collect();
-        let sr = app.engine.session().sample_rate.as_f64();
+        let rate = app.engine.session().sample_rate;
+        let sr = rate.as_f64();
+        let limit = soundcraft_playback::max_sync_offset_samples(rate);
         for name in names {
             let mut port = self.settings.ports.get(&name).copied().unwrap_or_default();
             let changed = ui
                 .horizontal(|ui| {
                     let enabled = crate::widgets::checkbox(ui, &mut port.enabled, name.as_str()).changed();
                     let label = ui.label(text("Offset (samples)"));
-                    let offset =
-                        ui.add(egui::DragValue::new(&mut port.offset_samples).range(-10_000_000..=10_000_000)).labelled_by(label.id).changed();
+                    let offset = ui.add(egui::DragValue::new(&mut port.offset_samples).range(-limit..=limit)).labelled_by(label.id).changed();
                     ui.label(format!("{:.2} ms", port.offset_samples as f64 * 1000. / sr));
                     if !available.contains(&name) {
                         ui.label(text("The saved MIDI output is unavailable."));

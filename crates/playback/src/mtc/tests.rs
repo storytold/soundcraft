@@ -1,7 +1,7 @@
 use super::*;
 use crate::sync_clock::{DeviceTiming, Publisher, View};
 use crate::{AudioState, Cmd, Shared};
-use soundcraft_time::SampleRate;
+
 use std::sync::{
     Arc,
     atomic::Ordering,
@@ -9,7 +9,7 @@ use std::sync::{
 };
 
 fn session(rate: FrameRate) -> Session {
-    let mut s = Session::new("sync", SampleRate::new(48_000).unwrap());
+    let mut s = Session::new("sync", soundcraft_time::SampleRate::HZ_48000);
     s.frame_rate = rate;
     s.timecode_start = 0;
     s
@@ -19,7 +19,7 @@ fn callback(s: Session, device_rate: f64) -> (AudioState, Sender<Cmd>, View) {
     let (commands, rx) = channel();
     let state = AudioState::new(rx, shared, Arc::new(s), device_rate, channel().0);
     let view = View::default();
-    commands.send(Cmd::Clock(Some(Publisher::new(view.clone(), Default::default())))).unwrap();
+    assert!(commands.send(Cmd::Clock(Some(Publisher::new(view.clone(), Default::default())))).is_ok());
     (state, commands, view)
 }
 fn block(at: Instant, position: i64, frames: i64, playing: bool, pass: u64) -> Presentation {

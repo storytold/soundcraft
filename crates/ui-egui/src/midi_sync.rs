@@ -92,6 +92,13 @@ impl SoundApp {
         {
             return Err("Choose separate MIDI ports for Beat Clock output and external clock follow".into());
         }
+        let limit = soundcraft_playback::max_sync_offset_samples(self.engine.session().sample_rate);
+        if next.ports.iter().any(|(name, port)| {
+            port.offset_samples.unsigned_abs() > limit as u64
+                && self.ui.midi_sync.ports.get(name).map(|previous| previous.offset_samples) != Some(port.offset_samples)
+        }) {
+            return Err("MIDI port calibration must be within 250 ms at the session sample rate".into());
+        }
         self.ui.midi_sync = next;
         let config = &self.ui.midi_sync;
         let first = config.ports.iter().find(|(_, p)| p.enabled);
@@ -136,6 +143,18 @@ impl SoundApp {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn port_calibration_accepts_quarter_second_at_session_rate_and_rejects_one_sample_more() {
+        let mut host = SoundApp::new(Default::default(), None, crate::Services::default());
+        let limit = host.engine.session().sample_rate.samples(0.25);
+        for value in [-limit, limit] {
+            host.sync_command("setup.midi_beat_clock", &json!({"destination":"port","offset":value})).unwrap();
+        }
+        for value in [-limit - 1, limit + 1] {
+            assert!(host.sync_command("setup.midi_beat_clock", &json!({"offset":value})).is_err());
+        }
+    }
+
     #[test]
     fn old_project_imports_calibration_once_and_never_overwrites_machine_settings() {
         let mut app = SoundApp::new(Default::default(), None, crate::Services::default());
