@@ -2,14 +2,6 @@
 //! consumes the newest complete position, so a busy frame cannot replay a backlog of locates.
 use soundcraft_time::{FrameRate, SampleRate, Samples, Timecode};
 
-/// One bounded acquisition step per forward group. Shared with the silent UI transport.
-pub fn chase_rate(error: i64, tolerance: i64, sr: SampleRate, speed: f64) -> f64 {
-    let trim = if error.unsigned_abs() <= (tolerance / 48) as u64 { 0. } else { (error as f64 / sr.as_f64()).clamp(-0.02, 0.04) };
-    (1. + trim).min(speed.max(1.) + 0.002)
-}
-
-const TIMEOUT_US: i64 = 300_000;
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Position {
     quarter: i64,
@@ -59,8 +51,16 @@ impl Position {
         (self.quarter as f64 * (self.rate.samples_per_frame(sr) / 4.)).round() as Samples
     }
 
-    pub fn drift_tolerance(self, sr: SampleRate) -> Samples {
-        self.rate.samples_at_frame(3, sr)
+    fn frame_us(self) -> f64 {
+        let (n, d) = self.rate.rational();
+        1e6 * d as f64 / n as f64
+    }
+    pub fn frame_samples(self, sr: SampleRate) -> Samples {
+        self.rate.samples_at_frame(1, sr)
+    }
+    /// A positive external offset advances the local transport against incoming code.
+    pub fn session_sample(self, session_rate: FrameRate, sr: SampleRate, start: Samples, external_offset_frames: i64) -> Samples {
+        self.in_session_rate(session_rate).samples(sr).saturating_sub(start).saturating_add(session_rate.samples_at_frame(external_offset_frames, sr))
     }
 }
 
@@ -71,39 +71,110 @@ pub enum ChaseEvent {
     Stop,
 }
 
+#[derive(Clone, Copy)]
+pub(crate) struct Options {
+    pub(crate) rate: FrameRate,
+    pub(crate) freewheel: u8,
+    pub(crate) jam: bool,
+    pub(crate) offset: i64,
+}
+impl Default for Options {
+    fn default() -> Self {
+        Self { rate: FrameRate::Fps30, freewheel: 8, jam: false, offset: 0 }
+    }
+}
+#[derive(Clone, Copy, Default, serde::Serialize)]
+pub struct ChaseStats {
+    pub locks: u64,
+    pub freewheel_entries: u64,
+    pub losses: u64,
+    pub hard_relocates: u64,
+    pub input_jitter_p95_us: u32,
+}
+#[derive(Clone, Copy)]
+pub(crate) enum Tracking {
+    Idle,
+    Located(Position),
+    Rolling { position: Position, stamp: i64, now: i64, anchor: Option<Position> },
+}
+
 #[derive(Default)]
 pub(crate) struct Reader {
     pub(crate) source: Option<u8>,
+    pub(crate) options: Options,
+    pub(crate) stats: ChaseStats,
     parts: [u8; 8],
     next: u8,
-    // Candidate for the first playback block only. Stopped locates can precede play by minutes.
     located_start: Option<Position>,
+    first_anchor: Option<Position>,
     previous: Option<Position>,
     locked: bool,
+    coasting: bool,
     rolling: Option<(Position, i64)>,
     last_at: Option<i64>,
+    last_group: Option<i64>,
     pending: Option<ChaseEvent>,
+    fit: crate::sync_input::PulseFit<16>,
+    jitter: [u32; 32],
+    jitter_count: usize,
+    jitter_index: usize,
 }
-
 impl Reader {
     pub(crate) fn reset(&mut self, source: Option<u8>) {
-        *self = Self { source, ..Self::default() };
+        self.source = source;
+        self.next = 0;
+        self.located_start = None;
+        self.first_anchor = None;
+        self.previous = None;
+        self.locked = false;
+        self.coasting = false;
+        self.rolling = None;
+        self.last_at = None;
+        self.last_group = None;
+        self.pending = None;
+        self.fit.clear();
+        self.jitter_count = 0;
+        self.jitter_index = 0;
     }
-
+    pub(crate) fn diagnostics(&self) -> ChaseStats {
+        let mut stats = self.stats;
+        if self.jitter_count > 0 {
+            let mut samples = self.jitter;
+            samples[..self.jitter_count].sort_unstable();
+            stats.input_jitter_p95_us = samples[(self.jitter_count * 95).div_ceil(100) - 1];
+        }
+        stats
+    }
     pub(crate) fn loss(&mut self) {
         let stop = self.locked || self.pending == Some(ChaseEvent::Stop);
+        if self.locked {
+            self.stats.losses += 1;
+        }
         self.reset(self.source);
         if stop {
             self.pending = Some(ChaseEvent::Stop);
         }
     }
-
+    fn freewheel(&mut self) {
+        if self.locked && !self.coasting {
+            self.coasting = true;
+            self.stats.freewheel_entries += 1;
+        }
+    }
     fn expire(&mut self, now: i64) {
-        if self.last_at.is_some_and(|at| now.saturating_sub(at) >= TIMEOUT_US) {
+        let Some((p, _)) = self.rolling else { return };
+        let frame_us = p.in_session_rate(self.options.rate).frame_us();
+        // Accept a replacement group completing exactly four frames after the previous one.
+        // Limit extending the deadline with partial or invalid groups to one group interval.
+        let last = self.last_at.unwrap_or(now).min(self.last_group.unwrap_or(now).saturating_add((2. * frame_us).ceil() as i64));
+        let elapsed = now.saturating_sub(last);
+        if self.last_at.is_some_and(|last| now.saturating_sub(last) as f64 > frame_us / 2.) {
+            self.freewheel();
+        }
+        if elapsed as f64 >= frame_us * f64::from(self.options.freewheel) && !self.options.jam {
             self.loss();
         }
     }
-
     pub(crate) fn read(&mut self, bytes: &[u8], now: i64) {
         self.expire(now);
         match *bytes {
@@ -128,6 +199,12 @@ impl Reader {
                 }
                 self.parts[usize::from(piece)] = data & 15;
                 self.next = (piece + 1) % 8;
+                if let (Some(last), Some((position, _))) = (self.last_at, self.rolling) {
+                    let quarter_us = position.in_session_rate(self.options.rate).frame_us() / 4.;
+                    self.jitter[self.jitter_index] = ((now.saturating_sub(last) as f64 - quarter_us).abs()).round() as u32;
+                    self.jitter_index = (self.jitter_index + 1) % self.jitter.len();
+                    self.jitter_count = (self.jitter_count + 1).min(self.jitter.len());
+                }
                 self.last_at = Some(now);
                 if piece == 7 {
                     let p = self.parts;
@@ -140,13 +217,36 @@ impl Reader {
                         return;
                     };
                     if let Some(last) = self.previous {
-                        if last.advance(8) == position {
+                        // A missing group during lock is a dropout, not a seek.
+                        // A valid pair at a new position can also re-establish the timeline.
+                        let contiguous = last.advance(8) == position;
+                        let plausible = self.rolling.is_some_and(|(live, stamp)| {
+                            if live.rate != position.rate {
+                                return false;
+                            }
+                            let elapsed = now.saturating_sub(stamp) as f64;
+                            let expected = (elapsed * 4. / live.in_session_rate(self.options.rate).frame_us()).round() as i64;
+                            live.advance(expected).quarter.abs_diff(position.advance(7).quarter) <= 4
+                        });
+                        if contiguous || (self.locked && self.coasting && plausible) {
+                            if !contiguous {
+                                self.fit.clear();
+                            }
                             if self.locked {
                                 self.located_start = None;
                             }
+                            self.first_anchor = if self.locked { None } else { self.located_start };
+                            if !self.locked {
+                                self.stats.locks += 1;
+                            }
                             self.locked = true;
-                            self.rolling = Some((position.advance(7), now));
-                            self.pending = Some(ChaseEvent::Roll(position.advance(7), now));
+                            self.coasting = false;
+                            self.last_group = Some(now);
+                            let live = position.advance(7);
+                            self.fit.push(live.quarter, now);
+                            let stamp = self.fit.predict_us(live.quarter).unwrap_or(now).min(now);
+                            self.rolling = Some((live, stamp));
+                            self.pending = Some(ChaseEvent::Roll(live, stamp));
                         } else {
                             self.discontinuity();
                         }
@@ -163,20 +263,27 @@ impl Reader {
         }
     }
 
-    pub(crate) fn tracking(&mut self, now: i64) -> Option<(Position, i64)> {
+    pub(crate) fn tracking(&mut self, now: i64) -> Tracking {
         self.expire(now);
-        self.rolling
+        if let Some((position, stamp)) = self.rolling {
+            let anchor = self.first_anchor.filter(|_| now.saturating_sub(stamp) < 2_000_000 / position.rate.nominal());
+            Tracking::Rolling { position, stamp, now, anchor }
+        } else if let Some(p) = self.located_start {
+            Tracking::Located(p)
+        } else {
+            Tracking::Idle
+        }
     }
 
     fn discontinuity(&mut self) {
-        self.rolling = None;
+        self.freewheel();
         self.located_start = None;
+        self.first_anchor = None;
         self.next = 0;
-        self.previous = None;
-        if self.locked {
-            self.locked = false;
-            self.pending = Some(ChaseEvent::Stop);
+        if !self.locked {
+            self.previous = None;
         }
+        self.fit.clear();
     }
 
     pub(crate) fn take(&mut self, now: i64) -> Option<ChaseEvent> {
@@ -222,16 +329,16 @@ mod tests {
         assert_eq!(reader.take(81_000), Some(ChaseEvent::Roll(Position { quarter: 15, rate: FrameRate::Fps25 }, 1000)));
         assert_eq!(reader.take(82_000), None);
         cycle(18, |b| reader.read(b, 160_000));
-        assert_eq!(reader.take(160_001), Some(ChaseEvent::Stop));
+        assert_eq!(reader.take(160_001), None, "coast until the new location is corroborated");
         cycle(20, |b| reader.read(b, 240_000));
         assert!(matches!(reader.take(240_000), Some(ChaseEvent::Roll(_, 0))));
-        assert_eq!(reader.take(540_000), Some(ChaseEvent::Stop));
-        assert_eq!(reader.take(541_000), None);
+        assert_eq!(reader.take(560_000), Some(ChaseEvent::Stop));
+        assert_eq!(reader.take(561_000), None);
         // A gap in an incomplete set cannot be hidden by an immediately following cycle.
-        reader.read(&[0xf1, 0], 550_000);
-        reader.read(&[0xf1, 0x20], 551_000);
-        cycle(0, |b| reader.read(b, 560_000));
-        assert_eq!(reader.take(560_001), None);
+        reader.read(&[0xf1, 0], 570_000);
+        reader.read(&[0xf1, 0x20], 571_000);
+        cycle(0, |b| reader.read(b, 580_000));
+        assert_eq!(reader.take(580_001), None);
     }
 
     #[test]
@@ -286,7 +393,7 @@ mod tests {
             send(&mut reader, 0, 0, 0, 0, false);
             assert_eq!(reader.take(0), Some(ChaseEvent::Roll(Position { quarter: 7, rate }, 0)));
             send(&mut reader, 0, 0, 0, 0, true);
-            assert_eq!(reader.take(0), Some(ChaseEvent::Stop));
+            assert_eq!(reader.take(500_000), Some(ChaseEvent::Stop));
             send(&mut reader, 23, 59, 59, rate.nominal() as u8 - 2, true);
             assert_eq!(reader.take(0), None);
         }
@@ -310,5 +417,55 @@ mod tests {
         cycle(6, |b| feed.receive_while_open(&gate, 1, b));
         assert_eq!(feed.take_mtc(), Some(ChaseEvent::Stop));
         assert_eq!(feed.take_mtc(), None);
+    }
+}
+
+#[cfg(test)]
+mod dropout_tests {
+    use super::*;
+    fn pulse(r: &mut Reader, i: i64) {
+        let group = crate::mtc::quarters(2 * (i / 8), FrameRate::Fps30);
+        r.read(&group[(i % 8) as usize], i * 1_000_000 / 120);
+    }
+    #[test]
+    fn one_lost_quarter_does_not_stop_or_change_phase() {
+        for missing in 16..24 {
+            let mut r = Reader::default();
+            r.options.freewheel = 4;
+            for i in 0..48 {
+                if i != missing {
+                    pulse(&mut r, i);
+                }
+                assert_ne!(r.take(i * 1_000_000 / 120), Some(ChaseEvent::Stop), "missing {missing} at {i}");
+            }
+            assert_eq!(r.stats.locks, 1);
+            assert_eq!(r.stats.freewheel_entries, 1);
+            match r.tracking(47 * 1_000_000 / 120) {
+                Tracking::Rolling { position, .. } => assert_eq!(position.quarter, 47),
+                _ => panic!("lost lock"),
+            }
+        }
+    }
+    #[test]
+    fn freewheel_at_configured_rate_and_jam_still_obey_explicit_stop() {
+        for frames in [4, 8, 40] {
+            let mut r = Reader::default();
+            r.options.freewheel = frames;
+            for i in 0..16 {
+                pulse(&mut r, i);
+            }
+            let last = 125_000;
+            let expiry = last + (i64::from(frames) * 1_000_000 + 29) / 30;
+            assert!(matches!(r.tracking(expiry - 1), Tracking::Rolling { .. }));
+            assert!(matches!(r.tracking(expiry), Tracking::Idle));
+            assert_eq!(r.take(expiry), Some(ChaseEvent::Stop));
+            r.options.jam = true;
+            for i in 0..16 {
+                pulse(&mut r, i);
+            }
+            assert!(matches!(r.tracking(expiry + 10_000_000), Tracking::Rolling { .. }));
+            r.read(&[0xfc], expiry + 10_000_001);
+            assert_eq!(r.take(expiry + 10_000_002), Some(ChaseEvent::Stop));
+        }
     }
 }

@@ -1952,33 +1952,3 @@ fn mtc_chase_accounts_for_rate_and_unconsumed_mix_samples() {
     state.publish_output_position(now, Duration::ZERO, 480);
     assert_eq!(shared.presented_position_at(now), shared.position.load(Ordering::Relaxed));
 }
-
-#[test]
-fn mtc_correction_preserves_a_tones_pitch_while_the_timeline_advances_faster_or_slower() {
-    use soundcraft_model::{SourceAudio, SourceId};
-    for (speed, fundamental) in [(1025, 440.0f32), (1040, 440.0), (980, 440.0), (1040, 55.0), (980, 110.0), (1040, 1760.0)] {
-        let (shared, mut state, tx, _) = spike_session(0);
-        let mut session = (*state.session).clone();
-        let tone = (0..48_000).map(|i| 0.3 * (std::f32::consts::TAU * fundamental * i as f32 / 48_000.0).sin()).collect();
-        session.pool.insert(SourceId(5), Arc::new(SourceAudio::new(craft_audio::AudioBuffer { sample_rate: 48_000, channels: vec![tone] })));
-        tx.send(Cmd::Session(Arc::new(session), Vec::new())).unwrap();
-        tx.send(Cmd::PlayMtc(0)).unwrap();
-        shared.speed.store(speed, Ordering::Relaxed);
-        let mut rendered = Vec::new();
-        for _ in 0..80 {
-            let mut block = [0.0; 960];
-            state.fill(&mut block, 2);
-            rendered.extend(block.as_chunks::<2>().0.iter().map(|frame| frame[0]));
-        }
-        assert!((shared.position.load(Ordering::Relaxed) - 38_400 * i64::from(speed) / 1000).abs() <= 512);
-        let crossings: Vec<_> = rendered[4800..]
-            .windows(2)
-            .enumerate()
-            .filter(|(_, w)| w[0] < 0.0 && w[1] >= 0.0)
-            .map(|(i, w)| i as f64 - f64::from(w[0]) / f64::from(w[1] - w[0]))
-            .collect();
-        let hz = (crossings.len() - 1) as f64 * 48_000.0 / (crossings.last().unwrap() - crossings[0]);
-        let cents = 1200.0 * (hz / f64::from(fundamental)).log2();
-        assert!(cents.abs() < 3.0, "target {fundamental} Hz, speed {speed}, {hz:.3} Hz ({cents:.2} cents)");
-    }
-}

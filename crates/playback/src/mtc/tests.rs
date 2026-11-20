@@ -95,7 +95,7 @@ fn stopped_locate_play_wrap_seek_and_disable_use_the_callback_command_path() {
 
 #[test]
 fn unsupported_session_rate_sends_no_mislabeled_packets() {
-    let (mut state, commands, packets) = callback(session(FrameRate::Fps23_976), 48_000.);
+    let (mut state, commands, packets) = callback(session(FrameRate::Fps60), 48_000.);
     commands.send(Cmd::Play { from: 0, end: None, looped: None }).unwrap();
     state.fill(&mut [0.; 1024], 2);
     assert!(packets.pop().is_none());
@@ -220,8 +220,6 @@ fn locked_device_tracks_and_stops_during_a_ui_stall() {
         }
         feed.set_clock(us);
         if started.is_none() && piece >= 16 {
-            commands.send(Cmd::PlayMtc(240_000)).unwrap();
-            shared.playing.store(true, Ordering::Relaxed);
             started = Some(us);
         }
         let clock = now + Duration::from_micros(us as u64);
@@ -237,6 +235,9 @@ fn locked_device_tracks_and_stops_during_a_ui_stall() {
         audio.publish_output_position(clock, lead, 240);
         if started.is_some() {
             let presented = shared.presented_position_at(clock);
+            if us == 800_000 {
+                assert_eq!(feed.mtc_diagnostics().hard_relocates, 0, "sub-second drift must not seek");
+            }
             if us == 11_935_000 {
                 phase = Some(presented - ((152. * 1600.) as i64 + us * 48_000 / 1_000_000));
             }
@@ -247,6 +248,8 @@ fn locked_device_tracks_and_stops_during_a_ui_stall() {
     assert!((attacks[0] - started.unwrap()).abs() < 50_000);
     let interval = attacks[1] - attacks[0];
     assert!((interval - 500_000).abs() < 15_000, "interval {interval} us");
+    assert_eq!(feed.mtc_diagnostics().hard_relocates, 1, "the protected anchor caused exactly one relaunch after sustained drift");
+    assert_eq!(shared.speed.load(Ordering::Relaxed), 1000);
     feed.set_clock(12_301_000);
     audio.fill(&mut buffer, 2);
     assert!(!shared.playing.load(Ordering::Relaxed));
@@ -255,21 +258,14 @@ fn locked_device_tracks_and_stops_during_a_ui_stall() {
 }
 
 #[test]
-fn recording_releases_chase_pitch_latency_without_restarting_the_pass() {
+fn recording_request_is_ignored_while_waiting_for_external_timecode() {
     let (mut state, cmd, _) = callback(session(FrameRate::Fps30), 48_000.);
-    let shared = state.shared.clone();
-    shared.playing.store(true, Ordering::Relaxed);
-    cmd.send(Cmd::PlayMtc(48_000)).unwrap();
-    let now = Instant::now();
-    let mut block = [0.; 960];
-    state.fill(&mut block, 2);
-    state.publish_output_position(now, Duration::ZERO, 480);
-    assert!(shared.presented_position_at(now) < 48_000);
+    let feed = Arc::new(crate::midi::MidiFeed::default());
+    feed.set_mtc_source(Some(0));
+    cmd.send(Cmd::Midi(feed.clone())).unwrap();
     cmd.send(Cmd::Recording(true, 0)).unwrap();
-    state.fill(&mut block, 2);
-    state.publish_output_position(now, Duration::ZERO, 480);
-    assert_eq!(shared.presented_position_at(now), 48_480);
-    assert!(shared.playing.load(Ordering::Relaxed));
+    state.fill(&mut [0.; 480], 2);
+    assert!(!state.is_recording());
 }
 
 #[test]
@@ -305,4 +301,42 @@ fn saturated_output_queue_restarts_at_a_complete_group() {
     for packet in quarters(60, FrameRate::Fps30) {
         assert_eq!(q.pop().unwrap().1, Packet::Quarter(packet));
     }
+}
+
+#[test]
+fn pulled_down_outputs_use_fractional_cadence_and_nominal_labels() {
+    for rate in [FrameRate::Fps23_976, FrameRate::Fps29_97] {
+        let s = session(rate);
+        let q = Queue::new();
+        let now = Instant::now();
+        let one_hour = 3600 * rate.nominal();
+        let start = rate.samples_at_frame(one_hour, s.sample_rate);
+        Generator::new(q.clone()).span(&s, start as f64, 20_000, 1., 48_000., now);
+        let (_, packet) = q.pop().expect("pull-down generator must send a locate");
+        let hour = if rate == FrameRate::Fps23_976 { 1 } else { 0x61 };
+        assert_eq!(packet.bytes(), &[0xf0, 0x7f, 0x7f, 1, 1, hour, 0, 0, 0, 0xf7]);
+        let (first, _) = q.pop().unwrap();
+        let (second, _) = q.pop().unwrap();
+        assert!((second.duration_since(first).as_secs_f64() - 1.001 / (4. * rate.nominal() as f64)).abs() < 1e-8);
+    }
+}
+
+#[test]
+fn external_lock_starts_and_runs_at_unity_without_repaints() {
+    let (mut state, cmd, _) = callback(session(FrameRate::Fps30), 48_000.);
+    let feed = Arc::new(crate::midi::MidiFeed::default());
+    feed.set_mtc_source(Some(0));
+    cmd.send(Cmd::Midi(feed.clone())).unwrap();
+    let now = Instant::now();
+    for piece in 0..16 {
+        let us = piece * 1_000_000 / 120;
+        feed.set_clock(us);
+        feed.receive(0, &quarters(2 * (piece / 8), FrameRate::Fps30)[(piece % 8) as usize]);
+    }
+    state.device_timing = Some((now, Duration::from_millis(30), 0));
+    state.fill(&mut [0.; 480], 2);
+    assert!(state.shared.playing.load(Ordering::Relaxed), "device callback starts on lock");
+    state.publish_output_position(now, Duration::from_millis(30), 240);
+    assert!(state.shared.presented_position_at(now).abs_diff(6000) <= 1, "piece 15 at 125 ms");
+    assert_eq!(state.shared.speed.load(Ordering::Relaxed), 1000);
 }

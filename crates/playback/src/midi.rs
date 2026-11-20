@@ -148,6 +148,8 @@ fn lost_entry(port: u8) -> u32 {
 /// from the audio thread to the UI.
 pub struct MidiFeed {
     mtc: Mutex<crate::mtc_input::Reader>,
+    mtc_online: AtomicBool,
+    mtc_relocates: AtomicU64,
     mtc_wake: std::sync::OnceLock<Box<dyn Fn() + Send + Sync>>,
     ports: Arc<MidiPorts>,
     incoming: Ring,
@@ -201,6 +203,8 @@ impl Default for MidiFeed {
         MidiFeed {
             mtc: Mutex::default(),
             mtc_wake: Default::default(),
+            mtc_online: false.into(),
+            mtc_relocates: 0.into(),
             ports: Arc::new(MidiPorts::default()),
             incoming: Ring::new(INCOMING),
             writers: Mutex::new(0),
@@ -273,13 +277,13 @@ impl MidiFeed {
     /// bytes are masked to 7 bits, and bytes past the message are ignored. Nothing downstream
     /// (the engine, instruments, the recorded take) sees anything else.
     pub fn receive(&self, port: u8, bytes: &[u8]) {
-        self.receive_from(None, port, bytes);
+        self.receive_from(None, port, bytes, self.now());
     }
 
     /// [`Self::receive`] for a connection that can be shut off: once `open` is false
     /// ([`Self::close_port`]) the message is discarded.
     pub fn receive_while_open(&self, open: &AtomicBool, port: u8, bytes: &[u8]) {
-        self.receive_from(Some(open), port, bytes);
+        self.receive_from(Some(open), port, bytes, self.now());
     }
 
     /// Register the host wakeup once per feed. Idle chase requires no repaint timer.
@@ -297,26 +301,40 @@ impl MidiFeed {
         let mut reader = self.mtc.lock().unwrap_or_else(PoisonError::into_inner);
         if reader.source != source {
             reader.reset(source);
+            self.mtc_online.store(source.is_some(), Ordering::Release);
         }
     }
 
-    // Contention leaves this audio block at its previous speed. A confirmed loss
-    // or Stop is distinct from a busy input callback.
-    pub(crate) fn tracking_mtc(&self) -> Option<Option<(crate::mtc_input::Position, i64, i64)>> {
+    pub fn set_mtc_options(&self, rate: soundcraft_time::FrameRate, freewheel_frames: u8, jam_sync: bool, external_offset_frames: i64) {
+        let mut r = self.mtc.lock().unwrap_or_else(PoisonError::into_inner);
+        r.options = crate::mtc_input::Options { rate, freewheel: freewheel_frames.clamp(4, 40), jam: jam_sync, offset: external_offset_frames };
+    }
+    pub fn mtc_diagnostics(&self) -> crate::mtc_input::ChaseStats {
+        let mut result = self.mtc.lock().unwrap_or_else(PoisonError::into_inner).diagnostics();
+        result.hard_relocates = self.mtc_relocates.load(Ordering::Relaxed);
+        result
+    }
+    pub(crate) fn mtc_relocated(&self) {
+        self.mtc_relocates.fetch_add(1, Ordering::Relaxed);
+    }
+    pub(crate) fn mtc_online(&self) -> bool {
+        self.mtc_online.load(Ordering::Acquire)
+    }
+    // A contended MIDI callback leaves the audio transport untouched for one block.
+    pub(crate) fn tracking_mtc(&self) -> Option<(crate::mtc_input::Tracking, i64)> {
         let mut reader = self.mtc.try_lock().ok()?;
-        let now = self.now();
-        Some(reader.tracking(now).map(|(p, stamp)| (p, stamp, now.saturating_sub(stamp))))
+        Some((reader.tracking(self.now()), reader.options.offset))
     }
 
     pub fn take_mtc(&self) -> Option<crate::mtc_input::ChaseEvent> {
         self.mtc.lock().unwrap_or_else(PoisonError::into_inner).take(self.now())
     }
 
-    fn receive_from(&self, open: Option<&AtomicBool>, port: u8, bytes: &[u8]) {
+    fn receive_from(&self, open: Option<&AtomicBool>, port: u8, bytes: &[u8], at_us: i64) {
         if matches!(bytes.first(), Some(0xf0 | 0xf1 | 0xfc)) {
             let mut reader = self.mtc.lock().unwrap_or_else(PoisonError::into_inner);
             if reader.source == Some(port) && open.is_none_or(|gate| gate.load(Ordering::Acquire)) {
-                reader.read(bytes, self.now());
+                reader.read(bytes, at_us);
                 drop(reader);
                 if !matches!(bytes,[0xf1,n] if n>>4!=7) {
                     self.wake_mtc_host();
@@ -339,7 +357,7 @@ impl MidiFeed {
             if open.is_some_and(|o| !o.load(Ordering::Acquire)) {
                 return;
             }
-            let now = self.now();
+            let now = at_us;
             // Losses from a full queue go into the queue first, where they happened: ahead of
             // the first event that fits again. Each mark carries the time its port's events
             // were dropped at (nothing of that port got into the queue since), so the audio
@@ -945,8 +963,20 @@ mod backend {
         let feed = Arc::clone(feed);
         let gate: Gate = Arc::new(AtomicBool::new(true));
         let open = Arc::clone(&gate);
-        let connection =
-            input.connect(port, "in", move |_, bytes, ()| feed.receive_while_open(&open, index, bytes), ()).map_err(|e| e.to_string())?;
+        let connection = input
+            .connect(
+                port,
+                "in",
+                {
+                    let mut timeline = crate::sync_input::DriverTime::default();
+                    move |stamp, bytes, ()| {
+                        let at_us = timeline.map(stamp, feed.now());
+                        feed.receive_from(Some(&open), index, bytes, at_us);
+                    }
+                },
+                (),
+            )
+            .map_err(|e| e.to_string())?;
         Ok((gate, connection))
     }
 }

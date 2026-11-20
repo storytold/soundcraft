@@ -79,7 +79,7 @@ pub(crate) struct AudioState {
     fold: [(f32, f32); MAX_CHANNELS],
     pub(crate) pending_len: usize,
     read: f64,
-    chase_pitch: super::chase_pitch::ChasePitch,
+    drift_since: Option<i64>,
     chasing: bool,
     chase_group: Option<i64>,
     pub(crate) device_timing: Option<(std::time::Instant, std::time::Duration, usize)>,
@@ -163,14 +163,13 @@ impl AudioState {
             return;
         }
         let duration = Duration::try_from_secs_f64(frames as f64 / self.device_rate.max(1.)).unwrap_or_default();
-        let pitch_latency = if self.chasing { self.chase_pitch.latency() / self.device_rate.max(1.) } else { 0.0 };
         let rate = self.midi_speed * self.session.sample_rate.as_f64();
         // pos includes samples mixed ahead but not yet copied to the output stream.
         let end = self.pos as f64 + self.read - self.pending_len as f64;
         *clock = Some(super::OutputPosition {
             callback: now,
             valid_for: duration.saturating_mul(2).max(Duration::from_millis(100)),
-            sample_at_callback: end - (lead.as_secs_f64() + duration.as_secs_f64() + pitch_latency) * rate,
+            sample_at_callback: end - (lead.as_secs_f64() + duration.as_secs_f64()) * rate,
             samples_per_second: rate,
         });
     }
@@ -199,7 +198,7 @@ impl AudioState {
             pending: vec![vec![0.0; BLOCK]; nch],
             pending_len: 0,
             read: 0.0,
-            chase_pitch: super::chase_pitch::ChasePitch::new(device_rate),
+            drift_since: None,
             chasing: false,
             chase_group: None,
             device_timing: None,
@@ -253,9 +252,8 @@ impl AudioState {
                     self.forget_meters();
                 }
                 Cmd::Recording(r, pass) => {
-                    if r && self.chasing {
-                        self.end_chase();
-                        self.shared.speed.store(1000, Ordering::Relaxed);
+                    if r && (self.chasing || self.midi.as_ref().is_some_and(|feed| feed.mtc_online())) {
+                        continue;
                     }
                     self.recording = r;
                     self.midi_wraps = 0;
@@ -302,17 +300,8 @@ impl AudioState {
                 Cmd::Play { from, end, looped } => self.begin_play(from, end, looped, false),
                 Cmd::EndChase => self.end_chase(),
                 Cmd::PlayMtc(from) => self.begin_play(from, None, None, true),
-                Cmd::Stop => {
-                    self.chasing = false;
-                    self.reset_mtc();
-                    self.midi_stopped = (self.playing && self.recording).then(|| self.midi.as_ref().map_or(i64::MAX, |f| f.clock()));
-                    self.playing = false;
-                    self.end = None;
-                    self.looped = None;
-                    self.mix.reset();
-                }
+                Cmd::Stop => self.halt(),
                 Cmd::Locate(at) => {
-                    self.chase_pitch.reset();
                     self.reset_mtc();
                     self.pos = at;
                     if self.playing {
@@ -336,7 +325,7 @@ impl AudioState {
     fn begin_play(&mut self, from: Samples, end: Option<Samples>, looped: Option<Range>, chasing: bool) {
         self.chasing = chasing;
         self.chase_group = None;
-        self.chase_pitch.reset();
+        self.drift_since = None;
         self.reset_mtc();
         self.pos = from;
         self.end = end;
@@ -353,50 +342,89 @@ impl AudioState {
         if self.chasing {
             self.chasing = false;
             self.chase_group = None;
-            self.chase_pitch.reset();
+            self.drift_since = None;
         }
     }
 
-    // Run the locked servo from the device callback. Its cadence is one correction
-    // per complete MTC group, including when the host window is not repainting.
+    #[cfg(test)]
+    pub(crate) fn is_recording(&self) -> bool {
+        self.recording
+    }
+
+    fn halt(&mut self) {
+        self.end_chase();
+        self.reset_mtc();
+        self.midi_stopped = (self.playing && self.recording).then(|| self.midi.as_ref().map_or(i64::MAX, |f| f.clock()));
+        self.playing = false;
+        self.end = None;
+        self.looped = None;
+        self.pending_len = 0;
+        self.read = 0.;
+        self.shared.playing.store(false, Ordering::Release);
+        self.mix.reset();
+    }
+
+    // Chase is a locate followed by playback at the device's own sample clock.
+    // A single late group (or a missing byte) cannot alter pitch or jump the transport.
     fn follow_mtc(&mut self) {
-        if !self.chasing || !self.playing {
+        use super::mtc_input::Tracking;
+        let Some(feed) = self.midi.as_ref() else { return };
+        if !feed.mtc_online() || self.recording {
             return;
         }
-        let Some(tracking) = self.midi.as_ref().and_then(|feed| feed.tracking_mtc()) else { return };
-        let Some((position, stamp, age)) = tracking else {
-            self.end_chase();
-            self.shared.speed.store(1000, Ordering::Relaxed);
-            self.playing = false;
-            self.pending_len = 0;
-            self.read = 0.;
-            self.shared.playing.store(false, Ordering::Relaxed);
-            self.mix.reset();
-            return;
-        };
-        match self.chase_group.replace(stamp) {
-            None => return, // preserve the first block at a corroborated stopped locate
-            Some(last) if last == stamp => return,
-            _ => {}
-        }
+        let Some((tracking, offset)) = feed.tracking_mtc() else { return };
         let sr = self.session.sample_rate;
-        let p = position.in_session_rate(self.session.frame_rate);
-        let target = p.samples(sr).saturating_sub(self.session.timecode_start).saturating_add(sr.samples(age as f64 / 1e6));
-        let latency = self.device_timing.map_or(0., |(_, lead, offset)| lead.as_secs_f64() + offset as f64 / self.device_rate.max(1.));
-        let speed = self.speed();
-        let presented = self.pos as f64 + self.read
-            - self.pending_len as f64
-            - (latency + self.chase_pitch.latency() / self.device_rate.max(1.)) * speed * sr.as_f64();
-        let error = target.saturating_sub(presented.round() as i64);
-        let tolerance = p.drift_tolerance(sr);
-        if error.unsigned_abs() > (4 * tolerance) as u64 {
-            self.begin_play(target.max(0), None, None, true);
-            self.chase_group = Some(stamp);
-            self.shared.speed.store(1000, Ordering::Relaxed);
-        } else {
-            let rate = super::mtc_input::chase_rate(error, tolerance, sr, speed);
-            self.shared.speed.store((rate * 1000.).round() as u32, Ordering::Relaxed);
+        let rate = self.session.frame_rate;
+        let start = self.session.timecode_start;
+        let (p, stamp, now, anchor) = match tracking {
+            Tracking::Idle => {
+                if self.chasing {
+                    self.halt();
+                }
+                return;
+            }
+            Tracking::Located(p) => {
+                if self.playing {
+                    self.halt();
+                }
+                self.pos = p.session_sample(rate, sr, start, offset).max(0);
+                self.shared.position.store(self.pos, Ordering::Relaxed);
+                return;
+            }
+            Tracking::Rolling { position, stamp, now, anchor } => (position, stamp, now, anchor),
+        };
+        if self.chase_group == Some(stamp) {
+            return;
         }
+        let live = p.session_sample(rate, sr, start, offset).saturating_add(sr.samples(now.saturating_sub(stamp) as f64 / 1e6));
+        if live < 0 {
+            if self.chasing {
+                self.halt();
+            }
+            return;
+        }
+        let delay = self.device_timing.map_or(0., |(_, lead, index)| lead.as_secs_f64() + index as f64 / self.device_rate.max(1.));
+        let desired = live.saturating_add(sr.samples(delay));
+        if !self.chasing || !self.playing {
+            // A corroborated stopped locate protects its first attack for one start.
+            // Unanchored locks start at the source time the new audio will be heard.
+            let from = anchor.map_or(desired, |p| p.session_sample(rate, sr, start, offset).max(0));
+            self.begin_play(from, None, None, true);
+            self.shared.speed.store(1000, Ordering::Relaxed);
+            self.shared.playing.store(true, Ordering::Release);
+        } else {
+            let rendered = self.pos as f64 + self.read - self.pending_len as f64;
+            if desired.abs_diff(rendered.round() as i64) > p.in_session_rate(rate).frame_samples(sr) as u64 {
+                let since = *self.drift_since.get_or_insert(stamp);
+                if stamp.saturating_sub(since) >= 1_000_000 {
+                    feed.mtc_relocated();
+                    self.begin_play(desired, None, None, true);
+                }
+            } else {
+                self.drift_since = None;
+            }
+        }
+        self.chase_group = Some(stamp);
     }
 
     fn reset_mtc(&mut self) {
@@ -864,9 +892,6 @@ impl AudioState {
             };
             write_frame(frame, channels, nch, sounding, &self.fold, sample);
             self.read += step;
-        }
-        if self.chasing && self.playing {
-            self.chase_pitch.process(out, channels, speed);
         }
     }
 }

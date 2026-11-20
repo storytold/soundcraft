@@ -12,7 +12,7 @@ use std::sync::{Arc, Mutex, Weak};
 use std::time::{Duration, Instant};
 
 pub fn supported(rate: FrameRate) -> bool {
-    matches!(rate, FrameRate::Fps24 | FrameRate::Fps25 | FrameRate::Fps29_97Drop | FrameRate::Fps30)
+    matches!(rate, FrameRate::Fps23_976 | FrameRate::Fps24 | FrameRate::Fps25 | FrameRate::Fps29_97 | FrameRate::Fps29_97Drop | FrameRate::Fps30)
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -49,7 +49,7 @@ fn locate(frame: i64, rate: FrameRate) -> Packet {
     Packet::Locate(message)
 }
 
-fn quarters(frame: i64, rate: FrameRate) -> [[u8; 2]; 8] {
+pub(crate) fn quarters(frame: i64, rate: FrameRate) -> [[u8; 2]; 8] {
     let (seconds, wire) = label(frame, rate);
     let mut messages = quarter_frames(seconds, wire);
     if rate.is_drop() {

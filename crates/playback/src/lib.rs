@@ -28,12 +28,12 @@ pub fn loops(range: Range) -> bool {
     range.len() > 64
 }
 
-mod chase_pitch;
 pub mod devices;
 pub mod midi;
 pub mod mtc;
 pub mod mtc_input;
 pub mod record;
+pub mod sync_input;
 
 pub use devices::AudioConfig;
 
@@ -513,7 +513,7 @@ impl Player {
         self.begin_play(from, Cmd::Play { from, end, looped });
     }
 
-    /// Start at a timecode locate, preserving audio pitch during transport rate corrections.
+    /// Start playback at a timecode locate at the normal device rate.
     pub fn play_chasing_mtc(&self, from: Samples) {
         self.begin_play(from, Cmd::PlayMtc(from));
     }
