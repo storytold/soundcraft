@@ -1,4 +1,5 @@
 //! One native worker owns all sync protocols and one connection per exact port name.
+use crate::sync_clock::{SessionRevision, delivery_offset};
 use crate::{
     Cmd, MidiSyncStatus, Session,
     beat_clock::Cursor,
@@ -23,15 +24,12 @@ pub(crate) fn output_names() -> Result<Vec<String>, String> {
 }
 
 /// Extension point for OS-timestamped MIDI backends. The native midir backend
-/// waits with Rust's high-resolution sleep and records the immediate send time.
+/// sends immediately; each port retains future messages until their deadline.
 trait SyncPort: Send {
     fn send_at(&mut self, at: Instant, bytes: &[u8]) -> Result<Instant, String>;
 }
 impl SyncPort for MidiOutputConnection {
-    fn send_at(&mut self, at: Instant, bytes: &[u8]) -> Result<Instant, String> {
-        if let Some(wait) = at.checked_duration_since(Instant::now()) {
-            std::thread::sleep(wait);
-        }
+    fn send_at(&mut self, _at: Instant, bytes: &[u8]) -> Result<Instant, String> {
         let handed = Instant::now();
         self.send(bytes).map_err(|e| e.to_string())?;
         Ok(handed)
@@ -52,9 +50,12 @@ struct Stats {
     connected: Mutex<BTreeSet<String>>,
     priority: AtomicU64,
     sent: AtomicU64,
+    pending_transition_timeouts: AtomicU64,
+    oversized_dropped: AtomicU64,
     relaunches: AtomicU64,
     catch_up_sends: AtomicU64,
     stale_dropped: AtomicU64,
+    session_backlog_drops: AtomicU64,
     buckets: [AtomicU64; 7],
     max: AtomicU64,
 }
@@ -94,6 +95,7 @@ pub(crate) struct Output {
     view: View,
     metrics: Arc<CallbackMetrics>,
     session: Option<Arc<Session>>,
+    generation: u64,
     beat: Vec<(String, i64)>,
     compensated: bool,
     additional: Option<(String, i64, bool)>,
@@ -111,14 +113,21 @@ enum Update {
     InputWake(Arc<AtomicBool>),
 }
 impl Output {
-    pub(crate) fn configure(&mut self, s: &Arc<Session>, audio: &Sender<Cmd>) {
+    pub(crate) fn configure(&mut self, s: &Arc<Session>, audio: &Sender<Cmd>) -> u64 {
         if self.session.is_none() {
             let _ = audio.send(Cmd::Clock(Some(Publisher::new(self.view.clone(), self.metrics.clone()))));
+        }
+        self.generation = self.generation.wrapping_add(1);
+        let revision = SessionRevision { generation: self.generation, doc: s.clone(), remap: true };
+        let active = !self.stats.connected().is_empty();
+        if self.view.lock().unwrap_or_else(std::sync::PoisonError::into_inner).register(revision, active) {
+            self.stats.session_backlog_drops.fetch_add(1, Relaxed);
         }
         self.session = Some(s.clone());
         if let Some((tx, _)) = &self.worker {
             let _ = tx.send(Update::Session(s.clone()));
         }
+        self.generation
     }
     fn send(&mut self, u: Update) {
         if self.worker.is_none() {
@@ -133,7 +142,7 @@ impl Output {
                     self.worker = Some((tx, thread));
                 }
                 Err(e) => {
-                    *self.trouble.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(e.to_string());
+                    *self.trouble.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(format!("MIDI sync worker could not start: {e}"));
                     return;
                 }
             }
@@ -143,7 +152,7 @@ impl Output {
         }
     }
     pub(crate) fn beats(&mut self, ports: Vec<(String, i64)>, compensate: bool) {
-        if self.beat == ports && self.compensated == compensate {
+        if self.worker.is_some() && self.beat == ports && self.compensated == compensate {
             return;
         }
         self.beat = ports.clone();
@@ -181,44 +190,48 @@ impl Output {
     }
     pub(crate) fn presented(&self) -> Option<i64> {
         let now = Instant::now();
-        self.view.lock().unwrap_or_else(std::sync::PoisonError::into_inner).read(now, true, 0.).0.map(|b| b.sample_index_at(now))
+        self.view.lock().unwrap_or_else(std::sync::PoisonError::into_inner).read(now, true, 0).0.map(|b| b.sample_index_at(now))
     }
     pub(crate) fn status(&self) -> MidiSyncStatus {
         let buckets = self.stats.buckets.each_ref().map(|v| v.load(Relaxed));
         let max = self.stats.max.load(Relaxed);
         let lead = self.metrics.lead_us.load(Relaxed);
         let sr = self.session.as_ref().map_or_else(soundcraft_time::SampleRate::default, |s| s.sample_rate);
-        let total = |offset: i64, compensate: bool| {
-            (if compensate { lead as i64 } else { 0 }).saturating_add((effective_offset(offset, sr) as f64 * 1e6 / sr.as_f64()).round() as i64)
+        let system_delay = self.metrics.system_delay_samples.load(Relaxed);
+        let timing = |name: &str, offset, compensate| {
+            let (total, limited) = delivery_offset(Duration::from_micros(lead), system_delay as usize, sr, compensate, offset);
+            PortTiming {
+                connected: self.stats.connected().contains(name),
+                requested_offset_samples: offset,
+                offset_samples: effective_offset(offset, sr),
+                system_delay_samples: system_delay,
+                device_lead_us: lead,
+                advance_limited: limited,
+                effective_total_us: (total * 1e6).round() as i64,
+                beat_clock_total_us: None,
+                mtc_total_us: None,
+            }
         };
-        let connected = self.stats.connected();
         let mut ports = BTreeMap::new();
         for (name, offset) in &self.beat {
-            ports.insert(
-                name.clone(),
-                PortTiming {
-                    connected: connected.contains(name),
-                    requested_offset_samples: *offset,
-                    offset_samples: effective_offset(*offset, sr),
-                    beat_clock_total_us: Some(total(*offset, self.compensated)),
-                    mtc_total_us: None,
-                },
-            );
+            let mut t = timing(name, *offset, self.compensated);
+            t.beat_clock_total_us = Some(t.effective_total_us);
+            ports.insert(name.clone(), t);
         }
         if let Some((name, offset, compensate)) = &self.additional {
-            ports
-                .entry(name.clone())
-                .or_insert(PortTiming {
-                    connected: connected.contains(name),
-                    requested_offset_samples: *offset,
-                    offset_samples: effective_offset(*offset, sr),
-                    beat_clock_total_us: None,
-                    mtc_total_us: None,
-                })
-                .mtc_total_us = Some(total(*offset, *compensate));
+            let t = timing(name, *offset, *compensate);
+            let total = t.effective_total_us;
+            let limited = t.advance_limited;
+            let entry = ports.entry(name.clone()).or_insert(t);
+            entry.mtc_total_us = Some(total);
+            entry.advance_limited |= limited;
         }
         MidiSyncStatus {
             sent: self.stats.sent.load(Relaxed),
+            pending_transition_timeouts: self.stats.pending_transition_timeouts.load(Relaxed),
+            oversized_dropped: self.stats.oversized_dropped.load(Relaxed),
+            error: self.trouble(),
+            session_backlog_drops: self.stats.session_backlog_drops.load(Relaxed),
             relaunches: self.stats.relaunches.load(Relaxed),
             catch_up_sends: self.stats.catch_up_sends.load(Relaxed),
             stale_dropped: self.stats.stale_dropped.load(Relaxed),
@@ -250,6 +263,7 @@ impl Drop for Output {
 }
 
 struct Route {
+    map: Option<SessionRevision>,
     offset: i64,
     compensate: bool,
     encoder: Box<dyn SyncEncoder>,
@@ -258,39 +272,98 @@ struct Port<C> {
     link: Option<C>,
     retry: Instant,
     routes: [Option<Route>; 2],
+    future: Vec<Event>,
+    stop_pending: bool,
     failure: Option<String>,
 }
+#[derive(Clone, Copy)]
 struct Event {
+    route: usize,
     at: Instant,
     len: usize,
-    bytes: [u8; 10],
+    bytes: [u8; 16],
 }
 impl Event {
-    fn new(at: Instant, msg: &[u8]) -> Option<Self> {
-        let mut bytes = [0; 10];
+    fn new(route: usize, at: Instant, msg: &[u8]) -> Option<Self> {
+        let mut bytes = [0; 16];
         bytes.get_mut(..msg.len())?.copy_from_slice(msg);
-        Some(Self { at, len: msg.len(), bytes })
+        Some(Self { route, at, len: msg.len(), bytes })
     }
 }
 impl<C: SyncPort> Port<C> {
+    fn disconnect(&mut self, name: &str, error: String, now: Instant, stats: &Stats) {
+        self.failure = Some(format!("{name}: {error}"));
+        stats.connected().remove(name);
+        self.link = None;
+        self.future.clear();
+        self.retry = now + Duration::from_secs(1);
+    }
+
     fn poll(&mut self, name: &str, now: Instant, session: &Session, view: &View, stats: &Stats, pending: &mut Vec<Event>) -> Option<Instant> {
         let Some(port) = &mut self.link else { return Some(self.retry) };
         let mut next = None;
         let mut soon = |at: Instant| next = Some(next.map_or(at, |t: Instant| t.min(at)));
+        if self.stop_pending {
+            match port.send_at(now, &[craft_midi_sync::sync::STOP]) {
+                Ok(handed) => {
+                    stats.record(now, handed);
+                    self.stop_pending = false;
+                }
+                Err(error) => {
+                    self.disconnect(name, error, now, stats);
+                    return Some(self.retry);
+                }
+            }
+        }
         pending.clear();
-        for r in self.routes.iter_mut().flatten() {
-            let (block, future) = view.lock().unwrap_or_else(std::sync::PoisonError::into_inner).read(
-                now,
-                r.compensate,
-                effective_offset(r.offset, session.sample_rate) as f64 / session.sample_rate.as_f64(),
-            );
+        self.future.retain(|event| {
+            if event.at <= now {
+                pending.push(*event);
+                false
+            } else {
+                soon(event.at);
+                true
+            }
+        });
+        for (route_index, route) in self.routes.iter_mut().enumerate() {
+            let Some(r) = route else { continue };
+            let (block, future, revision) = {
+                let timeline = view.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+                let (block, future) = timeline.read(now, r.compensate, r.offset);
+                let changed = block
+                    .and_then(|b| timeline.map(b.generation))
+                    .filter(|revision| r.map.as_ref().is_none_or(|old| old.generation < revision.generation))
+                    .cloned();
+                (block, future, changed)
+            };
+            if let Some(new) = revision {
+                if new.remap
+                    && let Some(old) = &r.map
+                {
+                    r.encoder.remap(&old.doc, &new.doc);
+                }
+                r.map = Some(new);
+            }
+            let session = r.map.as_ref().map_or(session, |rev| rev.doc.as_ref());
             if let Some(at) = future {
                 soon(at);
             }
             if let Some(b) = block {
                 if let Some(at) = r.encoder.update(b, now, session, &mut |at, m| {
-                    if let Some(e) = Event::new(at, m) {
-                        pending.push(e);
+                    let Some(event) = Event::new(route_index, at, m) else {
+                        stats.oversized_dropped.fetch_add(1, Relaxed);
+                        self.failure = Some(format!("{name}: MIDI message longer than 16 bytes dropped"));
+                        return;
+                    };
+                    if at <= now {
+                        pending.push(event);
+                    } else {
+                        if self.future.len() == 256 {
+                            self.future.remove(0);
+                            self.failure = Some(format!("{name}: MIDI sync deadline queue is full"));
+                        }
+                        self.future.push(event);
+                        soon(at);
                     }
                 }) {
                     soon(at);
@@ -309,12 +382,8 @@ impl<C: SyncPort> Port<C> {
                     }
                 }
                 Err(err) => {
-                    self.failure = Some(format!("{name}: {err}"));
-                    stats.connected().remove(name);
-                    self.link = None;
-                    self.retry = now + Duration::from_secs(1);
-                    soon(self.retry);
-                    break;
+                    self.disconnect(name, err, now, stats);
+                    return Some(self.retry);
                 }
             }
         }
@@ -322,17 +391,31 @@ impl<C: SyncPort> Port<C> {
     }
 }
 fn set_route<C: SyncPort>(map: &mut BTreeMap<String, Port<C>>, index: usize, name: String, route: Route) {
-    let port = map.entry(name).or_insert_with(|| Port { link: None, retry: Instant::now(), routes: [None, None], failure: None });
+    let port = map.entry(name).or_insert_with(|| Port {
+        link: None,
+        retry: Instant::now(),
+        routes: [None, None],
+        future: Vec::new(),
+        stop_pending: false,
+        failure: None,
+    });
     port.routes[index] = Some(route);
 }
-fn clear_route<C: SyncPort>(port: &mut Port<C>, index: usize, stats: &Stats) {
-    if let Some(mut old) = port.routes[index].take()
-        && let Some(out) = &mut port.link
-    {
-        old.encoder.stop(&mut |m| {
-            let at = Instant::now();
-            if let Ok(handed) = out.send_at(at, m) {
-                stats.record(at, handed);
+fn clear_route<C: SyncPort>(name: &str, port: &mut Port<C>, index: usize, stats: &Stats) {
+    port.future.retain(|event| event.route != index);
+    if let Some(mut route) = port.routes[index].take() {
+        route.encoder.stop(&mut |msg| {
+            let now = Instant::now();
+            if let Some(link) = &mut port.link {
+                match link.send_at(now, msg) {
+                    Ok(handed) => stats.record(now, handed),
+                    Err(error) => {
+                        port.stop_pending = true;
+                        port.disconnect(name, error, now, stats);
+                    }
+                }
+            } else {
+                port.stop_pending = true;
             }
         });
     }
@@ -353,6 +436,8 @@ fn drive<C: SyncPort>(
     stats.priority.store(if priority { 1 } else { 2 }, Relaxed);
     let mut ports = BTreeMap::<String, Port<C>>::new();
     let mut awake = Instant::now();
+    let mut transition = None;
+    let state = || view.lock().unwrap_or_else(std::sync::PoisonError::into_inner).transport_state();
     let mut update = None;
     let mut pending = Vec::<Event>::new();
     loop {
@@ -366,16 +451,11 @@ fn drive<C: SyncPort>(
                 awake = now + Duration::from_millis(150);
             }
             match u {
-                Update::Session(s) => {
-                    for r in ports.values_mut().flat_map(|p| p.routes.iter_mut().flatten()) {
-                        r.encoder.remap(&session, &s);
-                    }
-                    session = s;
-                }
+                Update::Session(s) => session = s,
                 Update::Beats(dest, c) => {
                     for (name, p) in &mut ports {
                         if !dest.iter().any(|(n, _)| n == name) {
-                            clear_route(p, 0, &stats);
+                            clear_route(name, p, 0, &stats);
                         }
                     }
                     for (n, o) in dest {
@@ -383,27 +463,30 @@ fn drive<C: SyncPort>(
                             continue;
                         }
                         if let Some(p) = ports.get_mut(&n) {
-                            clear_route(p, 0, &stats);
+                            clear_route(&n, p, 0, &stats);
                         }
-                        set_route(&mut ports, 0, n, Route { offset: o, compensate: c, encoder: Box::<Cursor>::default() });
+                        set_route(&mut ports, 0, n, Route { map: None, offset: o, compensate: c, encoder: Box::<Cursor>::default() });
                     }
                 }
                 Update::Encoder(dest, c, encoder) => {
-                    for p in ports.values_mut() {
-                        clear_route(p, 1, &stats);
+                    for (name, p) in &mut ports {
+                        clear_route(name, p, 1, &stats);
                     }
                     if let Some((n, o)) = dest {
-                        set_route(&mut ports, 1, n, Route { offset: o, compensate: c, encoder });
+                        set_route(&mut ports, 1, n, Route { map: None, offset: o, compensate: c, encoder });
                     }
                 }
-                Update::Wake => {}
+                Update::Wake => transition = Some((state(), now + Duration::from_secs(2))),
                 Update::InputWake(pending) => pending.store(false, Relaxed),
             }
-            ports.retain(|_, p| p.routes.iter().any(Option::is_some));
+            ports.retain(|_, p| p.stop_pending || p.routes.iter().any(Option::is_some));
             stats.connected().retain(|n| ports.contains_key(n));
         }
         let mut next = None;
         let mut soon = |at: Instant| next = Some(next.map_or(at, |t: Instant| t.min(at)));
+        // Sample before polling so a callback racing this iteration cannot cancel
+        // the final read of its newly published transport state.
+        let observed_state = transition.and_then(|_| state());
         for (name, p) in &mut ports {
             if p.link.is_none() && now >= p.retry {
                 match open(name) {
@@ -423,6 +506,15 @@ fn drive<C: SyncPort>(
                 soon(at);
             }
         }
+        if let Some(generation) = ports
+            .values()
+            .filter(|p| p.link.is_some())
+            .flat_map(|p| p.routes.iter().flatten())
+            .map(|route| route.map.as_ref().map_or(0, |r| r.generation))
+            .min()
+        {
+            view.lock().unwrap_or_else(std::sync::PoisonError::into_inner).retire_before(generation);
+        }
         {
             let err = ports.values().find_map(|p| p.failure.as_deref().or_else(|| p.routes.iter().flatten().find_map(|r| r.encoder.error())));
             let mut old = trouble.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -430,8 +522,23 @@ fn drive<C: SyncPort>(
                 *old = err.map(str::to_owned);
             }
         }
+        ports.retain(|name, p| {
+            let keep = p.stop_pending || p.routes.iter().any(Option::is_some);
+            if !keep {
+                stats.connected().remove(name);
+            }
+            keep
+        });
         let connected = ports.values().any(|p| p.link.is_some());
-        if connected && now < awake {
+        if let Some((previous, deadline)) = transition {
+            if !connected || observed_state != previous {
+                transition = None;
+            } else if now >= deadline {
+                stats.pending_transition_timeouts.fetch_add(1, Relaxed);
+                transition = None;
+            }
+        }
+        if connected && (now < awake || transition.is_some()) {
             soon(now + Duration::from_millis(1));
         }
         if let Some(at) = next {
@@ -459,9 +566,9 @@ fn drive<C: SyncPort>(
             }
         }
     }
-    for p in ports.values_mut() {
-        clear_route(p, 0, &stats);
-        clear_route(p, 1, &stats);
+    for (name, p) in &mut ports {
+        clear_route(name, p, 0, &stats);
+        clear_route(name, p, 1, &stats);
     }
 }
 
