@@ -175,6 +175,7 @@ const DIALOG_COMMANDS: &[&str] = &[
     "edit.shift",
     "edit.fades_create",
     "setup.session",
+    "setup.peripherals",
     "event.quantize",
     "event.transpose",
     "edit.strip_silence",

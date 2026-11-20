@@ -162,6 +162,9 @@ pub struct UiState {
     pub clock_follow_input: Option<String>,
     pub clock_follow_stop_on_loss: bool,
     pub clock_follow_input_offsets: std::collections::BTreeMap<String, i64>,
+    pub gen_mtc: bool,
+    pub mtc_freewheel_frames: u8,
+    pub mtc_jam_sync: bool,
     pub mtc_input_port: Option<String>,
     pub mtc_output_port: Option<String>,
 }
@@ -236,6 +239,9 @@ impl Default for UiState {
             clock_follow_input: None,
             clock_follow_stop_on_loss: false,
             clock_follow_input_offsets: Default::default(),
+            gen_mtc: false,
+            mtc_freewheel_frames: 8,
+            mtc_jam_sync: false,
             mtc_input_port: None,
             mtc_output_port: None,
         }
@@ -307,10 +313,8 @@ pub struct SoundApp {
     clock_follow: app::clock_follow::Host,
     pub(crate) mtc_online: bool,
     mtc_chasing: bool,
-    mtc_playback_rate: f32,
     mtc_status: &'static str,
-    pub(crate) mtc_output: Option<soundcraft_playback::mtc::MtcOutput>,
-    pub(crate) mtc_output_retry: Option<web_time::Instant>,
+    applied_mtc_output: Option<(Option<(String, i64)>, bool)>,
     /// When the MIDI ports were last looked for (app uptime, seconds).
     midi_scan_at: f64,
     /// MIDI played during the current record pass.

@@ -31,6 +31,8 @@ impl SoundApp {
         self.attach_midi(&player);
         player.locate(at);
         self.player = Some(player);
+        self.applied_mtc_output = None;
+        self.service_mtc_output();
         Ok(())
     }
 
@@ -130,6 +132,8 @@ impl SoundApp {
         let player = Player::with_config(self.engine.playback_session(), &self.ui.audio);
         self.attach_midi(&player);
         self.player = Some(player);
+        self.applied_mtc_output = None;
+        self.service_mtc_output();
     }
 }
 

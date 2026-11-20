@@ -219,7 +219,7 @@ fn new_session(e: &mut Engine, p: &Value) -> Result<Value> {
     let name = str_param(p, "name").unwrap_or("Untitled").to_string();
     let sr =
         SampleRate::new(i64_or(p, "sample_rate", 48_000).clamp(0, i64::from(u32::MAX)) as u32).map_err(|err| bad("session.new", err.to_string()))?;
-    let mut s = if str_param(p, "template") == Some("demo") { crate::demo::demo_session() } else { Session::new(name.clone(), sr) };
+    let mut s = if str_param(p, "template") == Some("demo") { crate::demo::demo_session() } else { crate::new_session(name.clone(), sr) };
     s.name = name;
     if let Some(b) = p.get("bit_depth") {
         s.bit_depth = match b.to_string().trim_matches('"') {

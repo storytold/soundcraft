@@ -50,7 +50,8 @@ pub enum Dialog {
     AutoRename { clips: Vec<ClipId>, names: StripNames },
     // `id: None` creates (Track › Group…); `id: Some` modifies that group (Groups list › Modify Group…).
     Group { id: Option<GroupId>, name: String, edit: bool, mix: bool, members: Vec<(u64, String, bool)> },
-    Session { frame_rate: String, bit_depth: String },
+    Synchronization,
+    Session { frame_rate: String, bit_depth: String, start: String, external: i64 },
     // Clip › Loop…: `length` is typed in `format`, measured from `start` (the first selected clip's).
     // `filled` is the text the field opened with and the exact length it stands for.
     Loop { by: LoopBy, count: u32, length: String, format: soundcraft_time::TimeFormat, start: Samples, filled: (String, Samples) },
@@ -107,6 +108,7 @@ impl Dialogs {
             Dialog::AutoRename { .. } => "auto_rename",
             Dialog::Group { id: None, .. } => "group",
             Dialog::Group { id: Some(_), .. } => "modify_group",
+            Dialog::Synchronization => "synchronization",
             Dialog::Session { .. } => "session",
             Dialog::Loop { .. } => "clip_looping",
             Dialog::ScoreSetup { .. } => "score_setup",
@@ -234,7 +236,18 @@ impl Dialogs {
                 let members = s.tracks.iter().map(|t| (t.id.0, t.name.clone(), s.edit.selected_tracks.contains(&t.id))).collect();
                 Dialog::Group { id: None, name: format!("Group {}", s.groups.len() + 1), edit: true, mix: true, members }
             }
-            "setup.session" => Dialog::Session { frame_rate: e.session().frame_rate.label().into(), bit_depth: "24".into() },
+            "setup.peripherals" => Dialog::Synchronization,
+            "setup.session" => Dialog::Session {
+                frame_rate: e.session().frame_rate.label().into(),
+                bit_depth: match e.session().bit_depth {
+                    soundcraft_model::BitDepthSetting::Int16 => "16",
+                    soundcraft_model::BitDepthSetting::Float32 => "32f",
+                    _ => "24",
+                }
+                .into(),
+                start: e.session().format_position(0, soundcraft_time::TimeFormat::Timecode),
+                external: e.session().edit.value("midi.mtc.external_offset_frames", 0.) as i64,
+            },
             "file.score_setup" => {
                 let s = soundcraft_engine::score::ScoreSetup::from_session(e.session());
                 Dialog::ScoreSetup { title: s.title, composer: s.composer, bars_per_system: s.bars_per_system, show_track_names: s.show_track_names }
@@ -501,6 +514,7 @@ pub fn show(app: &mut SoundApp, ctx: &egui::Context) {
         Dialog::StripSilenceRename { .. } | Dialog::AutoRename { .. } => "Rename Selected Clips",
         Dialog::Group { id: None, .. } => "Create Group",
         Dialog::Group { id: Some(_), .. } => "Modify Group",
+        Dialog::Synchronization => "Synchronization",
         Dialog::Session { .. } => "Session Setup",
         Dialog::Loop { .. } => "Clip Looping",
         Dialog::ScoreSetup { .. } => "Score Setup",
@@ -700,7 +714,24 @@ pub fn show(app: &mut SoundApp, ctx: &egui::Context) {
                         action = Some((cmd.into(), params));
                     }
                 }
-                Dialog::Session { frame_rate, bit_depth } => {
+                Dialog::Synchronization => {
+                    app.mtc_input_settings(ui);
+                    app.mtc_output_settings(ui);
+                    ui.horizontal(|ui|{
+                        let caption=ui.label(crate::localization::text("Freewheel (frames)"));
+                        ui.add(egui::DragValue::new(&mut app.ui.mtc_freewheel_frames).range(4..=40)).labelled_by(caption.id);
+                    });
+                    crate::widgets::checkbox(ui,&mut app.ui.mtc_jam_sync,crate::localization::text("Jam Sync"));
+                }
+                Dialog::Session { frame_rate, bit_depth,start,external } => {
+                    ui.horizontal(|ui|{
+                        let caption=ui.label(crate::localization::text("Session Start"));
+                        ui.text_edit_singleline(start).labelled_by(caption.id);
+                    });
+                    ui.horizontal(|ui|{
+                        let caption=ui.label(crate::localization::text("External timecode offset (frames)"));
+                        ui.add(egui::DragValue::new(external).range(-5_184_000..=5_184_000)).labelled_by(caption.id);
+                    });
                     craft_ui::ComboBox::from_label(crate::localization::text("Timecode Rate")).selected_text(crate::localization::text(frame_rate.as_str())).show_ui(ui, |ui| {
                         for r in soundcraft_time::FrameRate::ALL {
                             ui.selectable_value(frame_rate, r.label().to_string(), crate::localization::text(r.label()));
@@ -712,7 +743,7 @@ pub fn show(app: &mut SoundApp, ctx: &egui::Context) {
                         }
                     });
                     if buttons(ui, "OK", enter) {
-                        action = Some(("setup.session".into(), json!({"frame_rate": frame_rate, "bit_depth": bit_depth})));
+                        action = Some(("setup.session".into(), json!({"frame_rate": frame_rate, "bit_depth": bit_depth,"start_timecode":start,"external_offset_frames":external})));
                     }
                 }
                 Dialog::Loop { by, count, length, format, start, filled } => {

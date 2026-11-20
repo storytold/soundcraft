@@ -74,7 +74,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Session",
             ["Setup"],
             Some("Cmd+2"),
-            "{frame_rate?: '29.97 Drop'…, bit_depth?: 16|24|32f, timecode_start?: position, name?}",
+            "{frame_rate?: '29.97 Drop'…, bit_depth?: 16|24|32f, timecode_start?: position, start_timecode?: HH:MM:SS:FF, external_offset_frames?: integer, name?}",
             always,
             session_setup
         ),
@@ -111,7 +111,23 @@ fn session_setup(e: &mut Engine, p: &Value) -> Result<Value> {
         Some(_) => return Err(bad("setup.session", "bit_depth must be 16, 24 or 32f")),
         None => None,
     };
-    let tc = position_param(e, "setup.session", p, "timecode_start")?;
+    let mut tc = position_param(e, "setup.session", p, "timecode_start")?;
+    let selected_rate = fr.unwrap_or(e.session().frame_rate);
+    if let Some(value) = p.get("start_timecode") {
+        if tc.is_some() {
+            return Err(bad("setup.session", "Choose one session start"));
+        }
+        let label = value.as_str().ok_or_else(|| bad("setup.session", "Expected a timecode label"))?;
+        let parsed = soundcraft_time::Timecode::parse(label).map_err(|e| bad("setup.session", e.to_string()))?;
+        if parsed.hours >= 24 || soundcraft_time::Timecode::from_frames(parsed.to_frames(selected_rate), selected_rate) != parsed {
+            return Err(bad("setup.session", "Invalid timecode label at this frame rate"));
+        }
+        tc = Some(parsed.to_samples(selected_rate, e.session().sample_rate));
+    }
+    let external = p
+        .get("external_offset_frames")
+        .map(|v| v.as_i64().filter(|v| v.unsigned_abs() <= 5_184_000).ok_or_else(|| bad("setup.session", "Invalid external timecode offset")))
+        .transpose()?;
     let s = e.session_mut();
     if let Some(f) = fr {
         s.frame_rate = f;
@@ -119,11 +135,33 @@ fn session_setup(e: &mut Engine, p: &Value) -> Result<Value> {
     if let Some(b) = bd {
         s.bit_depth = b;
     }
+    if let Some(frames) = external {
+        s.edit.values.insert("midi.mtc.external_offset_frames".into(), frames as f64);
+    }
     if let Some(t) = tc {
         s.timecode_start = t;
     }
     if let Some(n) = p.get("name").and_then(Value::as_str) {
         s.name = n.to_string();
     }
-    Ok(json!({"frame_rate": s.frame_rate.label(), "bit_depth": s.bit_depth, "sample_rate": s.sample_rate.hz()}))
+    Ok(
+        json!({"frame_rate": s.frame_rate.label(), "bit_depth": s.bit_depth, "sample_rate": s.sample_rate.hz(),"start_timecode":s.format_position(0,soundcraft_time::TimeFormat::Timecode),"external_offset_frames":s.edit.value("midi.mtc.external_offset_frames",0.) as i64}),
+    )
+}
+
+#[cfg(test)]
+mod sync_session_tests {
+    use super::*;
+    #[test]
+    fn new_session_starts_at_one_hour_and_external_offset_round_trips() {
+        let mut e = Engine::default();
+        e.execute("session.new", &json!({})).unwrap();
+        assert_eq!(e.session().format_position(0, soundcraft_time::TimeFormat::Timecode), "01:00:00:00");
+        e.execute("setup.session", &json!({"start_timecode":"02:01:03:04","frame_rate":"25","external_offset_frames":-17})).unwrap();
+        assert_eq!(e.session().format_position(0, soundcraft_time::TimeFormat::Timecode), "02:01:03:04");
+        let loaded = soundcraft_model::Session::from_json(&e.session().to_json().unwrap()).unwrap();
+        assert_eq!(loaded.edit.value("midi.mtc.external_offset_frames", 0.), -17.);
+        let old = soundcraft_model::Session::default();
+        assert_eq!(soundcraft_model::Session::from_json(&old.to_json().unwrap()).unwrap().timecode_start, 0);
+    }
 }

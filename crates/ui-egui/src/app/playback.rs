@@ -533,7 +533,7 @@ impl SoundApp {
             }
         } else if let Some((pos, end, looped)) = &mut self.sim {
             let sr = self.engine.session().sample_rate.as_f64();
-            *pos += (f64::from(dt) * sr * f64::from(self.mtc_playback_rate)) as i64;
+            *pos += (f64::from(dt) * sr) as i64;
             if let Some(l) = looped
                 && *pos >= l.end
             {
