@@ -2,7 +2,7 @@
 
 **Stage: pre-alpha** · next: alpha, ~5% and ~110–180 h away (the alpha gate's three failing workflows)
 
-> **Last reviewed:** 2026-11-14 · **Last updated:** 2026-11-20 · **Change:** minor (G-11 MIDI Time Code generation and chase; strict external-WAV AAF import and MIDI input in the progress log; previously trivial: Frequency Shifter plugin, Command-click target priority and cursor, Command-click automation points, plugin editors on Linux/X11, Cancel Zoom Toggle, side panels in dock columns, Auto Pan stereo balance, Alt-click returns a plugin parameter to its default, Clip List Auto Rename, Strip Silence rectangles, Strip Silence Rename, Strip Silence Extract and Separate, Clip Looping dialog, AudioSuite Vari-Fi speed ramps, Auto Pan plugin, Subharmonic plugin, Ring Modulator plugin, Float32 file headroom) · **Target:** Avid Pro Tools Ultimate 2026.4.1
+> **Last reviewed:** 2026-11-14 · **Last updated:** 2026-11-20 · **Change:** minor (G-11 MIDI Beat Clock output and MIDI Time Code generation and chase; strict external-WAV AAF import and MIDI input in the progress log; previously trivial: Frequency Shifter plugin, Command-click target priority and cursor, Command-click automation points, plugin editors on Linux/X11, Cancel Zoom Toggle, side panels in dock columns, Auto Pan stereo balance, Alt-click returns a plugin parameter to its default, Clip List Auto Rename, Strip Silence rectangles, Strip Silence Rename, Strip Silence Extract and Separate, Clip Looping dialog, AudioSuite Vari-Fi speed ramps, Auto Pan plugin, Subharmonic plugin, Ring Modulator plugin, Float32 file headroom) · **Target:** Avid Pro Tools Ultimate 2026.4.1
 
 SoundCraft is a clean-room, pure-Rust digital audio workstation that aims at full parity with
 Avid Pro Tools, and then beyond it: faster, open, scriptable and agent-controllable. This page is
@@ -124,7 +124,7 @@ mutated and truncated movies. Field reports from the first public week are track
 
 ## Progress log
 
-- **2026-11-20 (G-11)** MIDI Time Code generation and forward playback chase, including stopped locates. Beat Clock output is tracked in #1662.
+- **2026-11-20 (G-11)** Native MIDI Beat Clock supports multiple calibrated destinations. MIDI Time Code generation shares the same output worker. Chase locates to incoming timecode and plays at the session sample rate. Hardware verification is pending.
 - **2026-11-20 (G-11)** External MIDI Beat Clock can drive playback and recording with a transient tempo grid. Verified in simulation; hardware check pending.
 
 - **2026-11-18 (MIDI input):** MIDI input devices: keyboards play record-enabled and input-monitored MIDI and instrument tracks live and are recorded into MIDI clips, with a device and channel choice per track. The device switches are in the MIDI inputs section of Setup › Playback Engine (Setup › MIDI › MIDI Input Devices opens the same window) and are kept in the app preferences, per computer, not in the session. Controllers, pitch bend and aftertouch reach the instrument live; a pitch held on two devices or channels sounds until both release it; a full input queue releases the notes of its device and marks the take incomplete. On Linux, live play was checked with a hardware keyboard (Akai MPK mini 3) and recording with a virtual one; macOS and Windows are type-checked only, and there is no MIDI input on FreeBSD or the web. Guide: `docs/midi-input.md`. No readiness percentage change until that is measured.
@@ -191,7 +191,7 @@ mutated and truncated movies. Field reports from the first public week are track
 
 | Date | Change | Summary |
 |---|---|---|
-| 2026-11-20 | minor | M12: MIDI Time Code generation and forward playback chase; recording is offline. Beat Clock output is tracked in #1662. |
+| 2026-11-20 | minor | G-11: native MIDI Beat Clock output and MTC generation and playback chase. Hardware verification pending. |
 | 2026-11-14 | minor | Strict external-WAV AAF import with bounded property caching; remaining interchange work and readiness estimates unchanged |
 | 2026-11-09 | trivial | Progress log: Frequency Shifter plugin; readiness estimates unchanged |
 | 2026-11-08 | trivial | Command-click breakpoint/control priority and insertion affordance; active-tool drags retained; readiness estimates unchanged |

@@ -150,6 +150,7 @@ pub struct MidiFeed {
     clock_follow: Mutex<crate::clock_follow::Follower>,
     clock_source: AtomicUsize,
     mtc: Mutex<crate::mtc_input::Reader>,
+    sync_wake: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
     mtc_online: AtomicBool,
     mtc_relocates: AtomicU64,
     mtc_wake: std::sync::OnceLock<Box<dyn Fn() + Send + Sync>>,
@@ -207,6 +208,7 @@ impl Default for MidiFeed {
             clock_source: AtomicUsize::new(usize::MAX),
             mtc: Mutex::default(),
             mtc_wake: Default::default(),
+            sync_wake: Mutex::default(),
             mtc_online: false.into(),
             mtc_relocates: 0.into(),
             ports: Arc::new(MidiPorts::default()),
@@ -294,7 +296,13 @@ impl MidiFeed {
     pub fn set_mtc_wakeup(&self, make: impl FnOnce() -> Box<dyn Fn() + Send + Sync>) {
         self.mtc_wake.get_or_init(make);
     }
+    pub(crate) fn set_sync_waker(&self, wake: Arc<dyn Fn() + Send + Sync>) {
+        *self.sync_wake.lock().unwrap_or_else(PoisonError::into_inner) = Some(wake);
+    }
     fn wake_mtc_host(&self) {
+        if let Some(wake) = self.sync_wake.lock().unwrap_or_else(PoisonError::into_inner).as_ref() {
+            wake();
+        }
         if let Some(wake) = self.mtc_wake.get() {
             wake();
         }

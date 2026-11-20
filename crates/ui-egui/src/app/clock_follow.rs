@@ -233,7 +233,7 @@ impl SoundApp {
 fn update_grid(grid: &mut TempoMap, anchor: &mut Option<(i64, i64)>, s: Snapshot, sr: SampleRate) -> bool {
     let Some(bpm) = s.bpm else { return false };
     let Some((last, stamp)) = *anchor else {
-        if s.state != State::Locked && (grid.tempo_at_tick(0) - bpm).abs() >= 0.05 {
+        if s.state == State::Waiting && (grid.tempo_at_tick(0) - bpm).abs() >= 0.05 {
             let _ = grid.set_tempo(0, bpm);
             return true;
         }
@@ -251,7 +251,7 @@ fn update_grid(grid: &mut TempoMap, anchor: &mut Option<(i64, i64)>, s: Snapshot
     if (grid.tempo_at_tick(tick) - bpm).abs() < 0.15 && error < sr.samples(0.003) as u64 {
         return false;
     }
-    if observed <= 0 || grid.tempos().len() >= 16_384 {
+    if observed <= 0 {
         return false;
     }
     let measured = pulses as f64 * 2_500_000. / observed as f64;

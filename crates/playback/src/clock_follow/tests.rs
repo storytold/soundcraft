@@ -26,6 +26,16 @@ fn start_continue_spp_stop_and_realtime_inside_sysex() {
 }
 
 #[test]
+fn a_fresh_start_after_idle_clock_timeout_arms_the_next_pulse() {
+    let mut r = Follower::default();
+    feed(&mut r, 0xf8, 1);
+    feed(&mut r, 0xfa, 200_001);
+    assert_eq!(r.take(), Some(Action::Locate(0)));
+    feed(&mut r, 0xf8, 200_005);
+    assert_eq!(r.take(), Some(Action::Play { pulse: 0, at: 200_005 }));
+}
+
+#[test]
 fn coast_or_stop_once_on_loss_and_resume_only_after_transport() {
     for coast in [true, false] {
         let mut r = Follower::default();

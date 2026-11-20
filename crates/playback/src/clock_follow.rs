@@ -139,7 +139,6 @@ impl Follower {
         self.awaiting_clock = false;
     }
     fn clock(&mut self, at: i64) {
-        self.expire(at);
         let at = self.latest.map_or(at, |prev| prev.max(at));
         self.latest = Some(at);
         self.fit_index = self.fit_index.saturating_add(1);
@@ -180,6 +179,7 @@ impl Follower {
     /// System common bytes may be interrupted by real-time messages, even inside SysEx.
     /// Channel data and incomplete or malformed system messages never trigger a transport action.
     pub(crate) fn receive(&mut self, bytes: &[u8], at: i64) {
+        self.expire(at);
         for &byte in bytes {
             match byte {
                 0xf8 => self.clock(at),

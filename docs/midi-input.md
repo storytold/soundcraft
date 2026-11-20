@@ -81,6 +81,16 @@ One **Undo** removes the take.
 **Setup › MIDI › MIDI Input Filter…** keeps kinds of messages (for example aftertouch) out of
 recordings.
 
+## Send MIDI Beat Clock to external hardware
+
+In **Setup › MIDI › MIDI Beat Clock**, enable the clock and check each destination that should follow session tempo. Each port has a signed offset in samples. To calibrate a device, record its beat into an audio track, measure the first transient’s delay relative to the grid, and enter that sample count with a minus sign to advance the port. A positive offset delays delivery. Available lookahead limits how early a newly started transport can send. Settings persist on this computer across projects. Opening an old project imports its offset if the port has no saved calibration.
+
+At the session origin SoundCraft sends Start. A locate during playback sends Stop, Song Position Pointer and Continue in sequence. The first subsequent clock aligns to the encoded sixteenth. Stopped locates send no F8 clock pulses. Position Pointer covers 0 through 16,383 sixteenths; a continuous pass can run beyond that range. The worker retries unplugged ports. If names are duplicated, it opens the first matching device and reports the ambiguity.
+
+**Preferences › MIDI › Delay Compensation for External Devices** controls the use of the audio device’s reported output lead for Beat Clock and generated timecode. Per-port calibration applies in addition. The Notes and Controllers preference is saved for external note output. SoundCraft's current MIDI-input instruments render inside the audio engine.
+
+Use `setup.midi_beat_clock` to read settings or apply a patch, for example `{"enabled":true,"ports":{"USB MIDI":{"enabled":true,"offset_samples":-200}}}`. A supplied `ports` object replaces the destination list. The desktop control channel’s `setup.midi_sync_status` and the dialog’s **Copy diagnostics** report host-side send timing, callback gaps and port offsets. USB buffering and wire latency require an external measurement. Hardware verification of this revision is pending.
+
 ## If something is lost
 
 The path from a device to the engine has a fixed size. If a device sends more than it holds

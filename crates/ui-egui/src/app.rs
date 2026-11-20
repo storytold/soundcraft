@@ -114,6 +114,8 @@ impl SoundApp {
             last_rendered_tick: None,
             pending_open: None,
             last_rev: 0,
+            applied_midi_sync: None,
+            sync_migration_pending: true,
             fonts_ready: false,
             fonts_installed: false,
             system_fonts: true,
@@ -210,6 +212,8 @@ impl SoundApp {
                 self.engine.end_merge();
             }
         }
+        self.migrate_midi_sync();
+        self.service_midi_sync();
         self.watch_output();
         self.watch_input();
         // Stop the old playback before sending a replacement session to the audio thread.

@@ -33,6 +33,8 @@ impl SoundApp {
         self.player = Some(player);
         self.applied_mtc_output = None;
         self.service_mtc_output();
+        self.applied_midi_sync = None;
+        self.service_midi_sync();
         Ok(())
     }
 
@@ -134,6 +136,8 @@ impl SoundApp {
         self.player = Some(player);
         self.applied_mtc_output = None;
         self.service_mtc_output();
+        self.applied_midi_sync = None;
+        self.service_midi_sync();
     }
 }
 
