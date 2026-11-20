@@ -93,6 +93,8 @@ pub enum TransportRequest {
         origin: Samples,
         render_from: Samples,
     },
+    /// A prepared external-clock start already reached the device. Adopt it without sending Play again.
+    ClockPlaybackStarted(Samples),
     Stop,
     TogglePlay,
     Record,

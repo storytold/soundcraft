@@ -57,3 +57,4 @@ here. The subset uses default_fonts; the parent face uses monochrome_emoji_fonts
 | `docs/images/` | SoundCraft contributors | screenshots of SoundCraft rendered from the synthesised demo session | MIT OR Apache-2.0 |
 | `docs/images/midi-clock-resume-latency.png` | SoundCraft contributors | original graph of physical MIDI and audio timing measurements for #1675 | MIT OR Apache-2.0 |
 | `docs/images/midi-clock-resume-boundary.png` | SoundCraft contributors | original graphs of recorded amplitudes and crash waveform correlations for #1675 | MIT OR Apache-2.0 |
+| `docs/images/midi-clock-resume-dispatch.png` | SoundCraft contributors | original per-take comparison of playback submission and recorded downbeat timing on the physical MIDI loop | MIT OR Apache-2.0 |

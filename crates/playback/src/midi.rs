@@ -388,6 +388,13 @@ impl MidiFeed {
         input.snapshot(now)
     }
 
+    pub(crate) fn arm_clock_resume(&self, port: u8, cue: crate::clock_follow::PreparedResume) -> bool {
+        self.clock_follow.lock().unwrap_or_else(PoisonError::into_inner).arm(port, cue)
+    }
+    pub(crate) fn cancel_clock_resume(&self) {
+        self.clock_follow.lock().unwrap_or_else(PoisonError::into_inner).cue = None;
+    }
+
     fn read_clock(&self, open: Option<&AtomicBool>, port: u8, bytes: &[u8], at: i64) {
         if self.clock_source.load(Ordering::Acquire) != usize::from(port) {
             return;
@@ -395,6 +402,9 @@ impl MidiFeed {
         let mut input = self.clock_follow.lock().unwrap_or_else(PoisonError::into_inner);
         if input.source == Some(port) && open.is_none_or(|g| g.load(Ordering::Acquire)) {
             let action = input.receive(bytes, at);
+            if action {
+                input.dispatch_prepared(self.now());
+            }
             drop(input);
             if action {
                 self.wake_mtc_host();

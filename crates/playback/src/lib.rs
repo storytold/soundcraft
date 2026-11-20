@@ -209,7 +209,8 @@ pub struct Player {
     /// The block count last seen while playing, and since when.
     #[cfg(not(target_arch = "wasm32"))]
     watch: Mutex<Option<(u64, std::time::Instant)>>,
-    tx: Sender<Cmd>,
+    tx: Arc<Sender<Cmd>>,
+    prepared_clock_feed: Mutex<std::sync::Weak<midi::MidiFeed>>,
     #[cfg(not(target_arch = "wasm32"))]
     _stream: Option<cpal::Stream>,
     #[cfg(target_arch = "wasm32")]
@@ -218,7 +219,7 @@ pub struct Player {
     side: Mutex<Side>,
     // Hold the publication storage until the native callback has shut down.
     #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
-    beat_clock: Mutex<sync_output::Output>,
+    beat_clock: Arc<Mutex<sync_output::Output>>,
     pub device_name: String,
     pub device_rate: u32,
     /// Output channels the device was opened with (0 for the silent clock).
@@ -323,8 +324,9 @@ impl Player {
                             #[cfg(not(target_arch = "wasm32"))]
                             watch: Mutex::new(None),
                             #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
-                            beat_clock: Mutex::default(),
-                            tx,
+                            beat_clock: Arc::default(),
+                            tx: Arc::new(tx),
+                            prepared_clock_feed: Mutex::default(),
                             side: new_side(grx),
                             _stream: Some(stream),
                             device_name: name,
@@ -402,8 +404,9 @@ impl Player {
             fault,
             watch: Mutex::new(None),
             #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
-            beat_clock: Mutex::default(),
-            tx,
+            beat_clock: Arc::default(),
+            tx: Arc::new(tx),
+            prepared_clock_feed: Mutex::default(),
             side,
             _stream: None,
             device_name: "No audio device (silent)".into(),
@@ -426,7 +429,8 @@ impl Player {
         Player {
             shared,
             fault: Arc::default(),
-            tx,
+            tx: Arc::new(tx),
+            prepared_clock_feed: Mutex::default(),
             side,
             _stream: None,
             device_name: "No audio device".into(),
@@ -444,6 +448,7 @@ impl Player {
     }
 
     fn publish_session(&self, s: Arc<Session>, clock_document: std::sync::Weak<Session>) {
+        self.cancel_clock_resume();
         #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
         let generation = self.beat_clock.lock().unwrap_or_else(PoisonError::into_inner).configure(&s, &self.tx, true);
         #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
@@ -485,6 +490,7 @@ impl Player {
             return true;
         }
         let Some(s) = side.follow_snapshot(tempo) else { return false };
+        self.cancel_clock_resume();
         #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
         let generation = self.beat_clock.lock().unwrap_or_else(PoisonError::into_inner).configure(&s, &self.tx, false);
         #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
@@ -642,6 +648,7 @@ impl Player {
     }
 
     fn send_transport(&self, command: Cmd) {
+        self.cancel_clock_resume();
         #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
         self.beat_clock.lock().unwrap_or_else(PoisonError::into_inner).send_transport(&self.tx, command);
         #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
@@ -656,6 +663,39 @@ impl Player {
     pub fn play_from_clock(&self, origin: Samples, render_from: Samples) {
         self.begin_play(render_from, Cmd::PlayClock { origin, render_from });
     }
+    /// Prepare one already located, stopped position. A later edit or transport command
+    /// cancels it under the same input lock used to submit PlayClock.
+    pub fn arm_clock_resume(
+        &self,
+        feed: &Arc<midi::MidiFeed>,
+        port: u8,
+        pulse: i64,
+        origin: Samples,
+        offset: Samples,
+        sr: soundcraft_time::SampleRate,
+    ) {
+        self.cancel_clock_resume();
+        let cue = clock_follow::PreparedResume {
+            pulse,
+            origin,
+            offset,
+            sr,
+            shared: Arc::downgrade(&self.shared),
+            tx: Arc::downgrade(&self.tx),
+            #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+            output: Arc::downgrade(&self.beat_clock),
+        };
+        if feed.arm_clock_resume(port, cue) {
+            *self.prepared_clock_feed.lock().unwrap_or_else(PoisonError::into_inner) = Arc::downgrade(feed);
+        }
+    }
+
+    pub fn cancel_clock_resume(&self) {
+        if let Some(feed) = std::mem::take(&mut *self.prepared_clock_feed.lock().unwrap_or_else(PoisonError::into_inner)).upgrade() {
+            feed.cancel_clock_resume();
+        }
+    }
+
     pub fn play_chasing_mtc(&self, from: Samples) {
         self.begin_play(from, Cmd::PlayMtc(from));
     }
@@ -679,12 +719,14 @@ impl Player {
 
     /// Play MIDI devices through record-enabled and input-monitored MIDI and instrument tracks.
     pub fn set_midi(&self, feed: Arc<midi::MidiFeed>) {
+        self.cancel_clock_resume();
         #[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
         feed.set_sync_waker(self.beat_clock.lock().unwrap_or_else(PoisonError::into_inner).transport_waker());
         let _ = self.tx.send(Cmd::Midi(feed));
     }
 
     pub fn set_recording(&self, on: bool) {
+        self.cancel_clock_resume();
         let _ = self.tx.send(Cmd::Recording(on, 0));
     }
 

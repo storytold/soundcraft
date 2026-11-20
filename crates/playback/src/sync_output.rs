@@ -242,6 +242,9 @@ impl Output {
             let _ = tx.send(Update::Wake(before));
         }
     }
+    pub(crate) fn reported_lead_us(&self) -> u64 {
+        self.metrics.lead_us.load(Relaxed)
+    }
     pub(crate) fn trouble(&self) -> Option<String> {
         self.trouble.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone()
     }
@@ -252,7 +255,7 @@ impl Output {
     pub(crate) fn status(&self) -> MidiSyncStatus {
         let buckets = self.stats.buckets.each_ref().map(|v| v.load(Relaxed));
         let max = self.stats.max.load(Relaxed);
-        let lead = self.metrics.lead_us.load(Relaxed);
+        let lead = self.reported_lead_us();
         let sr = self.session.as_ref().map_or_else(soundcraft_time::SampleRate::default, |s| s.sample_rate);
         let system_delay = self.metrics.system_delay_samples.load(Relaxed);
         let timing = |name: &str, offset, compensate| {

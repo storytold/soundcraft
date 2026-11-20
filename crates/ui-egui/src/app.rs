@@ -232,6 +232,7 @@ impl SoundApp {
             self.last_rev = self.engine.revision;
             self.refresh_playback_session();
         }
+        self.prepare_located_clock_resume();
         self.open_inserted();
         self.autosave_changes();
         self.write_automation();

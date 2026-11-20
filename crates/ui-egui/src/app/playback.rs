@@ -46,6 +46,10 @@ impl SoundApp {
         } else {
             self.sim = Some((from, end, looped));
         }
+        self.note_play_started(from, looped);
+    }
+
+    fn note_play_started(&mut self, from: Samples, looped: Option<Range>) {
         // The loop as the audio engine takes it: a range too short to loop is played once.
         self.play_loop = looped.filter(|l| soundcraft_playback::loops(*l));
         self.engine.transport.playing = true;
@@ -447,6 +451,7 @@ impl SoundApp {
                         self.play_from_selection();
                     }
                 }
+                TransportRequest::ClockPlaybackStarted(from) => self.note_play_started(from, None),
                 TransportRequest::PlayFromClock { origin, render_from } if !self.is_playing() => {
                     self.start_play_with_origin(render_from, None, None, Some(origin));
                 }

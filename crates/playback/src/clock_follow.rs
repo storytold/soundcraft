@@ -13,7 +13,16 @@ pub enum State {
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]
 pub enum Action {
     Locate(i64),
-    Play { pulse: i64, at: i64 },
+    Play {
+        pulse: i64,
+        at: i64,
+    },
+    /// The input thread already submitted the prepared playback command.
+    Started {
+        pulse: i64,
+        at: i64,
+        render_from: i64,
+    },
     Stop,
 }
 #[derive(Default, Clone, Copy, Debug)]
@@ -29,7 +38,52 @@ pub struct Snapshot {
     pub now_us: i64,
 }
 
+/// One-shot transport handoff. Device callbacks never prepare plugins or retain a player.
+pub(crate) struct PreparedResume {
+    pub(crate) pulse: i64,
+    pub(crate) origin: i64,
+    pub(crate) offset: i64,
+    pub(crate) sr: soundcraft_time::SampleRate,
+    pub(crate) shared: std::sync::Weak<super::Shared>,
+    pub(crate) tx: std::sync::Weak<super::Sender<super::Cmd>>,
+    #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+    pub(crate) output: std::sync::Weak<super::Mutex<super::sync_output::Output>>,
+}
+impl PreparedResume {
+    fn dispatch(&self, age_us: i64) -> Option<i64> {
+        use super::{Cmd, Ordering};
+        let shared = self.shared.upgrade()?;
+        let tx = self.tx.upgrade()?;
+        if shared.playing.load(Ordering::Acquire) {
+            return None;
+        }
+        #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+        let output = self.output.upgrade()?;
+        #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+        let output = output.try_lock().ok()?;
+        #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+        let lead = output.reported_lead_us();
+        #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
+        let lead = 0;
+        let render_from = self
+            .origin
+            .saturating_add(self.sr.samples(age_us.max(0) as f64 / 1e6))
+            .saturating_add(self.sr.samples(lead as f64 / 1e6))
+            .saturating_sub(self.offset)
+            .max(0);
+        shared.position.store(render_from, Ordering::Relaxed);
+        shared.playing.store(true, Ordering::Release);
+        let cmd = Cmd::PlayClock { origin: self.origin, render_from };
+        #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+        output.send_transport(&tx, cmd);
+        #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
+        let _ = tx.send(cmd);
+        Some(render_from)
+    }
+}
+
 pub(crate) struct Follower {
+    pub(crate) cue: Option<PreparedResume>,
     pub(crate) source: Option<u8>,
     pub(crate) coast: bool,
     state: State,
@@ -54,6 +108,7 @@ pub(crate) struct Follower {
 impl Default for Follower {
     fn default() -> Self {
         Self {
+            cue: None,
             source: None,
             coast: true,
             state: State::Waiting,
@@ -78,7 +133,29 @@ impl Default for Follower {
     }
 }
 impl Follower {
+    pub(crate) fn arm(&mut self, port: u8, cue: PreparedResume) -> bool {
+        if self.source == Some(port) && self.count == 0 && self.next_pulse == cue.pulse && matches!(self.state, State::Waiting | State::Stopped) {
+            self.cue = Some(cue);
+            return true;
+        }
+        false
+    }
+
+    pub(crate) fn dispatch_prepared(&mut self, now: i64) {
+        if self.count == 1
+            && let Some(Action::Play { pulse, at }) = self.events[self.head]
+            && let Some(cue) = self.cue.take()
+            && cue.pulse == pulse
+            && let Some(render_from) = cue.dispatch(now.saturating_sub(at))
+        {
+            self.events[self.head] = Some(Action::Started { pulse, at, render_from });
+        }
+    }
+
     fn push(&mut self, action: Action) {
+        if !matches!(action, Action::Play { .. }) {
+            self.cue = None;
+        }
         self.queued_action = true;
         if self.count == self.events.len() {
             // A paused host cannot replay an arbitrarily long history safely.
@@ -125,6 +202,7 @@ impl Follower {
         }
     }
     pub(crate) fn lost(&mut self) {
+        self.cue = None;
         self.coast_period_us = self.steady.period_us().or(self.coast_period_us);
         self.short.clear();
         self.steady.clear();
