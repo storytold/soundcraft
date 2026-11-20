@@ -380,6 +380,11 @@ impl Movie {
             .collect()
     }
 
+    /// Size the sample table declares for `sample` (0 when there is none).
+    fn declared_size(&self, sample: usize) -> usize {
+        self.mp4.tracks.get(self.track).and_then(|t| t.samples.get(sample)).map_or(0, |s| s.size as usize)
+    }
+
     fn read(&self, sample: usize) -> Result<Vec<u8>> {
         let t = self.mp4.tracks.get(self.track).ok_or(VideoError::NoVideoTrack)?;
         let size = t.samples.get(sample).map_or(0, |s| s.size);
@@ -401,10 +406,8 @@ impl Movie {
                     return Err(VideoError::Decode(format!("{w}x{h} frame in a {}x{} track", self.info.width, self.info.height)));
                 }
                 let opts = crate::prores::DecodeOptions { bit_depth: Some(8), threads: false };
-                let f = crate::prores::decode_frame_with(&data, &opts).map_err(|e| VideoError::Decode(e.to_string()))?;
-                if u64::from(f.width) * u64::from(f.height) > MAX_PIXELS {
-                    return Err(VideoError::Decode("picture too large".into()));
-                }
+                let limits = crate::prores::DecodeLimits { max_pixels: MAX_PIXELS, max_frame_bytes: 512 * 1024 * 1024 };
+                let f = crate::prores::decode_frame_with_limits(&data, &opts, &limits).map_err(|e| VideoError::Decode(e.to_string()))?;
                 let (w, h) = (f.width as usize, f.height as usize);
                 let cw = f.chroma_width() as usize;
                 let narrow = |p: &[u16]| p.iter().map(|&v| v.min(255) as u8).collect::<Vec<u8>>();
@@ -415,13 +418,14 @@ impl Movie {
                 Ok(Frame { width: f.width, height: f.height, rgba, index, time })
             }
             Codec::Jpeg => {
-                let img = image::load_from_memory_with_format(&data, image::ImageFormat::Jpeg).map_err(|e| VideoError::Decode(e.to_string()))?;
-                let rgba = img.to_rgba8();
-                let (width, height) = rgba.dimensions();
-                if u64::from(width) * u64::from(height) > MAX_PIXELS {
-                    return Err(VideoError::Decode("picture too large".into()));
-                }
-                Ok(Frame { width, height, rgba: rgba.into_raw(), index, time })
+                // The frame's own size is checked from its header before a pixel is decoded: a frame may
+                // differ from the track's size (as before), but not exceed `MAX_PIXELS`.
+                let decoded = craft_video::mjpeg::Decoder::new().max_pixels(MAX_PIXELS).decode(&data).map_err(|e| match e {
+                    craft_video::mjpeg::Error::Limit(_) => VideoError::Decode("picture too large".into()),
+                    e => VideoError::Decode(e.to_string()),
+                })?;
+                let rgba = mjpeg_rgba(&decoded)?;
+                Ok(Frame { width: decoded.width, height: decoded.height, rgba, index, time })
             }
             _ => Err(VideoError::Unsupported("not an intra-frame codec".into())),
         }
@@ -449,6 +453,7 @@ impl Movie {
     /// Decode one sample with a fresh decoder (keyframe thumbnails).
     fn decode_h264_single(&mut self, avcc: &[u8], sample: usize, index: usize) -> Result<Frame> {
         let mut dec = crate::h264::Decoder::from_avcc(avcc).map_err(|e| VideoError::Decode(e.to_string()))?;
+        dec.set_max_picture_luma_samples(MAX_PIXELS);
         let data = self.read(sample)?;
         let mut pics = dec.decode(&data, index as i64).map_err(|e| VideoError::Decode(e.to_string()))?;
         pics.extend(dec.flush());
@@ -456,6 +461,14 @@ impl Movie {
         let p = pics.iter().find(|p| p.pts == index as i64).or(pics.first()).ok_or_else(|| VideoError::Decode("no picture decoded".into()))?;
         Ok(self.h264_to_frame(p, index))
     }
+
+    /// Most sample bytes one frame request feeds the decoder (eight samples at the 256 MiB cap):
+    /// a request decodes from the previous keyframe, and a sample table whose entries all name
+    /// one large payload would otherwise read and parse it once per sample.
+    const MAX_REQUEST_BYTES: usize = 2 << 30;
+    /// Most samples one frame request feeds without a picture coming out: the reorder depth is
+    /// at most 16, so a stream that produces nothing for this long will produce nothing.
+    const MAX_SAMPLES_WITHOUT_PICTURE: usize = 256;
 
     fn decode_h264(&mut self, index: usize) -> Result<Arc<Frame>> {
         let Codec::H264 { avcc } = &self.codec else { return Err(VideoError::Unsupported("not H.264".into())) };
@@ -466,11 +479,13 @@ impl Movie {
             .as_ref()
             .is_some_and(|st| st.ready.contains_key(&index) || (key < st.next && st.next != usize::MAX && st.last_out.is_none_or(|lo| lo < index)));
         if !resume {
-            let dec = crate::h264::Decoder::from_avcc(avcc).map_err(|e| VideoError::Decode(e.to_string()))?;
+            let mut dec = crate::h264::Decoder::from_avcc(avcc).map_err(|e| VideoError::Decode(e.to_string()))?;
+            dec.set_max_picture_luma_samples(MAX_PIXELS);
             self.h264 = Some(H264State { dec, next: key, last_out: None, ready: std::collections::BTreeMap::new() });
         }
         let total = self.order.len();
         let mut last_err: Option<String> = None;
+        let (mut fed, mut without_picture) = (0usize, 0usize);
         // Bounded: each iteration feeds one sample, or flushes once at the end.
         for _ in 0..=total.saturating_add(1) {
             let Some(st) = self.h264.as_mut() else { break };
@@ -485,13 +500,29 @@ impl Movie {
                 let s = st.next;
                 st.next += 1;
                 let pts = self.rank.get(s).copied().unwrap_or(0) as i64;
+                // The declared size is checked before the read allocates it. An error leaves no decoder
+                // behind that has stepped past this sample: the next request starts from its keyframe.
+                if fed.saturating_add(self.declared_size(s)) > Self::MAX_REQUEST_BYTES {
+                    self.h264 = None;
+                    return Err(VideoError::Decode(format!("frame {index} needs more than {} MiB of samples", Self::MAX_REQUEST_BYTES >> 20)));
+                }
                 let data = match self.read(s) {
                     Ok(d) => d,
+                    // an unreadable sample is skipped, as before, and counts as a sample without a picture: the
+                    // request's byte and no-picture budgets bound the walk
                     Err(e) => {
                         last_err = Some(e.to_string());
+                        without_picture += 1;
+                        if without_picture > Self::MAX_SAMPLES_WITHOUT_PICTURE {
+                            return Err(VideoError::Decode(format!(
+                                "no picture in {} samples before frame {index}",
+                                Self::MAX_SAMPLES_WITHOUT_PICTURE
+                            )));
+                        }
                         continue;
                     }
                 };
+                fed = fed.saturating_add(data.len());
                 let Some(st) = self.h264.as_mut() else { break };
                 match st.dec.decode(&data, pts) {
                     Ok(p) => p,
@@ -506,6 +537,10 @@ impl Movie {
                 st.dec.flush()
             };
             let Some(st) = self.h264.as_mut() else { break };
+            without_picture = if pics.is_empty() { without_picture + 1 } else { 0 };
+            if without_picture > Self::MAX_SAMPLES_WITHOUT_PICTURE {
+                return Err(VideoError::Decode(format!("no picture in {} samples before frame {index}", Self::MAX_SAMPLES_WITHOUT_PICTURE)));
+            }
             for p in pics {
                 let q = usize::try_from(p.pts).unwrap_or(usize::MAX);
                 st.last_out = Some(q);
@@ -521,4 +556,25 @@ impl Movie {
         }
         Err(VideoError::Decode(last_err.unwrap_or_else(|| format!("frame {index} was not produced"))))
     }
+}
+
+/// A decoded Motion JPEG picture as RGBA8: grey is spread over R, G and B, and 12-bit samples
+/// (scaled to 16 bits by the decoder) keep their top 8 bits.
+pub(crate) fn mjpeg_rgba(frame: &craft_video::mjpeg::Frame) -> Result<Vec<u8>> {
+    let channels = usize::from(frame.channels);
+    if channels != 1 && channels != 3 {
+        return Err(VideoError::Decode(format!("{channels}-channel Motion JPEG picture")));
+    }
+    let samples: Vec<u8> = match &frame.samples {
+        craft_video::mjpeg::Samples::U8(p) => p.clone(),
+        craft_video::mjpeg::Samples::U16(p) => p.iter().map(|&v| (v >> 8) as u8).collect(),
+    };
+    Ok(samples
+        .chunks_exact(channels)
+        .flat_map(|px| match *px {
+            [g] => [g, g, g, 255],
+            [r, g, b] => [r, g, b, 255],
+            _ => [0, 0, 0, 255],
+        })
+        .collect())
 }

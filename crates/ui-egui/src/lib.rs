@@ -13,6 +13,7 @@ pub const UPDATE_APP: craft_update::app::App = craft_update::app::App {
     ..craft_update::suite::SOUNDCRAFT
 };
 
+pub mod aaf_import;
 pub mod appearance;
 pub mod bounce;
 pub mod control;
@@ -23,10 +24,12 @@ pub mod edit_window;
 pub mod fonts;
 pub mod icons;
 pub mod import;
+pub mod localization;
 pub mod menus;
 pub mod mix_window;
 pub mod palette;
 pub mod panels;
+pub mod preferences;
 pub mod shortcuts;
 pub mod theme;
 pub mod toolbar;
@@ -101,6 +104,9 @@ pub struct UiState {
     /// The send in the Send window (track, slot).
     #[serde(skip)]
     pub send_window: Option<(TrackId, usize)>,
+    /// The track in the Output window.
+    #[serde(skip)]
+    pub output_window: Option<TrackId>,
     pub audiosuite: Option<String>,
     pub status: String,
     pub show_automation: bool,
@@ -114,6 +120,13 @@ pub struct UiState {
     pub show_workspace: bool,
     pub show_configurations: bool,
     pub show_playback_engine: bool,
+    /// Setup › Preferences. The selected page is kept per machine; the search and staged values
+    /// live in [`preferences::PreferencesState`] and are discarded when the window closes.
+    pub show_preferences: bool,
+    pub preferences_page: preferences::PreferencesPage,
+    pub preferences_window_pos: Option<[f32; 2]>,
+    pub reduce_visual_effects: preferences::ReduceVisualEffects,
+    pub undo_levels: usize,
     /// The audio device choice (Setup › Playback Engine), kept with the preferences: per machine.
     pub audio: soundcraft_playback::AudioConfig,
     /// The Mix window lives in its own native window (Window › Mix in Separate Window); the main
@@ -135,6 +148,8 @@ pub struct UiState {
     pub video_burn_in: bool,
     pub workspace_dir: String,
     pub configurations: Vec<(String, Value)>,
+    /// Interface language (`ui.language`).
+    pub language: localization::Language,
     /// Appearance (`ui.theme`): dark by default, light or follow the system on request.
     pub theme: theme::ThemeMode,
     /// The main window's size (logical points) and maximized state, and the interface scale, as
@@ -142,6 +157,8 @@ pub struct UiState {
     pub window_size: [f32; 2],
     pub window_maximized: bool,
     pub ui_scale: f32,
+    /// MIDI input ports switched off in Setup, by name (all others are used).
+    pub midi_inputs_off: Vec<String>,
 }
 
 impl Default for UiState {
@@ -169,6 +186,7 @@ impl Default for UiState {
             track_tint: 0.5,
             plugin_windows: Vec::new(),
             send_window: None,
+            output_window: None,
             audiosuite: None,
             status: String::new(),
             show_automation: false,
@@ -182,6 +200,11 @@ impl Default for UiState {
             show_workspace: false,
             show_configurations: false,
             show_playback_engine: false,
+            show_preferences: false,
+            preferences_page: preferences::PreferencesPage::default(),
+            preferences_window_pos: None,
+            reduce_visual_effects: preferences::ReduceVisualEffects::default(),
+            undo_levels: 64,
             audio: soundcraft_playback::AudioConfig::default(),
             mix_separate: false,
             show_io_setup: false,
@@ -199,10 +222,12 @@ impl Default for UiState {
             video_burn_in: false,
             workspace_dir: String::new(),
             configurations: Vec::new(),
+            language: localization::Language::default(),
             theme: theme::ThemeMode::Dark,
             window_size: [1600.0, 1000.0],
             window_maximized: false,
             ui_scale: 1.0,
+            midi_inputs_off: Vec::new(),
         }
     }
 }
@@ -267,6 +292,19 @@ pub struct SoundApp {
     /// Punch range to trim the take to (pre/post-roll recordings).
     punch: Option<Range>,
     recorder_failed: bool,
+    /// MIDI device input, opened on the first frame of an app that has an audio engine.
+    pub midi_inputs: Option<soundcraft_playback::midi::MidiInputs>,
+    /// When the MIDI ports were last looked for (app uptime, seconds).
+    midi_scan_at: f64,
+    /// MIDI played during the current record pass.
+    midi_take: Vec<soundcraft_playback::midi::RecordedMidi>,
+    /// Recorded MIDI events of the current pass that were dropped before they got here.
+    midi_take_lost: u64,
+    /// The MIDI input each record-enabled track had when the current pass started: the pass
+    /// records from it even if the track is switched to another device meanwhile.
+    midi_take_inputs: Vec<(TrackId, soundcraft_model::Route)>,
+    /// The loop the transport is playing round, when it was started with one.
+    play_loop: Option<Range>,
     /// Input this take lost to a slow disk, as last reported (ms).
     lost_shown: u64,
     /// Where the takes being recorded go, autosaved with the session so a crash can't lose them.
@@ -278,6 +316,8 @@ pub struct SoundApp {
     pub native_menu_bar: bool,
     /// Folder for crash-recovery autosaves (native apps set it).
     pub autosave_dir: Option<std::path::PathBuf>,
+    /// Where the takes of a session never saved go without an autosave folder: made once per run, under the temporary folder.
+    fallback_take_dir: Option<std::path::PathBuf>,
     /// Writes the open session's autosaves in the background, once there is something to write.
     autosaver: Option<soundcraft_engine::autosave::Autosaver>,
     /// The document revision last handed to the autosaver (0 once that autosave is stale).
@@ -290,6 +330,7 @@ pub struct SoundApp {
     pub preset_dir: Option<std::path::PathBuf>,
     last_autosave: Option<std::time::Instant>,
     pub dialogs: dialogs::Dialogs,
+    pub aaf_import: aaf_import::ImportState,
     pub(crate) updates_rt: updates_ui::Runtime,
     pub meters: HashMap<TrackId, MeterDisplay>,
     pub main_meter: MeterDisplay,
@@ -302,6 +343,7 @@ pub struct SoundApp {
     pub ops: ops_windows::OpsState,
     pub extra: extra_windows::ExtraState,
     pub palette: palette::PaletteState,
+    pub preferences: preferences::PreferencesState,
     /// Bring the separate Mix window to the front on the next frame.
     pub(crate) focus_mix: bool,
     /// Scroll Into View: the track each window brings to its top (Edit) or left (Mix) when it
