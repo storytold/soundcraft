@@ -434,7 +434,19 @@ fn idle_worker_starts_the_device_when_play_publishes_after_a_long_buffer() {
             assert_eq!(metrics.iterations.load(Relaxed), before);
         }
         let started = Instant::now();
-        publisher.publish(block(started, 0., 480., Duration::ZERO));
+        // The audio callback may skip a contended publication. This fixture exercises
+        // the single transition the worker sees once a playing block actually arrives.
+        let deadline = started + Duration::from_secs(1);
+        loop {
+            if let Ok(mut timeline) = publisher.view.try_lock() {
+                let playing = block(Instant::now(), 0., 480., Duration::ZERO);
+                timeline.push(playing);
+                assert_eq!(timeline.transport_state(), Some((playing.pass, true)));
+                break;
+            }
+            assert!(Instant::now() < deadline, "fixture could not publish the playing block");
+            std::thread::yield_now();
+        }
         assert_eq!(received.recv_timeout(Duration::from_secs(1)).ok(), Some(vec![START]), "Play delayed by {delay} ms");
         assert_eq!(received.recv_timeout(Duration::from_secs(1)).ok(), Some(vec![CLOCK]));
         eprintln!("Play delayed by {delay} ms: Start + F8 in {:?}", started.elapsed());
