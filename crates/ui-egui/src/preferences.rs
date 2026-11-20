@@ -1065,11 +1065,15 @@ mod tests {
     }
 
     #[test]
-    fn every_preference_text_has_a_portuguese_translation() {
+    fn every_preference_text_has_a_translation() {
         let mut missing = Vec::new();
         let mut check = |text: &str| {
-            if !is_numeric(text) && !crate::localization::has_pt_br_entry(text) {
-                missing.push(text.to_owned());
+            if !is_numeric(text) {
+                for language in [crate::localization::Language::PortugueseBrazil, crate::localization::Language::Hebrew] {
+                    if !crate::localization::has_catalog_entry(language, text) {
+                        missing.push(format!("{}: {text}", language.id()));
+                    }
+                }
             }
         };
         for page in PreferencesPage::ALL {
@@ -1091,16 +1095,18 @@ mod tests {
             }
         }
         // Names that are the same in both languages are listed by the catalog as identity entries.
-        assert!(missing.is_empty(), "preference texts without a pt-BR entry: {missing:?}");
+        assert!(missing.is_empty(), "preference texts without a catalog entry: {missing:?}");
     }
 
     #[test]
     fn preference_search_matches_both_languages() {
-        let _scope = crate::localization::enter(crate::localization::Language::PortugueseBrazil);
-        let control = Control::Check("Auto Backup");
-        assert!(text_matches(&control.search_text(), crate::localization::Language::PortugueseBrazil.text("Auto Backup")));
-        assert!(text_matches(&control.search_text(), "auto backup"));
-        assert!(!text_matches(&control.search_text(), "mixagem"));
+        for language in [crate::localization::Language::PortugueseBrazil, crate::localization::Language::Hebrew] {
+            let _scope = crate::localization::enter(language);
+            let control = Control::Check("Auto Backup");
+            assert!(text_matches(&control.search_text(), language.text("Auto Backup")), "{}", language.id());
+            assert!(text_matches(&control.search_text(), "auto backup"), "{}", language.id());
+            assert!(!text_matches(&control.search_text(), "mixagem"), "{}", language.id());
+        }
     }
 
     /// Creates a complete application harness with Preferences already open.
