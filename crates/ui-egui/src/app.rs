@@ -107,6 +107,7 @@ impl SoundApp {
             pending_open: None,
             last_rev: 0,
             applied_midi_sync: None,
+            last_midi_sync_error: None,
             sync_migration_pending: true,
             fonts_ready: false,
             fonts_installed: false,

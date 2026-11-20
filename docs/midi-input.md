@@ -5,8 +5,8 @@ MIDI clips.
 
 **Where it works.** Linux (ALSA sequencer), macOS (CoreMIDI) and Windows (WinMM). It has been
 played and recorded on Linux only; on macOS and Windows the code builds but has not been tried
-with a device yet. There is no MIDI input on FreeBSD or in the web version. MIDI output, MIDI
-clock and loop or merge recording are not there yet (see [gaps.md](gaps.md), G-02).
+with a device yet. There is no MIDI input on FreeBSD or in the web version. MIDI note output and loop or merge recording remain open (see [gaps.md](gaps.md), G-02).
+See [Send MIDI Beat Clock to external hardware](#send-midi-beat-clock-to-external-hardware) for clock output.
 
 ## 1. Switch a device on
 
@@ -83,13 +83,13 @@ recordings.
 
 ## Send MIDI Beat Clock to external hardware
 
-In **Setup › MIDI › MIDI Beat Clock**, enable the clock and check each destination that should follow session tempo. Each port has a signed offset in samples. To calibrate a device, record its beat into an audio track, measure the first transient’s delay relative to the grid, and enter that sample count with a minus sign to advance the port. A positive offset delays delivery. Port calibration is limited to ±250 ms at the session rate. When a different session rate puts a saved sample offset outside that range, playback caps its effective value and preserves the saved calibration. Available lookahead limits how early a newly started transport can send. Settings persist on this computer across projects. Opening an old project imports its offset if the port has no saved calibration.
+In **Setup › MIDI › MIDI Beat Clock**, enable the clock and check each destination that should follow session tempo. Each port has a signed offset in samples. To calibrate a device, record its beat into an audio track, measure the first transient’s delay relative to the grid, and enter that sample count with a minus sign to advance the port. A positive offset delays delivery. Port calibration is limited to ±250 ms at the session rate. When a different session rate puts a saved sample offset outside that range, playback caps its effective value and preserves the saved calibration. The audio callback limits how far a message can be advanced. For more advance, increase the audio buffer or delay the other devices. Measure several transients at different beat positions and average their sample offsets to reduce MIDI timing jitter. Settings persist on this computer across projects. Opening an old project imports its offset if the port has no saved calibration.
 
 At the session origin SoundCraft sends Start. A locate during playback sends Stop, Song Position Pointer and Continue in sequence. The first subsequent clock aligns to the encoded sixteenth. Stopped locates send no F8 clock pulses. Position Pointer covers 0 through 16,383 sixteenths; a continuous pass can run beyond that range. The worker retries unplugged ports. If names are duplicated, it opens the first matching device and reports the ambiguity.
 
-**Preferences › MIDI › Delay Compensation for External Devices** controls the use of the audio device’s reported output lead for Beat Clock and generated timecode. Per-port calibration applies in addition. The Notes and Controllers preference is saved for external note output. SoundCraft's current MIDI-input instruments render inside the audio engine.
+**Preferences › MIDI › Delay Compensation for External Devices** controls the use of the audio device’s reported output lead and, while Delay Compensation is enabled, the mixer’s compensated plug-in delay for Beat Clock. Per-port calibration applies in addition. The Notes and Controllers preference is saved for external note output. SoundCraft's current MIDI-input instruments render inside the audio engine.
 
-Use `setup.midi_beat_clock` to read settings or apply a patch, for example `{"enabled":true,"ports":{"USB MIDI":{"enabled":true,"offset_samples":-200}}}`. Supplying `ports` replaces the active Beat Clock destinations. Omitted ports stop sending Beat Clock and retain their saved sample offsets for other sync outputs. An empty object disables all Beat Clock destinations and preserves their offsets. The desktop control channel’s `setup.midi_sync_status` and the dialog’s **Copy diagnostics** report host-side send timing, callback gaps and port offsets. USB buffering and wire latency require an external measurement. Hardware verification of this revision is pending.
+Use `setup.midi_beat_clock` to read settings or apply a patch, for example `{"enabled":true,"ports":{"USB MIDI":{"enabled":true,"offset_samples":-200}}}`. Supplying `ports` replaces the active Beat Clock destinations. Omitted ports stop sending Beat Clock and retain their saved sample offsets for other sync outputs. Passing `{"ports":{}}` disables every Beat Clock destination and preserves calibrated offsets. Passing `{}` alone reads the settings. Use `{"ports":{"Old name":null}}` to remove a saved port. The desktop control channel’s `setup.midi_sync_status` and the dialog’s **Copy diagnostics** report host-side send timing, callback gaps and port offsets. USB buffering and wire latency require an external measurement. Hardware verification of this revision is pending.
 
 ## If something is lost
 

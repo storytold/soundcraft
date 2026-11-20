@@ -986,7 +986,11 @@ fn control_ui(ui: &mut egui::Ui, page: PreferencesPage, section: &str, index: us
                 "MIDI Timecode" => &mut draft.compensation.mtc,
                 _ => &mut draft.compensation.notes,
             };
-            ui.checkbox(value, label(text));
+            let response = ui.checkbox(value, label(text));
+            if text == "MIDI Beat Clock" {
+                response
+                    .on_hover_text(crate::localization::text("Include the reported audio output lead and the mixer's compensated plug-in delay."));
+            }
         }
         Control::Check(text) => {
             let mut value = false;
