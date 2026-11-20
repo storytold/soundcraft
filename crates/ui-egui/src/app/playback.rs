@@ -33,6 +33,9 @@ impl SoundApp {
         if let Some(p) = &self.player {
             p.update_session(self.engine.session_arc());
             p.play(from, end, looped);
+            if let Some(error) = p.midi_clock_error() {
+                self.ui.status = crate::localization::error_text(&error);
+            }
         } else {
             self.sim = Some((from, end, looped));
         }

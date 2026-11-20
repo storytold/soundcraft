@@ -707,7 +707,7 @@ pub fn show(app: &mut SoundApp, ctx: &egui::Context) {
                     }
                 }
                 Dialog::MidiBeatClock(clock) => {
-                    if let Some(params) = clock.show(ui, enter) {
+                    if let Some(params) = clock.show(ui, enter, app.player.as_ref().and_then(soundcraft_playback::Player::midi_clock_error)) {
                         action = Some(("setup.midi_beat_clock".into(), params));
                     }
                 }
@@ -997,6 +997,7 @@ mod tests {
     #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
     #[test]
     fn beat_clock_menu_applies_the_selected_port_and_preserves_an_unavailable_destination() {
+        let port = format!("  {}  ", "B".repeat(210));
         const CMD: &str = "setup.midi_beat_clock";
         const PATH: &str = "Setup > MIDI > MIDI Beat Clock...";
         let mut app = SoundApp::new(Engine::default(), None, crate::Services::default());
@@ -1021,25 +1022,25 @@ mod tests {
         let Some(Dialog::MidiBeatClock(form)) = &mut app.dialogs.open else { panic!("missing clock dialog") };
         assert!(!form.enabled);
         assert!(form.destination.is_empty());
-        form.outputs = Ok(vec!["Clock A".into(), "Clock B".into()]);
+        form.outputs = Ok(vec!["Clock A".into(), port.clone()]);
         form.enabled = true;
         dialog_frame(&ctx, &mut app, vec![]);
         enter(&mut app);
         assert_eq!(app.dialogs.open_name(), Some("midi_beat_clock"));
         assert_eq!(app.engine.revision, revision);
         let Some(Dialog::MidiBeatClock(form)) = &mut app.dialogs.open else { panic!("missing clock dialog") };
-        form.destination = "Clock B".into();
+        form.destination = port.clone();
         form.offset = -240;
         enter(&mut app);
         assert!(app.dialogs.open.is_none());
         assert!(app.engine.revision > revision);
         let config = soundcraft_model::MidiBeatClock::from_session(app.engine.session());
-        assert_eq!((config.enabled, config.destination, config.offset), (true, Some("Clock B"), -240));
+        assert_eq!((config.enabled, config.destination, config.offset), (true, Some(port.as_str()), -240));
 
         dialog_frame(&ctx, &mut app, vec![]);
         open(&mut app);
         let Some(Dialog::MidiBeatClock(form)) = &mut app.dialogs.open else { panic!("missing clock dialog") };
-        assert_eq!((form.enabled, form.destination.as_str(), form.offset), (true, "Clock B", -240));
+        assert_eq!((form.enabled, form.destination.as_str(), form.offset), (true, port.as_str(), -240));
         // Unplug the saved output. Opening and canceling must not replace it with the first port.
         form.outputs = Ok(vec!["Clock A".into()]);
         form.offset = 64;
@@ -1049,7 +1050,7 @@ mod tests {
         dialog_frame(&ctx, &mut app, vec![key(egui::Key::Escape, egui::Modifiers::NONE)]);
         assert!(app.dialogs.open.is_none());
         let config = soundcraft_model::MidiBeatClock::from_session(app.engine.session());
-        assert_eq!((config.enabled, config.destination, config.offset), (true, Some("Clock B"), -240));
+        assert_eq!((config.enabled, config.destination, config.offset), (true, Some(port.as_str()), -240));
     }
 
     /// Returns every editable value from the active New Tracks row.

@@ -22,7 +22,10 @@ impl MidiBeatClock {
         }
     }
 
-    pub(super) fn show(&mut self, ui: &mut egui::Ui, enter: bool) -> Option<Value> {
+    pub(super) fn show(&mut self, ui: &mut egui::Ui, enter: bool, error: Option<String>) -> Option<Value> {
+        if let Some(error) = error {
+            ui.label(crate::localization::error_text(&error));
+        }
         crate::widgets::checkbox(ui, &mut self.enabled, text("Enable MIDI Beat Clock"));
         let selected = if self.destination.is_empty() { text("Choose a MIDI output") } else { &self.destination };
         craft_ui::ComboBox::from_label(text("MIDI output")).selected_text(selected).show_ui(ui, |ui| {

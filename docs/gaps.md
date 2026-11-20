@@ -1,6 +1,6 @@
 # Where SoundCraft falls short of Pro Tools
 
-> **Last reviewed:** 2026-11-14 · **Last updated:** 2026-11-18 · **Change:** minor (G-02 shrunk: MIDI input devices work; G-03: strict external-WAV AAF import; previously minor: G-05: plugin editors on Linux/X11; previously trivial: G-09: the pt-BR catalog now covers helper-passed tooltips, the status bar, the remove-session prompt and engine error text; G-08: Frequency Shifter, 28 processors; G-04: volume automation read at every sample, #1354; G-01: `setup.playback_engine` applies the device buffer in the desktop app; G-04: Clip Looping crossfade and loop count) · **Target:** Avid Pro Tools Ultimate 2026.4.1
+> **Last reviewed:** 2026-11-14 · **Last updated:** 2026-11-20 · **Change:** minor (G-11 MIDI Beat Clock output; G-02 shrunk: MIDI input devices work; G-03: strict external-WAV AAF import; previously minor: G-05: plugin editors on Linux/X11; previously trivial: G-09: the pt-BR catalog now covers helper-passed tooltips, the status bar, the remove-session prompt and engine error text; G-08: Frequency Shifter, 28 processors; G-04: volume automation read at every sample, #1354; G-01: `setup.playback_engine` applies the device buffer in the desktop app; G-04: Clip Looping crossfade and loop count) · **Target:** Avid Pro Tools Ultimate 2026.4.1
 
 Every known shortfall, one entry each, ranked by how much it stops a Pro Tools user from doing
 real work in SoundCraft. This is the work list: pick from the top. Rows marked **alpha blocker**
@@ -185,7 +185,7 @@ switch. ≈ 40–70 h for HUI/MCU plus a mapping layer; hardware needed to verif
 
 ### G-11. Sync
 
-For MIDI Beat Clock and MIDI Time Code, see the [hardware capability tables](hardware-parity.md#midi).
+Native MIDI Beat Clock output is available. MIDI Time Code generation and chase are still open in [#1663](https://github.com/storytold/soundcraft/pull/1663). See the [hardware capability tables](hardware-parity.md#midi).
 LTC, video reference, word clock awareness and Satellite-style linking remain open.
 
 ### G-12. Immersive delivery
@@ -251,6 +251,7 @@ missing. Out of scope unless the owner decides otherwise.
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-11-20 | minor | G-11: native MIDI Beat Clock output; MTC generation and chase remain tracked separately in #1663. |
 | 2026-11-14 | minor | G-03: strict external-WAV AAF import with bounded property caching; AAF/OMF export, OMF import and `.ptx` remain; estimates unchanged |
 | 2026-11-13 | trivial | G-09: the pt-BR catalog now covers tooltips localized inside buttons and toggles, the Edit-window status bar, the remove-session question, the send help text and engine errors shown in the status line; estimates unchanged |
 | 2026-11-09 | trivial | G-08: 28 processors + 3 instruments with the Frequency Shifter |

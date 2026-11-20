@@ -65,6 +65,8 @@ pub(crate) fn guarded_block(fault: &Fault, shared: &Shared, out: &mut [f32], fil
 
 /// State owned by the audio callback.
 pub(crate) struct AudioState {
+    #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+    clock: Option<super::beat_clock::Publisher>,
     rx: Receiver<Cmd>,
     pub(crate) shared: Arc<Shared>,
     pub(crate) session: Arc<Session>,
@@ -169,6 +171,8 @@ impl AudioState {
             pos: 0,
             playing: false,
             end: None,
+            #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+            clock: None,
             looped: None,
             pending: vec![vec![0.0; BLOCK]; nch],
             pending_len: 0,
@@ -257,9 +261,15 @@ impl AudioState {
                         let _ = tx.try_send(old);
                     }
                 }
+                #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+                Cmd::Clock(clock) => self.clock = clock,
                 Cmd::OldSessions(tx) => self.old_sessions = Some(tx),
                 Cmd::Play { from, end, looped } => {
                     self.pos = from;
+                    #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+                    if let Some(clock) = &mut self.clock {
+                        clock.locate(from);
+                    }
                     self.end = end;
                     self.looped = looped.filter(|r| super::loops(*r));
                     self.midi_wraps = 0;
@@ -279,6 +289,10 @@ impl AudioState {
                 Cmd::Locate(at) => {
                     self.midi_stopped = None;
                     self.pos = at;
+                    #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+                    if let Some(clock) = &mut self.clock {
+                        clock.locate(at);
+                    }
                     self.pending_len = 0;
                     self.read = 0.0;
                     self.mix.reset();
@@ -551,6 +565,10 @@ impl AudioState {
             && self.pos >= l.end
         {
             self.pos = l.start;
+            #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+            if let Some(clock) = &mut self.clock {
+                clock.locate(l.start);
+            }
             if self.playing && self.recording {
                 self.midi_wraps = self.midi_wraps.saturating_add(1);
             }
@@ -678,6 +696,12 @@ impl AudioState {
         // A command may have installed a session at another sample rate: the audio is rendered
         // at the rate that is there now, at the same speed.
         let step = self.step(speed);
+        #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+        if let Some(clock) = &mut self.clock {
+            let position = self.pos.saturating_sub(self.pending_len as i64).saturating_add(self.read as i64);
+            let limit = position.saturating_add((callback_frames as f64 * step).ceil() as i64);
+            clock.publish(self.playing, position, limit, speed * self.session.sample_rate.as_f64(), self.looped, self.end);
+        }
         // A keyboard plays through record-enabled and input-monitored MIDI and instrument tracks.
         let midi_live = self.midi.as_ref().is_some_and(|f| f.connected() > 0)
             && self.session.tracks.iter().any(|t| matches!(t.kind, TrackKind::Instrument | TrackKind::Midi) && midi_thru(t));

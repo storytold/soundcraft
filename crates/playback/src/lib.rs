@@ -134,6 +134,8 @@ pub type PluginStates = Vec<(TrackId, usize, Vec<u8>)>;
 pub type EditorEdit = (TrackId, usize, String, f32);
 
 enum Cmd {
+    #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+    Clock(Option<beat_clock::Publisher>),
     /// A new snapshot plus the third-party instances it needs (created on the UI thread).
     Session(Arc<Session>, Vec<PreparedInstance>),
     /// Where the callback sends the snapshots it replaces (freeing one takes thousands of frees).
@@ -410,7 +412,7 @@ impl Player {
     /// prepared) instances of any third-party plugin it newly needs. Call on the UI thread.
     pub fn update_session(&self, s: Arc<Session>) {
         #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
-        self.beat_clock.lock().unwrap_or_else(PoisonError::into_inner).configure(&s, &self.shared);
+        self.beat_clock.lock().unwrap_or_else(PoisonError::into_inner).configure(&s, &self.tx);
         let (instances, gone) = {
             let mut side = self.side();
             (side.prepare(&s), side.gone_tracks(&s))
@@ -496,13 +498,25 @@ impl Player {
         self.side().editors.get_mut(&(track, slot))?.value_text(id, value)
     }
 
+    /// Latest clock destination or synchronization error for the setup dialog.
+    pub fn midi_clock_error(&self) -> Option<String> {
+        #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+        {
+            self.beat_clock.lock().unwrap_or_else(PoisonError::into_inner).trouble()
+        }
+        #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
+        {
+            None
+        }
+    }
+
     /// Start playback at `from`, stopping at `end`, or looping `looped`.
     pub fn play(&self, from: Samples, end: Option<Samples>, looped: Option<Range>) {
         self.shared.position.store(from, Ordering::Relaxed);
         self.shared.playing.store(true, Ordering::Release);
-        #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
-        self.beat_clock.lock().unwrap_or_else(PoisonError::into_inner).transport(from, true);
         let _ = self.tx.send(Cmd::Play { from, end, looped });
+        #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+        self.beat_clock.lock().unwrap_or_else(PoisonError::into_inner).wake();
     }
 
     /// Feed live input (from a `record::Recorder`) into the mix for input monitoring.
@@ -527,17 +541,17 @@ impl Player {
     }
 
     pub fn stop(&self) {
-        #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
-        self.beat_clock.lock().unwrap_or_else(PoisonError::into_inner).transport(self.position(), false);
         self.shared.playing.store(false, Ordering::Relaxed);
         let _ = self.tx.send(Cmd::Stop);
+        #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+        self.beat_clock.lock().unwrap_or_else(PoisonError::into_inner).wake();
     }
 
     pub fn locate(&self, at: Samples) {
         self.shared.position.store(at, Ordering::Relaxed);
-        #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
-        self.beat_clock.lock().unwrap_or_else(PoisonError::into_inner).transport(at, self.is_playing());
         let _ = self.tx.send(Cmd::Locate(at));
+        #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+        self.beat_clock.lock().unwrap_or_else(PoisonError::into_inner).wake();
     }
 
     pub fn set_speed(&self, speed: f32) {

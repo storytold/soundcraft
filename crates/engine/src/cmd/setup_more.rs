@@ -110,7 +110,9 @@ pub fn specs() -> Vec<CommandSpec> {
             }
             store_value(&mut s.edit, p, "offset", "midi.beat_clock.offset", -1e7, 1e7);
             if let Some(d) = str_param(p, "destination") {
-                set_text(&mut s.edit, "midi.beat_clock.destination", Some(d));
+                const PREFIX: &str = "midi.beat_clock.destination=";
+                s.edit.flags.retain(|f| !f.starts_with(PREFIX));
+                if !d.is_empty() { s.edit.flags.insert(format!("{PREFIX}{d}")); }
             }
             Ok(json!({"enabled": s.edit.flag("midi.beat_clock"), "offset": s.edit.value("midi.beat_clock.offset", 0.0), "destination": text(&s.edit, "midi.beat_clock.destination")}))
         }),

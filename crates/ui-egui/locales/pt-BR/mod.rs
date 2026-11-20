@@ -1834,6 +1834,7 @@ fn menu_translate(source: &str) -> Option<&'static str> {
         "Choose a MIDI output" => "Escolher uma saída MIDI",
         "MIDI output" => "Saída MIDI",
         "No MIDI output devices found" => "Nenhum dispositivo de saída MIDI encontrado",
+        "Position exceeds the MIDI Song Position Pointer range." => "A posição excede o limite do ponteiro de posição MIDI.",
         "The saved MIDI output is unavailable." => "A saída MIDI salva está indisponível.",
         "Offset (samples)" => "Deslocamento (amostras)",
         "MIDI Input Monitoring Follows Selected Track" => "O monitoramento de entrada MIDI acompanha a pista selecionada",
