@@ -105,6 +105,10 @@ impl ClipFx {
             }
         }
     }
+    /// Whether the EQ or compressor is on: only they carry parameters that settle (a gain does not).
+    pub(crate) fn has_smoothed_modules(&self) -> bool {
+        self.eq.is_some() || self.comp.is_some()
+    }
     pub(crate) fn process(&mut self, io: &mut [Vec<f32>], frames: usize) {
         if let Some(eq) = &mut self.eq {
             eq.process(io, frames);

@@ -1,4 +1,6 @@
 use super::instance::Instance;
+#[cfg(all(unix, not(target_os = "macos")))]
+use super::run_loop;
 use super::{
     Class, ComPtr, ComWrapper, IComponentTrait, IEditControllerTrait, IPlugFrameTrait, IPlugViewTrait, Mutex, Ordering, PoisonError, STATE_MAGIC,
     c_void, ok, read_c16, sb, sv, window,
@@ -6,14 +8,67 @@ use super::{
 
 // ---- editor (IPlugView) --------------------------------------------------------------------
 
-/// The `IPlugFrame` handed to a plugin view: `resizeView` resizes our host window.
+/// The `IPlugFrame` handed to a plugin view: `resizeView` resizes our host window. On X11 it is
+/// also the view's `Linux::IRunLoop` (plugins query the frame for it).
 pub(crate) struct PlugFrame {
-    /// The host window (an `NSWindow*` on macOS), not owned; null when there is none.
+    /// The host window (an `NSWindow*` on macOS, the X11 window id on Linux), not owned; null
+    /// when there is none.
     window: std::sync::atomic::AtomicPtr<c_void>,
+    #[cfg(all(unix, not(target_os = "macos")))]
+    run_loop: run_loop::RunLoop,
 }
 
+impl PlugFrame {
+    fn new(window: *mut c_void) -> PlugFrame {
+        PlugFrame {
+            window: std::sync::atomic::AtomicPtr::new(window),
+            #[cfg(all(unix, not(target_os = "macos")))]
+            run_loop: run_loop::RunLoop::default(),
+        }
+    }
+
+    /// Services the view's run loop (X11 only): ready file descriptors and due timers.
+    fn dispatch(&self) {
+        #[cfg(all(unix, not(target_os = "macos")))]
+        self.run_loop.dispatch(std::time::Instant::now());
+    }
+}
+
+#[cfg(not(all(unix, not(target_os = "macos"))))]
 impl Class for PlugFrame {
     type Interfaces = (sb::IPlugFrame,);
+}
+
+#[cfg(all(unix, not(target_os = "macos")))]
+impl Class for PlugFrame {
+    type Interfaces = (sb::IPlugFrame, sb::Linux::IRunLoop);
+}
+
+#[cfg(all(unix, not(target_os = "macos")))]
+impl sb::Linux::IRunLoopTrait for PlugFrame {
+    unsafe fn registerEventHandler(&self, handler: *mut sb::Linux::IEventHandler, fd: sb::Linux::FileDescriptor) -> sb::tresult {
+        // SAFETY: in-pointer from the plugin (or null, handled); we take our own reference.
+        match unsafe { vst3::ComRef::from_raw(handler) } {
+            Some(h) if self.run_loop.add_fd(h.to_com_ptr(), fd) => sb::kResultOk,
+            _ => sb::kInvalidArgument,
+        }
+    }
+
+    unsafe fn unregisterEventHandler(&self, handler: *mut sb::Linux::IEventHandler) -> sb::tresult {
+        if self.run_loop.remove_fd(handler) { sb::kResultOk } else { sb::kInvalidArgument }
+    }
+
+    unsafe fn registerTimer(&self, handler: *mut sb::Linux::ITimerHandler, milliseconds: sb::Linux::TimerInterval) -> sb::tresult {
+        // SAFETY: as in `registerEventHandler`.
+        match unsafe { vst3::ComRef::from_raw(handler) } {
+            Some(h) if self.run_loop.add_timer(h.to_com_ptr(), milliseconds) => sb::kResultOk,
+            _ => sb::kInvalidArgument,
+        }
+    }
+
+    unsafe fn unregisterTimer(&self, handler: *mut sb::Linux::ITimerHandler) -> sb::tresult {
+        if self.run_loop.remove_timer(handler) { sb::kResultOk } else { sb::kInvalidArgument }
+    }
 }
 
 impl IPlugFrameTrait for PlugFrame {
@@ -121,7 +176,7 @@ impl EditorLink {
         unsafe { view.getSize(&mut r) };
         let (w, h) = rect_size(&r);
         let win = window::HostWindow::new(title, w, h)?;
-        let frame = ComWrapper::new(PlugFrame { window: std::sync::atomic::AtomicPtr::new(win.raw()) });
+        let frame = ComWrapper::new(PlugFrame::new(win.raw()));
         if let Some(f) = frame.as_com_ref::<sb::IPlugFrame>() {
             // SAFETY: valid view; the frame outlives the view's attachment (kept in `g.frame`
             // and detached in `teardown`).
@@ -131,6 +186,9 @@ impl EditorLink {
         if !ok(unsafe { view.attached(win.parent(), platform) }) {
             // SAFETY: valid view; detach our frame again.
             unsafe { view.setFrame(std::ptr::null_mut()) };
+            // Release anything it registered while attaching, as `teardown` does.
+            #[cfg(all(unix, not(target_os = "macos")))]
+            frame.run_loop.clear();
             win.close();
             return Err("the editor could not attach to its window".into());
         }
@@ -149,6 +207,11 @@ impl EditorLink {
                 view.removed();
                 view.setFrame(std::ptr::null_mut());
             }
+        }
+        // Release the view's run-loop handlers even if the plugin still holds the frame.
+        #[cfg(all(unix, not(target_os = "macos")))]
+        if let Some(f) = &g.frame {
+            f.run_loop.clear();
         }
         g.frame = None;
         if let Some(w) = g.window.take() {
@@ -215,6 +278,8 @@ impl EditorLink {
         let mut g = self.lock();
         if g.window.as_ref().is_some_and(|w| !w.is_visible()) {
             EditorLink::teardown(&mut g);
+        } else if let Some(f) = &g.frame {
+            f.dispatch();
         }
     }
 
@@ -290,5 +355,144 @@ impl EditorLink {
         g.component = None;
         g.controller = None;
         leaked
+    }
+}
+
+/// The run loop is X11-only, and so are its tests.
+#[cfg(all(test, unix, not(target_os = "macos")))]
+mod tests {
+    use super::*;
+
+    /// A plugin-side handler for the run-loop test: counts its callbacks.
+    #[derive(Default)]
+    struct Ticks {
+        timer: std::sync::atomic::AtomicU32,
+        fd: std::sync::atomic::AtomicU32,
+    }
+
+    impl Class for Ticks {
+        type Interfaces = (sb::Linux::ITimerHandler, sb::Linux::IEventHandler);
+    }
+
+    impl sb::Linux::ITimerHandlerTrait for Ticks {
+        unsafe fn onTimer(&self) {
+            self.timer.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    impl sb::Linux::IEventHandlerTrait for Ticks {
+        unsafe fn onFDIsSet(&self, _fd: sb::Linux::FileDescriptor) {
+            self.fd.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    #[test]
+    fn the_run_loop_fires_due_timers_and_ready_descriptors() {
+        use sb::Linux::IRunLoopTrait;
+        use std::time::{Duration, Instant};
+        let frame = ComWrapper::new(PlugFrame::new(std::ptr::null_mut()));
+        let rl = frame.as_com_ref::<sb::Linux::IRunLoop>().expect("the frame is the view's run loop");
+        let ticks = ComWrapper::new(Ticks::default());
+        let timer = ticks.as_com_ref::<sb::Linux::ITimerHandler>().unwrap().as_ptr();
+        let handler = ticks.as_com_ref::<sb::Linux::IEventHandler>().unwrap().as_ptr();
+        // Before registering: every timer's first tick is then later than `t0`.
+        let t0 = Instant::now();
+        let mut fds = [0; 2];
+        // SAFETY: `fds` holds the two descriptors `pipe` writes.
+        assert_eq!(unsafe { libc::pipe(fds.as_mut_ptr()) }, 0);
+        // SAFETY: test calls through our own implementation with live handler objects.
+        unsafe {
+            assert_eq!(rl.registerTimer(timer, 10), sb::kResultOk);
+            assert_eq!(rl.registerEventHandler(handler, fds[0]), sb::kResultOk);
+            assert_ne!(rl.registerEventHandler(handler, -1), sb::kResultOk);
+            assert_ne!(rl.registerTimer(std::ptr::null_mut(), 10), sb::kResultOk);
+        }
+        frame.run_loop.dispatch(t0);
+        assert_eq!(ticks.timer.load(Ordering::Relaxed), 0, "not due yet");
+        assert_eq!(ticks.fd.load(Ordering::Relaxed), 0, "nothing to read");
+        // SAFETY: a valid one-byte buffer written to our own pipe.
+        assert_eq!(unsafe { libc::write(fds[1], b"x".as_ptr().cast(), 1) }, 1);
+        frame.run_loop.dispatch(t0 + Duration::from_secs(1));
+        assert_eq!(ticks.timer.load(Ordering::Relaxed), 1, "a late frame fires once, not once per missed period");
+        assert_eq!(ticks.fd.load(Ordering::Relaxed), 1);
+        // SAFETY: as above.
+        unsafe {
+            assert_eq!(rl.unregisterTimer(timer), sb::kResultOk);
+            assert_ne!(rl.unregisterTimer(timer), sb::kResultOk, "already gone");
+            assert_eq!(rl.unregisterEventHandler(handler), sb::kResultOk);
+        }
+        frame.run_loop.dispatch(t0 + Duration::from_secs(2));
+        assert_eq!((ticks.timer.load(Ordering::Relaxed), ticks.fd.load(Ordering::Relaxed)), (1, 1), "unregistered handlers stay quiet");
+        // SAFETY: as above.
+        unsafe { assert_eq!(rl.registerTimer(timer, 10), sb::kResultOk) };
+        frame.run_loop.clear();
+        frame.run_loop.dispatch(t0 + Duration::from_secs(3));
+        assert_eq!(ticks.timer.load(Ordering::Relaxed), 1, "cleared on teardown");
+        // SAFETY: closing the pipe we opened.
+        unsafe {
+            libc::close(fds[0]);
+            libc::close(fds[1]);
+        }
+    }
+
+    /// A plugin-side handler that calls back into the run loop from its destructor, as a plugin's
+    /// handler may when its last reference is released.
+    struct Reentrant {
+        run_loop: ComPtr<sb::Linux::IRunLoop>,
+    }
+
+    impl Class for Reentrant {
+        type Interfaces = (sb::Linux::ITimerHandler, sb::Linux::IEventHandler);
+    }
+
+    impl sb::Linux::ITimerHandlerTrait for Reentrant {
+        unsafe fn onTimer(&self) {}
+    }
+
+    impl sb::Linux::IEventHandlerTrait for Reentrant {
+        unsafe fn onFDIsSet(&self, _fd: sb::Linux::FileDescriptor) {}
+    }
+
+    impl Drop for Reentrant {
+        fn drop(&mut self) {
+            use sb::Linux::IRunLoopTrait;
+            // SAFETY: a call through our own run loop, which the handler keeps alive.
+            unsafe { self.run_loop.unregisterTimer(std::ptr::null_mut()) };
+        }
+    }
+
+    /// Unregistering or clearing releases the plugin's handler after the run loop's lock, so a
+    /// handler whose destructor calls back into the run loop does not deadlock.
+    #[test]
+    fn releasing_a_handler_may_call_back_into_the_run_loop() {
+        use sb::Linux::IRunLoopTrait;
+        let frame = ComWrapper::new(PlugFrame::new(std::ptr::null_mut()));
+        let rl = frame.to_com_ptr::<sb::Linux::IRunLoop>().expect("the frame is the view's run loop");
+        for case in 0..3 {
+            let handler = ComWrapper::new(Reentrant { run_loop: rl.clone() });
+            let timer = handler.as_com_ref::<sb::Linux::ITimerHandler>().unwrap().as_ptr();
+            let events = handler.as_com_ref::<sb::Linux::IEventHandler>().unwrap().as_ptr();
+            // SAFETY: test calls through our own implementation with a live handler object.
+            unsafe {
+                assert_eq!(rl.registerTimer(timer, 10), sb::kResultOk);
+                assert_eq!(rl.registerEventHandler(events, 0), sb::kResultOk);
+            }
+            // From here on the run loop holds the only references.
+            drop(handler);
+            // SAFETY: as above; the handler stays alive until the run loop lets it go.
+            unsafe {
+                match case {
+                    0 => {
+                        assert_eq!(rl.unregisterTimer(timer), sb::kResultOk);
+                        assert_eq!(rl.unregisterEventHandler(events), sb::kResultOk);
+                    }
+                    1 => {
+                        assert_eq!(rl.unregisterEventHandler(events), sb::kResultOk);
+                        assert_eq!(rl.unregisterTimer(timer), sb::kResultOk);
+                    }
+                    _ => frame.run_loop.clear(),
+                }
+            }
+        }
     }
 }

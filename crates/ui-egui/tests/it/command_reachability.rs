@@ -32,7 +32,6 @@ const KNOWN_UNREACHED: &[&str] = &[
     "track.vca",
     "transport.status",
     "video.offset",
-    "view.sub_counter",
 ];
 
 fn ui_source() -> String {
