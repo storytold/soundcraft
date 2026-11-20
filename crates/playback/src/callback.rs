@@ -79,10 +79,13 @@ pub(crate) struct AudioState {
     fold: [(f32, f32); MAX_CHANNELS],
     pub(crate) pending_len: usize,
     read: f64,
+    chase_pitch: super::chase_pitch::ChasePitch,
+    chasing: bool,
     pub(crate) device_rate: f64,
     input: Option<Arc<record::InputRing>>,
     recording: bool,
     midi: Option<Arc<midi::MidiFeed>>,
+    mtc: Option<super::mtc::Generator>,
     /// Live MIDI events of this callback not played yet: frames (session rate) until each is due.
     midi_pending: Vec<(i64, LiveMidi)>,
     /// The delay every live event gets so that all keep their spacing: one callback (frames).
@@ -149,6 +152,27 @@ fn new_engine(sr: f32) -> MixEngine {
 }
 
 impl AudioState {
+    pub(crate) fn publish_output_position(&self, now: std::time::Instant, lead: std::time::Duration, frames: usize) {
+        use std::time::Duration;
+        // The callback must never wait for a reader. The previous timestamp remains usable.
+        let Ok(mut clock) = self.shared.output_position.try_lock() else { return };
+        if !self.playing || !self.shared.playing.load(Ordering::Relaxed) {
+            *clock = None;
+            return;
+        }
+        let duration = Duration::from_secs_f64(frames as f64 / self.device_rate);
+        let pitch_latency = if self.chasing { self.chase_pitch.latency() / self.device_rate } else { 0.0 };
+        let rate = self.midi_speed * self.session.sample_rate.as_f64();
+        // pos includes samples mixed ahead but not yet copied to the output stream.
+        let end = self.pos as f64 + self.read - self.pending_len as f64;
+        *clock = Some(super::OutputPosition {
+            callback: now,
+            valid_for: (duration * 2).max(Duration::from_millis(100)),
+            sample_at_callback: end - (lead.as_secs_f64() + duration.as_secs_f64() + pitch_latency) * rate,
+            samples_per_second: rate,
+        });
+    }
+
     pub(crate) fn new(
         rx: Receiver<Cmd>,
         shared: Arc<Shared>,
@@ -173,10 +197,13 @@ impl AudioState {
             pending: vec![vec![0.0; BLOCK]; nch],
             pending_len: 0,
             read: 0.0,
+            chase_pitch: super::chase_pitch::ChasePitch::new(device_rate),
+            chasing: false,
             device_rate,
             input: None,
             recording: false,
             midi: None,
+            mtc: None,
             midi_pending: Vec::with_capacity(MIDI_EVENTS),
             midi_delay: 0,
             midi_lost: 0,
@@ -200,6 +227,7 @@ impl AudioState {
         let mut changed = false;
         while let Ok(c) = self.rx.try_recv() {
             match c {
+                Cmd::Mtc(output) => self.mtc = output,
                 Cmd::Input(r) => self.input = Some(r),
                 Cmd::Midi(f) => {
                     self.mix.midi_ports = Some(Arc::clone(f.ports()));
@@ -237,6 +265,11 @@ impl AudioState {
                     }
                 }
                 Cmd::Session(s, instances) => {
+                    if (s.frame_rate, s.timecode_start, s.sample_rate)
+                        != (self.session.frame_rate, self.session.timecode_start, self.session.sample_rate)
+                    {
+                        self.reset_mtc();
+                    }
                     changed = true;
                     if (s.sample_rate.as_f64() - self.session.sample_rate.as_f64()).abs() > 0.5 {
                         let mut old = std::mem::replace(&mut self.mix, new_engine(s.sample_rate.as_f64() as f32));
@@ -258,18 +291,11 @@ impl AudioState {
                     }
                 }
                 Cmd::OldSessions(tx) => self.old_sessions = Some(tx),
-                Cmd::Play { from, end, looped } => {
-                    self.pos = from;
-                    self.end = end;
-                    self.looped = looped.filter(|r| super::loops(*r));
-                    self.midi_wraps = 0;
-                    self.midi_stopped = None;
-                    self.playing = true;
-                    self.pending_len = 0;
-                    self.read = 0.0;
-                    self.mix.reset();
-                }
+                Cmd::Play { from, end, looped } => self.begin_play(from, end, looped, false),
+                Cmd::PlayMtc(from) => self.begin_play(from, None, None, true),
                 Cmd::Stop => {
+                    self.chasing = false;
+                    self.reset_mtc();
                     self.midi_stopped = (self.playing && self.recording).then(|| self.midi.as_ref().map_or(i64::MAX, |f| f.clock()));
                     self.playing = false;
                     self.end = None;
@@ -277,11 +303,15 @@ impl AudioState {
                     self.mix.reset();
                 }
                 Cmd::Locate(at) => {
-                    self.midi_stopped = None;
+                    self.chase_pitch.reset();
+                    self.reset_mtc();
                     self.pos = at;
-                    self.pending_len = 0;
-                    self.read = 0.0;
-                    self.mix.reset();
+                    if self.playing {
+                        self.midi_stopped = None;
+                        self.pending_len = 0;
+                        self.read = 0.0;
+                        self.mix.reset();
+                    }
                 }
             }
         }
@@ -292,6 +322,38 @@ impl AudioState {
         }
         self.send_garbage();
         self.shared.playing.store(self.playing, Ordering::Relaxed);
+    }
+
+    fn begin_play(&mut self, from: Samples, end: Option<Samples>, looped: Option<Range>, chasing: bool) {
+        self.chasing = chasing;
+        self.chase_pitch.reset();
+        self.reset_mtc();
+        self.pos = from;
+        self.end = end;
+        self.looped = looped.filter(|r| super::loops(*r));
+        self.midi_wraps = 0;
+        self.midi_stopped = None;
+        self.playing = true;
+        self.pending_len = 0;
+        self.read = 0.0;
+        self.mix.reset();
+    }
+
+    fn reset_mtc(&mut self) {
+        if let Some(mtc) = &mut self.mtc {
+            mtc.reset();
+        }
+    }
+
+    fn mtc_span(&mut self, clock: std::time::Instant, index: usize, length: usize, step: f64) {
+        let Some(mtc) = &mut self.mtc else { return };
+        let mut start = self.pos.saturating_add(self.session.timecode_start) as f64;
+        if self.playing {
+            start += self.read - self.pending_len as f64;
+        }
+        let device_rate = self.device_rate.max(1.0);
+        let at = clock + std::time::Duration::from_secs_f64(index as f64 / device_rate);
+        mtc.span(&self.session, start, if self.playing { length } else { 0 }, step, device_rate, at);
     }
 
     fn send_garbage(&mut self) {
@@ -551,6 +613,7 @@ impl AudioState {
             && self.pos >= l.end
         {
             self.pos = l.start;
+            self.reset_mtc();
             if self.playing && self.recording {
                 self.midi_wraps = self.midi_wraps.saturating_add(1);
             }
@@ -566,6 +629,7 @@ impl AudioState {
                 }
                 self.playing = false;
                 self.end = None;
+                self.reset_mtc();
                 self.shared.playing.store(false, Ordering::Relaxed);
                 n = 0;
             } else {
@@ -682,7 +746,11 @@ impl AudioState {
         let midi_live = self.midi.as_ref().is_some_and(|f| f.connected() > 0)
             && self.session.tracks.iter().any(|t| matches!(t.kind, TrackKind::Instrument | TrackKind::Midi) && midi_thru(t));
         let monitoring = midi_live || (self.input.is_some() && self.session.tracks.iter().any(|t| t.mixer.input_monitor || t.mixer.record_arm));
+        let clock = self.mtc.as_ref().map(|_| std::time::Instant::now());
         if !self.playing && !monitoring {
+            if let Some(clock) = clock {
+                self.mtc_span(clock, 0, 0, step);
+            }
             self.drop_midi();
             out.iter_mut().for_each(|x| *x = 0.0);
             self.unsent.silence();
@@ -696,16 +764,22 @@ impl AudioState {
         if !midi_live {
             self.drop_midi();
         }
-        for frame in out.chunks_mut(channels) {
+        for (index, frame) in out.chunks_mut(channels).enumerate() {
+            let mut span_start = index == 0;
             while self.read >= self.pending_len as f64 {
                 self.read -= self.pending_len as f64;
                 if !self.playing && !monitoring {
                     break;
                 }
                 self.render_next(quantum);
+                span_start = true;
                 if self.pending_len == 0 {
                     break;
                 }
+            }
+            if span_start && let Some(clock) = clock {
+                let remaining = ((self.pending_len as f64 - self.read) / step).ceil() as usize;
+                self.mtc_span(clock, index, remaining.min(callback_frames - index), step);
             }
             let i0 = self.read.floor() as usize;
             let fr = (self.read - i0 as f64) as f32;
@@ -720,6 +794,9 @@ impl AudioState {
             };
             write_frame(frame, channels, nch, sounding, &self.fold, sample);
             self.read += step;
+        }
+        if self.chasing && self.playing {
+            self.chase_pitch.process(out, channels, speed);
         }
     }
 }

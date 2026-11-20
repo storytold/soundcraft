@@ -147,6 +147,7 @@ fn lost_entry(port: u8) -> u32 {
 /// The path of MIDI events from the device threads to the audio thread, and of recorded events
 /// from the audio thread to the UI.
 pub struct MidiFeed {
+    mtc: Mutex<crate::mtc_input::Reader>,
     ports: Arc<MidiPorts>,
     incoming: Ring,
     /// Device threads write one at a time. Holds the ports ([`midi_port_bit`]) whose loss from
@@ -197,6 +198,7 @@ pub struct MidiFeed {
 impl Default for MidiFeed {
     fn default() -> Self {
         MidiFeed {
+            mtc: Mutex::default(),
             ports: Arc::new(MidiPorts::default()),
             incoming: Ring::new(INCOMING),
             writers: Mutex::new(0),
@@ -278,7 +280,26 @@ impl MidiFeed {
         self.receive_from(Some(open), port, bytes);
     }
 
+    /// Select one currently open port for chase. Switching it discards queued positions.
+    pub fn set_mtc_source(&self, source: Option<u8>) {
+        let mut reader = self.mtc.lock().unwrap_or_else(PoisonError::into_inner);
+        if reader.source != source {
+            reader.reset(source);
+        }
+    }
+
+    pub fn take_mtc(&self) -> Option<crate::mtc_input::ChaseEvent> {
+        self.mtc.lock().unwrap_or_else(PoisonError::into_inner).take(self.now())
+    }
+
     fn receive_from(&self, open: Option<&AtomicBool>, port: u8, bytes: &[u8]) {
+        if matches!(bytes.first(), Some(0xf0 | 0xf1 | 0xfc)) {
+            let mut reader = self.mtc.lock().unwrap_or_else(PoisonError::into_inner);
+            if reader.source == Some(port) && open.is_none_or(|gate| gate.load(Ordering::Acquire)) {
+                reader.read(bytes, self.now());
+            }
+            return;
+        }
         let Some(&status) = bytes.first().filter(|s| (0x80..0xF0).contains(*s)) else { return };
         // Program change and channel pressure have one data byte, the rest two.
         let needs = if matches!(status & 0xF0, 0xC0 | 0xD0) { 2 } else { 3 };
@@ -337,6 +358,10 @@ impl MidiFeed {
     /// Events of `port` did not (or will not) reach the audio thread: it releases what the port
     /// holds. Called when the queue is full and when a port closes.
     pub fn port_lost(&self, port: u8) {
+        let mut reader = self.mtc.lock().unwrap_or_else(PoisonError::into_inner);
+        if reader.source == Some(port) {
+            reader.loss();
+        }
         self.port_lost_at(port, self.now());
     }
 
@@ -888,8 +913,8 @@ mod backend {
 
     fn connect(name: &str, port: &MidiInputPort, feed: &Arc<MidiFeed>) -> Result<(Gate, MidiInputConnection<()>), String> {
         let mut input = MidiInput::new(CLIENT).map_err(|e| e.to_string())?;
-        // Clock, SysEx and active sensing are not used; do not wake up for them.
-        input.ignore(Ignore::All);
+        // Quarter-frame and full-frame SysEx carry MTC. The feed routes them separately from notes and controllers.
+        input.ignore(Ignore::ActiveSense);
         let index = feed.ports().assign(name);
         let feed = Arc::clone(feed);
         let gate: Gate = Arc::new(AtomicBool::new(true));

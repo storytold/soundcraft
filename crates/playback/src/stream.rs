@@ -59,7 +59,13 @@ where
     let (failed, guard, gone) = (Arc::clone(fault), Arc::clone(shared), Arc::clone(fault));
     device.build_output_stream(
         config,
-        move |data: &mut [T], _: &cpal::OutputCallbackInfo| {
+        move |data: &mut [T], info: &cpal::OutputCallbackInfo| {
+            #[cfg(not(target_arch = "wasm32"))]
+            let now = std::time::Instant::now();
+            #[cfg(not(target_arch = "wasm32"))]
+            let timestamp = info.timestamp();
+            #[cfg(target_arch = "wasm32")]
+            let _ = info;
             mark_audio_thread();
             for out in data.chunks_mut(chunk) {
                 let Some(s) = scratch.get_mut(..out.len()) else { return };
@@ -68,6 +74,8 @@ where
                     *o = T::from_sample(*x);
                 }
             }
+            #[cfg(not(target_arch = "wasm32"))]
+            state.publish_output_position(now, timestamp.playback.duration_since(timestamp.callback), data.len() / frame);
         },
         // cpal may call this on the audio thread (on ALSA in a loop while the device stays
         // broken): marked, so the logger hands the record off instead of writing it.

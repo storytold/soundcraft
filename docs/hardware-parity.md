@@ -34,7 +34,7 @@ Legend: ✅ works · 🟡 partial · ❌ missing.
 | MIDI input devices (keyboards, pads) | ✅ | 🟡 Linux (ALSA sequencer), macOS (CoreMIDI) and Windows (WinMM) through `midir`: every input port is opened, hot-plugged devices are picked up, ports can be switched off in Setup › Playback Engine; each MIDI/instrument track chooses a device and channel at its input selector. Notes are recorded into MIDI clips with controllers, pitch bend and aftertouch. On Linux, live play was checked with a hardware keyboard (Akai MPK mini 3) and recording with a virtual one; not on macOS or Windows, and there is none on FreeBSD or the web |
 | MIDI output to external gear | ✅ | ❌ |
 | MIDI Thru, input filter | ✅ | 🟡 record-enabled and input-monitored MIDI/instrument tracks play the keyboard through their instrument (notes, the sustain pedal, controllers, pitch bend, aftertouch and program changes); the input filter keeps the filtered kinds out of recordings. No thru to external gear |
-| MIDI Beat Clock out, MTC generate/chase | ✅ | ❌ |
+| MIDI synchronization | ✅ | See [Sync and video hardware](#sync-and-video-hardware) for transport and timecode support |
 | MIDI learn / controller mapping | ✅ (via surfaces and plug-in maps) | ❌ |
 | Virtual MIDI keyboard | ✅ (MIDI Keyboard window) | 🟡 window exists, no live audition path |
 
@@ -51,7 +51,8 @@ Legend: ✅ works · 🟡 partial · ❌ missing.
 
 | Feature | Pro Tools | SoundCraft |
 |---|---|---|
-| LTC / MTC chase, 9-pin machine control | ✅ (Ultimate) | ❌ |
+| MTC generate/chase | ✅ | 🟡 [Generate timecode or follow an external device](midi-input.md#generate-or-follow-midi-time-code). Windows hardware verified with a Model 12 and UM-ONE. |
+| LTC chase, 9-pin machine control | ✅ (Ultimate) | ❌ |
 | Word clock / video reference awareness | ✅ via interface | ❌ |
 | Video output to a second display or video card | ✅ | ❌ (video window only) |
 | Satellite linking of systems | ✅ | ❌ |

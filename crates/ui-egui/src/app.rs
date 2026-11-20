@@ -13,6 +13,8 @@ mod control;
 mod files;
 mod input;
 mod midi;
+mod mtc;
+mod mtc_output;
 mod playback;
 mod plugins;
 
@@ -42,6 +44,12 @@ impl SoundApp {
             punch: None,
             recorder_failed: false,
             midi_inputs: None,
+            mtc_online: false,
+            mtc_chasing: false,
+            mtc_playback_rate: 1.0,
+            mtc_status: "Offline",
+            mtc_output: None,
+            mtc_output_retry: None,
             midi_scan_at: 0.0,
             midi_take: Vec::new(),
             midi_take_lost: 0,
@@ -205,7 +213,9 @@ impl SoundApp {
         self.watch_output();
         self.watch_input();
         // Stop the old playback before sending a replacement session to the audio thread.
+        self.service_mtc_chase();
         self.handle_transport(dt);
+        self.service_mtc_output();
         if self.engine.revision != self.last_rev {
             self.last_rev = self.engine.revision;
             if let Some(p) = &self.player {
@@ -217,6 +227,9 @@ impl SoundApp {
         self.write_automation();
         self.autosave();
         self.service_midi(self.uptime);
+        if self.mtc_online {
+            ctx.request_repaint_after(std::time::Duration::from_millis(15));
+        }
         if self.recorder.is_none() && !self.recorder_failed && audio::wants_audio_input(self.engine.session()) {
             self.ensure_input();
         }

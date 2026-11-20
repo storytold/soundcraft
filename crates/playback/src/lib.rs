@@ -28,8 +28,11 @@ pub fn loops(range: Range) -> bool {
     range.len() > 64
 }
 
+mod chase_pitch;
 pub mod devices;
 pub mod midi;
+pub mod mtc;
+pub mod mtc_input;
 pub mod record;
 
 pub use devices::AudioConfig;
@@ -126,6 +129,7 @@ enum Cmd {
     OldSessions(SyncSender<Arc<Session>>),
     Input(Arc<record::InputRing>),
     Midi(Arc<midi::MidiFeed>),
+    Mtc(Option<mtc::Generator>),
     /// Recording on or off. Switching it off carries the number of the pass that ends
     /// (`MidiFeed::end_pass`; 0: nobody waits for it), which the callback acknowledges.
     Recording(bool, u64),
@@ -134,6 +138,7 @@ enum Cmd {
         end: Option<Samples>,
         looped: Option<Range>,
     },
+    PlayMtc(Samples),
     Stop,
     Locate(Samples),
     /// Tracks the latest session no longer has (worked out on the UI thread): their meters go.
@@ -146,6 +151,14 @@ struct Shared {
     /// Speed × 1000.
     speed: AtomicU32,
     meters: Mutex<MeterSnapshot>,
+    output_position: Mutex<Option<OutputPosition>>,
+}
+
+struct OutputPosition {
+    callback: std::time::Instant,
+    valid_for: std::time::Duration,
+    sample_at_callback: f64,
+    samples_per_second: f64,
 }
 
 /// What stopped the audio output.
@@ -157,6 +170,21 @@ pub enum OutputTrouble {
     Gone,
     /// The device stopped asking for audio while playing.
     Stalled,
+}
+
+impl Shared {
+    fn presented_position_at(&self, now: std::time::Instant) -> Samples {
+        if self.playing.load(Ordering::Relaxed)
+            && let Ok(clock) = self.output_position.lock()
+            && let Some(clock) = clock.as_ref()
+        {
+            let elapsed = now.saturating_duration_since(clock.callback);
+            if elapsed <= clock.valid_for {
+                return (clock.sample_at_callback + elapsed.as_secs_f64() * clock.samples_per_second).round() as Samples;
+            }
+        }
+        self.position.load(Ordering::Relaxed)
+    }
 }
 
 /// The transport and audio device.
@@ -224,6 +252,7 @@ impl Player {
             playing: AtomicBool::new(false),
             speed: AtomicU32::new(1000),
             meters: Mutex::new(MeterSnapshot::default()),
+            output_position: Mutex::default(),
         });
         let want = session.sample_rate.hz();
         let want_ch = u16::try_from(main_channels(&session)).unwrap_or(2);
@@ -476,9 +505,19 @@ impl Player {
 
     /// Start playback at `from`, stopping at `end`, or looping `looped`.
     pub fn play(&self, from: Samples, end: Option<Samples>, looped: Option<Range>) {
+        self.begin_play(from, Cmd::Play { from, end, looped });
+    }
+
+    /// Start at a timecode locate, preserving audio pitch during transport rate corrections.
+    pub fn play_chasing_mtc(&self, from: Samples) {
+        self.begin_play(from, Cmd::PlayMtc(from));
+    }
+
+    fn begin_play(&self, from: Samples, command: Cmd) {
+        *self.shared.output_position.lock().unwrap_or_else(PoisonError::into_inner) = None;
         self.shared.position.store(from, Ordering::Relaxed);
         self.shared.playing.store(true, Ordering::Relaxed);
-        let _ = self.tx.send(Cmd::Play { from, end, looped });
+        let _ = self.tx.send(command);
     }
 
     /// Feed live input (from a `record::Recorder`) into the mix for input monitoring.
@@ -503,11 +542,13 @@ impl Player {
     }
 
     pub fn stop(&self) {
+        *self.shared.output_position.lock().unwrap_or_else(PoisonError::into_inner) = None;
         self.shared.playing.store(false, Ordering::Relaxed);
         let _ = self.tx.send(Cmd::Stop);
     }
 
     pub fn locate(&self, at: Samples) {
+        *self.shared.output_position.lock().unwrap_or_else(PoisonError::into_inner) = None;
         self.shared.position.store(at, Ordering::Relaxed);
         let _ = self.tx.send(Cmd::Locate(at));
     }
@@ -524,6 +565,19 @@ impl Player {
 
     pub fn position(&self) -> Samples {
         self.shared.position.load(Ordering::Relaxed)
+    }
+
+    /// Estimated session sample at the output device now, for synchronization to an external clock.
+    /// Silent or stalled devices fall back to the transport cursor.
+    pub fn presented_position(&self) -> Samples {
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            self.shared.presented_position_at(std::time::Instant::now())
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            self.position()
+        }
     }
 
     pub fn is_playing(&self) -> bool {

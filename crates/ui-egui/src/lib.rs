@@ -159,6 +159,8 @@ pub struct UiState {
     pub ui_scale: f32,
     /// MIDI input ports switched off in Setup, by name (all others are used).
     pub midi_inputs_off: Vec<String>,
+    pub mtc_input_port: Option<String>,
+    pub mtc_output_port: Option<String>,
 }
 
 impl Default for UiState {
@@ -228,6 +230,8 @@ impl Default for UiState {
             window_maximized: false,
             ui_scale: 1.0,
             midi_inputs_off: Vec::new(),
+            mtc_input_port: None,
+            mtc_output_port: None,
         }
     }
 }
@@ -294,6 +298,12 @@ pub struct SoundApp {
     recorder_failed: bool,
     /// MIDI device input, opened on the first frame of an app that has an audio engine.
     pub midi_inputs: Option<soundcraft_playback::midi::MidiInputs>,
+    pub(crate) mtc_online: bool,
+    mtc_chasing: bool,
+    mtc_playback_rate: f32,
+    mtc_status: &'static str,
+    pub(crate) mtc_output: Option<soundcraft_playback::mtc::MtcOutput>,
+    pub(crate) mtc_output_retry: Option<std::time::Instant>,
     /// When the MIDI ports were last looked for (app uptime, seconds).
     midi_scan_at: f64,
     /// MIDI played during the current record pass.

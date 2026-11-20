@@ -98,3 +98,10 @@ shows how many messages were dropped.
 
 `ui.inspect` reports `midi_inputs` (name, enabled, open), `midi_events` (messages received so far)
 and `midi_events_dropped`. See [control-protocol.md](control-protocol.md).
+
+
+## Generate or follow MIDI Time Code
+
+Open **Setup › Playback Engine**. To follow a device, enable its MIDI input, choose it under **MTC input**, then turn on **Online (chase MTC)**. A full-frame locate moves the stopped cursor. Forward quarter-frame messages start playback and loss of timecode stops it. A local stop takes the transport offline.
+
+To drive another device, take chase offline and select an **MTC generator output**. Set the session start timecode and frame rate in Session Setup. The generator sends a full-frame message on a stopped locate and quarter-frame messages while playing. It supports 24, 25, 29.97 drop-frame and 30 fps. Select **Off** to release the output.

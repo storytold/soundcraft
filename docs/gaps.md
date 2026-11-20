@@ -16,7 +16,7 @@ When you close a gap, delete its entry (or shrink it) in the same PR, and bump t
 | # | Gap | Dimension | Doc | Est. (h) |
 |---|---|---|---|---:|
 | G-01 | **Alpha blocker.** No channel routing or duplex low-latency path (device, rate and buffer choice done; ASIO opt-in) | Hardware | [hardware-parity.md](hardware-parity.md) | 15–25 |
-| G-02 | **Alpha blocker.** MIDI devices: input works (checked on Linux only); no output, clock or loop/merge recording | Hardware / MIDI | [hardware-parity.md](hardware-parity.md) | 12–22 |
+| G-02 | **Alpha blocker.** MIDI devices: input works (checked on Linux only); no external track output or loop/merge recording | Hardware / MIDI | [hardware-parity.md](hardware-parity.md) | 12–22 |
 | G-03 | **Alpha blocker.** Session exchange remains incomplete (strict external-WAV AAF import only; no AAF/OMF export, OMF import or `.ptx`) | File formats | [file-format-parity.md](file-format-parity.md) | 50–90 |
 | G-04 | Open correctness bugs in features counted as done (~25 issues) | Stability | this file | 25–40 |
 | G-05 | (Entitlement part: alpha blocker for the mix row) Third-party VST3s blocked in the signed macOS build; AU editors missing | Ecosystem | [plugin-parity.md](plugin-parity.md) | 10–15 |
@@ -25,7 +25,7 @@ When you close a gap, delete its entry (or shrink it) in the same PR, and bump t
 | G-08 | Built-in plugin catalogue thin and unverified | Features | [plugin-parity.md](plugin-parity.md) | 80–120 |
 | G-09 | English-first UI with a pt-BR catalog (not native-reviewed); all fixed UI strings covered, no CJK/RTL rendering | Localization | [localization-parity.md](localization-parity.md) | 20–40 |
 | G-10 | No control surfaces (HUI/MCU, EUCON) | Hardware | [hardware-parity.md](hardware-parity.md) | 40–70 |
-| G-11 | No external sync (MTC, LTC, MIDI clock, video reference) | Hardware | [hardware-parity.md](hardware-parity.md) | 15–25 |
+| G-11 | External MIDI sync, LTC and video reference | Hardware | [hardware-parity.md](hardware-parity.md) | 15–25 |
 | G-12 | Immersive delivery: no Dolby Atmos/ADM BWF, MPEG-H, binaural | Features | [file-format-parity.md](file-format-parity.md) | 50–80 |
 | G-13 | Sidechain inputs, ARA, out-of-process plugin sandboxing | Ecosystem | [plugin-parity.md](plugin-parity.md) | 30–50 |
 | G-14 | Windows/Linux/Web exercised only lightly at runtime; no PR CI running the tests | Platforms / Stability | this file | 20–40 |
@@ -74,13 +74,12 @@ When you close a gap, delete its entry (or shrink it) in the same PR, and bump t
   preferences. User guide: [midi-input.md](midi-input.md). On Linux, live play was checked with
   a hardware keyboard (Akai MPK mini 3) and recording with a virtual one;
   **not yet on macOS or Windows** (type-checked only).
-- **Missing:** MIDI output (external synths, MIDI tracks without an instrument), MIDI clock/MTC
-  out, loop and merge recording (a MIDI take replaces what it covers; a loop pass piles every
+- **Missing:** MIDI output (external synths, MIDI tracks without an instrument), loop and merge recording (a MIDI take replaces what it covers; a loop pass piles every
   pass into one clip), audition from the MIDI editor (`midi_editor.rs:288`), MIDI
   input on FreeBSD and the web. `setup.midi_input_devices` and `setup.midi_studio` still only
   store names in the session; the real device switches are app preferences.
-- **Impact:** you can play and record a keyboard, not drive hardware synths or sync other gear.
-- **Estimate:** ≈ 12–22 h (output tracks and thru, clock out, merge/loop takes, controller path).
+- **Impact:** external synth playback still needs MIDI track output. See G-11 for device synchronization.
+- **Estimate:** ≈ 12–22 h (output tracks and thru, merge/loop takes, controller path).
 
 ### G-03. Session interchange with Pro Tools
 
@@ -186,8 +185,8 @@ switch. ≈ 40–70 h for HUI/MCU plus a mapping layer; hardware needed to verif
 
 ### G-11. Sync
 
-No MTC/LTC chase or generation, no MIDI Beat Clock (`setup.midi_beat_clock` stores a flag only),
-no video reference or word clock awareness, no Satellite-style linking. ≈ 15–25 h after G-01/G-02.
+For MIDI Beat Clock and MIDI Time Code, see the [hardware capability tables](hardware-parity.md#midi).
+LTC, video reference, word clock awareness and Satellite-style linking remain open.
 
 ### G-12. Immersive delivery
 

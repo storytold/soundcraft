@@ -139,6 +139,7 @@ fn spike_session(spike_at: usize) -> (Arc<Shared>, AudioState, std::sync::mpsc::
         playing: AtomicBool::new(false),
         speed: AtomicU32::new(1000),
         meters: Mutex::new(MeterSnapshot::default()),
+        output_position: Mutex::default(),
     });
     let (tx, rx) = channel();
     let st = AudioState::new(rx, Arc::clone(&shared), Arc::new(s), 48_000.0, channel().0);
@@ -246,6 +247,7 @@ fn a_block_that_panics_goes_silent_and_is_reported_once() {
         playing: AtomicBool::new(true),
         speed: AtomicU32::new(1000),
         meters: Mutex::new(MeterSnapshot::default()),
+        output_position: Mutex::default(),
     };
     let fault = Fault::default();
     let mut out = [0.5f32; 8];
@@ -287,6 +289,7 @@ fn audio_state_plays_and_stops_at_end() {
         playing: AtomicBool::new(false),
         speed: AtomicU32::new(1000),
         meters: Mutex::new(MeterSnapshot::default()),
+        output_position: Mutex::default(),
     });
     let (tx, rx) = channel();
     let mut st = AudioState::new(rx, Arc::clone(&shared), s, 48_000.0, channel().0);
@@ -305,6 +308,7 @@ fn short_device_callbacks_render_short_mix_blocks() {
         playing: AtomicBool::new(false),
         speed: AtomicU32::new(1000),
         meters: Mutex::new(MeterSnapshot::default()),
+        output_position: Mutex::default(),
     });
     let (tx, rx) = channel();
     let mut st = AudioState::new(rx, Arc::clone(&shared), s, 48_000.0, channel().0);
@@ -329,6 +333,7 @@ fn audio_output_state(format: soundcraft_model::ChannelFormat, channels: Vec<Vec
         playing: AtomicBool::new(false),
         speed: AtomicU32::new(1000),
         meters: Mutex::new(MeterSnapshot::default()),
+        output_position: Mutex::default(),
     });
     let (tx, rx) = channel();
     let st = AudioState::new(rx, shared, Arc::new(s), 48_000.0, channel().0);
@@ -436,6 +441,7 @@ fn surround_main_maps_to_device_channels_or_folds_down() {
         playing: AtomicBool::new(false),
         speed: AtomicU32::new(1000),
         meters: Mutex::new(MeterSnapshot::default()),
+        output_position: Mutex::default(),
     });
     let (tx, rx) = channel();
     let mut st = AudioState::new(rx, Arc::clone(&shared), Arc::clone(&s), 48_000.0, channel().0);
@@ -469,6 +475,7 @@ fn instances_arrive_with_the_session_and_leave_through_the_return_channel() {
         playing: AtomicBool::new(false),
         speed: AtomicU32::new(1000),
         meters: Mutex::new(MeterSnapshot::default()),
+        output_position: Mutex::default(),
     });
     let (tx, rx) = channel();
     let (gtx, grx) = channel();
@@ -610,6 +617,7 @@ fn replaced_sessions_are_freed_on_the_ui_thread() {
         playing: AtomicBool::new(false),
         speed: AtomicU32::new(1000),
         meters: Mutex::new(MeterSnapshot::default()),
+        output_position: Mutex::default(),
     });
     let (tx, rx) = channel();
     let (gtx, grx) = channel();
@@ -639,6 +647,7 @@ fn looping_wraps() {
         playing: AtomicBool::new(false),
         speed: AtomicU32::new(1000),
         meters: Mutex::new(MeterSnapshot::default()),
+        output_position: Mutex::default(),
     });
     let (tx, rx) = channel();
     let mut st = AudioState::new(rx, Arc::clone(&shared), s, 48_000.0, channel().0);
@@ -671,6 +680,7 @@ fn locate_while_playing_drops_the_old_position_audio() {
             playing: AtomicBool::new(false),
             speed: AtomicU32::new(1000),
             meters: Mutex::new(MeterSnapshot::default()),
+            output_position: Mutex::default(),
         });
         let (tx, rx) = channel();
         let mut st = AudioState::new(rx, Arc::clone(&shared), Arc::new(s), 48_000.0, channel().0);
@@ -701,6 +711,7 @@ fn armed_tracks_are_heard_and_metered_after_playback_stops() {
         playing: AtomicBool::new(false),
         speed: AtomicU32::new(1000),
         meters: Mutex::new(MeterSnapshot::default()),
+        output_position: Mutex::default(),
     });
     let (tx, rx) = channel();
     let mut st = AudioState::new(rx, Arc::clone(&shared), Arc::new(s), 48_000.0, channel().0);
@@ -729,6 +740,7 @@ fn keyboard_session() -> (AudioState, std::sync::mpsc::Sender<Cmd>, Arc<midi::Mi
         playing: AtomicBool::new(false),
         speed: AtomicU32::new(1000),
         meters: Mutex::new(MeterSnapshot::default()),
+        output_position: Mutex::default(),
     });
     let (tx, rx) = channel();
     let st = AudioState::new(rx, shared, Arc::new(s.clone()), 48_000.0, channel().0);
@@ -743,6 +755,17 @@ fn heard(st: &mut AudioState, callbacks: usize) -> bool {
     let mut out = vec![0.0f32; 2048];
     (0..callbacks).for_each(|_| st.fill(&mut out, 2));
     out.iter().any(|x| x.abs() > 0.003)
+}
+
+#[test]
+fn locating_the_stopped_cursor_preserves_a_monitored_instrument_note() {
+    let (mut state, commands, feed, ..) = keyboard_session();
+    feed.receive(0, &[0x90, 64, 100]);
+    assert!(heard(&mut state, 4));
+    commands.send(Cmd::Locate(240_000)).unwrap();
+    assert!(heard(&mut state, 6));
+    feed.receive(0, &[0x80, 64, 0]);
+    assert!(!heard(&mut state, 60));
 }
 
 #[test]
@@ -874,6 +897,7 @@ fn live_midi_keeps_its_order_and_its_time_at_another_device_rate() {
         playing: AtomicBool::new(false),
         speed: AtomicU32::new(1000),
         meters: Mutex::new(MeterSnapshot::default()),
+        output_position: Mutex::default(),
     });
     let (tx2, rx) = channel();
     drop(tx);
@@ -1036,6 +1060,7 @@ fn the_age_of_a_midi_event_is_counted_at_the_transport_speed() {
         playing: AtomicBool::new(false),
         speed: AtomicU32::new(500),
         meters: Mutex::new(MeterSnapshot::default()),
+        output_position: Mutex::default(),
     });
     let (tx, rx) = channel();
     let mut st = AudioState::new(rx, shared, Arc::new(s), 48_000.0, channel().0);
@@ -1892,4 +1917,67 @@ fn a_pass_started_and_ended_by_the_commands_of_one_callback_keeps_what_was_playe
     rec.clear();
     feed.take_recorded(&mut rec);
     assert!(rec.is_empty(), "{rec:?}");
+}
+
+#[test]
+fn mtc_chase_reads_presented_sample_between_device_callbacks() {
+    use std::time::{Duration, Instant};
+    let (shared, mut state, _tx, _) = spike_session(0);
+    let now = Instant::now();
+    let mut block = [0.0; 960];
+    // Render a full second, then a 10 ms buffer queued behind 30 ms of device output.
+    for _ in 0..101 {
+        state.fill(&mut block, 2);
+    }
+    state.publish_output_position(now, Duration::from_millis(30), 480);
+    assert_eq!(shared.presented_position_at(now + Duration::from_millis(5)), 46_800);
+    assert_eq!(shared.presented_position_at(now + Duration::from_secs(2)), 48_480);
+}
+
+#[test]
+fn mtc_chase_accounts_for_rate_and_unconsumed_mix_samples() {
+    use std::time::{Duration, Instant};
+    let (shared, mut state, tx, _) = spike_session(0);
+    let now = Instant::now();
+    let mut block = [0.0; 960];
+    shared.speed.store(1020, Ordering::Relaxed);
+    for _ in 0..10 {
+        state.fill(&mut block, 2);
+    }
+    state.publish_output_position(now, Duration::from_millis(20), 480);
+    // At callback + 5 ms the device is playing source time (100 - 10 - 20 + 5) ms at 102%.
+    assert_eq!(shared.presented_position_at(now + Duration::from_millis(5)), 3_672);
+    tx.send(Cmd::Stop).unwrap();
+    state.fill(&mut block, 2);
+    state.publish_output_position(now, Duration::ZERO, 480);
+    assert_eq!(shared.presented_position_at(now), shared.position.load(Ordering::Relaxed));
+}
+
+#[test]
+fn mtc_correction_preserves_a_tones_pitch_while_the_timeline_advances_faster_or_slower() {
+    use soundcraft_model::{SourceAudio, SourceId};
+    for (speed, fundamental) in [(1025, 440.0f32), (1040, 440.0), (980, 440.0), (1040, 55.0), (980, 110.0), (1040, 1760.0)] {
+        let (shared, mut state, tx, _) = spike_session(0);
+        let mut session = (*state.session).clone();
+        let tone = (0..48_000).map(|i| 0.3 * (std::f32::consts::TAU * fundamental * i as f32 / 48_000.0).sin()).collect();
+        session.pool.insert(SourceId(5), Arc::new(SourceAudio::new(craft_audio::AudioBuffer { sample_rate: 48_000, channels: vec![tone] })));
+        tx.send(Cmd::Session(Arc::new(session), Vec::new())).unwrap();
+        tx.send(Cmd::PlayMtc(0)).unwrap();
+        shared.speed.store(speed, Ordering::Relaxed);
+        let mut rendered = Vec::new();
+        for _ in 0..80 {
+            let mut block = [0.0; 960];
+            state.fill(&mut block, 2);
+            rendered.extend(block.chunks_exact(2).map(|frame| frame[0]));
+        }
+        assert!((shared.position.load(Ordering::Relaxed) - 38_400 * i64::from(speed) / 1000).abs() <= 512);
+        let crossings: Vec<_> = rendered[4800..]
+            .windows(2)
+            .enumerate()
+            .filter_map(|(i, w)| (w[0] < 0.0 && w[1] >= 0.0).then(|| i as f64 - f64::from(w[0]) / f64::from(w[1] - w[0])))
+            .collect();
+        let hz = (crossings.len() - 1) as f64 * 48_000.0 / (crossings.last().unwrap() - crossings[0]);
+        let cents = 1200.0 * (hz / f64::from(fundamental)).log2();
+        assert!(cents.abs() < 3.0, "target {fundamental} Hz, speed {speed}, {hz:.3} Hz ({cents:.2} cents)");
+    }
 }

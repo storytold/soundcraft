@@ -71,6 +71,8 @@ pub const UI_COMMANDS: &[(&str, &str, &str, Option<&str>)] = &[
     ("window.import_aaf", "Import Session Data (AAF)", "", None),
     ("window.playback_engine", "Playback Engine", "", None),
     ("ui.audio_device", "Audio Device", "", None),
+    ("setup.mtc", "MTC input", "", None),
+    ("setup.mtc_output", "MTC generator output", "", None),
     ("window.io_setup", "I/O Setup", "", None),
     ("window.shortcuts", "Keyboard Shortcuts", "", None),
     ("view.mix_section", "Mix Window View", "", None),
@@ -614,6 +616,12 @@ fn wants_dialog(id: &str) -> bool {
 
 /// Handle UI-layer commands. Returns None when `id` is not a UI command.
 pub fn run_ui_command(app: &mut SoundApp, id: &str, p: &Value) -> Option<Result<Value, String>> {
+    if id == "setup.mtc" {
+        return Some(app.mtc_command(p));
+    }
+    if id == "setup.mtc_output" {
+        return Some(app.mtc_output_command(p));
+    }
     if id == "window.import_aaf" {
         return Some(crate::aaf_import::command(app, p));
     }

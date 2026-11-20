@@ -15,6 +15,15 @@ pub(super) fn transport_window(app: &mut SoundApp, ctx: &egui::Context) {
             let flags = app.engine.session().edit.flags.clone();
             let expanded = flags.contains("view.transport.expanded");
             ui.horizontal(|ui| {
+                if app.ui.mtc_input_port.is_some()
+                    && ui
+                        .selectable_label(app.mtc_online, crate::localization::text("Online"))
+                        .on_hover_text(crate::localization::text(app.mtc_status))
+                        .clicked()
+                    && let Err(e) = app.run("setup.mtc", json!({"online": !app.mtc_online}))
+                {
+                    app.ui.status = e;
+                }
                 for (icon, cmd) in [
                     ("rtz", "transport.rtz"),
                     ("rewind", "transport.rewind"),

@@ -701,6 +701,8 @@ pub fn playback_engine(app: &mut SoundApp, ctx: &egui::Context) {
         }
         ui.separator();
         midi_inputs(app, ui);
+        app.mtc_input_settings(ui);
+        app.mtc_output_settings(ui);
     });
     if refresh {
         audio_systems(ctx, true);
