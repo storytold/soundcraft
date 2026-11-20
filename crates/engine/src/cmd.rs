@@ -308,6 +308,12 @@ fn position_param_raw(e: &Engine, cmd: &str, p: &Value, key: &str) -> Result<Opt
             Some((f, b)) if soundcraft_time::TimeFormat::from_id(f).is_some() => (soundcraft_time::TimeFormat::from_id(f), b),
             _ => (None, text),
         };
+        // Minutes:seconds with a fractional second identifies an elapsed time even
+        // when the main counter shows absolute timecode with a nonzero session start.
+        let fmt = fmt.or_else(|| {
+            let (_, seconds) = body.trim().split_once(':')?;
+            (seconds.contains('.') && !seconds.contains([':', ';'])).then_some(soundcraft_time::TimeFormat::MinSecs)
+        });
         let fmts: Vec<soundcraft_time::TimeFormat> = match fmt {
             Some(f) => vec![f],
             None => {
