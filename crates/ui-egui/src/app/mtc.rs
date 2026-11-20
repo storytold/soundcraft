@@ -192,6 +192,25 @@ mod tests {
     }
 
     #[test]
+    fn before_start_external_code_preserves_position_and_reports_range_status() {
+        let mut host = app();
+        let feed = host.midi_inputs.as_ref().unwrap().feed().clone();
+        let port = feed.ports().assign("Sender");
+        host.engine.transport.position = 48_000;
+        feed.receive(port, &[0xf0, 0x7f, 127, 1, 1, 0x20, 59, 50, 0, 0xf7]);
+        host.service_mtc_chase();
+        host.handle_transport(0.0);
+        assert_eq!(host.position(), 48_000);
+        let status = host.run("setup.midi_sync_status", json!({})).unwrap();
+        assert_eq!(status["mtc_chase"]["state"], "Before session start");
+        feed.receive(port, &[0xf0, 0x7f, 127, 1, 1, 0x21, 0, 0, 0, 0xf7]);
+        host.service_mtc_chase();
+        host.handle_transport(0.0);
+        assert_eq!(host.position(), 0);
+        assert_eq!(host.run("setup.midi_sync_status", json!({})).unwrap()["mtc_chase"]["state"], "Located");
+    }
+
+    #[test]
     fn diagnostics_expose_reader_counters_before_any_timecode_arrives() {
         let mut host = app();
         let status = host.run("setup.midi_sync_status", json!({})).unwrap();

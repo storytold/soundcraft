@@ -110,6 +110,21 @@ mod tests {
         assert_eq!(clock.map(0, 3_020_000), 3_020_000);
     }
     #[test]
+    fn timestamp_mapping_tracks_both_directions_of_clock_drift_for_an_hour() {
+        for ppm in [-100, 100] {
+            let mut clock = DriverTime::default();
+            let mut max_error = 0;
+            for second in 0..=3600_i64 {
+                let actual = second * 1_000_000;
+                let arrival = actual + if second % 3 == 0 { 0 } else { 1200 };
+                let stamp = (actual + second * ppm) as u64;
+                let mapped = clock.map(stamp, arrival);
+                max_error = max_error.max(mapped.abs_diff(actual));
+            }
+            assert!(max_error < 2000, "driver {ppm} ppm: max timestamp error {max_error} us");
+        }
+    }
+    #[test]
     fn windowed_fit_handles_host_uptime_jitter_and_discontinuities() {
         let mut fit = PulseFit::<24>::default();
         let start = 9_000_000_000;
