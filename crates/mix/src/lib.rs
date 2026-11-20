@@ -70,6 +70,10 @@ mod midi;
 mod offline;
 mod pan;
 mod routing;
+#[cfg(not(target_arch = "wasm32"))]
+mod stream;
+#[cfg(target_arch = "wasm32")]
+#[path = "stream_wasm.rs"]
 mod stream;
 mod strip;
 mod threads;
