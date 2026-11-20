@@ -64,16 +64,16 @@ midir = "=0.11.1"
 craft-docpath = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "ea24422ae9859dc5da398d0462bc87f8e02e0d10" }
 
 # Video containers and bitstreams, shared with the other craft apps.
-craft-media = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "45a8e16669e70dadb780dfbc759c882dd5b7ea1c" }
+craft-media = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "38b4001816f894ce848a6ac31b6afbef6e0944c6" }
 # H.264 and ProRes codecs shared with the other Craft apps.
 craft-video = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "ddbe78231b5b23273b3d191f04b1a38f4c0445b3", default-features = false, features = ["h264-decode", "prores", "mjpeg"] }
 # Audio file formats, codecs and waveform overviews, shared with the other craft apps. It shares
 # types with craft-media, so both stay on one rev.
 # Standard MIDI Files and the note/controller model, shared with the other craft apps.
-craft-midi = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "45a8e16669e70dadb780dfbc759c882dd5b7ea1c", features = ["serde"] }
-craft-audio = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "45a8e16669e70dadb780dfbc759c882dd5b7ea1c", features = ["decode", "lossless-encode", "peaks", "serde"] }
-craft-time = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "45a8e16669e70dadb780dfbc759c882dd5b7ea1c" }
-craft-scraft-format = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "45a8e16669e70dadb780dfbc759c882dd5b7ea1c" }
+craft-midi = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "38b4001816f894ce848a6ac31b6afbef6e0944c6", features = ["serde"] }
+craft-audio = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "38b4001816f894ce848a6ac31b6afbef6e0944c6", features = ["decode", "lossless-encode", "peaks", "serde"] }
+craft-time = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "38b4001816f894ce848a6ac31b6afbef6e0944c6" }
+craft-scraft-format = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "38b4001816f894ce848a6ac31b6afbef6e0944c6" }
 # craft-update: app-specific pretend versions apply to startup and manual checks.
 craft-update = { version = "=0.1.0", git = "https://github.com/storytold/craft-libs", rev = "ea24422ae9859dc5da398d0462bc87f8e02e0d10", features = ["egui"] }
 craft-mcp-server = { version = "=0.1.0", git = "https://github.com/storytold/craft-libs", rev = "08da5e1486ee640de1d2cccd8fe8dd32b1d3b62c" }

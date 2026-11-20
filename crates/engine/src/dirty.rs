@@ -33,13 +33,14 @@ fn document_values<'a>(s: &'a Session, navigation: &'a EditState) -> impl Partia
         next_id,
         comments,
         midi_originals,
+        room_tone,
         pool,
         folder,
     } = s;
     // Tuples implement PartialEq up to twelve elements. These contain only borrowed fields.
     (
         (format_version, name, sample_rate, bit_depth, frame_rate, timecode_start, tempo, key_signatures, sources, videos, busses),
-        (outputs, markers, groups, auto_names, edit_values(edit, navigation), next_id, comments, midi_originals, pool, folder),
+        (outputs, markers, groups, auto_names, edit_values(edit, navigation), next_id, comments, midi_originals, room_tone, pool, folder),
     )
 }
 
@@ -322,6 +323,9 @@ mod tests {
         let mut doc = saved.clone();
         doc.pool.remove(SourceId(900));
         check(&saved, &doc, false, "decoded audio removed");
+        let mut doc = saved.clone();
+        doc.room_tone = Some(soundcraft_model::RoomTone { source: SourceId(900), offset: 0, length: 10, gain_db: 0.0 });
+        check(&saved, &doc, false, "session room tone");
         let mut doc = saved.clone();
         doc.folder = Some(std::path::PathBuf::from("session"));
         check(&saved, &doc, false, "session folder");
