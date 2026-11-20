@@ -62,7 +62,8 @@ fn main() {
     READY.store(true, Ordering::Relaxed);
     let step = |h: &mut egui_kittest::Harness<SoundApp>| {
         let mut raw = std::mem::take(h.input_mut());
-        h.state_mut().raw_input_hook(&mut raw);
+        let ctx = h.ctx.clone();
+        h.state_mut().raw_input_hook(&ctx, &mut raw);
         *h.input_mut() = raw;
         h.step();
     };

@@ -1,0 +1,852 @@
+use serde_json::{Value, json};
+use soundcraft_engine::Engine;
+use soundcraft_engine::edit::SHUFFLE_LOCK;
+use soundcraft_model::{AutoParam, Clip, ClipId, EditMode, Source, SourceId, TrackId};
+
+fn source(id: u64, frames: u64) -> Source {
+    Source {
+        id: SourceId(id),
+        name: "src".into(),
+        path: "src.wav".into(),
+        channels: 1,
+        frames,
+        sample_rate: 48_000,
+        format: soundcraft_model::FileFormat::Wav,
+        time_reference: 0,
+        unsaved: false,
+    }
+}
+
+fn new_track(e: &mut Engine) -> TrackId {
+    TrackId(e.execute("track.new", &json!({"count": 1})).unwrap()["tracks"][0].as_u64().unwrap())
+}
+
+fn engine(mode: &str) -> (Engine, TrackId, [ClipId; 2]) {
+    let mut e = Engine::default();
+    let t = new_track(&mut e);
+    let s = e.session_mut();
+    s.sources.push(source(7, 10_000));
+    let ids = [s.new_clip_id(), s.new_clip_id()];
+    s.track_mut(t).and_then(|t| t.playlist_mut()).unwrap().clips =
+        vec![Clip::audio(ids[0], "a", SourceId(7), 0, 0, 1000), Clip::audio(ids[1], "b", SourceId(7), 1000, 2000, 1000)];
+    e.execute("edit.mode", &json!({"mode": mode})).unwrap();
+    (e, t, ids)
+}
+
+/// A track of clips (start, length, offset) on a long file, source 8.
+fn long(mode: &str, spans: &[(i64, i64, i64)]) -> (Engine, TrackId, Vec<ClipId>) {
+    let mut e = Engine::default();
+    let t = new_track(&mut e);
+    let s = e.session_mut();
+    s.sources.push(source(8, 1_000_000));
+    let ids: Vec<ClipId> = spans.iter().map(|_| s.new_clip_id()).collect();
+    s.track_mut(t).and_then(|t| t.playlist_mut()).unwrap().clips =
+        spans.iter().zip(&ids).map(|(&(start, len, offset), id)| Clip::audio(*id, "c", SourceId(8), offset, start, len)).collect();
+    e.execute("edit.mode", &json!({"mode": mode})).unwrap();
+    (e, t, ids)
+}
+
+fn clips(e: &Engine, t: TrackId) -> Vec<(i64, i64)> {
+    e.session().track(t).unwrap().clips().iter().map(|c| (c.start, c.length)).collect()
+}
+
+/// Each clip's id, length and file offset, in id order: what a move must never change.
+fn material(e: &Engine, t: TrackId) -> Vec<(u64, i64, i64)> {
+    let mut v: Vec<_> = e.session().track(t).unwrap().clips().iter().map(|c| (c.id.0, c.length, c.source_offset())).collect();
+    v.sort_unstable();
+    v
+}
+
+fn start(e: &Engine, id: ClipId) -> i64 {
+    e.session().find_clip(id).unwrap().1.start
+}
+
+fn points(e: &Engine, t: TrackId) -> Vec<i64> {
+    e.session().track(t).unwrap().lane(&AutoParam::Volume).map(|l| l.points.iter().map(|p| p.at).collect()).unwrap_or_default()
+}
+
+fn set_points(e: &mut Engine, t: TrackId, at: &[i64]) {
+    for a in at {
+        run(e, "automation.set_point", json!({"track": t.0, "param": "volume", "at": a, "value": -6.0}));
+    }
+}
+
+fn run(e: &mut Engine, id: &str, p: Value) {
+    e.execute(id, &p).unwrap();
+}
+
+#[test]
+fn insert_silence_pushes_in_shuffle_and_clears_otherwise() {
+    for (mode, want) in [("shuffle", vec![(0, 500), (700, 500), (2200, 1000)]), ("slip", vec![(0, 500), (700, 300), (2000, 1000)])] {
+        let (mut e, t, _) = engine(mode);
+        run(&mut e, "edit.insert_silence", json!({"tracks": [t.0], "start": 500, "end": 700}));
+        assert_eq!(clips(&e, t), want, "{mode}");
+    }
+}
+
+#[test]
+fn duplicate_and_repeat_make_room_in_shuffle() {
+    let (mut e, t, _) = engine("shuffle");
+    run(&mut e, "edit.duplicate", json!({"tracks": [t.0], "start": 0, "end": 1000}));
+    assert_eq!(clips(&e, t), vec![(0, 1000), (1000, 1000), (3000, 1000)]);
+    let (mut e, t, _) = engine("shuffle");
+    run(&mut e, "edit.repeat", json!({"tracks": [t.0], "start": 0, "end": 1000, "count": 2}));
+    assert_eq!(clips(&e, t), vec![(0, 1000), (1000, 1000), (2000, 1000), (4000, 1000)]);
+    let (mut e, t, _) = engine("slip");
+    run(&mut e, "edit.duplicate", json!({"tracks": [t.0], "start": 0, "end": 1000}));
+    assert_eq!(clips(&e, t), vec![(0, 1000), (1000, 1000), (2000, 1000)]);
+}
+
+#[test]
+fn shuffle_paste_replaces_the_selection() {
+    let (mut e, t, _) = engine("shuffle");
+    run(&mut e, "edit.copy", json!({"tracks": [t.0], "start": 0, "end": 1000}));
+    run(&mut e, "edit.select", json!({"tracks": [t.0], "start": 2000, "end": 2500}));
+    run(&mut e, "edit.paste", json!({}));
+    assert_eq!(clips(&e, t), vec![(0, 1000), (2000, 1000), (3000, 500)]);
+}
+
+#[test]
+fn clip_list_drops_land_on_a_clip_boundary_in_shuffle() {
+    let (mut e, t, [_, b]) = engine("shuffle");
+    run(&mut e, "clip.place_source", json!({"source": 7, "track": t.0, "at": 1900}));
+    assert_eq!(clips(&e, t), vec![(0, 1000), (2000, 10_000), (12_000, 1000)]);
+    e.session_mut().find_clip_mut(b).unwrap().time_locked = true;
+    assert!(e.execute("clip.place_source", &json!({"source": 7, "track": t.0, "at": 0})).is_err());
+    assert_eq!(clips(&e, t).len(), 3);
+}
+
+#[test]
+fn grid_moves_to_a_position_snap_or_keep_their_offset() {
+    let (mut e, t, [_, b]) = engine("grid");
+    let s = e.session();
+    let step = s.edit.grid.step_samples(0, s.sample_rate, &s.tempo, s.frame_rate);
+    run(&mut e, "edit.move_clips", json!({"clips": [b.0], "to": step + 1000}));
+    assert_eq!(clips(&e, t)[1].0, step);
+    run(&mut e, "edit.mode", json!({"mode": "relative_grid"}));
+    run(&mut e, "edit.move_clips", json!({"clips": [b.0], "to": 2 * step + 2000}));
+    assert_eq!(clips(&e, t)[1].0, 2 * step);
+    run(&mut e, "edit.move_clips", json!({"clips": [b.0], "by": 200}));
+    run(&mut e, "edit.move_clips", json!({"clips": [b.0], "to": 3 * step}));
+    assert_eq!(clips(&e, t)[1].0, 3 * step + 200);
+}
+
+#[test]
+fn clips_cannot_move_onto_tracks_without_a_playlist() {
+    let (mut e, t, [a, _]) = engine("slip");
+    let aux = e.execute("track.new", &json!({"kind": "aux"})).unwrap()["tracks"][0].clone();
+    assert!(e.execute("edit.move_clips", &json!({"clips": [a.0], "by": 0, "track": aux})).is_err());
+    assert_eq!(clips(&e, t).len(), 2);
+}
+
+#[test]
+fn trim_clip_needs_an_edge_and_an_unlocked_clip() {
+    let (mut e, t, [a, b]) = engine("slip");
+    assert!(e.execute("edit.trim_clip", &json!({"clip": a.0})).is_err());
+    e.session_mut().find_clip_mut(b).unwrap().edit_locked = true;
+    assert!(e.execute("edit.trim_clip", &json!({"clip": b.0, "end": 2500})).is_err());
+    run(&mut e, "edit.trim_clip", json!({"clip": a.0, "end": 5000}));
+    assert_eq!(clips(&e, t), vec![(0, 2000), (2000, 1000)]);
+}
+
+#[test]
+fn shuffle_lock_keeps_shuffle_mode_out() {
+    let (mut e, _, _) = engine("slip");
+    run(&mut e, "edit.shuffle_lock", json!({}));
+    assert!(e.execute("edit.mode", &json!({"mode": "shuffle"})).is_err());
+    run(&mut e, "edit.mode", json!({"mode": "grid"}));
+    run(&mut e, "edit.shuffle_lock", json!({"value": false}));
+    run(&mut e, "edit.mode", json!({"mode": "shuffle"}));
+    assert!(e.execute("edit.shuffle_lock", &json!({})).is_err());
+}
+
+#[test]
+fn snap_to_grid_rides_along_with_the_other_modes() {
+    let (mut e, _, _) = engine("slip");
+    let snap = |e: &Engine| e.session().edit.flag(soundcraft_engine::edit::SNAP_TO_GRID);
+    run(&mut e, "edit.snap_to_grid", json!({}));
+    assert!(snap(&e));
+    run(&mut e, "edit.mode", json!({"mode": "spot", "snap_to_grid": true}));
+    assert!(snap(&e));
+    run(&mut e, "edit.mode", json!({"mode": "shuffle"}));
+    assert!(!snap(&e));
+    run(&mut e, "edit.mode", json!({"mode": "grid", "snap_to_grid": true}));
+    assert!(!snap(&e));
+    assert!(e.execute("edit.snap_to_grid", &json!({})).is_err());
+}
+
+#[test]
+fn shuffle_edits_that_would_push_a_locked_clip_are_refused() {
+    let (mut e, t, [_, b]) = engine("shuffle");
+    e.session_mut().find_clip_mut(b).unwrap().time_locked = true;
+    for id in ["edit.insert_silence", "edit.duplicate"] {
+        let err = e.execute(id, &json!({"tracks": [t.0], "start": 0, "end": 1500})).unwrap_err().to_string();
+        assert!(err.contains("locked clip"), "{id}: {err}");
+    }
+    run(&mut e, "edit.insert_silence", json!({"tracks": [t.0], "start": 0, "end": 1000}));
+    assert_eq!(clips(&e, t), vec![(1000, 1000), (2000, 1000)]);
+    run(&mut e, "event.cut_time", json!({"start": 0, "end": 1000}));
+    assert_eq!(clips(&e, t), vec![(0, 1000), (1000, 1000)]);
+}
+
+#[test]
+fn clips_dragged_from_several_tracks_keep_their_tracks_apart() {
+    let (mut e, t, [a, _]) = engine("slip");
+    let new = e.execute("track.new", &json!({"count": 2})).unwrap()["tracks"].clone();
+    let [t2, t3] = [0, 1].map(|i| TrackId(new[i].as_u64().unwrap()));
+    let s = e.session_mut();
+    let d = s.new_clip_id();
+    s.track_mut(t2).and_then(|t| t.playlist_mut()).unwrap().clips.push(Clip::audio(d, "d", SourceId(7), 0, 5000, 500));
+    run(&mut e, "edit.move_clips", json!({"clips": [a.0, d.0], "by": 0, "track": t2.0}));
+    assert_eq!(clips(&e, t), vec![(2000, 1000)]);
+    assert_eq!(clips(&e, t2), vec![(0, 1000)]);
+    assert_eq!(clips(&e, t3), vec![(5000, 500)]);
+    assert!(e.execute("edit.move_clips", &json!({"clips": [a.0, d.0], "by": 0, "track": t3.0})).is_err());
+}
+
+#[test]
+fn relative_grid_pastes_keep_the_offset_from_the_grid() {
+    let (mut e, t, [_, b]) = engine("relative_grid");
+    let s = e.session();
+    let step = s.edit.grid.step_samples(0, s.sample_rate, &s.tempo, s.frame_rate);
+    run(&mut e, "edit.select", json!({"clips": [b.0]}));
+    run(&mut e, "edit.copy", json!({}));
+    run(&mut e, "edit.select", json!({"tracks": [t.0], "start": 3 * step}));
+    run(&mut e, "edit.paste", json!({}));
+    assert_eq!(clips(&e, t).last(), Some(&(3 * step + 2000, 1000)));
+    run(&mut e, "edit.mode", json!({"mode": "slip"}));
+    run(&mut e, "edit.select", json!({"tracks": [t.0], "start": 5 * step}));
+    run(&mut e, "edit.paste", json!({}));
+    assert_eq!(clips(&e, t).last(), Some(&(5 * step, 1000)));
+}
+
+/// A relative paste restores the insertion point even when Cut creates a new boundary there.
+#[test]
+fn relative_grid_cut_pastes_back_at_its_insertion_boundary() {
+    let (mut e, t, _) = long("relative_grid", &[(1_000, 2_000, 0)]);
+    run(&mut e, "view.grid", json!({"format": "clips_markers", "follow_main": false}));
+    run(&mut e, "edit.cut", json!({"tracks": [t.0], "start": 1_500, "end": 2_000}));
+    run(&mut e, "edit.paste", json!({"tracks": [t.0]}));
+    assert_eq!(e.session().edit.selection.start, 1_500);
+    assert!(clips(&e, t).contains(&(1_500, 500)), "{:?}", clips(&e, t));
+}
+
+/// Moving a group excludes all its clips from Clips/Markers snap candidates.
+#[test]
+fn clips_markers_grid_ignores_every_clip_being_moved() {
+    let (mut e, _, ids) = long("grid", &[(1_000, 1_000, 0), (4_000, 500, 2_000)]);
+    e.session_mut().add_marker("Target", soundcraft_model::MarkerKind::Marker, 2_500, 2_500);
+    run(&mut e, "view.grid", json!({"format": "clips_markers", "follow_main": false}));
+    run(&mut e, "edit.move_clips", json!({"clips": [ids[0].0, ids[1].0], "to": 1_000}));
+    assert_eq!([start(&e, ids[0]), start(&e, ids[1])], [1_000, 4_000]);
+    run(&mut e, "edit.move_clips", json!({"clips": [ids[0].0, ids[1].0], "to": 2_200}));
+    assert_eq!(start(&e, ids[0]), 2_500);
+    assert_eq!(start(&e, ids[1]), 5_500);
+}
+
+/// Zero and clamped moves preserve overlaps while off-grid quantization still changes position.
+#[test]
+fn zero_distance_move_keeps_overlapping_material_and_quantize_still_moves() {
+    let (mut e, t, ids) = long("slip", &[(1_000, 1_000, 0), (1_500, 1_000, 2_000)]);
+    let before = material(&e, t);
+    run(&mut e, "edit.move_clips", json!({"clips": [ids[0].0], "by": 0}));
+    assert_eq!(material(&e, t), before);
+
+    run(&mut e, "edit.select", json!({"clips": [ids[0].0]}));
+    run(&mut e, "clip.quantize_to_grid", json!({}));
+    assert_eq!(start(&e, ids[0]), 0);
+
+    let (mut e, t, ids) = long("slip", &[(0, 1_000, 0), (500, 1_000, 2_000)]);
+    let before = material(&e, t);
+    run(&mut e, "edit.move_clips", json!({"clips": [ids[0].0], "by": -1_000}));
+    assert_eq!(material(&e, t), before);
+}
+
+/// A vertical move remains a real edit and snaps its off-grid start on the destination track.
+#[test]
+fn zero_horizontal_grid_move_to_another_track_still_snaps() {
+    let (mut e, _, [_, clip]) = engine("grid");
+    let destination = new_track(&mut e);
+    run(&mut e, "edit.move_clips", json!({"clips": [clip.0], "to": 2_000, "track": destination.0}));
+    let (track, moved) = e.session().find_clip(clip).unwrap();
+    assert_eq!(track, destination);
+    assert_eq!(moved.start, 0);
+}
+
+/// Nudge and quantization must preserve overlapping material when the clip cannot move.
+#[test]
+fn stationary_nudges_and_quantization_preserve_overlaps() {
+    for (command, params) in [("edit.nudge", json!({"direction": -1})), ("clip.quantize_to_grid", json!({}))] {
+        let (mut e, t, ids) = long("slip", &[(0, 1_000, 0), (500, 1_000, 2_000)]);
+        run(&mut e, "edit.select", json!({"clips": [ids[0].0]}));
+        let before = e.session().track(t).unwrap().clips().to_vec();
+        let result = e.execute(command, &params).unwrap();
+        assert_eq!(e.session().track(t).unwrap().clips(), before, "{command}");
+        if command == "edit.nudge" {
+            assert_eq!(result["moved"], 0);
+        }
+    }
+}
+
+/// Every Nudge scale shifts clips and insertion across a tempo change and drop-frame rates.
+#[test]
+fn every_nudge_scale_moves_by_its_selected_increment() {
+    use soundcraft_time::{FrameRate, SampleRate, TICKS_PER_QUARTER};
+    for rate in [FrameRate::Fps30, FrameRate::Fps29_97Drop, FrameRate::Fps59_94Drop] {
+        for at in [48_000, 144_000] {
+            let cases = [
+                (json!("1/4"), if at < 96_000 { 24_000 } else { 32_000 }),
+                (json!({"seconds": 0.5}), 24_000),
+                (json!({"timecode": "5_frames"}), rate.samples_at_frame(5, SampleRate::HZ_48000)),
+                (json!({"feet_frames": "foot"}), rate.samples_at_frame(16, SampleRate::HZ_48000)),
+                (json!({"samples": 100}), 100),
+            ];
+            for (value, expected) in cases {
+                let (mut e, track, ids) = long("slip", &[(at, 1_000, 0)]);
+                e.session_mut().frame_rate = rate;
+                e.session_mut().tempo.set_tempo(TICKS_PER_QUARTER * 4, 90.0).unwrap();
+                run(&mut e, "edit.select", json!({"tracks": [track.0], "clips": [ids[0].0], "start": at, "end": at}));
+                run(&mut e, "view.nudge", json!({"value": value, "follow_main": false}));
+                let result = e.execute("edit.nudge", &json!({"direction": 1})).unwrap();
+                assert_eq!(result["by"], expected, "{rate:?} at {at}");
+                assert_eq!(result["moved"], 1);
+                assert_eq!(start(&e, ids[0]), at + expected);
+                assert_eq!(e.session().edit.selection.start, at + expected);
+            }
+        }
+    }
+}
+
+/// Separation refuses oversized numeric grids before splitting any material.
+#[test]
+fn separate_on_grid_refuses_a_truncated_boundary_set() {
+    let (mut e, t, _) = long("grid", &[(0, 20_000, 0)]);
+    run(&mut e, "view.grid", json!({"value": {"samples": 1}, "follow_main": false}));
+    assert!(e.execute("edit.separate_on_grid", &json!({"tracks": [t.0], "start": 0, "end": 10_002})).is_err());
+    assert_eq!(clips(&e, t), [(0, 20_000)]);
+}
+
+/// Display thinning must never hide an oversized Clips/Markers separation request.
+#[test]
+fn separate_on_grid_refuses_dense_markers_before_changing_clips() {
+    let (mut e, track, _) = long("grid", &[(0, 100_000, 0)]);
+    let s = e.session_mut();
+    for at in 1..=10_001 {
+        s.add_marker("Boundary", soundcraft_model::MarkerKind::Marker, at, at);
+    }
+    run(&mut e, "view.grid", json!({"format": "clips_markers", "follow_main": false}));
+    let before = e.session().clone();
+    let undo_len = e.undo_history().len();
+    let error = e.execute("edit.separate_on_grid", &json!({"tracks": [track.0], "start": 0, "end": 100_000})).unwrap_err();
+    assert!(error.to_string().contains("10,000"), "{error}");
+    assert_eq!(e.session(), &before);
+    assert_eq!(e.undo_history().len(), undo_len);
+}
+
+#[test]
+fn shuffle_moves_keep_crossfade_partners_whole() {
+    let (mut e, t, ids) = long("slip", &[(0, 1000, 10_000), (1000, 1000, 20_000), (2000, 1000, 30_000)]);
+    run(&mut e, "edit.fades_create", json!({"tracks": [t.0], "start": 900, "end": 1100}));
+    run(&mut e, "edit.mode", json!({"mode": "shuffle"}));
+    let whole = material(&e, t);
+    let [a, b, c] = [ids[0], ids[1], ids[2]];
+    run(&mut e, "edit.move_clips", json!({"clips": [a.0], "by": 5000}));
+    assert_eq!(material(&e, t), whole);
+    assert_eq!([start(&e, b), start(&e, c), start(&e, a)], [0, 1100, 2100]);
+    let (mut e, t, ids) = long("slip", &[(0, 1000, 10_000), (1000, 1000, 20_000), (2000, 1000, 30_000)]);
+    run(&mut e, "edit.fades_create", json!({"tracks": [t.0], "start": 900, "end": 1100}));
+    run(&mut e, "edit.mode", json!({"mode": "shuffle"}));
+    for by in [2500, -2500] {
+        run(&mut e, "edit.move_clips", json!({"clips": [ids[0].0, ids[1].0], "by": by}));
+        assert_eq!(material(&e, t), whole, "{by}");
+        assert_eq!(start(&e, ids[1]) - start(&e, ids[0]), 900, "{by}");
+    }
+    assert_eq!([start(&e, ids[0]), start(&e, ids[2])], [0, 2000]);
+    run(&mut e, "edit.mode", json!({"mode": "slip"}));
+    run(&mut e, "edit.move_clips", json!({"clips": [ids[0].0, ids[1].0], "by": 5000}));
+    assert_eq!(material(&e, t), whole);
+}
+
+#[test]
+fn pasting_copied_automation_in_shuffle_leaves_the_clips_alone() {
+    let (mut e, t, ids) = long("slip", &[(0, 1000, 0), (1000, 1000, 0), (2000, 1000, 0)]);
+    set_points(&mut e, t, &[200]);
+    run(&mut e, "edit.copy_all_automation", json!({"tracks": [t.0], "start": 0, "end": 500}));
+    run(&mut e, "edit.mode", json!({"mode": "shuffle"}));
+    run(&mut e, "edit.select", json!({"clips": [ids[1].0]}));
+    run(&mut e, "edit.paste", json!({}));
+    assert_eq!(clips(&e, t), vec![(0, 1000), (1000, 1000), (2000, 1000)]);
+}
+
+#[test]
+fn automation_follows_shuffle_moves_trims_and_drops() {
+    let setup = || {
+        let (mut e, t, ids) = long("shuffle", &[(0, 1000, 0), (1000, 1000, 0), (2000, 1000, 0)]);
+        set_points(&mut e, t, &[500, 1500, 2500]);
+        (e, t, ids)
+    };
+    let (mut e, t, ids) = setup();
+    run(&mut e, "edit.move_clips", json!({"clips": [ids[0].0], "by": 3000}));
+    assert_eq!(points(&e, t), [500, 1500, 2500]);
+    assert_eq!([start(&e, ids[1]), start(&e, ids[2]), start(&e, ids[0])], [0, 1000, 2000]);
+    let (mut e, t, ids) = setup();
+    run(&mut e, "edit.trim_clip", json!({"clip": ids[0].0, "end": 500}));
+    assert_eq!(points(&e, t), [1000, 2000]);
+    let (mut e, t, _) = setup();
+    run(&mut e, "clip.place_source", json!({"source": 8, "track": t.0, "at": 1000}));
+    assert_eq!(points(&e, t), [500, 1_001_500, 1_002_500]);
+}
+
+#[test]
+fn shuffle_automation_stops_at_locked_clips_and_needs_automation_follows_edit() {
+    let (mut e, t, ids) = long("shuffle", &[(0, 1000, 0), (1000, 1000, 0), (3000, 1000, 0)]);
+    e.session_mut().find_clip_mut(ids[2]).unwrap().time_locked = true;
+    set_points(&mut e, t, &[3500]);
+    run(&mut e, "edit.insert_silence", json!({"tracks": [t.0], "start": 0, "end": 500}));
+    run(&mut e, "edit.cut", json!({"tracks": [t.0], "start": 0, "end": 500}));
+    assert_eq!((start(&e, ids[2]), points(&e, t)), (3000, vec![3500]));
+    let (mut e, t, _) = long("shuffle", &[(0, 1000, 0), (1000, 1000, 0)]);
+    set_points(&mut e, t, &[300, 1500, 5000]);
+    e.session_mut().edit.automation_follows_edit = false;
+    run(&mut e, "edit.duplicate", json!({"tracks": [t.0], "start": 0, "end": 1000}));
+    run(&mut e, "edit.insert_silence", json!({"tracks": [t.0], "start": 0, "end": 100}));
+    assert_eq!(points(&e, t), [300, 1500, 5000]);
+}
+
+#[test]
+fn shuffle_clear_moves_automation_with_the_clips() {
+    let (mut e, t, _) = long("shuffle", &[(0, 10_000, 0), (20_000, 10_000, 0)]);
+    set_points(&mut e, t, &[0, 9_000, 20_000, 29_000]);
+    run(&mut e, "edit.clear", json!({"track": t.0, "start": 4_000, "end": 6_000}));
+    assert_eq!(clips(&e, t), [(0, 4_000), (4_000, 4_000), (18_000, 10_000)]);
+    assert_eq!(points(&e, t), [0, 7_000, 18_000, 27_000]);
+}
+
+/// Clearing selected clips by id closes their gaps in Shuffle, as clearing their ranges does, and moves the
+/// automation with the clips.
+#[test]
+fn shuffle_clear_by_clip_id_closes_each_gap() {
+    for (mode, want, want_points) in [
+        ("shuffle", [(0, 10_000), (20_000, 10_000)], [0, 9_000, 20_000, 29_000]),
+        ("slip", [(0, 10_000), (40_000, 10_000)], [0, 9_000, 40_000, 49_000]),
+    ] {
+        let (mut e, t, ids) = long(mode, &[(0, 10_000, 0), (20_000, 10_000, 0), (30_000, 10_000, 0), (40_000, 10_000, 0)]);
+        set_points(&mut e, t, &[0, 9_000, 40_000, 49_000]);
+        run(&mut e, "edit.clear", json!({"clips": [ids[1].0, ids[2].0], "tracks": [t.0], "start": 0}));
+        assert_eq!(clips(&e, t), want, "{mode}");
+        assert_eq!(points(&e, t), want_points, "{mode}");
+    }
+}
+
+#[test]
+fn relative_grid_pastes_land_on_grid_lines_at_any_tempo() {
+    let (mut e, t, [a, _]) = engine("relative_grid");
+    run(&mut e, "event.tempo", json!({"bpm": 90, "at": 0}));
+    run(&mut e, "edit.select", json!({"clips": [a.0]}));
+    run(&mut e, "edit.copy", json!({}));
+    run(&mut e, "edit.select", json!({"tracks": [t.0], "start": 128_000}));
+    run(&mut e, "edit.paste", json!({}));
+    assert!(clips(&e, t).contains(&(128_000, 1000)), "{:?}", clips(&e, t));
+    run(&mut e, "edit.paste", json!({"tracks": [t.0], "at": 50_000}));
+    assert!(clips(&e, t).contains(&(50_000, 1000)), "{:?}", clips(&e, t));
+}
+
+#[test]
+fn start_trims_keep_the_sync_point_on_its_audio() {
+    let (mut e, t, ids) = long("slip", &[(0, 10_000, 0)]);
+    let sync = |e: &Engine| e.session().find_clip(ids[0]).unwrap().1.sync_point;
+    e.session_mut().find_clip_mut(ids[0]).unwrap().sync_point = 5000;
+    run(&mut e, "edit.trim_clip", json!({"clip": ids[0].0, "start": 2000}));
+    assert_eq!(sync(&e), 3000);
+    run(&mut e, "edit.trim_clip", json!({"clip": ids[0].0, "start": 8000}));
+    assert_eq!(sync(&e), 0);
+    run(&mut e, "edit.mode", json!({"mode": "grid"}));
+    run(&mut e, "edit.move_clips", json!({"clips": [ids[0].0], "to": 30_000}));
+    assert_eq!(clips(&e, t), vec![(30_000, 2000)]);
+}
+
+#[test]
+fn imported_time_stamps_count_at_the_session_rate() {
+    use craft_audio::{AudioBuffer, BwfInfo, EncodeOptions};
+    let mut e = Engine::default();
+    let opts = EncodeOptions::default().with_bwf(BwfInfo::default().with_time_reference(1_587_600_000));
+    let bytes = craft_audio::encode(&AudioBuffer::new(44_100, 1, 441), &opts).unwrap();
+    soundcraft_engine::io::import_audio_bytes(&mut e, "stamped.wav", &bytes, None, None, 0).unwrap();
+    assert_eq!(e.session().sources[0].time_reference, 1_728_000_000);
+}
+
+#[test]
+fn shuffle_trims_stop_at_a_locked_crossfade_and_stay_inside_the_file() {
+    let (mut e, t, ids) = long("slip", &[(0, 1000, 500), (1000, 1000, 5000)]);
+    run(&mut e, "edit.fades_create", json!({"tracks": [t.0], "start": 950, "end": 1050}));
+    e.session_mut().find_clip_mut(ids[1]).unwrap().time_locked = true;
+    run(&mut e, "edit.mode", json!({"mode": "shuffle"}));
+    let before = material(&e, t);
+    run(&mut e, "edit.trim_clip", json!({"clip": ids[0].0, "end": 1500}));
+    run(&mut e, "edit.trim_clip", json!({"clip": ids[0].0, "start": 0}));
+    assert_eq!(material(&e, t), before);
+    let (mut e, _, [_, b]) = engine("shuffle");
+    run(&mut e, "edit.trim_clip", json!({"clip": b.0, "start": 2500, "end": 20_000}));
+    let c = e.session().find_clip(b).unwrap().1;
+    assert_eq!((c.source_offset(), c.source_offset() + c.length), (1500, 10_000));
+}
+
+#[test]
+fn duplicate_and_extend_makes_room_in_shuffle() {
+    let (mut e, t, _) = long("shuffle", &[(0, 1000, 0), (1000, 1000, 0)]);
+    run(&mut e, "edit.duplicate_extend", json!({"tracks": [t.0], "start": 0, "end": 1000}));
+    assert_eq!(clips(&e, t), vec![(0, 1000), (1000, 1000), (2000, 1000)]);
+    let (mut e, t, ids) = long("shuffle", &[(0, 1000, 0), (1000, 1000, 0)]);
+    e.session_mut().find_clip_mut(ids[1]).unwrap().time_locked = true;
+    assert!(e.execute("edit.duplicate_extend", &json!({"tracks": [t.0], "start": 0, "end": 1000})).is_err());
+    assert_eq!(clips(&e, t), vec![(0, 1000), (1000, 1000)]);
+}
+
+#[test]
+fn undo_leaves_the_edit_mode_and_shuffle_lock_alone() {
+    let (mut e, t, _) = engine("shuffle");
+    run(&mut e, "edit.cut", json!({"tracks": [t.0], "start": 0, "end": 500}));
+    run(&mut e, "edit.mode", json!({"mode": "slip"}));
+    run(&mut e, "edit.shuffle_lock", json!({}));
+    for step in [Engine::undo, Engine::redo] {
+        assert!(step(&mut e));
+        assert_eq!((e.session().edit.edit_mode, e.session().edit.flag(SHUFFLE_LOCK)), (EditMode::Slip, true));
+    }
+}
+
+#[test]
+fn shuffle_cuts_reaching_before_the_session_start_keep_the_spacing() {
+    let (mut e, t, _) = long("shuffle", &[(0, 1000, 0), (1000, 1000, 0), (2000, 1000, 0)]);
+    run(&mut e, "edit.cut", json!({"tracks": [t.0], "start": -5000, "end": 500}));
+    assert_eq!(clips(&e, t), vec![(0, 500), (500, 1000), (1500, 1000)]);
+}
+
+#[test]
+fn shuffle_never_pulls_a_crossfade_apart() {
+    let (mut e, t, ids) = long("slip", &[(0, 9000, 0), (9000, 11_000, 100_000), (20_000, 5000, 200_000)]);
+    run(&mut e, "edit.fades_create", json!({"tracks": [t.0], "start": 8000, "end": 10_000}));
+    run(&mut e, "edit.mode", json!({"mode": "shuffle"}));
+    let err = e.execute("edit.duplicate", &json!({"tracks": [t.0], "start": 5000, "end": 9000})).unwrap_err().to_string();
+    assert!(err.contains("crossfade"), "{err}");
+    run(&mut e, "clip.place_source", json!({"source": 8, "track": t.0, "at": 7900}));
+    assert_eq!(clips(&e, t)[0], (0, 1_000_000));
+    assert_eq!([start(&e, ids[0]), start(&e, ids[1])], [1_000_000, 1_008_000]);
+}
+
+#[test]
+fn clips_move_to_and_from_hidden_tracks() {
+    let (mut e, t, [a, _]) = engine("slip");
+    let hidden = new_track(&mut e);
+    run(&mut e, "track.hide", json!({"tracks": [hidden.0], "hidden": true}));
+    run(&mut e, "edit.move_clips", json!({"clips": [a.0], "by": 0, "track": hidden.0}));
+    assert_eq!(clips(&e, hidden), vec![(0, 1000)]);
+    run(&mut e, "edit.move_clips", json!({"clips": [a.0], "by": 0, "track": t.0}));
+    assert_eq!(clips(&e, t).len(), 2);
+}
+
+#[test]
+fn shuffle_lock_and_snap_rules_hold_when_a_call_names_tracks() {
+    let (mut e, t, _) = engine("shuffle");
+    assert!(e.execute("edit.shuffle_lock", &json!({"value": true, "tracks": [t.0]})).is_err());
+    run(&mut e, "edit.mode", json!({"mode": "grid"}));
+    assert!(e.execute("edit.snap_to_grid", &json!({"tracks": [t.0]})).is_err());
+}
+
+fn selection_marker(e: &mut Engine, start: i64, end: i64) -> usize {
+    run(e, "markers.add", json!({"kind": "selection", "start": start, "end": end}));
+    e.session().markers.len() - 1
+}
+
+#[test]
+fn cut_and_insert_time_move_the_end_of_a_spanning_selection_memory_location() {
+    let (mut e, _, _) = engine("slip");
+    let a = selection_marker(&mut e, 1000, 5000);
+    let b = selection_marker(&mut e, 1000, 2500);
+    run(&mut e, "event.cut_time", json!({"start": 2000, "end": 3000}));
+    let m = &e.session().markers;
+    assert_eq!((m[a].start, m[a].end), (1000, 4000));
+    assert_eq!((m[b].start, m[b].end), (1000, 2000));
+    run(&mut e, "event.insert_time", json!({"start": 2000, "length": 1000}));
+    let m = &e.session().markers;
+    assert_eq!((m[a].start, m[a].end), (1000, 5000));
+    assert_eq!((m[b].start, m[b].end), (1000, 2000));
+}
+
+#[test]
+fn moving_a_group_left_past_zero_keeps_its_spacing() {
+    let (mut e, t, ids) = long("slip", &[(500, 100, 0), (2000, 100, 0)]);
+    run(&mut e, "edit.move_clips", json!({"clips": [ids[0].0, ids[1].0], "by": -1000}));
+    assert_eq!(clips(&e, t), [(0, 100), (1500, 100)]);
+}
+
+#[test]
+fn separate_and_range_edits_leave_locked_clips_whole() {
+    let edits = [
+        ("edit.separate", json!({"at": 24_000})),
+        ("edit.separate", json!({"start": 12_000, "end": 36_000})),
+        ("edit.separate_on_grid", json!({"start": 12_000, "end": 36_000})),
+        ("edit.clear", json!({"start": 12_000, "end": 36_000})),
+        ("edit.insert_silence", json!({"start": 24_000, "end": 25_000})),
+    ];
+    for lock in [None, Some("clip.edit_lock"), Some("clip.time_lock")] {
+        for (cmd, p) in &edits {
+            let (mut e, t, ids) = long("slip", &[(0, 48_000, 0)]);
+            if let Some(lock) = lock {
+                run(&mut e, lock, json!({"clips": [ids[0].0]}));
+            }
+            let mut p = p.clone();
+            p["tracks"] = json!([t.0]);
+            run(&mut e, cmd, p);
+            if lock.is_some() {
+                assert_eq!(clips(&e, t), vec![(0, 48_000)], "{lock:?} {cmd}");
+            } else {
+                assert_ne!(clips(&e, t), vec![(0, 48_000)], "unlocked control {cmd}");
+            }
+        }
+    }
+}
+
+/// Event time edits move the entire timeline, including clips protected from ordinary edits.
+#[test]
+fn event_time_edits_split_and_move_locked_clips() {
+    for lock in ["clip.edit_lock", "clip.time_lock"] {
+        for (command, expected) in [
+            ("event.insert_time", vec![(0, 12_000, 0), (36_000, 36_000, 12_000)]),
+            ("event.cut_time", vec![(0, 12_000, 0), (12_000, 12_000, 36_000)]),
+        ] {
+            let (mut e, t, ids) = long("slip", &[(0, 48_000, 0)]);
+            run(&mut e, lock, json!({"clips": [ids[0].0]}));
+            run(&mut e, command, json!({"start": 12_000, "end": 36_000}));
+            let actual: Vec<_> = e.session().track(t).unwrap().clips().iter().map(|c| (c.start, c.length, c.source_offset())).collect();
+            assert_eq!(actual, expected, "{lock} {command}");
+            assert!(e.session().track(t).unwrap().clips().iter().all(soundcraft_engine::edit::locked));
+        }
+    }
+}
+
+/// Clear and Cut over a range leave a time- or edit-locked clip inside it whole, in Slip and Shuffle, while the
+/// unlocked clips in the range go. Pro Tools: an Edit-locked clip "cannot be moved, deleted, or edited". In
+/// Shuffle the clip after the range stays put, since a locked clip and everything after it are not displaced.
+/// Undo brings the removed clips back.
+#[test]
+fn range_clear_and_cut_leave_a_locked_clip_inside_the_range() {
+    for lock in ["clip.edit_lock", "clip.time_lock"] {
+        for cmd in ["edit.clear", "edit.cut"] {
+            for mode in ["slip", "shuffle"] {
+                let (mut e, t, ids) = long(mode, &[(2_000, 2_000, 0), (10_000, 10_000, 0), (25_000, 3_000, 0), (40_000, 5_000, 0)]);
+                run(&mut e, lock, json!({"clips": [ids[1].0]}));
+                let before = clips(&e, t);
+                let out = e.execute(cmd, &json!({"tracks": [t.0], "start": 0, "end": 30_000})).unwrap();
+                assert_eq!(clips(&e, t), [(10_000, 10_000), (40_000, 5_000)], "{lock} {cmd} {mode}");
+                assert_eq!(start(&e, ids[1]), 10_000, "{lock} {cmd} {mode}: the locked clip keeps its id");
+                if cmd == "edit.clear" {
+                    assert_eq!(out["removed"], 2, "{lock} {mode}");
+                }
+                assert!(e.undo());
+                assert_eq!(clips(&e, t), before, "{lock} {cmd} {mode}");
+            }
+        }
+    }
+}
+
+/// A Shuffle clear next to a locked clip still closes up: only a locked clip covering part of the range holds
+/// the clips after it.
+#[test]
+fn shuffle_clear_is_held_only_by_a_locked_clip_in_the_range() {
+    let cases = [
+        // Locked clip overlapping the range's start, kept whole by Separate: the clip after the range stays.
+        ((0, 48_000), (12_000, 36_000), vec![(0, 48_000), (50_000, 2_000)]),
+        // Locked clip ending where the range starts: the clip after the range closes the gap.
+        ((0, 10_000), (10_000, 20_000), vec![(0, 10_000), (40_000, 2_000)]),
+    ];
+    for ((lock_start, lock_len), (from, to), want) in cases {
+        let (mut e, t, ids) = long("shuffle", &[(lock_start, lock_len, 0), (50_000, 2_000, 0)]);
+        run(&mut e, "clip.time_lock", json!({"clips": [ids[0].0]}));
+        run(&mut e, "edit.clear", json!({"tracks": [t.0], "start": from, "end": to}));
+        assert_eq!(clips(&e, t), want, "clear {from}..{to}");
+    }
+}
+
+/// A 24 000-sample mono WAV of silence at 48 kHz.
+fn wav_24k() -> Vec<u8> {
+    craft_audio::encode(&craft_audio::AudioBuffer::new(48_000, 1, 24_000), &craft_audio::EncodeOptions::default()).unwrap()
+}
+
+/// Every path that places one clip (an import, a recorded take, Place Audio File, a paste) overlaps a locked
+/// clip it covers completely and leaves it whole, while an unlocked clip there is still overwritten. Undo takes
+/// the new clip away again.
+#[test]
+fn placing_over_a_locked_clip_overlaps_it() {
+    let dir = std::env::temp_dir().join(format!("soundcraft-locked-place-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let take = dir.join("Take_01.wav");
+    std::fs::write(&take, wav_24k()).unwrap();
+    for lock in [None, Some("clip.edit_lock"), Some("clip.time_lock")] {
+        for path in ["import", "record", "place_source", "paste"] {
+            let (mut e, t, ids) = long("slip", &[(16_000, 16_000, 0), (200_000, 24_000, 0)]);
+            e.session_mut().sources.push(source(9, 24_000));
+            if let Some(lock) = lock {
+                run(&mut e, lock, json!({"clips": [ids[0].0]}));
+            }
+            let before = clips(&e, t);
+            match path {
+                "import" => {
+                    soundcraft_engine::io::import_audio_bytes(&mut e, "new.wav", &wav_24k(), None, Some(t), 12_000).unwrap();
+                }
+                "record" => assert_eq!(soundcraft_engine::io::add_recording(&mut e, 12_000, vec![(t, take.clone())], None).len(), 1),
+                "place_source" => run(&mut e, "clip.place_source", json!({"source": 9, "track": t.0, "at": 12_000})),
+                _ => {
+                    run(&mut e, "edit.copy", json!({"tracks": [t.0], "start": 200_000, "end": 224_000}));
+                    run(&mut e, "edit.paste", json!({"tracks": [t.0], "at": 12_000}));
+                }
+            }
+            let want =
+                if lock.is_some() { vec![(12_000, 24_000), (16_000, 16_000), (200_000, 24_000)] } else { vec![(12_000, 24_000), (200_000, 24_000)] };
+            assert_eq!(clips(&e, t), want, "{lock:?} {path}");
+            if lock.is_some() {
+                assert_eq!(start(&e, ids[0]), 16_000, "{lock:?} {path}: the locked clip keeps its id");
+            }
+            if path != "import" {
+                assert!(e.undo());
+                assert_eq!(clips(&e, t), before, "{lock:?} {path}");
+            }
+        }
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Consolidate and Prepare DPE Tracks render a locked clip's material into the new clip, so they are refused
+/// with nothing changed rather than keep the clip whole under its own render.
+#[test]
+fn consolidating_over_a_locked_clip_is_refused() {
+    for lock in [None, Some("clip.edit_lock"), Some("clip.time_lock")] {
+        for (cmd, p) in [("edit.consolidate", json!({"start": 6_000, "end": 30_000})), ("options.prepare_dpe_tracks", json!({}))] {
+            let (mut e, t, ids) = long("slip", &[(0, 4_000, 0), (10_000, 10_000, 0)]);
+            let mut p = p.clone();
+            p["tracks"] = json!([t.0]);
+            let Some(lock) = lock else {
+                run(&mut e, cmd, p);
+                assert!(e.session().find_clip(ids[1]).is_none(), "unlocked control {cmd}");
+                continue;
+            };
+            run(&mut e, lock, json!({"clips": [ids[1].0]}));
+            let before = (clips(&e, t), e.undo_history());
+            let err = e.execute(cmd, &p).unwrap_err().to_string();
+            assert!(err.contains("locked clip"), "{lock} {cmd}: {err}");
+            assert_eq!((clips(&e, t), e.undo_history()), before, "{lock} {cmd}");
+        }
+    }
+}
+
+/// Event > Cut Time removes the whole span, locked clips included, as it moves the whole timeline.
+#[test]
+fn cut_time_removes_a_locked_clip_inside_the_range() {
+    for lock in ["clip.edit_lock", "clip.time_lock"] {
+        let (mut e, t, ids) = long("slip", &[(12_000, 12_000, 0), (40_000, 5_000, 0)]);
+        run(&mut e, lock, json!({"clips": [ids[0].0]}));
+        run(&mut e, "event.cut_time", json!({"start": 6_000, "end": 30_000}));
+        assert_eq!(clips(&e, t), [(16_000, 5_000)], "{lock}");
+    }
+}
+
+/// Cut is a move: it puts on the clipboard only what it removes. A time- or edit-locked clip it leaves in place,
+/// inside the range or across its end, stays off the clipboard, so a later paste doesn't duplicate it. Copy still
+/// copies locked clips, and the copies stay locked (Pro Tools: copied Edit-locked clips paste "also Edit-locked").
+#[test]
+fn cut_leaves_a_locked_clip_off_the_clipboard() {
+    for lock in [None, Some("clip.edit_lock"), Some("clip.time_lock")] {
+        for cmd in ["edit.cut", "edit.copy"] {
+            for mode in ["slip", "shuffle"] {
+                let (mut e, t, ids) = long(mode, &[(10_000, 10_000, 0), (25_000, 3_000, 0), (29_000, 5_000, 0)]);
+                if let Some(lock) = lock {
+                    run(&mut e, lock, json!({"clips": [ids[0].0, ids[2].0]}));
+                }
+                let out = e.execute(cmd, &json!({"tracks": [t.0], "start": 0, "end": 30_000})).unwrap();
+                let left = clips(&e, t);
+                run(&mut e, "edit.paste", json!({"tracks": [t.0], "at": 200_000}));
+                let pasted: Vec<_> = e.session().track(t).unwrap().clips().iter().filter(|c| c.start >= 200_000).cloned().collect();
+                let got: Vec<_> = pasted.iter().map(|c| (c.start, c.length)).collect();
+                let want = match (lock, cmd) {
+                    (Some(_), "edit.cut") => vec![(225_000, 3_000)],
+                    _ => vec![(210_000, 10_000), (225_000, 3_000), (229_000, 1_000)],
+                };
+                let ctx = format!("{lock:?} {cmd} {mode}");
+                assert_eq!(got, want, "{ctx}");
+                assert_eq!(out["clips"], want.len(), "{ctx}");
+                if lock.is_some() {
+                    let kept = if cmd == "edit.cut" {
+                        vec![(10_000, 10_000), (29_000, 5_000)]
+                    } else {
+                        vec![(10_000, 10_000), (25_000, 3_000), (29_000, 5_000)]
+                    };
+                    assert_eq!(left, kept, "{ctx}: locked clips stay in place");
+                    let locks: Vec<_> = pasted.iter().map(soundcraft_engine::edit::locked).collect();
+                    assert_eq!(locks, want.iter().map(|&(s, _)| s != 225_000).collect::<Vec<_>>(), "{ctx}: copies stay locked");
+                }
+            }
+        }
+    }
+}
+
+/// A playlist's clips as (start, length), sorted by start.
+fn playlist(e: &Engine, t: TrackId, idx: usize) -> Vec<(i64, i64)> {
+    let mut v: Vec<_> = e.session().track(t).unwrap().playlists[idx].clips.iter().map(|c| (c.start, c.length)).collect();
+    v.sort_unstable();
+    v
+}
+
+/// Pro Tools' Move Selection To commands cut and paste the selection to another playlist. A time- or edit-locked
+/// clip that the move leaves in the main playlist, inside the range or across its end, isn't copied to the
+/// destination as well; unlocked clips move as before.
+#[test]
+fn moving_a_selection_to_a_playlist_leaves_a_locked_clip_only_in_the_main_playlist() {
+    for lock in [None, Some("clip.edit_lock"), Some("clip.time_lock")] {
+        for cmd in ["edit.move_to_new_playlist", "edit.move_to_target_playlist", "edit.move_to_duplicate_playlist"] {
+            let (mut e, t, ids) = long("slip", &[(10_000, 10_000, 0), (25_000, 3_000, 0), (29_000, 5_000, 0)]);
+            if let Some(lock) = lock {
+                run(&mut e, lock, json!({"clips": [ids[0].0, ids[2].0]}));
+            }
+            if cmd == "edit.move_to_target_playlist" {
+                run(&mut e, "track.playlist_new", json!({"tracks": [t.0]}));
+                run(&mut e, "track.designate_target_playlist", json!({"tracks": [t.0], "index": 1}));
+                run(&mut e, "track.playlist_select", json!({"tracks": [t.0], "index": 0}));
+            }
+            run(&mut e, cmd, json!({"tracks": [t.0], "start": 0, "end": 30_000}));
+            let ctx = format!("{lock:?} {cmd}");
+            let (main, moved) = if lock.is_some() {
+                (vec![(10_000, 10_000), (29_000, 5_000)], vec![(25_000, 3_000)])
+            } else {
+                (vec![(30_000, 4_000)], vec![(10_000, 10_000), (25_000, 3_000), (29_000, 1_000)])
+            };
+            assert_eq!(playlist(&e, t, 0), main, "{ctx}: main playlist");
+            let dest = if cmd == "edit.move_to_duplicate_playlist" {
+                // The duplicate starts as a copy of the whole main playlist, locked clips included.
+                if lock.is_some() {
+                    vec![(10_000, 10_000), (25_000, 3_000), (29_000, 5_000)]
+                } else {
+                    vec![(10_000, 10_000), (25_000, 3_000), (29_000, 1_000), (30_000, 4_000)]
+                }
+            } else {
+                moved
+            };
+            assert_eq!(playlist(&e, t, 1), dest, "{ctx}: destination playlist");
+        }
+    }
+}
+
+/// Shuffle holds clips per track, after a locked clip (Pro Tools: a locked clip "and all clips occurring after
+/// the locked clip, are not displaced"). A Shuffle clear over two tracks closes the gap on the track without a
+/// locked clip and holds it on the track whose locked clip the range covers part of.
+#[test]
+fn shuffle_clear_holds_only_the_track_with_a_locked_clip_in_the_range() {
+    let (mut e, a, ids) = long("shuffle", &[(0, 20_000, 0), (50_000, 2_000, 0)]);
+    let b = new_track(&mut e);
+    let s = e.session_mut();
+    let b_ids = [s.new_clip_id(), s.new_clip_id()];
+    s.track_mut(b).and_then(|t| t.playlist_mut()).unwrap().clips =
+        vec![Clip::audio(b_ids[0], "c", SourceId(8), 0, 0, 20_000), Clip::audio(b_ids[1], "c", SourceId(8), 0, 50_000, 2_000)];
+    run(&mut e, "clip.time_lock", json!({"clips": [ids[0].0]}));
+    run(&mut e, "edit.clear", json!({"tracks": [a.0, b.0], "start": 10_000, "end": 30_000}));
+    assert_eq!(clips(&e, a), [(0, 20_000), (50_000, 2_000)]);
+    assert_eq!(clips(&e, b), [(0, 10_000), (30_000, 2_000)]);
+}

@@ -90,13 +90,19 @@ Copy-Item (Join-Path $Bin 'soundcraft.exe'), (Join-Path $Bin 'soundcraft-cli.exe
 
 & (Join-Path $PSScriptRoot 'sign.ps1') (Join-Path $Stage 'soundcraft.exe') (Join-Path $Stage 'soundcraft-cli.exe')
 
+# Required embedded-font notices ship independently of optional font inputs.
+Copy-Item -LiteralPath (Join-Path $Root 'NOTICE') -Destination $Stage
+
 # ---- MSI ---------------------------------------------------------------------------------------
 $Msi = Join-Path $Dist "soundcraft-$Version-windows-$Arch.msi"
+Invoke-Native 'WiX UI extension' { wix extension add -g WixToolset.UI.wixext/5.0.2 }
 Invoke-Native 'wix build' {
-  wix build (Join-Path $PSScriptRoot 'soundcraft.wxs') -arch $Arch `
+  wix build (Join-Path $PSScriptRoot 'soundcraft.wxs') -arch $Arch -ext WixToolset.UI.wixext `
     -d "Version=$MsiVersion" -d "BinDir=$Stage" -d "IconPath=$(Join-Path $Root 'assets\app-icon\soundcraft.ico')" `
     -o $Msi
 }
+# Check the compiled scope, path and registration contract before signing.
+& (Join-Path $PSScriptRoot 'check-install-policy.ps1') -MsiPath $Msi
 # wix writes its debug symbols (.wixpdb) next to the MSI; keep them out of the release assets.
 Remove-Item -Force -ErrorAction SilentlyContinue ([IO.Path]::ChangeExtension($Msi, '.wixpdb'))
 & (Join-Path $PSScriptRoot 'sign.ps1') $Msi
@@ -106,6 +112,8 @@ $Portable = Join-Path $TargetDir "windows-package\soundcraft-$Version-windows-$A
 Remove-Item -Recurse -Force $Portable -ErrorAction SilentlyContinue
 New-Item -ItemType Directory -Force -Path $Portable | Out-Null
 Copy-Item (Join-Path $Stage '*.exe') $Portable
+# The ZIP is portable by default; keep the marker out of the MSI staging directory.
+Set-Content -LiteralPath (Join-Path $Portable 'portable.txt') -Encoding Ascii -Value 'SoundCraft portable mode: settings and logs are stored in SoundCraftData beside the executable.'
 foreach ($f in 'README.md', 'LICENSE', 'LICENSE-MIT', 'LICENSE-APACHE', 'NOTICE', 'ATTRIBUTION.md') {
   $p = Join-Path $Root $f
   if (Test-Path $p) { Copy-Item $p $Portable }

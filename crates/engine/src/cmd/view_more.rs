@@ -1,11 +1,11 @@
 //! More View menu commands: Edit-window column views, extra rulers, marker displays, clip
 //! display options, waveform styles, expanded sends, transport views and other view toggles.
 //! Every setting is saved with the session in `edit.flags` (or `edit.rulers` for rulers).
+use super::{CommandSpec, always, str_param};
 
 use super::more_util::{exclusive_flag, set_flags, toggle_flag};
-use super::*;
-use crate::cmd;
-use serde_json::json;
+use crate::{Engine, Result, cmd};
+use serde_json::{Value, json};
 
 /// A view toggle: `{value?: bool}` sets it, otherwise it flips.
 macro_rules! flag {
@@ -184,7 +184,7 @@ pub fn specs() -> Vec<CommandSpec> {
         flag!("view.transport_counters", "Counters", ["View", "Transport"], "view.transport.counters"),
         flag!("view.transport_midi_controls", "MIDI Controls", ["View", "Transport"], "view.transport.midi_controls"),
         flag!("view.transport_synchronization", "Synchronization", ["View", "Transport"], "view.transport.synchronization"),
-        flag!("view.transport_ableton_link", "Ableton Link", ["View", "Transport"], "view.transport.ableton_link"),
+        flag!("view.transport_ableton_link", "Tempo Sync", ["View", "Transport"], "view.transport.ableton_link"),
         flag!("view.transport_output_meters", "Output Meters", ["View", "Transport"], "view.transport.output_meters"),
         flag!("view.transport_expanded", "Expanded", ["View", "Transport"], "view.transport.expanded"),
         cmd!(query "view.flags", "View Flags", [], None, "{prefix?} — lists the view/option flags that are on", always, |e, p| {
@@ -219,7 +219,6 @@ fn toggle_ruler(e: &mut Engine, p: &Value, id: &str) -> Result<Value> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
     #[test]
     fn flags_toggle_and_persist() {
         let mut e = Engine::default();

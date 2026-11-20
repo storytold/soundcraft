@@ -135,6 +135,65 @@ impl Default for DrumSynth {
     }
 }
 
+/// One output sample of a sounding voice of `kind`, advancing its envelopes.
+fn voice_sample(v: &mut DrumVoice, kind: Kind, sr: f32, clap_gap: usize) -> f32 {
+    match kind {
+        Kind::Kick | Kind::Tom(_) => {
+            v.pitch_env *= v.pitch_coef;
+            let f = v.f_end + (v.f_start - v.f_end) * v.pitch_env;
+            v.phase += f / sr;
+            v.phase -= v.phase.floor();
+            let tone = (v.phase * TAU).sin() * v.amp;
+            let click = v.filt.process_sample(v.rng.bipolar()) * v.noise_amp;
+            v.amp *= v.amp_coef;
+            v.noise_amp *= v.noise_coef;
+            tone + click
+        }
+        Kind::Snare => {
+            v.pitch_env *= v.pitch_coef;
+            let f = v.f_end + (v.f_start - v.f_end) * v.pitch_env;
+            v.phase += f / sr;
+            v.phase -= v.phase.floor();
+            let tone = (v.phase * TAU).sin() * v.amp * 0.6;
+            let n = v.filt2.process_sample(v.filt.process_sample(v.rng.bipolar())) * v.noise_amp * 0.7;
+            v.amp *= v.amp_coef;
+            v.noise_amp *= v.noise_coef;
+            tone + n
+        }
+        Kind::Clap => {
+            // Three quick bursts then a diffuse tail.
+            let burst = if v.t < clap_gap * 3 {
+                if v.t.is_multiple_of(clap_gap) {
+                    v.amp = 1.0;
+                }
+                v.amp
+            } else {
+                0.0
+            };
+            let env = burst.max(if v.t >= clap_gap * 2 { v.noise_amp * 0.6 } else { 0.0 });
+            let y = v.filt.process_sample(v.rng.bipolar()) * env * 2.0;
+            v.amp *= v.amp_coef;
+            if v.t >= clap_gap * 2 {
+                v.noise_amp *= v.noise_coef;
+            }
+            y
+        }
+        Kind::ClosedHat | Kind::OpenHat | Kind::Crash | Kind::Ride => {
+            let scale = if matches!(kind, Kind::Crash | Kind::Ride) { 1.0 } else { 1.9 };
+            let mut metal = 0.0;
+            for (m, f) in v.metal.iter_mut().zip(METAL) {
+                *m += f * scale / sr;
+                *m -= m.floor();
+                metal += if *m < 0.5 { 1.0 } else { -1.0 };
+            }
+            let raw = metal / 6.0 * (1.0 - v.noise_amp * 0.5) + v.rng.bipolar() * v.noise_amp;
+            let y = v.filt2.process_sample(v.filt.process_sample(raw)) * v.amp;
+            v.amp *= v.amp_coef;
+            y
+        }
+    }
+}
+
 impl DrumSynth {
     pub fn new() -> Self {
         let mut voices = [DrumVoice::new(1); VOICES];
@@ -246,61 +305,7 @@ impl DrumSynth {
         let mut out = 0.0;
         for v in &mut self.voices {
             let Some(kind) = v.kind else { continue };
-            let y = match kind {
-                Kind::Kick | Kind::Tom(_) => {
-                    v.pitch_env *= v.pitch_coef;
-                    let f = v.f_end + (v.f_start - v.f_end) * v.pitch_env;
-                    v.phase += f / sr;
-                    v.phase -= v.phase.floor();
-                    let tone = (v.phase * TAU).sin() * v.amp;
-                    let click = v.filt.process_sample(v.rng.bipolar()) * v.noise_amp;
-                    v.amp *= v.amp_coef;
-                    v.noise_amp *= v.noise_coef;
-                    tone + click
-                }
-                Kind::Snare => {
-                    v.pitch_env *= v.pitch_coef;
-                    let f = v.f_end + (v.f_start - v.f_end) * v.pitch_env;
-                    v.phase += f / sr;
-                    v.phase -= v.phase.floor();
-                    let tone = (v.phase * TAU).sin() * v.amp * 0.6;
-                    let n = v.filt2.process_sample(v.filt.process_sample(v.rng.bipolar())) * v.noise_amp * 0.7;
-                    v.amp *= v.amp_coef;
-                    v.noise_amp *= v.noise_coef;
-                    tone + n
-                }
-                Kind::Clap => {
-                    // Three quick bursts then a diffuse tail.
-                    let burst = if v.t < clap_gap * 3 {
-                        if v.t % clap_gap == 0 {
-                            v.amp = 1.0;
-                        }
-                        v.amp
-                    } else {
-                        0.0
-                    };
-                    let env = burst.max(if v.t >= clap_gap * 2 { v.noise_amp * 0.6 } else { 0.0 });
-                    let y = v.filt.process_sample(v.rng.bipolar()) * env * 2.0;
-                    v.amp *= v.amp_coef;
-                    if v.t >= clap_gap * 2 {
-                        v.noise_amp *= v.noise_coef;
-                    }
-                    y
-                }
-                Kind::ClosedHat | Kind::OpenHat | Kind::Crash | Kind::Ride => {
-                    let scale = if matches!(kind, Kind::Crash | Kind::Ride) { 1.0 } else { 1.9 };
-                    let mut metal = 0.0;
-                    for (m, f) in v.metal.iter_mut().zip(METAL) {
-                        *m += f * scale / sr;
-                        *m -= m.floor();
-                        metal += if *m < 0.5 { 1.0 } else { -1.0 };
-                    }
-                    let raw = metal / 6.0 * (1.0 - v.noise_amp * 0.5) + v.rng.bipolar() * v.noise_amp;
-                    let y = v.filt2.process_sample(v.filt.process_sample(raw)) * v.amp;
-                    v.amp *= v.amp_coef;
-                    y
-                }
-            };
+            let y = voice_sample(v, kind, sr, clap_gap);
             v.t += 1;
             let alive = match kind {
                 Kind::Clap => v.t < clap_gap * 3 || v.noise_amp > OFF,

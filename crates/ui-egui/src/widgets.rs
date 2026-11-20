@@ -69,11 +69,15 @@ pub fn key_fill(resp: &Response) -> Color32 {
     if resp.hovered() { t.button_hi } else { t.button }
 }
 
+/// The [`shade`] of a pressed key's face, top and bottom of its gradient.
+pub const PRESSED_SHADE: [f32; 2] = [-0.14, 0.02];
+
 /// A key in `fill`, softly lit from above; it sinks while pressed.
 pub fn key(p: &Painter, r: Rect, resp: &Response, fill: Color32) {
     let face = r.shrink(1.0);
     if resp.is_pointer_button_down_on() {
-        vgradient(p, face, shade(fill, -0.14), shade(fill, 0.02));
+        let [top, bottom] = PRESSED_SHADE;
+        vgradient(p, face, shade(fill, top), shade(fill, bottom));
     } else {
         p.rect_filled(face, 0.0, fill);
         key_light(p, face);
@@ -101,9 +105,20 @@ fn button_style(selected_fill: Color32, normal_icon: Color32, radius: u8) -> Ico
     }
 }
 
+/// Give a bare text field an accessible name without changing its visible layout.
+///
+/// `TextEdit` alone has a text-input node but no label; kittest 0.37 panics on a visible unnamed
+/// input after a settled step. A hint or a real adjacent label is preferred where the design has
+/// one; this covers fields whose name lives in the dialog title or a painted heading.
+pub(crate) fn named_text_field(resp: egui::Response, name: &str) -> egui::Response {
+    let _ = resp.ctx.accesskit_node_builder(resp.id, |node| node.set_label(name));
+    resp
+}
+
 /// A toolbar button with an icon; `on` draws the blue selected state.
 pub fn icon_button(ui: &mut Ui, size: egui::Vec2, icon: &str, on: bool, tip: &str) -> Response {
     let t = Tokens::current();
+    let tip = crate::localization::text(tip);
     let style = button_style(t.accent, t.text, 3);
     let resp = IconButton::new(tip, size, &style).selected(on).single_shape_frame().show(ui, |ui, r, tint| {
         key_light(ui.painter(), r.shrink(1.0));
@@ -113,10 +128,33 @@ pub fn icon_button(ui: &mut Ui, size: egui::Vec2, icon: &str, on: bool, tip: &st
     resp.on_hover_text(tip)
 }
 
+/// A compact close/delete button whose cross is painted, not typeset.
+///
+/// U+2715 is missing from egui 0.37's bundled proportional face (and from the shared fallback set
+/// until the symbol font lands), so this control must not depend on a text glyph. `label` is both
+/// the accessible name and the tooltip.
+pub fn close_button(ui: &mut Ui, label: &str) -> Response {
+    let t = Tokens::current();
+    let label = crate::localization::text(label);
+    let size = Vec2::splat(ui.spacing().interact_size.y.max(14.0));
+    let style = IconButtonStyle {
+        normal: ButtonVisuals { fill: Color32::TRANSPARENT, stroke: Stroke::NONE, icon: t.text_dim },
+        hovered: ButtonVisuals { fill: t.button_hi, stroke: Stroke::new(1.0, t.button_border), icon: t.text },
+        pressed: Some(ButtonVisuals { fill: shade(t.button_hi, -0.1), stroke: Stroke::new(1.0, t.button_border), icon: t.text }),
+        selected: ButtonVisuals { fill: t.button, stroke: Stroke::new(1.0, t.button_border), icon: t.text },
+        corner_radius: CornerRadius::same(3),
+        focus_stroke: Stroke::new(1.0, t.accent),
+    };
+    IconButton::new(label, size, &style)
+        .show(ui, |ui, r, tint| icons::draw(ui.painter(), r.shrink(size.x * 0.28), "close", tint))
+        .on_hover_text(label)
+}
+
 /// Square text toggle used for S / M / I / record etc.
 pub fn text_toggle(ui: &mut Ui, size: egui::Vec2, text: &str, on: bool, on_color: Color32, tip: &str) -> Response {
     let t = Tokens::current();
     let (r, resp) = ui.allocate_exact_size(size, Sense::click());
+    resp.widget_info(|| egui::WidgetInfo::selected(egui::Role::Button, ui.is_enabled(), on, tip));
     key(ui.painter(), r, &resp, if on { on_color } else { key_fill(&resp) });
     let col = if on { t.text_dark } else { t.text };
     ui.painter().text(r.center(), Align2::CENTER_CENTER, text, bold((size.y * 0.62).clamp(8.0, 13.0)), col);
@@ -153,8 +191,32 @@ pub fn selector_box(ui: &mut Ui, width: f32, height: f32, text: &str, color: Col
 
 /// A selector with a compact visible label and the complete meaning on hover.
 pub(crate) fn selector_box_with_tooltip(ui: &mut Ui, width: f32, height: f32, text: &str, color: Color32, tooltip: &str) -> Response {
+    selector_box_named(ui, width, height, text, color, SelectorLabels { name: tooltip, value: text, tooltip })
+}
+
+/// The accessibility strings for a custom selector: its unique name, current value and hover text.
+#[derive(Clone, Copy)]
+pub(crate) struct SelectorLabels<'a> {
+    pub name: &'a str,
+    pub value: &'a str,
+    pub tooltip: &'a str,
+}
+
+/// A selector whose accessible name is unique (for example per track), with its current value
+/// published separately in the accessibility tree.
+pub(crate) fn selector_box_named(ui: &mut Ui, width: f32, height: f32, text: &str, color: Color32, labels: SelectorLabels<'_>) -> Response {
     let t = Tokens::current();
+    // `text` and `value` can be user-defined route or group names (a bus called "Read"), so they
+    // are shown unchanged. Callers pass every label already translated.
+    let SelectorLabels { name, value, tooltip } = labels;
     let (r, resp) = ui.allocate_exact_size(vec2(width, height), Sense::click());
+    // The compact visible text can be an abbreviation ("t/l"); the full meaning on hover is the
+    // accessible name, not the tooltip. `current_text_value` tells a screen reader the selection.
+    resp.widget_info(|| {
+        let mut info = egui::WidgetInfo::labeled(egui::Role::ComboBox, ui.is_enabled(), name);
+        info.current_text_value = Some(value.to_string());
+        info
+    });
     key(ui.painter(), r, &resp, key_fill(&resp));
     let tr = Rect::from_min_max(pos2(r.max.x - height * 0.8, r.min.y), r.max);
     icons::draw(ui.painter(), tr.shrink(height * 0.15), "triangle_down", t.text_dim);
@@ -173,6 +235,7 @@ pub(crate) fn selector_box_with_tooltip(ui: &mut Ui, width: f32, height: f32, te
 pub fn pan_knob(ui: &mut Ui, size: f32, value: &mut f32, tip: &str) -> Response {
     let t = Tokens::current();
     let (r, resp) = ui.allocate_exact_size(vec2(size, size), Sense::click_and_drag());
+    resp.widget_info(|| egui::WidgetInfo::slider(ui.is_enabled(), f64::from(*value), tip));
     if resp.dragged() {
         let d = resp.drag_delta();
         *value = (*value + (d.x - d.y) * 0.01).clamp(-1.0, 1.0);
@@ -318,10 +381,12 @@ pub fn fader_slot(r: Rect) -> Rect {
     Rect::from_center_size(r.center(), vec2(4.0, r.height() - FADER_CAP_H))
 }
 
-/// A fader: returns the new dB value when dragged. `db` in -144..12.
-pub fn fader(ui: &mut Ui, r: Rect, db: f32, id: egui::Id) -> Option<f32> {
+/// A fader: returns the new dB value when dragged. `db` in -144..12. `name` is its accessible
+/// name; it must be unique enough that a label query picks one strip's control.
+pub fn fader(ui: &mut Ui, r: Rect, db: f32, id: egui::Id, name: &str) -> Option<f32> {
     let t = Tokens::current();
     let resp = ui.interact(r, id, Sense::click_and_drag());
+    resp.widget_info(|| egui::WidgetInfo::slider(ui.is_enabled(), f64::from(db), name));
     let p = ui.painter();
     let slot = fader_slot(r);
     let cap_w = (r.width() * 0.4).clamp(16.0, 18.0);
@@ -366,6 +431,175 @@ pub fn fader(ui: &mut Ui, r: Rect, db: f32, id: egui::Id) -> Option<f32> {
 
 pub fn db_text(db: f32) -> String {
     if db <= -143.9 { "-inf".into() } else { format!("{db:.1}") }
+}
+
+/// Where a [`fine_slider`] drag is anchored: the pointer's x and the value there, whether the key
+/// was held at the anchor, whether the drag moves the value from the anchor and not to the
+/// pointer, and the pass that last drew the slider during the drag.
+#[derive(Clone, Copy)]
+struct FineDrag {
+    x: f32,
+    value: f64,
+    fine: bool,
+    relative: bool,
+    pass: u64,
+}
+
+/// A horizontal slider that moves a tenth as far for the same drag while Ctrl (Command on a Mac)
+/// is held, as a [`fader`] does, on the rail and on the value box. Pressing or releasing the key
+/// during a drag on the rail or the value box leaves the value where it is, and the drag goes on
+/// from there. The value box shows the decimal places that a tenth of a point's step needs, and a
+/// drag on the rail that the key has touched rounds the value to them.
+pub fn fine_slider(ui: &mut Ui, value: &mut f64, range: std::ops::RangeInclusive<f64>, text: &str) -> Response {
+    FineSlider::new(value, range).text(text).show(ui)
+}
+
+/// A [`fine_slider`] with the options of `egui::Slider` that plug-in parameters use.
+pub struct FineSlider<'a> {
+    value: &'a mut f64,
+    range: std::ops::RangeInclusive<f64>,
+    text: &'a str,
+    id_salt: Option<&'a str>,
+    show_value: bool,
+    logarithmic: bool,
+    integer: bool,
+    default: Option<f64>,
+}
+
+impl<'a> FineSlider<'a> {
+    pub fn new(value: &'a mut f64, range: std::ops::RangeInclusive<f64>) -> Self {
+        Self { value, range, text: "", id_salt: None, show_value: true, logarithmic: false, integer: false, default: None }
+    }
+
+    /// The value that an Alt-click (Option-click on a Mac) on the slider or its value box sets,
+    /// as a [`fader`] returns to 0 dB. While Alt is held, a drag leaves the value where it is, and
+    /// an Alt-click on the value box does not open it for typing.
+    pub fn default_value(mut self, default: f64) -> Self {
+        self.default = Some(default);
+        self
+    }
+
+    /// The label after the slider. It also tells sliders in the same `Ui` apart unless
+    /// [`Self::id_salt`] is set.
+    pub fn text(mut self, text: &'a str) -> Self {
+        self.text = text;
+        self
+    }
+
+    /// Tells sliders in the same `Ui` apart when they have no label.
+    pub fn id_salt(mut self, salt: &'a str) -> Self {
+        self.id_salt = Some(salt);
+        self
+    }
+
+    /// Whether the value box is shown. Without it, a drag that the key has touched rounds the
+    /// value only on a whole-number slider.
+    pub fn show_value(mut self, show: bool) -> Self {
+        self.show_value = show;
+        self
+    }
+
+    /// A logarithmic rail, as `egui::Slider::logarithmic`, for a range above zero. A range that
+    /// reaches zero or below stays linear.
+    pub fn logarithmic(mut self, logarithmic: bool) -> Self {
+        self.logarithmic = logarithmic;
+        self
+    }
+
+    /// Whole numbers only, as `egui::Slider::integer`.
+    pub fn integer(mut self) -> Self {
+        self.integer = true;
+        self
+    }
+
+    pub fn show(self, ui: &mut Ui) -> Response {
+        let Self { value, range, text, id_salt, show_value, logarithmic, integer, default } = self;
+        let id = ui.scope_id().with(("fine_slider", id_salt.unwrap_or(text)));
+        let before = *value;
+        let (fine, x) = ui.input(|i| (i.modifiers.command || i.modifiers.ctrl, i.pointer.interact_pos().map(|p| p.x)));
+        let reset = default.is_some() && ui.input(|i| i.modifiers.alt);
+        // A drag lasts through the pass that releases the button, where egui still sets the value
+        // from the pointer. An anchor that the previous pass did not store was left by an earlier
+        // drag, and is ignored.
+        let pass = ui.ctx().cumulative_pass_nr();
+        let mut drag = ui.data(|d| d.get_temp::<FineDrag>(id)).filter(|d| d.pass + 1 == pass);
+        let (lo, hi) = (*range.start(), *range.end());
+        let log = logarithmic && lo > 0.0 && hi > lo;
+        // The handle's travel along the rail, as `egui::Slider` lays it out.
+        let thickness = ui.text_style_height(&egui::TextStyle::Body).max(ui.spacing().interact_size.y);
+        let travel = f64::from((ui.spacing().slider_width - 2.0 * thickness / 2.5).max(1.0));
+        // Where a value sits along the rail (0 to 1), and back, as `egui::Slider` maps them.
+        let span = if log { (hi / lo).ln() } else { hi - lo };
+        let along = |v: f64| if span > 0.0 { if log { (v / lo).ln() / span } else { (v - lo) / span } } else { 0.0 };
+        let at = |n: f64| {
+            let n = n.clamp(0.0, 1.0);
+            if log { lo * (n * span).exp() } else { lo + n * span }
+        };
+        // How far the value moves for one point of the rail at `v`.
+        let per_point = |v: f64| if log { v * span / travel } else { span / travel };
+        let scale = if fine { 0.1 } else { 1.0 };
+        let decimals = if integer { 0 } else { (-(per_point(lo) * 0.1).log10()).ceil().clamp(0.0, 6.0) as usize };
+        if let (Some(d), Some(x)) = (&mut drag, x) {
+            if d.fine != fine || reset {
+                *d = FineDrag { x, value: *value, fine, relative: true, pass };
+            } else if d.relative {
+                let moved = at(along(d.value) + f64::from(x - d.x) / travel * scale);
+                let moved = if show_value || integer { egui::emath::round_to_decimals(moved, decimals) } else { moved };
+                *value = moved.clamp(lo, hi);
+            }
+        }
+        let hold = reset || drag.is_some_and(|d| d.relative);
+        let speed = per_point(*value) * scale;
+        let mut slider = egui::Slider::from_get_set(range, |v| {
+            if let Some(v) = v
+                && !hold
+            {
+                *value = v;
+            }
+            *value
+        })
+        .show_value(show_value)
+        .logarithmic(log)
+        .min_decimals(decimals)
+        .text(text);
+        if integer {
+            slider = slider.integer();
+        }
+        if fine {
+            slider = slider.drag_value_speed(speed);
+        }
+        let mut resp = ui.add(slider);
+        // A drag from the anchor set the value before the slider read it.
+        if *value != before {
+            resp.mark_changed();
+        }
+        // The rail senses drags only, so a click on it ends as a drag that the pointer did not
+        // move far enough to count as one.
+        let clicked = resp.clicked() || (resp.drag_stopped() && ui.input(|i| i.pointer.could_any_button_be_click()));
+        if let Some(d) = default
+            && reset
+            && clicked
+        {
+            let d = if integer { d.round() } else { d };
+            *value = d.clamp(lo, hi);
+            resp.surrender_focus();
+            resp.mark_changed();
+        }
+        let rail = Rect::from_min_size(resp.rect.min, vec2(ui.spacing().slider_width, resp.rect.height()));
+        let on_rail = resp.dragged() && ui.input(|i| i.pointer.press_origin()).is_some_and(|p| rail.contains(p));
+        let next = match (on_rail, drag, x) {
+            (true, Some(d), _) => Some(FineDrag { pass, ..d }),
+            (true, None, Some(x)) => Some(FineDrag { x, value: *value, fine, relative: fine, pass }),
+            _ => None,
+        };
+        ui.data_mut(|m| match next {
+            Some(d) => {
+                m.insert_temp(id, d);
+            }
+            None => m.remove::<FineDrag>(id),
+        });
+        resp
+    }
 }
 
 /// A speaker dot on the surround panner: label, square position (-1..1, y up = front), height layer.
@@ -446,7 +680,7 @@ pub fn surround_panner(ui: &mut Ui, size: f32, speakers: &[PannerSpeaker], puck:
         painter.circle(pp, 5.0 + div * half, Color32::from_rgba_unmultiplied(80, 160, 230, 28), Stroke::new(1.0, Color32::from_rgb(70, 130, 190)));
     }
     painter.circle(pp, 5.0, t.counter_text, Stroke::new(1.0, Color32::BLACK));
-    let tip = "Surround pan: drag the puck · double-click: front centre · Alt-drag: divergence";
+    let tip = crate::localization::text("Surround pan: drag the puck · double-click: front centre · Alt-drag: divergence");
     let _ = resp.on_hover_text(tip);
     // Sliders below: divergence, then elevation for height formats.
     let mut sliders: Vec<(&str, f32, u8)> = vec![("div", div, 0)];
@@ -472,7 +706,8 @@ pub fn surround_panner(ui: &mut Ui, size: f32, speakers: &[PannerSpeaker], puck:
         if sresp.double_clicked() {
             edit = Some(if kind == 0 { PannerEdit::Divergence(0.0) } else { PannerEdit::Height(0.0) });
         }
-        let _ = sresp.on_hover_text(if kind == 0 { "Divergence (0 = point source)" } else { "Elevation (height speakers)" });
+        let _ =
+            sresp.on_hover_text(crate::localization::text(if kind == 0 { "Divergence (0 = point source)" } else { "Elevation (height speakers)" }));
     }
     edit
 }
@@ -515,7 +750,7 @@ pub fn checkbox(ui: &mut Ui, on: &mut bool, label: impl Into<egui::WidgetText>) 
 /// released. Returns whether `on` changed.
 fn drag_toggle(ui: &Ui, resp: &Response, on: &mut bool) -> bool {
     let ctx = ui.ctx();
-    let key = egui::Id::new("soundcraft-checkbox-drag-target");
+    let key = egui::Id::unique("soundcraft-checkbox-drag-target");
     if !ctx.input(|i| i.pointer.primary_down()) {
         ctx.data_mut(|d| d.remove::<bool>(key));
     }
@@ -562,6 +797,38 @@ mod tests {
         h.run();
         let at = h.get_all_by_label("Box").map(|n| n.rect().center()).collect();
         (h, at)
+    }
+
+    /// Close/delete controls are painted crosses with an accessible name, not a glyph that depends
+    /// on a font family covering U+2715.
+    #[test]
+    fn a_close_button_is_a_named_clickable_icon() {
+        let mut h = Harness::new_ui_state(
+            |ui, clicked: &mut bool| {
+                if super::close_button(ui, "Delete marker").clicked() {
+                    *clicked = true;
+                }
+            },
+            false,
+        );
+        h.run();
+        h.get_by_role_and_label(egui::accesskit::Role::Button, "Delete marker").click();
+        h.run();
+        assert!(*h.state(), "the painted close control dispatches its command");
+    }
+
+    /// The compact visible label of a selector is an abbreviation; the full meaning it shows on
+    /// hover is what a screen reader must hear.
+    #[test]
+    fn a_compact_selector_is_named_by_its_full_meaning() {
+        let mut h = Harness::new_ui(|ui| {
+            super::selector_box_with_tooltip(ui, 80.0, 16.0, "t/l", egui::Color32::WHITE, "auto touch latch");
+        });
+        h.run();
+        let selector =
+            h.query_by_role_and_label(egui::accesskit::Role::ComboBox, "auto touch latch").expect("the full automation mode names the selector");
+        assert_eq!(selector.value().as_deref(), Some("t/l"), "the visible value stays available to a screen reader");
+        assert!(h.query_by_role_and_label(egui::accesskit::Role::ComboBox, "t/l").is_none(), "the abbreviation is not the name");
     }
 
     /// #399: pressing a box and dragging over its neighbours sets them all to the state the first
@@ -666,7 +933,7 @@ mod selector_visual_regressions {
             let mut harness = egui_kittest::Harness::builder().with_size(vec2(320.0, 120.0)).with_pixels_per_point(scale).wgpu().build_ui_state(
                 move |ui, regions: &mut serde_json::Map<String, serde_json::Value>| {
                     if !ready {
-                        crate::fonts::install(ui.ctx());
+                        crate::fonts::install(ui.ctx(), true);
                         crate::theme::apply(ui.ctx(), false);
                         ready = true;
                         return;
@@ -719,7 +986,7 @@ mod selector_visual_regressions {
             for mode in soundcraft_model::AutomationMode::ALL {
                 for scale in [1.0, 1.5, 2.0] {
                     let ctx = egui::Context::default();
-                    crate::fonts::install(&ctx);
+                    crate::fonts::install(&ctx, true);
                     crate::theme::apply(&ctx, false);
                     let mut app = mixer_app(narrow, mode);
                     let mut output = ctx.run_ui(scaled_input(vec2(320.0, 640.0), scale), |ui| crate::mix_window::show(&mut app, ui));
@@ -753,6 +1020,8 @@ mod selector_visual_regressions {
         }
     }
 
+    /// Write real rendered mixer fixtures when `CRAFT_UI_VISUAL_FIXTURES` is set, covering automation modes, narrow
+    /// widths and display scales.
     #[test]
     fn capture_actual_mixer_visual_fixtures() {
         let _palette = crate::theme::lock_test_palette();
@@ -766,7 +1035,7 @@ mod selector_visual_regressions {
                         egui_kittest::Harness::builder().with_size(vec2(320.0, 640.0)).with_pixels_per_point(scale).wgpu().build_ui_state(
                             move |ui, app: &mut crate::SoundApp| {
                                 if !ready {
-                                    crate::fonts::install(ui.ctx());
+                                    crate::fonts::install(ui.ctx(), true);
                                     crate::theme::apply(ui.ctx(), false);
                                     ready = true;
                                     return;
@@ -783,14 +1052,12 @@ mod selector_visual_regressions {
                         .output()
                         .shapes
                         .iter()
+                        // The strip background is a gradient mesh, not a RectShape.
                         .filter_map(|shape| match &shape.shape {
-                            egui::Shape::Rect(rect)
-                                if (rect.rect.width() - crate::mix_window::strip_width(narrow)).abs() < 0.1 && rect.rect.height() >= 560.0 =>
-                            {
-                                Some(rect.rect)
-                            }
+                            egui::Shape::Mesh(mesh) => Some(mesh.calc_bounds()),
                             _ => None,
                         })
+                        .filter(|rect| (rect.width() - crate::mix_window::strip_width(narrow)).abs() < 0.1 && rect.height() >= 560.0)
                         .fold(Rect::NOTHING, Rect::union);
                     assert!(strips.is_finite());
                     std::fs::write(
@@ -814,7 +1081,7 @@ mod selector_visual_regressions {
             for label in ["auto read", "no group", "A very long mixer group name"] {
                 for scale in [1.0, 1.5, 2.0] {
                     let ctx = egui::Context::default();
-                    crate::fonts::install(&ctx);
+                    crate::fonts::install(&ctx, true);
                     crate::theme::apply(&ctx, false);
                     let mut rect = Rect::NOTHING;
                     let mut output = ctx.run_ui(scaled_input(vec2(320.0, 120.0), scale), |ui| {

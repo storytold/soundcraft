@@ -1,10 +1,10 @@
 //! Tab and Tab to Transient: the insertion point or selection end to the next or previous clip boundary, transient or note.
+use super::{CommandSpec, always, bool_or};
 
-use super::*;
-use crate::{TransportRequest, cmd};
-use serde_json::json;
-use soundcraft_model::{Clip, ClipContent, Session, SourceAudio};
-use soundcraft_time::SampleRate;
+use crate::{Engine, Result, TransportRequest, cmd};
+use serde_json::{Value, json};
+use soundcraft_model::{Clip, ClipContent, Session, SourceAudio, TrackId};
+use soundcraft_time::{Range, SampleRate, Samples};
 use std::sync::{Arc, Mutex, PoisonError, Weak};
 
 /// Transients are found in fixed blocks of each clip, so a long clip costs a block per press and
@@ -175,9 +175,10 @@ fn analysed(s: &Session, t: TrackId, around: Range) -> Vec<Samples> {
 #[cfg(test)]
 mod tests {
     use crate::Engine;
+    use craft_audio::AudioBuffer;
     use serde_json::json;
-    use soundcraft_audio_io::{AudioBuffer, FileFormat};
     use soundcraft_midi::{Note, Sequence};
+    use soundcraft_model::FileFormat;
     use soundcraft_model::{ChannelFormat, Clip, Session, TrackId, TrackKind};
     use soundcraft_time::{SampleRate, TICKS_PER_QUARTER};
 
