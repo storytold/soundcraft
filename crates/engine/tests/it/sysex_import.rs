@@ -4,9 +4,13 @@ use soundcraft_time::Range;
 
 fn fixture() -> Vec<u8> {
     let body = [0, 0xF0, 8, 0x43, 0x10, 0x4C, 0, 0, 0x7E, 0, 0xF7, 0x83, 0x60, 0xF7, 1, 0xF8, 0x83, 0x60, 0xF0, 2, 0x43, 0xF7, 0, 0xFF, 0x2F, 0];
+    smf_track(&body)
+}
+
+fn smf_track(body: &[u8]) -> Vec<u8> {
     let mut bytes = b"MThd\0\0\0\x06\0\0\0\x01\x03\xC0MTrk".to_vec();
     bytes.extend_from_slice(&(body.len() as u32).to_be_bytes());
-    bytes.extend_from_slice(&body);
+    bytes.extend_from_slice(body);
     bytes
 }
 
@@ -40,13 +44,35 @@ fn import_command_reports_retention_and_the_remaining_playback_limit() {
     std::fs::remove_file(path).unwrap();
 }
 
+// Delta 0, F0, then a four-byte VLQ declaring 16 MiB + 1 payload bytes.
+const LARGE_SYSEX_HEADER: [u8; 6] = [0, 0xF0, 0x88, 0x80, 0x80, 1];
+
+#[test]
+fn truncated_sysex_is_salvaged_without_hitting_the_size_limit() {
+    let bytes = smf_track(&LARGE_SYSEX_HEADER);
+    assert!(matches!(soundcraft_midi::read_smf(&bytes), Err(soundcraft_midi::MidiError::Truncated(_))));
+    let read = soundcraft_midi::read_smf_lenient(&bytes).unwrap();
+    assert!(!read.warnings.is_empty());
+    assert!(!read.over_limit);
+    let mut e = Engine::default();
+    assert!(io::import_midi_bytes(&mut e, &bytes, 0, true).unwrap().is_empty());
+}
+
 #[test]
 fn oversized_sysex_is_refused_without_changing_the_session() {
+    let limit = soundcraft_midi::MAX_SYSEX_BYTES;
+    let mut body = LARGE_SYSEX_HEADER.to_vec();
+    body.resize(body.len() + limit, 0);
+    body.push(0xF7);
+    body.extend_from_slice(&[0, 0xFF, 0x2F, 0]);
+    let bytes = smf_track(&body);
+    let expected = soundcraft_midi::MidiError::SysExTooLarge(limit);
+    assert_eq!(soundcraft_midi::read_smf(&bytes).unwrap_err(), expected);
+    assert!(soundcraft_midi::read_smf_lenient(&bytes).unwrap().over_limit);
     let mut e = Engine::default();
     let before = serde_json::to_value(e.session()).unwrap();
-    let mut bytes = b"MThd\0\0\0\x06\0\0\0\x01\x03\xC0MTrk\0\0\0\x06".to_vec();
-    bytes.extend_from_slice(&[0, 0xF0, 0x88, 0x80, 0x80, 1]);
-    assert!(io::import_midi_bytes(&mut e, &bytes, 0, true).unwrap_err().to_string().contains("SysEx"));
+    let error = io::import_midi_bytes(&mut e, &bytes, 0, true).unwrap_err();
+    assert!(error.to_string().contains(&expected.to_string()), "{error}");
     assert_eq!(serde_json::to_value(e.session()).unwrap(), before);
 }
 
