@@ -704,13 +704,11 @@ fn connected_worker_accepts_control_and_shuts_down_while_a_future_message_is_pen
     let (tx, rx) = channel();
     let (queued, ready) = channel();
     let (opened, devices) = channel();
-    let (done, stopped) = channel();
     let worker = std::thread::spawn(move || {
         drive(view, Arc::new(Session::default()), rx, Default::default(), Arc::new(Stats::default()), |name| {
             let _ = opened.send(name.to_owned());
             Ok((FakePort::default(), None))
         });
-        done.send(()).unwrap();
     });
     tx.send(Update::Encoder(Some(("future".into(), 0)), false, Box::new(Future(Some(queued))))).unwrap();
     assert_eq!(devices.recv_timeout(Duration::from_secs(3)).unwrap(), "future");
@@ -718,12 +716,15 @@ fn connected_worker_accepts_control_and_shuts_down_while_a_future_message_is_pen
     std::thread::sleep(Duration::from_millis(225));
     let elapsed = Instant::now();
     tx.send(Update::Beats(vec![("controller".into(), 0)], false)).unwrap();
-    assert_eq!(devices.recv_timeout(Duration::from_millis(250)).unwrap(), "controller");
+    let bound = Duration::from_millis(100);
+    assert_eq!(devices.recv_timeout(bound).unwrap(), "controller");
     let control = elapsed.elapsed();
     std::thread::sleep(Duration::from_millis(225));
+    let mut output = Output::default();
+    output.worker.replace((tx, worker));
     let elapsed = Instant::now();
-    drop(tx);
-    stopped.recv_timeout(Duration::from_millis(250)).unwrap();
-    eprintln!("control={control:?} shutdown={:?}", elapsed.elapsed());
-    worker.join().unwrap();
+    drop(output);
+    let shutdown = elapsed.elapsed();
+    eprintln!("control={control:?} shutdown={shutdown:?}");
+    assert!(shutdown < bound, "Output::drop took {shutdown:?}");
 }
