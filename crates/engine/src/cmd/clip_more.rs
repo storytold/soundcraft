@@ -150,6 +150,11 @@ fn loop_chain(s: &Session, t: TrackId, id: ClipId) -> Vec<ClipId> {
     chain
 }
 
+/// Whether a clip belongs to a loop that `clip.unloop` changes: two or more back-to-back copies.
+pub fn is_looped(s: &Session, id: ClipId) -> bool {
+    s.find_clip(id).is_some_and(|(t, _)| loop_chain(s, t, id).len() >= 2)
+}
+
 fn unloop(e: &mut Engine, p: &Value) -> Result<Value> {
     let id = "clip.unloop";
     let remove = match str_param(p, "mode") {
