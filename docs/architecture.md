@@ -1,6 +1,6 @@
 # Architecture
 
-> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-11-11 · **Change:** trivial (recordings are written to disk as they record (#84, #888); previously minor: audio file formats come from craft-audio; previously trivial: delay compensation includes the master faders' inserts (#351)) · **Target:** Avid Pro Tools Ultimate 2026.4.1
+> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-11-18 · **Change:** trivial (undo leaves listening and view settings alone (#492); previously trivial: recordings are written to disk as they record (#84, #888); previously minor: audio file formats come from craft-audio; previously trivial: delay compensation includes the master faders' inserts (#351)) · **Target:** Avid Pro Tools Ultimate 2026.4.1
 
 SoundCraft is a Cargo workspace of small crates with enforced layering (`cargo xtask layers`).
 Nothing below the UI knows about egui, so the interface can be replaced.
@@ -41,6 +41,12 @@ busses, and `EditState` (selection, tools, modes, view flags). Decoded audio liv
 Every user action is a `CommandSpec` (id, label, menu path, shortcut, params doc, enabled, run)
 registered in `crates/engine/src/cmd/`. `Engine::execute(id, params)` runs it, catches any escaped
 panic, and pushes an undo snapshot (the previous `Arc<Session>`) when the document changed.
+`noundo` commands (solo, mute, record, track height and view, insert bypass, …) push none. Each
+history entry notes the settings they changed since it (`touched`), and undo and redo keep those
+at their current values in the restored snapshot (`Engine::keep_live_state`; record arm and input
+monitor always stay as they are, through `keep_runtime_track_states`). A new listening or track
+view setting needs its field in the engine's `Live` list; other `noundo` settings (rulers, grid,
+options) are still restored with the snapshot.
 Continuous gestures use `execute_merged` so a fader drag is one undo step. Menus are built from
 the incumbent's menu catalog (`crates/engine/catalog/menus.txt`); a menu item lights up when a
 command has the same menu path and label (or an alias maps it), which also drives the parity
@@ -82,6 +88,7 @@ app as an MCP server. See `control-protocol.md` and `mcp.md`.
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-11-18 | trivial | Undo is for edits: `noundo` commands keep their values through undo and redo (#492) |
 | 2026-11-11 | minor | `audio-io` left the layer diagram: audio file formats come from `craft-audio` in craft-libs |
 | 2026-10-30 | trivial | Device I/O: recordings are written to disk as they record (#84), long takes in several files (#888) |
 | 2026-10-13 | trivial | delay compensation includes the master faders' inserts (#351) |
