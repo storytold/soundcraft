@@ -65,7 +65,7 @@ where
                 let Some(s) = scratch.get_mut(..out.len()) else { return };
                 guarded_block(&failed, &guard, s, |d| state.fill(d, channels));
                 for (o, x) in out.iter_mut().zip(s.iter()) {
-                    *o = T::from_sample(*x);
+                    *o = output_sample(*x);
                 }
             }
         },
@@ -86,8 +86,32 @@ where
     )
 }
 
+fn output_sample<T: cpal::SizedSample + cpal::FromSample<f32>>(sample: f32) -> T {
+    // The I24 conversion scales +1.0 to 0x800000, which is negative full scale
+    // when ASIO packs it into three bytes.
+    const I24_POSITIVE_FULL_SCALE: f32 = 8_388_607.0 / 8_388_608.0;
+    let sample = if T::FORMAT == cpal::SampleFormat::I24 {
+        if sample.is_finite() { sample.clamp(-1.0, I24_POSITIVE_FULL_SCALE) } else { 0.0 }
+    } else {
+        sample
+    };
+    T::from_sample(sample)
+}
+
+#[cfg(test)]
+#[test]
+fn output_sample_preserves_packed_i24_full_scale() {
+    assert_eq!(output_sample::<cpal::I24>(1.0).inner(), 8_388_607);
+    assert_eq!(output_sample::<cpal::I24>(-1.0).inner(), -8_388_608);
+    assert_eq!(output_sample::<cpal::I24>(0.5).inner(), 4_194_304);
+    assert_eq!(output_sample::<cpal::I24>(-1.5).inner(), -8_388_608);
+    assert_eq!(output_sample::<cpal::I24>(1.5).inner(), 8_388_607);
+    assert_eq!(output_sample::<cpal::I24>(f32::NAN).inner(), 0);
+    assert_eq!(output_sample::<f32>(1.0), 1.0);
+}
+
 /// Open the output device `cfg` chooses (else the default) at the chosen rate (else the session
-/// rate) if possible, in the best sample format it offers (f32, else 32- or 16-bit integers),
+/// rate) if possible, in the best sample format it offers (f32, else 32-, 24-, or 16-bit integers),
 /// with as many channels as it offers up to `want_ch` (at least stereo when available), and the
 /// chosen buffer size when the device allows it.
 pub(crate) fn open_device(
@@ -111,7 +135,7 @@ pub(crate) fn open_device(
         None => {
             let d = device.default_output_config().map_err(|e| e.to_string())?;
             let format = d.sample_format();
-            // cpal 0.18's default can name a format these callbacks do not decode (I24, F64);
+            // cpal 0.18's default can name a format these callbacks do not decode (e.g. F64);
             // open the same rate and channels in a format they do, rather than lose output.
             let c = if devices::format_rank(format).is_some() {
                 d

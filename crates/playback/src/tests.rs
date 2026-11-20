@@ -57,6 +57,14 @@ fn range(channels: u16, min: u32, max: u32, format: cpal::SampleFormat) -> cpal:
     cpal::SupportedStreamConfigRange::new(channels, min, max, cpal::SupportedBufferSize::Range { min: 64, max: 1024 }, format)
 }
 
+#[test]
+fn output_config_accepts_packed_pcm() {
+    let configs = [range(2, 44_100, 48_000, cpal::SampleFormat::I24), range(10, 44_100, 48_000, cpal::SampleFormat::I24)];
+    let (config, _, format) = pick_output_config(&configs, &[48_000], 2).unwrap();
+    assert_eq!(config.channels, 2);
+    assert_eq!(format, cpal::SampleFormat::I24);
+}
+
 /// Rates are tried in order, so a stale configured rate falls through to the session rate; when no requested rate
 /// is offered the caller uses the device default and resamples.
 #[test]
