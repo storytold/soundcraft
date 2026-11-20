@@ -188,6 +188,8 @@ pub struct Engine {
     pub clipboard: Clipboard,
     pub transport_requests: Vec<TransportRequest>,
     pub transport: TransportStatus,
+    /// Transient beat grid provided by an external MIDI clock; excluded from save, undo and export.
+    pub playback_tempo: Option<soundcraft_time::TempoMap>,
     /// Command journal (id, params) for macro recording / agents. Ring buffer: capped at
     /// [`MAX_JOURNAL_ENTRIES`] entries of up to [`MAX_JOURNAL_ENTRY_BYTES`] params each.
     pub journal: std::collections::VecDeque<(String, Value)>,
@@ -232,6 +234,7 @@ impl Engine {
             clipboard: Clipboard::default(),
             transport_requests: Vec::new(),
             transport: TransportStatus::default(),
+            playback_tempo: None,
             journal: std::collections::VecDeque::new(),
             path: None,
             revision: 1,
@@ -270,6 +273,19 @@ impl Engine {
 
     pub fn session(&self) -> &Session {
         &self.doc
+    }
+
+    pub fn transport_tempo(&self) -> &soundcraft_time::TempoMap {
+        self.playback_tempo.as_ref().unwrap_or(&self.doc.tempo)
+    }
+
+    /// The normal document is shared. Only external-clock playback needs a private tempo map.
+    pub fn playback_session(&self) -> Arc<Session> {
+        let mut doc = self.session_arc();
+        if let Some(tempo) = &self.playback_tempo {
+            Arc::make_mut(&mut doc).tempo.clone_from(tempo);
+        }
+        doc
     }
 
     pub fn session_arc(&self) -> Arc<Session> {

@@ -99,8 +99,8 @@ pub(super) fn transport_window(app: &mut SoundApp, ctx: &egui::Context) {
                         }
                     }
                 });
-                let tick = app.engine.session().tempo.samples_to_ticks(app.position(), app.engine.session().sample_rate);
-                let bpm = app.engine.session().tempo.tempo_at_tick(tick);
+                let tick = app.engine.transport_tempo().samples_to_ticks(app.position(), app.engine.session().sample_rate);
+                let bpm = app.engine.transport_tempo().tempo_at_tick(tick);
                 let m = app.engine.session().tempo.meter_at_tick(tick);
                 ui.label(
                     egui::RichText::new(crate::localized_format!("♩ = {bpm:.2}   {n}/{d}", bpm = bpm, n = m.numerator, d = m.denominator))

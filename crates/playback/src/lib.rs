@@ -28,6 +28,7 @@ pub fn loops(range: Range) -> bool {
     range.len() > 64
 }
 
+pub mod clock_follow;
 pub mod devices;
 pub mod midi;
 pub mod mtc;

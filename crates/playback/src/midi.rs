@@ -147,6 +147,8 @@ fn lost_entry(port: u8) -> u32 {
 /// The path of MIDI events from the device threads to the audio thread, and of recorded events
 /// from the audio thread to the UI.
 pub struct MidiFeed {
+    clock_follow: Mutex<crate::clock_follow::Follower>,
+    clock_source: AtomicUsize,
     mtc: Mutex<crate::mtc_input::Reader>,
     mtc_online: AtomicBool,
     mtc_relocates: AtomicU64,
@@ -201,6 +203,8 @@ pub struct MidiFeed {
 impl Default for MidiFeed {
     fn default() -> Self {
         MidiFeed {
+            clock_follow: Mutex::default(),
+            clock_source: AtomicUsize::new(usize::MAX),
             mtc: Mutex::default(),
             mtc_wake: Default::default(),
             mtc_online: false.into(),
@@ -330,7 +334,43 @@ impl MidiFeed {
         self.mtc.lock().unwrap_or_else(PoisonError::into_inner).take(self.now())
     }
 
+    pub fn set_clock_follow(&self, port: Option<u8>, coast: bool) {
+        let mut input = self.clock_follow.lock().unwrap_or_else(PoisonError::into_inner);
+        if input.source != port {
+            *input = Default::default();
+            input.source = port;
+            self.clock_source.store(port.map_or(usize::MAX, usize::from), Ordering::Release);
+        }
+        input.coast = coast;
+    }
+
+    /// Called on the host, never the device audio thread. At most 32 transport transitions can wait.
+    pub fn clock_follow_status(&self, actions: &mut Vec<crate::clock_follow::Action>) -> crate::clock_follow::Snapshot {
+        let mut input = self.clock_follow.lock().unwrap_or_else(PoisonError::into_inner);
+        let now = self.now();
+        input.expire(now);
+        while let Some(action) = input.take() {
+            actions.push(action);
+        }
+        input.snapshot(now)
+    }
+
+    fn read_clock(&self, open: Option<&AtomicBool>, port: u8, bytes: &[u8], at: i64) {
+        if self.clock_source.load(Ordering::Acquire) != usize::from(port) {
+            return;
+        }
+        let mut input = self.clock_follow.lock().unwrap_or_else(PoisonError::into_inner);
+        if input.source == Some(port) && open.is_none_or(|g| g.load(Ordering::Acquire)) {
+            input.receive(bytes, at);
+            drop(input);
+            if bytes.iter().any(|b| matches!(b, 0xf2 | 0xf8 | 0xfa..=0xfc)) {
+                self.wake_mtc_host();
+            }
+        }
+    }
+
     fn receive_from(&self, open: Option<&AtomicBool>, port: u8, bytes: &[u8], at_us: i64) {
+        self.read_clock(open, port, bytes, at_us);
         if matches!(bytes.first(), Some(0xf0 | 0xf1 | 0xfc)) {
             let mut reader = self.mtc.lock().unwrap_or_else(PoisonError::into_inner);
             if reader.source == Some(port) && open.is_none_or(|gate| gate.load(Ordering::Acquire)) {

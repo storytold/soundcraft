@@ -31,7 +31,7 @@ impl SoundApp {
 
     fn start_play(&mut self, from: Samples, end: Option<Samples>, looped: Option<Range>) {
         if let Some(p) = &self.player {
-            p.update_session(self.engine.session_arc());
+            p.update_session(self.engine.playback_session());
             if self.mtc_chasing && end.is_none() && looped.is_none() {
                 p.play_chasing_mtc(from);
             } else {

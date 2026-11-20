@@ -20,6 +20,9 @@ impl SoundApp {
             Some(v) => v.as_bool().ok_or("online must be a boolean")?,
             None => self.mtc_online && source.is_some(),
         };
+        if online && self.clock_follow.enabled {
+            return Err("Disable external MIDI clock follow before going online".into());
+        }
         if online && source.is_none() {
             return Err("Select an MTC input before going online".into());
         }

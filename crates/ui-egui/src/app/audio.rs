@@ -27,7 +27,7 @@ impl SoundApp {
         // The input reopens on the next record or monitor with the new choice.
         self.recorder = None;
         self.recorder_failed = false;
-        let player = soundcraft_playback::Player::with_config(self.engine.session_arc(), &self.ui.audio);
+        let player = soundcraft_playback::Player::with_config(self.engine.playback_session(), &self.ui.audio);
         self.attach_midi(&player);
         player.locate(at);
         self.player = Some(player);
@@ -127,7 +127,7 @@ impl SoundApp {
         }
         self.recorder = None;
         self.recorder_failed = false;
-        let player = Player::with_config(self.engine.session_arc(), &self.ui.audio);
+        let player = Player::with_config(self.engine.playback_session(), &self.ui.audio);
         self.attach_midi(&player);
         self.player = Some(player);
     }

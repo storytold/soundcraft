@@ -255,7 +255,8 @@ pub fn add_midi_recording_from(
         events.iter().take(MAX_MIDI_TAKE_EVENTS).filter(|ev| ev.status == MidiTakeEvent::LOST && ev.at >= range.start && ev.at < range.end).count()
             + usize::from(events.len() > MAX_MIDI_TAKE_EVENTS);
     let takes: Vec<(TrackId, String, Sequence)> = {
-        let s = e.session();
+        let doc = e.playback_session();
+        let s = &*doc;
         s.tracks
             .iter()
             .filter_map(|t| {
@@ -282,6 +283,21 @@ mod tests {
     use super::*;
     use serde_json::json;
     use soundcraft_model::ClipContent;
+
+    #[test]
+    fn external_clock_take_uses_transient_grid_and_keeps_the_document_tempo() {
+        let mut e = Engine::default();
+        let t = armed(&mut e, "Follow", "MIDI:*:keys");
+        let original = e.session().tempo.clone();
+        e.playback_tempo = Some(soundcraft_time::TempoMap::new(90., 4, 4).unwrap());
+        let q = e.session().sample_rate.samples(60. / 90.);
+        let range = Range::new(0, 3 * q);
+        add_midi_recording(&mut e, range, &[ev(q, 0, 0x90, 65, 127), ev(2 * q, 0, 0x80, 65, 0)], &["keys".into()], false);
+        let seq = sequence(&e, t, range);
+        assert_eq!(seq.notes.len(), 1);
+        assert_eq!(seq.notes[0].start, soundcraft_time::TICKS_PER_QUARTER);
+        assert_eq!(e.session().tempo, original);
+    }
 
     fn armed(e: &mut Engine, name: &str, input: &str) -> TrackId {
         let id = e.execute("track.new", &json!({"name": name, "kind": "instrument"})).unwrap()["tracks"][0].as_u64().unwrap();
