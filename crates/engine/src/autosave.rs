@@ -249,6 +249,7 @@ impl Autosave {
         self.next = next;
         for (name, audio) in &fresh {
             let opts = EncodeOptions::new(craft_audio::EncodeFormat::Wav).with_bit_depth(BitDepth::Float32);
+            let audio = soundcraft_mix::whole(audio).map_err(EngineError::Io)?;
             let bytes = craft_audio::encode(&audio.buffer, &opts).map_err(|err| EngineError::Io(err.to_string()))?;
             create_folder(&audio_dir).and_then(|()| write_synced(&audio_dir.join(name), &bytes)).map_err(|err| io_error(&audio_dir, err))?;
         }

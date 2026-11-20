@@ -483,8 +483,9 @@ fn split_mono(e: &mut Engine, p: &Value) -> Result<Value> {
                         let mono = if let Some(&id) = mono_sources.get(&key) {
                             id
                         } else {
+                            let full = soundcraft_mix::whole(audio).map_err(|err| bad("track.split_into_mono", err))?;
                             let samples =
-                                audio.buffer.channels.get(key.1).ok_or_else(|| bad("track.split_into_mono", "source channel unavailable"))?;
+                                full.buffer.channels.get(key.1).ok_or_else(|| bad("track.split_into_mono", "source channel unavailable"))?;
                             copied_samples = copied_samples
                                 .checked_add(samples.len())
                                 .filter(|&n| n <= crate::io::MAX_IMPORT_SAMPLES)
