@@ -123,7 +123,7 @@ enum Update {
     Session(Arc<Session>),
     Beats(Vec<(String, i64)>, bool),
     Encoder(Option<(String, i64)>, bool, Box<dyn SyncEncoder>),
-    Wake,
+    Wake(Option<(u64, bool)>),
     InputWake(Arc<AtomicBool>),
 }
 impl Output {
@@ -200,9 +200,17 @@ impl Output {
             }
         })
     }
-    pub(crate) fn wake(&self) {
-        if let Some((tx, _)) = &self.worker {
-            let _ = tx.send(Update::Wake);
+    pub(crate) fn send_transport(&self, audio: &Sender<Cmd>, command: Cmd) {
+        let Some((tx, _)) = &self.worker else {
+            let _ = audio.send(command);
+            return;
+        };
+        // The callback may publish before the worker processes this message. Capture
+        // its baseline before even enqueueing the corresponding audio command.
+        let before = self.view.lock().unwrap_or_else(std::sync::PoisonError::into_inner).transport_state();
+        let already_stopped = matches!(command, Cmd::Stop) && before.is_some_and(|(_, playing)| !playing);
+        if audio.send(command).is_ok() && !already_stopped {
+            let _ = tx.send(Update::Wake(before));
         }
     }
     pub(crate) fn trouble(&self) -> Option<String> {
@@ -529,7 +537,7 @@ fn drive<C: SyncPort>(
                         set_route(&mut ports, 1, n, Route { map: None, offset: o, compensate: c, encoder });
                     }
                 }
-                Update::Wake => transition = Some((state(), now + Duration::from_secs(2))),
+                Update::Wake(before) => transition = Some((before, now + Duration::from_secs(2))),
                 Update::InputWake(pending) => pending.store(false, Relaxed),
             }
             ports.retain(|_, p| p.stop_pending || p.routes.iter().any(Option::is_some));
