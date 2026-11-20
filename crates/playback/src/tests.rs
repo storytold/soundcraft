@@ -1968,13 +1968,14 @@ fn mtc_correction_preserves_a_tones_pitch_while_the_timeline_advances_faster_or_
         for _ in 0..80 {
             let mut block = [0.0; 960];
             state.fill(&mut block, 2);
-            rendered.extend(block.chunks_exact(2).map(|frame| frame[0]));
+            rendered.extend(block.as_chunks::<2>().0.iter().map(|frame| frame[0]));
         }
         assert!((shared.position.load(Ordering::Relaxed) - 38_400 * i64::from(speed) / 1000).abs() <= 512);
         let crossings: Vec<_> = rendered[4800..]
             .windows(2)
             .enumerate()
-            .filter_map(|(i, w)| (w[0] < 0.0 && w[1] >= 0.0).then(|| i as f64 - f64::from(w[0]) / f64::from(w[1] - w[0])))
+            .filter(|(_, w)| w[0] < 0.0 && w[1] >= 0.0)
+            .map(|(i, w)| i as f64 - f64::from(w[0]) / f64::from(w[1] - w[0]))
             .collect();
         let hz = (crossings.len() - 1) as f64 * 48_000.0 / (crossings.last().unwrap() - crossings[0]);
         let cents = 1200.0 * (hz / f64::from(fundamental)).log2();
