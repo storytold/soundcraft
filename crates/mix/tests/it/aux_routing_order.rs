@@ -1,7 +1,7 @@
 //! Aux and routing-folder dependencies preserve PCM beyond eight hops. Cyclic graphs keep
 //! the established whole-graph fallback, including its session-order-dependent audio.
 
-use soundcraft_audio_io::AudioBuffer;
+use craft_audio::AudioBuffer;
 use soundcraft_mix::{MixEngine, render_range};
 use soundcraft_model::{BusId, ChannelFormat, Clip, Route, SendSlot, Session, SourceAudio, SourceId, TrackId, TrackKind};
 use soundcraft_time::Range;

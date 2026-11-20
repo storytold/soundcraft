@@ -11,31 +11,30 @@ use std::sync::OnceLock;
 use clap::builder::NonEmptyStringValueParser;
 use clap::error::ErrorKind;
 use clap::{ArgAction, Args, CommandFactory, FromArgMatches, Parser, Subcommand, ValueEnum};
+use craft_audio::{DECODE_EXTENSIONS, ENCODE_EXTENSIONS};
 use serde_json::{Value, json};
-use soundcraft_audio_io::FileFormat;
 use soundcraft_automation::ControlTarget;
 use soundcraft_automation::args::{AutomationArgs, ControlClientArgs, blank_env_is_unset, control_target, long_version, name_env_vars};
 
-/// Help text that names the extensions `list` gives, built once from
-/// [`FileFormat::readable_extensions`] or [`FileFormat::writable_extensions`] so it can't drift
-/// from what the code accepts.
-fn with_formats(cell: &'static OnceLock<String>, before: &str, list: fn() -> Vec<&'static str>, after: &str) -> &'static str {
-    cell.get_or_init(|| format!("{before}({}){after}", list().join(", ")))
+/// Help text that names the extensions in `list`, built once from craft-audio's
+/// [`DECODE_EXTENSIONS`] or [`ENCODE_EXTENSIONS`] so it can't drift from what the code accepts.
+fn with_formats(cell: &'static OnceLock<String>, before: &str, list: &[&str], after: &str) -> &'static str {
+    cell.get_or_init(|| format!("{before}({}){after}", list.join(", ")))
 }
 
 fn info_file_help() -> &'static str {
     static C: OnceLock<String> = OnceLock::new();
-    with_formats(&C, "An audio file ", FileFormat::readable_extensions, " or a .scraft session")
+    with_formats(&C, "An audio file ", DECODE_EXTENSIONS, " or a .scraft session")
 }
 
 fn read_help() -> &'static str {
     static C: OnceLock<String> = OnceLock::new();
-    with_formats(&C, "The audio file to read ", FileFormat::readable_extensions, "")
+    with_formats(&C, "The audio file to read ", DECODE_EXTENSIONS, "")
 }
 
 fn write_help() -> &'static str {
     static C: OnceLock<String> = OnceLock::new();
-    with_formats(&C, "The audio file to write; its extension picks the format ", FileFormat::writable_extensions, "")
+    with_formats(&C, "The audio file to write; its extension picks the format ", ENCODE_EXTENSIONS, "")
 }
 
 /// soundcraft-cli: SoundCraft without a window
@@ -168,6 +167,12 @@ pub(crate) struct CommandsArgs {
     /// Only the commands whose id, or label in any case, contains this text
     #[arg(value_parser = NonEmptyStringValueParser::new())]
     pub(crate) filter: Option<String>,
+    /// Print a JSON array of each command's details, as describe prints them
+    #[arg(long)]
+    pub(crate) json: bool,
+    /// One line of JSON instead of pretty-printed
+    #[arg(long, requires = "json")]
+    pub(crate) compact: bool,
 }
 
 /// Print one engine command's details as JSON
@@ -355,7 +360,7 @@ pub(crate) enum BitDepthArg {
     Float32,
 }
 
-impl From<BitDepthArg> for soundcraft_audio_io::BitDepth {
+impl From<BitDepthArg> for craft_audio::BitDepth {
     fn from(depth: BitDepthArg) -> Self {
         match depth {
             BitDepthArg::Int16 => Self::Int16,

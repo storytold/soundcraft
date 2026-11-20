@@ -899,3 +899,19 @@ fn scroll_reports_the_wheel_and_trackpad_sources_after_delivery() {
     let v = reply.try_recv().expect("trackpad scroll replies after its events were applied");
     assert_eq!(v["result"]["source"], "trackpad");
 }
+
+#[test]
+fn shared_base64_retains_control_wire_bytes() {
+    assert_eq!(super::base64(b""), "");
+    assert_eq!(super::base64(b"f"), "Zg==");
+    assert_eq!(super::base64(b"fo"), "Zm8=");
+    assert_eq!(super::base64(b"foo"), "Zm9v");
+    assert_eq!(super::base64(&[251, 255, 255]), "+///");
+    let bytes: Vec<u8> = (0..=255).cycle().take(513).collect();
+    for len in 0..=bytes.len() {
+        let encoded = super::base64(&bytes[..len]);
+        assert_eq!(encoded.len(), len.div_ceil(3) * 4);
+        assert!(!encoded.contains(['\r', '\n']));
+        assert_eq!(craft_mime::base64::STANDARD.decode(&encoded).unwrap(), bytes[..len]);
+    }
+}
