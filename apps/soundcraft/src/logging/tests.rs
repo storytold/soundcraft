@@ -158,8 +158,15 @@ fn a_line_carries_time_level_thread_target_and_message() {
         format_line("2026-10-08T07:59:17.728Z", log::Level::Warn, "main", "soundcraft_mix", "eq_7band: the plugin did not accept its stored state"),
         "2026-10-08T07:59:17.728Z WARN  [main] soundcraft_mix: eq_7band: the plugin did not accept its stored state\n"
     );
-    // A multi-line message keeps its lines; the record still ends in exactly one newline.
-    assert!(format_line("t", log::Level::Error, "w", "x", "a\nb\n").ends_with("x: a\nb\n"));
+    // A message with breaks of its own stays one record; the record still ends in exactly one newline.
+    assert!(
+        format_line("t", log::Level::Error, "w", "x", "a\nb\n").ends_with("x: a\\nb\n"),
+        "a break inside the message is escaped, the final one dropped"
+    );
+    assert!(
+        format_line("t", log::Level::Error, "w", "x", "plugin \u{1b}[2J\r\n2026 INFO forged")
+            .ends_with("x: plugin \\u{1b}[2J\\r\\n2026 INFO forged\n")
+    );
 }
 
 #[test]
