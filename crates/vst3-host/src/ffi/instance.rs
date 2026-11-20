@@ -232,6 +232,27 @@ impl Instance {
             .collect()
     }
 
+    /// Every parameter some MIDI controller drives on any of the 16 channels (`IMidiMapping`),
+    /// sorted and deduplicated. JUCE reports these as stand-in parameters: a change to one is
+    /// turned into a MIDI message, not stored state. Main thread only.
+    pub fn midi_mapped_ids(&self) -> Vec<u32> {
+        let Some(m) = self.controller.as_ref().and_then(|c| c.cast::<sv::IMidiMapping>()) else { return Vec::new() };
+        let mut ids = Vec::new();
+        for channel in 0..16i16 {
+            for n in 0..=PITCH_BEND {
+                let mut id: sv::ParamID = 0;
+                let n = i16::try_from(n).unwrap_or(0);
+                // SAFETY: valid mapping interface on the main thread; `id` is a local.
+                if ok(unsafe { m.getMidiControllerAssignment(0, channel, n, &mut id) }) {
+                    ids.push(id);
+                }
+            }
+        }
+        ids.sort_unstable();
+        ids.dedup();
+        ids
+    }
+
     pub fn value_text(&self, id: u32, normalized: f64) -> Option<String> {
         let c = self.controller.as_ref()?;
         let mut s: sv::String128 = [0; 128];
