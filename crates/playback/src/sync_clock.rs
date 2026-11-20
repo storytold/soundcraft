@@ -127,10 +127,11 @@ pub(crate) const MAX_REVISIONS: usize = 8;
 pub(crate) struct Timeline {
     maps: VecDeque<SessionRevision>,
     blocks: VecDeque<Presentation>,
+    pub(crate) late_transport_waiter: Option<std::thread::Thread>,
 }
 impl Default for Timeline {
     fn default() -> Self {
-        Self { blocks: VecDeque::with_capacity(HISTORY), maps: VecDeque::with_capacity(MAX_REVISIONS) }
+        Self { blocks: VecDeque::with_capacity(HISTORY), maps: VecDeque::with_capacity(MAX_REVISIONS), late_transport_waiter: None }
     }
 }
 impl Timeline {
@@ -155,6 +156,14 @@ impl Timeline {
         }
     }
     pub(crate) fn push(&mut self, block: Presentation) {
+        // The worker arms this once, only after its bounded wait has expired.
+        // Ordinary callbacks publish under their existing try_lock without signalling.
+        if self.late_transport_waiter.is_some()
+            && self.transport_state() != Some((block.pass, block.playing))
+            && let Some(waiter) = self.late_transport_waiter.take()
+        {
+            waiter.unpark();
+        }
         if self.blocks.len() == HISTORY {
             self.blocks.pop_front();
         }
