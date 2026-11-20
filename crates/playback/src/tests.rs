@@ -457,6 +457,72 @@ fn surround_main_maps_to_device_channels_or_folds_down() {
     assert_eq!(shared.meters.lock().unwrap().main.peaks.len(), 6);
 }
 
+struct Stateful(Box<dyn soundcraft_dsp::Plugin>, Vec<u8>);
+
+impl soundcraft_dsp::Plugin for Stateful {
+    fn info(&self) -> &'static soundcraft_dsp::PluginInfo {
+        self.0.info()
+    }
+    fn prepare(&mut self, sr: f32, mb: usize, ch: usize) {
+        self.0.prepare(sr, mb, ch);
+    }
+    fn reset(&mut self) {
+        self.0.reset();
+    }
+    fn set_param(&mut self, id: &str, v: f32) -> bool {
+        self.0.set_param(id, v)
+    }
+    fn param(&self, id: &str) -> Option<f32> {
+        self.0.param(id)
+    }
+    fn process(&mut self, io: &mut [Vec<f32>], frames: usize) {
+        self.0.process(io, frames);
+    }
+    fn save_state(&mut self) -> Option<Vec<u8>> {
+        Some(self.1.clone())
+    }
+}
+
+#[test]
+fn document_replacement_restores_matching_plugin_slots_and_retires_old_instances() {
+    use soundcraft_model::{ChannelFormat, Insert, TrackKind};
+    let mut session = Session::default();
+    let track = session.add_track(TrackKind::Audio, ChannelFormat::Stereo, None);
+    session.track_mut(track).unwrap().mixer.inserts[0] = Some(Insert::new("clap:test.fake"));
+    let session = Arc::new(session);
+    let shared = Arc::new(Shared {
+        position: AtomicI64::new(0),
+        playing: AtomicBool::new(false),
+        speed: AtomicU32::new(1000),
+        meters: Mutex::new(MeterSnapshot::default()),
+    });
+    let (tx, rx) = channel();
+    let (gtx, grx) = channel();
+    let mut state = AudioState::new(rx, shared, Arc::new(Session::default()), 48_000.0, gtx);
+    let instance = |blob: &[u8]| PreparedInstance {
+        track,
+        slot: 0,
+        id: "clap:test.fake".into(),
+        ch: 2,
+        plugin: Box::new(Stateful(soundcraft_dsp::create("gain").unwrap(), blob.to_vec())),
+    };
+    tx.send(Cmd::Session(Arc::clone(&session), vec![instance(b"first session")])).unwrap();
+    state.drain();
+    tx.send(Cmd::Session(Arc::clone(&session), Vec::new())).unwrap();
+    state.drain();
+    assert!(grx.try_recv().is_err(), "matching slots stay live across a same-document update");
+    tx.send(Cmd::Play { from: 0, end: None, looped: None }).unwrap();
+    state.drain();
+    let mut replacement = (*session).clone();
+    replacement.edit.playhead = 1000;
+    tx.send(Cmd::ReplaceSession(Arc::new(replacement), vec![instance(b"second session")])).unwrap();
+    state.drain();
+    assert_eq!(grx.try_recv().unwrap().len(), 1);
+    assert!(!state.playing);
+    assert_eq!(state.pos, 1000);
+    assert_eq!(state.pending_len, 0);
+}
+
 #[test]
 fn instances_arrive_with_the_session_and_leave_through_the_return_channel() {
     use soundcraft_model::{ChannelFormat, Insert, TrackKind};
