@@ -297,7 +297,7 @@ fn receiver_recovers_grid_through_jitter_quantised_wakes_and_worker_stalls() {
                             clocks += 1;
                             pulse += 1;
                         }
-                        _ => unreachable!(),
+                        unexpected => panic!("unexpected receiver message {unexpected:?}"),
                     }
                 }
             }
