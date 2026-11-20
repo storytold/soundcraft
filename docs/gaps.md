@@ -185,6 +185,8 @@ switch. ≈ 40–70 h for HUI/MCU plus a mapping layer; hardware needed to verif
 
 ### G-11. Sync
 
+Incoming Beat Clock drives transport and a temporary tempo grid. External-clock hardware verification is pending.
+
 MTC generation and forward playback chase are implemented. Beat Clock output is tracked in #1662. Online recording, LTC, video reference, word clock and satellite linking remain open. The previous 15–25 h estimate covers the original scope; remaining effort awaits separate sizing.
 
 ### G-12. Immersive delivery

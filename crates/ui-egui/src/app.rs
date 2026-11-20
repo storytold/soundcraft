@@ -235,7 +235,7 @@ impl SoundApp {
                 let ctx = ctx.clone();
                 Box::new(move || ctx.request_repaint())
             });
-            if self.clock_follow.enabled {
+            if self.clock_follow.enabled && self.clock_follow.snapshot.state == soundcraft_playback::clock_follow::State::Locked {
                 ctx.request_repaint_after(std::time::Duration::from_millis(50));
             }
             if self.mtc_chasing {

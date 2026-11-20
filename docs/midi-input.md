@@ -111,3 +111,15 @@ A stopped full-frame message locates the cursor. Forward quarter frames establis
 The generator sends quarter frames while rolling and full-frame messages on locates with Gen MTC enabled. Both directions support 23.976, 24, 25, 29.97 non-drop, 29.97 drop-frame and 30 fps. Pull-down sessions interpret the 24/30 wire codes using the corresponding fractional rates. Timecode calculations use the project rate and preserve drop-frame labels.
 
 **For control clients.** `setup.mtc` reads or sets `input`, `online`, `freewheel_frames` and `jam_sync`. `setup.mtc_output` reads or sets `port` and `enabled`; `list_ports:true` enumerates destinations. Disabling the generator retains its selected port. `setup.session` accepts `start_timecode` and `external_offset_frames`. The engine without a desktop host reports Transport Online as unsupported. Updated hardware verification is pending.
+
+## Follow MIDI Beat Clock
+
+In **Setup › MIDI › Sync**, choose the enabled input connected to the sequencer or MPC and switch on **Follow MIDI clock**. Set that device to send MIDI Beat Clock and transport. A separate Link-to-MIDI-clock bridge can be used as the master: join the Link session in the bridge and route its MIDI output to the selected SoundCraft input.
+
+Start selects song zero and the next clock starts playback. Continue resumes at the current clock position. A stopped Song Position Pointer selects six clocks per unit (one sixteenth note, in every meter). Stop ends playback and any recording pass. SoundCraft estimates quarter-note tempo from the 24 pulses per quarter note. Live playback and incoming MIDI takes use a transient beat grid. Disabling follow restores the session tempo map; audio continues at the device sample rate during follow.
+
+If clock pulses disappear for three intervals or 150 milliseconds, whichever is longer, the default is to coast at the last tempo. Select **Stop if MIDI clock is lost** for stop-on-loss. Send Start or Continue to resume following. Each input remembers its signed calibration in session samples on this computer. A positive value advances the transport by that many samples on an external start. The host also accounts for the age of the incoming message and the audio output device’s reported presentation lead.
+
+Desktop control clients can query or change `setup.midi_clock_follow` with `input` (port name), `enabled`, `loss_policy` (`coast` or `stop`), and `input_offset_samples`. The `clock_follow` member of `setup.midi_sync_status` reports estimated BPM, timing jitter and phase residual in microseconds, state and dropout count. Following a clock excludes online MTC chase and sending Beat Clock to the same port. Recording remains available while following Beat Clock.
+
+External clock follow has been exercised with simulated timestamps. Hardware verification of this revision is pending.

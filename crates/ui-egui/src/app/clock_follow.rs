@@ -9,7 +9,8 @@ const TICKS_PER_PULSE: i64 = TICKS_PER_QUARTER / 24;
 pub(crate) struct Host {
     pub(crate) enabled: bool,
     pub(crate) show: bool,
-    snapshot: Snapshot,
+    pub(super) snapshot: Snapshot,
+    transport_error_us: Option<i64>,
     actions: Vec<Action>,
     // Musical pulse and timestamp of the last grid segment, in the input clock.
     anchor: Option<(i64, i64)>,
@@ -27,7 +28,7 @@ impl SoundApp {
         let source = self.ui.clock_follow_input.as_ref();
         json!({"input":source,"enabled":self.clock_follow.enabled, "loss_policy":if self.ui.clock_follow_stop_on_loss {"stop"} else {"coast"},
             "input_offset_samples":source.and_then(|p|self.ui.clock_follow_input_offsets.get(p)).copied().unwrap_or(0),
-            "state":state,"estimated_bpm":s.bpm,"jitter_us":s.jitter_us,"phase_error_us":s.phase_error_us,"dropouts":s.dropouts})
+            "state":state,"estimated_bpm":s.bpm,"jitter_us":s.jitter_us,"arrival_residual_us":s.phase_error_us,"phase_error_us":self.clock_follow.transport_error_us,"dropouts":s.dropouts})
     }
 
     pub(crate) fn clock_follow_command(&mut self, p: &Value) -> Result<Value, String> {
@@ -93,6 +94,16 @@ impl SoundApp {
         self.ui.midi_sync.enabled && self.ui.midi_sync.ports.get(name).is_some_and(|p| p.enabled)
     }
 
+    fn reset_follow_grid(&mut self, bpm: Option<f64>) {
+        let score = &self.engine.session().tempo;
+        let mut grid = TempoMap::default();
+        let _ = grid.set_tempo(0, bpm.unwrap_or_else(|| score.tempo_at_tick(0)));
+        for meter in score.meters() {
+            let _ = grid.set_meter(meter.tick, meter.numerator, meter.denominator);
+        }
+        self.engine.playback_tempo = Some(grid);
+    }
+
     fn refresh_follow_playback(&self) {
         if let Some(player) = &self.player {
             player.update_session(self.engine.playback_session());
@@ -126,29 +137,17 @@ impl SoundApp {
         let sr = self.engine.session().sample_rate;
         self.clock_follow.snapshot = s;
         if self.engine.playback_tempo.is_none() {
-            let map = &self.engine.session().tempo;
-            let mut grid = TempoMap::default();
-            let _ = grid.set_tempo(0, s.bpm.unwrap_or_else(|| map.tempo_at_tick(0)));
-            for m in map.meters() {
-                let _ = grid.set_meter(m.tick, m.numerator, m.denominator);
-            }
-            self.engine.playback_tempo = Some(grid);
+            self.reset_follow_grid(s.bpm);
         }
         for event in events.drain(..) {
             match event {
                 Action::Locate(pulse) => {
                     self.clock_follow.anchor = None;
-                    if pulse == 0 {
-                        let default = self.engine.session().tempo.tempo_at_tick(0);
-                        let mut map = TempoMap::default();
-                        let _ = map.set_tempo(0, s.bpm.unwrap_or(default));
-                        for m in self.engine.session().tempo.meters() {
-                            let _ = map.set_meter(m.tick, m.numerator, m.denominator);
-                        }
-                        self.engine.playback_tempo = Some(map);
-                    }
                     if self.is_playing() {
                         self.stop_play();
+                    }
+                    if pulse == 0 {
+                        self.reset_follow_grid(s.bpm);
                     }
                     let at = self.engine.transport_tempo().tick_to_samples(pulse.saturating_mul(TICKS_PER_PULSE), sr);
                     // The normal locate command updates the stopped insertion and both transport cursors.
@@ -179,6 +178,13 @@ impl SoundApp {
         {
             self.refresh_follow_playback();
         }
+        self.clock_follow.transport_error_us = (s.state == State::Locked && self.is_playing()).then(|| {
+            let heard = self.player.as_ref().map_or(self.engine.transport.position, |player| player.presented_position());
+            let tick = s.pulse.saturating_mul(TICKS_PER_PULSE);
+            let elapsed = sr.samples(s.now_us.saturating_sub(s.stamp_us).max(0) as f64 / 1e6);
+            let master = self.engine.transport_tempo().tick_to_samples(tick, sr).saturating_add(elapsed).saturating_add(offset);
+            (sr.seconds(heard.saturating_sub(master)) * 1e6).round() as i64
+        });
     }
     pub(crate) fn clock_follow_window(&mut self, ctx: &egui::Context) {
         if !self.clock_follow.show {
