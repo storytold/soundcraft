@@ -238,6 +238,8 @@ fn external_timecode_before_session_start_preserves_the_cursor_and_recovers() {
     let feed = Arc::new(crate::midi::MidiFeed::default());
     feed.set_mtc_source(Some(0));
     tx.send(Cmd::Midi(feed.clone())).unwrap();
+    // Player::locate publishes the cursor and queues the device command.
+    audio.shared.position.store(48_000, Ordering::Relaxed);
     tx.send(Cmd::Locate(48_000)).unwrap();
     feed.set_clock(0);
     feed.receive(0, &locate(3590 * 25, rate));
