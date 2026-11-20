@@ -480,9 +480,9 @@ impl LiveNotes {
     /// The pitches the track's clips hold on the instrument, told before each block's live
     /// events. A live release of such a pitch is not sent on: the clip's note goes on sounding
     /// and ends with its own note-off.
-    pub(crate) fn set_clip_notes(&mut self, held: &[u8]) {
+    pub(crate) fn set_clip_notes(&mut self, held: impl IntoIterator<Item = u8>) {
         self.clip = NoteSet::default();
-        for &note in held {
+        for note in held {
             self.clip.set(note & 0x7F, true);
         }
     }
@@ -811,7 +811,7 @@ mod tests {
     #[test]
     fn a_live_release_leaves_a_pitch_that_a_clip_holds() {
         let mut live = LiveNotes::default();
-        live.set_clip_notes(&[60]);
+        live.set_clip_notes([60]);
         assert_eq!(play(&mut live, &[ev(0, 0x90, 60, 100), ev(0, 0x90, 64, 100)]), [(true, 60), (true, 64)]);
         assert!(live.holds(60) && !live.holds(61));
         assert_eq!(play(&mut live, &[ev(0, 0x80, 60, 0), ev(0, 0x80, 64, 0)]), [(false, 64)], "the clip's note goes on");
@@ -825,7 +825,7 @@ mod tests {
         live.release_ports(midi_port_bit(0), &mut log);
         assert!(log.0.is_empty());
         // Once the clip's note is over, a live release ends the pitch as usual.
-        live.set_clip_notes(&[]);
+        live.set_clip_notes([]);
         assert_eq!(play(&mut live, &[ev(0, 0x90, 60, 100), ev(0, 0x80, 60, 0)]), [(true, 60), (false, 60)]);
     }
 
@@ -843,11 +843,11 @@ mod tests {
         // sample 32, or at sample 450: the note ends at the later of the two.
         for (release, ends) in [(32, 400), (450, 450)] {
             let (mut live, mut log) = (LiveNotes::default(), Log::default());
-            live.set_clip_notes(&[60]);
+            live.set_clip_notes([60]);
             live.play(t, &mut log, &[at(0, 0x90)], None, 512);
             live.begin_block();
             live.clip_off_held_back(60, 400);
-            live.set_clip_notes(&[]);
+            live.set_clip_notes([]);
             live.play(t, &mut log, &[at(release, 0x80)], None, 512);
             assert_eq!((log.0.last(), log.2.as_slice()), (Some(&(false, 60)), &[ends][..]), "key up at {release}");
         }
@@ -855,11 +855,11 @@ mod tests {
         // offsets of the note-offs the instrument gets.
         let block = |offs: &[usize], events: &[LiveMidi]| {
             let (mut live, mut log) = (LiveNotes::default(), Log::default());
-            live.set_clip_notes(&[60]);
+            live.set_clip_notes([60]);
             live.play(t, &mut log, &[at(0, 0x90)], None, 512);
             live.begin_block();
             offs.iter().for_each(|off| live.clip_off_held_back(60, *off));
-            live.set_clip_notes(&[]);
+            live.set_clip_notes([]);
             live.play(t, &mut log, events, None, 512);
             (log.2, live.holds(60))
         };

@@ -270,7 +270,7 @@ impl MixEngine {
                 i.plugin.reset();
                 i.failed = false;
             }
-            s.held.clear();
+            s.held.fill(0);
             s.chase = true;
             s.live.clear();
             s.align.clear();
@@ -439,7 +439,7 @@ impl MixEngine {
                     if let Some(i) = &mut st.instrument {
                         i.plugin.all_notes_off();
                     }
-                    st.held.clear();
+                    st.held.fill(0);
                     st.chase = true;
                     st.live.clear();
                 }

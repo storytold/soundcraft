@@ -218,16 +218,17 @@ impl Instance {
         v.is_finite().then(|| v.clamp(0.0, 1.0))
     }
 
-    /// The parameter each MIDI controller drives on channel 1 (`IMidiMapping`), indexed by VST3's
+    /// The parameter each MIDI controller drives (`IMidiMapping`), indexed by channel then VST3's
     /// controller numbers: CCs 0–127, then [`AFTERTOUCH`] and [`PITCH_BEND`]. Main thread only.
     pub fn midi_mapping(&self) -> Vec<Option<u32>> {
         let Some(m) = self.controller.as_ref().and_then(|c| c.cast::<sv::IMidiMapping>()) else { return Vec::new() };
-        (0..=PITCH_BEND)
-            .map(|n| {
+        (0..16i16)
+            .flat_map(|channel| (0..=PITCH_BEND).map(move |n| (channel, n)))
+            .map(|(channel, n)| {
                 let mut id: sv::ParamID = 0;
                 let n = i16::try_from(n).unwrap_or(0);
                 // SAFETY: valid mapping interface on the main thread; `id` is a local.
-                ok(unsafe { m.getMidiControllerAssignment(0, 0, n, &mut id) }).then_some(id)
+                ok(unsafe { m.getMidiControllerAssignment(0, channel, n, &mut id) }).then_some(id)
             })
             .collect()
     }

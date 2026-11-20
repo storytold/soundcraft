@@ -1,4 +1,5 @@
 use super::clips::Key;
+use super::instances::is_third_party;
 use super::live_midi::LiveNotes;
 use super::strip::{PluginSlot, Strip};
 use super::{ClipContent, CtrlKind, Range, SampleSource, Samples, Session, SourceAudio, Track};
@@ -20,17 +21,27 @@ fn midi_offset(s: &Session, t: &Track) -> i64 {
 
 /// Send note on/offs and controllers for MIDI clips overlapping the block.
 ///
-/// `live` holds the notes played live on the same instrument. Instruments end notes by pitch, so
-/// a clip note-off is not sent while a live key holds that pitch: the key's own release ends it.
-/// A note-off held back that way is told to `live`: when the key goes up earlier in the same
-/// block, the note still lasts until the clip's note-off.
-pub(crate) fn schedule_notes(s: &Session, t: &Track, pos: Samples, frames: usize, inst: &mut PluginSlot, held: &mut Vec<u8>, live: &mut LiveNotes) {
+/// Live MIDI uses the instrument's first channel. The clip and a live key may share
+/// a pitch there (or on a single-part instrument), so defer that clip's release.
+pub(crate) fn schedule_notes(
+    s: &Session,
+    t: &Track,
+    pos: Samples,
+    frames: usize,
+    inst: &mut PluginSlot,
+    held: &mut [u128; 16],
+    live: &mut LiveNotes,
+) {
+    let multichannel = is_third_party(&inst.id);
     let sr = s.sample_rate;
     // MIDI Track Offsets: the track's notes sound `offset` samples later (earlier if negative), so
     // the block looks that far back into the clips.
     let offset = midi_offset(s, t);
     let pos = pos.saturating_sub(offset);
     let end = pos.saturating_add(frames as i64);
+    // Offsets can arrive out of order when clips overlap. Keep the final event by
+    // sample for the block-end bitmap, with a later traversal event winning ties.
+    let mut latest = [[0usize; 128]; 16];
     for clip in t.clips() {
         if clip.muted {
             continue;
@@ -56,6 +67,9 @@ pub(crate) fn schedule_notes(s: &Session, t: &Track, pos: Samples, frames: usize
         let near = s.tempo.samples_to_ticks(pos, sr).saturating_sub(base).saturating_sub(1)
             ..=s.tempo.samples_to_ticks(end, sr).saturating_sub(base).saturating_add(1);
         for n0 in &sequence.notes {
+            if n0.channel >= 16 {
+                continue;
+            }
             let mut n = *n0;
             n.velocity = (i64::from(n.velocity) + dv).clamp(1, 127) as u8;
             n.pitch = (i64::from(n.pitch) + dp).clamp(0, 127) as u8;
@@ -71,41 +85,51 @@ pub(crate) fn schedule_notes(s: &Session, t: &Track, pos: Samples, frames: usize
             if on >= clip.end() {
                 continue;
             }
+            let held_channel = if multichannel { usize::from(n.channel) } else { 0 };
             if on >= pos && on < end {
-                inst.plugin.note_on(usize::try_from(on - pos).unwrap_or(0), n.pitch, n.velocity);
-                if !held.contains(&n.pitch) && held.len() < 128 {
-                    held.push(n.pitch);
-                }
+                let at = usize::try_from(on - pos).unwrap_or(0);
+                inst.plugin.note_on_channel(at, n.channel, n.pitch, n.velocity);
+                update_clip_held(&mut latest, held, held_channel, n.pitch, at, true);
             }
             if off >= pos && off < end {
                 let at = usize::try_from(off - pos).unwrap_or(0);
-                if live.holds(n.pitch) {
+                if held_channel == 0 && live.holds(n.pitch) {
                     live.clip_off_held_back(n.pitch, at);
                 } else {
-                    inst.plugin.note_off(at, n.pitch);
+                    inst.plugin.note_off_channel(at, n.channel, n.pitch);
                 }
-                held.retain(|p| *p != n.pitch);
+                update_clip_held(&mut latest, held, held_channel, n.pitch, at, false);
             }
         }
         // Events before tick 0 are what a start trim hid: they don't play.
-        for c in sequence.ctrls.iter().filter(|c| c.tick >= 0) {
+        for c in sequence.ctrls.iter().filter(|c| c.tick >= 0 && c.channel < 16) {
             let tick = c.tick.saturating_add(delay).max(0);
             if !near.contains(&tick) {
                 continue;
             }
             let at = s.tempo.tick_to_samples(base.saturating_add(tick), sr);
             if at >= pos && at < end && at < clip.end() {
-                inst.plugin.midi(usize::try_from(at - pos).unwrap_or(0), ctrl_message(c.kind, c.value, dp));
+                inst.plugin.midi(usize::try_from(at - pos).unwrap_or(0), ctrl_message(c.channel, c.kind, c.value, dp));
             }
         }
     }
 }
 
-/// A controller event as a MIDI 1.0 message on channel 1 (where the notes go), with `transpose`
+fn update_clip_held(latest: &mut [[usize; 128]; 16], held: &mut [u128; 16], channel: usize, pitch: u8, offset: usize, sounding: bool) {
+    let Some(previous) = latest.get_mut(channel).and_then(|keys| keys.get_mut(usize::from(pitch))) else { return };
+    let Some(held) = held.get_mut(channel) else { return };
+    if offset >= *previous {
+        *previous = offset;
+        let bit = 1u128 << pitch;
+        *held = (*held & !bit) | if sounding { bit } else { 0 };
+    }
+}
+
+/// A controller event as a MIDI 1.0 message on its channel, with `transpose`
 /// applied to a poly-pressure key.
-fn ctrl_message(kind: CtrlKind, value: i32, transpose: i64) -> [u8; 3] {
+fn ctrl_message(channel: u8, kind: CtrlKind, value: i32, transpose: i64) -> [u8; 3] {
     let v7 = value.clamp(0, 127) as u8;
-    match kind {
+    let mut message = match kind {
         CtrlKind::Cc(n) => [0xB0, n & 0x7F, v7],
         CtrlKind::PitchBend => {
             let v = value.saturating_add(8192).clamp(0, 16383);
@@ -114,18 +138,37 @@ fn ctrl_message(kind: CtrlKind, value: i32, transpose: i64) -> [u8; 3] {
         CtrlKind::ChannelPressure => [0xD0, v7, 0],
         CtrlKind::PolyPressure(k) => [0xA0, (i64::from(k) + transpose).clamp(0, 127) as u8, v7],
         CtrlKind::Program => [0xC0, v7, 0],
-    }
+    };
+    message[0] |= channel & 0x0F;
+    message
 }
 
-/// Before an instrument plays from `pos`: reset its controllers, then send each one the last value
-/// it had on this track before `pos`. Returns the control changes that were given a value, bit
-/// `n` for CC `n`.
-pub(crate) fn chase_controllers(s: &Session, t: &Track, pos: Samples, inst: &mut PluginSlot) -> u128 {
-    inst.plugin.midi(0, [0xB0, 121, 0]);
+const BEND: usize = 128;
+const PRESSURE: usize = 129;
+const PROGRAM: usize = 130;
+const PROGRAM_BANK_MSB: usize = 131;
+const PROGRAM_BANK_LSB: usize = 132;
+const CHASE_PER_CHANNEL: usize = PROGRAM_BANK_LSB + 1;
+const CHASE_SLOTS: usize = 16 * CHASE_PER_CHANNEL;
+
+#[derive(Clone, Copy, Default)]
+pub(crate) struct ChaseEvent {
+    time: i64,
+    order: usize,
+    message: [u8; 3],
+}
+
+/// Reset controllers, then replay the latest values and recorded resets in playback order.
+/// Shared or omni receivers therefore hear the latest event regardless of its MIDI channel.
+pub(crate) fn chase_controllers(s: &Session, t: &Track, pos: Samples, inst: &mut PluginSlot, last: &mut Vec<ChaseEvent>, channels: u16) -> u128 {
+    let multichannel = is_third_party(&inst.id);
+    let reset = if multichannel { channels } else { channels & 1 };
+    for channel in (0..16u8).filter(|channel| reset & (1 << channel) != 0) {
+        inst.plugin.midi(0, [0xB0 | channel, 121, 0]);
+    }
     let pos = pos.saturating_sub(midi_offset(s, t));
-    const BEND: usize = 128;
-    const PRESSURE: usize = 129;
-    const PROGRAM: usize = 130;
+    last.clear();
+    last.resize_with(CHASE_SLOTS, ChaseEvent::default);
     // MIDI Real-Time Properties: the delay moves the track's controllers as it does when they
     // are played (`schedule_notes`), so a value is in the past here when it was already sent.
     let delay = if s.edit.values.is_empty() {
@@ -133,48 +176,89 @@ pub(crate) fn chase_controllers(s: &Session, t: &Track, pos: Samples, inst: &mut
     } else {
         Key::new(format_args!("rtp.{}.delay", t.id.0)).map_or(0.0, |k| s.edit.value(k.as_str(), 0.0)).clamp(-1e7, 1e7) as i64
     };
-    let mut last = [(i64::MIN, 0i32); 131];
     let mut sent = 0u128;
     let sr = s.sample_rate;
-    for clip in t.clips() {
-        let ClipContent::Midi { sequence } = &clip.content else { continue };
-        if clip.muted || clip.start >= pos {
-            continue;
+    let candidates = || {
+        t.clips()
+            .iter()
+            .filter_map(|clip| {
+                let ClipContent::Midi { sequence } = &clip.content else { return None };
+                if clip.muted || clip.start >= pos {
+                    return None;
+                }
+                let base = s.tempo.samples_to_ticks(clip.start, sr);
+                let until = pos.min(clip.end());
+                Some(sequence.ctrls.iter().filter_map(move |c| {
+                    if c.tick < 0 || c.channel >= 16 || (multichannel && channels & (1 << c.channel) == 0) {
+                        return None;
+                    }
+                    let at = s.tempo.tick_to_samples(base.saturating_add(c.tick.saturating_add(delay).max(0)), sr);
+                    (at < until).then_some((c, at))
+                }))
+            })
+            .flatten()
+            .enumerate()
+    };
+    for (order, (c, at)) in candidates() {
+        let slot = match c.kind {
+            CtrlKind::Cc(n) => usize::from(n & 0x7F),
+            CtrlKind::PitchBend => BEND,
+            CtrlKind::ChannelPressure => PRESSURE,
+            CtrlKind::Program => PROGRAM,
+            CtrlKind::PolyPressure(_) => continue,
+        };
+        let index = usize::from(c.channel) * CHASE_PER_CHANNEL + slot;
+        if let Some(event) = last.get_mut(index)
+            && (event.order == 0 || at >= event.time)
+        {
+            *event = ChaseEvent { time: at, order: order.saturating_add(1), message: ctrl_message(c.channel, c.kind, c.value, 0) };
         }
-        let base = s.tempo.samples_to_ticks(clip.start, sr);
-        let until = pos.min(clip.end());
-        for c in sequence.ctrls.iter().filter(|c| c.tick >= 0) {
-            let slot = match c.kind {
-                CtrlKind::Cc(n) => usize::from(n & 0x7F),
-                CtrlKind::PitchBend => BEND,
-                CtrlKind::ChannelPressure => PRESSURE,
-                CtrlKind::Program => PROGRAM,
-                CtrlKind::PolyPressure(_) => continue,
+    }
+    // A newer Bank Select stays pending for the next Program Change. Recover the older
+    // selection separately when it was overwritten, even when clips overlap in time.
+    let mut needs_bank = [[false; 2]; 16];
+    for (needed, slots) in needs_bank.iter_mut().zip(last.as_chunks::<CHASE_PER_CHANNEL>().0) {
+        let Some(program) = slots.get(PROGRAM).filter(|program| program.order != 0) else { continue };
+        for (needed, cc) in needed.iter_mut().zip([0, 32]) {
+            *needed = slots.get(cc).is_some_and(|bank| bank.order != 0 && (bank.time, bank.order) > (program.time, program.order));
+        }
+    }
+    if needs_bank.iter().flatten().any(|&needed| needed) {
+        for (order, (c, at)) in candidates() {
+            let (component, slot) = match c.kind {
+                CtrlKind::Cc(0) => (0, PROGRAM_BANK_MSB),
+                CtrlKind::Cc(32) => (1, PROGRAM_BANK_LSB),
+                _ => continue,
             };
-            let at = s.tempo.tick_to_samples(base.saturating_add(c.tick.saturating_add(delay).max(0)), sr);
-            if at < until
-                && let Some(l) = last.get_mut(slot)
-                && at >= l.0
+            let channel = usize::from(c.channel);
+            if !needs_bank.get(channel).and_then(|parts| parts.get(component)).copied().unwrap_or(false) {
+                continue;
+            }
+            let base = channel * CHASE_PER_CHANNEL;
+            let Some(program) = last.get(base + PROGRAM).copied() else { continue };
+            let order = order.saturating_add(1);
+            if (at, order) < (program.time, program.order)
+                && let Some(bank) = last.get_mut(base + slot)
+                && (bank.order == 0 || at >= bank.time)
             {
-                *l = (at, c.value);
+                *bank = ChaseEvent { time: at, order, message: ctrl_message(c.channel, c.kind, c.value, 0) };
             }
         }
     }
-    for (slot, &(at, value)) in last.iter().enumerate() {
-        let kind = match slot {
-            BEND => CtrlKind::PitchBend,
-            PRESSURE => CtrlKind::ChannelPressure,
-            PROGRAM => CtrlKind::Program,
-            n => CtrlKind::Cc(u8::try_from(n).unwrap_or(0)),
-        };
-        if at != i64::MIN {
-            inst.plugin.midi(0, ctrl_message(kind, value, 0));
-            if slot < 128 {
-                sent |= 1u128 << slot;
-            }
+    last.retain(|event| event.order != 0);
+    last.sort_unstable_by_key(|event| (event.time, event.order));
+    for event in last {
+        inst.plugin.midi(0, event.message);
+        let [status, cc, _] = event.message;
+        if status & 0xF0 == 0xB0 && (status & 0x0F == 0 || !multichannel) {
+            sent |= 1u128 << cc;
         }
     }
     sent
+}
+
+pub(crate) fn chase_scratch() -> Vec<ChaseEvent> {
+    Vec::with_capacity(CHASE_SLOTS)
 }
 
 /// Session audio shared with a sample-playing instrument.
