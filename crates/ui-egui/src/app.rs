@@ -149,6 +149,10 @@ impl SoundApp {
     /// empty queue on a discarded pass from ending a still-active plugin gesture.
     pub fn logic(&mut self, ctx: &egui::Context) {
         let _language = crate::localization::enter(self.ui.language);
+        self.services.poll();
+        if let Some(e) = self.services.error.take() {
+            self.ui.status = e;
+        }
         self.ui.undo_levels = self.ui.undo_levels.clamp(1, 64);
         self.engine.set_history_limit(self.ui.undo_levels);
         // Fonts set now take effect next frame, so draw only from the frame after.
