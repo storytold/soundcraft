@@ -33,16 +33,30 @@ fn a_burst_of_external_locates_queues_one_transport_refresh() {
     let wake = output.transport_waker();
     let (tx, rx) = channel();
     *output.wake_tx.lock().unwrap() = Some(WorkerSender { tx, worker: std::thread::current() });
+    use crate::mtc_input::{ChaseEvent, Reader};
+    let mut reader = Reader::default();
+    reader.receive(&[0xf0, 0x7f, 0x7f, 1, 1, 0, 0, 1, 0, 0xf7], 0, 0);
+    let locate = reader.pending.unwrap();
+    let ChaseEvent::Locate(position) = locate else {
+        panic!("expected full frame");
+    };
+    let stopped = super::tests::block(Instant::now(), 0., 0., Duration::ZERO);
+    output.view.lock().unwrap().push(Presentation { pass: 5, playing: false, ..stopped });
+    wake(ChaseEvent::Stop);
+    assert!(rx.try_recv().is_err());
     for _ in 0..100 {
-        wake();
+        wake(locate);
     }
-    let Ok(Update::TransportWake(pending)) = rx.try_recv() else {
-        panic!("expected a transport refresh for the audio callback's new pass");
+    output.view.lock().unwrap().push(Presentation { pass: 6, playing: true, ..stopped });
+    let Ok(Update::TransportWake(pending, Some((5, false)))) = rx.try_recv() else {
+        panic!("expected the transport state before the callback consumed the locate");
     };
     assert!(rx.try_recv().is_err());
     pending.store(false, Relaxed);
-    wake();
-    assert!(matches!(rx.try_recv(), Ok(Update::TransportWake(_))));
+    wake(ChaseEvent::Roll(position, 0));
+    assert!(rx.try_recv().is_err());
+    wake(ChaseEvent::Stop);
+    assert!(matches!(rx.try_recv(), Ok(Update::TransportWake(_, Some((6, true))))));
 }
 
 #[test]

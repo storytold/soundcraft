@@ -144,7 +144,7 @@ pub(crate) struct Reader {
     rolling: Option<(Position, i64)>,
     last_at: Option<i64>,
     last_group: Option<i64>,
-    pending: Option<ChaseEvent>,
+    pub(crate) pending: Option<ChaseEvent>,
     fit: crate::sync_input::PulseFit<16>,
     arrival_delays: [u32; 32],
     arrival_count: usize,

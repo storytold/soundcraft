@@ -96,6 +96,11 @@ struct WorkerSender {
     worker: std::thread::Thread,
 }
 impl WorkerSender {
+    fn send_coalesced(&self, pending: &Arc<AtomicBool>, update: impl FnOnce(Arc<AtomicBool>) -> Update) {
+        if !pending.swap(true, Relaxed) && self.send(update(pending.clone())).is_err() {
+            pending.store(false, Relaxed);
+        }
+    }
     fn send(&self, update: Update) -> Result<(), std::sync::mpsc::SendError<Update>> {
         self.tx.send(update)?;
         // A timed-out transition can park on a late presentation as well as on control.
@@ -123,9 +128,9 @@ enum Update {
     Session(Arc<Session>),
     Beats(Vec<(String, i64)>, bool),
     Encoder(Option<(String, i64)>, bool, Box<dyn SyncEncoder>),
-    Wake,
+    Wake(Option<(u64, bool)>),
     InputWake(Arc<AtomicBool>),
-    TransportWake(Arc<AtomicBool>),
+    TransportWake(Arc<AtomicBool>, Option<(u64, bool)>),
 }
 impl Output {
     pub(crate) fn configure(&mut self, s: &Arc<Session>, audio: &Sender<Cmd>) -> u64 {
@@ -193,30 +198,48 @@ impl Output {
         accepted
     }
     pub(crate) fn waker(&self) -> Arc<dyn Fn() + Send + Sync> {
-        self.coalesced_waker(self.pending_wake.clone(), Update::InputWake)
-    }
-    fn coalesced_waker(&self, pending: Arc<AtomicBool>, update: fn(Arc<AtomicBool>) -> Update) -> Arc<dyn Fn() + Send + Sync> {
         let dest = self.wake_tx.clone();
+        let pending = self.pending_wake.clone();
         Arc::new(move || {
-            if pending.load(Relaxed) {
-                return;
-            }
-            if let Some(tx) = dest.lock().unwrap_or_else(std::sync::PoisonError::into_inner).as_ref()
-                && !pending.swap(true, Relaxed)
-                && tx.send(update(pending.clone())).is_err()
+            if !pending.load(Relaxed)
+                && let Some(tx) = dest.lock().unwrap_or_else(std::sync::PoisonError::into_inner).as_ref()
             {
-                pending.store(false, Relaxed);
+                tx.send_coalesced(&pending, Update::InputWake);
             }
         })
     }
-    /// A confirmed external transport transition precedes the audio callback
-    /// publishing its new pass. Use the same bounded lookahead as local Play/Locate.
-    pub(crate) fn transport_waker(&self) -> Arc<dyn Fn() + Send + Sync> {
-        self.coalesced_waker(Arc::default(), Update::TransportWake)
+    /// MidiFeed invokes this while it still holds the reader, before the callback
+    /// can consume the new roll, stop or locate and publish its transport state.
+    pub(crate) fn transport_waker(&self) -> crate::midi::TransportWaker {
+        let dest = self.wake_tx.clone();
+        let pending = Arc::<AtomicBool>::default();
+        let view = self.view.clone();
+        Arc::new(move |event| {
+            if pending.load(Relaxed) {
+                return;
+            }
+            if let Some(tx) = dest.lock().unwrap_or_else(std::sync::PoisonError::into_inner).as_ref() {
+                let before = view.lock().unwrap_or_else(std::sync::PoisonError::into_inner).transport_state();
+                if !matches!(
+                    (event, before),
+                    (crate::mtc_input::ChaseEvent::Roll(..), Some((_, true))) | (crate::mtc_input::ChaseEvent::Stop, Some((_, false)))
+                ) {
+                    tx.send_coalesced(&pending, |flag| Update::TransportWake(flag, before));
+                }
+            }
+        })
     }
-    pub(crate) fn wake(&self) {
-        if let Some((tx, _)) = &self.worker {
-            let _ = tx.send(Update::Wake);
+    pub(crate) fn send_transport(&self, audio: &Sender<Cmd>, command: Cmd) {
+        let Some((tx, _)) = &self.worker else {
+            let _ = audio.send(command);
+            return;
+        };
+        // The callback may publish before the worker processes this message. Capture
+        // its baseline before even enqueueing the corresponding audio command.
+        let before = self.view.lock().unwrap_or_else(std::sync::PoisonError::into_inner).transport_state();
+        let already_stopped = matches!(command, Cmd::Stop) && before.is_some_and(|(_, playing)| !playing);
+        if audio.send(command).is_ok() && !already_stopped {
+            let _ = tx.send(Update::Wake(before));
         }
     }
     pub(crate) fn trouble(&self) -> Option<String> {
@@ -543,11 +566,11 @@ fn drive<C: SyncPort>(
                         set_route(&mut ports, 1, n, Route { map: None, offset: o, compensate: c, encoder });
                     }
                 }
-                Update::Wake => transition = Some((state(), now + Duration::from_secs(2))),
+                Update::Wake(before) => transition = Some((before, now + Duration::from_secs(2))),
                 Update::InputWake(pending) => pending.store(false, Relaxed),
-                Update::TransportWake(pending) => {
+                Update::TransportWake(pending, before) => {
                     pending.store(false, Relaxed);
-                    transition = Some((state(), now + Duration::from_secs(2)));
+                    transition = Some((before, now + Duration::from_secs(2)));
                 }
             }
             ports.retain(|_, p| p.stop_pending || p.routes.iter().any(Option::is_some));
