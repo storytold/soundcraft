@@ -32,9 +32,18 @@ fn beat_clock_host_timing() {
         let lead = Duration::from_millis(30);
         let end = start + Duration::from_secs(seconds);
         let workers = load.min(std::thread::available_parallelism().map_or(1, usize::from).saturating_sub(2));
+        // Emulate the device callback at elevated priority independently of
+        // the output worker. Record host lateness of this synthetic publisher too.
+        let producer_priority = thread_priority::ThreadPriorityValue::try_from(68u8)
+            .ok()
+            .is_some_and(|v| thread_priority::ThreadPriority::Crossplatform(v).set_for_current().is_ok());
+        let mut publish_late = Vec::new();
         std::thread::scope(|scope| {
             for _ in 0..workers {
                 scope.spawn(|| {
+                    if let Ok(normal) = thread_priority::ThreadPriorityValue::try_from(50u8) {
+                        let _ = thread_priority::ThreadPriority::Crossplatform(normal).set_for_current();
+                    }
                     let mut seed = 1u64;
                     while Instant::now() < end {
                         for _ in 0..16384 {
@@ -47,6 +56,7 @@ fn beat_clock_host_timing() {
             while (index as f64) < rate * seconds as f64 {
                 let due = start + Duration::from_secs_f64(index as f64 / rate);
                 std::thread::sleep(due.saturating_duration_since(Instant::now()));
+                publish_late.push(Instant::now().saturating_duration_since(due).as_secs_f64() * 1000.);
                 for _ in 0..if paired { 2 } else { 1 } {
                     view.lock().unwrap().push(Presentation {
                         pass: 1,
@@ -80,6 +90,13 @@ fn beat_clock_host_timing() {
         let stops = rows.iter().filter(|(_, _, b)| b[0] == STOP).count();
         let starts = rows.iter().filter(|(_, _, b)| b[0] == START).count();
         assert!(!errors.is_empty());
+        publish_late.sort_by(f64::total_cmp);
+        println!(
+            "worker_priority={} producer_raised={producer_priority} producer_p95_ms={:.3} producer_max_ms={:.3}",
+            stats.priority.load(Relaxed),
+            publish_late[publish_late.len() * 95 / 100],
+            publish_late.last().unwrap()
+        );
         println!(
             "180 BPM frames={frames} paired={paired} load_threads={workers} seconds={seconds} clocks={} starts={starts} spp={spp} stops={stops} late_p95_ms={:.3} gap_error_p95_ms={:.3} catch_up={}",
             stamps.len(),

@@ -47,6 +47,8 @@ fn open_unique(name: &str) -> Result<(MidiOutputConnection, Option<String>), Str
 }
 #[derive(Default)]
 struct Stats {
+    connected: Mutex<BTreeSet<String>>,
+    priority: AtomicU64,
     sent: AtomicU64,
     relaunches: AtomicU64,
     catch_up_sends: AtomicU64,
@@ -55,6 +57,9 @@ struct Stats {
     max: AtomicU64,
 }
 impl Stats {
+    fn connected(&self) -> std::sync::MutexGuard<'_, BTreeSet<String>> {
+        self.connected.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
     fn record(&self, at: Instant, handed: Instant) {
         let us = handed.saturating_duration_since(at).as_micros() as u64;
         let bucket = BOUNDS.partition_point(|&v| v < us);
@@ -177,22 +182,27 @@ impl Output {
         let max = self.stats.max.load(Relaxed);
         let lead = self.metrics.lead_us.load(Relaxed);
         let sr = self.session.as_ref().map_or(48_000., |s| s.sample_rate.as_f64());
-        let ports = self
-            .beat
-            .iter()
-            .map(|(n, o)| (n, *o, self.compensated))
-            .chain(self.additional.iter().map(|(n, o, c)| (n, *o, *c)))
-            .map(|(n, o, c)| {
-                (
-                    n.clone(),
-                    PortTiming {
-                        offset_samples: o,
-                        total_us: (if c { lead as i64 } else { 0 }) + (o as f64 * 1e6 / sr).round() as i64,
-                        compensated: c,
-                    },
-                )
-            })
-            .collect();
+        let total =
+            |offset: i64, compensate: bool| (if compensate { lead as i64 } else { 0 }).saturating_add((offset as f64 * 1e6 / sr).round() as i64);
+        let connected = self.stats.connected();
+        let mut ports = BTreeMap::new();
+        for (name, offset) in &self.beat {
+            ports.insert(
+                name.clone(),
+                PortTiming {
+                    connected: connected.contains(name),
+                    offset_samples: *offset,
+                    beat_clock_total_us: Some(total(*offset, self.compensated)),
+                    mtc_total_us: None,
+                },
+            );
+        }
+        if let Some((name, offset, compensate)) = &self.additional {
+            ports
+                .entry(name.clone())
+                .or_insert(PortTiming { connected: connected.contains(name), offset_samples: *offset, beat_clock_total_us: None, mtc_total_us: None })
+                .mtc_total_us = Some(total(*offset, *compensate));
+        }
         MidiSyncStatus {
             sent: self.stats.sent.load(Relaxed),
             relaunches: self.stats.relaunches.load(Relaxed),
@@ -206,7 +216,11 @@ impl Output {
             callback_gap_max_us: self.metrics.max_gap_us.load(Relaxed),
             callback_gaps_over_two_buffers: self.metrics.late_buffers.load(Relaxed),
             lead_clamps: self.metrics.clamps.load(Relaxed),
-            priority: "normal",
+            priority: match self.stats.priority.load(Relaxed) {
+                1 => "raised",
+                2 => "normal (raise unavailable)",
+                _ => "inactive",
+            },
             ports,
         }
     }
@@ -282,6 +296,7 @@ impl<C: SyncPort> Port<C> {
                 }
                 Err(err) => {
                     self.failure = Some(format!("{name}: {err}"));
+                    stats.connected().remove(name);
                     self.link = None;
                     self.retry = now + Duration::from_secs(1);
                     soon(self.retry);
@@ -313,6 +328,12 @@ fn drive<C: SyncPort>(
     stats: Arc<Stats>,
     mut open: impl FnMut(&str) -> Result<(C, Option<String>), String>,
 ) {
+    // Use a safe best-effort API. Hosts that deny a negative nice level keep
+    // their normal scheduling policy and expose that in the diagnostics.
+    let priority = thread_priority::ThreadPriorityValue::try_from(68u8)
+        .ok()
+        .is_some_and(|value| thread_priority::ThreadPriority::Crossplatform(value).set_for_current().is_ok());
+    stats.priority.store(if priority { 1 } else { 2 }, Relaxed);
     let mut ports = BTreeMap::<String, Port<C>>::new();
     let mut awake = Instant::now();
     let mut update = None;
@@ -356,6 +377,7 @@ fn drive<C: SyncPort>(
                 Update::InputWake(pending) => pending.store(false, Relaxed),
             }
             ports.retain(|_, p| p.routes.iter().any(Option::is_some));
+            stats.connected().retain(|n| ports.contains_key(n));
         }
         let mut next = None;
         let mut soon = |at: Instant| next = Some(next.map_or(at, |t: Instant| t.min(at)));
@@ -363,6 +385,7 @@ fn drive<C: SyncPort>(
             if p.link.is_none() && now >= p.retry {
                 match open(name) {
                     Ok((out, warn)) => {
+                        stats.connected().insert(name.clone());
                         p.link = Some(out);
                         p.failure = warn;
                         for r in p.routes.iter_mut().flatten() {
@@ -391,7 +414,7 @@ fn drive<C: SyncPort>(
             let delay = at.saturating_duration_since(Instant::now());
             // Only sleep is used for protocol deadlines. A long reconnect wait is
             // interruptible by control changes. Recheck every 10 ms during playback.
-            if delay <= Duration::from_millis(100) {
+            if ports.values().any(|p| p.link.is_some()) || delay <= Duration::from_millis(100) {
                 std::thread::sleep(delay.min(Duration::from_millis(10)));
                 match rx.try_recv() {
                     Ok(u) => update = Some(u),

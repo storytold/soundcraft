@@ -22,7 +22,8 @@ pub struct MidiSyncStatus {
 
 #[derive(Serialize)]
 pub struct PortTiming {
+    pub connected: bool,
     pub offset_samples: i64,
-    pub total_us: i64,
-    pub compensated: bool,
+    pub beat_clock_total_us: Option<i64>,
+    pub mtc_total_us: Option<i64>,
 }

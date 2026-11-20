@@ -27,6 +27,7 @@ cpal = { workspace = true, features = ["wasm-bindgen"] }
 [target.'cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))'.dependencies]
 midir.workspace = true
 craft-midi-sync.workspace = true
+thread-priority = "3.1.1"
 
 [features]
 # ASIO on Windows (cpal's ASIO host). Off by default: building it downloads Steinberg's ASIO SDK

@@ -1074,6 +1074,7 @@ mod tests {
         form.outputs = Ok(vec!["Clock A".into(), port.clone()]);
         form.settings.enabled = true;
         form.settings.ports.insert(port.clone(), crate::midi_sync::MidiSyncPort { enabled: true, offset_samples: -240 });
+        dialog_frame(&ctx, &mut app, vec![]);
         enter(&mut app);
         assert!(app.dialogs.open.is_none());
         assert_eq!(app.engine.revision, revision);
@@ -1083,6 +1084,7 @@ mod tests {
         let Some(Dialog::MidiBeatClock(form)) = &mut app.dialogs.open else { panic!("missing clock dialog") };
         form.outputs = Ok(vec!["Clock A".into()]);
         form.settings.ports.get_mut(&port).unwrap().offset_samples = 64;
+        dialog_frame(&ctx, &mut app, vec![]);
         dialog_frame(&ctx, &mut app, vec![key(egui::Key::Escape, egui::Modifiers::NONE)]);
         assert!(app.dialogs.open.is_none());
         assert_eq!(app.ui.midi_sync.ports[&port].offset_samples, -240);
