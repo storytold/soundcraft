@@ -56,6 +56,14 @@ impl CounterField {
         }
     }
 
+    fn edit(self, app: &mut SoundApp, ui: &mut egui::Ui, value: &mut String, first_frame: bool, enter: bool) -> bool {
+        let input = ui.text_edit_singleline(value);
+        if first_frame {
+            input.request_focus();
+        }
+        !buttons(ui, "OK", enter) || self.submit(app, value).is_err()
+    }
+
     fn submit(self, app: &mut SoundApp, value: &str) -> Result<Value, String> {
         let selection = app.engine.session().edit.selection;
         match self {
@@ -777,13 +785,7 @@ pub fn show(app: &mut SoundApp, ctx: &egui::Context) {
                         action = Some(("setup.midi_beat_clock".into(), params));
                     }
                 }
-                Dialog::Counter { field,value } => {
-                    let input=ui.text_edit_singleline(value);
-                    if first_frame {input.request_focus();}
-                    if buttons(ui,"OK",enter) {
-                        keep=field.submit(app,value).is_err();
-                    }
-                }
+                Dialog::Counter { field, value } => keep = field.edit(app, ui, value, first_frame, enter),
                 Dialog::Synchronization => {
                     app.mtc_input_settings(ui);
                     app.mtc_output_settings(ui);
