@@ -483,12 +483,12 @@ fn paste_merge_midi(e: &mut Engine, p: &Value) -> Result<Value> {
                 placed += 1;
                 continue;
             };
-            let end = cb
-                .midi_tick_lengths
-                .get(&c.id)
-                .copied()
-                .unwrap_or_else(|| tempo.samples_to_ticks(pos.saturating_add(c.length), sr).saturating_sub(tempo.samples_to_ticks(pos, sr)));
-            retain_midi_window(sequence, end);
+            let paste_tick = tempo.samples_to_ticks(pos, sr);
+            let sample_end = pos.saturating_add(c.length);
+            let ticks = cb.midi_tick_lengths.get(&c.id).copied().unwrap_or_else(|| tempo.samples_to_ticks(sample_end, sr).saturating_sub(paste_tick));
+            retain_midi_window(sequence, ticks);
+            // At a slower destination tempo the same musical window needs more samples.
+            let want_end = sample_end.max(tempo.tick_to_samples(paste_tick.saturating_add(ticks), sr));
             let target = s.track(*t).and_then(|tr| {
                 let host = tr.clips().iter().find(|x| matches!(x.content, ClipContent::Midi { .. }) && x.range().contains(pos))?;
                 let next_start = tr.clips().iter().filter(|x| x.start > host.start && x.id != host.id).map(|x| x.start).min();
@@ -496,8 +496,7 @@ fn paste_merge_midi(e: &mut Engine, p: &Value) -> Result<Value> {
             });
             match target {
                 Some((hid, hstart, next_start)) => {
-                    let diff = tempo.samples_to_ticks(pos, sr) - tempo.samples_to_ticks(hstart, sr);
-                    let want_end = pos.saturating_add(c.length);
+                    let diff = paste_tick - tempo.samples_to_ticks(hstart, sr);
                     let limit = next_start.unwrap_or(Samples::MAX);
                     if let Some(h) = s.find_clip_mut(hid)
                         && let ClipContent::Midi { sequence: hs } = &mut h.content
@@ -522,6 +521,14 @@ fn paste_merge_midi(e: &mut Engine, p: &Value) -> Result<Value> {
                     }
                 }
                 None => {
+                    // Only extend through empty space. Keep the existing placement behavior
+                    // inside the original sample range and preserve material beyond it.
+                    if want_end > sample_end
+                        && let Some(track) = s.track(*t)
+                    {
+                        let limit = track.clips().iter().filter(|other| other.end() > sample_end).map(|other| other.start.max(sample_end)).min();
+                        c.length = want_end.min(limit.unwrap_or(Samples::MAX)).saturating_sub(pos);
+                    }
                     c.id = s.new_clip_id();
                     c.start = pos;
                     ops::place_clip(s, *t, c);

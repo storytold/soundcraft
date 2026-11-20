@@ -174,6 +174,33 @@ fn partial_copy_merge_exports_only_the_selected_midi_events() {
     assert_eq!(seq.notes.iter().map(|n| (n.start, n.length)).collect::<Vec<_>>(), [(1920, 180), (2040, 120)]);
     assert_eq!(seq.ctrls.iter().map(|c| c.tick).collect::<Vec<_>>(), [1920, 2040]);
     assert_eq!(seq.sysex.iter().map(|s| s.tick).collect::<Vec<_>>(), [1920, 2040]);
+
+    // At half tempo the original sample duration would end at the second retained event.
+    // Both placement and extension of a short host must cover the full source-tick window.
+    e.session_mut().tempo.set_tempo(0, 60.).unwrap();
+    let s = e.session_mut();
+    let short = s.add_track(TrackKind::Midi, ChannelFormat::Stereo, None);
+    let short_id = s.new_clip_id();
+    edit::place_clip(s, short, Clip::midi(short_id, "short host", 23_000, 2_000, Sequence::default()));
+    let blank = s.add_track(TrackKind::Midi, ChannelFormat::Stereo, None);
+    for (track, action) in [(blank, "placed"), (short, "merged")] {
+        let result = e.execute("edit.paste_merge_midi", &json!({"tracks":[track.0], "at":24_000})).unwrap();
+        assert_eq!(result[action], 1);
+        let smf = soundcraft_midi::read_smf(&io::export_midi(&e, Some(&[track])).unwrap()).unwrap();
+        let seq = &smf.tracks.iter().find(|t| !t.sequence.notes.is_empty()).unwrap().sequence;
+        assert_eq!(seq.notes.iter().map(|n| (n.start, n.length)).collect::<Vec<_>>(), [(480, 180), (600, 120)]);
+        assert_eq!(seq.ctrls.iter().map(|c| c.tick).collect::<Vec<_>>(), [480, 600]);
+        assert_eq!(seq.sysex.iter().map(|s| s.tick).collect::<Vec<_>>(), [480, 600]);
+    }
+
+    let s = e.session_mut();
+    let adjacent = s.add_track(TrackKind::Midi, ChannelFormat::Stereo, None);
+    let neighbor_id = s.new_clip_id();
+    edit::place_clip(s, adjacent, Clip::midi(neighbor_id, "neighbor", 32_000, 4_000, Sequence::default()));
+    e.execute("edit.paste_merge_midi", &json!({"tracks":[adjacent.0], "at":24_000})).unwrap();
+    let clips = e.session().track(adjacent).unwrap().clips();
+    assert_eq!(clips.len(), 2);
+    assert_eq!((clips[0].end(), clips[1].id, clips[1].start, clips[1].length), (32_000, neighbor_id, 32_000, 4_000));
 }
 
 #[test]
