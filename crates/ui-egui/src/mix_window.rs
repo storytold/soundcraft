@@ -46,6 +46,8 @@ pub fn show_separate(app: &mut SoundApp, ctx: &egui::Context) {
             ui.ctx().send_viewport_cmd(egui::ViewportCommand::Focus);
         }
         show(app, ui);
+        // Read here, while egui is in this window: its focus is kept per window.
+        app.text_focused_in_other_window = ui.ctx().input(|i| i.focused) && ui.ctx().text_edit_focused();
         if ui.ctx().input(|i| i.viewport().close_requested()) {
             separate_closed(app);
         }
@@ -55,6 +57,7 @@ pub fn show_separate(app: &mut SoundApp, ctx: &egui::Context) {
 /// The separate Mix window was closed: Mix goes back into the main window.
 pub fn separate_closed(app: &mut SoundApp) {
     app.ui.mix_separate = false;
+    app.text_focused_in_other_window = false;
     app.ui.window = crate::MainWindow::Mix;
 }
 
