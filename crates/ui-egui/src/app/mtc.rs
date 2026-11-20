@@ -193,6 +193,15 @@ mod tests {
         app
     }
 
+    #[test]
+    fn diagnostics_expose_reader_counters_before_any_timecode_arrives() {
+        let mut host = app();
+        let status = host.run("setup.midi_sync_status", json!({})).unwrap();
+        for key in ["locks", "freewheel_entries", "losses", "hard_relocates", "input_jitter_p95_us"] {
+            assert_eq!(status["mtc_chase"][key], 0, "{key}");
+        }
+    }
+
     fn send_cycle(feed: &MidiFeed, port: u8, frame: u8) {
         // 25 fps, 01:00:01:ff.
         for (n, piece) in [frame & 15, frame >> 4, 1, 0, 0, 0, 1, 2].into_iter().enumerate() {

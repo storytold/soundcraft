@@ -48,7 +48,8 @@ impl SoundApp {
     pub(crate) fn sync_command(&mut self, id: &str, args: &Value) -> Result<Value, String> {
         if id == "setup.midi_sync_status" {
             return Ok(json!({"output": self.player.as_ref().map(|p|p.midi_sync_status()).unwrap_or_default(),
-                "audio_device_open":self.player.is_some(), "settings":self.ui.midi_sync}));
+                "audio_device_open":self.player.is_some(), "settings":self.ui.midi_sync,
+                "mtc_chase":self.midi_inputs.as_ref().map(|inputs|inputs.feed().mtc_diagnostics())}));
         }
         self.migrate_midi_sync();
         let mut next = self.ui.midi_sync.clone();
