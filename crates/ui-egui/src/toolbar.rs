@@ -251,8 +251,7 @@ fn option_toggles(e: &EditState) -> [(&'static str, &'static str, bool, &'static
 }
 
 fn fmt_pos(app: &SoundApp, at: i64, f: TimeFormat) -> String {
-    let s = app.engine.session();
-    s.format_position(at, f)
+    app.engine.format_transport_position(at, f)
 }
 
 /// Main and sub position counters with their format menus, selection readouts and dirty/device status.
@@ -639,9 +638,10 @@ fn tempo_meter(app: &mut SoundApp, ui: &mut Ui) {
     let t = Tokens::current();
     let (bpm, meter, countoff, click, bars) = {
         let s = app.engine.session();
-        let tick = s.tempo.samples_to_ticks(app.position(), s.sample_rate);
-        let m = s.tempo.meter_at_tick(tick);
-        (s.tempo.tempo_at_tick(tick), format!("{}/{}", m.numerator, m.denominator), s.edit.countoff, s.edit.click, s.edit.countoff_bars)
+        let map = app.engine.transport_tempo();
+        let tick = map.samples_to_ticks(app.position(), s.sample_rate);
+        let m = map.meter_at_tick(tick);
+        (map.tempo_at_tick(tick), format!("{}/{}", m.numerator, m.denominator), s.edit.countoff, s.edit.click, s.edit.countoff_bars)
     };
     let (r, _) = ui.allocate_exact_size(vec2(150.0, 64.0), Sense::hover());
     ui.painter().rect(r, CornerRadius::same(4), t.counter_bg, Stroke::new(1.0, t.counter_border), StrokeKind::Inside);
@@ -692,6 +692,10 @@ fn tempo_value(app: &mut SoundApp, ui: &mut Ui, right: f32, y: f32, bpm: f64) {
         w.bg_stroke = Stroke::NONE;
     }
     v.widgets.hovered.bg_stroke = Stroke::new(1.0, t.counter_border);
+    if app.clock_follow.enabled {
+        c.painter().text(rect.right_center(), Align2::RIGHT_CENTER, format!("{bpm:.4}"), mono(11.0), t.counter_text);
+        return;
+    }
     let mut value = bpm;
     let resp = c
         .add_sized(rect.size(), egui::DragValue::new(&mut value).speed(0.1).range(5.0..=1000.0).fixed_decimals(4))

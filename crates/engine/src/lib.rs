@@ -287,6 +287,12 @@ impl Engine {
         self.playback_tempo.as_ref().unwrap_or(&self.doc.tempo)
     }
 
+    /// Display the live beat grid while keeping editing and saved tempo events in score time.
+    pub fn format_transport_position(&self, at: Samples, fmt: soundcraft_time::TimeFormat) -> String {
+        let s = self.session();
+        soundcraft_time::format_position(at, fmt, s.sample_rate, self.transport_tempo(), s.frame_rate, s.timecode_start, s.feet_frames_start())
+    }
+
     /// The normal document is shared. Only external-clock playback needs a private tempo map.
     pub fn playback_session(&self) -> Arc<Session> {
         let mut doc = self.session_arc();

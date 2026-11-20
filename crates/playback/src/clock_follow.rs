@@ -34,7 +34,7 @@ pub(crate) struct Follower {
     pub(crate) coast: bool,
     state: State,
     awaiting_clock: bool,
-    next_pulse: i64,
+    pub(crate) next_pulse: i64,
     fit_index: i64,
     short: PulseFit<12>,
     steady: PulseFit<192>,

@@ -69,6 +69,9 @@ impl SoundApp {
             return Err("The MIDI clock input is also enabled as a clock output".into());
         }
         if let (Some(offset), Some(name)) = (offset, &source) {
+            if self.ui.clock_follow_input_offsets.len() >= 256 && !self.ui.clock_follow_input_offsets.contains_key(name) {
+                return Err("Too many calibrated MIDI inputs".into());
+            }
             self.ui.clock_follow_input_offsets.insert(name.clone(), offset);
         }
         if self.clock_follow.enabled != enabled || self.ui.clock_follow_input != source {
@@ -77,7 +80,7 @@ impl SoundApp {
                 self.stop_play();
             }
             if let Some(m) = &self.midi_inputs {
-                m.feed().set_clock_follow(None, true);
+                m.feed().set_clock_follow(None, true, 0);
             }
             self.engine.playback_tempo = None;
             self.clock_follow = Host { enabled, show: self.clock_follow.show, ..Host::default() };
@@ -90,7 +93,6 @@ impl SoundApp {
     }
 
     fn clock_master_uses(&self, name: &str) -> bool {
-        // This branch is stacked on the machine-level MIDI sync settings.
         self.ui.midi_sync.enabled && self.ui.midi_sync.ports.get(name).is_some_and(|p| p.enabled)
     }
 
@@ -116,7 +118,7 @@ impl SoundApp {
         }
         if self.engine.transport_requests.iter().any(|r| matches!(r, TransportRequest::ResetSession)) {
             if let Some(inputs) = &self.midi_inputs {
-                inputs.feed().set_clock_follow(None, true);
+                inputs.feed().set_clock_follow(None, true, 0);
             }
             self.clock_follow = Host::default();
             self.engine.playback_tempo = None;
@@ -130,11 +132,13 @@ impl SoundApp {
         if feed.ports().name(id) != Some(name.as_str()) {
             return;
         }
-        feed.set_clock_follow(Some(id), !self.ui.clock_follow_stop_on_loss);
+        // A first Continue without an SPP resumes at the insertion where follow was enabled.
+        let sr = self.engine.session().sample_rate;
+        let initial_pulse = self.engine.transport_tempo().samples_to_ticks(self.position(), sr) / TICKS_PER_PULSE;
+        feed.set_clock_follow(Some(id), !self.ui.clock_follow_stop_on_loss, initial_pulse);
         let offset = self.ui.clock_follow_input_offsets.get(name).copied().unwrap_or_default();
         let mut events = std::mem::take(&mut self.clock_follow.actions);
         let s = feed.clock_follow_status(&mut events);
-        let sr = self.engine.session().sample_rate;
         self.clock_follow.snapshot = s;
         if self.engine.playback_tempo.is_none() {
             self.reset_follow_grid(s.bpm);
@@ -272,6 +276,8 @@ mod tests {
     fn follows_only_the_selected_port_retains_project_tempo_and_allows_record() {
         let mut app = SoundApp::new(Default::default(), None, crate::Services::default());
         let saved = app.engine.session().tempo.clone();
+        app.run("transport.locate", json!({"at":48000})).unwrap();
+        app.handle_transport(0.);
         app.midi_inputs = Some(MidiInputs::with_port_names(vec![], vec!["MPC".into(), "keys".into()]));
         app.run("setup.midi_clock_follow", json!({"input":"MPC","enabled":true,"input_offset_samples":120})).unwrap();
         let feed = app.midi_inputs.as_ref().unwrap().feed().clone();
@@ -281,6 +287,14 @@ mod tests {
         feed.receive(other, &[0xf8]);
         app.service_clock_follow();
         assert!(app.engine.transport_requests.is_empty());
+        feed.receive(src, &[0xfb]);
+        feed.receive(src, &[0xf8]);
+        app.service_clock_follow();
+        assert!(matches!(app.engine.transport_requests.as_slice(), [TransportRequest::PlayFrom(p)] if *p>=48_120));
+        app.handle_transport(0.);
+        feed.receive(src, &[0xfc]);
+        app.service_clock_follow();
+        app.handle_transport(0.);
         feed.receive(src, &[0xf2, 11, 0]);
         app.service_clock_follow();
         app.handle_transport(0.);

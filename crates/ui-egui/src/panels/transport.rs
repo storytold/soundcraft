@@ -62,7 +62,7 @@ pub(super) fn transport_window(app: &mut SoundApp, ctx: &egui::Context) {
                 }
             });
             let s = app.engine.session();
-            let fmt = |x: i64| s.format_position(x, s.edit.main_counter);
+            let fmt = |x: i64| app.engine.format_transport_position(x, s.edit.main_counter);
             if flags.contains("view.transport.counters") || expanded || flags.is_empty() {
                 ui.label(egui::RichText::new(fmt(app.position())).font(mono(20.0)).color(t.counter_text));
             }
@@ -128,7 +128,7 @@ pub(super) fn big_counter(app: &mut SoundApp, ctx: &egui::Context) {
         .default_size(vec2(520.0, 110.0))
         .show(ctx, |ui| {
             let s = app.engine.session();
-            let txt = s.format_position(app.position(), s.edit.main_counter);
+            let txt = app.engine.format_transport_position(app.position(), s.edit.main_counter);
             let r = ui.available_rect_before_wrap();
             let t = Tokens::current();
             ui.painter().rect_filled(r, 4.0, t.big_counter_bg);

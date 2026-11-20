@@ -342,11 +342,12 @@ impl MidiFeed {
         self.mtc.lock().unwrap_or_else(PoisonError::into_inner).take(self.now())
     }
 
-    pub fn set_clock_follow(&self, port: Option<u8>, coast: bool) {
+    pub fn set_clock_follow(&self, port: Option<u8>, coast: bool, initial_pulse: i64) {
         let mut input = self.clock_follow.lock().unwrap_or_else(PoisonError::into_inner);
         if input.source != port {
             *input = Default::default();
             input.source = port;
+            input.next_pulse = initial_pulse.max(0);
             self.clock_source.store(port.map_or(usize::MAX, usize::from), Ordering::Release);
         }
         input.coast = coast;
