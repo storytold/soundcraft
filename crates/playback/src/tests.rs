@@ -1973,7 +1973,7 @@ fn a_slow_sync_route_can_publish_more_than_eight_live_grid_revisions() {
     let mut timeline = crate::sync_clock::Timeline::default();
     for generation in 1..=(3 * crate::sync_clock::MAX_REVISIONS) as u64 {
         let doc = side.follow_snapshot(&base.tempo).expect("worker history must leave a slot for the next revision");
-        timeline.register(crate::sync_clock::SessionRevision {generation,doc,remap:false}, true);
+        timeline.register(crate::sync_clock::SessionRevision { generation, doc, remap: false }, true);
     }
 }
 

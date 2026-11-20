@@ -653,13 +653,15 @@ fn a_follow_grid_revision_changes_pulse_spacing_at_its_audible_block_without_rel
             new = output.configure(&changed, &tx, false);
         }
         if ms % 10 == 0 {
-            let generation = if ms >= 510 {new} else {old};
-            output.view.lock().unwrap().push(Presentation {generation, ..block(now, ms as f64 * 48., 480., lead)});
+            let generation = if ms >= 510 { new } else { old };
+            output.view.lock().unwrap().push(Presentation { generation, ..block(now, ms as f64 * 48., 480., lead) });
         }
         port.poll("DIN", now, &changed, &output.view, &output.stats, &mut Vec::new());
         for (_, bytes) in port.link.as_mut().unwrap().messages.drain(..) {
             if bytes == [CLOCK] {
-                if ms >= 500 {clocks.push(ms);}
+                if ms >= 500 {
+                    clocks.push(ms);
+                }
             } else {
                 transport.push((ms, bytes));
             }

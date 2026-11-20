@@ -77,8 +77,8 @@ impl SoundApp {
         if id == "setup.midi_sync_status" {
             let mut chase = json!(self.midi_inputs.as_ref().map(|inputs| inputs.feed().mtc_diagnostics()).unwrap_or_default());
             chase["state"] = match chase["freewheel_state"].as_str() {
-                Some("freewheeling") => json!(format!("freewheeling ({}/{} frames)",chase["elapsed_frames"],chase["limit_frames"])),
-                Some(s @ ("jam sync running on internal clock"|"stopped: timecode lost")) if self.mtc_online => json!(s),
+                Some("freewheeling") => json!(format!("freewheeling ({}/{} frames)", chase["elapsed_frames"], chase["limit_frames"])),
+                Some(s @ ("jam sync running on internal clock" | "stopped: timecode lost")) if self.mtc_online => json!(s),
                 _ => json!(self.mtc_status),
             };
             return Ok(json!({"output": self.player.as_ref().map(|p|p.midi_sync_status()).unwrap_or_default(),

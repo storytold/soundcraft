@@ -77,14 +77,18 @@ impl SoundApp {
 
     fn update_mtc_warning(&mut self, warning: Option<String>) {
         if self.mtc_warning != warning {
-            if self.mtc_warning.as_ref() == Some(&self.ui.status) { self.ui.status.clear(); }
-            if let Some(msg) = &warning { self.ui.status.clone_from(msg); }
-            self.mtc_warning=warning;
+            if self.mtc_warning.as_ref() == Some(&self.ui.status) {
+                self.ui.status.clear();
+            }
+            if let Some(msg) = &warning {
+                self.ui.status.clone_from(msg);
+            }
+            self.mtc_warning = warning;
         }
     }
     pub(crate) fn mtc_rate_warning(&self) -> Option<String> {
         let mismatch = self.midi_inputs.as_ref()?.feed().mtc_input_status().1?;
-        Some(crate::localized_format!("Receiving {incoming} fps; session is {session} fps", incoming=mismatch.incoming, session=mismatch.session))
+        Some(crate::localized_format!("Receiving {incoming} fps; session is {session} fps", incoming = mismatch.incoming, session = mismatch.session))
     }
 
     fn mtc_at(&self, p: Position) -> i64 {
@@ -135,16 +139,16 @@ impl SoundApp {
         if self.mtc_status == "Input unavailable" {
             self.mtc_status = "Waiting for timecode";
         }
-        let event = inputs.feed().take_mtc();
+        let event = inputs.feed().take_mtc_with_lock();
         self.update_mtc_warning(self.mtc_rate_warning());
         match event {
-            Some(ChaseEvent::Locate(p) | ChaseEvent::Roll(p, _)) if self.mtc_at(p) < 0 => {
+            Some((ChaseEvent::Locate(p) | ChaseEvent::Roll(p, _), _)) if self.mtc_at(p) < 0 => {
                 if self.mtc_status != "Before session start" {
                     self.stop_mtc_transport();
                 }
                 self.mtc_status = "Before session start";
             }
-            Some(ChaseEvent::Locate(p)) => {
+            Some((ChaseEvent::Locate(p), _)) => {
                 if self.is_playing() {
                     self.stop_play();
                 }
@@ -153,7 +157,7 @@ impl SoundApp {
                 let _ = self.run("transport.locate", json!({"at": at}));
                 self.mtc_status = "Located";
             }
-            Some(ChaseEvent::Roll(p, age_us)) => {
+            Some((ChaseEvent::Roll(p, age_us), _)) => {
                 let sr = self.engine.session().sample_rate;
                 let at = self.mtc_at(p).saturating_add(sr.samples(age_us as f64 / 1_000_000.0));
                 if let Some(player) = &self.player {
@@ -168,8 +172,15 @@ impl SoundApp {
                 self.mtc_chasing = true;
                 self.mtc_status = "Locked";
             }
-            Some(ChaseEvent::Stop) => {
-                self.stop_mtc_transport();
+            Some((ChaseEvent::Stop, lock)) => {
+                if let Some(player) = &self.player {
+                    // A newer roll may already own the callback while the UI processes this stop.
+                    player.end_observed_mtc_chase(lock);
+                    self.mtc_chasing = false;
+                    self.engine.transport.playing = player.is_playing();
+                } else {
+                    self.stop_mtc_transport();
+                }
                 self.mtc_status = "Waiting for timecode";
             }
             None => {}
@@ -252,58 +263,73 @@ mod tests {
 
     #[test]
     fn offset_sign_follows_session_setup_semantics_with_absolute_incoming_diagnostics() {
-        let mut host=app();
-        let feed=host.midi_inputs.as_ref().unwrap().feed().clone();
-        let port=feed.ports().assign("Sender");
-        for (offset,expected) in [("+00:00:00:00",None),("+01:00:00:00",Some(480000)),("-01:00:00:00",None)] {
-            host.run("setup.external_timecode_offset",json!({"timecode":offset})).unwrap();
-            feed.receive(port,&[0xf0,0x7f,127,1,1,0x60,0,10,0,0xf7]);
+        let mut host = app();
+        let feed = host.midi_inputs.as_ref().unwrap().feed().clone();
+        let port = feed.ports().assign("Sender");
+        for (offset, expected) in [("+00:00:00:00", None), ("+01:00:00:00", Some(480000)), ("-01:00:00:00", None)] {
+            host.run("setup.external_timecode_offset", json!({"timecode":offset})).unwrap();
+            feed.receive(port, &[0xf0, 0x7f, 127, 1, 1, 0x60, 0, 10, 0, 0xf7]);
             host.service_mtc_chase();
             host.handle_transport(0.);
-            let status=host.run("setup.midi_sync_status",json!({})).unwrap();
-            assert_eq!(status["mtc_chase"]["incoming_timecode"],"00:00:10:00");
-            if let Some(pos)=expected {assert_eq!(host.position(),pos);}
-            else {assert_eq!(status["mtc_chase"]["state"],"Before session start");}
+            let status = host.run("setup.midi_sync_status", json!({})).unwrap();
+            assert_eq!(status["mtc_chase"]["incoming_timecode"], "00:00:10:00");
+            if let Some(pos) = expected {
+                assert_eq!(host.position(), pos);
+            } else {
+                assert_eq!(status["mtc_chase"]["state"], "Before session start");
+            }
         }
     }
 
     #[test]
     fn unsupported_session_rates_refuse_generator_and_reader_with_one_message() {
-        let mut host=app();
-        host.run("setup.mtc",json!({"online":false})).unwrap();
-        host.engine.session_mut().frame_rate=soundcraft_time::FrameRate::Fps50;
-        let gen_error=host.run("setup.mtc_output",json!({"enabled":true,"port":"Generator"})).unwrap_err();
-        let online_error=host.run("options.transport_online",json!({"value":true})).unwrap_err();
-        assert_eq!(gen_error,online_error);
+        let mut host = app();
+        host.run("setup.mtc", json!({"online":false})).unwrap();
+        host.engine.session_mut().frame_rate = soundcraft_time::FrameRate::Fps50;
+        let gen_error = host.run("setup.mtc_output", json!({"enabled":true,"port":"Generator"})).unwrap_err();
+        let online_error = host.run("options.transport_online", json!({"value":true})).unwrap_err();
+        assert_eq!(gen_error, online_error);
         assert!(gen_error.contains("29.97 non-drop"));
     }
 
     #[test]
     fn ctrl_j_toggles_transport_online_and_the_button_blinks_while_waiting() {
-        use egui_kittest::{Harness,kittest::{NodeT,Queryable}};
-        let mut host=app();
+        use egui_kittest::{
+            Harness,
+            kittest::{NodeT, Queryable},
+        };
+        let mut host = app();
         host.mtc_command(&json!({"online":false})).unwrap();
-        host.ui.show_transport=true;
-        let mut h=Harness::builder().with_size(egui::vec2(1400.,900.)).build_ui_state(|ui,app:&mut SoundApp|{
-            crate::shortcuts::handle(app,ui.ctx());
-            app.ui(ui);
-        },host);
+        host.ui.show_transport = true;
+        let mut h = Harness::builder().with_size(egui::vec2(1400., 900.)).build_ui_state(
+            |ui, app: &mut SoundApp| {
+                crate::shortcuts::handle(app, ui.ctx());
+                app.ui(ui);
+            },
+            host,
+        );
         h.ctx.set_os(egui::os::OperatingSystem::Windows);
         h.run_steps(3);
-        let cmd=egui::Modifiers {ctrl:true,command:true,..Default::default()};
-        h.key_press_modifiers(cmd,egui::Key::J);
+        let cmd = egui::Modifiers { ctrl: true, command: true, ..Default::default() };
+        h.key_press_modifiers(cmd, egui::Key::J);
         h.run_steps(2);
         assert!(h.state().mtc_online);
-        let lit=|h:&Harness<SoundApp>|{
-            let node=h.get_by_label("Online");
-            node.accesskit_node().is_selected()==Some(true) || node.accesskit_node().toggled()==Some(egui::accesskit::Toggled::True)
+        let lit = |h: &Harness<SoundApp>| {
+            let node = h.get_by_label("Online");
+            node.accesskit_node().is_selected() == Some(true) || node.accesskit_node().toggled() == Some(egui::accesskit::Toggled::True)
         };
-        let mut phases=[false;2];
-        for _ in 0..75 { h.run_steps(1); phases[usize::from(lit(&h))]=true; }
-        assert_eq!(phases,[true,true]);
-        h.state_mut().mtc_status="Locked";
-        for _ in 0..35 { h.run_steps(1);assert!(lit(&h)); }
-        h.key_press_modifiers(cmd,egui::Key::J);
+        let mut phases = [false; 2];
+        for _ in 0..75 {
+            h.run_steps(1);
+            phases[usize::from(lit(&h))] = true;
+        }
+        assert_eq!(phases, [true, true]);
+        h.state_mut().mtc_status = "Locked";
+        for _ in 0..35 {
+            h.run_steps(1);
+            assert!(lit(&h));
+        }
+        h.key_press_modifiers(cmd, egui::Key::J);
         h.run_steps(2);
         assert!(!h.state().mtc_online);
     }
@@ -326,9 +352,11 @@ mod tests {
         let state = host.run("setup.mtc", json!({})).unwrap();
         assert_eq!(state["freewheel_frames"], 8);
         assert_eq!(state["jam_sync"], false);
+        assert_eq!(state["freewheel"], "frames");
         host.engine.replace_session(saved);
         assert_eq!(host.run("setup.mtc", json!({})).unwrap()["freewheel_frames"], 12);
         assert_eq!(host.run("setup.mtc", json!({})).unwrap()["jam_sync"], true);
+        assert_eq!(host.run("setup.mtc", json!({})).unwrap()["freewheel"], "jam_sync");
     }
 
     #[test]

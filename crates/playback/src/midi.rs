@@ -320,9 +320,14 @@ impl MidiFeed {
 
     pub fn set_mtc_options(&self, rate: soundcraft_time::FrameRate, freewheel_frames: u8, jam_sync: bool, external_offset_samples: i64) {
         let mut r = self.mtc.lock().unwrap_or_else(PoisonError::into_inner);
-        r.options = crate::mtc_input::Options { rate, freewheel: if freewheel_frames == 0 { 0 } else { freewheel_frames.clamp(4, 40) }, jam: jam_sync, offset: external_offset_samples };
+        r.options = crate::mtc_input::Options {
+            rate,
+            freewheel: if freewheel_frames == 0 { 0 } else { freewheel_frames.clamp(4, 40) },
+            jam: jam_sync,
+            offset: external_offset_samples,
+        };
     }
-    pub fn mtc_input_status(&self) -> (Option<crate::mtc_input::Position>,Option<crate::mtc_input::RateMismatch>) {
+    pub fn mtc_input_status(&self) -> (Option<crate::mtc_input::Position>, Option<crate::mtc_input::RateMismatch>) {
         self.mtc.lock().unwrap_or_else(PoisonError::into_inner).incoming_status()
     }
     pub fn mtc_diagnostics(&self) -> crate::mtc_input::ChaseStats {
@@ -343,7 +348,16 @@ impl MidiFeed {
     }
 
     pub fn take_mtc(&self) -> Option<crate::mtc_input::ChaseEvent> {
-        self.mtc.lock().unwrap_or_else(PoisonError::into_inner).take(self.now())
+        self.take_mtc_with_lock().map(|(event, _)| event)
+    }
+
+    pub fn take_mtc_with_lock(&self) -> Option<(crate::mtc_input::ChaseEvent, u64)> {
+        let mut reader = self.mtc.lock().unwrap_or_else(PoisonError::into_inner);
+        reader.take(self.now()).map(|event| (event, reader.stats.locks))
+    }
+
+    pub(crate) fn is_mtc_lock(&self, lock: u64) -> bool {
+        self.mtc.try_lock().is_ok_and(|reader| reader.stats.locks == lock)
     }
 
     pub fn set_clock_follow(&self, port: Option<u8>, coast: bool, initial_pulse: i64) {
