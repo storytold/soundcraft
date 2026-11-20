@@ -118,9 +118,12 @@ pub fn audio_systems() -> Vec<AudioSystem> {
 /// `HostUnavailable`, `DeviceBusy` and `BackendError` stay log-only until their retry/rebuild
 /// policies exist.
 pub(crate) fn stream_lost(e: &cpal::Error) -> bool {
+    kind_lost(e.kind(), cfg!(any(target_os = "ios", target_os = "android")))
+}
+
+fn kind_lost(kind: cpal::ErrorKind, mobile: bool) -> bool {
     // ErrorKind is non-exhaustive; an equality test avoids a wildcard match arm.
-    let kind = e.kind();
-    kind == cpal::ErrorKind::DeviceNotAvailable || kind == cpal::ErrorKind::StreamInvalidated
+    kind == cpal::ErrorKind::DeviceNotAvailable || (!mobile && kind == cpal::ErrorKind::StreamInvalidated)
 }
 
 /// The device's configuration at `sample_rate` in the best sample format these streams convert.
@@ -246,11 +249,24 @@ mod tests {
 
     /// Only device-not-available and invalidated-stream errors stop playback; other cpal errors are treated as
     /// recoverable.
+    /// cpal's iOS backend raises `StreamInvalidated` for audio-session route changes the app
+    /// causes itself (category change, override, route configuration) while the stream keeps
+    /// running; on mobile only a missing device stops the stream.
+    #[test]
+    fn mobile_keeps_streams_through_invalidation_notices() {
+        assert!(kind_lost(cpal::ErrorKind::DeviceNotAvailable, true));
+        assert!(!kind_lost(cpal::ErrorKind::StreamInvalidated, true));
+        assert!(kind_lost(cpal::ErrorKind::StreamInvalidated, false));
+    }
+
     #[test]
     fn only_a_dead_stream_is_reported() {
         let error = |kind| cpal::Error::with_message(kind, "test");
+        let mobile = cfg!(any(target_os = "ios", target_os = "android"));
         assert!(stream_lost(&error(cpal::ErrorKind::DeviceNotAvailable)));
-        assert!(stream_lost(&error(cpal::ErrorKind::StreamInvalidated)), "the stream must be rebuilt");
+        // The desktop rule (rebuild required) does not hold on mobile, where the
+        // same kind also reports app-caused route changes the stream survives.
+        assert_eq!(stream_lost(&error(cpal::ErrorKind::StreamInvalidated)), !mobile, "the stream must be rebuilt on desktop");
         for kind in [
             cpal::ErrorKind::DeviceChanged,
             cpal::ErrorKind::DeviceBusy,
