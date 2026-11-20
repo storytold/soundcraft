@@ -3,8 +3,14 @@ use super::{Color32, Rect, SoundApp, TrackId, Ui, json, pos2, vec2};
 /// An insert's menu: a search field that takes typing at once, then (until something is typed)
 /// Bypass and removal and the plugins by category and format.
 pub fn plugin_menu(app: &mut SoundApp, ui: &mut Ui, id: TrackId, slot: usize, occupied: bool) {
+    // On an instrument track the inserts also list instruments, whose picks go to the track's
+    // instrument slot — the menu is where a Pro Tools user looks for the VI (#372).
+    let instrument_track = app.engine.session().track(id).is_some_and(|t| t.kind == soundcraft_model::TrackKind::Instrument);
     let search = MenuSearch::show(ui, egui::Id::unique(("plugin-search", id.0, slot)), crate::localization::text("Search plugins…"));
     if search.typing() {
+        if instrument_track && let Some(plugin) = plugin_search(ui, &search, true) {
+            run_pick(app, ui, "mix.instrument", json!({"track": id.0, "plugin": plugin}));
+        }
         if let Some(plugin) = plugin_search(ui, &search, false) {
             pick_insert(app, ui, id, slot, &plugin);
         }
@@ -18,6 +24,22 @@ pub fn plugin_menu(app: &mut SoundApp, ui: &mut Ui, id: TrackId, slot: usize, oc
             run_pick(app, ui, "mix.insert_remove", json!({"track": id.0, "slot": slot}));
         }
         ui.separator();
+    }
+    if instrument_track {
+        ui.menu_button(crate::localization::text("Instruments"), |ui| {
+            let mut picked = None;
+            for p in soundcraft_dsp::plugins().iter().filter(|p| p.is_instrument) {
+                if ui.button(p.name).clicked() {
+                    picked = Some(p.id.to_string());
+                }
+            }
+            if let Some(p) = hosted_menus(ui, true) {
+                picked = Some(p);
+            }
+            if let Some(plugin) = picked {
+                run_pick(app, ui, "mix.instrument", json!({"track": id.0, "plugin": plugin}));
+            }
+        });
     }
     let mut cats: Vec<soundcraft_dsp::Category> = Vec::new();
     for p in soundcraft_dsp::plugins() {
