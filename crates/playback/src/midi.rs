@@ -314,12 +314,15 @@ impl MidiFeed {
         }
     }
 
-    pub fn set_mtc_options(&self, rate: soundcraft_time::FrameRate, freewheel_frames: u8, jam_sync: bool, external_offset_frames: i64) {
+    pub fn set_mtc_options(&self, rate: soundcraft_time::FrameRate, freewheel_frames: u8, jam_sync: bool, external_offset_samples: i64) {
         let mut r = self.mtc.lock().unwrap_or_else(PoisonError::into_inner);
-        r.options = crate::mtc_input::Options { rate, freewheel: freewheel_frames.clamp(4, 40), jam: jam_sync, offset: external_offset_frames };
+        r.options = crate::mtc_input::Options { rate, freewheel: if freewheel_frames == 0 { 0 } else { freewheel_frames.clamp(4, 40) }, jam: jam_sync, offset: external_offset_samples };
+    }
+    pub fn mtc_input_status(&self) -> (Option<crate::mtc_input::Position>,Option<crate::mtc_input::RateMismatch>) {
+        self.mtc.lock().unwrap_or_else(PoisonError::into_inner).incoming_status()
     }
     pub fn mtc_diagnostics(&self) -> crate::mtc_input::ChaseStats {
-        let mut result = self.mtc.lock().unwrap_or_else(PoisonError::into_inner).diagnostics();
+        let mut result = self.mtc.lock().unwrap_or_else(PoisonError::into_inner).diagnostics_at(self.now());
         result.hard_relocates = self.mtc_relocates.load(Ordering::Relaxed);
         result
     }

@@ -20,9 +20,12 @@ pub(super) fn transport_window(app: &mut SoundApp, ctx: &egui::Context) {
                 {
                     app.ui.status = crate::localization::error_text(&e);
                 }
+                let waiting = app.mtc_online && app.mtc_status == "Waiting for timecode";
+                if waiting { ctx.request_repaint_after(std::time::Duration::from_millis(500)); }
+                let online_lamp = app.mtc_online && (!waiting || ctx.input(|i| i.time.rem_euclid(1.0) < 0.5));
                 if app.ui.mtc_input_port.is_some()
                     && ui
-                        .selectable_label(app.mtc_online, crate::localization::text("Online"))
+                        .selectable_label(online_lamp, crate::localization::text("Online"))
                         .on_hover_text(crate::localization::text(app.mtc_status))
                         .clicked()
                     && let Err(e) = app.run("options.transport_online", json!({}))

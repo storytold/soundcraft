@@ -12,6 +12,8 @@ use soundcraft_time::Timecode;
 #[cfg(any(target_os = "windows", target_os = "macos", target_os = "linux"))]
 use std::time::{Duration, Instant};
 
+pub const UNSUPPORTED_RATE: &str = "MIDI Time Code needs a session at 23.976, 24, 25, 29.97 non-drop, 29.97 drop-frame or 30 fps.";
+
 pub fn supported(rate: FrameRate) -> bool {
     matches!(rate, FrameRate::Fps23_976 | FrameRate::Fps24 | FrameRate::Fps25 | FrameRate::Fps29_97 | FrameRate::Fps29_97Drop | FrameRate::Fps30)
 }

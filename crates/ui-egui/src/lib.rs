@@ -306,6 +306,7 @@ pub struct SoundApp {
     pub(crate) mtc_online: bool,
     mtc_chasing: bool,
     mtc_status: &'static str,
+    mtc_warning: Option<String>,
     applied_mtc_output: Option<(Option<(String, i64)>, bool)>,
     /// When the MIDI ports were last looked for (app uptime, seconds).
     midi_scan_at: f64,

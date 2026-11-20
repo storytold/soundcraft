@@ -51,6 +51,10 @@ impl Position {
         (self.quarter as f64 * (self.rate.samples_per_frame(sr) / 4.)).round() as Samples
     }
 
+    pub fn label(self) -> String {
+        Timecode::from_frames(self.quarter / 4, self.rate).format(self.rate)
+    }
+
     fn frame_us(self) -> f64 {
         let (n, d) = self.rate.rational();
         1e6 * d as f64 / n as f64
@@ -59,8 +63,8 @@ impl Position {
         self.rate.samples_at_frame(1, sr)
     }
     /// A positive external offset advances the local transport against incoming code.
-    pub fn session_sample(self, session_rate: FrameRate, sr: SampleRate, start: Samples, external_offset_frames: i64) -> Samples {
-        self.in_session_rate(session_rate).samples(sr).saturating_sub(start).saturating_add(session_rate.samples_at_frame(external_offset_frames, sr))
+    pub fn session_sample(self, session_rate: FrameRate, sr: SampleRate, start: Samples, external_offset_samples: i64) -> Samples {
+        self.in_session_rate(session_rate).samples(sr).saturating_sub(start).saturating_add(external_offset_samples)
     }
 }
 
@@ -85,6 +89,13 @@ impl Default for Options {
 }
 #[derive(Clone, Copy, Default, serde::Serialize)]
 pub struct ChaseStats {
+    #[serde(serialize_with = "serialize_incoming_timecode")]
+    pub incoming_timecode: Option<Position>,
+    pub incoming_rate: Option<&'static str>,
+    pub rate_mismatch: Option<RateMismatch>,
+    pub freewheel_state: &'static str,
+    pub elapsed_frames: u64,
+    pub limit_frames: u8,
     pub locks: u64,
     pub freewheel_entries: u64,
     pub losses: u64,
@@ -92,6 +103,17 @@ pub struct ChaseStats {
     pub input_jitter_p95_us: u32,
     pub arrival_delay_p95_us: u32,
 }
+#[derive(Debug, Clone, Copy, serde::Serialize)]
+pub struct RateMismatch {
+    pub incoming: &'static str,
+    pub session: &'static str,
+    pub speed_deviation_ppm: Option<i64>,
+}
+fn serialize_incoming_timecode<S: serde::Serializer>(p: &Option<Position>, serializer: S) -> Result<S::Ok, S::Error> {
+    use serde::Serialize;
+    p.map(Position::label).serialize(serializer)
+}
+
 #[derive(Clone, Copy)]
 pub(crate) enum Tracking {
     Idle,
@@ -104,6 +126,10 @@ pub(crate) struct Reader {
     pub(crate) source: Option<u8>,
     pub(crate) options: Options,
     pub(crate) stats: ChaseStats,
+    incoming: Option<Position>,
+    // Absolute group position, mapped arrival, and the session interpretation for this window.
+    speed_anchor: Option<(Position, i64, FrameRate)>,
+    speed_mismatch: Option<RateMismatch>,
     parts: [u8; 8],
     next: u8,
     located_start: Option<Position>,
@@ -111,6 +137,7 @@ pub(crate) struct Reader {
     previous: Option<Position>,
     locked: bool,
     coasting: bool,
+    lost_code: bool,
     rolling: Option<(Position, i64)>,
     last_at: Option<i64>,
     last_group: Option<i64>,
@@ -125,7 +152,10 @@ pub(crate) struct Reader {
 }
 impl Reader {
     pub(crate) fn reset(&mut self, source: Option<u8>) {
+        self.speed_anchor = None;
+        self.speed_mismatch = None;
         if self.source != source {
+            self.incoming = None;
             self.arrival_count = 0;
             self.arrival_cursor = 0;
         }
@@ -136,6 +166,7 @@ impl Reader {
         self.previous = None;
         self.locked = false;
         self.coasting = false;
+        self.lost_code = false;
         self.rolling = None;
         self.last_at = None;
         self.last_group = None;
@@ -144,8 +175,37 @@ impl Reader {
         self.jitter_count = 0;
         self.jitter_index = 0;
     }
+    pub(crate) fn incoming_status(&self) -> (Option<Position>,Option<RateMismatch>) {
+        let mismatch=self.incoming.and_then(|p| {
+            if self.source.is_none() { return None; }
+            if p.in_session_rate(self.options.rate).rate != self.options.rate {
+                Some(RateMismatch { incoming: p.rate.label(), session: self.options.rate.label(), speed_deviation_ppm: None })
+            } else {
+                self.speed_mismatch.filter(|m| m.session == self.options.rate.label())
+            }
+        });
+        (self.incoming,mismatch)
+    }
+    #[cfg(test)]
     pub(crate) fn diagnostics(&self) -> ChaseStats {
+        self.diagnostics_at(self.last_at.unwrap_or(0))
+    }
+    pub(crate) fn diagnostics_at(&self, now: i64) -> ChaseStats {
         let mut stats = self.stats;
+        stats.freewheel_state = match (self.locked,self.coasting,self.options.jam,self.lost_code) {
+            (true,true,true,_) => "jam sync running on internal clock",
+            (true,true,false,_) => "freewheeling",
+            (true,_,_,_) => "locked",
+            (_,_,_,true) => "stopped: timecode lost",
+            _ => "waiting",
+        };
+        stats.limit_frames=self.options.freewheel;
+        if self.coasting && let (Some(last),Some((p,_)))=(self.last_at,self.rolling) {
+            stats.elapsed_frames=(now.saturating_sub(last).max(0) as f64/p.in_session_rate(self.options.rate).frame_us()) as u64;
+        }
+        stats.incoming_timecode = self.incoming;
+        stats.incoming_rate = self.incoming.map(|p| if p.rate.is_drop() { "30df" } else { p.rate.label() });
+        stats.rate_mismatch = self.incoming_status().1;
         if self.jitter_count > 0 {
             let mut samples = self.jitter;
             samples[..self.jitter_count].sort_unstable();
@@ -181,6 +241,7 @@ impl Reader {
         }
         self.reset(self.source);
         if stop {
+            self.lost_code = true;
             self.pending = Some(ChaseEvent::Stop);
         }
     }
@@ -197,6 +258,10 @@ impl Reader {
         // Limit extending the deadline with partial or invalid groups to one group interval.
         let last = self.last_at.unwrap_or(now).min(self.last_group.unwrap_or(now).saturating_add((2. * frame_us).ceil() as i64));
         let elapsed = now.saturating_sub(last);
+        if self.options.freewheel == 0 && !self.options.jam {
+            if elapsed as f64 >= frame_us * 2. { self.loss(); }
+            return;
+        }
         if self.last_at.is_some_and(|last| now.saturating_sub(last) as f64 > frame_us / 2.) {
             self.freewheel();
         }
@@ -210,6 +275,7 @@ impl Reader {
             [0xf0, 0x7f, device, 1, 1, h, m, s, f, 0xf7] if device < 128 => {
                 if let Some(position) = Position::decode(h, m, s, f) {
                     self.reset(self.source);
+                    self.incoming = Some(position);
                     self.located_start = Some(position);
                     self.pending = Some(ChaseEvent::Locate(position));
                 }
@@ -245,6 +311,7 @@ impl Reader {
                         self.discontinuity();
                         return;
                     };
+                    self.incoming = Some(position);
                     if let Some(last) = self.previous {
                         // A missing group during lock is a dropout, not a seek.
                         // A valid pair at a new position can also re-establish the timeline.
@@ -268,6 +335,8 @@ impl Reader {
                             if !self.locked {
                                 self.stats.locks += 1;
                             }
+                            self.measure_wire_speed(position, now);
+                            self.lost_code = false;
                             self.locked = true;
                             self.coasting = false;
                             self.last_group = Some(now);
@@ -292,6 +361,36 @@ impl Reader {
         }
     }
 
+    fn measure_wire_speed(&mut self, position: Position, now: i64) {
+        let rate = self.options.rate;
+        let anchor = (position, now, rate);
+        let Some((start, time, old_rate)) = self.speed_anchor else {
+            self.speed_anchor = Some(anchor);
+            return;
+        };
+        let elapsed = now.saturating_sub(time);
+        if !matches!(position.rate, FrameRate::Fps24 | FrameRate::Fps30)
+            || rate != old_rate || position.rate != start.rate || position.quarter < start.quarter || elapsed < 0
+        {
+            self.speed_anchor = Some(anchor);
+            self.speed_mismatch = None;
+            return;
+        }
+        // Ten seconds bounds the error from 2.4 ms peak-to-peak arrival jitter to 240 ppm.
+        if elapsed < 10_000_000 { return; }
+        self.speed_anchor = Some(anchor);
+        let position_us = (position.quarter - start.quarter) as f64 * position.in_session_rate(rate).frame_us() / 4.;
+        let ppm = ((position_us / elapsed as f64 - 1.) * 1_000_000.).round() as i64;
+        let candidate = match (rate, ppm) {
+            (FrameRate::Fps23_976, 501..) => Some("24"),
+            (FrameRate::Fps29_97, 501..) => Some("30"),
+            (FrameRate::Fps24, ..=-501) => Some("23.976"),
+            (FrameRate::Fps30, ..=-501) => Some("29.97"),
+            _ => None,
+        };
+        self.speed_mismatch = candidate.map(|incoming| RateMismatch { incoming, session: rate.label(), speed_deviation_ppm: Some(ppm) });
+    }
+
     pub(crate) fn tracking(&mut self, now: i64) -> Tracking {
         self.expire(now);
         if let Some((position, stamp)) = self.rolling {
@@ -305,6 +404,12 @@ impl Reader {
     }
 
     fn discontinuity(&mut self) {
+        self.speed_anchor = None;
+        self.speed_mismatch = None;
+        if self.locked && self.options.freewheel == 0 && !self.options.jam {
+            self.loss();
+            return;
+        }
         self.freewheel();
         self.located_start = None;
         self.first_anchor = None;
@@ -470,6 +575,63 @@ mod dropout_tests {
         let group = crate::mtc::quarters(2 * (i / 8), FrameRate::Fps30);
         r.read(&group[(i % 8) as usize], i * 1_000_000 / 120);
     }
+    #[test]
+    fn reader_reports_the_latest_absolute_incoming_timecode_and_rate() {
+        let mut r = Reader::default();
+        r.reset(Some(3));
+        r.options.offset = 123_456;
+        let first = 30 * (3600 + 120 + 3) + 4;
+        for b in crate::mtc::quarters(first, FrameRate::Fps30) { r.read(&b, 0); }
+        let d = r.diagnostics();
+        assert_eq!(d.incoming_timecode.map(Position::label).as_deref(), Some("01:02:03:04"));
+        assert_eq!(d.incoming_rate, Some("30"));
+        r.read(&[0xf0,0x7f,127,1,1,0x40,1,0,2,0xf7], 16);
+        r.read(&[0xfc], 18);
+        assert_eq!(r.diagnostics().incoming_timecode.map(Position::label).as_deref(), Some("00:01:00;02"));
+        assert_eq!(r.diagnostics().incoming_rate, Some("30df"));
+        r.reset(None);
+        assert_eq!(r.diagnostics().incoming_timecode, None);
+    }
+
+    #[test]
+    fn reader_warns_about_mismatched_code_and_ntsc_speed_without_losing_lock() {
+        let mut r = Reader::default();
+        r.reset(Some(1));
+        for b in crate::mtc::quarters(0, FrameRate::Fps25) { r.read(&b, 0); }
+        assert_eq!(r.diagnostics().rate_mismatch.map(|m| (m.incoming,m.speed_deviation_ppm)),Some(("25", None)));
+        for (session, source) in [(FrameRate::Fps29_97, FrameRate::Fps30),(FrameRate::Fps30,FrameRate::Fps29_97),(FrameRate::Fps30,FrameRate::Fps30)] {
+            let mut r = Reader::default();
+            r.reset(Some(1));
+            r.options.rate = session;
+            let same = session == source;
+            for n in 0..if same { 9000 } else { 420 } {
+                for (piece,b) in crate::mtc::quarters(n*2, FrameRate::Fps30).into_iter().enumerate() {
+                    let (num,den) = source.rational();
+                    let us = ((n*8+piece as i64)*1_000_000*i64::from(den))/(4*i64::from(num));
+                    r.read(&b,us+if n%2==0 { 1200 } else { -1200 });
+                }
+                if same { assert!(r.diagnostics().rate_mismatch.is_none()); }
+            }
+            assert!(r.locked);
+            if !same { assert_eq!(r.diagnostics().rate_mismatch.map(|m| m.incoming),Some(source.label())); }
+        }
+    }
+
+    #[test]
+    fn none_stops_on_missing_or_discontinuous_code_without_coasting() {
+        for discontinuity in [false,true] {
+            let mut r = Reader::default();
+            r.options.freewheel = 0;
+            for i in 0..16 { pulse(&mut r,i); }
+            assert!(matches!(r.tracking(150_000), Tracking::Rolling {..}));
+            assert_eq!(r.stats.freewheel_entries,0);
+            if discontinuity { r.read(&[0xf1, 0x30],151_000); }
+            assert!(matches!(r.tracking(if discontinuity {151_001} else {191_667}),Tracking::Idle));
+            assert_eq!(r.stats.freewheel_entries,0);
+            assert_eq!(r.take(191_668),Some(ChaseEvent::Stop));
+        }
+    }
+
     #[test]
     fn one_lost_quarter_does_not_stop_or_change_phase() {
         for missing in 16..24 {

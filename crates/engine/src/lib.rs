@@ -221,6 +221,23 @@ pub(crate) fn new_session(name: impl Into<String>, sr: soundcraft_time::SampleRa
     session
 }
 
+const MTC_FREEWHEEL: &str = "midi.mtc.freewheel_mode=";
+
+fn migrate_mtc_settings(s: &mut Session) -> Option<&'static str> {
+    if s.edit.flags.remove("midi.mtc.jam_sync") && !s.edit.flags.iter().any(|f| f.starts_with(MTC_FREEWHEEL)) {
+        s.edit.flags.insert(format!("{MTC_FREEWHEEL}jam_sync"));
+    }
+    let frames = *s.edit.values.get("midi.mtc.external_offset_frames")?;
+    let samples = s.frame_rate.samples_at_frame(frames as i64, s.sample_rate) as f64;
+    let existing = s.edit.value("sync.external_offset", 0.);
+    if existing != 0. && samples != 0. && existing != samples {
+        return Some("The session has conflicting timecode offsets. Chase uses the External Timecode Offset.");
+    }
+    if existing == 0. { s.edit.values.insert("sync.external_offset".into(), samples); }
+    s.edit.values.remove("midi.mtc.external_offset_frames");
+    Some("Migrated the MTC reader offset to External Timecode Offset.")
+}
+
 impl Default for Engine {
     fn default() -> Self {
         Engine::new(new_session("Untitled", soundcraft_time::SampleRate::HZ_48000))
@@ -235,11 +252,20 @@ impl Engine {
 
     /// Keep rolling through timecode loss in this session.
     pub fn mtc_jam_sync(&self) -> bool {
-        self.session().edit.flag("midi.mtc.jam_sync")
+        self.mtc_freewheel_mode() == "jam_sync"
     }
 
-    pub fn new(session: Session) -> Self {
+    pub fn mtc_freewheel_mode(&self) -> &'static str {
+        self.session().edit.flags.iter().find_map(|flag| match flag.strip_prefix(MTC_FREEWHEEL) {
+            Some("jam_sync") => Some("jam_sync"),
+            Some("none") => Some("none"),
+            _ => None,
+        }).unwrap_or("frames")
+    }
+
+    pub fn new(mut session: Session) -> Self {
         install_panic_hook();
+        let messages = migrate_mtc_settings(&mut session).map(str::to_owned).into_iter().collect();
         let doc = Arc::new(session);
         Engine {
             saved: Arc::clone(&doc),
@@ -257,7 +283,7 @@ impl Engine {
             dirty_at: Cell::new((0, false)),
             merge_key: None,
             merge_hold: None,
-            messages: Vec::new(),
+            messages,
             last_selection: None,
             imports: Vec::new(),
         }
@@ -315,7 +341,8 @@ impl Engine {
     }
 
     /// Replace the whole document (open / new); clears history.
-    pub fn replace_session(&mut self, s: Session) {
+    pub fn replace_session(&mut self, mut s: Session) {
+        if let Some(note) = migrate_mtc_settings(&mut s) { self.message(note); }
         self.transport = TransportStatus { position: s.edit.selection.start.max(0), ..TransportStatus::default() };
         self.transport_requests.clear();
         self.transport_requests.push(TransportRequest::ResetSession);

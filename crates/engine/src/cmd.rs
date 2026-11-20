@@ -29,6 +29,7 @@ mod plugin_state;
 mod query;
 pub(crate) mod sampler;
 mod setup_more;
+pub use setup_more::signed_offset;
 mod strip_silence;
 mod surround;
 mod tab;

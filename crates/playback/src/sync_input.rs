@@ -18,7 +18,16 @@ impl DriverTime {
         // forever: the driver's oscillator may run slower than the host's.
         let bucket = arrival.div_euclid(2_000_000);
         if self.last.is_none_or(|(last, _)| stamp < last) || bucket != self.bucket {
-            self.previous_min = (self.last.is_some_and(|(last, _)| last <= stamp) && bucket == self.bucket + 1).then_some(self.minimum);
+            self.previous_min = self.last.filter(|(last, _)| *last <= stamp).map(|(last, _)| {
+                if bucket == self.bucket + 1 {
+                    return self.minimum;
+                }
+                // Project only previously observed upward drift across a gap, capped at 200 ppm.
+                // With a stable epoch the first delayed batch retains its learned mapping.
+                let drift = self.previous_min.map_or(0, |previous| self.minimum.saturating_sub(previous).clamp(0, 400));
+                let gap = stamp.saturating_sub(last);
+                self.minimum.saturating_add((u128::from(gap) * drift as u128 / 2_000_000).min(i64::MAX as u128) as i64)
+            });
             self.bucket = bucket;
             self.minimum = offset;
         } else {
@@ -128,10 +137,23 @@ mod tests {
                 let mapped = clock.map(stamp, arrival);
                 max_error = max_error.max(mapped.abs_diff(actual));
             }
-            println!("driver {ppm:+} ppm, largest mapped arrival error {max_error} us");
-            assert!(max_error < 2000, "driver {ppm} ppm: max timestamp error {max_error} us");
+            
+            assert!(max_error < 500, "driver {ppm} ppm: max timestamp error {max_error} us");
         }
     }
+    #[test]
+    fn driver_time_keeps_its_epoch_across_a_transport_pause() {
+        let mut clock = DriverTime::default();
+        for n in 0..1000 {
+            clock.map(n * 10_000, (n * 10_000) as i64);
+        }
+        for n in 1500..1520 {
+            let driver = n * 10_000;
+            let mapped = clock.map(driver, driver as i64 + 3_000);
+            assert!(mapped.abs_diff(driver as i64) < 500, "mapped pause error {} us", mapped - driver as i64);
+        }
+    }
+
     #[test]
     fn windowed_fit_handles_host_uptime_jitter_and_discontinuities() {
         let mut fit = PulseFit::<24>::default();

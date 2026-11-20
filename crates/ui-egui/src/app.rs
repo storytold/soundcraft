@@ -47,6 +47,7 @@ impl SoundApp {
             mtc_online: false,
             mtc_chasing: false,
             mtc_status: "Offline",
+            mtc_warning: None,
             applied_mtc_output: None,
             midi_scan_at: 0.0,
             midi_take: Vec::new(),
