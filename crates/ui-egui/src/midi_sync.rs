@@ -142,7 +142,7 @@ mod tests {
         for value in [-limit, limit] {
             host.sync_command("setup.midi_beat_clock", &json!({"destination":"port","offset":value})).unwrap();
         }
-        for value in [-limit-1, limit+1] {
+        for value in [-limit - 1, limit + 1] {
             assert!(host.sync_command("setup.midi_beat_clock", &json!({"offset":value})).is_err());
         }
     }
