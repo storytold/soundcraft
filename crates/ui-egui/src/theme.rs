@@ -309,7 +309,8 @@ impl Tokens {
         knob_pointer: Color32::from_rgb(230, 230, 230),
         section_label: Color32::from_rgb(200, 200, 200),
         slot_well: Color32::from_rgb(43, 43, 43),
-        slot_empty: Color32::from_rgb(39, 39, 39),
+        // A see-through dark well, so a Mix strip's colour shows through its empty slots.
+        slot_empty: Color32::from_black_alpha(70),
         slot_face: [Color32::from_rgb(92, 92, 92), Color32::from_rgb(75, 75, 75)],
         slot_bypassed: [Color32::from_rgb(66, 96, 146), Color32::from_rgb(50, 76, 120)],
         slot_mark: Color32::from_rgb(159, 159, 159),
@@ -456,6 +457,7 @@ pub fn track_backgrounds(color: [u8; 3], selected: bool, tint: f32) -> (Color32,
 /// Track colours tinted for clip bodies.
 pub fn clip_colors(rgb: [u8; 3], selected: bool) -> (Color32, Color32, Color32) {
     let [r, g, b] = rgb;
+    let g_ = g;
     let shade = |k: f32| Color32::from_rgb((f32::from(r) * k) as u8, (f32::from(g) * k) as u8, (f32::from(b) * k) as u8);
     let tint = |k: f32| {
         let t = |c: u8| (f32::from(c) + (255.0 - f32::from(c)) * k) as u8;
@@ -466,8 +468,13 @@ pub fn clip_colors(rgb: [u8; 3], selected: bool) -> (Color32, Color32, Color32) 
         // A paler body and a waveform in a deep shade of the clip's own colour.
         return if selected { (tint(0.2), bar, shade(0.22)) } else { (tint(0.45), bar, shade(0.32)) };
     }
-    // A dark body and a light waveform in the clip's own colour; selection inverts them.
-    if selected { (shade(0.7), bar, Color32::from_rgb(16, 16, 18)) } else { (shade(0.34), bar, tint(0.35)) }
+    // A dark, greyed body and a bright, saturated waveform in the clip's own colour, as the
+    // incumbent draws them; selection inverts them.
+    let grey = |k: f32, mix: f32| {
+        let g = |c: u8| ((f32::from(c) * k) * (1.0 - mix) + 46.0 * mix) as u8;
+        Color32::from_rgb(g(r), g(g_), g(b))
+    };
+    if selected { (shade(0.7), bar, Color32::from_rgb(16, 16, 18)) } else { (grey(0.42, 0.45), bar, tint(0.12)) }
 }
 
 pub fn rgb(c: [u8; 3]) -> Color32 {

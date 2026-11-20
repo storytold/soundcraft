@@ -4,7 +4,7 @@ use crate::SoundApp;
 use crate::theme::{Tokens, bold, regular, rgb};
 use crate::widgets::{
     PannerEdit, PannerSpeaker, SelectorLabels, db_text, fader, fader_slot, groove, inset, meter, meter_scale, multi_meter, pan_knob, pan_text,
-    raised_key, rec_toggle, selector_box_named, shade, surround_panner, text_toggle, vgradient,
+    raised_key, rec_toggle, selector_box_named, shade, surround_panner, text_toggle,
 };
 use egui::{Align2, Color32, CornerRadius, Rect, Sense, Stroke, StrokeKind, Ui, pos2, vec2};
 use serde_json::json;
@@ -27,7 +27,7 @@ pub(crate) use sends::{send_slot, send_window};
 pub(crate) use slots::{insert_slot, instrument_slot};
 
 pub fn strip_width(narrow: bool) -> f32 {
-    if narrow { 64.0 } else { 98.0 }
+    if narrow { 64.0 } else { 86.0 }
 }
 
 pub fn show(app: &mut SoundApp, ui: &mut Ui) {
@@ -175,6 +175,8 @@ struct StripCtx<'a> {
     inner_w: f32,
     narrow: bool,
     selected: bool,
+    /// The fill behind the strip's sections: a darker shade of the strip's own colour.
+    section: Color32,
     views: Vec<String>,
     all: bool,
 }
@@ -201,15 +203,20 @@ fn strip(app: &mut SoundApp, ui: &mut Ui, id: TrackId, snap: Option<&MeterSnapsh
         ui.scroll_to_rect(r.translate(vec2(margin, 0.0)), Some(egui::Align::Min));
     }
     let selected = app.engine.session().edit.selected_tracks.contains(&id);
-    let bg = if selected { t.strip_selected } else { t.strip_bg };
-    vgradient(ui.painter(), r, shade(bg, 0.06), bg);
-    ui.painter().vline(r.min.x + 0.5, r.y_range(), Stroke::new(1.0, t.edge_light));
+    // The whole strip wears the track's colour, as in the incumbent's Mix window, so a strip is
+    // found by colour at a glance and lines up with its track in the Edit window.
+    let bg = if selected { t.strip_selected } else { t.strip_bg.lerp_to_gamma(crate::theme::rgb(track.color), 0.30) };
+    // The strip's backdrop is painted once its height is known (below), under its sections.
+    let backdrop = ui.painter().add(egui::Shape::Noop);
     let mut y = r.min.y + 4.0;
     let inner_w = w - 8.0;
     let x0 = r.min.x + 4.0;
     let views = app.ui.mix_views.clone();
     let all = views.iter().any(|x| x == "all");
-    let cx = StripCtx { track, id, r, w, x0, inner_w, narrow, selected, views, all };
+    // Sections sit in a darker shade of the strip, so the track colour runs through the whole
+    // strip as in the incumbent's Mix window rather than boxing it in grey panels.
+    let section = if selected || t.strip_bg.intensity() > 0.5 { t.strip_section } else { shade(bg, -0.3) };
+    let cx = StripCtx { track, id, r, w, x0, inner_w, narrow, selected, section, views, all };
     // Preamp, instrument and object rows keep their height on every strip so sections line up;
     // their controls only appear on tracks with an input.
     y = preamp_section(app, ui, &cx, y);
@@ -222,19 +229,38 @@ fn strip(app: &mut SoundApp, ui: &mut Ui, id: TrackId, snap: Option<&MeterSnapsh
     y = group_selector(app, ui, &cx, y);
     y = pan_section(app, ui, &cx, y);
     y = toggle_rows(app, ui, &cx, y);
+    // Faders keep a console's length, as the incumbent's do, rather than stretching with the
+    // window: the strip ends below its name plate and the rest of the window stays empty.
+    let bottom = r.max.y.min(y + MAX_FADER_H + STRIP_FOOT_H);
+    let mut cx = cx;
+    cx.r = Rect::from_min_max(r.min, pos2(r.max.x, bottom));
+    let sr = cx.r;
+    let mut mesh = egui::Mesh::default();
+    let top = shade(bg, 0.06);
+    for (p, c) in [(sr.left_top(), top), (sr.right_top(), top), (sr.left_bottom(), bg), (sr.right_bottom(), bg)] {
+        mesh.colored_vertex(p, c);
+    }
+    mesh.add_triangle(0, 1, 2);
+    mesh.add_triangle(1, 2, 3);
+    ui.painter().set(
+        backdrop,
+        egui::Shape::Vec(vec![egui::Shape::mesh(mesh), egui::Shape::vline(sr.min.x + 0.5, sr.y_range(), Stroke::new(1.0, t.edge_light))]),
+    );
     fader_and_meter(app, ui, &cx, y, snap);
     name_and_readout(app, ui, &cx);
 }
 
+/// The longest a strip's fader (with its meter) gets, in points.
+const MAX_FADER_H: f32 = 260.0;
+
 /// Input gain stage ahead of the inserts (the track's trim).
 fn preamp_section(app: &mut SoundApp, ui: &mut Ui, cx: &StripCtx<'_>, mut y: f32) -> f32 {
     let StripCtx { track, id, narrow, x0, inner_w, .. } = *cx;
-    let t = Tokens::current();
     let has_input = matches!(track.kind, TrackKind::Audio | TrackKind::Instrument | TrackKind::Midi);
     if cx.shows("mic_preamps") {
         // Input gain stage ahead of the inserts (the track's trim).
         let sec = Rect::from_min_size(pos2(x0, y), vec2(inner_w, 34.0));
-        inset(ui.painter(), sec, t.strip_section);
+        inset(ui.painter(), sec, cx.section);
         section_label(ui, sec, "PREAMP", narrow);
         if has_input {
             let kr = Rect::from_min_size(pos2(x0 + 6.0, sec.min.y + 15.0), vec2(inner_w - 12.0, 16.0));
@@ -261,7 +287,7 @@ fn instrument_section(app: &mut SoundApp, ui: &mut Ui, cx: &StripCtx<'_>, mut y:
     let t = Tokens::current();
     if cx.shows("instruments") {
         let sec = Rect::from_min_size(pos2(x0, y), vec2(inner_w, 34.0));
-        inset(ui.painter(), sec, t.strip_section);
+        inset(ui.painter(), sec, cx.section);
         section_label(ui, sec, "INSTRUMENT", narrow);
         let sr = Rect::from_min_size(pos2(x0 + 2.0, sec.min.y + 16.0), vec2(inner_w - 4.0, 15.0));
         let slot = track.mixer.inserts.iter().position(|i| i.as_ref().is_some_and(|i| plugin_info(&i.plugin).is_some_and(|p| p.is_instrument)));
@@ -303,7 +329,6 @@ fn object_section(app: &mut SoundApp, ui: &mut Ui, cx: &StripCtx<'_>, mut y: f32
 /// The insert and send sections.
 fn slot_sections(app: &mut SoundApp, ui: &mut Ui, cx: &StripCtx<'_>, mut y: f32) -> f32 {
     let StripCtx { track, narrow, x0, inner_w, .. } = *cx;
-    let t = Tokens::current();
     for (key, title, off, is_send) in [
         ("inserts_ae", "INSERTS A-E", 0usize, false),
         ("inserts_fj", "INSERTS F-J", 5, false),
@@ -314,7 +339,7 @@ fn slot_sections(app: &mut SoundApp, ui: &mut Ui, cx: &StripCtx<'_>, mut y: f32)
             continue;
         }
         let sec = Rect::from_min_size(pos2(x0, y), vec2(inner_w, 16.0 + 5.0 * 17.0));
-        inset(ui.painter(), sec, t.strip_section);
+        inset(ui.painter(), sec, cx.section);
         section_label(ui, sec, title, narrow);
         for k in 0..5 {
             let sr = Rect::from_min_size(pos2(x0 + 2.0, sec.min.y + 15.0 + k as f32 * 17.0), vec2(inner_w - 4.0, 15.0));
@@ -398,7 +423,7 @@ fn io_section(app: &mut SoundApp, ui: &mut Ui, cx: &StripCtx<'_>, mut y: f32) ->
     if cx.shows("io") {
         let has_input = has_input_selector(track.kind);
         let sec = Rect::from_min_size(pos2(x0, y), vec2(inner_w, 16.0 + 2.0 * 18.0 + 30.0));
-        inset(ui.painter(), sec, t.strip_section);
+        inset(ui.painter(), sec, cx.section);
         section_label(ui, sec, "I / O", narrow);
         let in_r = Rect::from_min_size(pos2(x0 + 2.0, sec.min.y + 15.0), vec2(inner_w - 4.0, 16.0));
         let out_r = if has_input { Rect::from_min_size(pos2(x0 + 2.0, sec.min.y + 33.0), vec2(inner_w - 4.0, 16.0)) } else { in_r };
@@ -435,8 +460,14 @@ fn io_section(app: &mut SoundApp, ui: &mut Ui, cx: &StripCtx<'_>, mut y: f32) ->
         );
         route_popup(app, &resp, id, false);
         // Automation mode.
-        let am_r = Rect::from_min_size(pos2(x0 + 2.0, sec.min.y + 15.0 + 2.0 * 18.0), vec2(inner_w - 4.0, 16.0));
-        ui.painter().text(pos2(am_r.center().x, am_r.min.y - 1.0), Align2::CENTER_BOTTOM, "", regular(9.0), t.text_dim);
+        let am_r = Rect::from_min_size(pos2(x0 + 2.0, sec.min.y + 15.0 + 2.0 * 18.0 + 12.0), vec2(inner_w - 4.0, 16.0));
+        ui.painter().text(
+            pos2(am_r.center().x, am_r.min.y - 1.0),
+            Align2::CENTER_BOTTOM,
+            crate::localization::text("AUTO"),
+            bold(9.0),
+            t.section_label,
+        );
         let mut c = ui.new_child(egui::UiBuilder::new().max_rect(am_r));
         let mode = track.mixer.automation_mode;
         let col = if mode == soundcraft_model::AutomationMode::Read {
@@ -603,6 +634,11 @@ fn toggle_rows(app: &mut SoundApp, ui: &mut Ui, cx: &StripCtx<'_>, mut y: f32) -
     y
 }
 
+/// Channels the strip meter shows as separate bars (two at most for a stereo strip).
+fn chans_shown(track: &soundcraft_model::Track) -> usize {
+    if track.kind == TrackKind::Master { 2 } else { track.channels().min(2) }
+}
+
 /// The fader and its meter.
 fn fader_and_meter(app: &mut SoundApp, ui: &mut Ui, cx: &StripCtx<'_>, y: f32, snap: Option<&MeterSnapshot>) {
     let StripCtx { track, id, narrow, x0, inner_w, r, .. } = *cx;
@@ -617,7 +653,17 @@ fn fader_and_meter(app: &mut SoundApp, ui: &mut Ui, cx: &StripCtx<'_>, y: f32, s
     }
     let md = app.meters.get(&id).copied().unwrap_or_default();
     let slot = fader_slot(fr);
-    let mr = Rect::from_min_max(pos2(fr.max.x + 4.0, slot.min.y - 5.0), pos2(x0 + inner_w - 2.0, slot.max.y + if wide_meter { 17.0 } else { 1.0 }));
+    let right = x0 + inner_w - 2.0;
+    // Slim bars (about 7 pt a channel) right of the scale, not a block filling the strip.
+    let bars = if wide_meter {
+        0.0
+    } else if chans_shown(track) >= 2 {
+        16.0
+    } else {
+        8.0
+    };
+    let left = if wide_meter { fr.max.x + 4.0 } else { (right - bars).max(fr.max.x + 4.0) };
+    let mr = Rect::from_min_max(pos2(left, slot.min.y - 5.0), pos2(right, slot.max.y + if wide_meter { 17.0 } else { 1.0 }));
     if !narrow && !wide_meter {
         meter_scale(ui.painter(), mr, mr.min.x - 1.0);
     }

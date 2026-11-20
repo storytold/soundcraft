@@ -9,7 +9,9 @@ use soundcraft_engine::edit::{SHUFFLE_LOCK, SNAP_TO_GRID};
 use soundcraft_model::{EditMode, EditState, Session, Tool};
 use soundcraft_time::{FeetFramesValue, GridScale, GridValue, NoteValue, TimeFormat, TimecodeValue, format_length};
 
-pub const HEIGHT: f32 = 78.0;
+pub const HEIGHT: f32 = 70.0;
+/// One height for every group, so the row reads as one bar rather than boxes of four sizes.
+const ROW: f32 = 58.0;
 
 fn group(ui: &mut Ui, w: f32, h: f32, add: impl FnOnce(&mut Ui, Rect)) {
     let t = Tokens::current();
@@ -28,9 +30,9 @@ pub fn show(app: &mut SoundApp, ui: &mut Ui) {
         .id_salt("edit_toolbar_scroll")
         .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::VisibleWhenNeeded)
         .show(ui, |ui| {
-            ui.horizontal(|ui| {
+            ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
                 ui.add_space(8.0);
-                ui.spacing_mut().item_spacing.x = 8.0;
+                ui.spacing_mut().item_spacing.x = 6.0;
                 edit_modes(app, ui);
                 zoom_group(app, ui);
                 tools(app, ui);
@@ -97,7 +99,7 @@ fn edit_modes(app: &mut SoundApp, ui: &mut Ui) {
         .chain(["REL GRID"])
         .map(|l| ui.painter().layout_no_wrap(crate::localization::text(l).into(), bold(10.5), t.text).size().x)
         .fold(0.0, f32::max);
-    group(ui, 2.0 * widest + 44.0, 52.0, |ui, r| {
+    group(ui, 2.0 * widest + 44.0, ROW, |ui, r| {
         let inner = r.shrink(6.0);
         let cw = inner.width() / 2.0;
         let ch = inner.height() / 2.0;
@@ -135,7 +137,7 @@ fn mode_click(app: &mut SoundApp, m: EditMode, mods: egui::Modifiers) {
 }
 
 fn zoom_group(app: &mut SoundApp, ui: &mut Ui) {
-    group(ui, 128.0, 52.0, |ui, _| {
+    group(ui, 128.0, ROW, |ui, _| {
         ui.vertical(|ui| {
             ui.spacing_mut().item_spacing = vec2(2.0, 3.0);
             ui.horizontal(|ui| {
@@ -179,7 +181,7 @@ fn zoom_group(app: &mut SoundApp, ui: &mut Ui) {
 fn tools(app: &mut SoundApp, ui: &mut Ui) {
     let t = Tokens::current();
     let cur = app.engine.session().edit.tool;
-    group(ui, 268.0 + 38.0, 52.0, |ui, r| {
+    group(ui, 268.0 + 38.0, ROW, |ui, r| {
         ui.vertical(|ui| {
             ui.spacing_mut().item_spacing = vec2(2.0, 3.0);
             let row = ui.horizontal(|ui| {
@@ -263,11 +265,11 @@ fn counters(app: &mut SoundApp, ui: &mut Ui) {
         (s.edit.main_counter, s.edit.sub_counter.unwrap_or(TimeFormat::Samples), s.edit.selection)
     };
     let pos = app.position();
-    let (r, _) = ui.allocate_exact_size(vec2(318.0, 64.0), Sense::hover());
+    let (r, _) = ui.allocate_exact_size(vec2(292.0, ROW), Sense::hover());
     ui.painter().rect(r, CornerRadius::same(4), t.counter_bg, Stroke::new(1.0, t.counter_border), StrokeKind::Inside);
-    let main_r = Rect::from_min_max(r.min, pos2(r.min.x + 180.0, r.min.y + 44.0));
+    let main_r = Rect::from_min_max(r.min, pos2(r.min.x + 160.0, r.min.y + 40.0));
     let txt = fmt_pos(app, pos, main_fmt);
-    ui.painter().text(pos2(main_r.max.x - 18.0, main_r.center().y), Align2::RIGHT_CENTER, txt, mono(26.0), t.counter_text);
+    ui.painter().text(pos2(main_r.max.x - 16.0, main_r.center().y), Align2::RIGHT_CENTER, txt, mono(24.0), t.counter_text);
     let resp = ui.interact(main_r, ui.scope_id().with("main_counter"), Sense::click());
     icons::draw(ui.painter(), Rect::from_center_size(pos2(main_r.max.x - 9.0, main_r.center().y), vec2(10.0, 10.0)), "triangle_down", t.text_dim);
     format_menu(app, &resp, main_fmt, "view.main_counter");
@@ -279,28 +281,21 @@ fn counters(app: &mut SoundApp, ui: &mut Ui) {
         ("Length", format_length(sel.start, sel.len(), main_fmt, s.sample_rate, &s.tempo, s.frame_rate)),
     ];
     for (i, (label, val)) in rows.iter().enumerate() {
-        let y = r.min.y + 10.0 + i as f32 * 13.0;
-        ui.painter().text(pos2(r.min.x + 214.0, y), Align2::RIGHT_CENTER, crate::localization::text(label), regular(11.0), t.counter_label);
-        ui.painter().text(pos2(r.max.x - 8.0, y), Align2::RIGHT_CENTER, val, mono(11.0), t.counter_text);
+        let y = r.min.y + 8.0 + i as f32 * 11.0;
+        ui.painter().text(pos2(r.min.x + 200.0, y), Align2::RIGHT_CENTER, crate::localization::text(label), regular(10.0), t.counter_label);
+        ui.painter().text(pos2(r.max.x - 8.0, y), Align2::RIGHT_CENTER, val, mono(10.0), t.counter_text);
     }
     // Sub counter row.
-    let y = r.max.y - 11.0;
-    ui.painter().line_segment([pos2(r.min.x + 6.0, r.max.y - 21.0), pos2(r.max.x - 6.0, r.max.y - 21.0)], Stroke::new(1.0, t.counter_rule));
+    let y = r.max.y - 9.0;
+    ui.painter().line_segment([pos2(r.min.x + 6.0, r.max.y - 18.0), pos2(r.max.x - 6.0, r.max.y - 18.0)], Stroke::new(1.0, t.counter_rule));
     ui.painter().text(pos2(r.min.x + 10.0, y), Align2::LEFT_CENTER, crate::localization::text("Sub"), regular(11.0), t.counter_label);
     ui.painter().text(pos2(r.min.x + 150.0, y), Align2::RIGHT_CENTER, fmt_pos(app, pos, sub_fmt), mono(11.0), t.counter_text);
-    let sub_r = Rect::from_min_max(pos2(r.min.x + 6.0, r.max.y - 20.0), pos2(r.min.x + 164.0, r.max.y - 2.0));
+    let sub_r = Rect::from_min_max(pos2(r.min.x + 6.0, r.max.y - 17.0), pos2(r.min.x + 164.0, r.max.y - 1.0));
     let sub_resp = ui.interact(sub_r, ui.scope_id().with("sub_counter"), Sense::click());
     icons::draw(ui.painter(), Rect::from_center_size(pos2(r.min.x + 158.0, y), vec2(8.0, 8.0)), "triangle_down", t.text_dim);
     format_menu(app, &sub_resp, sub_fmt, "view.sub_counter");
-    let st = if app.engine.is_dirty() { "modified" } else { "saved" };
-    let dev = app.player.as_ref().map_or("no audio engine", |p| if p.silent { "silent clock" } else { "audio on" });
-    ui.painter().text(
-        pos2(r.max.x - 8.0, y),
-        Align2::RIGHT_CENTER,
-        format!("{} · {}", crate::localization::text(st), crate::localization::text(dev)),
-        regular(10.0),
-        t.text_dim,
-    );
+    // Save state and audio status live in the window title and status bar: here they only
+    // crowded the sub counter row.
 }
 
 /// A counter's time-format menu: picking a format runs `command` (`view.main_counter` or
@@ -322,7 +317,7 @@ fn grid_nudge(app: &mut SoundApp, ui: &mut Ui) {
         let e = &app.engine.session().edit;
         (e.grid, e.nudge, e.grid_lines, e.grid_follow_main, e.nudge_follow_main, e.grid_clips_markers)
     };
-    let (r, _) = ui.allocate_exact_size(vec2(170.0, 64.0), Sense::hover());
+    let (r, _) = ui.allocate_exact_size(vec2(170.0, ROW), Sense::hover());
     ui.painter().rect(r, CornerRadius::same(4), t.counter_bg, Stroke::new(1.0, t.counter_border), StrokeKind::Inside);
     let gl = Rect::from_min_size(pos2(r.min.x + 6.0, r.min.y + 8.0), vec2(48.0, 16.0));
     let resp = ui.interact(gl, ui.scope_id().with("grid_lines"), Sense::click());
@@ -583,27 +578,27 @@ fn transport(app: &mut SoundApp, ui: &mut Ui) {
     let playing = app.is_playing();
     let recording = app.engine.transport.recording;
     let looped = app.engine.session().edit.loop_playback;
-    group(ui, 176.0, 64.0, |ui, g| {
+    group(ui, 176.0, ROW, |ui, g| {
         ui.vertical(|ui| {
-            ui.spacing_mut().item_spacing = vec2(3.0, 4.0);
+            ui.spacing_mut().item_spacing = vec2(3.0, 3.0);
             ui.horizontal(|ui| {
                 ui.spacing_mut().item_spacing.x = 3.0;
-                if icon_button(ui, vec2(38.0, 28.0), "loop", looped, "Loop Playback (Cmd+Shift+L)").clicked() {
+                if icon_button(ui, vec2(38.0, 25.0), "loop", looped, "Loop Playback (Cmd+Shift+L)").clicked() {
                     let _ = app.run("options.loop_playback", json!({}));
                 }
-                let (r, resp) = ui.allocate_exact_size(vec2(38.0, 28.0), Sense::click());
+                let (r, resp) = ui.allocate_exact_size(vec2(38.0, 25.0), Sense::click());
                 key(ui.painter(), r, &resp, key_fill(&resp));
                 icons::draw(ui.painter(), r.shrink(5.0), "stop", if playing { t.text } else { t.accent });
                 if resp.on_hover_text(crate::localization::text("Stop (Space)")).clicked() {
                     let _ = app.run("transport.stop", json!({}));
                 }
-                let (r, resp) = ui.allocate_exact_size(vec2(38.0, 28.0), Sense::click());
+                let (r, resp) = ui.allocate_exact_size(vec2(38.0, 25.0), Sense::click());
                 key(ui.painter(), r, &resp, if playing { Color32::from_rgb(40, 90, 50) } else { key_fill(&resp) });
                 icons::draw(ui.painter(), r.shrink(5.0), "play", if playing { Color32::from_rgb(120, 255, 140) } else { t.counter_text });
                 if resp.on_hover_text(crate::localization::text("Play (Space)")).clicked() {
                     let _ = app.run("transport.play", json!({}));
                 }
-                let (r, resp) = ui.allocate_exact_size(vec2(38.0, 28.0), Sense::click());
+                let (r, resp) = ui.allocate_exact_size(vec2(38.0, 25.0), Sense::click());
                 key(ui.painter(), r, &resp, if recording { Color32::from_rgb(110, 30, 30) } else { key_fill(&resp) });
                 icons::draw(ui.painter(), r.shrink(5.0), "record", t.rec);
                 // macOS gives Cmd+Space to Spotlight unless the user frees it, so name F12 first.
@@ -625,7 +620,7 @@ fn transport(app: &mut SoundApp, ui: &mut Ui) {
                     ("ffwd", "transport.fast_forward", "Fast Forward"),
                     ("end", "transport.go_to_end", "Go to End (End)"),
                 ] {
-                    if icon_button(ui, vec2(38.0, 22.0), icon, false, tip).clicked() {
+                    if icon_button(ui, vec2(38.0, 19.0), icon, false, tip).clicked() {
                         let _ = app.run(cmd, json!({}));
                     }
                 }
@@ -643,7 +638,7 @@ fn tempo_meter(app: &mut SoundApp, ui: &mut Ui) {
         let m = s.tempo.meter_at_tick(tick);
         (s.tempo.tempo_at_tick(tick), format!("{}/{}", m.numerator, m.denominator), s.edit.countoff, s.edit.click, s.edit.countoff_bars)
     };
-    let (r, _) = ui.allocate_exact_size(vec2(150.0, 64.0), Sense::hover());
+    let (r, _) = ui.allocate_exact_size(vec2(150.0, ROW), Sense::hover());
     ui.painter().rect(r, CornerRadius::same(4), t.counter_bg, Stroke::new(1.0, t.counter_border), StrokeKind::Inside);
     let co = Rect::from_min_size(pos2(r.min.x + 6.0, r.min.y + 6.0), vec2(64.0, 15.0));
     let resp = ui.interact(co, ui.scope_id().with("countoff"), Sense::click());
@@ -665,12 +660,12 @@ fn tempo_meter(app: &mut SoundApp, ui: &mut Ui) {
         mono(11.0),
         t.counter_text,
     );
-    ui.painter().text(pos2(r.min.x + 70.0, r.min.y + 32.0), Align2::RIGHT_CENTER, crate::localization::text("Meter"), regular(11.0), t.counter_label);
-    ui.painter().text(pos2(r.max.x - 8.0, r.min.y + 32.0), Align2::RIGHT_CENTER, meter, mono(11.0), t.counter_text);
-    ui.painter().text(pos2(r.min.x + 70.0, r.min.y + 48.0), Align2::RIGHT_CENTER, crate::localization::text("Tempo"), regular(11.0), t.counter_label);
-    icons::draw(ui.painter(), Rect::from_center_size(pos2(r.min.x + 82.0, r.min.y + 48.0), vec2(13.0, 13.0)), "note", t.counter_text);
-    tempo_value(app, ui, r.max.x - 8.0, r.min.y + 48.0, bpm);
-    let clk = Rect::from_min_size(pos2(r.min.x + 6.0, r.min.y + 40.0), vec2(18.0, 18.0));
+    ui.painter().text(pos2(r.min.x + 70.0, r.min.y + 30.0), Align2::RIGHT_CENTER, crate::localization::text("Meter"), regular(11.0), t.counter_label);
+    ui.painter().text(pos2(r.max.x - 8.0, r.min.y + 30.0), Align2::RIGHT_CENTER, meter, mono(11.0), t.counter_text);
+    ui.painter().text(pos2(r.min.x + 70.0, r.min.y + 45.0), Align2::RIGHT_CENTER, crate::localization::text("Tempo"), regular(11.0), t.counter_label);
+    icons::draw(ui.painter(), Rect::from_center_size(pos2(r.min.x + 82.0, r.min.y + 45.0), vec2(13.0, 13.0)), "note", t.counter_text);
+    tempo_value(app, ui, r.max.x - 8.0, r.min.y + 45.0, bpm);
+    let clk = Rect::from_min_size(pos2(r.min.x + 6.0, r.min.y + 36.0), vec2(18.0, 18.0));
     icons::draw(ui.painter(), clk, "click", if click { t.counter_text } else { t.text_dim });
     if ui.interact(clk, ui.scope_id().with("click"), Sense::click()).on_hover_text(crate::localization::text("Click")).clicked() {
         let _ = app.run("options.click", json!({}));
@@ -711,7 +706,7 @@ fn tempo_value(app: &mut SoundApp, ui: &mut Ui, right: f32, y: f32, bpm: f64) {
 
 /// Draws the compact stereo main-output meter.
 fn output_meter(app: &mut SoundApp, ui: &mut Ui) {
-    let (r, _) = ui.allocate_exact_size(vec2(26.0, 64.0), Sense::hover());
+    let (r, _) = ui.allocate_exact_size(vec2(30.0, ROW), Sense::hover());
     let m = app.main_meter;
     let w = (r.width() - 6.0) / 2.0;
     for c in 0..2 {
