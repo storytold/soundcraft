@@ -61,7 +61,7 @@ pub fn specs() -> Vec<CommandSpec> {
         cmd!(noundo "track.save_preset", "Save Track Preset...", ["Track"], None, "{path, track?} — writes the track's type, width, mixer, inserts, sends and instrument as JSON", has_selection, save_preset),
         cmd!(
             "track.load_preset",
-            "Load Track Preset",
+            "Recall Track Preset",
             [],
             None,
             "{path, tracks?} — applies a saved track preset's mixer, inserts, sends and instrument",

@@ -26,7 +26,6 @@ const KNOWN_UNREACHED: &[&str] = &[
     "options.post_roll",
     "options.pre_roll",
     "setup.reset_edit_state",
-    "track.load_preset",
     "track.pin",
     "track.trim_automation_write",
     "track.vca",
