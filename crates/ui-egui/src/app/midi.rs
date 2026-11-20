@@ -131,7 +131,11 @@ impl SoundApp {
         let Some(p) = &self.player else { return };
         match &mut self.midi_inputs {
             None => {
-                let m = MidiInputs::open(self.ui.midi_inputs_off.clone());
+                #[cfg(windows)]
+                let reserved = self.ui.hui.as_ref().map(crate::HuiPorts::input);
+                #[cfg(not(windows))]
+                let reserved = None;
+                let m = MidiInputs::open_reserving(self.ui.midi_inputs_off.clone(), reserved);
                 p.set_midi(std::sync::Arc::clone(m.feed()));
                 self.midi_inputs = Some(m);
                 self.midi_scan_at = now;

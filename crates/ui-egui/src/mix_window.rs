@@ -68,11 +68,17 @@ pub(crate) fn content(app: &mut SoundApp, ui: &mut Ui) {
     // Taken for this frame only: a strip that isn't drawn (hidden track) must not scroll the Mix
     // whenever it comes back. A request made during this frame (the strip's menu) waits for the next.
     let scroll_to = app.mix_scroll_into_view.take();
+    #[cfg(windows)]
+    let controlled = crate::hui::controlled_tracks(app);
     egui::ScrollArea::horizontal().auto_shrink([false, false]).show(ui, |ui| {
         ui.horizontal_top(|ui| {
             ui.spacing_mut().item_spacing.x = 1.0;
             for id in ids {
-                strip(app, ui, id, snap.as_ref(), scroll_to == Some(id));
+                #[cfg(windows)]
+                let hui_controlled = controlled.contains(&Some(id));
+                #[cfg(not(windows))]
+                let hui_controlled = false;
+                strip(app, ui, id, snap.as_ref(), scroll_to == Some(id), hui_controlled);
             }
             let rest = Rect::from_min_max(pos2(ui.cursor().min.x, ui.clip_rect().min.y), ui.clip_rect().max);
             if rest.width() > 4.0 && ui.interact(rest, ui.scope_id().with("past_strips"), Sense::click()).double_clicked() {
@@ -186,7 +192,7 @@ impl StripCtx<'_> {
     }
 }
 
-fn strip(app: &mut SoundApp, ui: &mut Ui, id: TrackId, snap: Option<&MeterSnapshot>, scroll_here: bool) {
+fn strip(app: &mut SoundApp, ui: &mut Ui, id: TrackId, snap: Option<&MeterSnapshot>, scroll_here: bool, hui_controlled: bool) {
     let t = Tokens::current();
     let session = app.engine.session_arc();
     let Some(track) = session.track(id) else { return };
@@ -223,7 +229,7 @@ fn strip(app: &mut SoundApp, ui: &mut Ui, id: TrackId, snap: Option<&MeterSnapsh
     y = pan_section(app, ui, &cx, y);
     y = toggle_rows(app, ui, &cx, y);
     fader_and_meter(app, ui, &cx, y, snap);
-    name_and_readout(app, ui, &cx);
+    name_and_readout(app, ui, &cx, hui_controlled);
 }
 
 /// Input gain stage ahead of the inserts (the track's trim).
@@ -643,7 +649,7 @@ fn fader_and_meter(app: &mut SoundApp, ui: &mut Ui, cx: &StripCtx<'_>, y: f32, s
 }
 
 /// Volume readout, kind label and name plate.
-fn name_and_readout(app: &mut SoundApp, ui: &mut Ui, cx: &StripCtx<'_>) {
+fn name_and_readout(app: &mut SoundApp, ui: &mut Ui, cx: &StripCtx<'_>, hui_controlled: bool) {
     let StripCtx { track, id, x0, inner_w, r, w, selected, .. } = *cx;
     let t = Tokens::current();
     // Volume readout and name.
@@ -680,7 +686,7 @@ fn name_and_readout(app: &mut SoundApp, ui: &mut Ui, cx: &StripCtx<'_>) {
         nr,
         CornerRadius::same(2),
         if selected { t.name_field_sel } else { t.name_field },
-        Stroke::new(1.0, Color32::BLACK),
+        if hui_controlled { Stroke::new(2.0, t.accent) } else { Stroke::new(1.0, Color32::BLACK) },
         StrokeKind::Inside,
     );
     ui.painter().with_clip_rect(nr).text(nr.center(), Align2::CENTER_CENTER, &track.name, bold(12.0), t.text_dark);

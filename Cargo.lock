@@ -5118,6 +5118,7 @@ dependencies = [
  "egui_kittest",
  "image",
  "log",
+ "midir",
  "serde",
  "serde_json",
  "soundcraft-au-host",

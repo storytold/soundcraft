@@ -70,6 +70,8 @@ pub const UI_COMMANDS: &[(&str, &str, &str, Option<&str>)] = &[
     ("window.rtp", "MIDI Real-Time Properties", "", None),
     ("window.import_aaf", "Import Session Data (AAF)", "", None),
     ("window.playback_engine", "Playback Engine", "", None),
+    #[cfg(windows)]
+    ("ui.hui", "MIDI Controllers", "", None),
     ("ui.audio_device", "Audio Device", "", None),
     ("window.io_setup", "I/O Setup", "", None),
     ("window.shortcuts", "Keyboard Shortcuts", "", None),
@@ -562,6 +564,11 @@ pub fn live_label(app: &SoundApp, id: Option<&str>) -> Option<String> {
 
 /// Menu-style invocation: may open a dialog.
 pub fn invoke_menu(app: &mut SoundApp, id: &str, path: &str) {
+    #[cfg(windows)]
+    if id == "setup.peripherals" {
+        let _ = crate::hui::command(app, id, &json!({"value": true}));
+        return;
+    }
     if id == "file.import_aaf" || path == "File > Import > Session Data..." {
         let _ = crate::aaf_import::command(app, &json!({}));
         return;
@@ -625,6 +632,10 @@ pub fn run_ui_command(app: &mut SoundApp, id: &str, p: &Value) -> Option<Result<
     }
     if id == "ui.audio_device" {
         return Some(crate::windows::audio_device_command(app, p));
+    }
+    #[cfg(windows)]
+    if id == "ui.hui" {
+        return Some(crate::hui::command(app, id, p));
     }
     // Menu clicks never get here: Setup › Playback Engine / Hardware open the window
     // (`MENU_WINDOWS`). A programmatic call applies the open device instead.

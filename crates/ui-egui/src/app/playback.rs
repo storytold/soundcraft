@@ -1,6 +1,6 @@
 use super::audio::feed_meter;
 use super::plugins::failed_plugin_status;
-use super::{Gesture, MainWindow, MeterDisplay, Range, Samples, SoundApp, TrackId, TransportRequest, json};
+use super::{AUTOMATION_PASS, Gesture, MainWindow, MeterDisplay, Range, Samples, SoundApp, TrackId, TransportRequest, json};
 
 /// Whether another automation-write pass is due: the transport moved at least
 /// `step` since `last` in either direction. `last == i64::MIN` marks "never
@@ -292,6 +292,13 @@ impl SoundApp {
         }
     }
 
+    pub(crate) fn hold_automation_pass(&mut self) {
+        use soundcraft_model::AutomationMode as M;
+        let may_write = self.is_playing()
+            && self.engine.session().tracks.iter().any(|t| matches!(t.mixer.automation_mode, M::Write | M::Touch | M::Latch | M::TouchLatch));
+        self.engine.hold_merge(may_write.then_some(AUTOMATION_PASS));
+    }
+
     /// While playing, record volume automation from fader positions for tracks in Write mode, and
     /// for Touch/Latch tracks whose fader is (or, for Latch, was) being moved. Send levels follow the
     /// same rules, per send, from its slot or its floating send window. Each point replaces the
@@ -299,19 +306,25 @@ impl SoundApp {
     /// dragged during it, its fader included, are one undo step.
     pub(crate) fn write_automation(&mut self) {
         use soundcraft_model::AutomationMode as M;
-        const PASS: &str = "automation_pass";
         let playing = self.is_playing();
-        let may_write =
-            playing && self.engine.session().tracks.iter().any(|t| matches!(t.mixer.automation_mode, M::Write | M::Touch | M::Latch | M::TouchLatch));
-        self.engine.hold_merge(may_write.then_some(PASS));
+        self.hold_automation_pass();
         if !playing && self.touched.is_empty() && self.touched_sends.is_empty() {
+            #[cfg(windows)]
+            crate::hui::clear_pending_touch_samples(self, false);
             self.last_write_at = i64::MIN;
+            if self.engine.merge_key() == Some(AUTOMATION_PASS) {
+                self.engine.end_merge();
+            }
             return;
         }
         let pos = self.engine.transport.position;
         let step = self.engine.session().sample_rate.samples(0.02);
         if playing && !automation_step_due(pos, self.last_write_at, step) {
             return;
+        }
+        #[cfg(windows)]
+        if playing {
+            crate::hui::clear_pending_touch_samples(self, true);
         }
         let from = std::mem::replace(&mut self.last_write_at, if playing { pos } else { i64::MIN });
         // The gesture state cached from the known UI phase, never hidden-tick stale input.
@@ -331,7 +344,11 @@ impl SoundApp {
             .iter()
             .filter_map(|t| {
                 let m = t.mixer.automation_mode;
-                let touched_now = dragging && fader_track == Some(t.id);
+                #[cfg(windows)]
+                let surface_touched = crate::hui::touching(self, t.id);
+                #[cfg(not(windows))]
+                let surface_touched = false;
+                let touched_now = (dragging && fader_track == Some(t.id)) || surface_touched;
                 let write = match m {
                     M::Write => true,
                     M::Touch => touched_now,
@@ -373,13 +390,26 @@ impl SoundApp {
             self.touched_sends.insert((t, slot));
         }
         for (t, param, v) in points {
+            // A new physical touch may start after another gesture ended between two samples.
+            // Retain the old release and the automation before the new touch.
+            #[cfg(windows)]
+            let from = if self.ui.hui.is_some()
+                && param == "volume"
+                && self.engine.session().track(t).is_some_and(|tr| tr.mixer.automation_mode == M::Touch)
+            {
+                from.max(crate::hui::touch_start(self, t).unwrap_or(i64::MIN))
+            } else {
+                from
+            };
             let mut point = serde_json::json!({"track": t.0, "param": param, "at": pos, "value": v});
             if from != i64::MIN {
                 point["from"] = from.into();
             }
-            let _ = self.engine.execute_merged("automation.set_point", &point, PASS);
+            let _ = self.engine.execute_merged("automation.set_point", &point, AUTOMATION_PASS);
         }
         if !playing {
+            #[cfg(windows)]
+            crate::hui::clear_pending_touch_samples(self, false);
             self.touched.clear();
             self.touched_sends.clear();
             self.engine.end_merge();
