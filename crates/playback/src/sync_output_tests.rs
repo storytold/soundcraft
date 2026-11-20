@@ -406,12 +406,7 @@ fn player_wakes_a_parked_clock_output_for_follow_transport() {
     let (audio, commands) = channel();
     let (retire, garbage) = channel();
     let session = Arc::new(Session::default());
-    let shared = Arc::new(crate::Shared {
-        position: 0.into(),
-        playing: false.into(),
-        speed: 1000.into(),
-        meters: Mutex::default(),
-    });
+    let shared = Arc::new(crate::Shared { position: 0.into(), playing: false.into(), speed: 1000.into(), meters: Mutex::default() });
     let side = Mutex::new(crate::Side::new(session.sample_rate.as_f64() as f32, garbage));
     let player = crate::Player::silent_clock_with(shared, audio, commands, session.clone(), side, retire);
     let (messages, received) = channel();
