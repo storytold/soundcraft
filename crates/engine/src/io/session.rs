@@ -16,6 +16,7 @@ pub fn save_session(e: &mut Engine, path: &str) -> Result<usize> {
         return save_session_bundle(e, path);
     }
     let (fresh, written, p) = write_session(e.session(), path, false)?;
+    crate::io::create_default_session_folders(&p);
     // Keep the in-memory document in sync (paths, unsaved flags) without an undo step.
     *e.session_mut() = fresh;
     e.path = Some(p.to_string_lossy().into_owned());
@@ -328,6 +329,40 @@ mod save_tests {
     }
 
     #[test]
+    fn a_new_session_save_creates_the_default_folders() {
+        let dir = Scratch::new("default-folders");
+        let path = dir.0.join("Song.scraft").to_string_lossy().into_owned();
+        save_session(&mut Engine::default(), &path).unwrap();
+        for folder in ["Audio Files", "Bounced Files", "Session File Backups"] {
+            assert!(dir.0.join(folder).is_dir(), "{folder} was not created");
+        }
+    }
+
+    /// A session saved before the default folders keep its legacy `Backups/`: the new save must
+    /// not create `Session File Backups/` and split its versions between two rotating folders.
+    #[test]
+    fn a_session_with_legacy_backups_keeps_backing_up_there() {
+        let dir = Scratch::new("legacy-backups");
+        std::fs::create_dir_all(dir.0.join("Backups")).unwrap();
+        let path = dir.0.join("Song.scraft").to_string_lossy().into_owned();
+        let mut e = Engine::default();
+        for i in 0..3 {
+            e.execute("track.new", &json!({"name": format!("T{i}")})).unwrap();
+            save_session(&mut e, &path).unwrap();
+            save_session(&mut e, &path).unwrap();
+        }
+        assert!(!dir.0.join("Session File Backups").exists(), "the legacy session must not gain the new folder");
+        let mut names: Vec<u32> = std::fs::read_dir(dir.0.join("Backups"))
+            .unwrap()
+            .flatten()
+            .filter_map(|f| f.file_name().to_str()?.strip_prefix("Song backup ")?.strip_suffix(".scraft")?.parse().ok())
+            .collect();
+        names.sort_unstable();
+        assert!(!names.is_empty(), "backups are written");
+        assert_eq!(names, (1..=names.len() as u32).collect::<Vec<_>>(), "numbering continues in Backups/");
+    }
+
+    #[test]
     fn saving_keeps_the_last_ten_versions_as_backups() {
         let dir = std::env::temp_dir().join(format!("soundcraft-backups-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
@@ -341,8 +376,8 @@ mod save_tests {
             save_session(&mut e, &path.to_string_lossy()).unwrap();
             versions.push(std::fs::read(&path).unwrap());
         }
-        let backup = |n: usize| std::fs::read(dir.join(format!("Backups/Song backup {n}.scraft"))).ok();
-        assert_eq!(std::fs::read_dir(dir.join("Backups")).unwrap().count(), 10);
+        let backup = |n: usize| std::fs::read(dir.join(format!("Session File Backups/Song backup {n}.scraft"))).ok();
+        assert_eq!(std::fs::read_dir(dir.join("Session File Backups")).unwrap().count(), 10);
         assert_eq!((backup(1), backup(2), backup(11)), (None, Some(versions[1].clone()), Some(versions[10].clone())));
         let _ = std::fs::remove_dir_all(&dir);
     }
