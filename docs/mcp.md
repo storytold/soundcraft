@@ -43,8 +43,8 @@ works across the suite) keep the agent to the folders you give it:
   `session.save_as`, `session.save_copy`, `session.save_template`, `bounce_mix` and
   `file.bounce_mix`, `file.bounce_stems`, `file.export_clips`, `file.export_midi`,
   `file.export_session_text`, `file.export_selected_tracks_as_session`, `file.export_sibelius`,
-  `file.send_to_sibelius`, `file.print_score`, `file.export_clip_groups` and
-  `track.save_preset`, together with what a session save writes beside the session file
+  `file.send_to_sibelius`, `file.print_score`, `file.export_clip_groups`, `track.save_preset`
+  and the record folder `setup.disk_allocation` sets, together with what a session save writes beside the session file
   (`Audio Files/`, `Backups/`) and its temporary file. A score command given no `path` writes to
   the temp folder, which is outside the write roots unless you made it one, so it is refused.
 - Each flag may be given more than once (#874): a path inside any of the read roots may be read,
