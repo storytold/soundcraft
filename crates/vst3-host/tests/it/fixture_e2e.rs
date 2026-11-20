@@ -4,7 +4,7 @@
 
 use soundcraft_dsp::{Category, Taper, Unit};
 
-use crate::common::fixture_dir;
+use crate::common::{fixture_dir, take_fixture_calls};
 
 fn id_of(name: &str) -> String {
     let found = soundcraft_vst3_host::scan_paths(&[fixture_dir().to_path_buf()]);
@@ -378,4 +378,24 @@ fn editor_view_is_probed_and_edits_come_back_as_plain_values() {
     // The synth's controller has no view.
     let synth = soundcraft_vst3_host::instantiate_plugin(&id_of("Fixture Synth")).unwrap();
     assert!(synth.editor_size().is_err());
+}
+
+#[test]
+fn reactivate_cycles_processing_and_activation_in_order_and_keeps_params() {
+    let mut p = soundcraft_vst3_host::instantiate_plugin(&id_of("Fixture Gain")).unwrap();
+    soundcraft_dsp::Plugin::prepare(&mut p, 44_100.0, 256, 2);
+    soundcraft_dsp::Plugin::set_param(&mut p, "7", 1.5);
+    let before = take_fixture_calls();
+    assert!(before.contains(&"setActive(true)".to_string()), "prepare activated it: {before:?}");
+    p.reactivate().unwrap();
+    assert_eq!(
+        take_fixture_calls(),
+        ["setProcessing(false)", "setActive(false)", "setActive(true)", "setProcessing(true)"],
+        "the four calls, in this order and nothing else"
+    );
+    assert_eq!(soundcraft_dsp::Plugin::param(&p, "7"), Some(1.5), "parameters survive");
+    // Still processes afterwards.
+    let mut io = vec![vec![1.0f32; 64], vec![1.0f32; 64]];
+    soundcraft_dsp::Plugin::process(&mut p, &mut io, 64);
+    p.reactivate().unwrap();
 }

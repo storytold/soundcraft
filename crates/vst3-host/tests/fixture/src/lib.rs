@@ -72,6 +72,28 @@ unsafe fn channels<'a>(bus: &AudioBusBuffers, frames: usize) -> Vec<&'a mut [f32
     table.iter().map(|&p| unsafe { std::slice::from_raw_parts_mut(p, frames) }).collect()
 }
 
+// ---- call log ------------------------------------------------------------------------------
+
+thread_local! {
+    /// The Fixture Gain component's `setActive`/`setProcessing` calls made on this thread, oldest
+    /// first. Thread-local so tests running in parallel do not see each other's calls.
+    static CALLS: std::cell::RefCell<Vec<&'static str>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+fn log_call(call: &'static str) {
+    let _ = CALLS.try_with(|c| c.borrow_mut().push(call));
+}
+
+/// Test hook: writes this thread's logged calls, comma separated, into `buf` (at most `cap`
+/// bytes), clears the log and returns the number of bytes written.
+#[unsafe(no_mangle)]
+extern "C" fn fixture_take_call_log(buf: *mut u8, cap: usize) -> usize {
+    let text = CALLS.with(|c| c.take()).join(",");
+    let n = text.len().min(cap);
+    unsafe { std::ptr::copy_nonoverlapping(text.as_ptr(), buf, n) };
+    n
+}
+
 // ---- gain ----------------------------------------------------------------------------------
 
 struct GainProcessor {
@@ -131,7 +153,8 @@ impl IComponentTrait for GainProcessor {
     unsafe fn activateBus(&self, _m: MediaType, _d: BusDirection, _i: i32, _s: TBool) -> tresult {
         kResultOk
     }
-    unsafe fn setActive(&self, _state: TBool) -> tresult {
+    unsafe fn setActive(&self, state: TBool) -> tresult {
+        log_call(if state != 0 { "setActive(true)" } else { "setActive(false)" });
         kResultOk
     }
     unsafe fn setState(&self, state: *mut IBStream) -> tresult {
@@ -187,7 +210,8 @@ impl IAudioProcessorTrait for GainProcessor {
         assert!(s.maxSamplesPerBlock > 0 && s.sampleRate > 0.0);
         kResultOk
     }
-    unsafe fn setProcessing(&self, _state: TBool) -> tresult {
+    unsafe fn setProcessing(&self, state: TBool) -> tresult {
+        log_call(if state != 0 { "setProcessing(true)" } else { "setProcessing(false)" });
         kNotImplemented
     }
     unsafe fn process(&self, data: *mut ProcessData) -> tresult {
