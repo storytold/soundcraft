@@ -29,13 +29,17 @@ impl SoundApp {
         let Some(player) = self.player.as_ref() else { return };
         let port =
             self.ui.mtc_output_port.as_ref().filter(|_| self.ui.gen_mtc && !self.mtc_online && mtc::supported(self.engine.session().frame_rate));
-        let desired = port.map(|s| (s.clone(), self.ui.midi_sync.ports.get(s).map_or(0, |p| p.offset_samples)));
+        let desired = port.map(|name| (name.as_str(), self.ui.midi_sync.ports.get(name).map_or(0, |p| p.offset_samples)));
         let compensate = self.ui.midi_sync.compensation.mtc;
-        if self.applied_mtc_output.as_ref().is_some_and(|(name, c)| name == &desired && *c == compensate) {
+        if let Some((applied, previous_compensation)) = &self.applied_mtc_output
+            && applied.as_ref().map(|(name, offset)| (name.as_str(), *offset)) == desired
+            && *previous_compensation == compensate
+        {
             return;
         }
-        player.set_mtc_generator(desired.clone(), compensate);
-        self.applied_mtc_output = Some((desired, compensate));
+        let owned = desired.map(|(name, offset)| (name.to_owned(), offset));
+        player.set_mtc_generator(owned.clone(), compensate);
+        self.applied_mtc_output = Some((owned, compensate));
     }
 
     pub(crate) fn mtc_output_command(&mut self, p: &Value) -> Result<Value, String> {
@@ -69,7 +73,11 @@ impl SoundApp {
         self.ui.gen_mtc = enabled;
         self.ui.mtc_output_port = selected;
         self.service_mtc_output();
-        let mut state = json!({"port":self.ui.mtc_output_port,"enabled":enabled,"active":enabled && self.player.is_some() && mtc::supported(self.engine.session().frame_rate),"frame_rate":self.engine.session().frame_rate.label()});
+        let active = enabled
+            && self.player.as_ref().zip(self.ui.mtc_output_port.as_ref()).is_some_and(|(player, name)| {
+                player.midi_sync_status().ports.get(name).is_some_and(|port| port.connected && port.mtc_total_us.is_some())
+            });
+        let mut state = json!({"port":self.ui.mtc_output_port,"enabled":enabled,"active":active,"frame_rate":self.engine.session().frame_rate.label()});
         if let Some(ports) = ports {
             state["ports"] = json!(ports);
         }
