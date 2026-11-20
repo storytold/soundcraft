@@ -619,7 +619,7 @@ fn external_clock_returns_prior_snapshot_even_with_unavailable_retirement_queue(
         let mut state = AudioState::new(rx, shared, previous, 48_000.0, garbage);
         let (retire, receiver) = sync_channel(1);
         retire.try_send(Arc::new(Session::default())).unwrap();
-        let receiver = Some(receiver).filter(|_| !disconnect);
+        let receiver = (!disconnect).then_some(receiver);
         tx.send(Cmd::OldSessions(retire)).unwrap();
         let mut returned = GridReturn::default();
         tx.send(Cmd::FollowGrid(Arc::new(Session::default()), returned.clone())).unwrap();

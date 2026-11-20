@@ -38,8 +38,7 @@ fn a_fresh_start_after_idle_clock_timeout_arms_the_next_pulse() {
 #[test]
 fn coast_or_stop_once_on_loss_and_resume_only_after_transport() {
     for coast in [true, false] {
-        let mut r = Follower::default();
-        r.coast = coast;
+        let mut r = Follower { coast, ..Follower::default() };
         feed(&mut r, 0xfa, 0);
         feed(&mut r, 0xf8, 1);
         while r.take().is_some() {}
