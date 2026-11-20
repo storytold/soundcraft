@@ -97,8 +97,8 @@ fn ctrl_dragging_the_value_box_moves_a_tenth_as_far_too() {
 
 #[test]
 fn ctrl_without_command_moves_a_tenth_as_far() {
-    let mut h = strip_silence_dialog();
     for (role, dx, within) in [(Role::Slider, 30.0, 0.08..=0.12), (Role::SpinButton, 20.0, 0.07..=0.13)] {
+        let mut h = strip_silence_dialog();
         let label = "Threshold dB";
         let plain = drag_on(&mut h, role, label, dx, Modifiers::NONE);
         let fine = drag_on(&mut h, role, label, dx, Modifiers::CTRL);

@@ -185,17 +185,19 @@ fn pressing_and_releasing_ctrl_during_a_drag_keeps_a_whole_number_slider_whole()
 fn a_small_ctrl_drag_at_the_low_end_of_a_log_slider_moves_the_value() {
     let mut app = SoundApp::new(soundcraft_engine::demo::demo_engine(), None, Services::default());
     let kick = app.engine.session().track_by_name("Kick").unwrap().id;
+    let attack = slider_params("compressor")[2];
+    assert_eq!(attack.id, "attack");
+    app.run("mix.insert_param", json!({"track": kick.0, "slot": 1, "param": "attack", "value": attack.min})).unwrap();
+    app.engine.end_merge();
     app.ui.plugin_windows = vec![(kick, 1)];
     let mut h = harness(app);
     let rails = window_sliders(&h, Id::unique(("plugin", kick.0, 1usize)));
-    let attack = slider_params("compressor")[2];
-    assert_eq!(attack.id, "attack");
     let from = rails[2].left_center() + vec2(1.0, 0.0);
     hold(&mut h, Modifiers::COMMAND);
     move_to(&mut h, from);
     press(&mut h, from, true, Modifiers::COMMAND);
     let start = insert_param(&h, kick, 1, attack);
-    assert_eq!(start, f64::from(attack.min), "the press did not put Attack at its lowest value");
+    assert_eq!(start, f64::from(attack.min), "the press moved Attack from its lowest value");
     move_to(&mut h, from + vec2(1.0, 0.0));
     let moved = insert_param(&h, kick, 1, attack);
     press(&mut h, from + vec2(1.0, 0.0), false, Modifiers::COMMAND);
@@ -208,10 +210,12 @@ fn a_small_ctrl_drag_at_the_low_end_of_a_log_slider_with_a_value_box_moves_the_v
     let mut app = SoundApp::new(soundcraft_engine::demo::demo_engine(), None, Services::default());
     let clip = app.engine.session().track_by_name("Kick").unwrap().clips().iter().find(|c| c.is_audio()).unwrap().id;
     app.run("edit.select", json!({"clips": [clip.0]})).unwrap();
-    app.ui.show_clip_effects = true;
-    let mut h = harness(app);
     let attack = slider_params("compressor")[2];
     assert_eq!(attack.id, "attack");
+    app.run("clip.effects_set", json!({"clips": [clip.0], "params": {"comp.attack": attack.min}})).unwrap();
+    app.engine.end_merge();
+    app.ui.show_clip_effects = true;
+    let mut h = harness(app);
     let key = format!("clip_fx.{}.comp.attack", clip.0);
     let from = h.get_by_role_and_label(Role::Slider, attack.name).rect().left_center() + vec2(1.0, 0.0);
     hold(&mut h, Modifiers::COMMAND);
