@@ -34,9 +34,10 @@ pub fn import_midi_bytes(e: &mut Engine, bytes: &[u8], at: Samples, tempo_map: b
             // The strict reader stops at the first damage, so a limit further on shows only here.
             if read.over_limit {
                 return Err(EngineError::Io(format!(
-                    "MIDI file: more than {} events or {} tracks",
+                    "MIDI file exceeds a limit of {} events, {} tracks, or {} bytes of SysEx payload",
                     soundcraft_midi::MAX_EVENTS,
-                    soundcraft_midi::MAX_TRACKS
+                    soundcraft_midi::MAX_TRACKS,
+                    soundcraft_midi::MAX_SYSEX_BYTES
                 )));
             }
             for warning in &read.warnings {

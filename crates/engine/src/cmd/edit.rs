@@ -259,7 +259,9 @@ fn cut_copy(e: &mut Engine, p: &Value, cut: bool, id: &str) -> Result<Value> {
     let follow = e.session().edit.automation_follows_edit;
     for t in &tracks {
         // Cut carries only what it removes; a locked clip stays where it is (see `ops::take_range`).
-        cb.tracks.push(if cut { ops::take_range(e.session(), *t, range) } else { ops::copy_range(e.session(), *t, range) });
+        let s = e.session();
+        let clips = if cut { ops::take_range(s, *t, range) } else { ops::copy_range(s, *t, range) };
+        cb.push_clips(s, range.start, clips);
         let lanes = e
             .session()
             .track(*t)

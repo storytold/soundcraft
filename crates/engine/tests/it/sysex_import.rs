@@ -119,3 +119,79 @@ fn trimming_drops_packets_before_the_new_start_and_reanchors_the_rest() {
     assert_eq!(packets.iter().map(|e| e.tick).collect::<Vec<_>>(), [480, 960]);
     assert_eq!(packets[0].status, 0xF7);
 }
+
+#[test]
+fn partial_copy_merge_exports_only_the_selected_midi_events() {
+    use serde_json::json;
+    use soundcraft_midi::{CtrlEvent, CtrlKind, Note, Sequence, SysExEvent};
+    use soundcraft_model::{ChannelFormat, Clip, TrackKind};
+
+    let mut e = Engine::default();
+    let s = e.session_mut();
+    let source = s.add_track(TrackKind::Midi, ChannelFormat::Stereo, None);
+    let host = s.add_track(TrackKind::Midi, ChannelFormat::Stereo, None);
+    let mut sequence = Sequence::default();
+    for (tick, key) in [(119, 60), (120, 61), (240, 62), (360, 63), (480, 64)] {
+        sequence.notes.push(Note { start: tick, length: 180, pitch: key, velocity: 100, release_velocity: 64, channel: 0 });
+        sequence.ctrls.push(CtrlEvent { tick, channel: 0, kind: CtrlKind::Cc(11), value: i32::from(key) });
+        sequence.sysex.push(SysExEvent { tick, status: 0xf0, data: vec![0x7d, key, 0xf7] });
+    }
+    let source_id = s.new_clip_id();
+    let host_id = s.new_clip_id();
+    edit::place_clip(s, source, Clip::midi(source_id, "source", 0, 24_000, sequence));
+    edit::place_clip(s, host, Clip::midi(host_id, "destination", 12_000, 96_000, Sequence::default()));
+    // At 120 BPM and 48 kHz, [3000, 9000) samples selects source ticks [120, 360).
+    e.execute("edit.copy", &json!({"tracks":[source.0], "start":3000, "end":9000})).unwrap();
+    let result = e.execute("edit.paste_merge_midi", &json!({"tracks":[host.0], "at":24_000})).unwrap();
+    assert_eq!(result["merged"], 1);
+
+    let smf = soundcraft_midi::read_smf(&io::export_midi(&e, Some(&[host])).unwrap()).unwrap();
+    let exported = &smf.tracks.iter().find(|t| !t.sequence.notes.is_empty()).unwrap().sequence;
+    let ClipContent::Midi { sequence: merged } = &e.session().find_clip(host_id).unwrap().1.content else { panic!("expected MIDI") };
+    // Host-relative ticks and the decoded SMF both retain inclusive start and exclusive end.
+    for (seq, base) in [(exported, 960), (merged, 480)] {
+        let notes: Vec<_> = seq.notes.iter().map(|n| (n.start, n.pitch, n.length)).collect();
+        let ctrls: Vec<_> = seq.ctrls.iter().map(|c| (c.tick, c.kind, c.value)).collect();
+        let packets: Vec<_> = seq.sysex.iter().map(|s| (s.tick, s.status, s.data.as_slice())).collect();
+        assert_eq!(
+            (notes, ctrls, packets),
+            (
+                vec![(base, 61, 180), (base + 120, 62, 120)],
+                vec![(base, CtrlKind::Cc(11), 61), (base + 120, CtrlKind::Cc(11), 62)],
+                vec![(base, 0xf0, &[0x7d, 61, 0xf7][..]), (base + 120, 0xf0, &[0x7d, 62, 0xf7][..])],
+            )
+        );
+    }
+
+    // At the faster destination tempo the same sample length spans twice as many ticks.
+    // A repeated paste on an empty track must still use the source window.
+    e.session_mut().tempo.set_tempo(0, 240.).unwrap();
+    let empty = e.session_mut().add_track(TrackKind::Midi, ChannelFormat::Stereo, None);
+    let result = e.execute("edit.paste_merge_midi", &json!({"tracks":[empty.0], "at":24_000})).unwrap();
+    assert_eq!(result["placed"], 1);
+    let smf = soundcraft_midi::read_smf(&io::export_midi(&e, Some(&[empty])).unwrap()).unwrap();
+    let seq = &smf.tracks.iter().find(|t| !t.sequence.notes.is_empty()).unwrap().sequence;
+    assert_eq!(seq.notes.iter().map(|n| (n.start, n.length)).collect::<Vec<_>>(), [(1920, 180), (2040, 120)]);
+    assert_eq!(seq.ctrls.iter().map(|c| c.tick).collect::<Vec<_>>(), [1920, 2040]);
+    assert_eq!(seq.sysex.iter().map(|s| s.tick).collect::<Vec<_>>(), [1920, 2040]);
+}
+
+#[test]
+fn recovered_track_over_the_sysex_budget_reports_the_payload_limit() {
+    // A damaged first track sends import down the lenient path before it sees track two.
+    let mut bytes = smf_track(&[0, 0x90, 60]);
+    bytes[9] = 1; // SMF format 1
+    bytes[11] = 2;
+    let mut body = LARGE_SYSEX_HEADER.to_vec();
+    body.resize(body.len() + soundcraft_midi::MAX_SYSEX_BYTES + 1, 0);
+    bytes.extend_from_slice(b"MTrk");
+    bytes.extend_from_slice(&(body.len() as u32).to_be_bytes());
+    bytes.extend_from_slice(&body);
+    assert!(matches!(soundcraft_midi::read_smf(&bytes), Err(soundcraft_midi::MidiError::Truncated(_))));
+    assert!(soundcraft_midi::read_smf_lenient(&bytes).unwrap().over_limit);
+    let mut e = Engine::default();
+    let before = serde_json::to_value(e.session()).unwrap();
+    let error = io::import_midi_bytes(&mut e, &bytes, 0, true).unwrap_err().to_string();
+    assert!(error.contains("SysEx") && error.contains(&soundcraft_midi::MAX_SYSEX_BYTES.to_string()), "{error}");
+    assert_eq!(serde_json::to_value(e.session()).unwrap(), before);
+}
