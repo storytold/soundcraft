@@ -366,12 +366,10 @@ impl MidiFeed {
         if matches!(bytes.first(), Some(0xf0 | 0xf1 | 0xfc)) {
             let arrival = self.now();
             let mut reader = self.mtc.lock().unwrap_or_else(PoisonError::into_inner);
-            if reader.source == Some(port) && open.is_none_or(|gate| gate.load(Ordering::Acquire)) {
-                if reader.receive(bytes, at_us, arrival) {
-                    self.wake_mtc_output(&reader);
-                    drop(reader);
-                    self.wake_mtc_host();
-                }
+            if reader.source == Some(port) && open.is_none_or(|gate| gate.load(Ordering::Acquire)) && reader.receive(bytes, at_us, arrival) {
+                self.wake_mtc_output(&reader);
+                drop(reader);
+                self.wake_mtc_host();
             }
             return;
         }
