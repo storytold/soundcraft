@@ -518,3 +518,35 @@ fn live_input_states_of_restored_tracks_start_disabled() {
     assert!(!mixer.record_arm && !mixer.input_monitor);
     assert!(e.session().track(b).unwrap().mixer.input_monitor);
 }
+
+#[test]
+fn insert_io_builds_a_hardware_insert() {
+    // #1550: an I/O insert binds an insert slot to a hardware out/return pair; its
+    // latency_samples is the round trip the delay compensation aligns the session to.
+    let mut e = Engine::default();
+    e.execute("track.new", &json!({})).unwrap();
+    let t = e.session().tracks[0].id.0;
+    e.execute("mix.insert_io", &json!({"track": t, "slot": 0, "out": "Out 3-4", "in": "In 5-6", "latency_samples": 480})).unwrap();
+    let ins = e.session().tracks[0].mixer.inserts[0].as_ref().unwrap().clone();
+    assert_eq!(ins.plugin, "hwio:Out 3-4|In 5-6");
+    assert_eq!(ins.params["latency_samples"], 480.0);
+
+    // Paths must carry a channel number and no `|` separator.
+    for params in [
+        json!({"track": t, "out": "Out A", "in": "In 1-2"}),
+        json!({"track": t, "out": "Out 1|x", "in": "In 1-2"}),
+        json!({"track": t, "out": "Out 1-2"}),
+    ] {
+        assert!(e.execute("mix.insert_io", &params).is_err(), "{params}");
+    }
+
+    // latency_samples is settable through mix.insert_param; no other param exists.
+    e.execute("mix.insert_param", &json!({"track": t, "slot": 0, "param": "latency_samples", "value": 240})).unwrap();
+    assert_eq!(e.session().tracks[0].mixer.inserts[0].as_ref().unwrap().params["latency_samples"], 240.0);
+    assert!(e.execute("mix.insert_param", &json!({"track": t, "slot": 0, "param": "gain", "value": 1})).is_err());
+
+    // The id round-trips: a saved session keeps the binding.
+    let text = serde_json::to_string(&ins).unwrap();
+    let back: Insert = serde_json::from_str(&text).unwrap();
+    assert_eq!(back.plugin, "hwio:Out 3-4|In 5-6");
+}
