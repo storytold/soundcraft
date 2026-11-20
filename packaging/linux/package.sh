@@ -129,7 +129,10 @@ if has deb || has rpm; then
   # so its entry is dropped too.
   DROP_ZSH_LINK=
   [[ -f "$STAGE/usr/share/zsh/site-functions/_soundcraft-cli" ]] || DROP_ZSH_LINK='\|^  - src: /usr/share/zsh/site-functions/|,/packager: deb/d;'
-  sed "${DROP_ZSH_LINK}s|\${STAGE}|$STAGE|g" "$HERE/nfpm.yaml" >"$WORK/nfpm.yaml"
+  # The man pages and completions are named one by one (nfpm.yaml), so their entries go too.
+  DROP_CLI_DOCS=
+  [[ -f "$STAGE/usr/share/zsh/site-functions/_soundcraft-cli" ]] || DROP_CLI_DOCS='/^  # cli-docs:begin/,/^  # cli-docs:end/d;'
+  sed "${DROP_ZSH_LINK}${DROP_CLI_DOCS}s|\${STAGE}|$STAGE|g" "$HERE/nfpm.yaml" >"$WORK/nfpm.yaml"
   for fmt in deb rpm; do
     if has "$fmt"; then (cd "$ROOT" && nfpm package -f "$WORK/nfpm.yaml" -p "$fmt" -t "$DIST/$BASENAME.$fmt"); fi
   done
