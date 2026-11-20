@@ -1,6 +1,6 @@
 # SoundCraft roadmap: milestones and what's next
 
-> **Last reviewed:** 2026-11-05 · **Last updated:** 2026-11-18 · **Change:** minor (MIDI input landed, the gate row needs checking on macOS and Windows; previously trivial: 28 built-in processors with the Frequency Shifter; previously trivial: G-05 estimate after Linux/X11 plugin editors; previously trivial: M15: partial pt-BR catalog in PR #1346) · **Target:** Avid Pro Tools Ultimate 2026.4.1
+> **Last reviewed:** 2026-11-14 · **Last updated:** 2026-11-18 · **Change:** minor (MIDI input landed, the gate row needs checking on macOS and Windows; strict external-WAV AAF import; previously trivial: 28 built-in processors with the Frequency Shifter; G-05 estimate after Linux/X11 plugin editors; M15: partial pt-BR catalog; readiness estimates unchanged) · **Target:** Avid Pro Tools Ultimate 2026.4.1
 
 Forward-looking plan. Status and numbers: [`../ROADMAP.md`](../ROADMAP.md) and
 [`target-app-parity.md`](target-app-parity.md); the ranked work list: [`gaps.md`](gaps.md).
@@ -27,7 +27,7 @@ main platform). Any **no** keeps SoundCraft **pre-alpha**, and those rows are th
 | Edit: select, trim, fade, comp playlists, Slip/Shuffle/Grid | yes (rough) | Every Edit menu command; property-tested with undo; open bugs #3, #5, #140 don't block the workflow | — |
 | Mix with built-in and third-party plugins, sends, busses, automation | partial (passes on CLAP/AU) | 28 built-in processors; CLAP and AU host on the signed macOS build, but its missing entitlement blocks third-party VST3 (#153). No AU plugin windows yet; VST3 windows on macOS, Windows and Linux/X11 | 1–2 (entitlement) |
 | Bounce mix and stems; save and reopen the session | yes (rough) | WAV/BWF/AIFF/FLAC bounce, stems, `.scraft` save/reopen with plugin state; bugs #59, #103 in bus bounce and aux latency (PRs open) | — |
-| Exchange a session with Pro Tools or a picture editor | **no** | No `.ptx`, AAF or OMF import or export (#40, G-03) | 50–90 |
+| Exchange a session with Pro Tools or a picture editor | **no** | Strict external-WAV AAF import works, but AAF export, OMF and `.ptx` do not (#40, G-03) | 50–90 |
 
 **Result: pre-alpha.** Three workflows fail. Passing them is ~110–180 h, about 70 % of it
 parallelizable (interfaces, MIDI and AAF are independent crates).
@@ -47,7 +47,7 @@ Status: ✅ done · 🟡 in progress · ⬜ not started.
 | M10 | Public releases on all platforms | ✅ v0.3.0 (2026-10-08) and v0.4.0 (2026-10-10) released for every platform | — |
 | M11 | Third-party plugin hosting (CLAP, VST3, AU), video, surround | 🟡 mostly done | 40–60 |
 | M12 | **Hardware**: audio interfaces, MIDI devices, sync, control surfaces | ⬜ | 110–180 |
-| M13 | **Interchange**: AAF/OMF import/export, disk streaming, record to disk | ⬜ | 65–115 |
+| M13 | **Interchange**: AAF/OMF import/export, disk streaming, record to disk | 🟡 strict external-WAV AAF import; export, OMF and disk streaming missing | 65–115 |
 | M14 | **Fidelity harness** against Pro Tools (null tests, plugin responses) | ⬜ | 20–30 |
 | M15 | **Localization**: catalog, fonts/RTL, the 8 Pro Tools languages first | 🟡 partial (pt-BR catalog; needs native review; PRs #141, #143 open) | 45–80 |
 | M16 | Built-in plugin depth, sidechain, ARA | ⬜ | 110–170 |
@@ -89,6 +89,7 @@ There is no `cargo xtask scorecard` in this repo; the measured number is `cargo 
 | Date | Change | Summary |
 |---|---|---|
 | 2026-11-18 | minor | MIDI input devices landed (G-02 shrunk); the MIDI gate row is unverified until checked on macOS and Windows |
+| 2026-11-14 | minor | M13 is in progress with strict external-WAV AAF import; the exchange gate still fails without AAF export, OMF or `.ptx`; estimates unchanged |
 | 2026-11-09 | trivial | 28 built-in processors with the Frequency Shifter |
 | 2026-11-05 | trivial | M15: a pt-BR catalog covers menus and `text`/`localized_format!` strings; remains native review, CJK/RTL and the other languages. Estimates unchanged |
 | 2026-10-30 | trivial | G-05 down to 10–15 h and the mix row's VST3 windows updated: VST3 and embedded CLAP editors are hosted on Linux/X11 (#527) |

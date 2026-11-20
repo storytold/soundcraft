@@ -1,12 +1,14 @@
-//! Model Context Protocol server (stdio, newline-delimited JSON-RPC 2.0).
+//! Model Context Protocol server (stdio, newline-delimited JSON-RPC 2.0), backed by
+//! `craft_mcp_server`.
 
 use crate::Backend;
+use craft_mcp_server::{Contents, Info, Options, Tools};
 use serde_json::{Value, json};
 use std::io::{BufRead, Write};
 
-pub const PROTOCOL_VERSION: &str = "2025-06-18";
-const SUPPORTED: &[&str] = &["2025-06-18", "2025-03-26", "2024-11-05"];
+pub use craft_mcp_server::PROTOCOL_VERSION;
 const MAX_BATCH_CALLS: usize = 1000;
+const MAX_LINE_BYTES: usize = 16 * 1024 * 1024;
 
 const INSTRUCTIONS: &str = "SoundCraft is a digital audio workstation (Pro Tools-class). Everything a user can do is a \
 command: call `list_commands` to discover ids and their params, then `execute` (or `batch`). Positions are samples \
@@ -14,8 +16,12 @@ command: call `list_commands` to discover ids and their params, then `execute` (
 or name. Verify your work with `inspect_session` (tracks, clips, mixer, automation, markers, selection). Programmatic \
 calls never open dialogs. Tools marked APP_ONLY need the desktop app (`soundcraft --control 0` + `soundcraft-cli mcp --connect PORT`).";
 
+struct SoundcraftTools<B: Backend> {
+    backend: B,
+}
+
 pub struct Server<B: Backend> {
-    pub backend: B,
+    inner: craft_mcp_server::Server<SoundcraftTools<B>>,
 }
 
 fn tool(name: &str, desc: &str, props: Value, required: &[&str]) -> Value {
@@ -113,17 +119,12 @@ fn error_result(e: &str) -> Value {
     json!({"content": [{"type": "text", "text": e}], "isError": true})
 }
 
-impl<B: Backend> Server<B> {
-    pub fn new(backend: B) -> Self {
-        Server { backend }
-    }
-
+impl<B: Backend> SoundcraftTools<B> {
     fn exec(&mut self, cmd: &str, params: Value) -> Result<Value, String> {
         self.backend.call("engine.execute", json!({"command": cmd, "params": params}))
     }
 
-    /// Dispatch a tool call.
-    pub fn call_tool(&mut self, name: &str, args: &Value) -> Value {
+    fn call_tool(&mut self, name: &str, args: &Value) -> Value {
         let a = |k: &str| args.get(k).cloned();
         let r: Result<Value, String> = match name {
             "list_commands" => self.backend.call("engine.commands", json!({"filter": a("filter")})),
@@ -195,84 +196,63 @@ impl<B: Backend> Server<B> {
             Err(e) => error_result(&e),
         }
     }
+}
+
+impl<B: Backend> Tools for SoundcraftTools<B> {
+    fn instructions(&self) -> String {
+        format!("{INSTRUCTIONS}\nBackend: {}.", self.backend.describe())
+    }
+
+    fn list(&mut self) -> Vec<Value> {
+        tool_definitions()
+    }
+
+    fn call(&mut self, name: &str, args: &Value) -> Value {
+        self.call_tool(name, args)
+    }
+
+    fn resources(&self) -> Vec<Value> {
+        vec![
+            json!({"uri": "soundcraft://session", "name": "Session", "mimeType": "application/json", "description": "The open session as JSON"}),
+            json!({"uri": "soundcraft://commands", "name": "Commands", "mimeType": "application/json", "description": "All commands"}),
+        ]
+    }
+
+    fn read_resource(&mut self, uri: &str) -> Option<Result<Contents, String>> {
+        let r = match uri {
+            "soundcraft://session" => self.backend.call("session.inspect", json!({"detail": "full"})),
+            "soundcraft://commands" => self.backend.call("engine.commands", json!({})),
+            _ => return None,
+        };
+        Some(r.map(|v| Contents::Text { mime_type: "application/json".into(), text: v.to_string() }))
+    }
+}
+
+impl<B: Backend> Server<B> {
+    pub fn new(backend: B) -> Self {
+        let info = Info { name: "soundcraft", title: "SoundCraft", version: env!("CARGO_PKG_VERSION"), max_line: MAX_LINE_BYTES };
+        let options = Options { website_url: None, tool_errors_as_results: true, strict_request_ids: false };
+        Self { inner: craft_mcp_server::Server::new(info, SoundcraftTools { backend }).with_options(options) }
+    }
+
+    /// Dispatch a tool call.
+    pub fn call_tool(&mut self, name: &str, args: &Value) -> Value {
+        self.inner.tools().call_tool(name, args)
+    }
+
+    /// Borrow the underlying backend.
+    pub fn backend(&mut self) -> &mut B {
+        &mut self.inner.tools().backend
+    }
 
     /// Handle one JSON-RPC message; returns the reply line (None for notifications).
     pub fn handle(&mut self, msg: &Value) -> Option<Value> {
-        if !msg.is_object() {
-            return Some(json!({"jsonrpc": "2.0", "id": null, "error": {"code": -32600, "message": "invalid request"}}));
-        }
-        let id = msg.get("id").cloned();
-        let method = msg.get("method").and_then(Value::as_str).unwrap_or("");
-        let params = msg.get("params").cloned().unwrap_or(json!({}));
-        let id = id?;
-        let result: Result<Value, (i64, String)> = match method {
-            "initialize" => {
-                let want = params.get("protocolVersion").and_then(Value::as_str).unwrap_or(PROTOCOL_VERSION);
-                let ver = if SUPPORTED.contains(&want) { want } else { PROTOCOL_VERSION };
-                Ok(json!({
-                    "protocolVersion": ver,
-                    "capabilities": {"tools": {}, "resources": {}},
-                    "serverInfo": {"name": "soundcraft", "version": env!("CARGO_PKG_VERSION")},
-                    "instructions": format!("{INSTRUCTIONS}\nBackend: {}.", self.backend.describe()),
-                }))
-            }
-            "ping" => Ok(json!({})),
-            "tools/list" => Ok(json!({"tools": tool_definitions()})),
-            "tools/call" => {
-                let name = params.get("name").and_then(Value::as_str).unwrap_or("");
-                let args = params.get("arguments").cloned().unwrap_or(json!({}));
-                Ok(self.call_tool(name, &args))
-            }
-            "resources/list" => Ok(json!({"resources": [
-                {"uri": "soundcraft://session", "name": "Session", "mimeType": "application/json", "description": "The open session as JSON"},
-                {"uri": "soundcraft://commands", "name": "Commands", "mimeType": "application/json", "description": "All commands"},
-            ]})),
-            "resources/templates/list" => Ok(json!({"resourceTemplates": []})),
-            "resources/read" => {
-                let uri = params.get("uri").and_then(Value::as_str).unwrap_or("");
-                let r = match uri {
-                    "soundcraft://session" => self.backend.call("session.inspect", json!({"detail": "full"})),
-                    "soundcraft://commands" => self.backend.call("engine.commands", json!({})),
-                    _ => Err(format!("unknown resource {uri}")),
-                };
-                match r {
-                    Ok(v) => Ok(json!({"contents": [{"uri": uri, "mimeType": "application/json", "text": v.to_string()}]})),
-                    Err(e) => Err((-32002, e)),
-                }
-            }
-            "" => Err((-32600, "invalid request".into())),
-            other => Err((-32601, format!("method not found: {other}"))),
-        };
-        Some(match result {
-            Ok(r) => json!({"jsonrpc": "2.0", "id": id, "result": r}),
-            Err((code, m)) => json!({"jsonrpc": "2.0", "id": id, "error": {"code": code, "message": m}}),
-        })
+        self.inner.handle(msg.clone())
     }
 
     /// Serve until EOF.
-    pub fn serve(&mut self, input: impl BufRead, mut out: impl Write) -> std::io::Result<()> {
-        for line in input.lines() {
-            let line = line?;
-            if line.trim().is_empty() {
-                continue;
-            }
-            let reply = match serde_json::from_str::<Value>(&line) {
-                Ok(Value::Array(batch)) if batch.is_empty() => {
-                    Some(json!({"jsonrpc": "2.0", "id": null, "error": {"code": -32600, "message": "invalid request: empty batch"}}))
-                }
-                Ok(Value::Array(batch)) => {
-                    let replies: Vec<Value> = batch.iter().filter_map(|m| self.handle(m)).collect();
-                    if replies.is_empty() { None } else { Some(Value::Array(replies)) }
-                }
-                Ok(msg) => self.handle(&msg),
-                Err(e) => Some(json!({"jsonrpc": "2.0", "id": null, "error": {"code": -32700, "message": format!("parse error: {e}")}})),
-            };
-            if let Some(r) = reply {
-                writeln!(out, "{r}")?;
-                out.flush()?;
-            }
-        }
-        Ok(())
+    pub fn serve(&mut self, input: impl BufRead, out: impl Write) -> std::io::Result<()> {
+        self.inner.serve(input, out)
     }
 }
 

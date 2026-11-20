@@ -15,6 +15,7 @@ craft-score = { git = "https://github.com/storytold/craft-libs", rev = "3a1a627d
 craft-xml = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "ea24422ae9859dc5da398d0462bc87f8e02e0d10" }
 craft-mime = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "ea24422ae9859dc5da398d0462bc87f8e02e0d10" }
 # internal
+soundcraft-interchange = { path = "crates/interchange" }
 soundcraft-time = { path = "crates/time" }
 soundcraft-midi = { path = "crates/midi" }
 soundcraft-video = { path = "crates/video" }
@@ -46,6 +47,8 @@ proptest = "1"
 
 # audio
 rustfft = "6"
+# AAF interchange: Compound File Binary (structured storage) container reader.
+cfb = "0.15"
 # Session bundles (one file holding a session and its audio, for the browser): stored entries only.
 zip = { version = "9", default-features = false }
 cpal = "0.18"
@@ -73,6 +76,7 @@ craft-time = { version = "0.1.0", git = "https://github.com/storytold/craft-libs
 craft-scraft-format = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "45a8e16669e70dadb780dfbc759c882dd5b7ea1c" }
 # craft-update: app-specific pretend versions apply to startup and manual checks.
 craft-update = { version = "=0.1.0", git = "https://github.com/storytold/craft-libs", rev = "ea24422ae9859dc5da398d0462bc87f8e02e0d10", features = ["egui"] }
+craft-mcp-server = { version = "=0.1.0", git = "https://github.com/storytold/craft-libs", rev = "08da5e1486ee640de1d2cccd8fe8dd32b1d3b62c" }
 
 # ui
 craft-ui = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "ea24422ae9859dc5da398d0462bc87f8e02e0d10", features = ["serde"] }
