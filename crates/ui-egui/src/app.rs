@@ -375,7 +375,6 @@ impl SoundApp {
         }
         panels::floating(self, &ctx);
         windows::show(self, &ctx);
-        self.clock_follow_window(&ctx);
         preferences::show(self, &ctx);
         video_window::show(self, &ctx);
         ops_windows::show(self, &ctx);

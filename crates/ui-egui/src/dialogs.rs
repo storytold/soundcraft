@@ -96,7 +96,7 @@ pub enum Dialog {
     AutoRename { clips: Vec<ClipId>, names: StripNames },
     // `id: None` creates (Track › Group…); `id: Some` modifies that group (Groups list › Modify Group…).
     Group { id: Option<GroupId>, name: String, edit: bool, mix: bool, members: Vec<(u64, String, bool)> },
-    Synchronization,
+    Synchronization { scroll_to_clock: bool },
     Session { frame_rate: String, bit_depth: String, start: String, external: i64, freewheel: u8, jam_sync: bool },
     MidiBeatClock(midi_beat_clock::MidiBeatClock),
     // Clip › Loop…: `length` is typed in `format`, measured from `start` (the first selected clip's).
@@ -155,7 +155,7 @@ impl Dialogs {
             Dialog::AutoRename { .. } => "auto_rename",
             Dialog::Group { id: None, .. } => "group",
             Dialog::Group { id: Some(_), .. } => "modify_group",
-            Dialog::Synchronization => "synchronization",
+            Dialog::Synchronization { .. } => "synchronization",
             Dialog::Counter { .. } => "counter",
             Dialog::Session { .. } => "session",
             Dialog::MidiBeatClock(_) => "midi_beat_clock",
@@ -290,7 +290,7 @@ impl Dialogs {
                 let members = s.tracks.iter().map(|t| (t.id.0, t.name.clone(), s.edit.selected_tracks.contains(&t.id))).collect();
                 Dialog::Group { id: None, name: format!("Group {}", s.groups.len() + 1), edit: true, mix: true, members }
             }
-            "setup.peripherals" => Dialog::Synchronization,
+            "setup.peripherals" => Dialog::Synchronization { scroll_to_clock: false },
             "setup.session" => Dialog::Session {
                 frame_rate: e.session().frame_rate.label().into(),
                 bit_depth: match e.session().bit_depth {
@@ -579,7 +579,7 @@ pub fn show(app: &mut SoundApp, ctx: &egui::Context) {
         Dialog::StripSilenceRename { .. } | Dialog::AutoRename { .. } => "Rename Selected Clips",
         Dialog::Group { id: None, .. } => "Create Group",
         Dialog::Group { id: Some(_), .. } => "Modify Group",
-        Dialog::Synchronization => "Synchronization",
+        Dialog::Synchronization { .. } => "Synchronization",
         Dialog::Session { .. } => "Session Setup",
         Dialog::MidiBeatClock(_) => "MIDI Beat Clock",
         Dialog::Loop { .. } => "Clip Looping",
@@ -786,9 +786,15 @@ pub fn show(app: &mut SoundApp, ctx: &egui::Context) {
                     }
                 }
                 Dialog::Counter { field, value } => keep = field.edit(app, ui, value, first_frame, enter),
-                Dialog::Synchronization => {
-                    app.mtc_input_settings(ui);
-                    app.mtc_output_settings(ui);
+                Dialog::Synchronization { scroll_to_clock } => {
+                    egui::ScrollArea::vertical().max_height((ui.ctx().content_rect().height() - 160.).max(120.)).show(ui, |ui| {
+                        app.mtc_input_settings(ui);
+                        app.mtc_output_settings(ui);
+                        ui.separator();
+                        let section = ui.heading(crate::localization::text("External MIDI clock"));
+                        if std::mem::take(scroll_to_clock) { section.scroll_to_me(Some(egui::Align::TOP)); }
+                        app.clock_follow_settings(ui);
+                    });
                 }
                 Dialog::Session { frame_rate, bit_depth,start,external,freewheel,jam_sync } => {
                     ui.horizontal(|ui|{
@@ -1131,21 +1137,21 @@ mod tests {
         let Some(Dialog::MidiBeatClock(form)) = &mut app.dialogs.open else { panic!("missing clock dialog") };
         form.outputs = Ok(vec!["Clock A".into(), port.clone()]);
         form.settings.enabled = true;
-        form.settings.ports.insert(port.clone(), crate::midi_sync::MidiSyncPort { enabled: true, offset_samples: -240 });
+        form.settings.ports.insert(port.clone(), crate::midi_sync::MidiSyncPort { enabled: true, out_offset_samples: -240, ..Default::default() });
         dialog_frame(&ctx, &mut app, vec![]);
         enter(&mut app);
         assert!(app.dialogs.open.is_none());
         assert_eq!(app.engine.revision, revision);
-        assert_eq!(app.ui.midi_sync.ports[&port].offset_samples, -240);
+        assert_eq!(app.ui.midi_sync.ports[&port].out_offset_samples, -240);
         dialog_frame(&ctx, &mut app, vec![]);
         open(&mut app);
         let Some(Dialog::MidiBeatClock(form)) = &mut app.dialogs.open else { panic!("missing clock dialog") };
         form.outputs = Ok(vec!["Clock A".into()]);
-        form.settings.ports.get_mut(&port).unwrap().offset_samples = 64;
+        form.settings.ports.get_mut(&port).unwrap().out_offset_samples = 64;
         dialog_frame(&ctx, &mut app, vec![]);
         dialog_frame(&ctx, &mut app, vec![key(egui::Key::Escape, egui::Modifiers::NONE)]);
         assert!(app.dialogs.open.is_none());
-        assert_eq!(app.ui.midi_sync.ports[&port].offset_samples, -240);
+        assert_eq!(app.ui.midi_sync.ports[&port].out_offset_samples, -240);
     }
 
     /// Returns every editable value from the active New Tracks row.

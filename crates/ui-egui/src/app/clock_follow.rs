@@ -8,7 +8,6 @@ const TICKS_PER_PULSE: i64 = TICKS_PER_QUARTER / 24;
 #[derive(Default)]
 pub(crate) struct Host {
     pub(crate) enabled: bool,
-    pub(crate) show: bool,
     pub(super) snapshot: Snapshot,
     transport_error_us: Option<i64>,
     actions: Vec<Action>,
@@ -30,11 +29,12 @@ impl SoundApp {
         };
         let source = self.ui.clock_follow_input.as_ref();
         json!({"input":source,"enabled":self.clock_follow.enabled, "loss_policy":if self.ui.clock_follow_stop_on_loss {"stop"} else {"coast"},
-            "input_offset_samples":source.and_then(|p|self.ui.clock_follow_input_offsets.get(p)).copied().unwrap_or(0),
+            "input_offset_samples":source.and_then(|p|self.ui.midi_sync.ports.get(p)).map_or(0, |p|p.in_offset_samples),
             "state":state,"estimated_bpm":s.bpm,"jitter_us":s.jitter_us,"arrival_residual_us":s.phase_error_us,"phase_error_us":self.clock_follow.transport_error_us,"dropouts":s.dropouts})
     }
 
     pub(crate) fn clock_follow_command(&mut self, p: &Value) -> Result<Value, String> {
+        self.migrate_midi_sync();
         let args = p.as_object().ok_or("setup.midi_clock_follow expects an object")?;
         if args.keys().any(|k| !matches!(k.as_str(), "input" | "enabled" | "loss_policy" | "input_offset_samples")) {
             return Err("Unknown external MIDI clock setting".into());
@@ -59,9 +59,14 @@ impl SoundApp {
             _ => return Err("loss_policy must be coast or stop".into()),
         };
         let limit = soundcraft_playback::max_sync_offset_samples(self.engine.session().sample_rate);
+        let previous = source.as_ref().and_then(|name| self.ui.midi_sync.ports.get(name)).map_or(0, |p| p.in_offset_samples);
         let offset = args
             .get("input_offset_samples")
-            .map(|v| v.as_i64().filter(|n| n.unsigned_abs() <= limit as u64).ok_or("MIDI input calibration must be within the sync timing horizon"))
+            .map(|v| {
+                v.as_i64()
+                    .filter(|n| *n == previous || n.unsigned_abs() <= limit as u64)
+                    .ok_or("MIDI input calibration must be within the sync timing horizon")
+            })
             .transpose()?;
         if enabled && source.is_none() || offset.is_some() && source.is_none() {
             return Err("Select a MIDI clock input".into());
@@ -72,11 +77,18 @@ impl SoundApp {
         if enabled && source.as_ref().is_some_and(|name| self.clock_master_uses(name)) {
             return Err("The MIDI clock input is also enabled as a clock output".into());
         }
+        if self.ui.clock_follow_input != source {
+            self.ui.midi_sync.retain_calibrated_ports([source.as_deref(), self.ui.mtc_input_port.as_deref(), self.ui.mtc_output_port.as_deref()]);
+        }
         if let (Some(offset), Some(name)) = (offset, &source) {
-            if self.ui.clock_follow_input_offsets.len() >= 256 && !self.ui.clock_follow_input_offsets.contains_key(name) {
-                return Err("Too many calibrated MIDI inputs".into());
+            if let Some(port) = self.ui.midi_sync.ports.get_mut(name) {
+                port.in_offset_samples = offset;
+            } else if offset != 0 {
+                if self.ui.midi_sync.ports.len() >= 256 {
+                    return Err("Too many calibrated MIDI inputs".into());
+                }
+                self.ui.midi_sync.ports.entry(name.clone()).or_default().in_offset_samples = offset;
             }
-            self.ui.clock_follow_input_offsets.insert(name.clone(), offset);
         }
         if self.clock_follow.enabled != enabled || self.ui.clock_follow_input != source {
             // Finish a pending recording on the grid that captured it before releasing the route.
@@ -87,7 +99,7 @@ impl SoundApp {
                 m.feed().set_clock_follow(None, true, 0);
             }
             self.engine.playback_tempo = None;
-            self.clock_follow = Host { enabled, show: self.clock_follow.show, ..Host::default() };
+            self.clock_follow = Host { enabled, ..Host::default() };
             self.refresh_follow_playback();
         }
         self.ui.clock_follow_input = source;
@@ -113,6 +125,7 @@ impl SoundApp {
             let _ = grid.set_meter(meter.tick, meter.numerator, meter.denominator);
         }
         self.engine.playback_tempo = Some(grid);
+        self.clock_follow.grid_dirty = true;
     }
 
     fn refresh_follow_playback(&self) {
@@ -146,7 +159,7 @@ impl SoundApp {
         let initial_pulse = self.engine.transport_tempo().samples_to_ticks(self.position(), sr) / TICKS_PER_PULSE;
         feed.set_clock_follow(Some(id), !self.ui.clock_follow_stop_on_loss, initial_pulse);
         let limit = soundcraft_playback::max_sync_offset_samples(sr);
-        let offset = self.ui.clock_follow_input_offsets.get(name).copied().unwrap_or_default().clamp(-limit, limit);
+        let offset = self.ui.midi_sync.ports.get(name).map_or(0, |p| p.in_offset_samples).clamp(-limit, limit);
         let mut events = std::mem::take(&mut self.clock_follow.actions);
         let s = feed.clock_follow_status(&mut events);
         self.clock_follow.snapshot = s;
@@ -160,10 +173,7 @@ impl SoundApp {
                     if self.is_playing() {
                         self.stop_play();
                     }
-                    self.clock_follow.waiting_tick = pulse.saturating_mul(TICKS_PER_PULSE);
-                    if pulse == 0 {
-                        self.reset_follow_grid(0, s.bpm);
-                    }
+                    self.reset_follow_grid(pulse, s.bpm);
                     let at = self.engine.transport_tempo().tick_to_samples(pulse.saturating_mul(TICKS_PER_PULSE), sr);
                     // The normal locate command updates the stopped insertion and both transport cursors.
                     let _ = self.run("transport.locate", json!({"at":at}));
@@ -171,15 +181,17 @@ impl SoundApp {
                 Action::Play { pulse, at } => {
                     self.clock_follow.anchor = Some((pulse, at));
                     let tick = pulse.saturating_mul(TICKS_PER_PULSE);
-                    if let (Some(bpm), Some(grid)) = (s.bpm, &mut self.engine.playback_tempo) {
-                        let _ = grid.set_tempo(tick, bpm);
+                    if let (Some(bpm), Some(grid)) = (s.bpm, &mut self.engine.playback_tempo)
+                        && grid.tempo_at_tick(tick) != bpm
+                    {
+                        self.clock_follow.grid_dirty |= grid.set_tempo(tick, bpm).is_ok();
                     }
                     let origin = self.engine.transport_tempo().tick_to_samples(tick, sr);
                     let age = sr.samples(s.now_us.saturating_sub(at).max(0) as f64 / 1e6);
                     let lead = self.player.as_ref().map_or(0, |p| sr.samples(p.midi_sync_status().reported_lead_us as f64 / 1e6));
                     self.engine
                         .transport_requests
-                        .push(TransportRequest::PlayFrom(origin.saturating_add(age).saturating_add(lead).saturating_add(offset).max(0)));
+                        .push(TransportRequest::PlayFrom(origin.saturating_add(age).saturating_add(lead).saturating_sub(offset).max(0)));
                 }
                 Action::Stop => {
                     self.clock_follow.anchor = None;
@@ -198,19 +210,11 @@ impl SoundApp {
             let heard = self.player.as_ref().map_or(self.engine.transport.position, |player| player.presented_position());
             let tick = s.pulse.saturating_mul(TICKS_PER_PULSE);
             let elapsed = sr.samples(s.now_us.saturating_sub(s.stamp_us).max(0) as f64 / 1e6);
-            let master = self.engine.transport_tempo().tick_to_samples(tick, sr).saturating_add(elapsed).saturating_add(offset);
+            let master = self.engine.transport_tempo().tick_to_samples(tick, sr).saturating_add(elapsed).saturating_sub(offset);
             (sr.seconds(heard.saturating_sub(master)) * 1e6).round() as i64
         });
     }
-    pub(crate) fn clock_follow_window(&mut self, ctx: &egui::Context) {
-        if !self.clock_follow.show {
-            return;
-        }
-        let mut open = true;
-        egui::Window::new(crate::localization::text("MIDI clock synchronization")).open(&mut open).show(ctx, |ui| self.clock_follow_settings(ui));
-        self.clock_follow.show = open;
-    }
-    fn clock_follow_settings(&mut self, ui: &mut egui::Ui) {
+    pub(crate) fn clock_follow_settings(&mut self, ui: &mut egui::Ui) {
         let mut name = self.ui.clock_follow_input.clone();
         craft_ui::ComboBox::from_label(crate::localization::text("MIDI clock input"))
             .selected_text(name.as_deref().unwrap_or(crate::localization::text("None")))
@@ -233,14 +237,20 @@ impl SoundApp {
             }
         }
         if let Some(name) = &self.ui.clock_follow_input {
-            let mut offset = self.ui.clock_follow_input_offsets.get(name).copied().unwrap_or_default();
+            let mut offset = self.ui.midi_sync.ports.get(name).map_or(0, |p| p.in_offset_samples);
+            let limit = soundcraft_playback::max_sync_offset_samples(self.engine.session().sample_rate);
             ui.horizontal(|ui| {
-                ui.label(crate::localization::text("MIDI input offset (samples)"));
-                let limit = soundcraft_playback::max_sync_offset_samples(self.engine.session().sample_rate);
-                if ui.add(egui::DragValue::new(&mut offset).range(-limit..=limit)).changed() {
-                    let _ = self.clock_follow_command(&json!({"input_offset_samples":offset}));
+                let caption = ui.label(crate::localization::text("Input offset"));
+                if ui.add(egui::DragValue::new(&mut offset).range(-limit..=limit).clamp_existing_to_range(false)).labelled_by(caption.id).changed()
+                    && let Err(error) = self.clock_follow_command(&json!({"input_offset_samples":offset}))
+                {
+                    self.ui.status = crate::localization::error_text(&error);
                 }
             });
+            if offset.unsigned_abs() > limit as u64 {
+                ui.label(format!("{} {}", crate::localization::text("Effective input offset (samples)"), offset.clamp(-limit, limit)));
+            }
+            ui.label(crate::localization::text("Negative values make SoundCraft respond earlier."));
         }
     }
 }
@@ -291,7 +301,7 @@ mod tests {
         app.run("transport.locate", json!({"at":72000})).unwrap();
         app.handle_transport(0.);
         app.midi_inputs = Some(MidiInputs::with_port_names(vec![], vec!["MPC".into(), "keys".into()]));
-        app.run("setup.midi_clock_follow", json!({"input":"MPC","enabled":true,"input_offset_samples":120})).unwrap();
+        app.run("setup.midi_clock_follow", json!({"input":"MPC","enabled":true,"input_offset_samples":-120})).unwrap();
         let feed = app.midi_inputs.as_ref().unwrap().feed().clone();
         let src = feed.ports().assign("MPC");
         let other = feed.ports().assign("keys");
@@ -365,14 +375,15 @@ mod tests {
         let sr = app.engine.session().sample_rate;
         let grid = app.engine.playback_tempo.as_mut().unwrap();
         let origin = grid.tick_to_samples(240 * TICKS_PER_PULSE, sr);
+        grid.set_tempo(240 * TICKS_PER_PULSE, 130.).unwrap();
         let mut peak = 0;
         for pulse in 241..=1050 {
             let elapsed = (pulse - 240) as f64 * 2.5 / 130.;
             let snap = Snapshot { state: State::Locked, bpm: Some(130.), pulse, stamp_us: (elapsed * 1e6).round() as i64, ..Default::default() };
-            if pulse == 241 { grid.set_tempo(240 * TICKS_PER_PULSE, 130.).unwrap(); }
             update_grid(grid, Some((240, 0)), 0, snap, sr);
             peak = peak.max(grid.tick_to_samples(pulse * TICKS_PER_PULSE, sr).abs_diff(origin + sr.samples(elapsed)));
         }
+        eprintln!("backward SPP/Continue: peak {peak} samples");
         assert!(peak < sr.samples(0.003) as u64, "previous-pass tempo produced {peak} samples of phase error");
     }
 
@@ -398,7 +409,8 @@ mod tests {
     fn legacy_clock_follow_offsets_migrate_with_the_sign_inverted() {
         let mut app = SoundApp::new(Default::default(), None, crate::Services::default());
         app.ui = serde_json::from_value(json!({"clock_follow_input":"DIN","clock_follow_input_offsets":{"DIN":480},
-            "midi_sync":{"ports":{"DIN":{"offset_samples":-200}}}})).unwrap();
+            "midi_sync":{"ports":{"DIN":{"offset_samples":-200}}}}))
+        .unwrap();
         app.migrate_midi_sync();
         assert_eq!(app.run("setup.midi_clock_follow", json!({})).unwrap()["input_offset_samples"], -480);
         let saved = serde_json::to_value(&app.ui).unwrap();
@@ -427,8 +439,12 @@ mod tests {
             let sr = app.engine.session().sample_rate;
             let age = sr.samples((app.clock_follow.snapshot.now_us - stamp).max(0) as f64 / 1e6);
             let anchor = app.engine.transport_tempo().tick_to_samples(pulse * TICKS_PER_PULSE, sr);
-            assert!(matches!(app.engine.transport_requests.as_slice(), [TransportRequest::PlayFrom(p)] if *p == anchor + age - offset),
-                "offset {offset}, reference {}, requests {:?}", anchor + age, app.engine.transport_requests);
+            assert!(
+                matches!(app.engine.transport_requests.as_slice(), [TransportRequest::PlayFrom(p)] if *p == anchor + age - offset),
+                "offset {offset}, reference {}, requests {:?}",
+                anchor + age,
+                app.engine.transport_requests
+            );
         }
     }
 
@@ -452,8 +468,10 @@ mod tests {
         let cmd = crate::menus::command_for_path(path, &[]).unwrap();
         crate::menus::invoke_menu(&mut app, &cmd, path);
         assert_eq!(app.dialogs.open_name(), Some("synchronization"));
-        let mut h = Harness::builder().with_size(egui::vec2(1000., 800.)).with_context_setup(|ctx|crate::fonts::install(ctx,false)).build_ui_state(
-            |ui, app: &mut SoundApp| crate::dialogs::show(app, ui.ctx()), app);
+        let mut h = Harness::builder()
+            .with_size(egui::vec2(1000., 800.))
+            .with_context_setup(|ctx| crate::fonts::install(ctx, false))
+            .build_ui_state(|ui, app: &mut SoundApp| crate::dialogs::show(app, ui.ctx()), app);
         h.run();
         h.get_by_label("External MIDI clock");
         h.get_by_label("MIDI clock input");
@@ -462,7 +480,7 @@ mod tests {
         h.get_by_label("Stop if MIDI clock is lost").click();
         h.run();
         let result = h.state_mut().run("setup.midi_clock_follow", json!({})).unwrap();
-        assert_eq!((result["input"].as_str(), result["enabled"].as_bool(), result["loss_policy"].as_str()), (Some("MPC"),Some(true),Some("stop")));
+        assert_eq!((result["input"].as_str(), result["enabled"].as_bool(), result["loss_policy"].as_str()), (Some("MPC"), Some(true), Some("stop")));
         let app = h.state_mut();
         assert!(app.dialogs.open_for_command(&app.engine, "setup.peripherals"));
         assert_eq!(app.dialogs.open_name(), Some("synchronization"));
@@ -563,8 +581,12 @@ mod tests {
         }
         lookup_cost.sort_unstable();
         let count = lookup_cost.len();
-        eprintln!("8h ±0.2 BPM, {pulse} pulses, {} events, {count} lookups, p99 {:?}, max {:?}, peak phase {peak_phase} samples",
-            grid.tempos().len(), lookup_cost[count * 99 / 100], lookup_cost[count - 1]);
+        eprintln!(
+            "8h ±0.2 BPM, {pulse} pulses, {} events, {count} lookups, p99 {:?}, max {:?}, peak phase {peak_phase} samples",
+            grid.tempos().len(),
+            lookup_cost[count * 99 / 100],
+            lookup_cost[count - 1]
+        );
         assert!(peak_phase < rate.samples(0.010) as u64);
     }
 }

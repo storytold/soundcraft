@@ -740,7 +740,16 @@ pub fn run_ui_command(app: &mut SoundApp, id: &str, p: &Value) -> Option<Result<
         "window.time_ops" => toggle(&mut app.ui.show_time_ops),
         "window.midi_ops" => toggle(&mut app.ui.show_midi_ops),
         "window.rtp" => toggle(&mut app.ui.show_rtp),
-        "window.midi_sync_follow" => toggle(&mut app.clock_follow.show),
+        "window.midi_sync_follow" => {
+            let open = matches!(app.dialogs.open, Some(crate::dialogs::Dialog::Synchronization { .. }));
+            let show = p.get("value").and_then(Value::as_bool).unwrap_or(!open);
+            if show {
+                app.dialogs.open = Some(crate::dialogs::Dialog::Synchronization { scroll_to_clock: true });
+            } else if open {
+                app.dialogs.open = None;
+            }
+            json!({"value":show})
+        }
         "window.playback_engine" => toggle(&mut app.ui.show_playback_engine),
         // The engine catalog already exposes this command. Handling it here keeps the menu,
         // control channel and scripted callers on the same public command id.

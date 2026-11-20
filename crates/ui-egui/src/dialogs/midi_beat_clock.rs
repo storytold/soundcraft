@@ -27,14 +27,17 @@ impl MidiBeatClock {
         } else if available.is_empty() {
             ui.label(text("No MIDI output devices found"));
         }
-        let names: BTreeSet<_> = available.iter().chain(self.settings.ports.keys()).cloned().collect();
+        let saved_outputs = self.settings.ports.iter().filter_map(|(name, port)| {
+            (port.enabled || port.out_offset_samples != 0 || app.ui.mtc_output_port.as_ref() == Some(name)).then_some(name)
+        });
+        let names: BTreeSet<_> = available.iter().chain(saved_outputs).cloned().collect();
         let rate = app.engine.session().sample_rate;
         for name in names {
             let mut port = self.settings.ports.get(&name).copied().unwrap_or_default();
             let changed = ui
                 .horizontal(|ui| {
                     let enabled = crate::widgets::checkbox(ui, &mut port.enabled, name.as_str()).changed();
-                    let offset = super::port_offset_field(ui, &mut port.offset_samples, rate);
+                    let offset = super::port_offset_field(ui, &mut port.out_offset_samples, rate);
                     if !available.contains(&name) {
                         ui.label(text("The saved MIDI output is unavailable."));
                     }
@@ -51,6 +54,6 @@ impl MidiBeatClock {
             ui.ctx().copy_text(status.to_string());
         }
         super::buttons_enabled(ui, "OK", enter, !self.settings.enabled || self.settings.ports.values().any(|p| p.enabled))
-            .then(|| json!({"enabled":self.settings.enabled,"ports":self.settings.ports}))
+            .then(|| json!({"enabled":self.settings.enabled,"ports":crate::midi_sync::beat_destinations(&self.settings.ports)}))
     }
 }

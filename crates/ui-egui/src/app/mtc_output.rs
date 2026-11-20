@@ -24,7 +24,7 @@ impl SoundApp {
             self.ui.status = crate::localization::error_text(&e);
         }
         if let Some(name) = &self.ui.mtc_output_port {
-            let mut offset = self.ui.midi_sync.ports.get(name).map_or(0, |cfg| cfg.offset_samples);
+            let mut offset = self.ui.midi_sync.ports.get(name).map_or(0, |cfg| cfg.out_offset_samples);
             if ui.horizontal(|ui| crate::dialogs::port_offset_field(ui, &mut offset, self.engine.session().sample_rate)).inner
                 && let Err(err) = self.mtc_output_command(&json!({"offset_samples":offset}))
             {
@@ -37,7 +37,7 @@ impl SoundApp {
         let Some(player) = self.player.as_ref() else { return };
         let port =
             self.ui.mtc_output_port.as_ref().filter(|_| self.ui.gen_mtc && !self.mtc_online && mtc::supported(self.engine.session().frame_rate));
-        let desired = port.map(|name| (name.as_str(), self.ui.midi_sync.ports.get(name).map_or(0, |p| p.offset_samples)));
+        let desired = port.map(|name| (name.as_str(), self.ui.midi_sync.ports.get(name).map_or(0, |p| p.out_offset_samples)));
         let compensate = self.ui.midi_sync.compensation.mtc;
         if let Some((applied, previous_compensation)) = &self.applied_mtc_output
             && applied.as_ref().map(|(name, offset)| (name.as_str(), *offset)) == desired
@@ -89,7 +89,7 @@ impl SoundApp {
             if !ports.contains_key(name) && ports.len() >= 256 {
                 return Err("Invalid MIDI sync port name, count or sample offset".into());
             }
-            ports.entry(name.clone()).or_default().offset_samples = offset;
+            ports.entry(name.clone()).or_default().out_offset_samples = offset;
         }
         self.ui.gen_mtc = enabled;
         self.ui.mtc_output_port = selected;
@@ -98,7 +98,7 @@ impl SoundApp {
             && self.player.as_ref().zip(self.ui.mtc_output_port.as_ref()).is_some_and(|(player, name)| {
                 player.midi_sync_status().ports.get(name).is_some_and(|port| port.connected && port.mtc_total_us.is_some())
             });
-        let mut state = json!({"port":self.ui.mtc_output_port,"enabled":enabled,"active":active,"offset_samples":self.ui.mtc_output_port.as_ref().and_then(|n|self.ui.midi_sync.ports.get(n)).map_or(0,|p|p.offset_samples),"frame_rate":self.engine.session().frame_rate.label()});
+        let mut state = json!({"port":self.ui.mtc_output_port,"enabled":enabled,"active":active,"offset_samples":self.ui.mtc_output_port.as_ref().and_then(|n|self.ui.midi_sync.ports.get(n)).map_or(0,|p|p.out_offset_samples),"frame_rate":self.engine.session().frame_rate.label()});
         if let Some(ports) = ports {
             state["ports"] = json!(ports);
         }

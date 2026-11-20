@@ -25,7 +25,7 @@ When you close a gap, delete its entry (or shrink it) in the same PR, and bump t
 | G-08 | Built-in plugin catalogue thin and unverified | Features | [plugin-parity.md](plugin-parity.md) | 80–120 |
 | G-09 | English-first UI with a pt-BR catalog (not native-reviewed); all fixed UI strings covered, no CJK/RTL rendering | Localization | [localization-parity.md](localization-parity.md) | 20–40 |
 | G-10 | No control surfaces (HUI/MCU, EUCON) | Hardware | [hardware-parity.md](hardware-parity.md) | 40–70 |
-| G-11 | LTC, video reference, word clock and Satellite linking | Hardware | [hardware-parity.md](hardware-parity.md#sync-and-video-hardware) | 80–160 h (preliminary) |
+| G-11 | Online MTC recording, LTC, video reference, word clock and Satellite linking | Hardware | [hardware-parity.md](hardware-parity.md#sync-and-video-hardware) | 80–160 (preliminary) |
 | G-12 | Immersive delivery: no Dolby Atmos/ADM BWF, MPEG-H, binaural | Features | [file-format-parity.md](file-format-parity.md) | 50–80 |
 | G-13 | Sidechain inputs, ARA, out-of-process plugin sandboxing | Ecosystem | [plugin-parity.md](plugin-parity.md) | 30–50 |
 | G-14 | Windows/Linux/Web exercised only lightly at runtime; no PR CI running the tests | Platforms / Stability | this file | 20–40 |

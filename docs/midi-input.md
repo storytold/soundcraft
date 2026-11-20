@@ -5,8 +5,11 @@ MIDI clips.
 
 **Where it works.** Linux (ALSA sequencer), macOS (CoreMIDI) and Windows (WinMM). It has been
 played and recorded on Linux only; on macOS and Windows the code builds but has not been tried
-with a device yet. There is no MIDI input on FreeBSD or in the web version. MIDI output, MIDI
-clock and loop or merge recording are not there yet (see [gaps.md](gaps.md), G-02).
+with a device yet. There is no MIDI input on FreeBSD or in the web version. MIDI note output and loop or merge
+recording remain on the [G-02 roadmap](gaps.md). For synchronization, see
+[Send MIDI Beat Clock to external hardware](#send-midi-beat-clock-to-external-hardware),
+[Generate or follow MIDI Time Code](#generate-or-follow-midi-time-code), and
+[Follow MIDI Beat Clock](#follow-midi-beat-clock).
 
 ## 1. Switch a device on
 
@@ -124,14 +127,16 @@ The generator sends quarter frames while rolling and full-frame messages on loca
 
 ## Follow MIDI Beat Clock
 
-In **Setup › MIDI › Sync**, choose the enabled input connected to the sequencer or MPC and switch on **Follow MIDI clock**. Set that device to send MIDI Beat Clock and transport. A separate Link-to-MIDI-clock bridge can be used as the master: join the Link session in the bridge and route its MIDI output to the selected SoundCraft input.
+In **Setup › Peripherals › Synchronization**, under **External MIDI clock**, choose the enabled input connected to the sequencer or MPC and switch on **Follow MIDI clock**. **Setup › MIDI › Sync** opens the same section. Set that device to send MIDI Beat Clock and transport. A separate Link-to-MIDI-clock bridge can be used as the master: join the Link session in the bridge and route its MIDI output to the selected SoundCraft input.
 
 Start selects song zero and the next clock starts playback. Continue resumes at the current clock position. A stopped Song Position Pointer selects six clocks per unit (one sixteenth note, in every meter). Stop ends playback and any recording pass. SoundCraft estimates quarter-note tempo from the 24 pulses per quarter note. Live playback and incoming MIDI takes use a transient beat grid. Disabling follow restores the session tempo map; audio continues at the device sample rate during follow.
 
-If clock pulses disappear for three intervals or 150 milliseconds, whichever is longer, the default is to coast at the last tempo. Select **Stop if MIDI clock is lost** for stop-on-loss. Send Start or Continue to resume following. Each input remembers its signed calibration in session samples on this computer. A positive value advances the transport by that many samples on an external start. The host also accounts for the age of the incoming message and the audio output device’s reported presentation lead.
+If clock pulses disappear for three intervals or 150 milliseconds, whichever is longer, the default is to coast at the last tempo. Select **Stop if MIDI clock is lost** for stop-on-loss. Send Start or Continue to resume following. Each input remembers its signed calibration in session samples on this computer. If the SoundCraft click is late by N samples, set the input offset to −N. Input and output calibration are independent even when both directions share a port name. Earlier builds stored input advances as positive values; loading those settings reverses the sign to preserve the timing. The host also accounts for the age of the incoming message and the audio output device’s reported presentation lead.
 
-Desktop control clients can query or change `setup.midi_clock_follow` with `input` (port name), `enabled`, `loss_policy` (`coast` or `stop`), and `input_offset_samples`. The `clock_follow` member of `setup.midi_sync_status` reports estimated BPM, timing jitter and phase residual in microseconds, state and dropout count. Following a clock excludes online MTC chase and sending Beat Clock to the same port. Recording remains available while following Beat Clock.
+The setup follows the synchronization-device grouping in Avid’s [Pro Tools Reference Guide 2026.4](https://resources.avid.com/SupportFiles/PT/Pro_Tools_Reference_Guide_2026.4.pdf#page=286), pp. 184–185. SoundCraft applies the guide’s per-port output convention (p. 744) to incoming Beat Clock as well. MTC chase uses its own reader settings.
 
-During playback, tempo and phase corrections change the spacing of upcoming beats. Beats that have already played keep their positions. The live tempo map retains those changes for the current pass.
+Desktop control clients can query or change `setup.midi_clock_follow` with `input` (port name), `enabled`, `loss_policy` (`coast` or `stop`), and `input_offset_samples`. The `clock_follow` member of `setup.midi_sync_status` reports estimated BPM, timing jitter and phase residual in microseconds, state and dropout count. Following a clock excludes online MTC chase and sending Beat Clock to the same port. Recording remains available while following Beat Clock. The generic key/value entries in the scripting command `setup.peripherals` do not configure clock follow or MTC.
+
+During playback, tempo and phase corrections change the spacing of upcoming beats. Beats that have already played keep their positions. An incoming Song Position Pointer starts a new pass; tempo corrections from the previous pass are discarded.
 
 External clock follow has been exercised with simulated timestamps. Hardware verification of this revision is pending.
