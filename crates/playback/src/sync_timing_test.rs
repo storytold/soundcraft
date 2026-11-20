@@ -106,3 +106,55 @@ fn beat_clock_host_timing() {
         );
     }
 }
+
+/// On Windows, set SOUNDCRAFT_LOOPBACK_IN and SOUNDCRAFT_LOOPBACK_OUT to the
+/// exact names of a dedicated virtual cable. The Unix paths create their own port.
+#[test]
+#[ignore = "requires an OS MIDI loopback driver"]
+fn beat_clock_reaches_a_virtual_midi_receiver() {
+    use midir::{Ignore, MidiInput};
+    let mut input = MidiInput::new("SoundCraft test receiver").unwrap();
+    input.ignore(Ignore::None);
+    let (events, observed) = channel();
+    let record = move |_: u64, msg: &[u8], _: &mut ()| {
+        let _ = events.send(msg.to_vec());
+    };
+    #[cfg(target_os = "windows")]
+    let (_reader, name) = {
+        let name = std::env::var("SOUNDCRAFT_LOOPBACK_IN").expect("specify a dedicated virtual MIDI input");
+        let mut matching = input.ports().into_iter().filter(|p| input.port_name(p).is_ok_and(|n| n == name));
+        let p = matching.next().expect("specified input not found");
+        assert!(matching.next().is_none());
+        (input.connect(&p, "receive clock", record, ()).unwrap(), std::env::var("SOUNDCRAFT_LOOPBACK_OUT").expect("specify its virtual MIDI output"))
+    };
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    let (_reader, name) = {
+        use midir::os::unix::VirtualInput;
+        let unique = format!("SoundCraft G11 probe {}", std::process::id());
+        let reader = input.create_virtual(&unique, record, ()).unwrap();
+        let list = output_names().unwrap();
+        let name = list.into_iter().find(|n| n.contains(&unique)).expect("OS did not publish the virtual destination");
+        (reader, name)
+    };
+    let ready = Instant::now() + Duration::from_millis(40);
+    let view = View::default();
+    view.lock().unwrap().push(Presentation {
+        pass: 1,
+        origin: 0,
+        playing: true,
+        sample: 0.,
+        limit: 4000.,
+        samples_per_second: 48_000.,
+        heard_at: ready,
+        looped: None,
+        end: None,
+        lead: Duration::ZERO,
+    });
+    let (tx, rx) = channel();
+    let worker = std::thread::spawn(move || drive(view, Arc::new(Session::default()), rx, Arc::default(), Arc::default(), open_unique));
+    tx.send(Update::Beats(vec![(name, 0)], true)).unwrap();
+    assert_eq!(observed.recv_timeout(Duration::from_secs(2)).unwrap(), [START]);
+    assert_eq!(observed.recv_timeout(Duration::from_secs(2)).unwrap(), [CLOCK]);
+    drop(tx);
+    worker.join().unwrap();
+}
