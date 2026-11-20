@@ -685,3 +685,45 @@ fn unavailable_session_generations_fall_forward_and_report_backlog_drops() {
     drop(timeline);
     assert_eq!(out.status().session_backlog_drops, 1);
 }
+
+#[test]
+fn connected_worker_accepts_control_and_shuts_down_while_a_future_message_is_pending() {
+    struct Future(Option<Sender<()>>);
+    impl SyncEncoder for Future {
+        fn reset(&mut self) {}
+        fn update(&mut self, _: Presentation, now: Instant, _: &Session, send: &mut dyn FnMut(Instant, &[u8])) -> Option<Instant> {
+            if let Some(started) = self.0.take() {
+                send(now + Duration::from_secs(2), &[0xf8]);
+                started.send(()).unwrap();
+            }
+            None
+        }
+    }
+    let view = View::default();
+    view.lock().unwrap().push(block(Instant::now(), 0., 480., Duration::ZERO));
+    let (tx, rx) = channel();
+    let (queued, ready) = channel();
+    let (opened, devices) = channel();
+    let (done, stopped) = channel();
+    let worker = std::thread::spawn(move || {
+        drive(view, Arc::new(Session::default()), rx, Default::default(), Arc::new(Stats::default()), |name| {
+            let _ = opened.send(name.to_owned());
+            Ok((FakePort::default(), None))
+        });
+        done.send(()).unwrap();
+    });
+    tx.send(Update::Encoder(Some(("future".into(), 0)), false, Box::new(Future(Some(queued))))).unwrap();
+    assert_eq!(devices.recv_timeout(Duration::from_secs(3)).unwrap(), "future");
+    ready.recv_timeout(Duration::from_secs(3)).unwrap();
+    std::thread::sleep(Duration::from_millis(225));
+    let elapsed = Instant::now();
+    tx.send(Update::Beats(vec![("controller".into(), 0)], false)).unwrap();
+    assert_eq!(devices.recv_timeout(Duration::from_millis(250)).unwrap(), "controller");
+    let control = elapsed.elapsed();
+    std::thread::sleep(Duration::from_millis(225));
+    let elapsed = Instant::now();
+    drop(tx);
+    stopped.recv_timeout(Duration::from_millis(250)).unwrap();
+    eprintln!("control={control:?} shutdown={:?}", elapsed.elapsed());
+    worker.join().unwrap();
+}

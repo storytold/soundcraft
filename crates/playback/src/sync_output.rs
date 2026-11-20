@@ -543,8 +543,11 @@ fn drive<C: SyncPort>(
         }
         if let Some(at) = next {
             let delay = at.saturating_duration_since(Instant::now());
-            // Only sleep is used for protocol deadlines. A long reconnect wait is
-            // interruptible by control changes. Recheck every 10 ms during playback.
+            // Keep native sleep precision for sub-millisecond MIDI deadlines. While a
+            // port is connected the worker checks control/shutdown after at most
+            // 10 ms of requested sleep (OS scheduling can add latency). A distant
+            // event stays queued across those checks. Long reconnect waits below
+            // can be interrupted directly by the channel.
             if connected || delay <= Duration::from_millis(100) {
                 std::thread::sleep(delay.min(Duration::from_millis(10)));
                 match rx.try_recv() {
