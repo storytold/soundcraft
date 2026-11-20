@@ -74,7 +74,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Session",
             ["Setup"],
             Some("Cmd+2"),
-            "{frame_rate?: '29.97 Drop'…, bit_depth?: 16|24|32f, timecode_start?: position, start_timecode?: HH:MM:SS:FF, external_offset_frames?: integer, name?}",
+            "{frame_rate?: '29.97 Drop'…, bit_depth?: 16|24|32f, timecode_start?: position, start_timecode?: HH:MM:SS:FF, external_offset_frames?: integer, freewheel_frames?: 4..40, jam_sync?: bool, name?}",
             always,
             session_setup
         ),
@@ -123,7 +123,19 @@ fn session_setup(e: &mut Engine, p: &Value) -> Result<Value> {
             return Err(bad("setup.session", "Invalid timecode label at this frame rate"));
         }
         tc = Some(parsed.to_samples(selected_rate, e.session().sample_rate));
+    } else if tc.is_none() && selected_rate != e.session().frame_rate {
+        let s = e.session();
+        let label = soundcraft_time::Timecode::from_samples(s.timecode_start, s.frame_rate, s.sample_rate);
+        if soundcraft_time::Timecode::from_frames(label.to_frames(selected_rate), selected_rate) != label {
+            return Err(bad("setup.session", "Invalid timecode label at this frame rate"));
+        }
+        tc = Some(label.to_samples(selected_rate, s.sample_rate));
     }
+    let freewheel = p
+        .get("freewheel_frames")
+        .map(|v| v.as_u64().filter(|n| (4..=40).contains(n)).ok_or_else(|| bad("setup.session", "Freewheel must be 4 to 40 frames")))
+        .transpose()?;
+    let jam = p.get("jam_sync").map(|v| v.as_bool().ok_or_else(|| bad("setup.session", "Jam Sync must be a boolean"))).transpose()?;
     let external = p
         .get("external_offset_frames")
         .map(|v| v.as_i64().filter(|v| v.unsigned_abs() <= 5_184_000).ok_or_else(|| bad("setup.session", "Invalid external timecode offset")))
@@ -135,6 +147,12 @@ fn session_setup(e: &mut Engine, p: &Value) -> Result<Value> {
     if let Some(b) = bd {
         s.bit_depth = b;
     }
+    if let Some(frames) = freewheel {
+        s.edit.values.insert("midi.mtc.freewheel_frames".into(), frames as f64);
+    }
+    if let Some(enabled) = jam {
+        s.edit.set_flag("midi.mtc.jam_sync", enabled);
+    }
     if let Some(frames) = external {
         s.edit.values.insert("midi.mtc.external_offset_frames".into(), frames as f64);
     }
@@ -144,9 +162,12 @@ fn session_setup(e: &mut Engine, p: &Value) -> Result<Value> {
     if let Some(n) = p.get("name").and_then(Value::as_str) {
         s.name = n.to_string();
     }
-    Ok(
-        json!({"frame_rate": s.frame_rate.label(), "bit_depth": s.bit_depth, "sample_rate": s.sample_rate.hz(),"start_timecode":s.format_position(0,soundcraft_time::TimeFormat::Timecode),"external_offset_frames":s.edit.value("midi.mtc.external_offset_frames",0.) as i64}),
-    )
+    Ok(json!({
+        "frame_rate": s.frame_rate.label(), "bit_depth": s.bit_depth, "sample_rate": s.sample_rate.hz(),
+        "start_timecode": s.format_position(0,soundcraft_time::TimeFormat::Timecode),
+        "external_offset_frames": s.edit.value("midi.mtc.external_offset_frames",0.) as i64,
+        "freewheel_frames": e.mtc_freewheel_frames(), "jam_sync": e.mtc_jam_sync(),
+    }))
 }
 
 #[cfg(test)]
@@ -163,5 +184,57 @@ mod sync_session_tests {
         assert_eq!(loaded.edit.value("midi.mtc.external_offset_frames", 0.), -17.);
         let old = soundcraft_model::Session::default();
         assert_eq!(soundcraft_model::Session::from_json(&old.to_json().unwrap()).unwrap().timecode_start, 0);
+    }
+
+    #[test]
+    fn session_sync_preferences_round_trip_and_validate_before_changes() {
+        let mut e = Engine::default();
+        for n in [4, 40, 12] {
+            let state = e.execute("setup.session", &json!({"freewheel_frames":n,"jam_sync":true})).unwrap();
+            assert_eq!(state["freewheel_frames"], n);
+            assert_eq!(state["jam_sync"], true);
+        }
+        let copy = soundcraft_model::Session::from_json(&e.session().to_json().unwrap()).unwrap();
+        let mut reopened = Engine::new(copy);
+        for n in [3, 41] {
+            assert!(reopened.execute("setup.session", &json!({"freewheel_frames":n,"jam_sync":false})).is_err());
+        }
+        let state = reopened.execute("setup.session", &json!({})).unwrap();
+        assert_eq!(state["freewheel_frames"], 12);
+        assert_eq!(state["jam_sync"], true);
+        let legacy = Engine::new(soundcraft_model::Session::default()).execute("setup.session", &json!({})).unwrap();
+        assert_eq!(legacy["freewheel_frames"], 8);
+        assert_eq!(legacy["jam_sync"], false);
+    }
+
+    #[test]
+    fn new_session_keeps_the_one_hour_label_when_only_the_rate_changes() {
+        for label in ["23.976", "24", "25", "29.97", "29.97 Drop", "30"] {
+            let mut e = Engine::default();
+            let state = e.execute("setup.session", &json!({"frame_rate":label})).unwrap();
+            assert_eq!(state["start_timecode"], if label == "29.97 Drop" { "01:00:00;00" } else { "01:00:00:00" }, "{label}");
+        }
+    }
+
+    #[test]
+    fn closing_a_session_creates_a_fresh_one_hour_start() {
+        let mut e = Engine::new(soundcraft_model::Session::default());
+        e.execute("session.close", &json!({})).unwrap();
+        assert_eq!(e.session().format_position(0, soundcraft_time::TimeFormat::Timecode), "01:00:00:00");
+    }
+
+    #[test]
+    fn absolute_position_before_start_leaves_selection_and_transport_unchanged() {
+        let mut e = Engine::default();
+        e.execute("edit.select", &json!({"start":3200,"end":9600})).unwrap();
+        let selection = e.session().edit.selection;
+        for (cmd, args) in [("edit.select", json!({"start":"00:00:20:00"})), ("transport.locate", json!({"at":"timecode:00:00:20:00"}))] {
+            let err = e.execute(cmd, &args).unwrap_err().to_string();
+            assert!(err.contains("before the session start") && err.contains("01:00:00:00"), "{err}");
+            assert_eq!(e.session().edit.selection, selection);
+        }
+        let legacy = Engine::new(soundcraft_model::Session::default());
+        assert_eq!(crate::cmd::position_param(&legacy, "test", &json!({"at":"00:00:20:00"}), "at").unwrap(), Some(960_000));
+        assert_eq!(crate::cmd::position_param(&e, "test", &json!({"at":"0:20.000"}), "at").unwrap(), Some(960_000));
     }
 }

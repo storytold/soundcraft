@@ -324,6 +324,10 @@ fn position_param_raw(e: &Engine, cmd: &str, p: &Value, key: &str) -> Result<Opt
         };
         for f in fmts {
             if let Ok(x) = s.parse_position(body, f) {
+                if f == soundcraft_time::TimeFormat::Timecode && x < 0 {
+                    let start = s.format_position(0, f);
+                    return Err(bad(cmd, format!("{body} is before the session start ({start})")));
+                }
                 return Ok(Some(x));
             }
         }

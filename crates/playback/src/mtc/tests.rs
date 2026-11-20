@@ -204,3 +204,90 @@ fn external_lock_starts_and_runs_at_unity_without_repaints() {
     assert!((view.lock().unwrap().read(now + Duration::from_millis(30), true, 0.).0.unwrap().sample - 7440.).abs() < 1., "piece 15 at 125 ms");
     assert_eq!(state.shared.speed.load(Ordering::Relaxed), 1000);
 }
+
+#[test]
+fn only_mtc_transitions_wake_the_host() {
+    use std::sync::atomic::AtomicUsize;
+    let feed = crate::midi::MidiFeed::default();
+    let count = Arc::new(AtomicUsize::new(0));
+    let called = count.clone();
+    feed.set_mtc_wakeup(|| {
+        Box::new(move || {
+            called.fetch_add(1, Ordering::Relaxed);
+        })
+    });
+    feed.set_mtc_source(Some(0));
+    for n in 0..800 {
+        feed.set_clock(n * 10_000);
+        feed.receive(0, &quarters(n / 8 * 2, FrameRate::Fps25)[(n % 8) as usize]);
+    }
+    assert_eq!(count.load(Ordering::Relaxed), 1);
+    feed.receive(0, &[0xfc]);
+    feed.receive(0, &locate(1, FrameRate::Fps25));
+    assert_eq!(count.load(Ordering::Relaxed), 3);
+    feed.receive(0, &[0xf1, 0x7f]); // invalid unpaired final piece
+    assert_eq!(count.load(Ordering::Relaxed), 3);
+}
+
+#[test]
+fn external_timecode_before_session_start_preserves_the_cursor_and_recovers() {
+    let rate = FrameRate::Fps25;
+    let mut s = session(rate);
+    s.timecode_start = s.sample_rate.samples(3600.);
+    let (mut audio, tx, _) = callback(s, 48_000.);
+    let feed = Arc::new(crate::midi::MidiFeed::default());
+    feed.set_mtc_source(Some(0));
+    tx.send(Cmd::Midi(feed.clone())).unwrap();
+    // Player::locate publishes the cursor and queues the device command.
+    audio.shared.position.store(48_000, Ordering::Relaxed);
+    tx.send(Cmd::Locate(48_000)).unwrap();
+    feed.set_clock(0);
+    feed.receive(0, &locate(3590 * 25, rate));
+    audio.fill(&mut [0.; 480], 2);
+    assert_eq!(audio.shared.position.load(Ordering::Relaxed), 48_000, "before-start locate");
+    for n in 0..16 {
+        feed.set_clock(n * 10_000);
+        feed.receive(0, &quarters(3590 * 25 + n / 8 * 2, rate)[(n % 8) as usize]);
+    }
+    audio.fill(&mut [0.; 480], 2);
+    assert!(!audio.shared.playing.load(Ordering::Acquire));
+    assert_eq!(audio.shared.position.load(Ordering::Relaxed), 48_000, "before-start roll");
+    feed.receive(0, &locate(3600 * 25, rate));
+    audio.fill(&mut [0.; 480], 2);
+    assert_eq!(audio.shared.position.load(Ordering::Relaxed), 0);
+    for n in 0..16 {
+        feed.set_clock(200_000 + n * 10_000);
+        feed.receive(0, &quarters(3600 * 25 + n / 8 * 2, rate)[(n % 8) as usize]);
+    }
+    audio.fill(&mut [0.; 480], 2);
+    assert!(audio.shared.playing.load(Ordering::Acquire));
+}
+
+#[test]
+fn going_offline_before_ui_observes_roll_stops_chase_and_permits_record() {
+    let (mut state, tx, _) = callback(session(FrameRate::Fps25), 48_000.);
+    let feed = Arc::new(crate::midi::MidiFeed::default());
+    feed.set_mtc_source(Some(0));
+    tx.send(Cmd::Midi(feed.clone())).unwrap();
+    for n in 0..16 {
+        feed.set_clock(n * 10_000);
+        feed.receive(0, &quarters(n / 8 * 2, FrameRate::Fps25)[(n % 8) as usize]);
+    }
+    state.fill(&mut [0.; 480], 2);
+    assert!(state.shared.playing.load(Ordering::Acquire));
+    let actions = tx.clone();
+    state.before_commands = Some(Box::new(move || {
+        feed.set_mtc_source(None);
+        assert!(actions.send(Cmd::EndChase).is_ok());
+    }));
+    state.fill(&mut [0.; 480], 2);
+    assert!(!state.shared.playing.load(Ordering::Acquire), "offline must halt an unobserved chase");
+    state.before_commands = None;
+    tx.send(Cmd::Recording(true, 1)).unwrap();
+    state.fill(&mut [0.; 480], 2);
+    assert!(state.is_recording());
+    tx.send(Cmd::Play { from: 4800, end: None, looped: None }).unwrap();
+    tx.send(Cmd::EndChase).unwrap();
+    state.fill(&mut [0.; 480], 2);
+    assert!(state.shared.playing.load(Ordering::Acquire), "offline must preserve local playback");
+}

@@ -619,6 +619,7 @@ fn menu_translate(source: &str) -> Option<&'static str> {
         "MIDI..." => "MIDI...",
         "Machine Track Arming" => "Armar faixa da máquina",
         "Machine Track Arming Profiles..." => "Perfis de armação de faixa da máquina...",
+        "Enter position…" => "Inserir posição…",
         "Main Counter" => "Contador principal",
         "Make Inactive" => "Desativar",
         "Marker Controls" => "Controles de marcadores",
@@ -2118,6 +2119,10 @@ macro_rules! error_templates {
 }
 
 error_templates! {
+    "{value} is before the session start ({start})" => "{value} é anterior ao início da sessão ({start})",
+    "Freewheel must be 4 to 40 frames" => "A tolerância deve ser de 4 a 40 quadros",
+    "Jam Sync must be a boolean" => "Jam Sync deve ser um valor booleano",
+    "Invalid timecode label at this frame rate" => "Código de tempo inválido para esta taxa de quadros",
     "Choose an MTC output port" => "Escolha uma porta de saída MTC",
     "Disable MTC output before going online" => "Desative a saída MTC antes de ativar o modo online",
     "MIDI output is unavailable on this platform" => "A saída MIDI está indisponível nesta plataforma",

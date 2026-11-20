@@ -47,10 +47,12 @@ impl MidiSync {
 impl SoundApp {
     pub(crate) fn sync_command(&mut self, id: &str, args: &Value) -> Result<Value, String> {
         if id == "setup.midi_sync_status" {
+            let mut chase = json!(self.midi_inputs.as_ref().map(|inputs| inputs.feed().mtc_diagnostics()).unwrap_or_default());
+            chase["state"] = json!(self.mtc_status);
             return Ok(json!({"output": self.player.as_ref().map(|p|p.midi_sync_status()).unwrap_or_default(),
                 "audio_device_open":self.player.is_some(), "settings":self.ui.midi_sync,
                 "clock_follow":self.clock_follow_state(),
-                "mtc_chase":self.midi_inputs.as_ref().map(|inputs|inputs.feed().mtc_diagnostics())}));
+                "mtc_chase":chase}));
         }
         self.migrate_midi_sync();
         let mut next = self.ui.midi_sync.clone();
@@ -62,7 +64,12 @@ impl SoundApp {
             next.enabled = v.as_bool().ok_or("enabled must be a boolean")?;
         }
         if let Some(v) = args.get("ports") {
-            next.ports = serde_json::from_value(v.clone()).map_err(|e| e.to_string())?;
+            let destinations: BTreeMap<String, MidiSyncPort> = serde_json::from_value(v.clone()).map_err(|e| e.to_string())?;
+            // Beat Clock routing can change independently of another protocol's calibration.
+            for port in next.ports.values_mut() {
+                port.enabled = false;
+            }
+            next.ports.extend(destinations);
         }
         if let Some(v) = args.get("compensation") {
             next.compensation = serde_json::from_value(v.clone()).map_err(|e| e.to_string())?;
@@ -153,6 +160,26 @@ mod tests {
         for value in [-limit - 1, limit + 1] {
             assert!(host.sync_command("setup.midi_beat_clock", &json!({"offset":value})).is_err());
         }
+    }
+
+    #[test]
+    fn replacing_clock_destinations_retains_other_ports_calibration() {
+        let mut host = SoundApp::new(Default::default(), None, crate::Services::default());
+        host.sync_command(
+            "setup.midi_beat_clock",
+            &json!({"enabled":true, "ports":{
+                "DIN":{"enabled":true,"offset_samples":-201},
+                "MTC":{"enabled":false,"offset_samples":72}
+            }}),
+        )
+        .unwrap();
+        let result = host.sync_command("setup.midi_beat_clock", &json!({"ports":{"USB":{"enabled":true,"offset_samples":33}}})).unwrap();
+        assert_eq!(result["destination"], "USB");
+        assert_eq!(result["ports"]["DIN"], json!({"enabled":false,"offset_samples":-201}));
+        assert_eq!(result["ports"]["MTC"], json!({"enabled":false,"offset_samples":72}));
+        let result = host.sync_command("setup.midi_beat_clock", &json!({"ports":{}})).unwrap();
+        assert!(result["destination"].is_null());
+        assert_eq!(result["ports"]["USB"], json!({"enabled":false,"offset_samples":33}));
     }
 
     #[test]

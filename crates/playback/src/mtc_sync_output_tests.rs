@@ -13,6 +13,24 @@ impl SyncPort for Capture {
 }
 
 #[test]
+fn a_burst_of_external_locates_queues_one_transport_refresh() {
+    let output = Output::default();
+    let wake = output.transport_waker();
+    let (tx, rx) = channel();
+    *output.wake_tx.lock().unwrap() = Some(tx);
+    for _ in 0..100 {
+        wake();
+    }
+    let Ok(Update::TransportWake(pending)) = rx.try_recv() else {
+        panic!("expected a transport refresh for the audio callback's new pass");
+    };
+    assert!(rx.try_recv().is_err());
+    pending.store(false, Relaxed);
+    wake();
+    assert!(matches!(rx.try_recv(), Ok(Update::TransportWake(_))));
+}
+
+#[test]
 fn both_encoders_use_one_connection_and_the_same_offset() {
     let now = Instant::now();
     let lead = Duration::from_millis(30);

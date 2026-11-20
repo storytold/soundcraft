@@ -165,8 +165,6 @@ pub struct UiState {
     pub clock_follow_stop_on_loss: bool,
     pub clock_follow_input_offsets: std::collections::BTreeMap<String, i64>,
     pub gen_mtc: bool,
-    pub mtc_freewheel_frames: u8,
-    pub mtc_jam_sync: bool,
     pub mtc_input_port: Option<String>,
     pub mtc_output_port: Option<String>,
 }
@@ -243,8 +241,6 @@ impl Default for UiState {
             clock_follow_stop_on_loss: false,
             clock_follow_input_offsets: Default::default(),
             gen_mtc: false,
-            mtc_freewheel_frames: 8,
-            mtc_jam_sync: false,
             mtc_input_port: None,
             mtc_output_port: None,
         }

@@ -90,6 +90,7 @@ pub struct ChaseStats {
     pub losses: u64,
     pub hard_relocates: u64,
     pub input_jitter_p95_us: u32,
+    pub arrival_delay_p95_us: u32,
 }
 #[derive(Clone, Copy)]
 pub(crate) enum Tracking {
@@ -115,12 +116,19 @@ pub(crate) struct Reader {
     last_group: Option<i64>,
     pending: Option<ChaseEvent>,
     fit: crate::sync_input::PulseFit<16>,
+    arrival_delays: [u32; 32],
+    arrival_count: usize,
+    arrival_cursor: usize,
     jitter: [u32; 32],
     jitter_count: usize,
     jitter_index: usize,
 }
 impl Reader {
     pub(crate) fn reset(&mut self, source: Option<u8>) {
+        if self.source != source {
+            self.arrival_count = 0;
+            self.arrival_cursor = 0;
+        }
         self.source = source;
         self.next = 0;
         self.located_start = None;
@@ -143,7 +151,28 @@ impl Reader {
             samples[..self.jitter_count].sort_unstable();
             stats.input_jitter_p95_us = samples[(self.jitter_count * 95).div_ceil(100) - 1];
         }
+        if self.arrival_count > 0 {
+            let mut delays = self.arrival_delays;
+            delays[..self.arrival_count].sort_unstable();
+            stats.arrival_delay_p95_us = delays[(self.arrival_count * 95).div_ceil(100) - 1];
+        }
         stats
+    }
+    /// The host only needs notification when a transport transition is accepted.
+    /// Steady quarter-frame updates stay available to the audio callback.
+    pub(crate) fn receive(&mut self, bytes: &[u8], stamp: i64, arrival: i64) -> bool {
+        let had_transport = self.locked || self.located_start.is_some();
+        let located = self.located_start;
+        let (locks, losses) = (self.stats.locks, self.stats.losses);
+        self.read(bytes, stamp);
+        let delay = arrival.saturating_sub(stamp).clamp(0, i64::from(u32::MAX)) as u32;
+        self.arrival_delays[self.arrival_cursor] = delay;
+        self.arrival_cursor = (self.arrival_cursor + 1) % self.arrival_delays.len();
+        self.arrival_count = (self.arrival_count + 1).min(self.arrival_delays.len());
+        self.stats.locks != locks
+            || self.stats.losses != losses
+            || (bytes == [0xfc] && had_transport)
+            || (bytes.first() == Some(&0xf0) && self.located_start.is_some() && located != self.located_start)
     }
     pub(crate) fn loss(&mut self) {
         let stop = self.locked || self.pending == Some(ChaseEvent::Stop);
@@ -318,6 +347,20 @@ mod tests {
         for (i, nibble) in [frame & 15, frame >> 4, 0, 0, 0, 0, 0, 2].into_iter().enumerate() {
             receive(&[0xf1, (i as u8) << 4 | nibble]);
         }
+    }
+
+    #[test]
+    fn arrival_delay_uses_the_selected_input_and_remains_readable_after_stop() {
+        let mut reader = Reader::default();
+        reader.reset(Some(1));
+        for n in 0..32_i64 {
+            reader.receive(&[0xf1, 0], n * 10_000, n * 10_000 + n * 100);
+        }
+        assert_eq!(reader.diagnostics().arrival_delay_p95_us, 3000);
+        reader.receive(&[0xfc], 400_000, 400_010);
+        assert_eq!(reader.diagnostics().arrival_delay_p95_us, 3000);
+        reader.reset(Some(2));
+        assert_eq!(reader.diagnostics().arrival_delay_p95_us, 0);
     }
 
     #[test]

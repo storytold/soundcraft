@@ -332,3 +332,38 @@ fn saved_external_offset_is_bounded_at_each_session_rate() {
         assert_eq!(port.link.unwrap().messages, [(due, vec![START]), (due, vec![CLOCK])]);
     }
 }
+
+#[test]
+fn input_wakes_reread_an_idle_timeline_without_periodic_polling() {
+    for has_port in [false, true] {
+        let stats = Arc::new(Stats::default());
+        let observed = stats.clone();
+        let (tx, rx) = channel();
+        let (opened, ready) = channel();
+        let worker = std::thread::spawn(move || {
+            drive(View::default(), Arc::new(Session::default()), rx, Default::default(), observed, move |_| {
+                opened.send(()).unwrap();
+                Ok((FakePort::default(), None))
+            });
+        });
+        if has_port {
+            tx.send(Update::Beats(vec![("DIN".into(), 0)], true)).unwrap();
+            ready.recv_timeout(Duration::from_secs(5)).unwrap();
+            // Let the initial configuration's transport grace expire.
+            std::thread::sleep(Duration::from_millis(200));
+        }
+        let before = stats.iterations.load(Relaxed);
+        if !has_port {
+            tx.send(Update::Wake).unwrap();
+        }
+        let pending = Arc::new(AtomicBool::new(false));
+        for _ in 0..50 {
+            tx.send(Update::InputWake(pending.clone())).unwrap();
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        drop(tx);
+        worker.join().unwrap();
+        let iterations = stats.iterations.load(Relaxed) - before;
+        assert!((50..=60).contains(&iterations), "{iterations} iterations for 50 input wakes, configured port: {has_port}");
+    }
+}

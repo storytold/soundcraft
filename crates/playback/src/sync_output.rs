@@ -47,6 +47,8 @@ fn open_unique(name: &str) -> Result<(MidiOutputConnection, Option<String>), Str
 }
 #[derive(Default)]
 struct Stats {
+    #[cfg(test)]
+    iterations: AtomicU64,
     connected: Mutex<BTreeSet<String>>,
     priority: AtomicU64,
     sent: AtomicU64,
@@ -107,6 +109,7 @@ enum Update {
     Encoder(Option<(String, i64)>, bool, Box<dyn SyncEncoder>),
     Wake,
     InputWake(Arc<AtomicBool>),
+    TransportWake(Arc<AtomicBool>),
 }
 impl Output {
     pub(crate) fn configure(&mut self, s: &Arc<Session>, audio: &Sender<Cmd>, remap: bool) {
@@ -155,19 +158,26 @@ impl Output {
         self.send(Update::Encoder(port, compensate, encoder));
     }
     pub(crate) fn waker(&self) -> Arc<dyn Fn() + Send + Sync> {
+        self.coalesced_waker(self.pending_wake.clone(), Update::InputWake)
+    }
+    fn coalesced_waker(&self, pending: Arc<AtomicBool>, update: fn(Arc<AtomicBool>) -> Update) -> Arc<dyn Fn() + Send + Sync> {
         let dest = self.wake_tx.clone();
-        let pending = self.pending_wake.clone();
         Arc::new(move || {
             if pending.load(Relaxed) {
                 return;
             }
             if let Some(tx) = dest.lock().unwrap_or_else(std::sync::PoisonError::into_inner).as_ref()
                 && !pending.swap(true, Relaxed)
-                && tx.send(Update::InputWake(pending.clone())).is_err()
+                && tx.send(update(pending.clone())).is_err()
             {
                 pending.store(false, Relaxed);
             }
         })
+    }
+    /// A confirmed external transport transition precedes the audio callback
+    /// publishing its new pass. Use the same bounded lookahead as local Play/Locate.
+    pub(crate) fn transport_waker(&self) -> Arc<dyn Fn() + Send + Sync> {
+        self.coalesced_waker(Arc::default(), Update::TransportWake)
     }
     pub(crate) fn wake(&self) {
         if let Some((tx, _)) = &self.worker {
@@ -354,9 +364,15 @@ fn drive<C: SyncPort>(
     let mut update = None;
     let mut pending = Vec::<Event>::new();
     loop {
+        #[cfg(test)]
+        stats.iterations.fetch_add(1, Relaxed);
         let now = Instant::now();
         if let Some(u) = update.take() {
-            awake = now + Duration::from_millis(150);
+            // Input wakes recheck the presentation once. Local transport and setup
+            // commands may precede the callback that publishes their new timeline.
+            if !matches!(u, Update::InputWake(_)) {
+                awake = now + Duration::from_millis(150);
+            }
             match u {
                 Update::Session { doc, remap } => {
                     // A running external-clock adjustment preserves the outgoing transport pass.
@@ -392,7 +408,7 @@ fn drive<C: SyncPort>(
                     }
                 }
                 Update::Wake => {}
-                Update::InputWake(pending) => pending.store(false, Relaxed),
+                Update::InputWake(pending) | Update::TransportWake(pending) => pending.store(false, Relaxed),
             }
             ports.retain(|_, p| p.routes.iter().any(Option::is_some));
             stats.connected().retain(|n| ports.contains_key(n));
@@ -425,14 +441,15 @@ fn drive<C: SyncPort>(
                 *old = err.map(str::to_owned);
             }
         }
-        if now < awake {
+        let connected = ports.values().any(|p| p.link.is_some());
+        if connected && now < awake {
             soon(now + Duration::from_millis(1));
         }
         if let Some(at) = next {
             let delay = at.saturating_duration_since(Instant::now());
             // Only sleep is used for protocol deadlines. A long reconnect wait is
             // interruptible by control changes. Recheck every 10 ms during playback.
-            if ports.values().any(|p| p.link.is_some()) || delay <= Duration::from_millis(100) {
+            if connected || delay <= Duration::from_millis(100) {
                 std::thread::sleep(delay.min(Duration::from_millis(10)));
                 match rx.try_recv() {
                     Ok(u) => update = Some(u),

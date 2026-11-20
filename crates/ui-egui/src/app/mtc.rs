@@ -23,11 +23,6 @@ impl SoundApp {
         if online && self.clock_follow.enabled {
             return Err("Disable external MIDI clock follow before going online".into());
         }
-        let frames = args
-            .get("freewheel_frames")
-            .map(|v| v.as_u64().filter(|n| (4..=40).contains(n)).ok_or("Freewheel must be 4 to 40 frames"))
-            .transpose()?;
-        let jam = args.get("jam_sync").map(|v| v.as_bool().ok_or("jam_sync must be a boolean")).transpose()?;
         if online && source.is_none() {
             return Err("Select an MTC input before going online".into());
         }
@@ -37,11 +32,14 @@ impl SoundApp {
         if online && self.engine.transport.recording {
             return Err("Stop recording before enabling MTC chase".into());
         }
-        if let Some(f) = frames {
-            self.ui.mtc_freewheel_frames = f as u8;
+        let mut session_settings = serde_json::Map::new();
+        for key in ["freewheel_frames", "jam_sync"] {
+            if let Some(value) = args.get(key) {
+                session_settings.insert(key.into(), value.clone());
+            }
         }
-        if let Some(j) = jam {
-            self.ui.mtc_jam_sync = j;
+        if !session_settings.is_empty() {
+            self.engine.execute("setup.session", &Value::Object(session_settings)).map_err(|e| e.to_string())?;
         }
         if self.ui.mtc_input_port != source || self.mtc_online != online {
             if let Some(m) = &self.midi_inputs {
@@ -56,15 +54,13 @@ impl SoundApp {
     }
 
     fn mtc_state(&self) -> Value {
-        json!({"input": self.ui.mtc_input_port, "online": self.mtc_online, "status": self.mtc_status,"freewheel_frames":self.ui.mtc_freewheel_frames,"jam_sync":self.ui.mtc_jam_sync})
+        json!({"input": self.ui.mtc_input_port, "online": self.mtc_online, "status": self.mtc_status,"freewheel_frames":self.engine.mtc_freewheel_frames(),"jam_sync":self.engine.mtc_jam_sync()})
     }
 
     fn stop_mtc_transport(&mut self) {
-        if !std::mem::take(&mut self.mtc_chasing) {
-            return;
-        }
+        // The audio callback may have locked before the host has observed its first Roll.
         self.leave_chase_audio();
-        if self.is_playing() && !self.engine.transport.recording {
+        if std::mem::take(&mut self.mtc_chasing) && self.is_playing() && !self.engine.transport.recording {
             self.stop_play();
         }
     }
@@ -106,13 +102,15 @@ impl SoundApp {
         let s = self.engine.session();
         inputs.feed().set_mtc_options(
             s.frame_rate,
-            self.ui.mtc_freewheel_frames.clamp(4, 40),
-            self.ui.mtc_jam_sync,
+            self.engine.mtc_freewheel_frames(),
+            self.engine.mtc_jam_sync(),
             s.edit.value("midi.mtc.external_offset_frames", 0.) as i64,
         );
         inputs.feed().set_mtc_source(source);
         if source.is_none() {
-            self.stop_mtc_transport();
+            if self.mtc_status != "Input unavailable" {
+                self.stop_mtc_transport();
+            }
             self.mtc_status = "Input unavailable";
             return;
         }
@@ -120,23 +118,24 @@ impl SoundApp {
             self.mtc_status = "Waiting for timecode";
         }
         match inputs.feed().take_mtc() {
+            Some(ChaseEvent::Locate(p) | ChaseEvent::Roll(p, _)) if self.mtc_at(p) < 0 => {
+                if self.mtc_status != "Before session start" {
+                    self.stop_mtc_transport();
+                }
+                self.mtc_status = "Before session start";
+            }
             Some(ChaseEvent::Locate(p)) => {
                 if self.is_playing() {
                     self.stop_play();
                 }
                 self.mtc_chasing = false;
-                let at = self.mtc_at(p).max(0);
+                let at = self.mtc_at(p);
                 let _ = self.run("transport.locate", json!({"at": at}));
                 self.mtc_status = "Located";
             }
             Some(ChaseEvent::Roll(p, age_us)) => {
                 let sr = self.engine.session().sample_rate;
                 let at = self.mtc_at(p).saturating_add(sr.samples(age_us as f64 / 1_000_000.0));
-                if at < 0 {
-                    self.stop_mtc_transport();
-                    self.mtc_status = "Before session start";
-                    return;
-                }
                 if let Some(player) = &self.player {
                     if !player.is_playing() {
                         return;
@@ -197,11 +196,72 @@ mod tests {
     }
 
     #[test]
+    fn before_start_external_code_preserves_position_and_reports_range_status() {
+        let mut host = app();
+        let feed = host.midi_inputs.as_ref().unwrap().feed().clone();
+        let port = feed.ports().assign("Sender");
+        host.engine.session_mut().edit.selection = crate::Range::point(48_000);
+        host.engine.transport.position = 48_000;
+        assert_eq!(host.position(), 48_000);
+        feed.receive(port, &[0xf0, 0x7f, 127, 1, 1, 0x20, 59, 50, 0, 0xf7]);
+        host.service_mtc_chase();
+        host.handle_transport(0.0);
+        assert_eq!(host.position(), 48_000);
+        let status = host.run("setup.midi_sync_status", json!({})).unwrap();
+        assert_eq!(status["mtc_chase"]["state"], "Before session start");
+        for frame in [0, 2] {
+            // Rolling 25 fps code, still ten seconds before the session.
+            for (i, v) in [frame, 0, 2, 3, 11, 3, 0, 2].into_iter().enumerate() {
+                feed.receive(port, &[0xf1, (i as u8) << 4 | v]);
+            }
+        }
+        host.service_mtc_chase();
+        assert!(host.engine.transport_requests.is_empty());
+        assert_eq!(host.position(), 48_000);
+        feed.receive(port, &[0xf0, 0x7f, 127, 1, 1, 0x21, 0, 0, 0, 0xf7]);
+        host.service_mtc_chase();
+        host.handle_transport(0.0);
+        assert_eq!(host.position(), 0);
+        assert_eq!(host.run("setup.midi_sync_status", json!({})).unwrap()["mtc_chase"]["state"], "Located");
+        host.engine.session_mut().timecode_start = 0;
+        feed.receive(port, &[0xf0, 0x7f, 127, 1, 1, 0x20, 59, 50, 0, 0xf7]);
+        host.service_mtc_chase();
+        host.handle_transport(0.0);
+        assert_eq!(host.position(), host.engine.session().sample_rate.samples(3590.));
+    }
+
+    #[test]
     fn diagnostics_expose_reader_counters_before_any_timecode_arrives() {
         let mut host = app();
         let status = host.run("setup.midi_sync_status", json!({})).unwrap();
         for key in ["locks", "freewheel_entries", "losses", "hard_relocates", "input_jitter_p95_us"] {
             assert_eq!(status["mtc_chase"][key], 0, "{key}");
+        }
+    }
+
+    #[test]
+    fn chase_preferences_follow_the_document_when_switching_sessions() {
+        let mut host = app();
+        host.run("setup.mtc", json!({"freewheel_frames":12,"jam_sync":true})).unwrap();
+        let saved = host.engine.session().clone();
+        host.run("session.new", json!({})).unwrap();
+        let state = host.run("setup.mtc", json!({})).unwrap();
+        assert_eq!(state["freewheel_frames"], 8);
+        assert_eq!(state["jam_sync"], false);
+        host.engine.replace_session(saved);
+        assert_eq!(host.run("setup.mtc", json!({})).unwrap()["freewheel_frames"], 12);
+        assert_eq!(host.run("setup.mtc", json!({})).unwrap()["jam_sync"], true);
+    }
+
+    #[test]
+    fn counter_and_selection_report_before_start_without_moving() {
+        let mut host = SoundApp::new(Default::default(), None, crate::Services::default());
+        host.run("edit.select", json!({"start":100,"end":200})).unwrap();
+        let selection = host.engine.session().edit.selection;
+        for (cmd, args) in [("transport.locate", json!({"at":"00:00:20:00"})), ("edit.select", json!({"start":"00:00:20:00"}))] {
+            assert!(host.run(cmd, args).is_err());
+            assert!(host.ui.status.contains("01:00:00:00"), "{}", host.ui.status);
+            assert_eq!(host.engine.session().edit.selection, selection);
         }
     }
 
@@ -255,7 +315,7 @@ mod tests {
         let feed = app.midi_inputs.as_ref().unwrap().feed().clone();
         let src = feed.ports().assign("Sender");
         let onset = app.engine.session().sample_rate.samples(5.0);
-        // The Model 12 starts its first two 30 fps groups at 05:02 and 05:04.
+        // A sender may label its first two groups 05:02 and 05:04 after locating to 05:00.
         feed.receive(src, &[0xf0, 0x7f, 0x7f, 1, 1, 0x61, 0, 5, 0, 0xf7]);
         app.service_mtc_chase();
         app.handle_transport(0.0);
