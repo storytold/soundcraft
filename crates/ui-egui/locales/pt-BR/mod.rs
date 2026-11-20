@@ -716,6 +716,7 @@ fn menu_translate(source: &str) -> Option<&'static str> {
         "No Track Presets" => "Nenhuma predefinição de faixa",
         "Saved in {folder}" => "Salvo em {folder}",
         "Couldn't create {folder}: {error}" => "Não foi possível criar {folder}: {error}",
+        "Couldn't read {folder}: {error}" => "Não foi possível ler {folder}: {error}",
         "Scale..." => "Escala...",
         "Scene And Take" => "Cena e tomada",
         "Sci-Fi" => "Sci-Fi",

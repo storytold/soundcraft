@@ -233,29 +233,40 @@ impl Default for UiState {
     }
 }
 
-/// The presets (`*.json`) in a preset folder, by name, sorted ignoring case.
-fn preset_names(dir: &std::path::Path) -> Vec<String> {
-    let mut names: Vec<String> = std::fs::read_dir(dir)
-        .map(|rd| {
-            rd.flatten()
-                .map(|e| e.path())
-                .filter(|p| p.extension().is_some_and(|x| x == "json"))
-                .filter_map(|p| p.file_stem()?.to_str().map(str::to_string))
-                .collect()
-        })
-        .unwrap_or_default();
+/// The presets (`*.json`) in a preset folder, by name, sorted ignoring case. Empty while the folder
+/// doesn't exist; an error when it can't be read in full, rather than a list missing presets.
+fn preset_names(dir: &std::path::Path) -> Result<Vec<String>, String> {
+    let unreadable = |e: std::io::Error| crate::localized_format!("Couldn't read {folder}: {error}", folder = dir.display(), error = e);
+    let entries = match std::fs::read_dir(dir) {
+        Ok(entries) => entries,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(e) => return Err(unreadable(e)),
+    };
+    let mut names = Vec::new();
+    for entry in entries {
+        let path = entry.map_err(unreadable)?.path();
+        if path.extension().is_some_and(|x| x == "json")
+            && let Some(name) = path.file_stem().and_then(|n| n.to_str())
+        {
+            names.push(name.to_string());
+        }
+    }
     names.sort_by_cached_key(|n| n.to_lowercase());
-    names
+    Ok(names)
 }
 
+type Listed = Result<std::sync::Arc<[String]>, std::sync::Arc<str>>;
+
 /// `preset_names` for a menu: read when the menu opens, not on every frame it stays open.
-pub(crate) fn listed_presets(ui: &egui::Ui, dir: &std::path::Path) -> std::sync::Arc<[String]> {
+pub(crate) fn listed_presets(ui: &egui::Ui, dir: &std::path::Path) -> Listed {
     let id = egui::Id::unique(("listed_presets", dir));
     let frame = ui.ctx().cumulative_frame_nr();
-    let shown = ui.ctx().data(|d| d.get_temp::<(u64, std::sync::Arc<[String]>)>(id));
-    let names = shown.filter(|(seen, _)| seen.saturating_add(1) >= frame).map_or_else(|| preset_names(dir).into(), |(_, names)| names);
-    ui.ctx().data_mut(|d| d.insert_temp(id, (frame, names.clone())));
-    names
+    let shown = ui.ctx().data(|d| d.get_temp::<(u64, Listed)>(id));
+    let listed = shown
+        .filter(|(seen, _)| seen.saturating_add(1) >= frame)
+        .map_or_else(|| preset_names(dir).map(Into::into).map_err(Into::into), |(_, listed)| listed);
+    ui.ctx().data_mut(|d| d.insert_temp(id, (frame, listed.clone())));
+    listed
 }
 
 /// File-system-safe folder name for a plugin id (`clap:com.x.y` → `clap_com.x.y`).

@@ -18,7 +18,7 @@ fn dir(app: &SoundApp) -> Option<PathBuf> {
 pub(crate) fn open_save(app: &mut SoundApp, track: TrackId) -> bool {
     let Some(dir) = dir(app) else { return false };
     let name = app.engine.session().track(track).map(|t| t.name.clone()).unwrap_or_default();
-    app.dialogs.open = Some(Dialog::SaveTrackPreset { track, name, dir, confirm: false, error: None });
+    app.dialogs.set(Dialog::SaveTrackPreset { track, name, dir, confirm: false, error: None });
     true
 }
 
@@ -71,7 +71,7 @@ pub(crate) fn save(app: &mut SoundApp, track: TrackId, name: &str, dir: &Path, r
 pub(crate) fn open_recall(app: &mut SoundApp) {
     let path = dir(app).map(|d| format!("{}/", d.display())).unwrap_or_default();
     let title = "Track — Recall Track Preset from File".into();
-    app.dialogs.open = Some(Dialog::PathPrompt { cmd: "track.load_preset".into(), title, path, key: "path".into() });
+    app.dialogs.set(Dialog::PathPrompt { cmd: "track.load_preset".into(), title, path, key: "path".into() });
 }
 
 /// The Track menu's items after Save Track Preset...: the Recall Track Preset submenu and a path
@@ -97,15 +97,22 @@ pub(crate) fn name_menu(app: &mut SoundApp, ui: &mut egui::Ui, id: TrackId, trac
     recall_menu(app, ui, tracks);
 }
 
-/// The Recall Track Preset submenu: the presets in the folder, recalled onto `tracks`. A preset that
-/// can't be recalled says why in the status line (`SoundApp::run`).
+/// The Recall Track Preset submenu: the presets in the folder, recalled onto `tracks`. A folder that
+/// can't be read says why in the menu, a preset that can't be recalled in the status line
+/// (`SoundApp::run`).
 fn recall_menu(app: &mut SoundApp, ui: &mut egui::Ui, tracks: &[u64]) {
     ui.menu_button(crate::localization::text("Recall Track Preset"), |ui| {
         let Some(dir) = dir(app) else {
             ui.add_enabled(false, egui::Button::new(crate::localization::text("Track presets need the desktop app")));
             return;
         };
-        let names = crate::listed_presets(ui, &dir);
+        let names = match crate::listed_presets(ui, &dir) {
+            Ok(names) => names,
+            Err(e) => {
+                ui.add_enabled(false, egui::Button::new(&*e));
+                return;
+            }
+        };
         if names.is_empty() {
             ui.add_enabled(false, egui::Button::new(crate::localization::text("No Track Presets")));
             return;

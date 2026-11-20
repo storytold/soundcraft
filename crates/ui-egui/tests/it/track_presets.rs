@@ -269,6 +269,92 @@ fn recall_lists_only_presets_ignoring_case_and_reports_a_broken_one() {
 }
 
 #[test]
+fn save_track_preset_opened_over_another_dialog_ignores_its_first_enter() {
+    let (mut app, presets) = app("over-dialog");
+    app.run("edit.select", json!({"tracks": ["Hats"]})).unwrap();
+    menus::invoke_menu(&mut app, "track.load_preset", "");
+    let mut h = harness(app);
+    menus::invoke_menu(h.state_mut(), "track.save_preset", "Track > Save Track Preset...");
+    enter(&mut h);
+    assert!(!presets.join("Track Presets").join("Hats.json").exists(), "the Enter that opened it doesn't save");
+    assert!(matches!(h.state().dialogs.open, Some(Dialog::SaveTrackPreset { .. })));
+    let _ = std::fs::remove_dir_all(&presets);
+}
+
+#[test]
+fn recall_from_file_opened_over_another_dialog_ignores_its_first_enter() {
+    let (mut app, presets) = app("recall-over-dialog");
+    app.run("edit.select", json!({"tracks": ["Hats"]})).unwrap();
+    save_hats(&mut app, "Hats", presets.join("Track Presets"));
+    let mut h = harness(app);
+    menus::invoke_menu(h.state_mut(), "track.load_preset", "");
+    if let Some(Dialog::PathPrompt { path, .. }) = &mut h.state_mut().dialogs.open {
+        *path = presets.join("Track Presets").join("Bass Chain.json").to_string_lossy().into_owned();
+    }
+    enter(&mut h);
+    assert!(!compressor(h.state(), "Hats"), "the Enter that opened it doesn't recall");
+    assert!(matches!(h.state().dialogs.open, Some(Dialog::PathPrompt { .. })));
+    let _ = std::fs::remove_dir_all(&presets);
+}
+
+/// Makes a folder unreadable until dropped, so a failing test still leaves it removable. None
+/// when it stays readable anyway (as for root).
+#[cfg(unix)]
+struct Unreadable(PathBuf);
+
+#[cfg(unix)]
+impl Unreadable {
+    fn new(dir: PathBuf) -> Option<Self> {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o000)).unwrap();
+        let guard = Self(dir);
+        std::fs::read_dir(&guard.0).is_err().then_some(guard)
+    }
+}
+
+#[cfg(unix)]
+impl Drop for Unreadable {
+    fn drop(&mut self) {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(&self.0, std::fs::Permissions::from_mode(0o755));
+    }
+}
+
+/// A Track Presets folder that can't be read says so in Recall Track Preset, not "No Track Presets".
+#[cfg(unix)]
+#[test]
+fn a_folder_that_cannot_be_read_is_named_in_the_recall_menu() {
+    let (mut app, presets) = app("unreadable");
+    let Some(locked) = Unreadable::new(presets.join("Track Presets")) else { return };
+    app.run("edit.select", json!({"tracks": ["Hats"]})).unwrap();
+    let mut h = harness(app);
+    right_click_name(&mut h, "Hats");
+    h.get_by_label("Recall Track Preset").hover();
+    h.run_steps(3);
+    assert!(h.query_by_label_contains("Couldn't read").is_some() && h.query_by_label("No Track Presets").is_none());
+    drop(locked);
+    let _ = std::fs::remove_dir_all(&presets);
+}
+
+/// The same for a plugin's preset folder in its Presets menu.
+#[cfg(unix)]
+#[test]
+fn a_plugin_preset_folder_that_cannot_be_read_is_named_in_its_menu() {
+    let (mut app, presets) = app("plugin-unreadable");
+    let Some(locked) = Unreadable::new(presets.join(soundcraft_ui_egui::preset_folder_name("compressor"))) else { return };
+    app.run("mix.insert", json!({"track": "Hats", "slot": 0, "plugin": "compressor"})).unwrap();
+    let hats = app.engine.session().track_by_name("Hats").unwrap().id;
+    app.ui.plugin_windows.push((hats, 0));
+    let mut h = harness(app);
+    h.get_by_label("Presets v").click();
+    h.run_steps(3);
+    assert!(h.query_by_label_contains("Couldn't read").is_some());
+    drop(locked);
+    let _ = std::fs::remove_dir_all(&presets);
+}
+
+#[test]
 fn choosing_save_track_preset_in_the_palette_with_enter_opens_the_dialog() {
     let (mut app, presets) = app("palette-save");
     app.run("edit.select", json!({"tracks": ["Hats"]})).unwrap();

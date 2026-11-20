@@ -201,7 +201,11 @@ fn preset_menu(
         ui.label(crate::localization::text("User presets need the desktop app."));
         return;
     };
-    for n in crate::listed_presets(ui, &dir).iter() {
+    let names = crate::listed_presets(ui, &dir).unwrap_or_else(|e| {
+        ui.label(&*e);
+        Default::default()
+    });
+    for n in names.iter() {
         if ui.button(n).clicked() {
             if let Ok(text) = std::fs::read_to_string(dir.join(format!("{n}.json")))
                 && let Ok(v) = serde_json::from_str::<serde_json::Value>(&text)
