@@ -185,7 +185,7 @@ switch. ≈ 40–70 h for HUI/MCU plus a mapping layer; hardware needed to verif
 
 ### G-11. Sync
 
-Native MIDI Beat Clock output supports multiple calibrated destinations. MIDI Time Code supports generation, forward playback chase and stopped locates. The updated design awaits hardware verification. External clock follow, online MTC recording, LTC, video reference, word clock and Satellite-style linking remain open. See the [hardware capability tables](hardware-parity.md#midi).
+Native MIDI Beat Clock output supports multiple calibrated destinations. MIDI Time Code supports generation, forward playback chase, stopped locates, received timecode capture, a signed external offset and selectable freewheel behavior. The updated design awaits hardware verification. External clock follow, online MTC recording, LTC, video reference, word clock and Satellite-style linking remain open. See the [hardware capability tables](hardware-parity.md#midi).
 
 ### G-12. Immersive delivery
 
