@@ -516,10 +516,20 @@ impl Player {
 
     /// Active machine-configured destinations and their signed external latency offsets in samples.
     pub fn set_beat_clock_outputs(&self, ports: Vec<(String, i64)>, compensate: bool) {
+        self.try_set_beat_clock_outputs(ports, compensate);
+    }
+
+    /// Whether the worker accepted these settings. A transient startup failure can be retried.
+    pub fn try_set_beat_clock_outputs(&self, ports: Vec<(String, i64)>, compensate: bool) -> bool {
         #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
-        self.beat_clock.lock().unwrap_or_else(PoisonError::into_inner).beats(ports, compensate);
+        {
+            self.beat_clock.lock().unwrap_or_else(PoisonError::into_inner).beats(ports, compensate)
+        }
         #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
-        let _ = (ports, compensate);
+        {
+            let _ = compensate;
+            ports.is_empty()
+        }
     }
     /// Add a second protocol to the same MIDI worker and port pool.
     #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]

@@ -104,6 +104,7 @@ pub(crate) struct Output {
     wake_tx: Arc<Mutex<Option<Sender<Update>>>>,
     pending_wake: Arc<AtomicBool>,
     worker: Option<(Sender<Update>, std::thread::JoinHandle<()>)>,
+    retry_spawn_at: Option<Instant>,
 }
 enum Update {
     Session(Arc<Session>),
@@ -129,9 +130,12 @@ impl Output {
         }
         self.generation
     }
-    fn send(&mut self, u: Update) {
+    fn send(&mut self, u: Update) -> bool {
         if self.worker.is_none() {
-            let Some(s) = self.session.clone() else { return };
+            let Some(s) = self.session.clone() else { return false };
+            if self.retry_spawn_at.is_some_and(|at| Instant::now() < at) {
+                return false;
+            }
             let (tx, rx) = channel();
             let view = self.view.clone();
             let trouble = self.trouble.clone();
@@ -143,23 +147,25 @@ impl Output {
                 }
                 Err(e) => {
                     *self.trouble.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(format!("MIDI sync worker could not start: {e}"));
-                    return;
+                    self.retry_spawn_at = Some(Instant::now() + Duration::from_secs(1));
+                    return false;
                 }
             }
         }
-        if let Some((tx, _)) = &self.worker {
-            let _ = tx.send(u);
+        let queued = self.worker.as_ref().is_some_and(|(tx, _)| tx.send(u).is_ok());
+        if !queued {
+            self.worker = None;
+            *self.wake_tx.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = None;
         }
+        queued
     }
-    pub(crate) fn beats(&mut self, ports: Vec<(String, i64)>, compensate: bool) {
-        if self.worker.is_some() && self.beat == ports && self.compensated == compensate {
-            return;
+    pub(crate) fn beats(&mut self, ports: Vec<(String, i64)>, compensate: bool) -> bool {
+        if self.worker.as_ref().is_some_and(|(_, task)| !task.is_finished()) && self.beat == ports && self.compensated == compensate {
+            return true;
         }
         self.beat = ports.clone();
         self.compensated = compensate;
-        if !ports.is_empty() || self.worker.is_some() {
-            self.send(Update::Beats(ports, compensate));
-        }
+        (ports.is_empty() && self.worker.is_none()) || self.send(Update::Beats(ports, compensate))
     }
     pub(crate) fn encoder(&mut self, port: Option<(String, i64)>, compensate: bool, encoder: Box<dyn SyncEncoder>) {
         self.additional = port.clone().map(|(n, o)| (n, o, compensate));
