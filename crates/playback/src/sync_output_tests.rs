@@ -13,7 +13,7 @@ impl SyncPort for FakePort {
         Ok(at)
     }
 }
-fn block(start: Instant, sample: f64, frames: f64, lead: Duration) -> Presentation {
+pub(super) fn block(start: Instant, sample: f64, frames: f64, lead: Duration) -> Presentation {
     Presentation {
         generation: 0,
         sample_rate: soundcraft_time::SampleRate::default(),
@@ -379,7 +379,7 @@ fn input_wakes_reread_an_idle_timeline_without_periodic_polling() {
         }
         let before = stats.iterations.load(Relaxed);
         if !has_port {
-            tx.send(Update::Wake).unwrap();
+            tx.send(Update::Wake(None)).unwrap();
         }
         let pending = Arc::new(AtomicBool::new(false));
         for _ in 0..50 {
@@ -421,7 +421,7 @@ fn idle_worker_starts_the_device_when_play_publishes_after_a_long_buffer() {
         tx.send(Update::Beats(vec![("DIN".into(), 0)], true)).unwrap();
         ready.recv_timeout(Duration::from_secs(3)).unwrap();
         std::thread::sleep(Duration::from_millis(300));
-        tx.send(Update::Wake).unwrap();
+        tx.send(Update::Wake(Some((stopped.pass, stopped.playing)))).unwrap();
         std::thread::sleep(Duration::from_millis(delay));
         if delay > 2000 {
             assert_eq!(metrics.pending_transition_timeouts.load(Relaxed), 1);
@@ -444,6 +444,51 @@ fn idle_worker_starts_the_device_when_play_publishes_after_a_long_buffer() {
 }
 
 #[test]
+fn stopping_an_already_stopped_presentation_does_not_expect_another_transition() {
+    let mut output = Output::default();
+    let (tx, requests) = channel();
+    let worker = std::thread::spawn(|| {});
+    let sender = WorkerSender { tx, worker: worker.thread().clone() };
+    output.worker.replace((sender, worker));
+    output.view.lock().unwrap().push(Presentation { playing: false, ..block(Instant::now(), 0., 0., Duration::ZERO) });
+    let (audio, callback) = channel();
+    output.send_transport(&audio, Cmd::Stop);
+    assert!(matches!(callback.try_recv(), Ok(Cmd::Stop)));
+    assert!(matches!(requests.try_recv(), Err(std::sync::mpsc::TryRecvError::Empty)));
+}
+
+#[test]
+fn a_non_grid_start_published_before_the_worker_reads_wake_does_not_time_out() {
+    let mut output = Output::default();
+    let view = output.view.clone();
+    let stats = output.stats.clone();
+    let initial = Presentation { pass: 0, playing: false, ..block(Instant::now(), 0., 0., Duration::ZERO) };
+    output.view.lock().unwrap().push(initial);
+    let (tx, rx) = channel();
+    let (opened, ready) = channel();
+    let (release, paused) = channel();
+    let worker = std::thread::spawn(move || {
+        drive(view, Arc::new(Session::default()), rx, Default::default(), stats, move |_| {
+            opened.send(()).unwrap();
+            paused.recv().unwrap();
+            Ok((FakePort::default(), None))
+        });
+    });
+    let sender = WorkerSender { tx, worker: worker.thread().clone() };
+    output.worker.replace((sender, worker));
+    output.beats(vec![("DIN".into(), 0)], false);
+    ready.recv_timeout(Duration::from_secs(3)).unwrap();
+    let (audio, callback) = channel();
+    output.send_transport(&audio, Cmd::Play { from: 47_125, end: None, looped: None });
+    assert!(matches!(callback.try_recv(), Ok(Cmd::Play { from: 47_125, .. })));
+    output.view.lock().unwrap().push(Presentation { origin: 47_125, ..block(Instant::now(), 47_125., 4_800., Duration::ZERO) });
+    release.send(()).unwrap();
+    std::thread::sleep(Duration::from_millis(2400));
+    assert!(output.stats.sent.load(Relaxed) >= 3, "expected SPP, Continue and Clock");
+    assert_eq!(output.stats.pending_transition_timeouts.load(Relaxed), 0);
+}
+
+#[test]
 fn parked_worker_handles_control_and_shutdown_without_a_new_audio_block() {
     let mut output = Output::default();
     let (tx, rx) = channel();
@@ -461,7 +506,8 @@ fn parked_worker_handles_control_and_shutdown_without_a_new_audio_block() {
     output.worker.replace((sender, worker));
     output.beats(vec![("DIN".into(), 0)], true);
     ready.recv_timeout(Duration::from_secs(3)).unwrap();
-    output.wake();
+    let (audio, _callback) = channel();
+    output.send_transport(&audio, Cmd::Play { from: 0, end: None, looped: None });
     let limit = Instant::now() + Duration::from_secs(4);
     while output.stats.pending_transition_timeouts.load(Relaxed) == 0 {
         assert!(Instant::now() < limit, "worker never entered its post-timeout wait");

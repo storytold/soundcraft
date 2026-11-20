@@ -74,7 +74,7 @@ fn beat_clock_host_timing() {
                         lead,
                     });
                     if index == 0 {
-                        tx.send(Update::Wake).unwrap();
+                        tx.send(Update::Wake(None)).unwrap();
                     }
                     index += frames;
                 }

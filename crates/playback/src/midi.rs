@@ -144,13 +144,15 @@ fn lost_entry(port: u8) -> u32 {
     pack(&LiveMidi { offset: 0, port, status: RecordedMidi::LOST, data1: 0, data2: 0 })
 }
 
+pub(crate) type TransportWaker = Arc<dyn Fn(crate::mtc_input::ChaseEvent) + Send + Sync>;
+
 /// The path of MIDI events from the device threads to the audio thread, and of recorded events
 /// from the audio thread to the UI.
 pub struct MidiFeed {
     clock_follow: Mutex<crate::clock_follow::Follower>,
     clock_source: AtomicUsize,
     mtc: Mutex<crate::mtc_input::Reader>,
-    sync_wake: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
+    sync_wake: Mutex<Option<TransportWaker>>,
     mtc_online: AtomicBool,
     mtc_relocates: AtomicU64,
     mtc_wake: std::sync::OnceLock<Box<dyn Fn() + Send + Sync>>,
@@ -297,13 +299,17 @@ impl MidiFeed {
         self.mtc_wake.get_or_init(make);
     }
     #[cfg(any(target_os = "windows", target_os = "macos", target_os = "linux"))]
-    pub(crate) fn set_sync_waker(&self, wake: Arc<dyn Fn() + Send + Sync>) {
+    pub(crate) fn set_sync_waker(&self, wake: TransportWaker) {
         *self.sync_wake.lock().unwrap_or_else(PoisonError::into_inner) = Some(wake);
     }
-    fn wake_mtc_host(&self) {
-        if let Some(wake) = self.sync_wake.lock().unwrap_or_else(PoisonError::into_inner).as_ref() {
-            wake();
+    fn wake_mtc_output(&self, reader: &crate::mtc_input::Reader) {
+        if let Some(event) = reader.pending
+            && let Some(wake) = self.sync_wake.lock().unwrap_or_else(PoisonError::into_inner).as_ref()
+        {
+            wake(event);
         }
+    }
+    fn wake_mtc_host(&self) {
         if let Some(wake) = self.mtc_wake.get() {
             wake();
         }
@@ -402,9 +408,9 @@ impl MidiFeed {
             let arrival = self.now();
             let mut reader = self.mtc.lock().unwrap_or_else(PoisonError::into_inner);
             if reader.source == Some(port) && open.is_none_or(|gate| gate.load(Ordering::Acquire)) {
-                let changed = reader.receive(bytes, at_us, arrival);
-                drop(reader);
-                if changed {
+                if reader.receive(bytes, at_us, arrival) {
+                    self.wake_mtc_output(&reader);
+                    drop(reader);
                     self.wake_mtc_host();
                 }
             }
@@ -471,6 +477,7 @@ impl MidiFeed {
         let mut reader = self.mtc.lock().unwrap_or_else(PoisonError::into_inner);
         if reader.source == Some(port) {
             reader.loss();
+            self.wake_mtc_output(&reader);
             drop(reader);
             self.wake_mtc_host();
         }

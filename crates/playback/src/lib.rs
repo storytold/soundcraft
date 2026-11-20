@@ -619,6 +619,13 @@ impl Player {
         }
     }
 
+    fn send_transport(&self, command: Cmd) {
+        #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+        self.beat_clock.lock().unwrap_or_else(PoisonError::into_inner).send_transport(&self.tx, command);
+        #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
+        let _ = self.tx.send(command);
+    }
+
     /// Start playback at `from`, stopping at `end`, or looping `looped`.
     pub fn play(&self, from: Samples, end: Option<Samples>, looped: Option<Range>) {
         self.begin_play(from, Cmd::Play { from, end, looped });
@@ -636,9 +643,7 @@ impl Player {
     fn begin_play(&self, from: Samples, cmd: Cmd) {
         self.shared.position.store(from, Ordering::Relaxed);
         self.shared.playing.store(true, Ordering::Release);
-        let _ = self.tx.send(cmd);
-        #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
-        self.beat_clock.lock().unwrap_or_else(PoisonError::into_inner).wake();
+        self.send_transport(cmd);
     }
 
     /// Feed live input (from a `record::Recorder`) into the mix for input monitoring.
@@ -666,16 +671,12 @@ impl Player {
 
     pub fn stop(&self) {
         self.shared.playing.store(false, Ordering::Relaxed);
-        let _ = self.tx.send(Cmd::Stop);
-        #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
-        self.beat_clock.lock().unwrap_or_else(PoisonError::into_inner).wake();
+        self.send_transport(Cmd::Stop);
     }
 
     pub fn locate(&self, at: Samples) {
         self.shared.position.store(at, Ordering::Relaxed);
-        let _ = self.tx.send(Cmd::Locate(at));
-        #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
-        self.beat_clock.lock().unwrap_or_else(PoisonError::into_inner).wake();
+        self.send_transport(Cmd::Locate(at));
     }
 
     pub fn set_speed(&self, speed: f32) {
