@@ -1,13 +1,20 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<!-- Hardened-runtime entitlements for SoundCraft. The app is pure Rust, loads no unsigned code,
-     needs no JIT, and is not sandboxed (it opens files by path, from the command line and
-     drag-and-drop). Add exceptions here only with a reason in a comment. -->
+<!-- Hardened-runtime entitlements for SoundCraft. The app is pure Rust, needs no JIT, and is not
+     sandboxed (it opens files by path, from the command line and drag-and-drop). It does load
+     third-party plugin bundles (VST3, CLAP, AU), see below. Add exceptions here only with a
+     reason in a comment. -->
 <plist version="1.0">
 <dict>
   <!-- Recording: the hardened runtime blocks audio input (CoreAudio via cpal) without this,
        even after the user grants microphone access (NSMicrophoneUsageDescription). -->
   <key>com.apple.security.device.audio-input</key>
+  <true/>
+  <!-- Plugin hosting: with library validation on, the hardened runtime only lets dlopen load
+       libraries signed by Apple or by our own Team ID, so every third-party VST3/CLAP bundle
+       fails with "dlopen failed" (#153, #149). A plugin host has to load code from other
+       vendors, so this is required. Every host DAW (Logic, Reaper, Ableton) carries it. -->
+  <key>com.apple.security.cs.disable-library-validation</key>
   <true/>
 </dict>
 </plist>
