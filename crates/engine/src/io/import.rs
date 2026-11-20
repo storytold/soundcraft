@@ -191,7 +191,15 @@ fn place_import(
     let cid = s.new_clip_id();
     let stem = s.source(src).map(|x| x.name.clone()).unwrap_or_default();
     crate::edit::place_clip(s, track, Clip::audio(cid, stem, src, 0, at, frames));
-    Ok(json!({"track": track, "clip": cid, "source": src, "frames": frames, "channels": channels}))
+    let mut out = json!({"track": track, "clip": cid, "source": src, "frames": frames, "channels": channels});
+    // craft-audio keeps a damaged file's timing by decoding what was lost as silence (#550): say
+    // so, instead of passing the silence off as the file's audio.
+    if info.damaged > 0 {
+        let warning = format!("{name}: {} damaged packet(s) imported as silence", info.damaged);
+        log::warn!("{warning}");
+        out["warning"] = json!(warning);
+    }
+    Ok(out)
 }
 
 /// Loads an audio file's bytes into an instrument track's Sampler as one undo step ("Load
