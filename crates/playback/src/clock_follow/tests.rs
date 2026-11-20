@@ -154,7 +154,7 @@ fn midi_clock_wakes_only_on_transport_actions() {
     #[cfg(any(target_os = "windows", target_os = "macos", target_os = "linux"))]
     {
         let worker = worker.clone();
-        feed.set_sync_waker(Arc::new(move || {
+        feed.set_sync_waker(Arc::new(move |_| {
             worker.fetch_add(1, Ordering::Relaxed);
         }));
     }
