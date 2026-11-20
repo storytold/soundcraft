@@ -17,6 +17,7 @@ craft-mime = { version = "0.1.0", git = "https://github.com/storytold/craft-libs
 # internal
 soundcraft-interchange = { path = "crates/interchange" }
 soundcraft-time = { path = "crates/time" }
+craft-midi-sync = { package = "craft-midi", git = "https://github.com/storytold/craft-libs", rev = "08da5e1486ee640de1d2cccd8fe8dd32b1d3b62c" }
 soundcraft-midi = { path = "crates/midi" }
 soundcraft-video = { path = "crates/video" }
 soundcraft-dsp = { path = "crates/dsp" }

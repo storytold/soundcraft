@@ -13,6 +13,7 @@ use std::sync::Arc;
 
 mod audiosuite;
 mod files;
+mod midi_beat_clock;
 mod strip_silence;
 
 #[cfg(test)]
@@ -51,6 +52,7 @@ pub enum Dialog {
     // `id: None` creates (Track › Group…); `id: Some` modifies that group (Groups list › Modify Group…).
     Group { id: Option<GroupId>, name: String, edit: bool, mix: bool, members: Vec<(u64, String, bool)> },
     Session { frame_rate: String, bit_depth: String },
+    MidiBeatClock(midi_beat_clock::MidiBeatClock),
     // Clip › Loop…: `length` is typed in `format`, measured from `start` (the first selected clip's).
     // `filled` is the text the field opened with and the exact length it stands for.
     Loop { by: LoopBy, count: u32, length: String, format: soundcraft_time::TimeFormat, start: Samples, filled: (String, Samples) },
@@ -108,6 +110,7 @@ impl Dialogs {
             Dialog::Group { id: None, .. } => "group",
             Dialog::Group { id: Some(_), .. } => "modify_group",
             Dialog::Session { .. } => "session",
+            Dialog::MidiBeatClock(_) => "midi_beat_clock",
             Dialog::Loop { .. } => "clip_looping",
             Dialog::ScoreSetup { .. } => "score_setup",
             Dialog::SaveChanges { .. } => "save_changes",
@@ -234,6 +237,8 @@ impl Dialogs {
                 let members = s.tracks.iter().map(|t| (t.id.0, t.name.clone(), s.edit.selected_tracks.contains(&t.id))).collect();
                 Dialog::Group { id: None, name: format!("Group {}", s.groups.len() + 1), edit: true, mix: true, members }
             }
+            #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+            "setup.midi_beat_clock" => Dialog::MidiBeatClock(midi_beat_clock::MidiBeatClock::new(e.session())),
             "setup.session" => Dialog::Session { frame_rate: e.session().frame_rate.label().into(), bit_depth: "24".into() },
             "file.score_setup" => {
                 let s = soundcraft_engine::score::ScoreSetup::from_session(e.session());
@@ -502,6 +507,7 @@ pub fn show(app: &mut SoundApp, ctx: &egui::Context) {
         Dialog::Group { id: None, .. } => "Create Group",
         Dialog::Group { id: Some(_), .. } => "Modify Group",
         Dialog::Session { .. } => "Session Setup",
+        Dialog::MidiBeatClock(_) => "MIDI Beat Clock",
         Dialog::Loop { .. } => "Clip Looping",
         Dialog::ScoreSetup { .. } => "Score Setup",
         Dialog::SaveChanges { then } if then.0 == "session.revert" => "Revert to Saved",
@@ -698,6 +704,11 @@ pub fn show(app: &mut SoundApp, ctx: &egui::Context) {
                             None => "track.group",
                         };
                         action = Some((cmd.into(), params));
+                    }
+                }
+                Dialog::MidiBeatClock(clock) => {
+                    if let Some(params) = clock.show(ui, enter) {
+                        action = Some(("setup.midi_beat_clock".into(), params));
                     }
                 }
                 Dialog::Session { frame_rate, bit_depth } => {
@@ -981,6 +992,64 @@ mod tests {
     /// Constructs one non-repeating key-press event for dialog tests.
     fn key(key: egui::Key, modifiers: egui::Modifiers) -> egui::Event {
         egui::Event::Key { key, physical_key: None, pressed: true, repeat: false, modifiers }
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+    #[test]
+    fn beat_clock_menu_applies_the_selected_port_and_preserves_an_unavailable_destination() {
+        const CMD: &str = "setup.midi_beat_clock";
+        const PATH: &str = "Setup > MIDI > MIDI Beat Clock...";
+        let mut app = SoundApp::new(Engine::default(), None, crate::Services::default());
+        let ctx = egui::Context::default();
+        crate::fonts::install(&ctx, true);
+        let open = |app: &mut SoundApp| {
+            assert_eq!(crate::menus::command_for_path(PATH, &[]).as_deref(), Some(CMD));
+            assert!(crate::menus::item_state(app, PATH, Some(CMD)).0);
+            crate::menus::invoke_menu(app, CMD, PATH);
+            assert_eq!(app.dialogs.open_name(), Some("midi_beat_clock"));
+        };
+        let enter = |app: &mut SoundApp| {
+            let press = key(egui::Key::Enter, egui::Modifiers::NONE);
+            let mut release = press.clone();
+            if let egui::Event::Key { pressed, .. } = &mut release {
+                *pressed = false;
+            }
+            dialog_frame(&ctx, app, vec![press, release]);
+        };
+        let revision = app.engine.revision;
+        open(&mut app);
+        let Some(Dialog::MidiBeatClock(form)) = &mut app.dialogs.open else { panic!("missing clock dialog") };
+        assert!(!form.enabled);
+        assert!(form.destination.is_empty());
+        form.outputs = Ok(vec!["Clock A".into(), "Clock B".into()]);
+        form.enabled = true;
+        dialog_frame(&ctx, &mut app, vec![]);
+        enter(&mut app);
+        assert_eq!(app.dialogs.open_name(), Some("midi_beat_clock"));
+        assert_eq!(app.engine.revision, revision);
+        let Some(Dialog::MidiBeatClock(form)) = &mut app.dialogs.open else { panic!("missing clock dialog") };
+        form.destination = "Clock B".into();
+        form.offset = -240;
+        enter(&mut app);
+        assert!(app.dialogs.open.is_none());
+        assert!(app.engine.revision > revision);
+        let config = soundcraft_model::MidiBeatClock::from_session(app.engine.session());
+        assert_eq!((config.enabled, config.destination, config.offset), (true, Some("Clock B"), -240));
+
+        dialog_frame(&ctx, &mut app, vec![]);
+        open(&mut app);
+        let Some(Dialog::MidiBeatClock(form)) = &mut app.dialogs.open else { panic!("missing clock dialog") };
+        assert_eq!((form.enabled, form.destination.as_str(), form.offset), (true, "Clock B", -240));
+        // Unplug the saved output. Opening and canceling must not replace it with the first port.
+        form.outputs = Ok(vec!["Clock A".into()]);
+        form.offset = 64;
+        dialog_frame(&ctx, &mut app, vec![]);
+        enter(&mut app);
+        assert_eq!(app.dialogs.open_name(), Some("midi_beat_clock"));
+        dialog_frame(&ctx, &mut app, vec![key(egui::Key::Escape, egui::Modifiers::NONE)]);
+        assert!(app.dialogs.open.is_none());
+        let config = soundcraft_model::MidiBeatClock::from_session(app.engine.session());
+        assert_eq!((config.enabled, config.destination, config.offset), (true, Some("Clock B"), -240));
     }
 
     /// Returns every editable value from the active New Tracks row.

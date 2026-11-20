@@ -28,6 +28,20 @@ pub fn loops(range: Range) -> bool {
     range.len() > 64
 }
 
+#[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+mod beat_clock;
+
+/// Named destinations offered by the native MIDI Beat Clock setup dialog.
+pub fn midi_clock_outputs() -> Result<Vec<String>, String> {
+    #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+    {
+        beat_clock::output_names()
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
+    {
+        Ok(Vec::new())
+    }
+}
 pub mod devices;
 pub mod midi;
 pub mod record;
@@ -161,6 +175,8 @@ pub enum OutputTrouble {
 
 /// The transport and audio device.
 pub struct Player {
+    #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+    beat_clock: Mutex<beat_clock::Output>,
     shared: Arc<Shared>,
     fault: Arc<Fault>,
     /// The block count last seen while playing, and since when.
@@ -275,6 +291,8 @@ impl Player {
                             fault,
                             #[cfg(not(target_arch = "wasm32"))]
                             watch: Mutex::new(None),
+                            #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+                            beat_clock: Mutex::default(),
                             tx,
                             side: new_side(grx),
                             _stream: Some(stream),
@@ -352,6 +370,8 @@ impl Player {
             shared,
             fault,
             watch: Mutex::new(None),
+            #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+            beat_clock: Mutex::default(),
             tx,
             side,
             _stream: None,
@@ -389,6 +409,8 @@ impl Player {
     /// Sends a new session snapshot to the audio thread, with freshly created (state-restored,
     /// prepared) instances of any third-party plugin it newly needs. Call on the UI thread.
     pub fn update_session(&self, s: Arc<Session>) {
+        #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+        self.beat_clock.lock().unwrap_or_else(PoisonError::into_inner).configure(&s, &self.shared);
         let (instances, gone) = {
             let mut side = self.side();
             (side.prepare(&s), side.gone_tracks(&s))
@@ -477,7 +499,9 @@ impl Player {
     /// Start playback at `from`, stopping at `end`, or looping `looped`.
     pub fn play(&self, from: Samples, end: Option<Samples>, looped: Option<Range>) {
         self.shared.position.store(from, Ordering::Relaxed);
-        self.shared.playing.store(true, Ordering::Relaxed);
+        self.shared.playing.store(true, Ordering::Release);
+        #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+        self.beat_clock.lock().unwrap_or_else(PoisonError::into_inner).transport(from, true);
         let _ = self.tx.send(Cmd::Play { from, end, looped });
     }
 
@@ -503,12 +527,16 @@ impl Player {
     }
 
     pub fn stop(&self) {
+        #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+        self.beat_clock.lock().unwrap_or_else(PoisonError::into_inner).transport(self.position(), false);
         self.shared.playing.store(false, Ordering::Relaxed);
         let _ = self.tx.send(Cmd::Stop);
     }
 
     pub fn locate(&self, at: Samples) {
         self.shared.position.store(at, Ordering::Relaxed);
+        #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+        self.beat_clock.lock().unwrap_or_else(PoisonError::into_inner).transport(at, self.is_playing());
         let _ = self.tx.send(Cmd::Locate(at));
     }
 

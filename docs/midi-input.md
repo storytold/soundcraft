@@ -81,6 +81,12 @@ One **Undo** removes the take.
 **Setup › MIDI › MIDI Input Filter…** keeps kinds of messages (for example aftertouch) out of
 recordings.
 
+## Send MIDI Beat Clock to external hardware
+
+On Windows, macOS or Linux, open **Setup › MIDI › MIDI Beat Clock…**. Choose the MIDI output connected to the receiving device, check **Enable MIDI Beat Clock**, and click **OK**. Set the receiving device to follow external MIDI clock, then start SoundCraft playback. The output follows the session tempo at 24 clock pulses per quarter note. Playback from the beginning sends Start. Playback from a later position sends Song Position Pointer and Continue. Stopping playback sends Stop.
+
+**Offset (samples)** shifts the outgoing clock relative to session playback. A positive value delays the clock and a negative value advances it. The session saves the enable switch, destination and offset. After connecting a MIDI device, choose **Refresh devices** to update the list. If a saved destination is missing, its name stays selected. Reconnect it or choose another output to enable the clock.
+
 ## If something is lost
 
 The path from a device to the engine has a fixed size. If a device sends more than it holds
