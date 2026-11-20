@@ -100,7 +100,7 @@ impl SoundApp {
             }
             self.engine.playback_tempo = None;
             self.clock_follow = Host { enabled, ..Host::default() };
-            self.refresh_follow_playback();
+            self.refresh_playback_session();
         }
         self.ui.clock_follow_input = source;
         self.ui.clock_follow_stop_on_loss = stop;
@@ -128,9 +128,13 @@ impl SoundApp {
         self.clock_follow.grid_dirty = true;
     }
 
-    fn refresh_follow_playback(&self) {
+    pub(super) fn refresh_playback_session(&self) {
         if let Some(player) = &self.player {
-            player.update_session(self.engine.playback_session());
+            if let Some(grid) = &self.engine.playback_tempo {
+                player.prepare_clock_session(self.engine.session_arc(), grid);
+            } else {
+                player.update_session(self.engine.session_arc());
+            }
         }
     }
 

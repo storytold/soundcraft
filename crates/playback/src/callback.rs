@@ -1204,6 +1204,10 @@ pub(crate) struct Side {
     /// is opened.
     pub(crate) refused: HashSet<(TrackId, usize)>,
     pub(crate) grid_base: Option<Arc<Session>>,
+    // Identity of the editable document used to prepare the external-clock snapshot.
+    pub(crate) clock_document: std::sync::Weak<Session>,
+    // Index of the last published tempo-only snapshot, or None for the full base.
+    published_grid: Option<usize>,
     // Device and output worker may retain snapshots independently. Reuse only exclusively
     // owned entries. When all are occupied, the host coalesces edits until one returns.
     follow_pool: [Option<Arc<Session>>; FOLLOW_POOL_SLOTS],
@@ -1218,6 +1222,8 @@ impl Side {
     pub(crate) fn new(rate: f32, garbage: Receiver<Vec<Box<dyn Plugin>>>) -> Side {
         Side {
             grid_base: None,
+            clock_document: Default::default(),
+            published_grid: None,
             follow_pool: Default::default(),
             grid_return: Default::default(),
             shadow: HashMap::new(),
@@ -1233,15 +1239,25 @@ impl Side {
 
     pub(crate) fn set_follow_base(&mut self, doc: Arc<Session>) {
         self.grid_base = Some(doc);
+        self.published_grid = None;
         self.follow_pool = Default::default();
+    }
+
+    pub(crate) fn published_tempo(&self) -> Option<&soundcraft_time::TempoMap> {
+        let snapshot = match self.published_grid {
+            Some(index) => self.follow_pool.get(index)?.as_ref()?,
+            None => self.grid_base.as_ref()?,
+        };
+        Some(&snapshot.tempo)
     }
 
     pub(crate) fn follow_snapshot(&mut self, tempo: &soundcraft_time::TempoMap) -> Option<Arc<Session>> {
         let base = self.grid_base.as_ref()?;
-        for slot in &mut self.follow_pool {
+        for (index, slot) in self.follow_pool.iter_mut().enumerate() {
             let snapshot = slot.get_or_insert_with(|| Arc::new((**base).clone()));
             if let Some(doc) = Arc::get_mut(snapshot) {
                 doc.tempo.clone_from(tempo);
+                self.published_grid = Some(index);
                 return Some(snapshot.clone());
             }
         }

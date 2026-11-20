@@ -55,3 +55,5 @@ here. The subset uses default_fonts; the parent face uses monochrome_emoji_fonts
 | `assets/app-icon/soundcraft.ico` | SoundCraft contributors | original, rendered from `icon.svg` | MIT OR Apache-2.0 |
 | `assets/app-icon/hicolor/` | SoundCraft contributors | original, rendered from `icon.svg` (16–512 px PNGs and the scalable SVG) | MIT OR Apache-2.0 |
 | `docs/images/` | SoundCraft contributors | screenshots of SoundCraft rendered from the synthesised demo session | MIT OR Apache-2.0 |
+| `docs/images/midi-clock-resume-latency.png` | SoundCraft contributors | original graph of physical MIDI and audio timing measurements for #1675 | MIT OR Apache-2.0 |
+| `docs/images/midi-clock-resume-boundary.png` | SoundCraft contributors | original graphs of recorded amplitudes and crash waveform correlations for #1675 | MIT OR Apache-2.0 |

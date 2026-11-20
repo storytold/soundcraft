@@ -230,9 +230,7 @@ impl SoundApp {
         self.service_mtc_output();
         if self.engine.revision != self.last_rev {
             self.last_rev = self.engine.revision;
-            if let Some(p) = &self.player {
-                p.update_session(self.engine.playback_session());
-            }
+            self.refresh_playback_session();
         }
         self.open_inserted();
         self.autosave_changes();

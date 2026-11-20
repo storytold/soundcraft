@@ -1977,6 +1977,35 @@ fn a_slow_sync_route_can_publish_more_than_eight_live_grid_revisions() {
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn clock_resume_reuses_the_prepared_session_and_observes_edits() {
+    let (tx, rx) = channel();
+    let (retire, garbage) = channel();
+    let mut doc = Arc::new(Session::default());
+    let shared = Arc::new(Shared { position: 0.into(), playing: false.into(), speed: 1000.into(), meters: Mutex::default() });
+    let side = Mutex::new(Side::new(doc.sample_rate.as_f64() as f32, garbage));
+    let player = Player::silent_clock_with(shared, tx, rx, doc.clone(), side, retire);
+    let mut grid = doc.tempo.clone();
+    player.prepare_clock_session(doc.clone(), &grid);
+    let original = player.side().grid_base.clone().unwrap();
+    player.prepare_clock_session(doc.clone(), &grid);
+    assert!(Arc::ptr_eq(player.side().grid_base.as_ref().unwrap(), &original), "Continue rebuilt an unchanged session");
+    grid.set_tempo(0, 90.).unwrap();
+    assert!(player.update_follow_grid(&grid));
+    player.prepare_clock_session(doc.clone(), &grid);
+    assert!(Arc::ptr_eq(player.side().grid_base.as_ref().unwrap(), &original), "an already queued tempo grid should be reused");
+    grid.set_tempo(0, 100.).unwrap();
+    player.prepare_clock_session(doc.clone(), &grid);
+    assert_eq!(player.side().grid_base.as_ref().unwrap().tempo, grid);
+    Arc::make_mut(&mut doc).add_track(soundcraft_model::TrackKind::Audio, soundcraft_model::ChannelFormat::Mono, None);
+    player.prepare_clock_session(doc.clone(), &grid);
+    assert_eq!(player.side().grid_base.as_ref().unwrap().tracks.len(), doc.tracks.len());
+    player.update_session(original);
+    player.prepare_clock_session(doc.clone(), &grid);
+    assert_eq!(player.side().grid_base.as_ref().unwrap().tracks.len(), doc.tracks.len());
+}
+
 #[test]
 fn follow_snapshots_reuse_document_storage_until_an_edit() {
     use soundcraft_model::{ChannelFormat, TrackKind};

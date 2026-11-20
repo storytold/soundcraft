@@ -35,7 +35,7 @@ impl SoundApp {
 
     fn start_play_with_origin(&mut self, from: Samples, end: Option<Samples>, looped: Option<Range>, midi_origin: Option<Samples>) {
         if let Some(p) = &self.player {
-            p.update_session(self.engine.playback_session());
+            self.refresh_playback_session();
             if let Some(origin) = midi_origin {
                 p.play_from_clock(origin, from);
             } else if self.mtc_chasing && end.is_none() && looped.is_none() {

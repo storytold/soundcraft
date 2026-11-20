@@ -440,6 +440,10 @@ impl Player {
     /// Sends a new session snapshot to the audio thread, with freshly created (state-restored,
     /// prepared) instances of any third-party plugin it newly needs. Call on the UI thread.
     pub fn update_session(&self, s: Arc<Session>) {
+        self.publish_session(s, Default::default());
+    }
+
+    fn publish_session(&self, s: Arc<Session>, clock_document: std::sync::Weak<Session>) {
         #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
         let generation = self.beat_clock.lock().unwrap_or_else(PoisonError::into_inner).configure(&s, &self.tx, true);
         #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
@@ -447,12 +451,26 @@ impl Player {
         let (instances, gone) = {
             let mut side = self.side();
             side.set_follow_base(s.clone());
+            side.clock_document = clock_document;
             (side.prepare(&s), side.gone_tracks(&s))
         };
         let _ = self.tx.send(Cmd::Session(generation, s, instances));
         if !gone.is_empty() {
             let _ = self.tx.send(Cmd::Forget(gone));
         }
+    }
+
+    /// Prepare the project and transient grid for external-clock playback.
+    pub fn prepare_clock_session(&self, mut score: Arc<Session>, tempo: &soundcraft_time::TempoMap) {
+        let source = Arc::downgrade(&score);
+        {
+            let side = self.side();
+            if source.ptr_eq(&side.clock_document) && side.published_tempo() == Some(tempo) {
+                return;
+            }
+        }
+        Arc::make_mut(&mut score).tempo.clone_from(tempo);
+        self.publish_session(score, source);
     }
 
     /// Publish a tempo-only revision without rebuilding the mixer. Leave at most one grid
