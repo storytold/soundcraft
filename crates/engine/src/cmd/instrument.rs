@@ -136,6 +136,21 @@ mod tests {
         e.execute("edit.undo", &json!({})).unwrap();
     }
 
+    #[test]
+    fn the_synth_takes_the_noise_waves_and_keeps_older_wave_values() {
+        // #1312: 4 = White Noise and 5 = Pink Noise are stored as given; 0..=3 are unchanged.
+        let mut e = Engine::default();
+        let t = track(&mut e, "instrument");
+        e.execute("mix.instrument", &json!({"track": t.0, "plugin": "subtractive_synth", "params": {"osc1_wave": 4, "osc2_wave": 3}})).unwrap();
+        let ins = e.session().track(t).and_then(|tr| tr.instrument.clone()).unwrap();
+        assert_eq!((ins.params.get("osc1_wave"), ins.params.get("osc2_wave")), (Some(&4.0), Some(&3.0)));
+        let r = e.execute("mix.instrument_param", &json!({"track": t.0, "param": "osc2_wave", "value": 5})).unwrap();
+        assert_eq!(r["value"], 5.0);
+        let r = e.execute("mix.instrument_param", &json!({"track": t.0, "param": "osc2_wave", "value": 99})).unwrap();
+        assert_eq!(r["value"], 5.0, "clamped to the last choice");
+        assert!(rms_of_a_note(&mut e, t, 2) > 0.001, "the noise synth plays");
+    }
+
     /// One note of 440 Hz (A4) on the track, `secs` of render, and the RMS of the result.
     fn rms_of_a_note(e: &mut Engine, t: TrackId, secs: i64) -> f32 {
         let q = TICKS_PER_QUARTER;
