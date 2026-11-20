@@ -284,7 +284,11 @@ impl AudioState {
                 Cmd::Play { from, end, looped } => self.begin_play(from, end, looped, false),
                 Cmd::PlayMtc(from) => self.begin_play(from, None, None, true),
                 Cmd::Stop => self.halt(),
-                Cmd::EndChase => self.end_chase(),
+                Cmd::EndChase => {
+                    if self.chasing {
+                        self.halt();
+                    }
+                }
                 Cmd::Locate(at) => {
                     self.pos = at;
                     #[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
@@ -373,10 +377,16 @@ impl AudioState {
                 return;
             }
             Tracking::Located(p) => {
+                let at = p.session_sample(rate, sr, start, offset);
+                if at < 0 {
+                    if self.chasing {
+                        self.halt();
+                    }
+                    return;
+                }
                 if self.playing {
                     self.halt();
                 }
-                let at = p.session_sample(rate, sr, start, offset).max(0);
                 #[cfg(any(target_os = "windows", target_os = "macos", target_os = "linux"))]
                 if at != self.pos
                     && let Some(clock) = &mut self.clock
@@ -392,8 +402,8 @@ impl AudioState {
         if self.chase_group == Some(stamp) {
             return;
         }
-        let live = p.session_sample(rate, sr, start, offset).saturating_add(sr.samples(now.saturating_sub(stamp) as f64 / 1e6));
-        if live < 0 {
+        let position = p.session_sample(rate, sr, start, offset);
+        if position < 0 {
             if self.chasing {
                 self.halt();
             }
@@ -403,11 +413,12 @@ impl AudioState {
         let delay = self.device_timing.map_or(0., |t| t.heard_instant(self.device_rate, 0).saturating_duration_since(t.callback).as_secs_f64());
         #[cfg(not(any(target_os = "windows", target_os = "macos", target_os = "linux")))]
         let delay = 0.;
+        let live = position.saturating_add(sr.samples(now.saturating_sub(stamp) as f64 / 1e6));
         let desired = live.saturating_add(sr.samples(delay));
         if !self.chasing || !self.playing {
             // A corroborated stopped locate protects its first attack for one start.
             // Unanchored locks start at the source time the new audio will be heard.
-            let from = anchor.map_or(desired, |p| p.session_sample(rate, sr, start, offset).max(0));
+            let from = anchor.map(|p| p.session_sample(rate, sr, start, offset)).filter(|at| *at >= 0).unwrap_or(desired);
             self.begin_play(from, None, None, true);
             self.shared.speed.store(1000, Ordering::Relaxed);
             self.shared.playing.store(true, Ordering::Release);

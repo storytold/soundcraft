@@ -211,7 +211,11 @@ fn only_mtc_transitions_wake_the_host() {
     let feed = crate::midi::MidiFeed::default();
     let count = Arc::new(AtomicUsize::new(0));
     let called = count.clone();
-    feed.set_mtc_wakeup(|| Box::new(move || { called.fetch_add(1, Ordering::Relaxed); }));
+    feed.set_mtc_wakeup(|| {
+        Box::new(move || {
+            called.fetch_add(1, Ordering::Relaxed);
+        })
+    });
     feed.set_mtc_source(Some(0));
     for n in 0..800 {
         feed.set_clock(n * 10_000);
@@ -280,7 +284,7 @@ fn going_offline_before_ui_observes_roll_stops_chase_and_permits_record() {
     tx.send(Cmd::Recording(true, 1)).unwrap();
     state.fill(&mut [0.; 480], 2);
     assert!(state.is_recording());
-    tx.send(Cmd::Play {from: 4800, end: None, looped: None}).unwrap();
+    tx.send(Cmd::Play { from: 4800, end: None, looped: None }).unwrap();
     tx.send(Cmd::EndChase).unwrap();
     state.fill(&mut [0.; 480], 2);
     assert!(state.shared.playing.load(Ordering::Acquire), "offline must preserve local playback");

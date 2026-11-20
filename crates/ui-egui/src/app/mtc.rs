@@ -55,11 +55,9 @@ impl SoundApp {
     }
 
     fn stop_mtc_transport(&mut self) {
-        if !std::mem::take(&mut self.mtc_chasing) {
-            return;
-        }
+        // The audio callback may have locked before the host has observed its first Roll.
         self.leave_chase_audio();
-        if self.is_playing() && !self.engine.transport.recording {
+        if std::mem::take(&mut self.mtc_chasing) && self.is_playing() && !self.engine.transport.recording {
             self.stop_play();
         }
     }
@@ -107,7 +105,9 @@ impl SoundApp {
         );
         inputs.feed().set_mtc_source(source);
         if source.is_none() {
-            self.stop_mtc_transport();
+            if self.mtc_status != "Input unavailable" {
+                self.stop_mtc_transport();
+            }
             self.mtc_status = "Input unavailable";
             return;
         }
@@ -115,23 +115,24 @@ impl SoundApp {
             self.mtc_status = "Waiting for timecode";
         }
         match inputs.feed().take_mtc() {
+            Some(ChaseEvent::Locate(p) | ChaseEvent::Roll(p, _)) if self.mtc_at(p) < 0 => {
+                if self.mtc_status != "Before session start" {
+                    self.stop_mtc_transport();
+                }
+                self.mtc_status = "Before session start";
+            }
             Some(ChaseEvent::Locate(p)) => {
                 if self.is_playing() {
                     self.stop_play();
                 }
                 self.mtc_chasing = false;
-                let at = self.mtc_at(p).max(0);
+                let at = self.mtc_at(p);
                 let _ = self.run("transport.locate", json!({"at": at}));
                 self.mtc_status = "Located";
             }
             Some(ChaseEvent::Roll(p, age_us)) => {
                 let sr = self.engine.session().sample_rate;
                 let at = self.mtc_at(p).saturating_add(sr.samples(age_us as f64 / 1_000_000.0));
-                if at < 0 {
-                    self.stop_mtc_transport();
-                    self.mtc_status = "Before session start";
-                    return;
-                }
                 if let Some(player) = &self.player {
                     if !player.is_playing() {
                         return;
@@ -196,18 +197,34 @@ mod tests {
         let mut host = app();
         let feed = host.midi_inputs.as_ref().unwrap().feed().clone();
         let port = feed.ports().assign("Sender");
+        host.engine.session_mut().edit.selection = crate::Range::point(48_000);
         host.engine.transport.position = 48_000;
+        assert_eq!(host.position(), 48_000);
         feed.receive(port, &[0xf0, 0x7f, 127, 1, 1, 0x20, 59, 50, 0, 0xf7]);
         host.service_mtc_chase();
         host.handle_transport(0.0);
         assert_eq!(host.position(), 48_000);
         let status = host.run("setup.midi_sync_status", json!({})).unwrap();
         assert_eq!(status["mtc_chase"]["state"], "Before session start");
+        for frame in [0, 2] {
+            // Rolling 25 fps code, still ten seconds before the session.
+            for (i, v) in [frame, 0, 2, 3, 11, 3, 0, 2].into_iter().enumerate() {
+                feed.receive(port, &[0xf1, (i as u8) << 4 | v]);
+            }
+        }
+        host.service_mtc_chase();
+        assert!(host.engine.transport_requests.is_empty());
+        assert_eq!(host.position(), 48_000);
         feed.receive(port, &[0xf0, 0x7f, 127, 1, 1, 0x21, 0, 0, 0, 0xf7]);
         host.service_mtc_chase();
         host.handle_transport(0.0);
         assert_eq!(host.position(), 0);
         assert_eq!(host.run("setup.midi_sync_status", json!({})).unwrap()["mtc_chase"]["state"], "Located");
+        host.engine.session_mut().timecode_start = 0;
+        feed.receive(port, &[0xf0, 0x7f, 127, 1, 1, 0x20, 59, 50, 0, 0xf7]);
+        host.service_mtc_chase();
+        host.handle_transport(0.0);
+        assert_eq!(host.position(), host.engine.session().sample_rate.samples(3590.));
     }
 
     #[test]

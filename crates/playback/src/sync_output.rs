@@ -171,6 +171,16 @@ impl Output {
             }
         })
     }
+    /// A confirmed external transport transition precedes the audio callback
+    /// publishing its new pass. Use the same bounded lookahead as local Play/Locate.
+    pub(crate) fn transport_waker(&self) -> Arc<dyn Fn() + Send + Sync> {
+        let dest = self.wake_tx.clone();
+        Arc::new(move || {
+            if let Some(tx) = dest.lock().unwrap_or_else(std::sync::PoisonError::into_inner).as_ref() {
+                let _ = tx.send(Update::Wake);
+            }
+        })
+    }
     pub(crate) fn wake(&self) {
         if let Some((tx, _)) = &self.worker {
             let _ = tx.send(Update::Wake);

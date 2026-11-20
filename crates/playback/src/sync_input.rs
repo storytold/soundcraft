@@ -4,7 +4,9 @@
 #[derive(Default)]
 pub(crate) struct DriverTime {
     last: Option<(u64, i64)>,
-    offset: i64,
+    bucket: i64,
+    minimum: i64,
+    previous_min: Option<i64>,
 }
 
 #[cfg(any(test, target_os = "windows", target_os = "macos", target_os = "linux"))]
@@ -12,13 +14,18 @@ impl DriverTime {
     pub(crate) fn map(&mut self, stamp: u64, arrival: i64) -> i64 {
         let t = i64::try_from(stamp).unwrap_or(i64::MAX);
         let offset = arrival.saturating_sub(t);
-        if self.last.is_none_or(|(last, _)| stamp < last) {
-            self.offset = offset;
+        // The lower envelope rejects late deliveries, but cannot retain an epoch
+        // forever: the driver's oscillator may run slower than the host's.
+        let bucket = arrival.div_euclid(2_000_000);
+        if self.last.is_none_or(|(last, _)| stamp < last) || bucket != self.bucket {
+            self.previous_min = (self.last.is_some_and(|(last, _)| last <= stamp) && bucket == self.bucket + 1).then_some(self.minimum);
+            self.bucket = bucket;
+            self.minimum = offset;
         } else {
-            // The least delayed delivery is the best observed epoch estimate.
-            self.offset = self.offset.min(offset);
+            self.minimum = self.minimum.min(offset);
         }
-        let when = t.saturating_add(self.offset).clamp(self.last.map_or(0, |(_, t)| t).min(arrival), arrival);
+        let estimate = self.previous_min.map_or(self.minimum, |last| last.min(self.minimum));
+        let when = t.saturating_add(estimate).clamp(self.last.map_or(0, |(_, t)| t).min(arrival), arrival);
         self.last = Some((stamp, when));
         when
     }
@@ -121,6 +128,7 @@ mod tests {
                 let mapped = clock.map(stamp, arrival);
                 max_error = max_error.max(mapped.abs_diff(actual));
             }
+            println!("driver {ppm:+} ppm, largest mapped arrival error {max_error} us");
             assert!(max_error < 2000, "driver {ppm} ppm: max timestamp error {max_error} us");
         }
     }
