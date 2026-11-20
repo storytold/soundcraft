@@ -459,6 +459,7 @@ fn preferences_saved_before_the_window_was_remembered_keep_full_scale() {
     assert_eq!((ui.window_size, ui.window_maximized, ui.ui_scale), ([1600.0, 1000.0], false, 1.0));
     assert_eq!(ui.reduce_visual_effects, crate::preferences::ReduceVisualEffects::Never);
     assert_eq!(ui.undo_levels, 64);
+    assert_eq!(ui.sends_default, crate::preferences::SendsDefault::NegativeInfinity);
 }
 
 #[test]
