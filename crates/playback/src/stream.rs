@@ -59,9 +59,23 @@ where
     let (failed, guard, gone) = (Arc::clone(fault), Arc::clone(shared), Arc::clone(fault));
     device.build_output_stream(
         config,
-        move |data: &mut [T], _: &cpal::OutputCallbackInfo| {
+        move |data: &mut [T], info: &cpal::OutputCallbackInfo| {
+            #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+            let now = std::time::Instant::now();
+            #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+            let timestamp = info.timestamp();
+            #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+            let lead = timestamp.playback.checked_duration_since(timestamp.callback);
+            let _ = info;
             mark_audio_thread();
-            for out in data.chunks_mut(chunk) {
+            let frames = data.len() / frame;
+            for (index, out) in data.chunks_mut(chunk).enumerate() {
+                #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+                {
+                    state.device_timing = Some(super::sync_clock::DeviceTiming::new(now, lead, index * (chunk / frame)));
+                    state.device_buffer_frames = frames;
+                }
+                let _ = (frames, index);
                 let Some(s) = scratch.get_mut(..out.len()) else { return };
                 guarded_block(&failed, &guard, s, |d| state.fill(d, channels));
                 for (o, x) in out.iter_mut().zip(s.iter()) {

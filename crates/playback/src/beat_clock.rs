@@ -1,104 +1,24 @@
-//! External beat clock follows the audio transport. MIDI I/O never runs on its callback.
-use super::{Cmd, Session};
+//! MIDI Beat Clock encoding. The shared worker owns output ports and presentation deadlines.
+use crate::Session;
+use crate::sync_clock::{BACKWARD_TOLERANCE_PULSES, CATCH_UP_SPACING, Presentation, RELAUNCH_PULSES, SyncEncoder};
 use craft_midi_sync::sync::{CLOCK, CLOCKS_PER_QUARTER, CONTINUE, MAX_POSITION, START, STOP, song_position};
-use midir::{MidiOutput, MidiOutputConnection};
-use soundcraft_model::MidiBeatClock;
 use soundcraft_time::{SampleRate, TICKS_PER_QUARTER, TempoMap};
-use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender, TryRecvError, channel};
-use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
+#[cfg(test)]
+use {
+    crate::{
+        Cmd,
+        sync_clock::{Publisher, View},
+    },
+    std::sync::{Arc, Mutex, mpsc::channel},
+};
 
 const TICKS_PER_CLOCK: i64 = TICKS_PER_QUARTER / CLOCKS_PER_QUARTER as i64;
-
 #[derive(Default)]
-pub(super) struct Output {
-    trouble: Arc<Mutex<Option<String>>>,
-    worker: Option<(String, Sender<Update>, std::thread::JoinHandle<()>)>,
-}
-
-enum Update {
-    Session(Arc<Session>),
-    Wake,
-}
-
-impl Output {
-    pub(super) fn configure(&mut self, session: &Arc<Session>, audio: &Sender<Cmd>) {
-        let config = MidiBeatClock::from_session(session);
-        let destination = config.destination.filter(|_| config.enabled);
-        if let Some((name, tx, _)) = &self.worker
-            && destination == Some(name.as_str())
-            && tx.send(Update::Session(Arc::clone(session))).is_ok()
-        {
-            return;
-        }
-        if self.worker.is_some() {
-            let _ = audio.send(Cmd::Clock(None));
-        }
-        self.close();
-        self.set_trouble(None);
-        if let Some(destination) = destination {
-            let port = destination.to_owned();
-            let view = Arc::new(Mutex::new(None));
-            let _ = audio.send(Cmd::Clock(Some(Publisher::new(Arc::clone(&view)))));
-            let trouble = Arc::clone(&self.trouble);
-            let session = Arc::clone(session);
-            let (tx, rx) = channel();
-            match std::thread::Builder::new().name("MIDI Beat Clock".into()).spawn(move || run(&port, view, session, rx, trouble)) {
-                Ok(handle) => self.worker = Some((destination.to_owned(), tx, handle)),
-                Err(e) => {
-                    let _ = audio.send(Cmd::Clock(None));
-                    self.set_trouble(Some(e.to_string()));
-                }
-            }
-        }
-    }
-
-    pub(super) fn wake(&self) {
-        if let Some((_, tx, _)) = &self.worker {
-            let _ = tx.send(Update::Wake);
-        }
-    }
-
-    pub(super) fn trouble(&self) -> Option<String> {
-        self.trouble.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone()
-    }
-    fn set_trouble(&self, value: Option<String>) {
-        report(&self.trouble, value);
-    }
-    fn close(&mut self) {
-        if let Some((_, tx, worker)) = self.worker.take() {
-            drop(tx);
-            let _ = worker.join();
-        }
-    }
-}
-
-impl Drop for Output {
-    fn drop(&mut self) {
-        self.close();
-    }
-}
-
-pub(super) fn output_names() -> Result<Vec<String>, String> {
-    std::panic::catch_unwind(|| {
-        let out = MidiOutput::new("SoundCraft Beat Clock").map_err(|e| e.to_string())?;
-        Ok(out.ports().iter().filter_map(|p| out.port_name(p).ok()).collect())
-    })
-    .map_err(|_| "MIDI output enumeration failed".to_string())?
-}
-
-fn open(name: &str) -> Result<MidiOutputConnection, String> {
-    let out = MidiOutput::new("SoundCraft Beat Clock").map_err(|e| e.to_string())?;
-    let mut matches = out.ports().into_iter().filter(|p| out.port_name(p).is_ok_and(|n| n == name));
-    let port = matches.next().ok_or_else(|| format!("MIDI output {name} unavailable"))?;
-    if matches.next().is_some() {
-        return Err(format!("Multiple MIDI outputs named {name}"));
-    }
-    out.connect(&port, "beat clock").map_err(|e| e.to_string())
-}
-
-#[derive(Default)]
-struct Cursor {
+pub(crate) struct Cursor {
+    remap: bool,
+    catchups: u64,
+    last_sent: Option<Instant>,
     pass: Option<u64>,
     next_pulse: i64,
     last_position: Option<i64>,
@@ -107,7 +27,7 @@ struct Cursor {
 }
 
 impl Cursor {
-    fn follow(&mut self, block: Block, at: i64, offset: i64, remap: bool, session: &Session, mut send: impl FnMut(&[u8])) {
+    fn follow(&mut self, block: Presentation, at: i64, offset: i64, remap: bool, session: &Session, mut send: impl FnMut(&[u8])) {
         let changed = self.pass.replace(block.pass) != Some(block.pass);
         let (tempo, rate) = (&session.tempo, session.sample_rate);
         let origin = block.origin.saturating_sub(offset);
@@ -142,9 +62,15 @@ impl Cursor {
             estimated
         };
         let from_zero = std::mem::take(&mut self.delayed_start) && !locate && pulse == 0;
-        // Once an F8 deadline has been missed by a complete pulse, re-position rather
-        // than sending a burst of stale clocks that would speed up external instruments.
-        if self.last_position.is_none() || locate || self.last_position.is_some_and(|old| at < old) || pulse.saturating_sub(self.next_pulse) >= 1 {
+        // Recover short worker stalls one pulse per wake; a full SPP unit of lag requires a new position.
+        if self.last_position.is_none()
+            || locate
+            || self.last_position.is_some_and(|old| {
+                old > at
+                    && tempo.samples_to_ticks_f(old, rate) - tempo.samples_to_ticks_f(at, rate) > (BACKWARD_TOLERANCE_PULSES * TICKS_PER_CLOCK) as f64
+            })
+            || pulse.saturating_sub(self.next_pulse) >= RELAUNCH_PULSES
+        {
             if self.last_position.take().is_some() {
                 send(&[STOP]);
             }
@@ -164,7 +90,8 @@ impl Cursor {
             }
         }
         self.out_of_range = false;
-        while self.next_pulse <= pulse {
+        if self.next_pulse <= pulse {
+            self.catchups += u64::from(self.next_pulse < pulse);
             send(&[CLOCK]);
             self.next_pulse += 1;
         }
@@ -172,202 +99,81 @@ impl Cursor {
     }
 }
 
-// Only the audio thread publishes a block, after applying transport commands.
-// It never waits for the clock worker: a contended publication is retried on the
-// next callback, carrying the same pass and exact origin.
-type View = Arc<Mutex<Option<Block>>>;
-
-#[derive(Clone, Copy)]
-struct Block {
-    pass: u64,
-    origin: i64,
-    playing: bool,
-    position: i64,
-    limit: i64,
-    samples_per_second: f64,
-    looped: Option<super::Range>,
-    end: Option<i64>,
-    when: Instant,
-}
-
-impl Block {
-    // A loop or a bounded pass can end inside a device buffer. Project only
-    // the samples in that buffer, preserving the callback's generation at the next block.
-    fn current(mut self, now: Instant) -> Self {
-        self.position = self.at(now);
-        if self.playing {
-            if let Some(range) = self.looped {
-                if self.position >= range.end {
-                    let past = self.position.saturating_sub(range.end);
-                    let wraps = 1 + past / range.len();
-                    self.pass = self.pass.wrapping_add(wraps as u64);
-                    self.origin = range.start;
-                    self.position = range.start + past % range.len();
-                    self.limit = self.limit.saturating_sub(wraps.saturating_mul(range.len()));
-                }
-            } else if self.end.is_some_and(|end| self.position >= end) {
-                self.playing = false;
+impl SyncEncoder for Cursor {
+    fn reset(&mut self) {
+        *self = Self::default();
+    }
+    fn stop(&mut self, send: &mut dyn FnMut(&[u8])) {
+        if self.last_position.is_some() {
+            send(&[STOP]);
+        }
+        self.reset();
+    }
+    fn error(&self) -> Option<&'static str> {
+        self.out_of_range.then_some("Position exceeds the MIDI Song Position Pointer range.")
+    }
+    fn take_catchups(&mut self) -> u64 {
+        std::mem::take(&mut self.catchups)
+    }
+    fn remap(&mut self, old: &Session, new: &Session) {
+        if let Some(at) = self.last_position {
+            self.remap |= remapped(old, new, at);
+        }
+    }
+    fn update(&mut self, b: Presentation, now: Instant, s: &Session, send: &mut dyn FnMut(Instant, &[u8])) -> Option<Instant> {
+        let at = b.sample_index_at(now);
+        let remap = std::mem::take(&mut self.remap);
+        if self.pass == Some(b.pass)
+            && b.playing
+            && !remap
+            && let Some(last) = self.last_sent
+            && now < last + CATCH_UP_SPACING
+        {
+            return Some(last + CATCH_UP_SPACING);
+        }
+        let mut clock = false;
+        let mut pulse = self.next_pulse;
+        let mut transport = false;
+        self.follow(b, at, 0, remap, s, |m| {
+            // A transport change changes the grid origin. Preserve wire order for
+            // Start / SPP / Continue and its first F8 when all are due together.
+            if m == [START] {
+                pulse = 0;
             }
+            if let [0xf2, lo, hi] = m {
+                pulse = (i64::from(*lo) + (i64::from(*hi) << 7)) * 6;
+            }
+            if m != [CLOCK] {
+                transport = true;
+            }
+            let stamp = if m == [CLOCK] && !transport {
+                clock = true;
+                b.instant_for(s.tempo.tick_to_samples(pulse.saturating_mul(TICKS_PER_CLOCK), s.sample_rate) as f64)
+            } else {
+                now
+            };
+            clock |= m == [CLOCK];
+            send(stamp.min(now), m);
+        });
+        if clock {
+            self.last_sent = Some(now);
         }
-        self
-    }
-    fn at(self, now: Instant) -> i64 {
-        let elapsed = now.saturating_duration_since(self.when).as_secs_f64();
-        self.position.saturating_add((elapsed * self.samples_per_second) as i64).min(self.limit)
-    }
-}
-
-pub(super) struct Publisher {
-    view: View,
-    pass: u64,
-    origin: Option<i64>,
-}
-impl Publisher {
-    fn new(view: View) -> Self {
-        Self { view, pass: 0, origin: None }
-    }
-    pub(super) fn locate(&mut self, at: i64) {
-        self.pass = self.pass.wrapping_add(1);
-        self.origin = Some(at);
-    }
-    pub(super) fn publish(
-        &mut self,
-        playing: bool,
-        position: i64,
-        limit: i64,
-        samples_per_second: f64,
-        looped: Option<super::Range>,
-        end: Option<i64>,
-    ) {
-        let origin = *self.origin.get_or_insert(position);
-        if let Ok(mut view) = self.view.try_lock() {
-            *view = Some(Block { pass: self.pass, origin, playing, position, limit, samples_per_second, looped, end, when: Instant::now() });
+        if !b.playing {
+            return None;
         }
-    }
-}
-
-fn report(status: &Mutex<Option<String>>, value: Option<String>) {
-    let mut old = status.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-    if *old != value {
-        if let Some(message) = &value {
-            log::warn!("MIDI Beat Clock: {message}");
+        if self.out_of_range {
+            return Some(now + Duration::from_millis(10));
         }
-        *old = value;
+        let due = s.tempo.tick_to_samples(self.next_pulse.saturating_mul(TICKS_PER_CLOCK), s.sample_rate);
+        if due as f64 > b.limit {
+            return Some(now + Duration::from_millis(1));
+        }
+        Some(b.instant_for(due as f64).max(now + CATCH_UP_SPACING))
     }
 }
-
 fn remapped(old: &Session, new: &Session, at: i64) -> bool {
     old.tempo.samples_to_ticks_f(at, old.sample_rate) != new.tempo.samples_to_ticks_f(at, new.sample_rate)
 }
-
-fn run(port: &str, view: View, session: Arc<Session>, rx: Receiver<Update>, trouble: Arc<Mutex<Option<String>>>) {
-    drive(view, session, rx, trouble, || open(port), |out, bytes| out.send(bytes).map_err(|e| format!("{port}: {e}")));
-}
-
-fn drive<C>(
-    view: View,
-    mut session: Arc<Session>,
-    rx: Receiver<Update>,
-    trouble: Arc<Mutex<Option<String>>>,
-    mut connect: impl FnMut() -> Result<C, String>,
-    mut send: impl FnMut(&mut C, &[u8]) -> Result<(), String>,
-) {
-    let mut cursor = Cursor::default();
-    let mut offset = MidiBeatClock::from_session(&session).offset;
-    let mut link = None;
-    let mut retry = Instant::now();
-    let mut awake_until = retry;
-    let mut remap = false;
-    let mut latest = None;
-    let mut update = None;
-    loop {
-        let now = Instant::now();
-        if let Ok(guard) = view.try_lock() {
-            latest = *guard;
-        }
-        let block = latest.map(|b: Block| b.current(now));
-        if let Some(message) = update.take() {
-            match message {
-                Update::Session(s) => {
-                    let new_offset = MidiBeatClock::from_session(&s).offset;
-                    if let Some(b) = block {
-                        let at = b.position.saturating_sub(offset);
-                        remap |= offset != new_offset || remapped(&session, &s, at);
-                    }
-                    offset = new_offset;
-                    session = s;
-                }
-                Update::Wake => awake_until = now + Duration::from_millis(150),
-            }
-        }
-        let mut opened = false;
-        if link.is_none() && now >= retry {
-            match connect() {
-                Ok(out) => {
-                    link = Some(out);
-                    cursor = Cursor::default();
-                    remap = true;
-                    opened = true;
-                }
-                Err(e) => report(&trouble, Some(e)),
-            }
-            retry = now + Duration::from_secs(1);
-        }
-        let mut delay = Duration::from_millis(100);
-        if let (Some(block), Some(out)) = (block, &mut link) {
-            let at = block.position.saturating_sub(offset);
-            let mut error = None;
-            let was_out = cursor.out_of_range;
-            cursor.follow(block, at, offset, remap, &session, |bytes| {
-                if error.is_none() {
-                    error = send(out, bytes).err();
-                }
-            });
-            remap = false;
-            if let Some(error) = error {
-                report(&trouble, Some(error));
-                link = None;
-                retry = now + Duration::from_secs(1);
-            } else if opened || was_out != cursor.out_of_range {
-                report(&trouble, cursor.out_of_range.then(|| "Position exceeds the MIDI Song Position Pointer range.".into()));
-            }
-            if block.playing {
-                let due =
-                    if at < 0 { 0 } else { session.tempo.tick_to_samples(cursor.next_pulse.saturating_mul(TICKS_PER_CLOCK), session.sample_rate) };
-                let seconds = due.saturating_sub(at) as f64 / block.samples_per_second;
-                // Rust's native sleep uses a high-resolution waitable timer on Windows.
-                // Bound transport reaction time and avoid spinning on a stalled device.
-                delay = Duration::from_secs_f64(seconds.clamp(0.0005, 0.010));
-                if at >= block.limit.saturating_sub(offset) || cursor.out_of_range {
-                    delay = Duration::from_millis(3);
-                }
-            }
-        }
-        if now < awake_until {
-            delay = delay.min(Duration::from_millis(2));
-        }
-        if delay < Duration::from_millis(100) {
-            std::thread::sleep(delay.saturating_sub(now.elapsed()));
-            match rx.try_recv() {
-                Ok(message) => update = Some(message),
-                Err(TryRecvError::Empty) => continue,
-                Err(TryRecvError::Disconnected) => break,
-            }
-        } else {
-            match rx.recv_timeout(delay) {
-                Ok(message) => update = Some(message),
-                Err(RecvTimeoutError::Timeout) => continue,
-                Err(RecvTimeoutError::Disconnected) => break,
-            }
-        }
-    }
-    if cursor.last_position.is_some()
-        && let Some(mut out) = link
-    {
-        let _ = send(&mut out, &[STOP]);
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -375,6 +181,15 @@ mod tests {
         let mut result = Vec::new();
         cursor.advance(true, at, locate, &TempoMap::default(), SampleRate::new(48_000).unwrap(), |m| result.push(m.to_vec()));
         result
+    }
+
+    #[test]
+    fn one_missed_pulse_advances_without_restarting_external_transport() {
+        let mut cursor = Cursor::default();
+        assert_eq!(messages(&mut cursor, 0, true), [vec![START], vec![CLOCK]]);
+        assert_eq!(messages(&mut cursor, 2_100, false), [vec![CLOCK]]);
+        assert_eq!(messages(&mut cursor, 2_150, false), [vec![CLOCK]]);
+        assert_eq!(messages(&mut cursor, 32_000, false), [vec![STOP], song_position(6).to_vec(), vec![CONTINUE]]);
     }
 
     #[test]
@@ -393,7 +208,7 @@ mod tests {
                     assert!(bytes.is_empty());
                 }
             }
-            let wrap = messages(&mut cursor, 24_500, false);
+            let wrap = messages(&mut cursor, 24_500, true);
             assert_eq!(wrap, [vec![STOP], song_position(5).to_vec(), vec![CONTINUE]]);
         }
     }
@@ -436,15 +251,16 @@ mod tests {
         let session = Arc::new(Session::default());
         let (tx, rx) = channel();
         let mut audio = super::super::callback::AudioState::new(rx, Arc::clone(&shared), session.clone(), 48_000., channel().0);
-        let view = Arc::new(Mutex::new(None));
-        tx.send(Cmd::Clock(Some(Publisher::new(view.clone())))).unwrap();
+        let view = View::default();
+        tx.send(Cmd::Clock(Some(Publisher::new(view.clone(), Arc::default())))).unwrap();
         let mut out = [0.; 256];
         audio.fill(&mut out, 2);
         let mut cursor = Cursor::default();
         let mut poll = || {
-            let b = view.lock().unwrap().unwrap();
+            let now = Instant::now();
+            let b = view.lock().unwrap().read(now, true, 0.).0.unwrap();
             let mut bytes = Vec::new();
-            cursor.follow(b, b.position, 0, false, &session, |m| bytes.push(m.to_vec()));
+            cursor.follow(b, b.sample.floor() as i64, 0, false, &session, |m| bytes.push(m.to_vec()));
             bytes
         };
         tx.send(Cmd::Play { from: 0, end: None, looped: None }).unwrap();
@@ -467,69 +283,28 @@ mod tests {
     #[test]
     fn wrap_inside_block_matches_generation_of_next_callback() {
         let start = Instant::now();
-        let block = Block {
+        let block = Presentation {
             pass: 3,
             origin: 0,
             playing: true,
-            position: 29_900,
-            limit: 30_380,
+            lead: Duration::ZERO,
+            sample: 29_900.,
+            limit: 30_380.,
             samples_per_second: 48_000.,
             looped: Some(super::super::Range::new(24_500, 30_000)),
             end: None,
-            when: start,
+            heard_at: start,
         };
         let wrapped = block.current(start + Duration::from_millis(5));
-        assert_eq!((wrapped.pass, wrapped.origin, wrapped.position), (4, 24_500, 24_640));
+        assert_eq!((wrapped.pass, wrapped.origin, wrapped.sample_heard_at(start + Duration::from_millis(5)) as i64), (4, 24_500, 24_640));
         let session = Session::default();
         let mut cursor = Cursor::default();
         let mut bytes = Vec::new();
-        cursor.follow(wrapped, wrapped.position, 0, false, &session, |m| bytes.push(m.to_vec()));
+        cursor.follow(wrapped, wrapped.sample_heard_at(start + Duration::from_millis(5)) as i64, 0, false, &session, |m| bytes.push(m.to_vec()));
         assert_eq!(bytes, [song_position(5).to_vec(), vec![CONTINUE]]);
-        cursor.follow(Block { position: 24_880, ..wrapped }, 24_880, 0, false, &session, |_| panic!("repeated locate"));
-        let ended = Block { looped: None, end: Some(30_000), ..block }.current(start + Duration::from_millis(5));
+        cursor.follow(Presentation { sample: 24_880., ..wrapped }, 24_880, 0, false, &session, |_| panic!("repeated locate"));
+        let ended = Presentation { looped: None, end: Some(30_000), ..block }.current(start + Duration::from_millis(5));
         assert!(!ended.playing);
-    }
-
-    #[test]
-    fn failed_send_is_reported_and_reopen_clears_the_error() {
-        let view = View::default();
-        let mut publisher = Publisher::new(view.clone());
-        publisher.publish(true, 0, 0, 48_000., None, None);
-        let trouble = Arc::new(Mutex::new(None));
-        let (tx, rx) = channel();
-        let (observed, events) = channel();
-        let status = trouble.clone();
-        let handle = std::thread::spawn(move || {
-            let mut attempt = 0;
-            drive(
-                view,
-                Arc::new(Session::default()),
-                rx,
-                status,
-                || {
-                    attempt += 1;
-                    Ok(attempt)
-                },
-                |attempt, bytes| {
-                    if *attempt == 1 {
-                        return Err("MIDI destination disappeared".into());
-                    }
-                    if bytes == [START] {
-                        observed.send(()).unwrap();
-                    }
-                    Ok(())
-                },
-            );
-        });
-        let deadline = Instant::now() + Duration::from_millis(800);
-        while trouble.lock().unwrap().is_none() && Instant::now() < deadline {
-            std::thread::sleep(Duration::from_millis(5));
-        }
-        assert_eq!(trouble.lock().unwrap().as_deref(), Some("MIDI destination disappeared"));
-        events.recv_timeout(Duration::from_secs(4)).unwrap();
-        assert!(trouble.lock().unwrap().is_none());
-        drop(tx);
-        handle.join().unwrap();
     }
 
     #[test]
@@ -552,11 +327,21 @@ mod tests {
     #[test]
     fn between_blocks_clock_advances_once_then_waits_for_the_audio_device() {
         let start = std::time::Instant::now();
-        let block =
-            Block { pass: 0, origin: 0, playing: true, position: 480, limit: 960, samples_per_second: 48_000., looped: None, end: None, when: start };
-        assert_eq!(block.at(start), 480);
-        assert_eq!(block.at(start + Duration::from_millis(5)), 720);
-        assert_eq!(block.at(start + Duration::from_secs(1)), 960);
+        let block = Presentation {
+            lead: Duration::ZERO,
+            pass: 0,
+            origin: 0,
+            playing: true,
+            sample: 480.,
+            limit: 960.,
+            samples_per_second: 48_000.,
+            looped: None,
+            end: None,
+            heard_at: start,
+        };
+        assert_eq!(block.sample_heard_at(start), 480.);
+        assert_eq!(block.sample_heard_at(start + Duration::from_millis(5)), 720.);
+        assert_eq!(block.sample_heard_at(start + Duration::from_secs(1)), 960.);
     }
 
     #[test]

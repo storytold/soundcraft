@@ -30,12 +30,21 @@ pub fn loops(range: Range) -> bool {
 
 #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
 mod beat_clock;
+#[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+pub mod sync_clock;
+#[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+mod sync_output;
+mod sync_status;
+pub use sync_status::MidiSyncStatus;
 
 /// Named destinations offered by the native MIDI Beat Clock setup dialog.
 pub fn midi_clock_outputs() -> Result<Vec<String>, String> {
+    midi_sync_outputs()
+}
+pub fn midi_sync_outputs() -> Result<Vec<String>, String> {
     #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
     {
-        beat_clock::output_names()
+        sync_output::output_names()
     }
     #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
     {
@@ -135,7 +144,7 @@ pub type EditorEdit = (TrackId, usize, String, f32);
 
 enum Cmd {
     #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
-    Clock(Option<beat_clock::Publisher>),
+    Clock(Option<sync_clock::Publisher>),
     /// A new snapshot plus the third-party instances it needs (created on the UI thread).
     Session(Arc<Session>, Vec<PreparedInstance>),
     /// Where the callback sends the snapshots it replaces (freeing one takes thousands of frees).
@@ -177,8 +186,6 @@ pub enum OutputTrouble {
 
 /// The transport and audio device.
 pub struct Player {
-    #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
-    beat_clock: Mutex<beat_clock::Output>,
     shared: Arc<Shared>,
     fault: Arc<Fault>,
     /// The block count last seen while playing, and since when.
@@ -190,6 +197,9 @@ pub struct Player {
     _stream: Option<cpal::Stream>,
     #[cfg(target_arch = "wasm32")]
     _stream: Option<cpal::Stream>,
+    // Hold the publication storage until the native callback has shut down.
+    #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+    beat_clock: Mutex<sync_output::Output>,
     pub device_name: String,
     pub device_rate: u32,
     /// Output channels the device was opened with (0 for the silent clock).
@@ -498,6 +508,49 @@ impl Player {
         self.side().editors.get_mut(&(track, slot))?.value_text(id, value)
     }
 
+    /// Active machine-configured destinations and their signed external latency offsets in samples.
+    pub fn set_beat_clock_outputs(&self, ports: Vec<(String, i64)>, compensate: bool) {
+        #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+        self.beat_clock.lock().unwrap_or_else(PoisonError::into_inner).beats(ports, compensate);
+        #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
+        let _ = (ports, compensate);
+    }
+    /// Add a second protocol to the same MIDI worker and port pool.
+    #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+    pub fn set_sync_encoder(&self, port: Option<(String, i64)>, compensate: bool, encoder: Box<dyn sync_clock::SyncEncoder>) {
+        self.beat_clock.lock().unwrap_or_else(PoisonError::into_inner).encoder(port, compensate, encoder);
+    }
+    /// Notify the sync worker of external transport activity from a MIDI input
+    /// thread. The handle does not retain the player and coalesces pending wakes.
+    pub fn sync_waker(&self) -> Arc<dyn Fn() + Send + Sync> {
+        #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+        {
+            self.beat_clock.lock().unwrap_or_else(PoisonError::into_inner).waker()
+        }
+        #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
+        {
+            Arc::new(|| {})
+        }
+    }
+    pub fn midi_sync_status(&self) -> MidiSyncStatus {
+        #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+        {
+            self.beat_clock.lock().unwrap_or_else(PoisonError::into_inner).status()
+        }
+        #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
+        {
+            MidiSyncStatus::default()
+        }
+    }
+    pub fn presented_position(&self) -> Samples {
+        #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+        if self.is_playing()
+            && let Some(sample) = self.beat_clock.lock().unwrap_or_else(PoisonError::into_inner).presented()
+        {
+            return sample;
+        }
+        self.position()
+    }
     /// Latest clock destination or synchronization error for the setup dialog.
     pub fn midi_clock_error(&self) -> Option<String> {
         #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
