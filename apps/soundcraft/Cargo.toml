@@ -45,6 +45,9 @@ winresource = "0.1"
 muda = { version = "0.21.2", default-features = false }
 objc2 = "0.6"
 objc2-app-kit = { version = "0.3", default-features = false, features = ["NSApplication", "NSResponder"] }
+# Files opened from Finder arrive as an Apple event that winit doesn't handle (src/apple_events.rs).
+# The sibling apps pin the same version.
+fmv-macos-events = "=0.1.0"
 
 [target.'cfg(windows)'.dependencies]
 craft-update = { workspace = true }
