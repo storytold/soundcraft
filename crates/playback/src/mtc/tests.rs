@@ -227,7 +227,7 @@ fn locked_device_tracks_and_stops_during_a_ui_stall() {
         let clock = now + Duration::from_micros(us as u64);
         audio.device_timing = Some((clock, lead, 0));
         audio.fill(&mut buffer, 2);
-        if let Some(frame) = buffer.chunks_exact(2).position(|pair| pair[0].abs() > 0.03) {
+        if let Some(frame) = buffer.as_chunks::<2>().0.iter().position(|pair| pair[0].abs() > 0.03) {
             let onset = us + frame as i64 * 1_000_000 / 48_000;
             if onset - last_sound > 150_000 {
                 attacks.push(onset);
