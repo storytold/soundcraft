@@ -89,7 +89,7 @@ At the session origin SoundCraft sends Start. A locate during playback sends Sto
 
 **Preferences › MIDI › Delay Compensation for External Devices** controls the use of the audio device’s reported output lead for Beat Clock and generated timecode. Per-port calibration applies in addition. The Notes and Controllers preference is saved for external note output. SoundCraft's current MIDI-input instruments render inside the audio engine.
 
-Use `setup.midi_beat_clock` to read settings or apply a patch, for example `{"enabled":true,"ports":{"USB MIDI":{"enabled":true,"offset_samples":-200}}}`. A supplied `ports` object replaces the destination list. The desktop control channel’s `setup.midi_sync_status` and the dialog’s **Copy diagnostics** report host-side send timing, callback gaps and port offsets. USB buffering and wire latency require an external measurement. Hardware verification of this revision is pending.
+Use `setup.midi_beat_clock` to read settings or apply a patch, for example `{"enabled":true,"ports":{"USB MIDI":{"enabled":true,"offset_samples":-200}}}`. Supplying `ports` replaces the active Beat Clock destinations. Omitted ports stop sending Beat Clock and retain their saved sample offsets for other sync outputs. An empty object disables all Beat Clock destinations and preserves their offsets. The desktop control channel’s `setup.midi_sync_status` and the dialog’s **Copy diagnostics** report host-side send timing, callback gaps and port offsets. USB buffering and wire latency require an external measurement. Hardware verification of this revision is pending.
 
 ## If something is lost
 
