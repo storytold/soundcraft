@@ -420,7 +420,7 @@ mod tests {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, any(target_os = "windows", target_os = "macos", target_os = "linux")))]
 mod dropout_tests {
     use super::*;
     fn pulse(r: &mut Reader, i: i64) {

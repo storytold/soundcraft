@@ -60,30 +60,28 @@ where
     device.build_output_stream(
         config,
         move |data: &mut [T], info: &cpal::OutputCallbackInfo| {
-            #[cfg(not(target_arch = "wasm32"))]
+            #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
             let now = std::time::Instant::now();
-            #[cfg(not(target_arch = "wasm32"))]
+            #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
             let timestamp = info.timestamp();
-            #[cfg(target_arch = "wasm32")]
+            #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+            let lead = timestamp.playback.checked_duration_since(timestamp.callback);
             let _ = info;
             mark_audio_thread();
-            #[cfg(not(target_arch = "wasm32"))]
-            let lead = timestamp.playback.duration_since(timestamp.callback);
+            let frames = data.len() / frame;
             for (index, out) in data.chunks_mut(chunk).enumerate() {
-                #[cfg(not(target_arch = "wasm32"))]
+                #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
                 {
-                    state.device_timing = Some((now, lead, index * (chunk / frame)));
+                    state.device_timing = Some(super::sync_clock::DeviceTiming::new(now, lead, index * (chunk / frame)));
+                    state.device_buffer_frames = frames;
                 }
-                #[cfg(target_arch = "wasm32")]
-                let _ = index;
+                let _ = (frames, index);
                 let Some(s) = scratch.get_mut(..out.len()) else { return };
                 guarded_block(&failed, &guard, s, |d| state.fill(d, channels));
                 for (o, x) in out.iter_mut().zip(s.iter()) {
                     *o = T::from_sample(*x);
                 }
             }
-            #[cfg(not(target_arch = "wasm32"))]
-            state.publish_output_position(now, lead, data.len() / frame);
         },
         // cpal may call this on the audio thread (on ALSA in a loop while the device stays
         // broken): marked, so the logger hands the record off instead of writing it.

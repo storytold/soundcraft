@@ -174,6 +174,7 @@ const DIALOG_COMMANDS: &[&str] = &[
     "edit.fades_create",
     "setup.session",
     "setup.peripherals",
+    "setup.midi_beat_clock",
     "event.quantize",
     "event.transpose",
     "edit.strip_silence",
@@ -585,6 +586,11 @@ pub fn invoke_menu(app: &mut SoundApp, id: &str, path: &str) {
         app.ui.audiosuite = p.get("process").and_then(Value::as_str).map(str::to_string);
         return;
     }
+    if id == "setup.midi_beat_clock" {
+        app.migrate_midi_sync();
+        app.dialogs.open_beat_clock(&app.ui.midi_sync);
+        return;
+    }
     if wants_dialog(id) && app.dialogs.open_for_command(&app.engine, id) {
         return;
     }
@@ -608,6 +614,10 @@ pub fn invoke_shortcut_dialog(app: &mut SoundApp, id: &str) -> bool {
         let _ = crate::aaf_import::command(app, &json!({}));
         return true;
     }
+    if id == "setup.midi_beat_clock" {
+        app.migrate_midi_sync();
+        return app.dialogs.open_beat_clock(&app.ui.midi_sync);
+    }
     (wants_dialog(id) && app.dialogs.open_for_command(&app.engine, id)) || crate::dialogs::ask_to_save(app, id, &json!({}))
 }
 
@@ -630,6 +640,9 @@ pub fn run_ui_command(app: &mut SoundApp, id: &str, p: &Value) -> Option<Result<
     }
     if id == "setup.mtc_output" {
         return Some(app.mtc_output_command(p));
+    }
+    if matches!(id, "setup.midi_beat_clock" | "setup.midi_sync_status") {
+        return Some(app.sync_command(id, p));
     }
     if id == "window.import_aaf" {
         return Some(crate::aaf_import::command(app, p));

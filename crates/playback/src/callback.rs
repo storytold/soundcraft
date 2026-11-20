@@ -65,12 +65,21 @@ pub(crate) fn guarded_block(fault: &Fault, shared: &Shared, out: &mut [f32], fil
 
 /// State owned by the audio callback.
 pub(crate) struct AudioState {
+    #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+    clock: Option<super::sync_clock::Publisher>,
+    #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+    pub(crate) device_timing: Option<super::sync_clock::DeviceTiming>,
+    #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+    pub(crate) device_buffer_frames: usize,
     rx: Receiver<Cmd>,
     pub(crate) shared: Arc<Shared>,
     pub(crate) session: Arc<Session>,
     pub(crate) mix: MixEngine,
     pos: Samples,
     playing: bool,
+    chasing: bool,
+    drift_since: Option<i64>,
+    chase_group: Option<i64>,
     end: Option<Samples>,
     looped: Option<Range>,
     /// Rendered frames waiting to be consumed (planar, main channels) and the fractional read index.
@@ -79,15 +88,10 @@ pub(crate) struct AudioState {
     fold: [(f32, f32); MAX_CHANNELS],
     pub(crate) pending_len: usize,
     read: f64,
-    drift_since: Option<i64>,
-    chasing: bool,
-    chase_group: Option<i64>,
-    pub(crate) device_timing: Option<(std::time::Instant, std::time::Duration, usize)>,
     pub(crate) device_rate: f64,
     input: Option<Arc<record::InputRing>>,
     recording: bool,
     midi: Option<Arc<midi::MidiFeed>>,
-    mtc: Option<super::mtc::Generator>,
     /// Live MIDI events of this callback not played yet: frames (session rate) until each is due.
     midi_pending: Vec<(i64, LiveMidi)>,
     /// The delay every live event gets so that all keep their spacing: one callback (frames).
@@ -154,26 +158,6 @@ fn new_engine(sr: f32) -> MixEngine {
 }
 
 impl AudioState {
-    pub(crate) fn publish_output_position(&self, now: std::time::Instant, lead: std::time::Duration, frames: usize) {
-        use std::time::Duration;
-        // The callback must never wait for a reader. The previous timestamp remains usable.
-        let Ok(mut clock) = self.shared.output_position.try_lock() else { return };
-        if !self.playing || !self.shared.playing.load(Ordering::Relaxed) {
-            *clock = None;
-            return;
-        }
-        let duration = Duration::try_from_secs_f64(frames as f64 / self.device_rate.max(1.)).unwrap_or_default();
-        let rate = self.midi_speed * self.session.sample_rate.as_f64();
-        // pos includes samples mixed ahead but not yet copied to the output stream.
-        let end = self.pos as f64 + self.read - self.pending_len as f64;
-        *clock = Some(super::OutputPosition {
-            callback: now,
-            valid_for: duration.saturating_mul(2).max(Duration::from_millis(100)),
-            sample_at_callback: end - (lead.as_secs_f64() + duration.as_secs_f64()) * rate,
-            samples_per_second: rate,
-        });
-    }
-
     pub(crate) fn new(
         rx: Receiver<Cmd>,
         shared: Arc<Shared>,
@@ -193,20 +177,24 @@ impl AudioState {
             session,
             pos: 0,
             playing: false,
+            chasing: false,
+            drift_since: None,
+            chase_group: None,
             end: None,
+            #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+            clock: None,
+            #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+            device_timing: None,
+            #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+            device_buffer_frames: 0,
             looped: None,
             pending: vec![vec![0.0; BLOCK]; nch],
             pending_len: 0,
             read: 0.0,
-            drift_since: None,
-            chasing: false,
-            chase_group: None,
-            device_timing: None,
             device_rate,
             input: None,
             recording: false,
             midi: None,
-            mtc: None,
             midi_pending: Vec::with_capacity(MIDI_EVENTS),
             midi_delay: 0,
             midi_lost: 0,
@@ -230,7 +218,6 @@ impl AudioState {
         let mut changed = false;
         while let Ok(c) = self.rx.try_recv() {
             match c {
-                Cmd::Mtc(output) => self.mtc = output,
                 Cmd::Input(r) => self.input = Some(r),
                 Cmd::Midi(f) => {
                     self.mix.midi_ports = Some(Arc::clone(f.ports()));
@@ -252,7 +239,7 @@ impl AudioState {
                     self.forget_meters();
                 }
                 Cmd::Recording(r, pass) => {
-                    if r && (self.chasing || self.midi.as_ref().is_some_and(|feed| feed.mtc_online())) {
+                    if r && (self.chasing || self.midi.as_ref().is_some_and(|f| f.mtc_online())) {
                         continue;
                     }
                     self.recording = r;
@@ -271,11 +258,6 @@ impl AudioState {
                     }
                 }
                 Cmd::Session(s, instances) => {
-                    if (s.frame_rate, s.timecode_start, s.sample_rate)
-                        != (self.session.frame_rate, self.session.timecode_start, self.session.sample_rate)
-                    {
-                        self.reset_mtc();
-                    }
                     changed = true;
                     if (s.sample_rate.as_f64() - self.session.sample_rate.as_f64()).abs() > 0.5 {
                         let mut old = std::mem::replace(&mut self.mix, new_engine(s.sample_rate.as_f64() as f32));
@@ -296,18 +278,23 @@ impl AudioState {
                         let _ = tx.try_send(old);
                     }
                 }
+                #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+                Cmd::Clock(clock) => self.clock = clock,
                 Cmd::OldSessions(tx) => self.old_sessions = Some(tx),
                 Cmd::Play { from, end, looped } => self.begin_play(from, end, looped, false),
-                Cmd::EndChase => self.end_chase(),
                 Cmd::PlayMtc(from) => self.begin_play(from, None, None, true),
                 Cmd::Stop => self.halt(),
+                Cmd::EndChase => self.end_chase(),
                 Cmd::Locate(at) => {
-                    self.reset_mtc();
                     self.pos = at;
+                    #[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
+                    if let Some(clock) = &mut self.clock {
+                        clock.locate(at);
+                    }
                     if self.playing {
                         self.midi_stopped = None;
                         self.pending_len = 0;
-                        self.read = 0.0;
+                        self.read = 0.;
                         self.mix.reset();
                     }
                 }
@@ -326,7 +313,10 @@ impl AudioState {
         self.chasing = chasing;
         self.chase_group = None;
         self.drift_since = None;
-        self.reset_mtc();
+        #[cfg(any(target_os = "windows", target_os = "macos", target_os = "linux"))]
+        if let Some(clock) = &mut self.clock {
+            clock.locate(from);
+        }
         self.pos = from;
         self.end = end;
         self.looped = looped.filter(|r| super::loops(*r));
@@ -353,7 +343,6 @@ impl AudioState {
 
     fn halt(&mut self) {
         self.end_chase();
-        self.reset_mtc();
         self.midi_stopped = (self.playing && self.recording).then(|| self.midi.as_ref().map_or(i64::MAX, |f| f.clock()));
         self.playing = false;
         self.end = None;
@@ -387,7 +376,14 @@ impl AudioState {
                 if self.playing {
                     self.halt();
                 }
-                self.pos = p.session_sample(rate, sr, start, offset).max(0);
+                let at = p.session_sample(rate, sr, start, offset).max(0);
+                #[cfg(any(target_os = "windows", target_os = "macos", target_os = "linux"))]
+                if at != self.pos
+                    && let Some(clock) = &mut self.clock
+                {
+                    clock.locate(at);
+                }
+                self.pos = at;
                 self.shared.position.store(self.pos, Ordering::Relaxed);
                 return;
             }
@@ -403,7 +399,10 @@ impl AudioState {
             }
             return;
         }
-        let delay = self.device_timing.map_or(0., |(_, lead, index)| lead.as_secs_f64() + index as f64 / self.device_rate.max(1.));
+        #[cfg(any(target_os = "windows", target_os = "macos", target_os = "linux"))]
+        let delay = self.device_timing.map_or(0., |t| t.heard_instant(self.device_rate, 0).saturating_duration_since(t.callback).as_secs_f64());
+        #[cfg(not(any(target_os = "windows", target_os = "macos", target_os = "linux")))]
+        let delay = 0.;
         let desired = live.saturating_add(sr.samples(delay));
         if !self.chasing || !self.playing {
             // A corroborated stopped locate protects its first attack for one start.
@@ -425,23 +424,6 @@ impl AudioState {
             }
         }
         self.chase_group = Some(stamp);
-    }
-
-    fn reset_mtc(&mut self) {
-        if let Some(mtc) = &mut self.mtc {
-            mtc.reset();
-        }
-    }
-
-    fn mtc_span(&mut self, clock: std::time::Instant, index: usize, length: usize, step: f64) {
-        let Some(mtc) = &mut self.mtc else { return };
-        let mut start = self.pos.saturating_add(self.session.timecode_start) as f64;
-        if self.playing {
-            start += self.read - self.pending_len as f64;
-        }
-        let device_rate = self.device_rate.max(1.0);
-        let at = clock + std::time::Duration::from_secs_f64(index as f64 / device_rate);
-        mtc.span(&self.session, start, if self.playing { length } else { 0 }, step, device_rate, at);
     }
 
     fn send_garbage(&mut self) {
@@ -701,7 +683,10 @@ impl AudioState {
             && self.pos >= l.end
         {
             self.pos = l.start;
-            self.reset_mtc();
+            #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+            if let Some(clock) = &mut self.clock {
+                clock.locate(l.start);
+            }
             if self.playing && self.recording {
                 self.midi_wraps = self.midi_wraps.saturating_add(1);
             }
@@ -717,7 +702,6 @@ impl AudioState {
                 }
                 self.playing = false;
                 self.end = None;
-                self.reset_mtc();
                 self.shared.playing.store(false, Ordering::Relaxed);
                 n = 0;
             } else {
@@ -829,26 +813,43 @@ impl AudioState {
             drop(quiet);
         }
         self.midi_started = false;
-        // A command may have installed a session at another sample rate: the audio is rendered
-        // at the rate and chase speed that apply after the commands above.
         let speed = if self.chasing || was_chasing { self.speed() } else { speed };
         self.midi_speed = speed;
+        // A command may have installed a session at another sample rate: the audio is rendered
+        // at the rate that is there now, at the same speed.
         let step = self.step(speed);
+        #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+        if let Some(clock) = &mut self.clock {
+            let sample = self.pos as f64 - self.pending_len as f64 + self.read;
+            let limit = sample + callback_frames as f64 * step;
+            let origin = *clock.origin.get_or_insert(sample.floor() as i64);
+            let (heard_at, lead) = match self.device_timing {
+                Some(t) => {
+                    clock.observe(t, self.device_buffer_frames as f64 / self.device_rate);
+                    (t.heard_instant(self.device_rate, 0), t.lead)
+                }
+                None => (std::time::Instant::now(), std::time::Duration::ZERO),
+            };
+            if let Ok(mut timeline) = clock.view.try_lock() {
+                timeline.push(super::sync_clock::Presentation {
+                    pass: clock.pass,
+                    origin,
+                    playing: self.playing,
+                    sample,
+                    limit,
+                    samples_per_second: speed * self.session.sample_rate.as_f64(),
+                    looped: self.looped,
+                    end: self.end,
+                    heard_at,
+                    lead,
+                });
+            }
+        }
         // A keyboard plays through record-enabled and input-monitored MIDI and instrument tracks.
         let midi_live = self.midi.as_ref().is_some_and(|f| f.connected() > 0)
             && self.session.tracks.iter().any(|t| matches!(t.kind, TrackKind::Instrument | TrackKind::Midi) && midi_thru(t));
         let monitoring = midi_live || (self.input.is_some() && self.session.tracks.iter().any(|t| t.mixer.input_monitor || t.mixer.record_arm));
-        let clock = self.mtc.as_ref().map(|_| {
-            self.device_timing
-                .and_then(|(now, lead, offset)| {
-                    now.checked_add(lead)?.checked_add(std::time::Duration::try_from_secs_f64(offset as f64 / self.device_rate.max(1.)).ok()?)
-                })
-                .unwrap_or_else(std::time::Instant::now)
-        });
         if !self.playing && !monitoring {
-            if let Some(clock) = clock {
-                self.mtc_span(clock, 0, 0, step);
-            }
             self.drop_midi();
             out.iter_mut().for_each(|x| *x = 0.0);
             self.unsent.silence();
@@ -862,22 +863,16 @@ impl AudioState {
         if !midi_live {
             self.drop_midi();
         }
-        for (index, frame) in out.chunks_mut(channels).enumerate() {
-            let mut span_start = index == 0;
+        for frame in out.chunks_mut(channels) {
             while self.read >= self.pending_len as f64 {
                 self.read -= self.pending_len as f64;
                 if !self.playing && !monitoring {
                     break;
                 }
                 self.render_next(quantum);
-                span_start = true;
                 if self.pending_len == 0 {
                     break;
                 }
-            }
-            if span_start && let Some(clock) = clock {
-                let remaining = ((self.pending_len as f64 - self.read) / step).ceil() as usize;
-                self.mtc_span(clock, index, remaining.min(callback_frames - index), step);
             }
             let i0 = self.read.floor() as usize;
             let fr = (self.read - i0 as f64) as f32;
