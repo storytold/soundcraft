@@ -12,6 +12,15 @@ pub(super) fn translate(source: &str) -> Option<&'static str> {
         "Located" => "Posicionado",
         "Locked" => "Sincronizado",
         "MTC generator output" => "Saída do gerador de MTC",
+        "MTC Reader Port" => "Porta de leitura de MTC",
+        "MTC Generator Port" => "Porta de geração de MTC",
+        "Gen MTC" => "Gerar MTC",
+        "Freewheel (frames)" => "Tolerância de perda (quadros)",
+        "Jam Sync" => "Sincronização contínua",
+        "External timecode offset (frames)" => "Deslocamento do timecode externo (quadros)",
+        "Session Start" => "Início da sessão",
+        "Take MTC chase offline before recording" => "Desative o seguimento de MTC antes de gravar",
+        "MTC output supports 23.976, 24, 25, 29.97 and 30 fps" => "A saída MTC aceita 23,976, 24, 25, 29,97 e 30 fps",
         "MTC input" => "Entrada de MTC",
         "MTC output suspended: check the session frame rate and chase mode" => {
             "Saída MTC suspensa: verifique a taxa de quadros da sessão e o modo de sincronismo"

@@ -1,119 +1,79 @@
 use super::{SoundApp, Value, json};
 use crate::localization::text;
-use soundcraft_playback::mtc::{self, MtcOutput};
-use std::time::Duration;
-use web_time::Instant;
+use soundcraft_playback::mtc;
 
 impl SoundApp {
     pub(crate) fn mtc_output_settings(&mut self, ui: &mut egui::Ui) {
         let mut chosen = self.ui.mtc_output_port.clone();
-        craft_ui::ComboBox::from_label(text("MTC generator output")).selected_text(chosen.as_deref().unwrap_or_else(|| text("Off"))).show_ui(
-            ui,
-            |ui| {
-                ui.selectable_value(&mut chosen, None, text("Off"));
-                match mtc::output_ports() {
-                    Ok(ports) => {
-                        for port in ports {
-                            ui.selectable_value(&mut chosen, Some(port.clone()), port);
-                        }
-                    }
-                    Err(e) => {
-                        ui.label(crate::localization::error_text(&e));
+        craft_ui::ComboBox::from_label(text("MTC Generator Port")).selected_text(chosen.as_deref().unwrap_or(text("None"))).show_ui(ui, |ui| {
+            ui.selectable_value(&mut chosen, None, text("None"));
+            match soundcraft_playback::midi_sync_outputs() {
+                Ok(ports) => {
+                    for port in ports {
+                        ui.selectable_value(&mut chosen, Some(port.clone()), port);
                     }
                 }
-            },
-        );
+                Err(e) => {
+                    ui.label(crate::localization::error_text(&e));
+                }
+            }
+        });
         if chosen != self.ui.mtc_output_port
-            && let Err(e) = self.set_mtc_output_port(chosen)
+            && let Err(e) = self.mtc_output_command(&json!({"port":chosen}))
         {
             self.ui.status = crate::localization::error_text(&e);
         }
     }
 
-    fn set_mtc_output_port(&mut self, port: Option<String>) -> Result<(), String> {
-        let mut next = None;
-        if let Some(name) = &port {
+    pub(crate) fn service_mtc_output(&mut self) {
+        let Some(player) = self.player.as_ref() else { return };
+        let port =
+            self.ui.mtc_output_port.as_ref().filter(|_| self.ui.gen_mtc && !self.mtc_online && mtc::supported(self.engine.session().frame_rate));
+        let desired = port.map(|s| (s.clone(), self.ui.midi_sync.ports.get(s).map_or(0, |p| p.offset_samples)));
+        let compensate = self.ui.midi_sync.compensation.mtc;
+        if self.applied_mtc_output.as_ref().is_some_and(|(name, c)| name == &desired && *c == compensate) {
+            return;
+        }
+        player.set_mtc_generator(desired.clone(), compensate);
+        self.applied_mtc_output = Some((desired, compensate));
+    }
+
+    pub(crate) fn mtc_output_command(&mut self, p: &Value) -> Result<Value, String> {
+        let args = p.as_object().ok_or("Expected MTC generator settings")?;
+        if args.keys().any(|k| !matches!(k.as_str(), "port" | "enabled" | "list_ports")) {
+            return Err("Unknown MTC generator setting".into());
+        }
+        let selected = match args.get("port") {
+            None => self.ui.mtc_output_port.clone(),
+            Some(Value::Null) => None,
+            Some(Value::String(s)) if !s.trim().is_empty() && s.len() <= 1024 => Some(s.clone()),
+            _ => return Err("port must be a MIDI output name or null".into()),
+        };
+        let enabled = match args.get("enabled") {
+            None => self.ui.gen_mtc && selected.is_some(),
+            Some(v) => v.as_bool().ok_or("enabled must be a boolean")?,
+        };
+        let list = args.get("list_ports").map(|v| v.as_bool().ok_or("list_ports must be a boolean")).transpose()?.unwrap_or(false);
+        if enabled {
+            if selected.is_none() {
+                return Err("Choose an MTC output port".into());
+            }
             if self.mtc_online {
                 return Err("Take MTC chase offline before enabling the generator".into());
             }
             if !mtc::supported(self.engine.session().frame_rate) {
-                return Err("MTC output supports 24, 25, 29.97 drop-frame and 30 fps".into());
-            }
-            let player = self.player.as_ref().ok_or("MTC output needs a playback engine")?;
-            if self.ui.mtc_output_port == port && self.mtc_output.as_ref().is_some_and(|p| p.error().is_none()) {
-                return Ok(());
-            }
-            let mut output = MtcOutput::open(name)?;
-            output.attach(player);
-            next = Some(output);
-        } else if let Some(player) = &self.player {
-            player.clear_mtc_output();
-        }
-        self.mtc_output = next;
-        self.ui.mtc_output_port = port;
-        self.mtc_output_retry = None;
-        Ok(())
-    }
-
-    /// Reattach after changing audio devices, or reopen the saved output after hotplug.
-    pub(crate) fn service_mtc_output(&mut self) {
-        let Some(port) = self.ui.mtc_output_port.as_ref() else { return };
-        let Some(player) = &self.player else { return };
-        if self.mtc_online || !mtc::supported(self.engine.session().frame_rate) {
-            if self.mtc_output.take().is_some() {
-                player.clear_mtc_output();
-                self.ui.status = text("MTC output suspended: check the session frame rate and chase mode").into();
-            }
-            return;
-        }
-        if let Some(output) = &mut self.mtc_output {
-            if let Some(e) = output.error() {
-                self.ui.status = crate::localized_format!("MTC output: {e}", e = e);
-                player.clear_mtc_output();
-                self.mtc_output = None;
-            } else {
-                output.attach(player);
-                return;
+                return Err("MTC output supports 23.976, 24, 25, 29.97 and 30 fps".into());
             }
         }
-        if self.mtc_output_retry.is_some_and(|last| last.elapsed() < Duration::from_secs(2)) {
-            return;
+        let ports = if list { Some(soundcraft_playback::midi_sync_outputs()?) } else { None };
+        self.ui.gen_mtc = enabled;
+        self.ui.mtc_output_port = selected;
+        self.service_mtc_output();
+        let mut state = json!({"port":self.ui.mtc_output_port,"enabled":enabled,"active":enabled && self.player.is_some() && mtc::supported(self.engine.session().frame_rate),"frame_rate":self.engine.session().frame_rate.label()});
+        if let Some(ports) = ports {
+            state["ports"] = json!(ports);
         }
-        self.mtc_output_retry = Some(Instant::now());
-        if let Err(e) = self.set_mtc_output_port(Some(port.clone())) {
-            self.ui.status = crate::localization::error_text(&e);
-        }
-    }
-
-    /// With no arguments returns the current selection. `list_ports` enumerates device names.
-    pub(crate) fn mtc_output_command(&mut self, p: &Value) -> Result<Value, String> {
-        let enabled = p.get("enabled").map(|v| v.as_bool().ok_or("enabled must be a boolean")).transpose()?;
-        let list = p.get("list_ports").map(|v| v.as_bool().ok_or("list_ports must be a boolean")).transpose()?.unwrap_or(false);
-        let port = match p.get("port") {
-            None => self.ui.mtc_output_port.as_deref(),
-            Some(Value::Null) => None,
-            Some(Value::String(port)) if !port.trim().is_empty() => Some(port.as_str()),
-            Some(_) => return Err("port must be a MIDI output name or null".into()),
-        };
-        if enabled == Some(true) && port.is_none() {
-            return Err("Choose an MTC output port".into());
-        }
-        if enabled == Some(false) || p.get("port") == Some(&Value::Null) {
-            self.set_mtc_output_port(None)?;
-        } else if (p.get("port").is_some() || enabled == Some(true))
-            && let Some(port) = port
-        {
-            self.set_mtc_output_port(Some(port.to_owned()))?;
-        }
-        let mut result = json!({
-            "port": self.ui.mtc_output_port,
-            "active": self.mtc_output.as_ref().is_some_and(|p| p.error().is_none()),
-            "frame_rate": self.engine.session().frame_rate.label()
-        });
-        if list {
-            result["ports"] = json!(mtc::output_ports()?);
-        }
-        Ok(result)
+        Ok(state)
     }
 }
 
@@ -132,16 +92,16 @@ mod tests {
             assert!(app.run("setup.mtc_output", args).is_err());
         }
         app.engine.session_mut().frame_rate = FrameRate::Fps59_94;
-        let err = app.run("setup.mtc_output", json!({"port":"loop"})).unwrap_err();
+        let err = app.run("setup.mtc_output", json!({"port":"loop","enabled":true})).unwrap_err();
         assert!(err.contains("29.97"));
         app.engine.session_mut().frame_rate = FrameRate::Fps25;
         app.mtc_online = true;
-        let err = app.run("setup.mtc_output", json!({"port":"loop"})).unwrap_err();
+        let err = app.run("setup.mtc_output", json!({"port":"loop","enabled":true})).unwrap_err();
         assert!(err.contains("offline"));
         assert!(app.ui.mtc_output_port.is_none());
         app.ui.mtc_output_port = Some("Saved output".into());
         app.run("setup.mtc_output", json!({"enabled":false})).unwrap();
-        assert!(app.ui.mtc_output_port.is_none());
+        assert_eq!(app.ui.mtc_output_port.as_deref(), Some("Saved output"));
     }
 
     #[cfg(not(target_arch = "wasm32"))]

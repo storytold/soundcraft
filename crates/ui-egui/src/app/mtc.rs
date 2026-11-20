@@ -7,27 +7,38 @@ impl SoundApp {
         if args.is_empty() {
             return Ok(self.mtc_state());
         }
-        if args.keys().any(|k| !matches!(k.as_str(), "input" | "online")) {
-            return Err("setup.mtc accepts input and online".into());
+        if args.keys().any(|k| !matches!(k.as_str(), "input" | "online" | "freewheel_frames" | "jam_sync")) {
+            return Err("Unknown MTC reader setting".into());
         }
         let source = match args.get("input") {
             None => self.ui.mtc_input_port.clone(),
             Some(Value::Null) => None,
-            Some(Value::String(s)) if !s.trim().is_empty() => Some(s.clone()),
+            Some(Value::String(s)) if !s.trim().is_empty() && s.len() <= 1024 => Some(s.clone()),
             Some(_) => return Err("input must be a MIDI port name or null".into()),
         };
         let online = match args.get("online") {
             Some(v) => v.as_bool().ok_or("online must be a boolean")?,
             None => self.mtc_online && source.is_some(),
         };
+        let frames = args
+            .get("freewheel_frames")
+            .map(|v| v.as_u64().filter(|n| (4..=40).contains(n)).ok_or("Freewheel must be 4 to 40 frames"))
+            .transpose()?;
+        let jam = args.get("jam_sync").map(|v| v.as_bool().ok_or("jam_sync must be a boolean")).transpose()?;
         if online && source.is_none() {
             return Err("Select an MTC input before going online".into());
         }
-        if online && self.ui.mtc_output_port.is_some() {
+        if online && self.ui.gen_mtc {
             return Err("Disable MTC output before going online".into());
         }
         if online && self.engine.transport.recording {
             return Err("Stop recording before enabling MTC chase".into());
+        }
+        if let Some(f) = frames {
+            self.ui.mtc_freewheel_frames = f as u8;
+        }
+        if let Some(j) = jam {
+            self.ui.mtc_jam_sync = j;
         }
         if self.ui.mtc_input_port != source || self.mtc_online != online {
             if let Some(m) = &self.midi_inputs {
@@ -42,7 +53,7 @@ impl SoundApp {
     }
 
     fn mtc_state(&self) -> Value {
-        json!({"input": self.ui.mtc_input_port, "online": self.mtc_online, "status": self.mtc_status})
+        json!({"input": self.ui.mtc_input_port, "online": self.mtc_online, "status": self.mtc_status,"freewheel_frames":self.ui.mtc_freewheel_frames,"jam_sync":self.ui.mtc_jam_sync})
     }
 
     fn stop_mtc_transport(&mut self) {
@@ -56,32 +67,22 @@ impl SoundApp {
     }
 
     fn leave_chase_audio(&mut self) {
-        self.mtc_playback_rate = 1.;
         if let Some(player) = &self.player {
-            player.set_speed(1.);
             player.end_mtc_chase();
         }
     }
 
-    fn set_mtc_playback_rate(&mut self, rate: f32) {
-        if self.mtc_playback_rate != rate {
-            self.mtc_playback_rate = rate;
-            if let Some(player) = &self.player {
-                player.set_speed(rate);
-            }
-        }
-    }
-
     fn mtc_at(&self, p: Position) -> i64 {
-        let session = self.engine.session();
-        p.in_session_rate(session.frame_rate).samples(session.sample_rate).saturating_sub(session.timecode_start)
+        let s = self.engine.session();
+        p.session_sample(s.frame_rate, s.sample_rate, s.timecode_start, s.edit.value("midi.mtc.external_offset_frames", 0.) as i64)
     }
 
     pub(crate) fn service_mtc_chase(&mut self) {
         if !self.mtc_online {
             return;
         }
-        // A local stop, record or document change takes the transport back offline.
+        self.engine.transport_requests.retain(|r| !matches!(r, TransportRequest::Record));
+        // A local transport or document change returns control to the host.
         if self.engine.transport.recording || self.engine.transport_requests.iter().any(|r| !matches!(r, TransportRequest::AllNotesOff)) {
             self.leave_chase_audio();
             if let Some(m) = &self.midi_inputs {
@@ -99,6 +100,13 @@ impl SoundApp {
                 (inputs.feed().ports().name(port) == Some(name)).then_some(port)
             })
         });
+        let s = self.engine.session();
+        inputs.feed().set_mtc_options(
+            s.frame_rate,
+            self.ui.mtc_freewheel_frames.clamp(4, 40),
+            self.ui.mtc_jam_sync,
+            s.edit.value("midi.mtc.external_offset_frames", 0.) as i64,
+        );
         inputs.feed().set_mtc_source(source);
         if source.is_none() {
             self.stop_mtc_transport();
@@ -110,7 +118,6 @@ impl SoundApp {
         }
         match inputs.feed().take_mtc() {
             Some(ChaseEvent::Locate(p)) => {
-                self.set_mtc_playback_rate(1.0);
                 if self.is_playing() {
                     self.stop_play();
                 }
@@ -127,23 +134,14 @@ impl SoundApp {
                     self.mtc_status = "Before session start";
                     return;
                 }
-                if !self.is_playing() || !self.mtc_chasing || self.player.as_ref().is_some_and(|p| !p.is_playing()) {
-                    self.engine.transport_requests.push(TransportRequest::PlayFrom(at));
-                } else if self.player.is_none() {
-                    // The audio callback owns the servo when a device is present.
-                    let playing_at = self.engine.transport.position;
-                    let error = at.saturating_sub(playing_at);
-                    let three_frames = p.in_session_rate(self.engine.session().frame_rate).drift_tolerance(sr);
-                    if error.unsigned_abs() > (4 * three_frames) as u64 {
-                        self.set_mtc_playback_rate(1.0);
-                        self.engine.transport_requests.push(TransportRequest::Locate(at));
-                    } else {
-                        // Preserve attacks at a located start while making up acquisition latency.
-                        // Increase catch-up by at most 0.2 percentage points per complete MTC group.
-                        // Taper immediately as the phase error shrinks; an ahead player still slows by at most 2%.
-                        let rate = soundcraft_playback::mtc_input::chase_rate(error, three_frames, sr, f64::from(self.mtc_playback_rate)) as f32;
-                        self.set_mtc_playback_rate(rate);
+                if let Some(player) = &self.player {
+                    if !player.is_playing() {
+                        return;
                     }
+                    self.engine.transport.playing = true;
+                    self.engine.transport.position = player.position();
+                } else if !self.is_playing() || !self.mtc_chasing {
+                    self.engine.transport_requests.push(TransportRequest::PlayFrom(at));
                 }
                 self.mtc_chasing = true;
                 self.mtc_status = "Locked";
@@ -158,7 +156,7 @@ impl SoundApp {
 
     pub(crate) fn mtc_input_settings(&mut self, ui: &mut egui::Ui) {
         let mut selected = self.ui.mtc_input_port.clone();
-        craft_ui::ComboBox::from_label(crate::localization::text("MTC input"))
+        craft_ui::ComboBox::from_label(crate::localization::text("MTC Reader Port"))
             .selected_text(selected.as_deref().unwrap_or(crate::localization::text("None")))
             .show_ui(ui, |ui| {
                 ui.selectable_value(&mut selected, None, crate::localization::text("None"));
@@ -229,7 +227,7 @@ mod tests {
         app.engine.transport.position = 0;
         send_cycle(&feed, src, 6);
         app.service_mtc_chase();
-        assert!(matches!(app.engine.transport_requests.as_slice(), [TransportRequest::Locate(_)]));
+        assert!(app.engine.transport_requests.is_empty(), "one group does not cause a drift relocate");
         app.handle_transport(0.0);
         app.engine.session_mut().edit.insertion_follows_playback = true;
         feed.receive(src, &locate);
@@ -264,126 +262,7 @@ mod tests {
     }
 
     #[test]
-    fn located_roll_preserves_the_first_note_interval_and_converges_to_timecode() {
-        let mut app = app();
-        let feed = app.midi_inputs.as_ref().unwrap().feed().clone();
-        let src = feed.ports().assign("Sender");
-        let sr = app.engine.session().sample_rate;
-        let first = sr.samples(5.0);
-        let second = sr.samples(5.5);
-        feed.receive(src, &[0xf0, 0x7f, 0x7f, 1, 1, 0x61, 0, 5, 0, 0xf7]);
-        app.service_mtc_chase();
-        app.handle_transport(0.0);
-        let mut elapsed = 0.0;
-        let mut second_onset = None;
-        let mut seeks = 0;
-        for offset in (2..=364).step_by(2) {
-            let before = app.position();
-            if app.is_playing() {
-                app.handle_transport(2.0 / 30.0);
-                elapsed += 2.0 / 30.0;
-            }
-            let seconds = 5 + offset / 30;
-            let f = offset % 30;
-            for (i, nibble) in [f & 15, f >> 4, seconds & 15, seconds >> 4, 0, 0, 1, 6].into_iter().enumerate() {
-                feed.receive(src, &[0xf1, (i as u8) << 4 | nibble as u8]);
-            }
-            app.service_mtc_chase();
-            seeks += app.engine.transport_requests.iter().filter(|r| matches!(r, TransportRequest::Locate(_))).count();
-            app.handle_transport(0.0);
-            let after = app.position();
-            if offset == 4 {
-                assert!(app.is_playing());
-                assert_eq!(after, first);
-            }
-            if before < second && after >= second {
-                second_onset = Some(elapsed - (after - second) as f64 / (after - before) as f64 * (2.0 / 30.0));
-            }
-        }
-        let interval = second_onset.expect("second note reached");
-        assert!((interval - 0.5).abs() < 0.020, "first interval was {interval:.3} s");
-        assert_eq!(seeks, 0, "continuous timecode must not skip or replay audio");
-        let external = first + sr.samples(365.75 / 30.0);
-        assert!(app.position().abs_diff(external) <= sr.samples(1.0 / 30.0) as u64);
-    }
-
-    #[test]
-    fn located_chase_catches_a_queued_output_without_squeezing_the_first_interval() {
-        let mut app = app();
-        let feed = app.midi_inputs.as_ref().unwrap().feed().clone();
-        let port = feed.ports().assign("Sender");
-        let sr = app.engine.session().sample_rate;
-        let start = sr.samples(5.0);
-        feed.receive(port, &[0xf0, 0x7f, 0x7f, 1, 1, 0x61, 0, 5, 0, 0xf7]);
-        app.service_mtc_chase();
-        app.handle_transport(0.0);
-        let cycle = 2.0 / 30.0;
-        // The master's first label is two frames past the locate. Two full groups confirm
-        // motion. Model another 80 ms before the output starts advancing at the endpoint.
-        let mut queued: f64 = 0.080;
-        let mut output_seconds = 0.0;
-        let mut first_interval = None;
-        for frame in (2..=358).step_by(2) {
-            let before = app.position();
-            if app.is_playing() {
-                let wait = queued.min(cycle);
-                queued -= wait;
-                let active = cycle - wait;
-                app.handle_transport(active as f32);
-                let after = app.position();
-                let second = start + sr.samples(0.5);
-                if before < second && second <= after {
-                    first_interval = Some(output_seconds + active * (second - before) as f64 / (after - before) as f64);
-                }
-                output_seconds += active;
-            }
-            let sec = 5 + frame / 30;
-            let f = frame % 30;
-            for (i, nibble) in [f & 15, f >> 4, sec & 15, sec >> 4, 0, 0, 1, 6].into_iter().enumerate() {
-                feed.receive(port, &[0xf1, (i as u8) << 4 | nibble as u8]);
-            }
-            app.service_mtc_chase();
-            if frame == 268 {
-                assert!(app.position().abs_diff(sr.samples(14.0)) < sr.samples(1.0 / 30.0) as u64);
-            }
-            assert!(app.mtc_playback_rate <= 1.04, "excessive acquisition speed");
-            if frame == 4 {
-                assert!(matches!(app.engine.transport_requests.as_slice(), [TransportRequest::PlayFrom(at)] if *at == start));
-            } else {
-                assert!(app.engine.transport_requests.is_empty(), "unexpected transport jump at frame {frame}");
-            }
-            app.handle_transport(0.0);
-        }
-        // Piece 7 arrives a quarter frame before the next two-frame group.
-        let lag = (sr.samples(17.0 - 0.25 / 30.0) - app.position()) as f64 / sr.as_f64();
-        let interval = first_interval.unwrap();
-        assert!(lag.abs() <= 1.0 / 60.0, "late by {lag:.4} s at 17 s; first interval {interval:.4} s");
-        assert!((interval - 0.5).abs() < 0.010, "first interval {interval:.4} s");
-    }
-
-    #[test]
-    fn chase_trim_slows_an_ahead_player_and_resets_on_stop() {
-        let mut app = app();
-        let feed = app.midi_inputs.as_ref().unwrap().feed().clone();
-        let src = feed.ports().assign("Sender");
-        send_cycle(&feed, src, 0);
-        send_cycle(&feed, src, 2);
-        app.service_mtc_chase();
-        app.handle_transport(0.0);
-        let sr = app.engine.session().sample_rate;
-        app.engine.transport.position = sr.samples(1.40);
-        send_cycle(&feed, src, 4);
-        app.service_mtc_chase();
-        assert_eq!(app.mtc_playback_rate, 0.98);
-        assert!(app.engine.transport_requests.is_empty());
-        feed.receive(src, &[0xfc]);
-        app.service_mtc_chase();
-        assert_eq!(app.mtc_playback_rate, 1.0);
-        assert!(!app.is_playing());
-    }
-
-    #[test]
-    fn mtc_chase_input_loss_recovers_and_record_takes_priority() {
+    fn mtc_chase_input_recovers_and_online_mode_refuses_recording() {
         let mut app = app();
         let feed = app.midi_inputs.as_ref().unwrap().feed().clone();
         let src = feed.ports().assign("Sender");
@@ -409,9 +288,11 @@ mod tests {
         send_cycle(&feed, src, 6);
         app.engine.transport_requests.push(TransportRequest::Record);
         app.service_mtc_chase();
-        assert!(!app.mtc_online);
-        assert!(matches!(app.engine.transport_requests.as_slice(), [TransportRequest::Record]));
-        app.ui.mtc_output_port = Some("Sender".into());
+        assert!(app.mtc_online);
+        assert!(!app.engine.transport_requests.iter().any(|r| matches!(r, TransportRequest::Record)));
+        assert!(app.run("transport.record", json!({})).is_err());
+        app.run("setup.mtc", json!({"online":false})).unwrap();
+        app.ui.gen_mtc = true;
         assert!(app.run("setup.mtc", json!({"online":true})).is_err());
         assert_eq!(app.run("setup.mtc", json!({})).unwrap()["online"], false);
     }

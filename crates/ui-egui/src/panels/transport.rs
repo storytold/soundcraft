@@ -15,6 +15,11 @@ pub(super) fn transport_window(app: &mut SoundApp, ctx: &egui::Context) {
             let flags = app.engine.session().edit.flags.clone();
             let expanded = flags.contains("view.transport.expanded");
             ui.horizontal(|ui| {
+                if ui.selectable_label(app.ui.gen_mtc, crate::localization::text("Gen MTC")).clicked()
+                    && let Err(e) = app.run("setup.mtc_output", json!({"enabled":!app.ui.gen_mtc}))
+                {
+                    app.ui.status = crate::localization::error_text(&e);
+                }
                 if app.ui.mtc_input_port.is_some()
                     && ui
                         .selectable_label(app.mtc_online, crate::localization::text("Online"))

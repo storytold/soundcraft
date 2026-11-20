@@ -213,9 +213,17 @@ pub struct Engine {
     imports: Vec<io::DecodedImport>,
 }
 
+/// Create a fresh project at 01:00:00:00. Loaded session documents retain their own start.
+pub(crate) fn new_session(name: impl Into<String>, sr: soundcraft_time::SampleRate) -> Session {
+    let mut session = Session::new(name, sr);
+    let hour = soundcraft_time::Timecode { negative: false, hours: 1, minutes: 0, seconds: 0, frames: 0 };
+    session.timecode_start = hour.to_samples(session.frame_rate, sr);
+    session
+}
+
 impl Default for Engine {
     fn default() -> Self {
-        Engine::new(Session::default())
+        Engine::new(new_session("Untitled", soundcraft_time::SampleRate::HZ_48000))
     }
 }
 

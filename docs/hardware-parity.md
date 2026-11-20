@@ -51,7 +51,7 @@ Legend: ✅ works · 🟡 partial · ❌ missing.
 
 | Feature | Pro Tools | SoundCraft |
 |---|---|---|
-| MTC generate/chase | ✅ | 🟡 [Generate timecode or follow an external device](midi-input.md#generate-or-follow-midi-time-code). The Windows hardware check used a Model 12 and UM-ONE. Chase supports playback. Local recording takes the transport offline. |
+| MTC generate/chase | ✅ | 🟡 [Generate timecode or follow an external device](midi-input.md#generate-or-follow-midi-time-code). Locate-and-free-run playback, configurable freewheel and Jam Sync. Take chase offline to record. Hardware check pending. |
 | LTC chase, 9-pin machine control | ✅ (Ultimate) | ❌ |
 | Word clock / video reference awareness | ✅ via interface | ❌ |
 | Video output to a second display or video card | ✅ | ❌ (video window only) |
