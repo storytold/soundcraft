@@ -2,7 +2,7 @@
 
 **Stage: pre-alpha** · next: alpha, ~5% and ~110–180 h away (the alpha gate's three failing workflows)
 
-> **Last reviewed:** 2026-11-14 · **Last updated:** 2026-11-18 · **Change:** minor (strict external-WAV AAF import and MIDI input in the progress log; previously trivial: Frequency Shifter plugin, Command-click target priority and cursor, Command-click automation points, plugin editors on Linux/X11, Cancel Zoom Toggle, side panels in dock columns, Auto Pan stereo balance, Alt-click returns a plugin parameter to its default, Clip List Auto Rename, Strip Silence rectangles, Strip Silence Rename, Strip Silence Extract and Separate, Clip Looping dialog, AudioSuite Vari-Fi speed ramps, Auto Pan plugin, Subharmonic plugin, Ring Modulator plugin, Float32 file headroom) · **Target:** Avid Pro Tools Ultimate 2026.4.1
+> **Last reviewed:** 2026-11-14 · **Last updated:** 2026-11-18 · **Change:** minor (long takes kept whole; previously minor: strict external-WAV AAF import and MIDI input in the progress log; previously trivial: Frequency Shifter plugin, Command-click target priority and cursor, Command-click automation points, plugin editors on Linux/X11, Cancel Zoom Toggle, side panels in dock columns, Auto Pan stereo balance, Alt-click returns a plugin parameter to its default, Clip List Auto Rename, Strip Silence rectangles, Strip Silence Rename, Strip Silence Extract and Separate, Clip Looping dialog, AudioSuite Vari-Fi speed ramps, Auto Pan plugin, Subharmonic plugin, Ring Modulator plugin, Float32 file headroom) · **Target:** Avid Pro Tools Ultimate 2026.4.1
 
 SoundCraft is a clean-room, pure-Rust digital audio workstation that aims at full parity with
 Avid Pro Tools, and then beyond it: faster, open, scriptable and agent-controllable. This page is
@@ -36,7 +36,7 @@ Detail: [target-app-parity.md](docs/target-app-parity.md#readiness-by-audience).
 **Why pre-alpha:** the core-workflow gate in [docs/roadmap.md](docs/roadmap.md#alpha-gate) fails.
 Editing, mixing, bouncing, and saving and reopening work end to end. But a Pro Tools user can't
 record from a chosen audio interface at a chosen buffer size (only the default devices, a fixed
-512-sample block, and takes held in RAM). Recording MIDI from a keyboard is built but checked on
+512-sample block). Recording MIDI from a keyboard is built but checked on
 Linux only: macOS and Windows are type-checked and have not been tried with a device, and there
 is no MIDI input on FreeBSD or the web. Session interchange is still incomplete: a strict
 external-WAV AAF import subset works, but AAF export, OMF and `.ptx` do not.
@@ -104,7 +104,7 @@ Other languages shipped: 0 complete. Brazilian Portuguese covers the fixed UI st
 
 Ranked; the alpha gate, the alpha checklist and the beta plan are in [docs/roadmap.md](docs/roadmap.md).
 
-1. **Alpha blocker:** audio interfaces: device and buffer-size choice, duplex stream, ASIO; record to disk (G-01, G-06). 35–55 h.
+1. **Alpha blocker:** audio interfaces: device and buffer-size choice, duplex stream, ASIO (G-01). 35–55 h.
 2. **Alpha blocker:** MIDI devices: keyboard input, live play and recording are in (checked on Linux only; macOS and Windows type-checked, none on FreeBSD or the web); output, clock and loop/merge recording remain (G-02). 12–22 h.
 3. **Alpha blocker:** complete AAF/OMF interchange (G-03): strict external-WAV AAF import works; AAF export and OMF import/export remain. 50–90 h.
 4. macOS plugin entitlement (#153), then AU editors and embedded CLAP editors on macOS (G-05). 1 h for the entitlement (needed for the mix row), then 10–15 h.
@@ -129,6 +129,7 @@ mutated and truncated movies. Field reports from the first public week are track
 - **2026-11-09:** A built-in Frequency Shifter (`freq_shifter`) moves every frequency in the signal by the same number of hertz, from 0.01 Hz to 5 kHz: up, down, both ways at once, or down on the left and up on the right of a stereo track. The unwanted sideband stays at least 100 dB down from 20 Hz to 20 Hz below Nyquist at 44.1 to 96 kHz. Feedback sends the output round again for a trail of further shifts, Mix blends in the dry signal, and every change glides without a click. No readiness percentage change.
 - **2026-11-08:** Command-click near an existing automation breakpoint keeps that point as the click target with every active tool, and existing fade and clip-gain controls retain their normal priority. Empty automation space shows a crosshair and an insertion hint while Command is held. The active tool's drag gestures stay unchanged. No readiness percentage change.
 - **2026-11-05:** Command-click in an automation lane adds a point at the clicked time and value with the current editing tool (#1394), using the existing Pencil mapping. Command-click preserves the existing selection and also works on the fallback volume lanes of Master, Aux and VCA tracks. Plain clicks and clip contents stay unchanged, and one Undo removes the new point. No readiness percentage change.
+- **2026-10-30:** A take too long for one file is recorded into several (`Vox_01.wav`, `Vox_01-2.wav`, …), each small enough to be read back, and all of it lands on the track as clips butted end to end; loop recording and punch-in cut their passes across the files, and crash recovery places every file of an unfinished take. Before, a take past about 1 G samples (46 min of stereo at 192 kHz) stayed on disk but never reached the session (#888). No readiness percentage change.
 - **2026-10-27 (plugin editors on Linux):** VST3 editors and embedded CLAP editors open in a SoundCraft X11 host window on Linux and the BSDs (XWayland on Wayland desktops), resized on request and closed from its title bar; the host run loop (VST3 `Linux::IRunLoop`, CLAP `timer-support` and `posix-fd-support`) lets X11 editors read their display connection and repaint. Verified with Graillon 3 and Surge XT Effects (JUCE) in both formats (#527). No readiness percentage change.
 - **2026-10-25:** Alt+Shift+E (`view.zoom_toggle_cancel`) and an Alt-click on the Zoom Toggle button cancel Zoom Toggle and keep the current view: the zoom, the scroll and the track heights stay as they are, and the button is no longer lit. The next Zoom Toggle zooms in from that view and goes back to it. No readiness percentage change.
 - **2026-10-25:** Tracks and Groups and the Clip List sit in dock columns that run the Edit window's full height at its left and right edges, with the MIDI Editor under the session view between them; Mix docks Tracks and Groups at its left edge. A panel dragged onto a dock group joins it as a tab, stacks above or below it, or makes a new column; one dragged to an empty window edge makes a dock there. A list with no saved place reopens in its dock, and makes the dock again when it is gone. Preferences and window configurations saved with the earlier split-frame layouts load with the new default layouts and keep their other settings. No readiness percentage change.
@@ -193,6 +194,7 @@ mutated and truncated movies. Field reports from the first public week are track
 | 2026-11-08 | trivial | Command-click breakpoint/control priority and insertion affordance; active-tool drags retained; readiness estimates unchanged |
 | 2026-11-05 | trivial | Progress log: Command-click adds an undoable automation point (#1394); readiness estimates unchanged |
 | 2026-11-05 | trivial | Languages table: Brazilian Portuguese (pt-BR) near complete for fixed UI strings via PR #1346; needs native review. Estimates unchanged |
+| 2026-10-30 | minor | Long takes go on in new files and land whole (#888); record to disk dropped from the pre-alpha reasons and the first alpha blocker (done, #84); readiness estimates unchanged |
 | 2026-10-27 | trivial | VST3 and embedded CLAP editors on Linux/X11 (#527); G-05 estimate down to 10–15 h; readiness estimates unchanged |
 | 2026-10-25 | trivial | Progress log: Cancel Zoom Toggle; readiness estimates unchanged |
 | 2026-10-25 | trivial | Progress log: side panels in dock columns; readiness estimates unchanged |
