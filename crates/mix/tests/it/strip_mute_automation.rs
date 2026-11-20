@@ -107,6 +107,20 @@ fn reading_modes_retain_existing_policy() {
     }
 }
 #[test]
+fn a_soloed_source_mutes_the_aux_it_feeds_unless_the_aux_is_solo_safe() {
+    let (mut s, source) = fixture();
+    let bus = s.add_bus("Feed", ChannelFormat::Stereo);
+    let aux = s.add_track(TrackKind::Aux, ChannelFormat::Stereo, Some("Return"));
+    s.track_mut(aux).unwrap().mixer.input = Route::Bus(bus);
+    s.track_mut(aux).unwrap().mixer.output = Route::Main;
+    s.track_mut(source).unwrap().mixer.output = Route::Bus(bus);
+    let reference = rendered(&s, 512);
+    s.track_mut(source).unwrap().mixer.solo = true;
+    assert!(rendered(&s, 512).iter().flatten().all(|x| x.abs() < 1e-6), "the aux the soloed source feeds is muted");
+    s.track_mut(aux).unwrap().mixer.solo_safe = true;
+    assert_eq!(rendered(&s, 512), reference, "Solo Safe keeps the aux audible");
+}
+#[test]
 fn static_mute_and_solo_suppression_cannot_be_reopened_by_automation() {
     for solo in [false, true] {
         let (mut s, t) = fixture();
