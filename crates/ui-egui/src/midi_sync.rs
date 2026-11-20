@@ -124,3 +124,28 @@ impl SoundApp {
         self.applied_midi_sync = Some(config.clone());
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn old_project_imports_calibration_once_and_never_overwrites_machine_settings() {
+        let mut app = SoundApp::new(Default::default(), None, crate::Services::default());
+        let edit = &mut app.engine.session_mut().edit;
+        edit.flags.insert("midi.beat_clock.destination=DIN".into());
+        edit.set_flag("midi.beat_clock", true);
+        edit.values.insert("midi.beat_clock.offset".into(), -211.);
+        app.migrate_midi_sync();
+        assert_eq!(app.ui.midi_sync.ports["DIN"].offset_samples, -211);
+        assert!(app.ui.midi_sync.enabled);
+        app.sync_command("setup.midi_beat_clock", &json!({"destination":"DIN","offset":-99})).unwrap();
+        app.document_replaced();
+        app.migrate_midi_sync();
+        assert_eq!(app.ui.midi_sync.ports["DIN"].offset_samples, -99);
+        for invalid in [json!({"enabled":false,"destination":"x".repeat(1025)}), json!({"ports":{"A":{"enabled":true,"offset_samples":i64::MAX}}})] {
+            assert!(app.sync_command("setup.midi_beat_clock", &invalid).is_err());
+            assert!(app.ui.midi_sync.enabled);
+            assert_eq!(app.ui.midi_sync.ports["DIN"].offset_samples, -99);
+        }
+    }
+}
