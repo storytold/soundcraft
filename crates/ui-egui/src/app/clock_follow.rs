@@ -347,6 +347,128 @@ mod tests {
     }
 
     #[test]
+    fn continue_after_a_backward_spp_ignores_the_previous_pass_grid() {
+        let mut app = SoundApp::new(Default::default(), None, crate::Services::default());
+        app.midi_inputs = Some(MidiInputs::with_port_names(vec![], vec!["DIN".into()]));
+        app.run("setup.midi_clock_follow", json!({"input":"DIN","enabled":true})).unwrap();
+        let feed = app.midi_inputs.as_ref().unwrap().feed().clone();
+        let src = feed.ports().assign("DIN");
+        // A previous pass continued beyond pulse 1000 and corrected its tempo there.
+        app.engine.playback_tempo.as_mut().unwrap().set_tempo(1000 * TICKS_PER_PULSE, 90.).unwrap();
+        feed.receive(src, &[0xf2, 40, 0]); // position 40 = pulse 240
+        app.service_clock_follow();
+        app.handle_transport(0.);
+        feed.receive(src, &[0xfb]);
+        feed.receive(src, &[0xf8]);
+        app.service_clock_follow();
+
+        let sr = app.engine.session().sample_rate;
+        let grid = app.engine.playback_tempo.as_mut().unwrap();
+        let origin = grid.tick_to_samples(240 * TICKS_PER_PULSE, sr);
+        let mut peak = 0;
+        for pulse in 241..=1050 {
+            let elapsed = (pulse - 240) as f64 * 2.5 / 130.;
+            let snap = Snapshot { state: State::Locked, bpm: Some(130.), pulse, stamp_us: (elapsed * 1e6).round() as i64, ..Default::default() };
+            if pulse == 241 { grid.set_tempo(240 * TICKS_PER_PULSE, 130.).unwrap(); }
+            update_grid(grid, Some((240, 0)), 0, snap, sr);
+            peak = peak.max(grid.tick_to_samples(pulse * TICKS_PER_PULSE, sr).abs_diff(origin + sr.samples(elapsed)));
+        }
+        assert!(peak < sr.samples(0.003) as u64, "previous-pass tempo produced {peak} samples of phase error");
+    }
+
+    #[test]
+    fn input_and_output_calibration_of_a_same_named_port_are_independent() {
+        let mut app = SoundApp::new(Default::default(), None, crate::Services::default());
+        app.run("setup.midi_clock_follow", json!({"input":"DIN","input_offset_samples":-480})).unwrap();
+        app.run("setup.midi_beat_clock", json!({"ports":{"DIN":{"enabled":false,"offset_samples":-200}}})).unwrap();
+        let settings = app.run("setup.midi_sync_status", json!({})).unwrap()["settings"].clone();
+        assert_eq!(settings["ports"]["DIN"]["in_offset_samples"], -480);
+        assert_eq!(settings["ports"]["DIN"]["out_offset_samples"], -200);
+        app.run("setup.midi_beat_clock", json!({"ports":{"DIN":null}})).unwrap();
+        let settings = app.run("setup.midi_sync_status", json!({})).unwrap()["settings"].clone();
+        assert_eq!(settings["ports"]["DIN"]["out_offset_samples"], 0);
+        assert_eq!(app.run("setup.midi_clock_follow", json!({})).unwrap()["input_offset_samples"], -480);
+        // An input-only calibration also survives when a different input is selected.
+        app.run("setup.midi_clock_follow", json!({"input":"USB"})).unwrap();
+        app.run("setup.midi_beat_clock", json!({"ports":{}})).unwrap();
+        assert_eq!(app.run("setup.midi_clock_follow", json!({"input":"DIN"})).unwrap()["input_offset_samples"], -480);
+    }
+
+    #[test]
+    fn legacy_clock_follow_offsets_migrate_with_the_sign_inverted() {
+        let mut app = SoundApp::new(Default::default(), None, crate::Services::default());
+        app.ui = serde_json::from_value(json!({"clock_follow_input":"DIN","clock_follow_input_offsets":{"DIN":480},
+            "midi_sync":{"ports":{"DIN":{"offset_samples":-200}}}})).unwrap();
+        app.migrate_midi_sync();
+        assert_eq!(app.run("setup.midi_clock_follow", json!({})).unwrap()["input_offset_samples"], -480);
+        let saved = serde_json::to_value(&app.ui).unwrap();
+        assert!(saved.get("clock_follow_input_offsets").is_none());
+        assert_eq!(saved["midi_sync"]["ports"]["DIN"]["out_offset_samples"], -200);
+        assert_eq!(saved["midi_sync"]["ports"]["DIN"]["in_offset_samples"], -480);
+        app.ui = serde_json::from_value(saved).unwrap();
+        assert_eq!(app.run("setup.midi_clock_follow", json!({})).unwrap()["input_offset_samples"], -480);
+    }
+
+    #[test]
+    fn negative_input_offset_moves_the_follow_transport_earlier() {
+        for offset in [0, -480] {
+            let mut app = SoundApp::new(Default::default(), None, crate::Services::default());
+            app.midi_inputs = Some(MidiInputs::with_port_names(vec![], vec!["DIN".into()]));
+            app.run("setup.midi_clock_follow", json!({"input":"DIN","enabled":true,"input_offset_samples":offset})).unwrap();
+            let feed = app.midi_inputs.as_ref().unwrap().feed().clone();
+            let src = feed.ports().assign("DIN");
+            feed.receive(src, &[0xf2, 4, 0]);
+            app.service_clock_follow();
+            app.handle_transport(0.);
+            feed.receive(src, &[0xfb]);
+            feed.receive(src, &[0xf8]);
+            app.service_clock_follow();
+            let (pulse, stamp) = app.clock_follow.anchor.unwrap();
+            let sr = app.engine.session().sample_rate;
+            let age = sr.samples((app.clock_follow.snapshot.now_us - stamp).max(0) as f64 / 1e6);
+            let anchor = app.engine.transport_tempo().tick_to_samples(pulse * TICKS_PER_PULSE, sr);
+            assert!(matches!(app.engine.transport_requests.as_slice(), [TransportRequest::PlayFrom(p)] if *p == anchor + age - offset),
+                "offset {offset}, reference {}, requests {:?}", anchor + age, app.engine.transport_requests);
+        }
+    }
+
+    #[test]
+    fn saved_input_calibration_survives_a_lower_rate() {
+        let mut app = SoundApp::new(Default::default(), None, crate::Services::default());
+        app.ui = serde_json::from_value(json!({"clock_follow_input":"DIN","clock_follow_input_offsets":{"DIN":-24000}})).unwrap();
+        app.migrate_midi_sync();
+        assert!(app.run("setup.midi_clock_follow", json!({"input_offset_samples":24000})).is_ok());
+        assert!(app.run("setup.midi_clock_follow", json!({"input_offset_samples":24001})).is_err());
+        assert_eq!(app.run("setup.midi_clock_follow", json!({})).unwrap()["input_offset_samples"], 24000);
+    }
+
+    #[test]
+    fn sync_menu_and_peripherals_share_the_external_clock_controls() {
+        use egui_kittest::{Harness, kittest::Queryable};
+        let mut app = SoundApp::new(Default::default(), None, crate::Services::default());
+        app.midi_inputs = Some(MidiInputs::with_port_names(vec![], vec!["MPC".into()]));
+        app.run("setup.midi_clock_follow", json!({"input":"MPC"})).unwrap();
+        let path = "Setup > MIDI > Sync";
+        let cmd = crate::menus::command_for_path(path, &[]).unwrap();
+        crate::menus::invoke_menu(&mut app, &cmd, path);
+        assert_eq!(app.dialogs.open_name(), Some("synchronization"));
+        let mut h = Harness::builder().with_size(egui::vec2(1000., 800.)).with_context_setup(|ctx|crate::fonts::install(ctx,false)).build_ui_state(
+            |ui, app: &mut SoundApp| crate::dialogs::show(app, ui.ctx()), app);
+        h.run();
+        h.get_by_label("External MIDI clock");
+        h.get_by_label("MIDI clock input");
+        h.get_by_label("Follow MIDI clock").click();
+        h.run();
+        h.get_by_label("Stop if MIDI clock is lost").click();
+        h.run();
+        let result = h.state_mut().run("setup.midi_clock_follow", json!({})).unwrap();
+        assert_eq!((result["input"].as_str(), result["enabled"].as_bool(), result["loss_policy"].as_str()), (Some("MPC"),Some(true),Some("stop")));
+        let app = h.state_mut();
+        assert!(app.dialogs.open_for_command(&app.engine, "setup.peripherals"));
+        assert_eq!(app.dialogs.open_name(), Some("synchronization"));
+    }
+
+    #[test]
     fn tempo_step_updates_future_beat_spacing_and_preserves_elapsed_bars() {
         let mut grid = TempoMap::default();
         let rate = SampleRate::new(48000).unwrap();
@@ -414,5 +536,35 @@ mod tests {
         assert_eq!(first_rewrite, None, "a previously passed bar moved");
         let end = grid.tick_to_samples(pulse * TICKS_PER_PULSE, sr);
         assert!(end.abs_diff(sr.samples(stamp / 1e6)) < sr.samples(0.010) as u64, "lost phase");
+    }
+    /// Profile the lookup made by the callback with an eight-hour live tempo map.
+    /// Run explicitly with --ignored --nocapture; wall-clock timing varies by host.
+    #[test]
+    #[ignore = "long-running external-clock performance profile"]
+    fn eight_hours_of_clock_flutter_keep_the_live_grid_in_phase() {
+        let rate = SampleRate::new(48_000).unwrap();
+        let mut grid = TempoMap::default();
+        let mut stamp = 0.0_f64;
+        let mut pulse = 0_i64;
+        let mut peak_phase = 0;
+        let mut lookup_cost = Vec::new();
+        while stamp < 28_800_000_000. {
+            let bpm = 120. + 0.2 * (stamp / 30_000_000. * std::f64::consts::TAU).sin();
+            stamp += 2_500_000. / bpm;
+            pulse += 1;
+            if pulse % 6 == 0 {
+                let snapshot = Snapshot { state: State::Locked, bpm: Some(bpm), pulse, stamp_us: stamp.round() as i64, ..Default::default() };
+                update_grid(&mut grid, Some((0, 0)), 0, snapshot, rate);
+                let now = std::time::Instant::now();
+                let sample = std::hint::black_box(grid.tick_to_samples(pulse * TICKS_PER_PULSE, rate));
+                lookup_cost.push(now.elapsed());
+                peak_phase = peak_phase.max(sample.abs_diff(rate.samples(stamp / 1e6)));
+            }
+        }
+        lookup_cost.sort_unstable();
+        let count = lookup_cost.len();
+        eprintln!("8h ±0.2 BPM, {pulse} pulses, {} events, {count} lookups, p99 {:?}, max {:?}, peak phase {peak_phase} samples",
+            grid.tempos().len(), lookup_cost[count * 99 / 100], lookup_cost[count - 1]);
+        assert!(peak_phase < rate.samples(0.010) as u64);
     }
 }
