@@ -162,8 +162,6 @@ pub struct UiState {
     /// MIDI input ports switched off in Setup, by name (all others are used).
     pub midi_inputs_off: Vec<String>,
     pub gen_mtc: bool,
-    pub mtc_freewheel_frames: u8,
-    pub mtc_jam_sync: bool,
     pub mtc_input_port: Option<String>,
     pub mtc_output_port: Option<String>,
 }
@@ -237,8 +235,6 @@ impl Default for UiState {
             ui_scale: 1.0,
             midi_inputs_off: Vec::new(),
             gen_mtc: false,
-            mtc_freewheel_frames: 8,
-            mtc_jam_sync: false,
             mtc_input_port: None,
             mtc_output_port: None,
         }

@@ -23,6 +23,14 @@ impl SoundApp {
         {
             self.ui.status = crate::localization::error_text(&e);
         }
+        if let Some(name) = &self.ui.mtc_output_port {
+            let mut offset = self.ui.midi_sync.ports.get(name).map_or(0, |cfg| cfg.offset_samples);
+            if ui.horizontal(|ui| crate::dialogs::port_offset_field(ui, &mut offset, self.engine.session().sample_rate)).inner
+                && let Err(err) = self.mtc_output_command(&json!({"offset_samples":offset}))
+            {
+                self.ui.status = crate::localization::error_text(&err);
+            }
+        }
     }
 
     pub(crate) fn service_mtc_output(&mut self) {
@@ -44,7 +52,7 @@ impl SoundApp {
 
     pub(crate) fn mtc_output_command(&mut self, p: &Value) -> Result<Value, String> {
         let args = p.as_object().ok_or("Expected MTC generator settings")?;
-        if args.keys().any(|k| !matches!(k.as_str(), "port" | "enabled" | "list_ports")) {
+        if args.keys().any(|k| !matches!(k.as_str(), "port" | "enabled" | "list_ports" | "offset_samples")) {
             return Err("Unknown MTC generator setting".into());
         }
         let selected = match args.get("port") {
@@ -70,6 +78,19 @@ impl SoundApp {
             }
         }
         let ports = if list { Some(soundcraft_playback::midi_sync_outputs()?) } else { None };
+        if let Some(value) = args.get("offset_samples") {
+            let name = selected.as_ref().ok_or("Choose an MTC output port")?;
+            let limit = soundcraft_playback::max_sync_offset_samples(self.engine.session().sample_rate);
+            let offset = value
+                .as_i64()
+                .filter(|n| n.unsigned_abs() <= limit as u64)
+                .ok_or("MIDI port calibration must be within 250 ms at the session sample rate")?;
+            let ports = &mut self.ui.midi_sync.ports;
+            if !ports.contains_key(name) && ports.len() >= 256 {
+                return Err("Invalid MIDI sync port name, count or sample offset".into());
+            }
+            ports.entry(name.clone()).or_default().offset_samples = offset;
+        }
         self.ui.gen_mtc = enabled;
         self.ui.mtc_output_port = selected;
         self.service_mtc_output();
@@ -77,8 +98,7 @@ impl SoundApp {
             && self.player.as_ref().zip(self.ui.mtc_output_port.as_ref()).is_some_and(|(player, name)| {
                 player.midi_sync_status().ports.get(name).is_some_and(|port| port.connected && port.mtc_total_us.is_some())
             });
-        let mut state =
-            json!({"port":self.ui.mtc_output_port,"enabled":enabled,"active":active,"frame_rate":self.engine.session().frame_rate.label()});
+        let mut state = json!({"port":self.ui.mtc_output_port,"enabled":enabled,"active":active,"offset_samples":self.ui.mtc_output_port.as_ref().and_then(|n|self.ui.midi_sync.ports.get(n)).map_or(0,|p|p.offset_samples),"frame_rate":self.engine.session().frame_rate.label()});
         if let Some(ports) = ports {
             state["ports"] = json!(ports);
         }
@@ -90,6 +110,29 @@ impl SoundApp {
 mod tests {
     use super::*;
     use soundcraft_time::FrameRate;
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn generator_calibration_is_shared_with_beat_settings_and_output_diagnostics() {
+        let engine = crate::Engine::default();
+        let player = soundcraft_playback::Player::new(engine.session_arc());
+        let mut app = SoundApp::new(engine, Some(player), crate::Services::default());
+        app.ui.midi_sync.compensation.mtc = false;
+        app.run("setup.mtc_output", json!({"port":"calibration test","enabled":true,"offset_samples":240})).unwrap();
+        let port = app.run("setup.midi_beat_clock", json!({})).unwrap()["ports"]["calibration test"].clone();
+        assert_eq!(port["offset_samples"], 240);
+        assert_eq!(port["enabled"], false);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        loop {
+            let status = app.run("setup.midi_sync_status", json!({})).unwrap();
+            if status["output"]["ports"]["calibration test"]["mtc_total_us"] == 5000 {
+                break;
+            }
+            assert!(std::time::Instant::now() < deadline, "{status}");
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        assert!(app.run("setup.mtc_output", json!({"offset_samples":12001})).is_err());
+    }
 
     #[test]
     fn mtc_output_validates_setup_commands_before_touching_a_port() {

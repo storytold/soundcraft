@@ -228,6 +228,16 @@ impl Default for Engine {
 }
 
 impl Engine {
+    /// Number of missing timecode frames tolerated before the chase reader reports loss.
+    pub fn mtc_freewheel_frames(&self) -> u8 {
+        self.session().edit.value("midi.mtc.freewheel_frames", 8.).clamp(4., 40.) as u8
+    }
+
+    /// Keep rolling through timecode loss in this session.
+    pub fn mtc_jam_sync(&self) -> bool {
+        self.session().edit.flag("midi.mtc.jam_sync")
+    }
+
     pub fn new(session: Session) -> Self {
         install_panic_hook();
         let doc = Arc::new(session);
