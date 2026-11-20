@@ -86,19 +86,83 @@ where
     )
 }
 
-/// Open the output device `cfg` chooses (else the default) at the chosen rate (else the session
-/// rate) if possible, in the best sample format it offers (f32, else 32- or 16-bit integers),
-/// with as many channels as it offers up to `want_ch` (at least stereo when available), and the
-/// chosen buffer size when the device allows it.
-pub(crate) fn open_device(
+/// Why no candidate worked: whether any could be configured (then only its streams failed to
+/// start), and the first candidate's reason when it could not be configured.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct NoneWorked {
+    pub(crate) configured: bool,
+    pub(crate) first_error: Option<String>,
+}
+
+/// Configure and open the candidates in order; the first that does both wins, with its index.
+/// Candidates after a winner are never produced, so a lazily listed fallback costs nothing when
+/// the first works. Each failure is logged by the closures.
+pub(crate) fn first_working<D, C, S>(
+    candidates: impl IntoIterator<Item = D>,
+    mut configure: impl FnMut(&D) -> Result<C, String>,
+    mut open: impl FnMut(&D, &C) -> Option<S>,
+) -> Result<(usize, D, C, S), NoneWorked> {
+    let mut none = NoneWorked { configured: false, first_error: None };
+    for (i, candidate) in candidates.into_iter().enumerate() {
+        match configure(&candidate) {
+            Ok(config) => {
+                none.configured = true;
+                if let Some(opened) = open(&candidate, &config) {
+                    return Ok((i, candidate, config, opened));
+                }
+            }
+            Err(e) if i == 0 => none.first_error = Some(e),
+            Err(_) => {}
+        }
+    }
+    Err(none)
+}
+
+/// [`first_working`] for a caller that reports one error: the first candidate that configures
+/// and opens, with its index, else the first device's reason (it failed to configure, or it
+/// configured and failed to open), else `none` when there was no candidate at all. The reason
+/// is the first device's because that is the one the user expects (the chosen device, or the
+/// system default); a fallback's failure would mislead.
+pub(crate) fn first_open<D, C, S>(
+    candidates: impl IntoIterator<Item = D>,
+    configure: impl FnMut(&D) -> Result<C, String>,
+    mut open: impl FnMut(&D, &C) -> Result<S, String>,
+    none: &str,
+) -> Result<(usize, D, S), String> {
+    // The first device's open failure, when it configured; the count of candidates produced so
+    // far tells whether the device being opened is the first.
+    let mut first_open_error = None;
+    let produced = std::cell::Cell::new(0usize);
+    let found = first_working(candidates.into_iter().inspect(|_| produced.set(produced.get().saturating_add(1))), configure, |device, config| {
+        match open(device, config) {
+            Ok(opened) => Some(opened),
+            Err(e) => {
+                if produced.get() == 1 {
+                    first_open_error = Some(e);
+                }
+                None
+            }
+        }
+    });
+    match found {
+        Ok((i, device, _, opened)) => Ok((i, device, opened)),
+        Err(NoneWorked { first_error: Some(e), .. }) => Err(e),
+        Err(_) => Err(first_open_error.unwrap_or_else(|| none.to_string())),
+    }
+}
+
+/// Configure `device` for output at the chosen rate (else the session rate) if possible, in the
+/// best sample format it offers (f32, else 32- or 16-bit integers), with as many channels as it
+/// offers up to `want_ch` (at least stereo when available), and the chosen buffer size when the
+/// device allows it.
+pub(crate) fn output_config(
+    device: &cpal::Device,
     want_rate: u32,
     want_ch: u16,
     cfg: &AudioConfig,
-) -> Result<(cpal::Device, cpal::StreamConfig, cpal::SampleFormat, String), String> {
+) -> Result<(cpal::StreamConfig, cpal::SampleFormat, String), String> {
     use cpal::traits::DeviceTrait;
-    let host = devices::host(cfg);
-    let device = devices::device(&host, cfg.output.as_deref(), true).ok_or_else(|| "no output device".to_string())?;
-    let name = devices::device_name(&device).unwrap_or_else(|| "Audio device".into());
+    let name = devices::device_name(device).unwrap_or_else(|| "Audio device".into());
     // Prefer a config at the chosen (else session) rate; else the device default (we resample).
     let want_ch = want_ch.max(2);
     let rates: Vec<u32> = cfg.sample_rate.into_iter().chain(Some(want_rate)).collect();
@@ -129,7 +193,7 @@ pub(crate) fn open_device(
             (stream_config, c.sample_format())
         }
     };
-    Ok((device, config, format, name))
+    Ok((config, format, name))
 }
 
 /// Pick the output configuration for the first requested rate the device offers (the configured

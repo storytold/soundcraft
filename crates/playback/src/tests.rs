@@ -108,6 +108,77 @@ fn no_config_that_starts_yields_none_so_the_caller_falls_back_to_a_silent_clock(
     assert_eq!(tried, 2);
 }
 
+/// #540: ALSA's `default` cannot be configured (its PulseAudio server refuses), so the next
+/// candidate (PipeWire) plays instead of the silent clock.
+#[test]
+fn a_default_that_will_not_open_falls_through_to_the_next_output() {
+    let won = first_working(
+        ["default", "pipewire"],
+        |d| if *d == "default" { Err("Connection refused (111)".to_string()) } else { Ok(48_000) },
+        |_, rate| Some(*rate),
+    );
+    assert_eq!(won, Ok((1, "pipewire", 48_000, 48_000)));
+}
+
+/// A device that configures but whose streams will not start is passed over too.
+#[test]
+fn a_device_whose_stream_will_not_start_falls_through() {
+    let won = first_working(["default", "sysdefault:CARD=PCH"], |_| Ok(()), |d, ()| (*d != "default").then_some(()));
+    assert_eq!(won.map(|(i, d, ..)| (i, d)), Ok((1, "sysdefault:CARD=PCH")));
+}
+
+/// When the first output works, the fallbacks are never listed (they come from a lazy iterator).
+#[test]
+fn a_working_first_output_never_lists_the_fallbacks() {
+    let listed = std::cell::Cell::new(false);
+    let fallbacks = std::iter::once_with(|| {
+        listed.set(true);
+        vec!["pipewire"]
+    })
+    .flatten();
+    let won = first_working(std::iter::once("default").chain(fallbacks), |_| Ok(()), |_, ()| Some(()));
+    assert_eq!(won.map(|(i, d, ..)| (i, d)), Ok((0, "default")));
+    assert!(!listed.get());
+}
+
+/// When nothing works the caller gets the first output's reason (the real cause, not a
+/// fallback's), and whether any output got as far as a configuration.
+#[test]
+fn when_nothing_works_the_first_reason_is_kept() {
+    let none = first_working(["default", "pipewire"], |d| Err::<(), _>(format!("{d} failed")), |_, ()| Some(()));
+    assert_eq!(none.map(|(i, ..)| i), Err(NoneWorked { configured: false, first_error: Some("default failed".into()) }));
+    let none = first_working(["default", "pipewire"], |_| Ok(()), |_, ()| None::<()>);
+    assert_eq!(none.map(|(i, ..)| i), Err(NoneWorked { configured: true, first_error: None }));
+    let none = first_working(std::iter::empty::<&str>(), |_| Ok(()), |_, ()| Some(()));
+    assert_eq!(none.map(|(i, ..)| i), Err(NoneWorked { configured: false, first_error: None }));
+}
+
+/// Recording (#540): the default input refuses and PipeWire records instead.
+#[test]
+fn a_default_input_that_will_not_open_records_from_the_next() {
+    let won = first_open(
+        ["default", "pipewire"],
+        |d| if *d == "default" { Err("Connection refused (111)".to_string()) } else { Ok(()) },
+        |d, ()| Ok(*d),
+        "no audio input device",
+    );
+    assert_eq!(won, Ok((1, "pipewire", "pipewire")));
+}
+
+/// When nothing opens, the error the user sees is the first device's, whether it failed to
+/// configure or configured and failed to start, never a fallback's; with no device, `none`.
+#[test]
+fn when_no_input_opens_the_first_devices_reason_is_shown() {
+    let configure = |d: &&str| if *d == "default" { Err("Connection refused (111)".to_string()) } else { Ok(()) };
+    let busy = |d: &&str, _: &()| Err::<(), _>(format!("{d} busy"));
+    assert_eq!(first_open(["default", "pipewire"], configure, busy, "none"), Err("Connection refused (111)".into()));
+    assert_eq!(first_open(["default", "pipewire"], |_| Ok(()), busy, "none"), Err("default busy".into()));
+    assert_eq!(first_open(std::iter::empty::<&str>(), |_| Ok(()), busy, "no audio input device"), Err("no audio input device".into()));
+    // The first device configures but a fallback fails to start: still the first device's reason.
+    let only_default_configures = |d: &&str| if *d == "default" { Ok(()) } else { Err(format!("{d} unsupported")) };
+    assert_eq!(first_open(["default", "pipewire"], only_default_configures, busy, "none"), Err("default busy".into()));
+}
+
 #[test]
 fn reusable_meter_snapshot_updates_and_drops_stale_tracks() {
     let keep = TrackId(1);
