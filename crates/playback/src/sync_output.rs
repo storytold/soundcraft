@@ -68,6 +68,10 @@ impl Stats {
         self.max.fetch_max(us, Relaxed);
     }
 }
+fn effective_offset(offset: i64, sr: soundcraft_time::SampleRate) -> i64 {
+    let max = crate::max_sync_offset_samples(sr);
+    offset.clamp(-max, max)
+}
 const BOUNDS: [u64; 6] = [500, 1000, 2000, 5000, 10_000, 20_000];
 fn percentile(buckets: [u64; 7], p: u64, max: u64) -> u64 {
     let target = buckets.iter().sum::<u64>().saturating_mul(p).div_ceil(100);
@@ -181,9 +185,10 @@ impl Output {
         let buckets = self.stats.buckets.each_ref().map(|v| v.load(Relaxed));
         let max = self.stats.max.load(Relaxed);
         let lead = self.metrics.lead_us.load(Relaxed);
-        let sr = self.session.as_ref().map_or(48_000., |s| s.sample_rate.as_f64());
-        let total =
-            |offset: i64, compensate: bool| (if compensate { lead as i64 } else { 0 }).saturating_add((offset as f64 * 1e6 / sr).round() as i64);
+        let sr = self.session.as_ref().map_or_else(soundcraft_time::SampleRate::default, |s| s.sample_rate);
+        let total = |offset: i64, compensate: bool| {
+            (if compensate { lead as i64 } else { 0 }).saturating_add((effective_offset(offset, sr) as f64 * 1e6 / sr.as_f64()).round() as i64)
+        };
         let connected = self.stats.connected();
         let mut ports = BTreeMap::new();
         for (name, offset) in &self.beat {
@@ -191,7 +196,8 @@ impl Output {
                 name.clone(),
                 PortTiming {
                     connected: connected.contains(name),
-                    offset_samples: *offset,
+                    requested_offset_samples: *offset,
+                    offset_samples: effective_offset(*offset, sr),
                     beat_clock_total_us: Some(total(*offset, self.compensated)),
                     mtc_total_us: None,
                 },
@@ -200,7 +206,13 @@ impl Output {
         if let Some((name, offset, compensate)) = &self.additional {
             ports
                 .entry(name.clone())
-                .or_insert(PortTiming { connected: connected.contains(name), offset_samples: *offset, beat_clock_total_us: None, mtc_total_us: None })
+                .or_insert(PortTiming {
+                    connected: connected.contains(name),
+                    requested_offset_samples: *offset,
+                    offset_samples: effective_offset(*offset, sr),
+                    beat_clock_total_us: None,
+                    mtc_total_us: None,
+                })
                 .mtc_total_us = Some(total(*offset, *compensate));
         }
         MidiSyncStatus {
@@ -268,7 +280,7 @@ impl<C: SyncPort> Port<C> {
             let (block, future) = view.lock().unwrap_or_else(std::sync::PoisonError::into_inner).read(
                 now,
                 r.compensate,
-                r.offset as f64 / session.sample_rate.as_f64(),
+                effective_offset(r.offset, session.sample_rate) as f64 / session.sample_rate.as_f64(),
             );
             if let Some(at) = future {
                 soon(at);
@@ -311,12 +323,15 @@ fn set_route<C: SyncPort>(map: &mut BTreeMap<String, Port<C>>, index: usize, nam
     let port = map.entry(name).or_insert_with(|| Port { link: None, retry: Instant::now(), routes: [None, None], failure: None });
     port.routes[index] = Some(route);
 }
-fn clear_route<C: SyncPort>(port: &mut Port<C>, index: usize) {
+fn clear_route<C: SyncPort>(port: &mut Port<C>, index: usize, stats: &Stats) {
     if let Some(mut old) = port.routes[index].take()
         && let Some(out) = &mut port.link
     {
         old.encoder.stop(&mut |m| {
-            let _ = out.send_at(Instant::now(), m);
+            let at = Instant::now();
+            if let Ok(handed) = out.send_at(at, m) {
+                stats.record(at, handed);
+            }
         });
     }
 }
@@ -352,7 +367,7 @@ fn drive<C: SyncPort>(
                 Update::Beats(dest, c) => {
                     for (name, p) in &mut ports {
                         if !dest.iter().any(|(n, _)| n == name) {
-                            clear_route(p, 0);
+                            clear_route(p, 0, &stats);
                         }
                     }
                     for (n, o) in dest {
@@ -360,14 +375,14 @@ fn drive<C: SyncPort>(
                             continue;
                         }
                         if let Some(p) = ports.get_mut(&n) {
-                            clear_route(p, 0);
+                            clear_route(p, 0, &stats);
                         }
                         set_route(&mut ports, 0, n, Route { offset: o, compensate: c, encoder: Box::<Cursor>::default() });
                     }
                 }
                 Update::Encoder(dest, c, encoder) => {
                     for p in ports.values_mut() {
-                        clear_route(p, 1);
+                        clear_route(p, 1, &stats);
                     }
                     if let Some((n, o)) = dest {
                         set_route(&mut ports, 1, n, Route { offset: o, compensate: c, encoder });
@@ -436,8 +451,8 @@ fn drive<C: SyncPort>(
         }
     }
     for p in ports.values_mut() {
-        clear_route(p, 0);
-        clear_route(p, 1);
+        clear_route(p, 0, &stats);
+        clear_route(p, 1, &stats);
     }
 }
 
