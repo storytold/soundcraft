@@ -540,6 +540,19 @@ fn external_offset_label(session: &soundcraft_model::Session) -> String {
 }
 
 /// Show the open dialog, if any.
+fn synchronization_settings(app: &mut SoundApp, ui: &mut egui::Ui, scroll_to_clock: &mut bool) {
+    egui::ScrollArea::vertical().max_height((ui.ctx().content_rect().height() - 160.).max(120.)).show(ui, |ui| {
+        app.mtc_input_settings(ui);
+        app.mtc_output_settings(ui);
+        ui.separator();
+        let section = ui.heading(crate::localization::text("External MIDI clock"));
+        if std::mem::take(scroll_to_clock) {
+            section.scroll_to_me(Some(egui::Align::TOP));
+        }
+        app.clock_follow_settings(ui);
+    });
+}
+
 pub fn show(app: &mut SoundApp, ctx: &egui::Context) {
     audiosuite_window(app, ctx);
     crate::bounce::show(app, ctx);
@@ -792,16 +805,7 @@ pub fn show(app: &mut SoundApp, ctx: &egui::Context) {
                     }
                 }
                 Dialog::Counter { field, value } => keep = field.edit(app, ui, value, first_frame, enter),
-                Dialog::Synchronization { scroll_to_clock } => {
-                    egui::ScrollArea::vertical().max_height((ui.ctx().content_rect().height() - 160.).max(120.)).show(ui, |ui| {
-                        app.mtc_input_settings(ui);
-                        app.mtc_output_settings(ui);
-                        ui.separator();
-                        let section = ui.heading(crate::localization::text("External MIDI clock"));
-                        if std::mem::take(scroll_to_clock) { section.scroll_to_me(Some(egui::Align::TOP)); }
-                        app.clock_follow_settings(ui);
-                    });
-                }
+                Dialog::Synchronization { scroll_to_clock } => synchronization_settings(app, ui, scroll_to_clock),
                 Dialog::ExternalOffset { value } => {
                     let caption=ui.label(crate::localization::text("External Timecode Offset"));
                     ui.text_edit_singleline(value).labelled_by(caption.id);
