@@ -46,9 +46,20 @@ impl SoundApp {
     }
 
     fn stop_mtc_transport(&mut self) {
-        self.set_mtc_playback_rate(1.0);
-        if std::mem::take(&mut self.mtc_chasing) && self.is_playing() && !self.engine.transport.recording {
+        if !std::mem::take(&mut self.mtc_chasing) {
+            return;
+        }
+        self.leave_chase_audio();
+        if self.is_playing() && !self.engine.transport.recording {
             self.stop_play();
+        }
+    }
+
+    fn leave_chase_audio(&mut self) {
+        self.mtc_playback_rate = 1.;
+        if let Some(player) = &self.player {
+            player.set_speed(1.);
+            player.end_mtc_chase();
         }
     }
 
@@ -63,7 +74,7 @@ impl SoundApp {
 
     fn mtc_at(&self, p: Position) -> i64 {
         let session = self.engine.session();
-        p.samples(session.sample_rate).saturating_sub(session.timecode_start)
+        p.in_session_rate(session.frame_rate).samples(session.sample_rate).saturating_sub(session.timecode_start)
     }
 
     pub(crate) fn service_mtc_chase(&mut self) {
@@ -71,22 +82,11 @@ impl SoundApp {
             return;
         }
         // A local stop, record or document change takes the transport back offline.
-        if self.engine.transport.recording
-            || self.engine.transport_requests.iter().any(|r| {
-                matches!(
-                    r,
-                    TransportRequest::Record
-                        | TransportRequest::ResetSession
-                        | TransportRequest::Pause
-                        | TransportRequest::Stop
-                        | TransportRequest::TogglePlay
-                )
-            })
-        {
+        if self.engine.transport.recording || self.engine.transport_requests.iter().any(|r| !matches!(r, TransportRequest::AllNotesOff)) {
+            self.leave_chase_audio();
             if let Some(m) = &self.midi_inputs {
                 m.feed().set_mtc_source(None);
             }
-            self.set_mtc_playback_rate(1.0);
             self.mtc_online = false;
             self.mtc_chasing = false;
             self.mtc_status = "Offline";
@@ -127,13 +127,13 @@ impl SoundApp {
                     self.mtc_status = "Before session start";
                     return;
                 }
-                if !self.is_playing() || !self.mtc_chasing {
+                if !self.is_playing() || !self.mtc_chasing || self.player.as_ref().is_some_and(|p| !p.is_playing()) {
                     self.engine.transport_requests.push(TransportRequest::PlayFrom(at));
-                } else {
-                    // Compare against the audio device's current playhead, not the previous UI repaint.
-                    let playing_at = self.player.as_ref().map_or(self.engine.transport.position, |player| player.presented_position());
+                } else if self.player.is_none() {
+                    // The audio callback owns the servo when a device is present.
+                    let playing_at = self.engine.transport.position;
                     let error = at.saturating_sub(playing_at);
-                    let three_frames = p.drift_tolerance(sr);
+                    let three_frames = p.in_session_rate(self.engine.session().frame_rate).drift_tolerance(sr);
                     if error.unsigned_abs() > (4 * three_frames) as u64 {
                         self.set_mtc_playback_rate(1.0);
                         self.engine.transport_requests.push(TransportRequest::Locate(at));
@@ -141,9 +141,7 @@ impl SoundApp {
                         // Preserve attacks at a located start while making up acquisition latency.
                         // Increase catch-up by at most 0.2 percentage points per complete MTC group.
                         // Taper immediately as the phase error shrinks; an ahead player still slows by at most 2%.
-                        let trim =
-                            if error.unsigned_abs() <= (three_frames / 48) as u64 { 0.0 } else { (error as f64 / sr.as_f64()).clamp(-0.02, 0.04) };
-                        let rate = (1.0 + trim as f32).min(self.mtc_playback_rate.max(1.0) + 0.002);
+                        let rate = soundcraft_playback::mtc_input::chase_rate(error, three_frames, sr, f64::from(self.mtc_playback_rate)) as f32;
                         self.set_mtc_playback_rate(rate);
                     }
                 }
@@ -165,7 +163,7 @@ impl SoundApp {
             .show_ui(ui, |ui| {
                 ui.selectable_value(&mut selected, None, crate::localization::text("None"));
                 if let Some(m) = &self.midi_inputs {
-                    for p in m.ports() {
+                    for p in m.ports().iter().filter(|p| p.enabled) {
                         ui.selectable_value(&mut selected, Some(p.name.clone()), &p.name);
                     }
                 }
@@ -175,7 +173,7 @@ impl SoundApp {
         if selected != self.ui.mtc_input_port || changed {
             let online = online && selected.is_some();
             if let Err(e) = self.mtc_command(&json!({"input":selected,"online":online})) {
-                self.ui.status = e;
+                self.ui.status = crate::localization::error_text(&e);
             }
         }
         ui.label(crate::localization::text(self.mtc_status));
@@ -305,7 +303,7 @@ mod tests {
         let interval = second_onset.expect("second note reached");
         assert!((interval - 0.5).abs() < 0.020, "first interval was {interval:.3} s");
         assert_eq!(seeks, 0, "continuous timecode must not skip or replay audio");
-        let external = first + sr.samples(366.0 / 30.0);
+        let external = first + sr.samples(365.75 / 30.0);
         assert!(app.position().abs_diff(external) <= sr.samples(1.0 / 30.0) as u64);
     }
 
@@ -356,8 +354,8 @@ mod tests {
             }
             app.handle_transport(0.0);
         }
-        // At the last group's receipt its compensated label is exactly 17.000 seconds.
-        let lag = (sr.samples(17.0) - app.position()) as f64 / sr.as_f64();
+        // Piece 7 arrives a quarter frame before the next two-frame group.
+        let lag = (sr.samples(17.0 - 0.25 / 30.0) - app.position()) as f64 / sr.as_f64();
         let interval = first_interval.unwrap();
         assert!(lag.abs() <= 1.0 / 60.0, "late by {lag:.4} s at 17 s; first interval {interval:.4} s");
         assert!((interval - 0.5).abs() < 0.010, "first interval {interval:.4} s");
@@ -416,5 +414,46 @@ mod tests {
         app.ui.mtc_output_port = Some("Sender".into());
         assert!(app.run("setup.mtc", json!({"online":true})).is_err());
         assert_eq!(app.run("setup.mtc", json!({})).unwrap()["online"], false);
+    }
+
+    #[test]
+    fn full_frame_and_rolling_labels_use_the_session_pulldown() {
+        use soundcraft_time::FrameRate::*;
+        for (rate, bits, nominal) in [(Fps29_97, 6, 30), (Fps23_976, 0, 24), (Fps30, 6, 30)] {
+            let mut app = app();
+            let sr = app.engine.session().sample_rate;
+            app.engine.session_mut().frame_rate = rate;
+            app.engine.session_mut().timecode_start = rate.samples_at_frame(nominal * 3600, sr);
+            let feed = app.midi_inputs.as_ref().unwrap().feed().clone();
+            let src = feed.ports().assign("Sender");
+            feed.receive(src, &[0xf0, 127, 127, 1, 1, 1 | (bits << 4), 0, 10, 0, 0xf7]);
+            app.service_mtc_chase();
+            app.handle_transport(0.);
+            assert_eq!(app.position(), rate.samples_at_frame(10 * nominal, sr));
+            // A different rolling position forces a live lock instead of the stopped anchor.
+            for frame in [10, 12] {
+                for (i, n) in [frame, 0, 10, 0, 0, 0, 1, bits].into_iter().enumerate() {
+                    feed.receive(src, &[0xf1, ((i as u8) << 4) | n]);
+                }
+            }
+            app.service_mtc_chase();
+            app.handle_transport(0.);
+            let expected = rate.samples_at_frame(nominal * 10, sr) + (13.75 * rate.samples_per_frame(sr)).round() as i64;
+            assert!(app.position().abs_diff(expected) < sr.samples(0.005) as u64);
+        }
+    }
+
+    #[test]
+    fn online_command_and_transport_share_validation_and_manual_controls_leave_chase() {
+        let mut app = app();
+        assert_eq!(app.run("options.transport_online", json!({})).unwrap()["value"], false);
+        assert_eq!(app.mtc_state()["online"], false);
+        app.run("options.transport_online", json!({"value":true})).unwrap();
+        assert!(app.mtc_online);
+        app.engine.transport_requests.push(TransportRequest::HalfSpeed);
+        app.service_mtc_chase();
+        assert!(!app.mtc_online);
+        app.run("setup.mtc", json!({"input":null})).unwrap();
+        assert!(app.run("options.transport_online", json!({"value":true})).is_err());
     }
 }

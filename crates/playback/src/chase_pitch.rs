@@ -115,6 +115,10 @@ impl ChasePitch {
 
     pub(crate) fn process(&mut self, out: &mut [f32], channels: usize, speed: f64) {
         let active = channels.min(MAX_CHANNELS);
+        if !(0.9..=1.1).contains(&speed) {
+            self.reset();
+            return;
+        }
         let step = speed.recip();
         for frame in out.chunks_exact_mut(channels) {
             let slot = self.written as usize & (self.history.len() - 1);

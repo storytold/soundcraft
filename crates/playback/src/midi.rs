@@ -46,7 +46,7 @@ pub(crate) const INCOMING: usize = 1024;
 const RECORDED: usize = 16_384;
 
 /// A fixed-size queue of stamped events for one reader and one writer at a time. Lock-free.
-struct Ring {
+pub(crate) struct Ring {
     stamps: Vec<AtomicI64>,
     events: Vec<AtomicU32>,
     write: AtomicUsize,
@@ -54,7 +54,7 @@ struct Ring {
 }
 
 impl Ring {
-    fn new(capacity: usize) -> Ring {
+    pub(crate) fn new(capacity: usize) -> Ring {
         let n = capacity.next_power_of_two();
         Ring {
             stamps: (0..n).map(|_| AtomicI64::new(0)).collect(),
@@ -65,7 +65,7 @@ impl Ring {
     }
 
     /// False when full (the event is dropped).
-    fn push(&self, stamp: i64, event: u32) -> bool {
+    pub(crate) fn push(&self, stamp: i64, event: u32) -> bool {
         let n = self.events.len();
         let w = self.write.load(Ordering::Relaxed);
         if w.wrapping_sub(self.read.load(Ordering::Acquire)) >= n {
@@ -78,7 +78,7 @@ impl Ring {
         true
     }
 
-    fn pop(&self) -> Option<(i64, u32)> {
+    pub(crate) fn pop(&self) -> Option<(i64, u32)> {
         let n = self.events.len();
         let r = self.read.load(Ordering::Relaxed);
         if r == self.write.load(Ordering::Acquire) {
@@ -148,6 +148,7 @@ fn lost_entry(port: u8) -> u32 {
 /// from the audio thread to the UI.
 pub struct MidiFeed {
     mtc: Mutex<crate::mtc_input::Reader>,
+    mtc_wake: std::sync::OnceLock<Box<dyn Fn() + Send + Sync>>,
     ports: Arc<MidiPorts>,
     incoming: Ring,
     /// Device threads write one at a time. Holds the ports ([`midi_port_bit`]) whose loss from
@@ -199,6 +200,7 @@ impl Default for MidiFeed {
     fn default() -> Self {
         MidiFeed {
             mtc: Mutex::default(),
+            mtc_wake: Default::default(),
             ports: Arc::new(MidiPorts::default()),
             incoming: Ring::new(INCOMING),
             writers: Mutex::new(0),
@@ -280,12 +282,30 @@ impl MidiFeed {
         self.receive_from(Some(open), port, bytes);
     }
 
+    /// Register the host wakeup once per feed. Idle chase requires no repaint timer.
+    pub fn set_mtc_wakeup(&self, make: impl FnOnce() -> Box<dyn Fn() + Send + Sync>) {
+        self.mtc_wake.get_or_init(make);
+    }
+    fn wake_mtc_host(&self) {
+        if let Some(wake) = self.mtc_wake.get() {
+            wake();
+        }
+    }
+
     /// Select one currently open port for chase. Switching it discards queued positions.
     pub fn set_mtc_source(&self, source: Option<u8>) {
         let mut reader = self.mtc.lock().unwrap_or_else(PoisonError::into_inner);
         if reader.source != source {
             reader.reset(source);
         }
+    }
+
+    // Contention leaves this audio block at its previous speed. A confirmed loss
+    // or Stop is distinct from a busy input callback.
+    pub(crate) fn tracking_mtc(&self) -> Option<Option<(crate::mtc_input::Position, i64, i64)>> {
+        let mut reader = self.mtc.try_lock().ok()?;
+        let now = self.now();
+        Some(reader.tracking(now).map(|(p, stamp)| (p, stamp, now.saturating_sub(stamp))))
     }
 
     pub fn take_mtc(&self) -> Option<crate::mtc_input::ChaseEvent> {
@@ -297,6 +317,10 @@ impl MidiFeed {
             let mut reader = self.mtc.lock().unwrap_or_else(PoisonError::into_inner);
             if reader.source == Some(port) && open.is_none_or(|gate| gate.load(Ordering::Acquire)) {
                 reader.read(bytes, self.now());
+                drop(reader);
+                if !matches!(bytes,[0xf1,n] if n>>4!=7) {
+                    self.wake_mtc_host();
+                }
             }
             return;
         }
@@ -361,6 +385,8 @@ impl MidiFeed {
         let mut reader = self.mtc.lock().unwrap_or_else(PoisonError::into_inner);
         if reader.source == Some(port) {
             reader.loss();
+            drop(reader);
+            self.wake_mtc_host();
         }
         self.port_lost_at(port, self.now());
     }

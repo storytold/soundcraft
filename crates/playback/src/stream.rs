@@ -67,7 +67,15 @@ where
             #[cfg(target_arch = "wasm32")]
             let _ = info;
             mark_audio_thread();
-            for out in data.chunks_mut(chunk) {
+            #[cfg(not(target_arch = "wasm32"))]
+            let lead = timestamp.playback.duration_since(timestamp.callback);
+            for (index, out) in data.chunks_mut(chunk).enumerate() {
+                #[cfg(not(target_arch = "wasm32"))]
+                {
+                    state.device_timing = Some((now, lead, index * (chunk / frame)));
+                }
+                #[cfg(target_arch = "wasm32")]
+                let _ = index;
                 let Some(s) = scratch.get_mut(..out.len()) else { return };
                 guarded_block(&failed, &guard, s, |d| state.fill(d, channels));
                 for (o, x) in out.iter_mut().zip(s.iter()) {
@@ -75,7 +83,7 @@ where
                 }
             }
             #[cfg(not(target_arch = "wasm32"))]
-            state.publish_output_position(now, timestamp.playback.duration_since(timestamp.callback), data.len() / frame);
+            state.publish_output_position(now, lead, data.len() / frame);
         },
         // cpal may call this on the audio thread (on ALSA in a loop while the device stays
         // broken): marked, so the logger hands the record off instead of writing it.

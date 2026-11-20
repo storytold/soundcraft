@@ -5,9 +5,9 @@ use craft_midi_sync::sync::{Rate, full_frame, quarter_frames};
 use soundcraft_model::Session;
 use soundcraft_time::{FrameRate, Timecode};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc::SyncSender;
-#[cfg(any(test, target_os = "linux", target_os = "macos", target_os = "windows"))]
-use std::sync::mpsc::{Receiver, sync_channel};
+use std::sync::mpsc::Sender;
+#[cfg(any(all(test, not(target_arch = "wasm32")), target_os = "linux", target_os = "macos", target_os = "windows"))]
+use std::sync::mpsc::{Receiver, channel};
 use std::sync::{Arc, Mutex, Weak};
 use std::time::{Duration, Instant};
 
@@ -60,14 +60,44 @@ fn quarters(frame: i64, rate: FrameRate) -> [[u8; 2]; 8] {
 
 type Event = (Instant, Packet);
 
+// The existing SPSC MIDI ring carries a signed nanosecond offset and four
+// data bytes. The fixed SysEx header/trailer are reconstructed on the MIDI thread.
+pub(crate) struct Queue {
+    ring: crate::midi::Ring,
+    epoch: Instant,
+    retired: AtomicBool,
+}
+impl Queue {
+    fn new() -> Arc<Self> {
+        Arc::new(Self { ring: crate::midi::Ring::new(128), epoch: Instant::now(), retired: false.into() })
+    }
+    fn push(&self, (when, packet): Event) -> bool {
+        let ns =
+            if when >= self.epoch { when.duration_since(self.epoch).as_nanos() as i64 } else { -(self.epoch.duration_since(when).as_nanos() as i64) };
+        let bytes = match packet {
+            Packet::Locate([_, _, _, _, _, h, m, s, f, _]) => [h, m, s, f],
+            Packet::Quarter([status, data]) => [status, data, 0, 0],
+        };
+        self.ring.push(ns, u32::from_be_bytes(bytes))
+    }
+    #[cfg(any(test, target_os = "linux", target_os = "macos", target_os = "windows"))]
+    fn pop(&self) -> Option<Event> {
+        let (ns, bits) = self.ring.pop()?;
+        let [h, m, s, f] = bits.to_be_bytes();
+        let packet = if h == 0xf1 { Packet::Quarter([h, m]) } else { Packet::Locate([0xf0, 0x7f, 0x7f, 1, 1, h, m, s, f, 0xf7]) };
+        let dt = Duration::from_nanos(ns.unsigned_abs());
+        Some((if ns < 0 { self.epoch.checked_sub(dt)? } else { self.epoch.checked_add(dt)? }, packet))
+    }
+}
+
 pub(crate) struct Generator {
-    tx: SyncSender<Event>,
+    tx: Arc<Queue>,
     next: Option<i64>,
     group: [[u8; 2]; 8],
 }
 
 impl Generator {
-    fn new(tx: SyncSender<Event>) -> Self {
+    fn new(tx: Arc<Queue>) -> Self {
         Self { tx, next: None, group: [[0; 2]; 8] }
     }
 
@@ -88,7 +118,7 @@ impl Generator {
             Some(next) => next,
             None => {
                 let frame = rate.frames_at(start.floor() as i64, session.sample_rate);
-                if self.tx.try_send((at, locate(frame, rate))).is_err() {
+                if !self.tx.push((at, locate(frame, rate))) {
                     return;
                 }
                 // Start a whole eight-piece group, aligned with an even frame on the timeline.
@@ -102,7 +132,7 @@ impl Generator {
                 self.group = quarters(next.div_euclid(4), rate);
             }
             let seconds = ((next as f64 * per_quarter - start) / (step * device_rate)).max(0.0);
-            if self.tx.try_send((at + Duration::from_secs_f64(seconds), Packet::Quarter(self.group[piece]))).is_err() {
+            if !self.tx.push((at + Duration::from_secs_f64(seconds), Packet::Quarter(self.group[piece]))) {
                 // A slow port lost part of the group. Relocate and begin a fresh group.
                 self.reset();
                 return;
@@ -114,7 +144,8 @@ impl Generator {
 }
 
 pub struct MtcOutput {
-    tx: SyncSender<Event>,
+    route: Sender<Arc<Queue>>,
+    tx: Arc<Queue>,
     closed: Arc<AtomicBool>,
     failure: Arc<Mutex<Option<String>>>,
     worker: Option<std::thread::JoinHandle<()>>,
@@ -126,7 +157,15 @@ impl MtcOutput {
     pub fn attach(&mut self, player: &Player) {
         let shared = Arc::downgrade(&player.shared);
         if !self.attached.ptr_eq(&shared) {
-            player.set_mtc_output(Some(self));
+            if !self.attached.ptr_eq(&Weak::new()) {
+                self.tx.retired.store(true, Ordering::Release);
+                self.tx = Queue::new();
+                let _ = self.route.send(self.tx.clone());
+                if let Some(worker) = &self.worker {
+                    worker.thread().unpark();
+                }
+            }
+            player.install_mtc_queue(Some(self.tx.clone()));
             self.attached = shared;
         }
     }
@@ -154,7 +193,9 @@ impl MtcOutput {
 
     #[cfg(any(all(test, not(target_arch = "wasm32")), target_os = "linux", target_os = "macos", target_os = "windows"))]
     fn with_sink(send: impl FnMut(&[u8]) -> Result<(), String> + Send + 'static) -> Result<Self, String> {
-        let (tx, rx) = sync_channel(128);
+        let tx = Queue::new();
+        let current = tx.clone();
+        let (route, rx) = channel();
         let closed = Arc::new(AtomicBool::new(false));
         let failure = Arc::new(Mutex::new(None));
         let stop = Arc::clone(&closed);
@@ -162,28 +203,49 @@ impl MtcOutput {
         let worker = std::thread::Builder::new()
             .name("MTC output".into())
             .spawn(move || {
-                if let Err(e) = dispatch(rx, &stop, send) {
+                if let Err(e) = dispatch(current, rx, &stop, send) {
                     *failed.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(e);
                 }
             })
             .map_err(|e| e.to_string())?;
-        Ok(Self { tx, closed, failure, worker: Some(worker), attached: Weak::new() })
+        Ok(Self { route, tx, closed, failure, worker: Some(worker), attached: Weak::new() })
     }
 }
 
 #[cfg(any(all(test, not(target_arch = "wasm32")), target_os = "linux", target_os = "macos", target_os = "windows"))]
-fn dispatch(rx: Receiver<Event>, closed: &AtomicBool, mut send: impl FnMut(&[u8]) -> Result<(), String>) -> Result<(), String> {
+fn dispatch(
+    mut queue: Arc<Queue>,
+    rx: Receiver<Arc<Queue>>,
+    closed: &AtomicBool,
+    mut send: impl FnMut(&[u8]) -> Result<(), String>,
+) -> Result<(), String> {
     let mut partial = false;
+    let mut active = Instant::now();
     while !closed.load(Ordering::Acquire) {
-        let Ok((when, packet)) = rx.recv_timeout(Duration::from_millis(20)) else { continue };
+        if let Some(next) = rx.try_iter().last() {
+            queue = next;
+            partial = false;
+        }
+        let Some((when, packet)) = queue.pop() else {
+            let ms = if active.elapsed() < Duration::from_millis(100) { 1 } else { 10 };
+            std::thread::park_timeout(Duration::from_millis(ms));
+            continue;
+        };
+        active = Instant::now();
         while let Some(wait) = when.checked_duration_since(Instant::now()) {
             if closed.load(Ordering::Acquire) {
                 return Ok(());
+            }
+            if queue.retired.load(Ordering::Acquire) {
+                break;
             }
             std::thread::park_timeout(wait);
         }
         if closed.load(Ordering::Acquire) {
             break;
+        }
+        if queue.retired.load(Ordering::Acquire) {
+            continue;
         }
         match packet {
             // After a stalled device or system sleep, bursting obsolete quarter frames would
@@ -211,8 +273,16 @@ impl Drop for MtcOutput {
 }
 
 impl Player {
-    pub fn set_mtc_output(&self, output: Option<&MtcOutput>) {
-        let _ = self.tx.send(Cmd::Mtc(output.map(|p| Generator::new(p.tx.clone()))));
+    pub fn clear_mtc_output(&self) {
+        self.install_mtc_queue(None);
+    }
+    fn install_mtc_queue(&self, queue: Option<Arc<Queue>>) {
+        // Keep the allocation alive across detach. Reclaim replaced buffers on
+        // this control thread after the callback has dropped its producer.
+        let mut buffers = self.mtc_buffers.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        buffers.retain(|q| Arc::strong_count(q) > 1);
+        buffers.extend(queue.iter().cloned());
+        let _ = self.tx.send(Cmd::Mtc(queue.map(Generator::new)));
     }
 }
 

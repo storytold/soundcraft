@@ -303,7 +303,7 @@ pub struct SoundApp {
     mtc_playback_rate: f32,
     mtc_status: &'static str,
     pub(crate) mtc_output: Option<soundcraft_playback::mtc::MtcOutput>,
-    pub(crate) mtc_output_retry: Option<std::time::Instant>,
+    pub(crate) mtc_output_retry: Option<web_time::Instant>,
     /// When the MIDI ports were last looked for (app uptime, seconds).
     midi_scan_at: f64,
     /// MIDI played during the current record pass.

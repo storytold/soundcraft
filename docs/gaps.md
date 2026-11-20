@@ -1,6 +1,6 @@
 # Where SoundCraft falls short of Pro Tools
 
-> **Last reviewed:** 2026-11-14 · **Last updated:** 2026-11-18 · **Change:** minor (G-02 shrunk: MIDI input devices work; G-03: strict external-WAV AAF import; previously minor: G-05: plugin editors on Linux/X11; previously trivial: G-09: the pt-BR catalog now covers helper-passed tooltips, the status bar, the remove-session prompt and engine error text; G-08: Frequency Shifter, 28 processors; G-04: volume automation read at every sample, #1354; G-01: `setup.playback_engine` applies the device buffer in the desktop app; G-04: Clip Looping crossfade and loop count) · **Target:** Avid Pro Tools Ultimate 2026.4.1
+> **Last reviewed:** 2026-11-14 · **Last updated:** 2026-11-20 · **Change:** minor (G-11 MIDI Time Code generation and chase; G-02 shrunk: MIDI input devices work; G-03: strict external-WAV AAF import; previously minor: G-05: plugin editors on Linux/X11; previously trivial: G-09: the pt-BR catalog now covers helper-passed tooltips, the status bar, the remove-session prompt and engine error text; G-08: Frequency Shifter, 28 processors; G-04: volume automation read at every sample, #1354; G-01: `setup.playback_engine` applies the device buffer in the desktop app; G-04: Clip Looping crossfade and loop count) · **Target:** Avid Pro Tools Ultimate 2026.4.1
 
 Every known shortfall, one entry each, ranked by how much it stops a Pro Tools user from doing
 real work in SoundCraft. This is the work list: pick from the top. Rows marked **alpha blocker**
@@ -25,7 +25,7 @@ When you close a gap, delete its entry (or shrink it) in the same PR, and bump t
 | G-08 | Built-in plugin catalogue thin and unverified | Features | [plugin-parity.md](plugin-parity.md) | 80–120 |
 | G-09 | English-first UI with a pt-BR catalog (not native-reviewed); all fixed UI strings covered, no CJK/RTL rendering | Localization | [localization-parity.md](localization-parity.md) | 20–40 |
 | G-10 | No control surfaces (HUI/MCU, EUCON) | Hardware | [hardware-parity.md](hardware-parity.md) | 40–70 |
-| G-11 | External MIDI sync, LTC and video reference | Hardware | [hardware-parity.md](hardware-parity.md) | 15–25 |
+| G-11 | Beat Clock output (#1662), LTC and video reference | Hardware | [hardware-parity.md](hardware-parity.md) | TBD |
 | G-12 | Immersive delivery: no Dolby Atmos/ADM BWF, MPEG-H, binaural | Features | [file-format-parity.md](file-format-parity.md) | 50–80 |
 | G-13 | Sidechain inputs, ARA, out-of-process plugin sandboxing | Ecosystem | [plugin-parity.md](plugin-parity.md) | 30–50 |
 | G-14 | Windows/Linux/Web exercised only lightly at runtime; no PR CI running the tests | Platforms / Stability | this file | 20–40 |
@@ -185,8 +185,7 @@ switch. ≈ 40–70 h for HUI/MCU plus a mapping layer; hardware needed to verif
 
 ### G-11. Sync
 
-For MIDI Beat Clock and MIDI Time Code, see the [hardware capability tables](hardware-parity.md#midi).
-LTC, video reference, word clock awareness and Satellite-style linking remain open.
+MTC generation and forward playback chase are implemented. Beat Clock output is tracked in #1662. Online recording, LTC, video reference, word clock and satellite linking remain open. The previous 15–25 h estimate covers the original scope; remaining effort awaits separate sizing.
 
 ### G-12. Immersive delivery
 
@@ -251,6 +250,7 @@ missing. Out of scope unless the owner decides otherwise.
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-11-20 | minor | M12: MIDI Time Code generation and forward playback chase; recording is offline. Beat Clock output is tracked in #1662. |
 | 2026-11-14 | minor | G-03: strict external-WAV AAF import with bounded property caching; AAF/OMF export, OMF import and `.ptx` remain; estimates unchanged |
 | 2026-11-13 | trivial | G-09: the pt-BR catalog now covers tooltips localized inside buttons and toggles, the Edit-window status bar, the remove-session question, the send help text and engine errors shown in the status line; estimates unchanged |
 | 2026-11-09 | trivial | G-08: 28 processors + 3 instruments with the Frequency Shifter |

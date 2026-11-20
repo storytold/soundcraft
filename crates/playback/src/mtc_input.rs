@@ -2,11 +2,17 @@
 //! consumes the newest complete position, so a busy frame cannot replay a backlog of locates.
 use soundcraft_time::{FrameRate, SampleRate, Samples, Timecode};
 
+/// One bounded acquisition step per forward group. Shared with the silent UI transport.
+pub fn chase_rate(error: i64, tolerance: i64, sr: SampleRate, speed: f64) -> f64 {
+    let trim = if error.unsigned_abs() <= (tolerance / 48) as u64 { 0. } else { (error as f64 / sr.as_f64()).clamp(-0.02, 0.04) };
+    (1. + trim).min(speed.max(1.) + 0.002)
+}
+
 const TIMEOUT_US: i64 = 300_000;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Position {
-    frame: i64,
+    quarter: i64,
     rate: FrameRate,
 }
 
@@ -34,16 +40,23 @@ impl Position {
         {
             return None;
         }
-        Some(Self { frame: label.to_frames(rate), rate })
+        Some(Self { quarter: label.to_frames(rate) * 4, rate })
     }
 
-    fn next_cycle(self) -> Self {
+    fn advance(self, quarters: i64) -> Self {
         let at_midnight = Timecode { negative: false, hours: 24, minutes: 0, seconds: 0, frames: 0 }.to_frames(self.rate);
-        Self { frame: (self.frame + 2) % at_midnight, ..self }
+        Self { quarter: (self.quarter + quarters) % (at_midnight * 4), ..self }
+    }
+
+    pub fn in_session_rate(self, session: FrameRate) -> Self {
+        match (self.rate, session) {
+            (FrameRate::Fps30, FrameRate::Fps29_97) | (FrameRate::Fps24, FrameRate::Fps23_976) => Self { rate: session, ..self },
+            _ => self,
+        }
     }
 
     pub fn samples(self, sr: SampleRate) -> Samples {
-        self.rate.samples_at_frame(self.frame, sr)
+        (self.quarter as f64 * (self.rate.samples_per_frame(sr) / 4.)).round() as Samples
     }
 
     pub fn drift_tolerance(self, sr: SampleRate) -> Samples {
@@ -67,6 +80,7 @@ pub(crate) struct Reader {
     located_start: Option<Position>,
     previous: Option<Position>,
     locked: bool,
+    rolling: Option<(Position, i64)>,
     last_at: Option<i64>,
     pending: Option<ChaseEvent>,
 }
@@ -126,18 +140,19 @@ impl Reader {
                         return;
                     };
                     if let Some(last) = self.previous {
-                        if last.next_cycle() == position {
+                        if last.advance(8) == position {
                             if self.locked {
                                 self.located_start = None;
                             }
                             self.locked = true;
-                            self.pending = Some(ChaseEvent::Roll(position.next_cycle(), now));
+                            self.rolling = Some((position.advance(7), now));
+                            self.pending = Some(ChaseEvent::Roll(position.advance(7), now));
                         } else {
                             self.discontinuity();
                         }
                     } else if let Some(start) = self.located_start {
                         // A sender can label the first group at the locate or up to two frames ahead.
-                        if start.rate != position.rate || !(0..=2).contains(&(position.frame - start.frame)) {
+                        if start.rate != position.rate || !(0..=8).contains(&(position.quarter - start.quarter)) {
                             self.located_start = None;
                         }
                     }
@@ -148,7 +163,13 @@ impl Reader {
         }
     }
 
+    pub(crate) fn tracking(&mut self, now: i64) -> Option<(Position, i64)> {
+        self.expire(now);
+        self.rolling
+    }
+
     fn discontinuity(&mut self) {
+        self.rolling = None;
         self.located_start = None;
         self.next = 0;
         self.previous = None;
@@ -168,7 +189,7 @@ impl Reader {
                 let age = now.saturating_sub(at);
                 if let Some(start) = self.located_start.take()
                     && age < 2_000_000 / p.rate.nominal()
-                    && p.frame >= start.frame
+                    && p.quarter >= start.quarter
                 {
                     ChaseEvent::Roll(start, 0)
                 } else {
@@ -198,7 +219,7 @@ mod tests {
         cycle(0, |b| reader.read(b, 0));
         assert_eq!(reader.take(1), None);
         cycle(2, |b| reader.read(b, 80_000));
-        assert_eq!(reader.take(81_000), Some(ChaseEvent::Roll(Position { frame: 4, rate: FrameRate::Fps25 }, 1000)));
+        assert_eq!(reader.take(81_000), Some(ChaseEvent::Roll(Position { quarter: 15, rate: FrameRate::Fps25 }, 1000)));
         assert_eq!(reader.take(82_000), None);
         cycle(18, |b| reader.read(b, 160_000));
         assert_eq!(reader.take(160_001), Some(ChaseEvent::Stop));
@@ -215,7 +236,7 @@ mod tests {
 
     #[test]
     fn locate_only_anchors_the_matching_first_roll() {
-        let start = Position { frame: 0, rate: FrameRate::Fps25 };
+        let start = Position { quarter: 0, rate: FrameRate::Fps25 };
         for (first, consume_late, expected) in [(0, false, 0), (2, false, 0), (12, false, 16), (2, true, 6)] {
             let mut reader = Reader::default();
             reader.read(&[0xf0, 0x7f, 127, 1, 1, 0x20, 0, 0, 0, 0xf7], 0);
@@ -224,9 +245,12 @@ mod tests {
             assert_eq!(reader.take(1_000_000), None);
             cycle(first + 2, |b| reader.read(b, 1_080_000));
             let age = if consume_late { 100_000 } else { 0 };
-            assert_eq!(reader.take(1_080_000 + age), Some(ChaseEvent::Roll(Position { frame: expected, ..start }, age)));
+            assert_eq!(
+                reader.take(1_080_000 + age),
+                Some(ChaseEvent::Roll(Position { quarter: if expected == 0 { 0 } else { expected * 4 - 1 }, ..start }, age))
+            );
             cycle(first + 4, |b| reader.read(b, 1_200_000));
-            assert_eq!(reader.take(1_200_000), Some(ChaseEvent::Roll(Position { frame: i64::from(first + 6), ..start }, 0)));
+            assert_eq!(reader.take(1_200_000), Some(ChaseEvent::Roll(Position { quarter: i64::from(first + 6) * 4 - 1, ..start }, 0)));
         }
     }
 
@@ -237,7 +261,7 @@ mod tests {
         reader.read(&msg(1), 0);
         assert_eq!(reader.take(0), None);
         reader.read(&msg(2), 0);
-        assert_eq!(reader.take(0), Some(ChaseEvent::Locate(Position { frame: 1800, rate: FrameRate::Fps29_97Drop })));
+        assert_eq!(reader.take(0), Some(ChaseEvent::Locate(Position { quarter: 7200, rate: FrameRate::Fps29_97Drop })));
         assert!(!reader.locked);
         for invalid in
             [[0xf0, 0x7f, 127, 1, 1, 24, 0, 0, 0, 0xf7], [0xf0, 0x7f, 127, 1, 1, 0, 60, 0, 0, 0xf7], [0xf0, 0x7f, 127, 1, 1, 0, 0, 0, 24, 0xf7]]
@@ -260,7 +284,7 @@ mod tests {
             };
             send(&mut reader, 23, 59, 59, rate.nominal() as u8 - 2, false);
             send(&mut reader, 0, 0, 0, 0, false);
-            assert_eq!(reader.take(0), Some(ChaseEvent::Roll(Position { frame: 2, rate }, 0)));
+            assert_eq!(reader.take(0), Some(ChaseEvent::Roll(Position { quarter: 7, rate }, 0)));
             send(&mut reader, 0, 0, 0, 0, true);
             assert_eq!(reader.take(0), Some(ChaseEvent::Stop));
             send(&mut reader, 23, 59, 59, rate.nominal() as u8 - 2, true);

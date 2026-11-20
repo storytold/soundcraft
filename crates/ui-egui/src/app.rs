@@ -227,8 +227,16 @@ impl SoundApp {
         self.write_automation();
         self.autosave();
         self.service_midi(self.uptime);
-        if self.mtc_online {
-            ctx.request_repaint_after(std::time::Duration::from_millis(15));
+        if self.mtc_online
+            && let Some(inputs) = &self.midi_inputs
+        {
+            inputs.feed().set_mtc_wakeup(|| {
+                let ctx = ctx.clone();
+                Box::new(move || ctx.request_repaint())
+            });
+            if self.mtc_chasing {
+                ctx.request_repaint_after(std::time::Duration::from_millis(300));
+            }
         }
         if self.recorder.is_none() && !self.recorder_failed && audio::wants_audio_input(self.engine.session()) {
             self.ensure_input();

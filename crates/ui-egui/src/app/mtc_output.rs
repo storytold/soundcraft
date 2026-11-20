@@ -1,7 +1,8 @@
 use super::{SoundApp, Value, json};
 use crate::localization::text;
 use soundcraft_playback::mtc::{self, MtcOutput};
-use std::time::{Duration, Instant};
+use std::time::Duration;
+use web_time::Instant;
 
 impl SoundApp {
     pub(crate) fn mtc_output_settings(&mut self, ui: &mut egui::Ui) {
@@ -17,7 +18,7 @@ impl SoundApp {
                         }
                     }
                     Err(e) => {
-                        ui.label(e);
+                        ui.label(crate::localization::error_text(&e));
                     }
                 }
             },
@@ -25,7 +26,7 @@ impl SoundApp {
         if chosen != self.ui.mtc_output_port
             && let Err(e) = self.set_mtc_output_port(chosen)
         {
-            self.ui.status = e;
+            self.ui.status = crate::localization::error_text(&e);
         }
     }
 
@@ -46,7 +47,7 @@ impl SoundApp {
             output.attach(player);
             next = Some(output);
         } else if let Some(player) = &self.player {
-            player.set_mtc_output(None);
+            player.clear_mtc_output();
         }
         self.mtc_output = next;
         self.ui.mtc_output_port = port;
@@ -60,15 +61,15 @@ impl SoundApp {
         let Some(player) = &self.player else { return };
         if self.mtc_online || !mtc::supported(self.engine.session().frame_rate) {
             if self.mtc_output.take().is_some() {
-                player.set_mtc_output(None);
-                self.ui.status = "MTC output suspended: check the session frame rate and chase mode".into();
+                player.clear_mtc_output();
+                self.ui.status = text("MTC output suspended: check the session frame rate and chase mode").into();
             }
             return;
         }
         if let Some(output) = &mut self.mtc_output {
             if let Some(e) = output.error() {
-                self.ui.status = format!("MTC output: {e}");
-                player.set_mtc_output(None);
+                self.ui.status = crate::localized_format!("MTC output: {e}", e = e);
+                player.clear_mtc_output();
                 self.mtc_output = None;
             } else {
                 output.attach(player);
@@ -80,7 +81,7 @@ impl SoundApp {
         }
         self.mtc_output_retry = Some(Instant::now());
         if let Err(e) = self.set_mtc_output_port(Some(port.clone())) {
-            self.ui.status = e;
+            self.ui.status = crate::localization::error_text(&e);
         }
     }
 

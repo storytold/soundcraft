@@ -450,6 +450,7 @@ fn checked_state(app: &SoundApp, path: &str, id: Option<&str>) -> bool {
         Some("options.tab_to_transient") => e.tab_to_transient,
         Some("options.automation_follows_edit") => e.automation_follows_edit,
         Some("options.markers_follow_edit") => e.markers_follow_edit,
+        Some("options.transport_online") => app.mtc_online,
         Some("options.click") => e.click,
         Some("options.delay_compensation") => e.delay_compensation,
         Some("options.pre_fader_metering") => e.pre_fader_metering,
@@ -616,6 +617,13 @@ fn wants_dialog(id: &str) -> bool {
 
 /// Handle UI-layer commands. Returns None when `id` is not a UI command.
 pub fn run_ui_command(app: &mut SoundApp, id: &str, p: &Value) -> Option<Result<Value, String>> {
+    if id == "options.transport_online" {
+        let value = p.get("value").cloned().unwrap_or_else(|| serde_json::json!(!app.mtc_online));
+        return Some(
+            app.mtc_command(&serde_json::json!({"online":value}))
+                .map(|state| serde_json::json!({"flag":"options.transport_online","value":state["online"]})),
+        );
+    }
     if id == "setup.mtc" {
         return Some(app.mtc_command(p));
     }

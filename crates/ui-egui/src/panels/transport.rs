@@ -20,9 +20,9 @@ pub(super) fn transport_window(app: &mut SoundApp, ctx: &egui::Context) {
                         .selectable_label(app.mtc_online, crate::localization::text("Online"))
                         .on_hover_text(crate::localization::text(app.mtc_status))
                         .clicked()
-                    && let Err(e) = app.run("setup.mtc", json!({"online": !app.mtc_online}))
+                    && let Err(e) = app.run("options.transport_online", json!({}))
                 {
-                    app.ui.status = e;
+                    app.ui.status = crate::localization::error_text(&e);
                 }
                 for (icon, cmd) in [
                     ("rtz", "transport.rtz"),

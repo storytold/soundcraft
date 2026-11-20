@@ -81,6 +81,8 @@ pub(crate) struct AudioState {
     read: f64,
     chase_pitch: super::chase_pitch::ChasePitch,
     chasing: bool,
+    chase_group: Option<i64>,
+    pub(crate) device_timing: Option<(std::time::Instant, std::time::Duration, usize)>,
     pub(crate) device_rate: f64,
     input: Option<Arc<record::InputRing>>,
     recording: bool,
@@ -160,14 +162,14 @@ impl AudioState {
             *clock = None;
             return;
         }
-        let duration = Duration::from_secs_f64(frames as f64 / self.device_rate);
-        let pitch_latency = if self.chasing { self.chase_pitch.latency() / self.device_rate } else { 0.0 };
+        let duration = Duration::try_from_secs_f64(frames as f64 / self.device_rate.max(1.)).unwrap_or_default();
+        let pitch_latency = if self.chasing { self.chase_pitch.latency() / self.device_rate.max(1.) } else { 0.0 };
         let rate = self.midi_speed * self.session.sample_rate.as_f64();
         // pos includes samples mixed ahead but not yet copied to the output stream.
         let end = self.pos as f64 + self.read - self.pending_len as f64;
         *clock = Some(super::OutputPosition {
             callback: now,
-            valid_for: (duration * 2).max(Duration::from_millis(100)),
+            valid_for: duration.saturating_mul(2).max(Duration::from_millis(100)),
             sample_at_callback: end - (lead.as_secs_f64() + duration.as_secs_f64() + pitch_latency) * rate,
             samples_per_second: rate,
         });
@@ -199,6 +201,8 @@ impl AudioState {
             read: 0.0,
             chase_pitch: super::chase_pitch::ChasePitch::new(device_rate),
             chasing: false,
+            chase_group: None,
+            device_timing: None,
             device_rate,
             input: None,
             recording: false,
@@ -249,6 +253,10 @@ impl AudioState {
                     self.forget_meters();
                 }
                 Cmd::Recording(r, pass) => {
+                    if r && self.chasing {
+                        self.end_chase();
+                        self.shared.speed.store(1000, Ordering::Relaxed);
+                    }
                     self.recording = r;
                     self.midi_wraps = 0;
                     self.midi_stopped = None;
@@ -292,6 +300,7 @@ impl AudioState {
                 }
                 Cmd::OldSessions(tx) => self.old_sessions = Some(tx),
                 Cmd::Play { from, end, looped } => self.begin_play(from, end, looped, false),
+                Cmd::EndChase => self.end_chase(),
                 Cmd::PlayMtc(from) => self.begin_play(from, None, None, true),
                 Cmd::Stop => {
                     self.chasing = false;
@@ -326,6 +335,7 @@ impl AudioState {
 
     fn begin_play(&mut self, from: Samples, end: Option<Samples>, looped: Option<Range>, chasing: bool) {
         self.chasing = chasing;
+        self.chase_group = None;
         self.chase_pitch.reset();
         self.reset_mtc();
         self.pos = from;
@@ -337,6 +347,56 @@ impl AudioState {
         self.pending_len = 0;
         self.read = 0.0;
         self.mix.reset();
+    }
+
+    fn end_chase(&mut self) {
+        if self.chasing {
+            self.chasing = false;
+            self.chase_group = None;
+            self.chase_pitch.reset();
+        }
+    }
+
+    // Run the locked servo from the device callback. Its cadence is one correction
+    // per complete MTC group, including when the host window is not repainting.
+    fn follow_mtc(&mut self) {
+        if !self.chasing || !self.playing {
+            return;
+        }
+        let Some(tracking) = self.midi.as_ref().and_then(|feed| feed.tracking_mtc()) else { return };
+        let Some((position, stamp, age)) = tracking else {
+            self.end_chase();
+            self.shared.speed.store(1000, Ordering::Relaxed);
+            self.playing = false;
+            self.pending_len = 0;
+            self.read = 0.;
+            self.shared.playing.store(false, Ordering::Relaxed);
+            self.mix.reset();
+            return;
+        };
+        match self.chase_group.replace(stamp) {
+            None => return, // preserve the first block at a corroborated stopped locate
+            Some(last) if last == stamp => return,
+            _ => {}
+        }
+        let sr = self.session.sample_rate;
+        let p = position.in_session_rate(self.session.frame_rate);
+        let target = p.samples(sr).saturating_sub(self.session.timecode_start).saturating_add(sr.samples(age as f64 / 1e6));
+        let latency = self.device_timing.map_or(0., |(_, lead, offset)| lead.as_secs_f64() + offset as f64 / self.device_rate.max(1.));
+        let speed = self.speed();
+        let presented = self.pos as f64 + self.read
+            - self.pending_len as f64
+            - (latency + self.chase_pitch.latency() / self.device_rate.max(1.)) * speed * sr.as_f64();
+        let error = target.saturating_sub(presented.round() as i64);
+        let tolerance = p.drift_tolerance(sr);
+        if error.unsigned_abs() > (4 * tolerance) as u64 {
+            self.begin_play(target.max(0), None, None, true);
+            self.chase_group = Some(stamp);
+            self.shared.speed.store(1000, Ordering::Relaxed);
+        } else {
+            let rate = super::mtc_input::chase_rate(error, tolerance, sr, speed);
+            self.shared.speed.store((rate * 1000.).round() as u32, Ordering::Relaxed);
+        }
     }
 
     fn reset_mtc(&mut self) {
@@ -693,7 +753,7 @@ impl AudioState {
         let speed = self.speed();
         let step = self.step(speed);
         let callback = ((callback_frames as f64 * step).ceil() as i64).max(0);
-        let age_speed = std::mem::replace(&mut self.midi_speed, speed);
+        let age_speed = self.midi_speed;
         // A pass runs while playing and recording, and on through a transport stop until the
         // command that ends it. One the UI has begun during playback counts from when it began,
         // though the command that starts it is only read below.
@@ -718,7 +778,9 @@ impl AudioState {
         if let Some(hook) = &mut self.before_commands {
             hook();
         }
+        let was_chasing = self.chasing;
         self.drain();
+        self.follow_mtc();
         if let Some(ended) = self.midi_ended.take() {
             // A command ended the pass. What arrived after the queue was read above and before
             // that command belongs to the pass too: take it in as well, with the pass as it was,
@@ -740,13 +802,21 @@ impl AudioState {
         }
         self.midi_started = false;
         // A command may have installed a session at another sample rate: the audio is rendered
-        // at the rate that is there now, at the same speed.
+        // at the rate and chase speed that apply after the commands above.
+        let speed = if self.chasing || was_chasing { self.speed() } else { speed };
+        self.midi_speed = speed;
         let step = self.step(speed);
         // A keyboard plays through record-enabled and input-monitored MIDI and instrument tracks.
         let midi_live = self.midi.as_ref().is_some_and(|f| f.connected() > 0)
             && self.session.tracks.iter().any(|t| matches!(t.kind, TrackKind::Instrument | TrackKind::Midi) && midi_thru(t));
         let monitoring = midi_live || (self.input.is_some() && self.session.tracks.iter().any(|t| t.mixer.input_monitor || t.mixer.record_arm));
-        let clock = self.mtc.as_ref().map(|_| std::time::Instant::now());
+        let clock = self.mtc.as_ref().map(|_| {
+            self.device_timing
+                .and_then(|(now, lead, offset)| {
+                    now.checked_add(lead)?.checked_add(std::time::Duration::try_from_secs_f64(offset as f64 / self.device_rate.max(1.)).ok()?)
+                })
+                .unwrap_or_else(std::time::Instant::now)
+        });
         if !self.playing && !monitoring {
             if let Some(clock) = clock {
                 self.mtc_span(clock, 0, 0, step);

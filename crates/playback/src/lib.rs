@@ -139,6 +139,7 @@ enum Cmd {
         looped: Option<Range>,
     },
     PlayMtc(Samples),
+    EndChase,
     Stop,
     Locate(Samples),
     /// Tracks the latest session no longer has (worked out on the UI thread): their meters go.
@@ -200,6 +201,7 @@ pub struct Player {
     _stream: Option<cpal::Stream>,
     #[cfg(target_arch = "wasm32")]
     _stream: Option<cpal::Stream>,
+    mtc_buffers: Mutex<Vec<Arc<mtc::Queue>>>,
     pub device_name: String,
     pub device_rate: u32,
     /// Output channels the device was opened with (0 for the silent clock).
@@ -307,6 +309,7 @@ impl Player {
                             tx,
                             side: new_side(grx),
                             _stream: Some(stream),
+                            mtc_buffers: Mutex::default(),
                             device_name: name,
                             device_rate: rate,
                             device_channels: config.channels,
@@ -384,6 +387,7 @@ impl Player {
             tx,
             side,
             _stream: None,
+            mtc_buffers: Mutex::default(),
             device_name: "No audio device (silent)".into(),
             device_rate: rate,
             device_channels: 0,
@@ -407,6 +411,7 @@ impl Player {
             tx,
             side,
             _stream: None,
+            mtc_buffers: Mutex::default(),
             device_name: "No audio device".into(),
             device_rate: session.sample_rate.hz(),
             device_channels: 0,
@@ -553,8 +558,12 @@ impl Player {
         let _ = self.tx.send(Cmd::Locate(at));
     }
 
+    pub fn end_mtc_chase(&self) {
+        let _ = self.tx.send(Cmd::EndChase);
+    }
+
     pub fn set_speed(&self, speed: f32) {
-        let v = if speed.is_finite() { (speed.clamp(0.1, 4.0) * 1000.0) as u32 } else { 1000 };
+        let v = if speed.is_finite() { (speed.clamp(0.1, 4.0) * 1000.0).round() as u32 } else { 1000 };
         self.shared.speed.store(v, Ordering::Relaxed);
     }
 
