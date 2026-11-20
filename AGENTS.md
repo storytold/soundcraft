@@ -70,16 +70,16 @@ Layers, checked by `cargo xtask layers`; nothing below L6 depends on egui, efram
 
 | Layer | Crate | Role |
 |---|---|---|
-| L0 | `soundcraft-time`, `soundcraft-midi` | Timebases, tempo, grid; Standard MIDI Files |
-| L1 | `soundcraft-dsp` | Plugins, offline processing, meters, FFT |
+| L0 | `soundcraft-time`, `soundcraft-midi`, `soundcraft-video` | Timebases, tempo, grid; Standard MIDI Files; video demux and decoding |
+| L1 | `soundcraft-dsp`, `soundcraft-clap-host`, `soundcraft-vst3-host`, `soundcraft-au-host` | Plugins, offline processing, meters, FFT; CLAP, VST3 and Audio Unit hosts |
 | L2 | `soundcraft-model` | The session document |
-| L3 | `soundcraft-mix` | Mix engine for playback and offline bounce |
+| L3 | `soundcraft-mix`, `soundcraft-interchange` | Mix engine for playback and offline bounce; interchange plans |
 | L4 | `soundcraft-engine`, `soundcraft-playback` | Command registry, undo, editing, import/export; audio device I/O (cpal) |
 | L5 | `soundcraft-automation` | MCP server and control-channel client |
 | L6 | `soundcraft-ui-egui` | The swappable UI |
 
 - Audio formats, codecs and waveform peaks come from `craft-audio` in `storytold/craft-libs`; `soundcraft_model::FileFormat` maps them onto the session model.
-- Commands live in `crates/engine/src/cmd/*` (id, label, menu path, shortcut, params doc, `enabled`, `run`), each module with its own `specs()` registered in `cmd/mod.rs`; UI-only commands in `crates/ui-egui/src/menus.rs` (`UI_COMMANDS`). Menus, shortcuts, CLI, control channel and MCP dispatch the same ids. Panels act through `engine.execute(id, params)`. Programmatic calls open no dialogs; `ui.menu.invoke` does.
+- Commands live in `crates/engine/src/cmd/*` (id, label, menu path, shortcut, params doc, `enabled`, `run`), each module with its own `specs()` registered in `crates/engine/src/cmd.rs`; UI-only commands in `crates/ui-egui/src/menus.rs` (`UI_COMMANDS`). Menus, shortcuts, CLI, control channel and MCP dispatch the same ids. Panels act through `engine.execute(id, params)`. Programmatic calls open no dialogs; `ui.menu.invoke` does.
 - Parity: `crates/engine/catalog/menus.txt` lists the reference menu leaves; `cargo xtask parity` writes `docs/parity-checklist.md`; a test enforces a floor that only rises.
 - Progress docs: `ROADMAP.md`, `docs/gaps.md`, `docs/roadmap.md`, `docs/target-app-parity.md` and the per-area `docs/*-parity.md`. Releases: `docs/releasing.md` (push to `release`; `cargo xtask version [set X.Y.Z]`). Control protocol: `docs/control-protocol.md`.
 
