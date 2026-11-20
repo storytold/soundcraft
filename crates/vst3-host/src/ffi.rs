@@ -249,12 +249,48 @@ mod tests {
     }
 
     #[test]
+    fn param_queues_keep_points_in_offset_order_and_the_later_call_at_one_offset() {
+        let pc = ParamChanges::new(1, process::QUEUE_POINTS);
+        pc.set(5, 40, 0.4, 3);
+        pc.set(5, 0, 0.1, 2);
+        pc.set(5, 0, 0.9, 1);
+        pc.set(5, 63, 0.6, 4);
+        let points = |pc: &ParamChanges| {
+            let q = pc.queues[0].as_com_ref::<sv::IParamValueQueue>().unwrap();
+            // SAFETY: test calls through our own implementation.
+            let n = unsafe { q.getPointCount() };
+            (0..n)
+                .map(|i| {
+                    let (mut o, mut v) = (0, 0.0);
+                    // SAFETY: as above.
+                    assert_eq!(unsafe { q.getPoint(i, &mut o, &mut v) }, sb::kResultOk);
+                    (o, v)
+                })
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(points(&pc), [(0, 0.1), (40, 0.4), (63, 0.6)], "the earlier call at offset 0 lost");
+        // Full: a new point takes the place of the one just before it; an earliest one is dropped.
+        pc.clear();
+        for i in 0..process::QUEUE_POINTS {
+            pc.set(5, 10 + i as i32, i as f64, i as u64);
+        }
+        pc.set(5, 1000, 0.5, 100);
+        pc.set(5, 0, 0.25, 101);
+        let got = points(&pc);
+        assert_eq!(got.len(), process::QUEUE_POINTS);
+        assert_eq!(got.first(), Some(&(10, 0.0)), "an earliest point is dropped when full");
+        assert_eq!(got.last(), Some(&(1000, 0.5)), "the latest point is kept");
+        let n = process::QUEUE_POINTS;
+        assert_eq!(got.get(n - 2), Some(&(10 + n as i32 - 2, (n - 2) as f64)));
+    }
+
+    #[test]
     fn host_objects_behave() {
-        let pc = ParamChanges::new(2);
-        pc.set(5, 0, 0.25);
-        pc.set(5, 0, 0.5);
-        pc.set(6, 0, 1.0);
-        pc.set(7, 0, 1.0);
+        let pc = ParamChanges::new(2, 1);
+        pc.set(5, 0, 0.25, 1);
+        pc.set(5, 0, 0.5, 2);
+        pc.set(6, 0, 1.0, 3);
+        pc.set(7, 0, 1.0, 4);
         // SAFETY: test calls through our own implementation.
         unsafe {
             assert_eq!(pc.getParameterCount(), 2, "full pool drops extra params");

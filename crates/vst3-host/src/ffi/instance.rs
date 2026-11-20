@@ -232,6 +232,27 @@ impl Instance {
             .collect()
     }
 
+    /// Every parameter some MIDI controller drives on any of the 16 channels (`IMidiMapping`),
+    /// sorted and deduplicated. JUCE reports these as stand-in parameters: a change to one is
+    /// turned into a MIDI message, not stored state. Main thread only.
+    pub fn midi_mapped_ids(&self) -> Vec<u32> {
+        let Some(m) = self.controller.as_ref().and_then(|c| c.cast::<sv::IMidiMapping>()) else { return Vec::new() };
+        let mut ids = Vec::new();
+        for channel in 0..16i16 {
+            for n in 0..=PITCH_BEND {
+                let mut id: sv::ParamID = 0;
+                let n = i16::try_from(n).unwrap_or(0);
+                // SAFETY: valid mapping interface on the main thread; `id` is a local.
+                if ok(unsafe { m.getMidiControllerAssignment(0, channel, n, &mut id) }) {
+                    ids.push(id);
+                }
+            }
+        }
+        ids.sort_unstable();
+        ids.dedup();
+        ids
+    }
+
     pub fn value_text(&self, id: u32, normalized: f64) -> Option<String> {
         let c = self.controller.as_ref()?;
         let mut s: sv::String128 = [0; 128];
@@ -427,12 +448,12 @@ impl Instance {
             self.processing = true;
         }
         self.in_params.clear();
-        for &(id, v) in params.iter().take(PARAM_QUEUE_CAP) {
-            self.in_params.set(id, 0, v.clamp(0.0, 1.0));
+        for &(id, v, seq) in params.iter().take(PARAM_QUEUE_CAP) {
+            self.in_params.set(id, 0, v.clamp(0.0, 1.0), seq);
         }
-        for &(time, id, v) in controls {
+        for &(time, id, v, seq) in controls {
             if let Some(at) = time.checked_sub(offset).filter(|&t| (t as usize) < frames) {
-                self.in_params.set(id, i32::try_from(at).unwrap_or(0), v.clamp(0.0, 1.0));
+                self.in_params.set(id, i32::try_from(at).unwrap_or(0), v.clamp(0.0, 1.0), seq);
             }
         }
         self.out_params.clear();
@@ -480,8 +501,10 @@ pub(crate) struct ProcessInput<'a> {
     pub frames: usize,
     pub inputs: &'a mut BusBuffers,
     pub outputs: &'a mut BusBuffers,
-    pub params: &'a [(u32, f64)],
-    pub controls: &'a [(u32, u32, f64)],
+    /// Host values for the sub-block's start: (param id, normalized value, call order).
+    pub params: &'a [(u32, f64, u64)],
+    /// Controller points: (time, param id, normalized value, call order).
+    pub controls: &'a [(u32, u32, f64, u64)],
     pub notes: &'a [NoteEvent],
     pub offset: u32,
     pub project_time: i64,
