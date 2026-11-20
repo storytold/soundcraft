@@ -280,12 +280,11 @@ impl AudioState {
                 }
                 #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
                 Cmd::Clock(clock) => self.clock = clock,
-                Cmd::FollowGrid(s, busy) => {
-                    let old = std::mem::replace(&mut self.session, s);
-                    if let Some(tx) = &self.old_sessions {
-                        let _ = tx.try_send(old);
-                    }
-                    busy.store(false, Ordering::Release);
+                Cmd::FollowGrid(s, retired) => {
+                    // Exactly one writer; the host empties the slot before sending this ticket.
+                    // A full/disconnected general-purpose reclamation queue cannot free this
+                    // snapshot here. Releasing the ticket allows the host to take it back.
+                    let _ = retired.set(std::mem::replace(&mut self.session, s));
                 }
                 Cmd::OldSessions(tx) => self.old_sessions = Some(tx),
                 Cmd::Play { from, end, looped } => self.begin_play(from, end, looped, false),
@@ -1098,7 +1097,7 @@ pub(crate) struct Side {
     /// is opened.
     pub(crate) refused: HashSet<(TrackId, usize)>,
     pub(crate) grid_base: Option<Arc<Session>>,
-    pub(crate) grid_busy: Arc<AtomicBool>,
+    pub(crate) grid_return: super::GridReturn,
     garbage: Receiver<Vec<Box<dyn Plugin>>>,
     old_sessions: Option<Receiver<Arc<Session>>>,
     /// The tracks of the session last sent, to tell the audio thread which ones went.
@@ -1109,7 +1108,7 @@ impl Side {
     pub(crate) fn new(rate: f32, garbage: Receiver<Vec<Box<dyn Plugin>>>) -> Side {
         Side {
             grid_base: None,
-            grid_busy: Default::default(),
+            grid_return: Default::default(),
             shadow: HashMap::new(),
             rate,
             editors: HashMap::new(),
@@ -1132,6 +1131,9 @@ impl Side {
     /// Drops retired instances (closing their editors first, inside the plugin's drop) and
     /// replaced session snapshots.
     pub(crate) fn collect_garbage(&mut self) {
+        if let Some(retired) = Arc::get_mut(&mut self.grid_return) {
+            retired.take();
+        }
         while let Ok(g) = self.garbage.try_recv() {
             for p in g {
                 log::debug!("plugin instance released: {}", p.info().name);

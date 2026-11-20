@@ -150,13 +150,15 @@ pub type PluginStates = Vec<(TrackId, usize, Vec<u8>)>;
 /// A parameter edit made in a plugin's own editor: `(track, slot, param id, value)`.
 pub type EditorEdit = (TrackId, usize, String, f32);
 
+type GridReturn = Arc<std::sync::OnceLock<Arc<Session>>>;
+
 enum Cmd {
     #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
     Clock(Option<sync_clock::Publisher>),
     /// A new snapshot plus the third-party instances it needs (created on the UI thread).
     Session(Arc<Session>, Vec<PreparedInstance>),
     /// Host-built copy of the last published snapshot with only its live tempo changed.
-    FollowGrid(Arc<Session>, Arc<AtomicBool>),
+    FollowGrid(Arc<Session>, GridReturn),
     /// Where the callback sends the snapshots it replaces (freeing one takes thousands of frees).
     OldSessions(SyncSender<Arc<Session>>),
     Input(Arc<record::InputRing>),
@@ -204,11 +206,12 @@ pub struct Player {
     #[cfg(not(target_arch = "wasm32"))]
     watch: Mutex<Option<(u64, std::time::Instant)>>,
     tx: Sender<Cmd>,
-    side: Mutex<Side>,
     #[cfg(not(target_arch = "wasm32"))]
     _stream: Option<cpal::Stream>,
     #[cfg(target_arch = "wasm32")]
     _stream: Option<cpal::Stream>,
+    // The stream must release its snapshot-return ticket before the host reclaims it.
+    side: Mutex<Side>,
     // Hold the publication storage until the native callback has shut down.
     #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
     beat_clock: Mutex<sync_output::Output>,
@@ -450,7 +453,7 @@ impl Player {
     /// update in the device queue; a busy host retries with the newest map.
     pub fn update_follow_grid(&self, tempo: &soundcraft_time::TempoMap) -> bool {
         let mut side = self.side();
-        if side.grid_busy.load(Ordering::Acquire) {
+        if Arc::get_mut(&mut side.grid_return).is_none() {
             return false;
         }
         side.collect_garbage();
@@ -458,10 +461,7 @@ impl Player {
         Arc::make_mut(&mut s).tempo.clone_from(tempo);
         #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
         self.beat_clock.lock().unwrap_or_else(PoisonError::into_inner).configure(&s, &self.tx, false);
-        side.grid_busy.store(true, Ordering::Release);
-        if self.tx.send(Cmd::FollowGrid(s, side.grid_busy.clone())).is_err() {
-            side.grid_busy.store(false, Ordering::Release);
-        }
+        let _ = self.tx.send(Cmd::FollowGrid(s, side.grid_return.clone()));
         true
     }
 

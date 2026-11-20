@@ -604,6 +604,36 @@ fn side_creates_each_missing_instance_once() {
 }
 
 #[test]
+fn external_clock_returns_prior_snapshot_even_with_unavailable_retirement_queue() {
+    for disconnect in [false, true] {
+        let shared = Arc::new(Shared {
+            position: AtomicI64::new(0),
+            playing: AtomicBool::new(false),
+            speed: AtomicU32::new(1000),
+            meters: Mutex::new(MeterSnapshot::default()),
+        });
+        let (tx, rx) = channel();
+        let (garbage, _trash) = channel();
+        let previous = Arc::new(Session::default());
+        let weak = Arc::downgrade(&previous);
+        let mut state = AudioState::new(rx, shared, previous, 48_000.0, garbage);
+        let (retire, receiver) = sync_channel(1);
+        retire.try_send(Arc::new(Session::default())).unwrap();
+        let receiver = Some(receiver).filter(|_| !disconnect);
+        tx.send(Cmd::OldSessions(retire)).unwrap();
+        let mut returned = GridReturn::default();
+        tx.send(Cmd::FollowGrid(Arc::new(Session::default()), returned.clone())).unwrap();
+        assert!(Arc::get_mut(&mut returned).is_none());
+        state.fill(&mut [0f32; 128], 2);
+        let slot = Arc::get_mut(&mut returned).unwrap();
+        assert_eq!(weak.strong_count(), 1, "the callback returned the snapshot");
+        drop(slot.take());
+        assert_eq!(weak.strong_count(), 0, "the host released it");
+        drop(receiver);
+    }
+}
+
+#[test]
 fn replaced_sessions_are_freed_on_the_ui_thread() {
     let shared = Arc::new(Shared {
         position: AtomicI64::new(0),
@@ -625,11 +655,11 @@ fn replaced_sessions_are_freed_on_the_ui_thread() {
         if index % 2 == 0 {
             tx.send(Cmd::Session(s, Vec::new())).unwrap();
         } else {
-            side.grid_busy.store(true, Ordering::Release);
-            tx.send(Cmd::FollowGrid(s, side.grid_busy.clone())).unwrap();
+            tx.send(Cmd::FollowGrid(s, side.grid_return.clone())).unwrap();
+            assert!(Arc::get_mut(&mut side.grid_return).is_none());
         }
         st.fill(&mut out, 2);
-        assert!(!side.grid_busy.load(Ordering::Acquire));
+        assert!(Arc::get_mut(&mut side.grid_return).is_some());
         let replaced = watched.len().checked_sub(2).and_then(|i| watched.get(i));
         assert!(replaced.is_none_or(|w| w.strong_count() == 1), "freed on the audio thread");
     }
