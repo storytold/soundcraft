@@ -134,3 +134,42 @@ fn malformed_input_never_starts_without_a_real_start_or_continue() {
         assert!(!matches!(r.take(), Some(Action::Play { .. })));
     }
 }
+
+#[test]
+fn midi_clock_wakes_only_on_transport_actions() {
+    use std::sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    };
+    let feed = crate::midi::MidiFeed::default();
+    let counter = Arc::new(AtomicUsize::default());
+    let wake = counter.clone();
+    feed.set_mtc_wakeup(|| {
+        Box::new(move || {
+            wake.fetch_add(1, Ordering::Relaxed);
+        })
+    });
+    #[cfg(any(target_os = "windows", target_os = "macos", target_os = "linux"))]
+    let worker = Arc::new(AtomicUsize::default());
+    #[cfg(any(target_os = "windows", target_os = "macos", target_os = "linux"))]
+    {
+        let worker = worker.clone();
+        feed.set_sync_waker(Arc::new(move || {
+            worker.fetch_add(1, Ordering::Relaxed);
+        }));
+    }
+    feed.set_clock_follow(Some(0), true, 0);
+    feed.receive(0, &[0xfa]);
+    for pulse in 1..=200 {
+        feed.set_clock(pulse * 20_833);
+        feed.receive(0, &[0xf8]);
+    }
+    assert_eq!(counter.load(Ordering::Relaxed), 2);
+    feed.receive(0, &[0xfc]);
+    feed.receive(0, &[0xf2, 1]);
+    assert_eq!(counter.load(Ordering::Relaxed), 3);
+    feed.receive(0, &[0]);
+    assert_eq!(counter.load(Ordering::Relaxed), 4);
+    #[cfg(any(target_os = "windows", target_os = "macos", target_os = "linux"))]
+    assert_eq!(worker.load(Ordering::Relaxed), 4);
+}

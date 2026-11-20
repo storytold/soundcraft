@@ -15,7 +15,7 @@ pub(crate) struct Host {
     grid_dirty: bool,
     /// While stopped, new tempo estimates begin here so earlier score time stays fixed.
     waiting_tick: i64,
-    // Musical pulse and timestamp of the last grid segment, in the input clock.
+    // Fixed pulse and device timestamp at Start/Continue; later edits preserve this origin.
     anchor: Option<(i64, i64)>,
 }
 
@@ -189,7 +189,7 @@ impl SoundApp {
         }
         self.clock_follow.actions = events;
         if let Some(grid) = self.engine.playback_tempo.as_mut() {
-            self.clock_follow.grid_dirty |= update_grid(grid, &mut self.clock_follow.anchor, self.clock_follow.waiting_tick, s, sr);
+            self.clock_follow.grid_dirty |= update_grid(grid, self.clock_follow.anchor, self.clock_follow.waiting_tick, s, sr);
             if self.clock_follow.grid_dirty && self.player.as_ref().is_none_or(|p| p.update_follow_grid(grid)) {
                 self.clock_follow.grid_dirty = false;
             }
@@ -245,39 +245,37 @@ impl SoundApp {
     }
 }
 
-// Time between observed clock positions sets the segment behind the pulse. The fit sets the
-// slope ahead of it. Keeping both anchors preserves elapsed bars across a live tempo change.
-fn update_grid(grid: &mut TempoMap, anchor: &mut Option<(i64, i64)>, waiting_tick: i64, s: Snapshot, sr: SampleRate) -> bool {
+// Only append tempo changes at or after the latest pulse. Elapsed playback and recorded
+// note positions remain fixed; future beat spacing follows the incoming clock and phase.
+fn update_grid(grid: &mut TempoMap, anchor: Option<(i64, i64)>, waiting_tick: i64, s: Snapshot, sr: SampleRate) -> bool {
     let Some(bpm) = s.bpm else { return false };
-    let Some((last, stamp)) = *anchor else {
+    let Some((origin, stamp)) = anchor else {
         if s.state == State::Waiting && (grid.tempo_at_tick(waiting_tick) - bpm).abs() >= 0.05 {
             let _ = grid.set_tempo(waiting_tick, bpm);
             return true;
         }
         return false;
     };
-    let pulses = s.pulse.saturating_sub(last);
-    if s.state != State::Locked || pulses < 6 {
-        return false;
-    }
     let tick = s.pulse.saturating_mul(TICKS_PER_PULSE);
-    let first = last.saturating_mul(TICKS_PER_PULSE);
-    let observed = s.stamp_us.saturating_sub(stamp);
-    let predicted = grid.tick_to_samples(tick, sr).saturating_sub(grid.tick_to_samples(first, sr));
-    let error = predicted.saturating_sub(sr.samples(observed as f64 / 1e6)).unsigned_abs();
-    if (grid.tempo_at_tick(tick) - bpm).abs() < 0.15 && error < sr.samples(0.003) as u64 {
+    let before = grid.tempos().partition_point(|event| event.tick <= tick);
+    let last_edit_tick = grid.tempos()[..before].last().map_or(0, |event| event.tick);
+    let since_edit = tick.saturating_sub(last_edit_tick);
+    if s.state != State::Locked || s.pulse <= origin || since_edit < 6 * TICKS_PER_PULSE {
         return false;
     }
-    if observed <= 0 {
+    let start = grid.tick_to_samples(origin.saturating_mul(TICKS_PER_PULSE), sr);
+    let elapsed = sr.samples(s.stamp_us.saturating_sub(stamp) as f64 / 1e6);
+    let phase = sr.seconds(start.saturating_add(elapsed).saturating_sub(grid.tick_to_samples(tick, sr)));
+    let slope = grid.tempo_at_tick(tick);
+    if (slope - bpm).abs() < 0.15 && phase.abs() < 0.003 {
         return false;
     }
-    let measured = pulses as f64 * 2_500_000. / observed as f64;
-    if grid.set_tempo(first, measured).is_err() {
-        return false;
-    }
-    let _ = grid.set_tempo(tick, bpm);
-    *anchor = Some((s.pulse, s.stamp_us));
-    true
+    // Spread small deviations over eight beats to avoid adding redundant events during gradual
+    // drift. Recover larger phase errors in four beats, with at most 5% change in beat length.
+    // An event at this pulse leaves every earlier tick at precisely the same sample.
+    let recovery_beats = if phase.abs() <= 0.006 { 8. } else { 4. };
+    let target = bpm / (1. + (phase * bpm / (60. * recovery_beats)).clamp(-0.05, 0.05));
+    (slope - target).abs() >= 0.15 && grid.set_tempo(tick, target.clamp(5., 1000.)).is_ok()
 }
 
 #[cfg(test)]
@@ -352,11 +350,69 @@ mod tests {
     fn tempo_step_updates_future_beat_spacing_and_preserves_elapsed_bars() {
         let mut grid = TempoMap::default();
         let rate = SampleRate::new(48000).unwrap();
-        let mut anchor = Some((96, 2_000_000));
+        let anchor = Some((96, 2_000_000));
         let s = Snapshot { pulse: 120, stamp_us: 2_666_667, bpm: Some(90.), state: State::Locked, ..Default::default() };
-        assert!(update_grid(&mut grid, &mut anchor, 0, s, rate));
+        assert!(update_grid(&mut grid, anchor, 0, s, rate));
         assert_eq!(grid.tick_to_samples(96 * TICKS_PER_PULSE, rate), 96_000);
-        assert!(grid.tick_to_samples(120 * TICKS_PER_PULSE, rate).abs_diff(128_000) <= 1);
-        assert!(grid.tick_to_samples(144 * TICKS_PER_PULSE, rate).abs_diff(160_000) <= 1);
+        // When the source stepped between observations, preserve the samples already played.
+        assert_eq!(grid.tick_to_samples(120 * TICKS_PER_PULSE, rate), 120_000);
+        for pulse in 121..=504 {
+            let s = Snapshot { pulse, stamp_us: 2_000_000 + (pulse - 96) * 2_000_000 / 72, ..s };
+            update_grid(&mut grid, anchor, 0, s, rate);
+        }
+        assert_eq!(grid.tick_to_samples(120 * TICKS_PER_PULSE, rate), 120_000);
+        let master = rate.samples(2. + 408. * 2.5 / 90.);
+        assert!(grid.tick_to_samples(504 * TICKS_PER_PULSE, rate).abs_diff(master) < rate.samples(0.010) as u64);
+    }
+
+    #[test]
+    fn two_hours_of_gradual_clock_drift_preserve_earlier_beat_positions() {
+        let mut grid = TempoMap::default();
+        let sr = SampleRate::new(48_000).unwrap();
+        let anchor = Some((0, 0));
+        let mut stamp = 0.0_f64;
+        let mut pulse = 0_i64;
+        let mut passed_bar = (0, 0);
+        let mut first_rewrite = None;
+        let mut published_cost = Vec::new();
+        let mut peak_phase = 0_u64;
+        let started = std::time::Instant::now();
+        while stamp < 7_200_000_000. {
+            let ramp = (stamp / 3_600_000_000.).min(2.);
+            let bpm = 120. + 30. * (1. - (ramp - 1.).abs());
+            stamp += 2_500_000. / bpm;
+            pulse += 1;
+            if pulse % 6 != 0 {
+                continue;
+            }
+            let snapshot = Snapshot { state: State::Locked, bpm: Some(bpm), pulse, stamp_us: stamp.round() as i64, ..Default::default() };
+            let update_started = std::time::Instant::now();
+            if update_grid(&mut grid, anchor, 0, snapshot, sr) {
+                published_cost.push(update_started.elapsed());
+                let actual = grid.tick_to_samples(passed_bar.0, sr);
+                if actual != passed_bar.1 && first_rewrite.is_none() {
+                    first_rewrite = Some((passed_bar, actual));
+                }
+            }
+            let at = grid.tick_to_samples(pulse * TICKS_PER_PULSE, sr);
+            peak_phase = peak_phase.max(at.abs_diff(sr.samples(stamp / 1e6)));
+            if pulse % 96 == 0 {
+                let tick = pulse * TICKS_PER_PULSE;
+                passed_bar = (tick, grid.tick_to_samples(tick, sr));
+            }
+        }
+        published_cost.sort_unstable();
+        let updates = published_cost.len();
+        eprintln!(
+            "two-hour 120–150–120 BPM simulation: {pulse} pulses, {updates} updates, {} events, peak phase {peak_phase} samples, update p95 {:?}, elapsed {:?}",
+            grid.tempos().len(),
+            published_cost[updates * 95 / 100],
+            started.elapsed()
+        );
+        assert!(peak_phase < sr.samples(0.010) as u64);
+        assert!(updates < 800, "excessive tempo events during a gradual drift");
+        assert_eq!(first_rewrite, None, "a previously passed bar moved");
+        let end = grid.tick_to_samples(pulse * TICKS_PER_PULSE, sr);
+        assert!(end.abs_diff(sr.samples(stamp / 1e6)) < sr.samples(0.010) as u64, "lost phase");
     }
 }

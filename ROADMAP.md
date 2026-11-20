@@ -2,7 +2,7 @@
 
 **Stage: pre-alpha** · next: alpha, ~5% and ~110–180 h away (the alpha gate's three failing workflows)
 
-> **Last reviewed:** 2026-11-14 · **Last updated:** 2026-11-20 · **Change:** minor (G-11 MIDI Beat Clock output and MIDI Time Code generation and chase; strict external-WAV AAF import and MIDI input in the progress log; previously trivial: Frequency Shifter plugin, Command-click target priority and cursor, Command-click automation points, plugin editors on Linux/X11, Cancel Zoom Toggle, side panels in dock columns, Auto Pan stereo balance, Alt-click returns a plugin parameter to its default, Clip List Auto Rename, Strip Silence rectangles, Strip Silence Rename, Strip Silence Extract and Separate, Clip Looping dialog, AudioSuite Vari-Fi speed ramps, Auto Pan plugin, Subharmonic plugin, Ring Modulator plugin, Float32 file headroom) · **Target:** Avid Pro Tools Ultimate 2026.4.1
+> **Last reviewed:** 2026-11-14 · **Last updated:** 2026-11-20 · **Change:** minor (G-11 MIDI Beat Clock output, external MIDI Beat Clock follow, and MIDI Time Code generation and chase; strict external-WAV AAF import and MIDI input in the progress log; previously trivial: Frequency Shifter plugin, Command-click target priority and cursor, Command-click automation points, plugin editors on Linux/X11, Cancel Zoom Toggle, side panels in dock columns, Auto Pan stereo balance, Alt-click returns a plugin parameter to its default, Clip List Auto Rename, Strip Silence rectangles, Strip Silence Rename, Strip Silence Extract and Separate, Clip Looping dialog, AudioSuite Vari-Fi speed ramps, Auto Pan plugin, Subharmonic plugin, Ring Modulator plugin, Float32 file headroom) · **Target:** Avid Pro Tools Ultimate 2026.4.1
 
 SoundCraft is a clean-room, pure-Rust digital audio workstation that aims at full parity with
 Avid Pro Tools, and then beyond it: faster, open, scriptable and agent-controllable. This page is
@@ -190,7 +190,7 @@ mutated and truncated movies. Field reports from the first public week are track
 
 | Date | Change | Summary |
 |---|---|---|
-| 2026-11-20 | minor | G-11: native MIDI Beat Clock output and MTC generation and playback chase. Hardware verification pending. |
+| 2026-11-20 | minor | G-11: native MIDI Beat Clock output, external MIDI Beat Clock follow, and MTC generation and playback chase. Hardware verification pending. |
 | 2026-11-14 | minor | Strict external-WAV AAF import with bounded property caching; remaining interchange work and readiness estimates unchanged |
 | 2026-11-09 | trivial | Progress log: Frequency Shifter plugin; readiness estimates unchanged |
 | 2026-11-08 | trivial | Command-click breakpoint/control priority and insertion affordance; active-tool drags retained; readiness estimates unchanged |

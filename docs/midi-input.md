@@ -132,4 +132,6 @@ If clock pulses disappear for three intervals or 150 milliseconds, whichever is 
 
 Desktop control clients can query or change `setup.midi_clock_follow` with `input` (port name), `enabled`, `loss_policy` (`coast` or `stop`), and `input_offset_samples`. The `clock_follow` member of `setup.midi_sync_status` reports estimated BPM, timing jitter and phase residual in microseconds, state and dropout count. Following a clock excludes online MTC chase and sending Beat Clock to the same port. Recording remains available while following Beat Clock.
 
+During playback, tempo and phase corrections change the spacing of upcoming beats. Beats that have already played keep their positions. The live tempo map retains those changes for the current pass.
+
 External clock follow has been exercised with simulated timestamps. Hardware verification of this revision is pending.

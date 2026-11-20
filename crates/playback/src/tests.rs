@@ -1929,3 +1929,68 @@ fn a_pass_started_and_ended_by_the_commands_of_one_callback_keeps_what_was_playe
     feed.take_recorded(&mut rec);
     assert!(rec.is_empty(), "{rec:?}");
 }
+
+#[test]
+fn follow_snapshots_reuse_document_storage_until_an_edit() {
+    use soundcraft_model::{ChannelFormat, TrackKind};
+    let (_, garbage) = channel();
+    let mut side = Side::new(48_000., garbage);
+    let mut doc = Session::default();
+    doc.add_track(TrackKind::Audio, ChannelFormat::Mono, None);
+    side.grid_base = Some(Arc::new(doc));
+    let map = soundcraft_time::TempoMap::default();
+    let first = side.follow_snapshot(&map).unwrap();
+    let second = side.follow_snapshot(&map).unwrap();
+    // A slow device and worker own both revisions. The UI keeps the latest tempo
+    // pending instead of repeatedly copying the entire document.
+    assert!(side.follow_snapshot(&map).is_none());
+    let tracks = first.tracks.as_ptr();
+    drop(first);
+    let next = side.follow_snapshot(&map).unwrap();
+    assert_eq!(next.tracks.as_ptr(), tracks);
+    assert_ne!(next.tracks.as_ptr(), second.tracks.as_ptr());
+    let mut edited = Session::default();
+    edited.add_track(TrackKind::Audio, ChannelFormat::Mono, None);
+    edited.add_track(TrackKind::Audio, ChannelFormat::Mono, None);
+    side.set_follow_base(Arc::new(edited));
+    assert_eq!(side.follow_snapshot(&map).unwrap().tracks.len(), 2);
+}
+
+/// Repeat the two-hour drift workload's snapshot publication cost on a populated session.
+#[test]
+#[ignore = "host performance measurement; run alone with --nocapture"]
+fn profile_external_clock_snapshot_updates() {
+    use soundcraft_model::{ChannelFormat, Clip, SourceId, TrackKind};
+    let (_, garbage) = channel();
+    let mut side = Side::new(48_000., garbage);
+    let mut base = Session::default();
+    for _ in 0..128 {
+        let track = base.add_track(TrackKind::Audio, ChannelFormat::Mono, None);
+        for clip in 0..32 {
+            let id = base.new_clip_id();
+            base.track_mut(track).unwrap().playlist_mut().unwrap().clips.push(Clip::audio(id, "loop", SourceId(1), clip * 48_000, 0, 48_000));
+        }
+    }
+    let base = Arc::new(base);
+    side.set_follow_base(base.clone());
+    let mut tempo = soundcraft_time::TempoMap::default();
+    let mut retained = None;
+    let mut old = Vec::new();
+    let mut new = Vec::new();
+    for i in 0..1024 {
+        tempo.set_tempo(i * 12_000, 110. + (i % 70) as f64).unwrap();
+        let when = std::time::Instant::now();
+        let mut doc = base.clone();
+        Arc::make_mut(&mut doc).tempo.clone_from(&tempo);
+        drop(std::hint::black_box(doc));
+        old.push(when.elapsed().as_micros());
+        let when = std::time::Instant::now();
+        retained = std::hint::black_box(Some(side.follow_snapshot(&tempo).unwrap()));
+        new.push(when.elapsed().as_micros());
+        std::hint::black_box(&retained);
+    }
+    drop(retained);
+    old.sort_unstable();
+    new.sort_unstable();
+    eprintln!("128 tracks, 4096 clips, 1024 grid revisions. Old p50/p95: {}/{} us; pooled p50/p95: {}/{} us", old[512], old[972], new[512], new[972]);
+}

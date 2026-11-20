@@ -530,7 +530,7 @@ fn params_for(path: &str, id: &str) -> Value {
 }
 
 /// Menu items that open a SoundCraft window when clicked (programmatic calls still run the command).
-const MENU_WINDOWS: &[(&str, &str)] = &[
+pub(super) const MENU_WINDOWS: &[(&str, &str)] = &[
     ("Setup > Appearance", "window.ui_customization"),
     ("File > Import > Session Data...", "file.import_aaf"),
     ("Setup > Hardware...", "window.playback_engine"),

@@ -381,10 +381,25 @@ mod tests {
 
     #[test]
     fn portuguese_catalog_covers_every_menu_label() {
-        for path in include_str!("../../engine/catalog/menus.txt").lines() {
+        for path in include_str!("../../engine/catalog/menus.txt").lines().chain(crate::menus::MENU_WINDOWS.iter().map(|(p, _)| *p)) {
             for label in path.split(" > ").map(str::trim).filter(|label| !label.is_empty()) {
                 assert!(super::pt_br::translate(label).is_some(), "missing pt-BR menu label: {label}");
             }
+        }
+    }
+
+    #[test]
+    fn clock_follow_dialog_errors_are_translated() {
+        let _scope = enter(Language::PortugueseBrazil);
+        for message in [
+            "Select a MIDI clock input",
+            "Take MTC chase offline before following MIDI clock",
+            "The MIDI clock input is also enabled as a clock output",
+            "MIDI input calibration must be within the sync timing horizon",
+            "Disable external MIDI clock follow before going online",
+            "Choose separate MIDI ports for Beat Clock output and external clock follow",
+        ] {
+            assert_ne!(error_text(message), message);
         }
     }
 

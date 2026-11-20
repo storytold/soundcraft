@@ -1108,6 +1108,9 @@ pub(crate) struct Side {
     /// is opened.
     pub(crate) refused: HashSet<(TrackId, usize)>,
     pub(crate) grid_base: Option<Arc<Session>>,
+    // Device and output worker may retain snapshots independently. Reuse only exclusively
+    // owned entries. When both are occupied, the host coalesces edits until one returns.
+    follow_pool: [Option<Arc<Session>>; 2],
     pub(crate) grid_return: super::GridReturn,
     garbage: Receiver<Vec<Box<dyn Plugin>>>,
     old_sessions: Option<Receiver<Arc<Session>>>,
@@ -1119,6 +1122,7 @@ impl Side {
     pub(crate) fn new(rate: f32, garbage: Receiver<Vec<Box<dyn Plugin>>>) -> Side {
         Side {
             grid_base: None,
+            follow_pool: Default::default(),
             grid_return: Default::default(),
             shadow: HashMap::new(),
             rate,
@@ -1129,6 +1133,23 @@ impl Side {
             old_sessions: None,
             tracks: HashSet::new(),
         }
+    }
+
+    pub(crate) fn set_follow_base(&mut self, doc: Arc<Session>) {
+        self.grid_base = Some(doc);
+        self.follow_pool = Default::default();
+    }
+
+    pub(crate) fn follow_snapshot(&mut self, tempo: &soundcraft_time::TempoMap) -> Option<Arc<Session>> {
+        let base = self.grid_base.as_ref()?;
+        for slot in &mut self.follow_pool {
+            let snapshot = slot.get_or_insert_with(|| Arc::new((**base).clone()));
+            if let Some(doc) = Arc::get_mut(snapshot) {
+                doc.tempo.clone_from(tempo);
+                return Some(snapshot.clone());
+            }
+        }
+        None
     }
 
     /// Note `s`'s tracks; the ones the previous session had and `s` doesn't.

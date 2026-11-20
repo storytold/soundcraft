@@ -371,9 +371,9 @@ impl MidiFeed {
         }
         let mut input = self.clock_follow.lock().unwrap_or_else(PoisonError::into_inner);
         if input.source == Some(port) && open.is_none_or(|g| g.load(Ordering::Acquire)) {
-            input.receive(bytes, at);
+            let action = input.receive(bytes, at);
             drop(input);
-            if bytes.iter().any(|b| matches!(b, 0xf2 | 0xf8 | 0xfa..=0xfc)) {
+            if action {
                 self.wake_mtc_host();
             }
         }

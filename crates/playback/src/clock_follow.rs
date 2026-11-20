@@ -47,6 +47,7 @@ pub(crate) struct Follower {
     dropouts: u64,
     events: [Option<Action>; 32],
     head: usize,
+    queued_action: bool,
     count: usize,
     spp: Option<Option<u8>>,
 }
@@ -70,6 +71,7 @@ impl Default for Follower {
             dropouts: 0,
             events: [None; 32],
             head: 0,
+            queued_action: false,
             count: 0,
             spp: None,
         }
@@ -77,6 +79,7 @@ impl Default for Follower {
 }
 impl Follower {
     fn push(&mut self, action: Action) {
+        self.queued_action = true;
         if self.count == self.events.len() {
             // A paused host cannot replay an arbitrarily long history safely.
             // Resynchronise on a fresh Start/Continue after delivering one Stop.
@@ -178,7 +181,8 @@ impl Follower {
     }
     /// System common bytes may be interrupted by real-time messages, even inside SysEx.
     /// Channel data and incomplete or malformed system messages never trigger a transport action.
-    pub(crate) fn receive(&mut self, bytes: &[u8], at: i64) {
+    pub(crate) fn receive(&mut self, bytes: &[u8], at: i64) -> bool {
+        self.queued_action = false;
         self.expire(at);
         for &byte in bytes {
             match byte {
@@ -215,6 +219,7 @@ impl Follower {
                 _ => self.spp = None,
             }
         }
+        self.queued_action
     }
 }
 #[cfg(test)]
