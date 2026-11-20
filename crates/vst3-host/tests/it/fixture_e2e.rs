@@ -12,6 +12,89 @@ fn id_of(name: &str) -> String {
 }
 
 #[test]
+fn mapped_program_changes_reach_the_instrument_at_each_event_offset() {
+    let mut p = soundcraft_vst3_host::create(&id_of("Fixture Synth")).unwrap();
+    p.prepare(48_000.0, 64, 2);
+    p.midi(40, [0xC0, 2, 0]);
+    p.midi(10, [0xC0, 5, 0]);
+    let mut io = vec![vec![0.0f32; 64]; 2];
+    p.process(&mut io, 64);
+    assert_eq!(io[0][9], 0.0);
+    assert!((io[0][10] - 15.0).abs() < 1e-5, "program 5/7 was dropped, mis-scaled or delivered late");
+    assert!((io[0][39] - 15.0).abs() < 1e-5);
+    assert!((io[0][40] - 12.0).abs() < 1e-5, "program 2 must not replace program 5's earlier point");
+    assert!((io[0][63] - 12.0).abs() < 1e-5);
+}
+
+#[test]
+fn mapped_program_and_cc7_both_play_in_one_sub_block() {
+    let mut p = soundcraft_vst3_host::create(&id_of("Fixture Synth")).unwrap();
+    p.prepare(48_000.0, 64, 2);
+    p.midi(0, [0xC0, 5, 0]);
+    p.midi(10, [0xB0, 7, 32]);
+    let mut io = vec![vec![0.0f32; 64]; 2];
+    p.process(&mut io, 64);
+    assert!(io[0][..10].iter().all(|&sample| (sample - 15.0).abs() < 1e-5));
+    assert!(io[0][10..].iter().all(|&sample| (sample - 32.0 / 127.0).abs() < 1e-5));
+}
+
+#[test]
+fn dense_program_changes_keep_each_offset_across_process_splits() {
+    let mut p = soundcraft_vst3_host::create(&id_of("Fixture Synth")).unwrap();
+    let frames = 1024;
+    p.prepare(48_000.0, 64, 2);
+    for offset in (0..frames).rev() {
+        p.midi(offset, [0xC0, if offset % 2 == 0 { 2 } else { 5 }, 0]);
+    }
+    let mut io = vec![vec![0.0f32; frames]; 2];
+    p.process(&mut io, frames);
+    for (offset, &sample) in io[0].iter().enumerate() {
+        let expected = if offset % 2 == 0 { 12.0 } else { 15.0 };
+        assert!((sample - expected).abs() < 1e-5, "program at offset {offset}");
+    }
+}
+
+#[test]
+fn an_unmapped_program_channel_does_not_select_channel_one_programs() {
+    let mut p = soundcraft_vst3_host::create(&id_of("Fixture Synth")).unwrap();
+    p.prepare(48_000.0, 64, 2);
+    p.midi(10, [0xC9, 5, 0]);
+    p.midi(12, [0xB1, 0, 127]);
+    p.midi(40, [0xC0, 5, 0]);
+    let mut io = vec![vec![0.0f32; 64]; 2];
+    p.process(&mut io, 64);
+    assert!(io[0][..40].iter().all(|&v| v == 0.0));
+    assert!((io[0][40] - 15.0).abs() < 1e-5);
+}
+
+#[test]
+fn program_and_max_block_splits_advance_the_transport_from_the_block_start() {
+    use soundcraft_dsp::Transport;
+    let mut p = soundcraft_vst3_host::create(&id_of("Fixture Synth")).unwrap();
+    p.prepare(48_000.0, 16, 2);
+    p.set_transport(&Transport {
+        playing: true,
+        recording: false,
+        tempo: 120.0,
+        numerator: 4,
+        denominator: 4,
+        samples: 48_000,
+        seconds: 1.0,
+        quarters: 2.0,
+        bar_start: 0.0,
+        bar: 0,
+    });
+    p.midi(10, [0xC0, 127, 0]);
+    p.midi(40, [0xC0, 127, 0]);
+    let mut io = vec![vec![0.0f32; 64]; 2];
+    p.process(&mut io, 64);
+    for start in [10usize, 26, 40, 56] {
+        assert_eq!(io[0][start], (48_000 + start) as f32, "sample position at sub-block {start}");
+        assert!((io[1][start] - (2.0 + start as f32 / 24_000.0)).abs() < 1e-6, "quarter-note position at sub-block {start}");
+    }
+}
+
+#[test]
 fn scan_lists_both_audio_modules_but_not_the_controller_class() {
     let dir = fixture_dir();
     let found = soundcraft_vst3_host::scan_paths(&[dir.to_path_buf()]);
