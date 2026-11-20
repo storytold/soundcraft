@@ -1,11 +1,13 @@
 //! MIDI driver timestamps have a per-connection epoch. Map them onto the
 //! feed's monotonic (audio host) clock before comparing different callbacks.
+#[cfg(any(test, target_os = "windows", target_os = "macos", target_os = "linux"))]
 #[derive(Default)]
 pub(crate) struct DriverTime {
     last: Option<(u64, i64)>,
     offset: i64,
 }
 
+#[cfg(any(test, target_os = "windows", target_os = "macos", target_os = "linux"))]
 impl DriverTime {
     pub(crate) fn map(&mut self, stamp: u64, arrival: i64) -> i64 {
         let t = i64::try_from(stamp).unwrap_or(i64::MAX);

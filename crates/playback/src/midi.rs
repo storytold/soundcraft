@@ -292,6 +292,7 @@ impl MidiFeed {
     pub fn set_mtc_wakeup(&self, make: impl FnOnce() -> Box<dyn Fn() + Send + Sync>) {
         self.mtc_wake.get_or_init(make);
     }
+    #[cfg(any(target_os = "windows", target_os = "macos", target_os = "linux"))]
     pub(crate) fn set_sync_waker(&self, wake: Arc<dyn Fn() + Send + Sync>) {
         *self.sync_wake.lock().unwrap_or_else(PoisonError::into_inner) = Some(wake);
     }

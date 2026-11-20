@@ -10,7 +10,6 @@ repository.workspace = true
 [dependencies]
 soundcraft-time.workspace = true
 craft-audio.workspace = true
-craft-midi-sync.workspace = true
 soundcraft-model.workspace = true
 soundcraft-mix.workspace = true
 soundcraft-dsp.workspace = true
