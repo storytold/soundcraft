@@ -1864,6 +1864,7 @@ fn menu_translate(source: &str) -> Option<&'static str> {
         "Offline Processing" => "Processamento offline",
         "On Exiting Trim Mode" => "Ao sair do modo Trim",
         "Online Recording Starts" => "A gravação online começa",
+        "Open Help Shortcut" => "Atalho para abrir a Ajuda",
         "Open Unresourced DSP Plugins as Native" => "Abrir plugins DSP sem recursos como nativos",
         "Organize Plugin Menus By" => "Organizar os menus de plugins por",
         "Organize Track I/O Menus By" => "Organizar os menus de E/S de pista por",
@@ -2063,6 +2064,63 @@ fn menu_translate(source: &str) -> Option<&'static str> {
         " {n} of the files are used by {users}" => " {n} dos arquivos são usados por {users}",
         " The file stays on disk." => " O arquivo permanece no disco.",
         " The files stay on disk." => " Os arquivos permanecem no disco.",
+        // Help window and Help menu.
+        "Help" => "Ajuda",
+        "SoundCraft Help" => "Ajuda do SoundCraft",
+        "Search Help..." => "Pesquisar na Ajuda...",
+        "Help Index" => "Índice da Ajuda",
+        "Report a Problem..." => "Relatar um problema...",
+        "SoundCraft Help could not load its bundled catalog." => "A Ajuda do SoundCraft não conseguiu carregar o catálogo incluído.",
+        "Back" => "Voltar",
+        "Back (Alt+Left)" => "Voltar (Alt+Esquerda)",
+        "Forward" => "Avançar",
+        "Forward (Alt+Right)" => "Avançar (Alt+Direita)",
+        "Search help" => "Pesquisar na ajuda",
+        "Clear the search" => "Limpar a pesquisa",
+        "{} pages" => "{} páginas",
+        "Contents" => "Conteúdo",
+        "Index" => "Índice",
+        "Welcome" => "Boas-vindas",
+        "Filter index" => "Filtrar índice",
+        "Type a word to jump to it" => "Digite uma palavra para ir até ela",
+        "Nothing starts with that. Try Search instead." => "Nada começa com isso. Tente a Pesquisa.",
+        "Type in the search box above: a word, a menu name or a shortcut such as {example}." => {
+            "Digite na caixa de pesquisa acima: uma palavra, o nome de um menu ou um atalho como {example}."
+        }
+        "No pages match. Try fewer or different words." => "Nenhuma página corresponde. Tente menos palavras ou palavras diferentes.",
+        "Every command in SoundCraft has a page here that says what it does, where it is in the menus and its shortcut." => {
+            "Cada comando do SoundCraft tem aqui uma página que diz o que ele faz, onde fica nos menus e qual é o seu atalho."
+        }
+        "Browse by topic in Contents, look a word up in Index, or type what you want to do in the search box." => {
+            "Navegue por tema em Conteúdo, procure uma palavra no Índice ou digite o que você quer fazer na caixa de pesquisa."
+        }
+        "Point at any SoundCraft window and press Cmd+? to open help on that window's page." => {
+            "Aponte para qualquer janela do SoundCraft e pressione Cmd+? para abrir a ajuda na página dessa janela."
+        }
+        "How to" => "Como fazer",
+        "Topics" => "Temas",
+        "Page not found" => "Página não encontrada",
+        "Guide: {}" => "Guia: {}",
+        "Current limits" => "Limitações atuais",
+        "{shortcut} (Mac only)" => "{shortcut} (somente Mac)",
+        "Do it now" => "Fazer agora",
+        "Not in the menus. Scripts and agents can run it by its command id." => {
+            "Não está nos menus. Scripts e agentes podem executá-lo pelo id do comando."
+        }
+        "Command id: {id}" => "Id do comando: {id}",
+        "Related commands" => "Comandos relacionados",
+        "Same as choosing {} from the menu." => "O mesmo que escolher {} no menu.",
+        "this action is unavailable." => "esta ação não está disponível.",
+        "Not available right now: {reason}" => "Indisponível no momento: {reason}",
+        "close Preferences first." => "feche as Preferências primeiro.",
+        "close the active dialog first." => "feche o diálogo ativo primeiro.",
+        "stop the transport first." => "pare o transporte primeiro.",
+        "stop recording first." => "pare a gravação primeiro.",
+        "Find it in the AudioSuite menu:" => "Encontre no menu AudioSuite:",
+        "AudioSuite processes the selected clips offline and writes the result as new audio files." => {
+            "O AudioSuite processa offline os clipes selecionados e grava o resultado como novos arquivos de áudio."
+        }
+        "Open it" => "Abrir",
         _ => return error_translation(source),
     })
 }

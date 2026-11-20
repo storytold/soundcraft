@@ -80,9 +80,17 @@ pub const UI_COMMANDS: &[(&str, &str, &str, Option<&str>)] = &[
     ("ui.set", "Set UI State", "", None),
     ("ui.language", "Language", "", None),
     ("ui.theme", "Appearance", "", None),
+    ("help.open", "SoundCraft Help", "Help > SoundCraft Help", Some("Cmd+Shift+/")),
+    ("help.search", "Search Help...", "Help > Search Help...", None),
+    ("help.index", "Help Index", "Help > Help Index", None),
+    ("help.report", "Report a Problem...", "Help > Report a Problem...", None),
     ("ui.reduce_visual_effects", "Reduce Visual Effects", "", None),
     ("ui.undo_levels", "Levels of Undo", "", None),
 ];
+
+/// The Help menu, last on the menu bar, in this order. Keyboard Shortcuts opens the existing window.
+const HELP_MENU: &[&str] =
+    &["Help > SoundCraft Help", "Help > Search Help...", "Help > Help Index", "Help > Keyboard Shortcuts", "Help > Report a Problem..."];
 
 /// Extra catalog mappings handled by the UI layer.
 pub fn ui_aliases() -> Vec<(&'static str, &'static str)> {
@@ -260,6 +268,9 @@ pub fn tree() -> Vec<MenuNode> {
     if let Some(clip) = roots.iter_mut().find(|n| n.path == "Clip") {
         clip.children.rotate_right(1);
     }
+    for path in HELP_MENU {
+        insert_path(&mut roots, path);
+    }
     for (path, _) in MENU_WINDOWS {
         insert_path(&mut roots, path);
     }
@@ -390,7 +401,7 @@ fn menu_node(app: &mut SoundApp, ui: &mut egui::Ui, n: &MenuNode, extra: &[(&str
     let (enabled, checked) = item_state(app, &n.path, id.as_deref());
     let label = live_label(app, id.as_deref()).unwrap_or_else(|| crate::localization::text(&n.label).to_string());
     let label = if checked { format!("✔ {label}") } else { label };
-    let shortcut = id.as_deref().and_then(shortcut_for).unwrap_or("");
+    let shortcut = id.as_deref().and_then(|id| crate::shortcuts::binding(&app.ui, id)).unwrap_or("");
     let btn = egui::Button::new(label).shortcut_text(crate::shortcuts::display_shortcut(shortcut, ui.ctx().os().is_mac()));
     let response = ui.add_enabled(enabled, btn);
     let response =
@@ -415,8 +426,10 @@ pub fn item_state(app: &SoundApp, path: &str, id: Option<&str>) -> (bool, bool) 
     } else {
         match id {
             Some("setup.preferences") => preferences_menu_enabled(app),
+            Some("app.checkForUpdates") => true,
             Some(i)
                 if i.starts_with("window.")
+                    || i.starts_with("help.")
                     || i.starts_with("view.mix_section")
                     || matches!(i, "audiosuite.process" | "ui.dock" | "ui.dock.reset") =>
             {
@@ -531,6 +544,7 @@ const MENU_WINDOWS: &[(&str, &str)] = &[
     ("Setup > MIDI > MIDI Input Devices...", "window.playback_engine"),
     ("Setup > I/O...", "window.io_setup"),
     ("Setup > Keyboard Shortcuts...", "window.shortcuts"),
+    ("Help > Keyboard Shortcuts", "window.shortcuts"),
     ("Setup > Session", "setup.session"),
     ("Event > Beat Detective", "window.beat_detective"),
     ("Event > Tempo Operations > Tempo Operations Window", "window.tempo_ops"),
@@ -686,6 +700,22 @@ pub fn run_ui_command(app: &mut SoundApp, id: &str, p: &Value) -> Option<Result<
             toggle(&mut app.ui.show_audio_health)
         }
         "window.about" => toggle(&mut app.ui.show_about),
+        // Help opens (never closes) from the menu and Cmd+?; `{"value": false}` closes it.
+        "help.open" | "help.search" | "help.index" => {
+            app.ui.show_help = p.get("value").and_then(Value::as_bool).unwrap_or(true);
+            app.ui.help.focus_help = app.ui.show_help && id != "help.search";
+            if id == "help.search" {
+                app.ui.help.tab = crate::help::Tab::Search;
+                app.ui.help.focus_search = true;
+            } else if id == "help.index" {
+                app.ui.help.tab = crate::help::Tab::Index;
+            }
+            json!({"value": app.ui.show_help})
+        }
+        "help.report" => {
+            app.ui.help.open_report = true;
+            json!({"url": crate::help::REPORT_URL})
+        }
         "window.midi_editor" => toggle(&mut app.ui.show_midi_editor),
         "window.midi_front" => {
             app.ui.show_midi_editor = true;
@@ -889,6 +919,7 @@ mod tests {
     fn preferences_menu_state_tracks_transport_and_modality() {
         let mut app = SoundApp::new(soundcraft_engine::Engine::default(), None, Services::default());
         assert!(item_state(&app, "Setup > Preferences...", Some("setup.preferences")).0);
+        assert!(item_state(&app, "Help > SoundCraft Help", Some("help.open")).0);
 
         app.engine.transport.playing = true;
         assert!(!item_state(&app, "Setup > Preferences...", Some("setup.preferences")).0);
@@ -900,6 +931,7 @@ mod tests {
         app.ui.show_preferences = true;
         assert!(!item_state(&app, "Setup > Preferences...", Some("setup.preferences")).0);
         assert!(!item_state(&app, "Window > About", Some("window.about")).0);
+        assert!(!item_state(&app, "Help > SoundCraft Help", Some("help.open")).0);
         assert!(!item_state(&app, "File > Save Session", Some("session.save")).0);
     }
 

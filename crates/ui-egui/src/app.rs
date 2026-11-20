@@ -353,6 +353,7 @@ impl SoundApp {
         recovery::show(self, &ctx);
         score_editor::show(self, &ctx);
         palette::show(self, &ctx);
+        crate::help::show(self, &ctx);
         dialogs::show(self, &ctx);
         aaf_import::show(self, &ctx);
         updates_ui::show(self, &ctx);
