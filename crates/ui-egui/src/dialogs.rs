@@ -997,6 +997,23 @@ mod tests {
         egui::Event::Key { key, physical_key: None, pressed: true, repeat: false, modifiers }
     }
 
+    fn visible_labels(mut output: egui::FullOutput, screen: egui::Rect) -> std::collections::BTreeMap<String, egui::Pos2> {
+        output.textures_delta.clear();
+        output
+            .shapes
+            .into_iter()
+            .filter_map(|shape| {
+                if let egui::Shape::Text(t) = shape.shape {
+                    let center = t.galley.rect.translate(t.pos.to_vec2()).center();
+                    if screen.contains(center) && shape.clip_rect.contains(center) {
+                        return Some((t.galley.text().to_owned(), center));
+                    }
+                }
+                None
+            })
+            .collect()
+    }
+
     #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
     #[test]
     fn many_clock_destinations_scroll_without_hiding_ok() {
@@ -1010,19 +1027,7 @@ mod tests {
             let output = ctx.run_ui(egui::RawInput { screen_rect: Some(screen), events, ..Default::default() }, |ui| {
                 form.show(ui, false, &mut app);
             });
-            output
-                .shapes
-                .into_iter()
-                .filter_map(|shape| {
-                    if let egui::Shape::Text(t) = shape.shape {
-                        let center = t.galley.rect.translate(t.pos.to_vec2()).center();
-                        if screen.contains(center) && shape.clip_rect.contains(center) {
-                            return Some((t.galley.text().to_owned(), center));
-                        }
-                    }
-                    None
-                })
-                .collect::<std::collections::BTreeMap<_, _>>()
+            visible_labels(output, screen)
         };
         draw(vec![]);
         let rows = draw(vec![]);
@@ -1060,6 +1065,28 @@ mod tests {
         dialog_frame(&ctx, &mut app, vec![key(egui::Key::Enter, egui::Modifiers::NONE)]);
         assert!(app.dialogs.open.is_none());
         assert_eq!(app.ui.midi_sync.ports["DIN"].offset_samples, 24_000);
+
+        // An explicit edit still goes through the control's current rate-dependent range.
+        let mut form = midi_beat_clock::MidiBeatClock { settings: app.ui.midi_sync.clone(), outputs: Ok(vec!["DIN".into()]) };
+        let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, vec2(1366., 768.));
+        let mut draw = |events| {
+            let output = ctx.run_ui(egui::RawInput { screen_rect: Some(screen), events, ..Default::default() }, |ui| {
+                form.show(ui, false, &mut app);
+            });
+            visible_labels(output, screen)
+        };
+        draw(vec![]);
+        let position = draw(vec![])["24000"];
+        for pressed in [true, false] {
+            draw(vec![
+                egui::Event::PointerMoved(position),
+                egui::Event::PointerButton { pos: position, button: egui::PointerButton::Primary, pressed, modifiers: egui::Modifiers::NONE },
+            ]);
+        }
+        draw(vec![]);
+        draw(vec![egui::Event::Text("20000".into())]);
+        draw(vec![key(egui::Key::Enter, egui::Modifiers::NONE)]);
+        assert_eq!(form.settings.ports["DIN"].offset_samples, 12_000);
     }
 
     #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
