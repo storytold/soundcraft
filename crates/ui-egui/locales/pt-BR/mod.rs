@@ -14,7 +14,9 @@ pub(super) fn translate(source: &str) -> Option<&'static str> {
         "MTC generator output" => "Saída do gerador de MTC",
         "MTC Reader Port" => "Porta de leitura de MTC",
         "MTC Generator Port" => "Porta de geração de MTC",
-        "MIDI Time Code needs a session at 23.976, 24, 25, 29.97 non-drop, 29.97 drop-frame or 30 fps." => "O MIDI Time Code precisa de uma sessão em 23,976, 24, 25, 29,97 sem drop-frame, 29,97 drop-frame ou 30 fps.",
+        "MIDI Time Code needs a session at 23.976, 24, 25, 29.97 non-drop, 29.97 drop-frame or 30 fps." => {
+            "O MIDI Time Code precisa de uma sessão em 23,976, 24, 25, 29,97 sem drop-frame, 29,97 drop-frame ou 30 fps."
+        }
         "No timecode received" => "Nenhum timecode recebido",
         "Received timecode" => "Timecode recebido",
         "Use received position" => "Usar posição recebida",
@@ -29,8 +31,12 @@ pub(super) fn translate(source: &str) -> Option<&'static str> {
         "External timecode offset exceeds one hour of samples" => "O deslocamento de timecode externo excede uma hora de amostras",
         "Offset must be a signed timecode such as -01:00:00:00." => "O deslocamento deve ser um timecode com sinal, como -01:00:00:00.",
         "Choose timecode or relative clip positions" => "Escolha posições dos clipes relativas ou por timecode",
-        "The session has conflicting timecode offsets. Chase uses the External Timecode Offset." => "A sessão tem deslocamentos de timecode conflitantes. O seguimento usa o deslocamento de timecode externo.",
-        "Migrated the MTC reader offset to External Timecode Offset." => "O deslocamento do leitor MTC foi migrado para o deslocamento de timecode externo.",
+        "The session has conflicting timecode offsets. Chase uses the External Timecode Offset." => {
+            "A sessão tem deslocamentos de timecode conflitantes. O seguimento usa o deslocamento de timecode externo."
+        }
+        "Migrated the MTC reader offset to External Timecode Offset." => {
+            "O deslocamento do leitor MTC foi migrado para o deslocamento de timecode externo."
+        }
         "Gen MTC" => "Gerar MTC",
         "Freewheel (frames)" => "Tolerância de perda (quadros)",
         "Jam Sync" => "Sincronização contínua",

@@ -36,14 +36,17 @@ fn both_encoders_use_one_connection_and_the_same_offset() {
     let lead = Duration::from_millis(30);
     let due = now + Duration::from_millis(25);
     let mut map = BTreeMap::new();
-    set_route(&mut map, 0, "device".to_owned(), Route { offset: -240, compensate: true, encoder: Box::<Cursor>::default() });
-    set_route(&mut map, 1, "device".to_owned(), Route { offset: -240, compensate: true, encoder: Box::<crate::mtc::Encoder>::default() });
+    set_route(&mut map, 0, "device".to_owned(), Route { map: None, offset: -240, compensate: true, encoder: Box::<Cursor>::default() });
+    set_route(&mut map, 1, "device".to_owned(), Route { map: None, offset: -240, compensate: true, encoder: Box::<crate::mtc::Encoder>::default() });
     assert_eq!(map.len(), 1);
     let messages = Arc::default();
     let p = map.get_mut("device").unwrap();
     p.link = Some(Capture(Arc::clone(&messages)));
     let v = View::default();
     v.lock().unwrap().push(Presentation {
+        generation: 0,
+        sample_rate: soundcraft_time::SampleRate::HZ_48000,
+        system_delay_samples: 0,
         pass: 1,
         origin: 0,
         playing: true,
@@ -66,6 +69,61 @@ fn both_encoders_use_one_connection_and_the_same_offset() {
     assert!(data.iter().any(|(t, _, b)| *t == due && b == &[0xf8]));
     assert!(data.iter().any(|(t, _, b)| *t == due && b == &[0xf1, 0]));
     assert_eq!(data.iter().filter(|(_, _, m)| m[0] == 0xf1).count(), 12);
+}
+
+#[test]
+fn mtc_quarters_use_the_mixer_delay_and_report_limited_negative_advances() {
+    use soundcraft_time::{FrameRate, SampleRate};
+    let base = Instant::now();
+    let lead = Duration::from_millis(20);
+    let mut session = Session::new("generator delay", SampleRate::HZ_48000);
+    session.frame_rate = FrameRate::Fps25;
+    session.timecode_start = 0;
+    for (offset, delay, expected_us, limited) in
+        [(-4800, 0, 1000, true), (-4800, 2400, 1000, true), (0, 2400, 70000, false), (480, 2400, 80000, false)]
+    {
+        let cable = View::default();
+        let mut routes = BTreeMap::new();
+        set_route(&mut routes, 1, "MTC".into(), Route { map: None, offset, compensate: true, encoder: Box::<crate::mtc::Encoder>::default() });
+        let p = routes.get_mut("MTC").unwrap();
+        let packets = Arc::new(Mutex::new(Vec::new()));
+        p.link = Some(Capture(packets.clone()));
+        let stats = Stats::default();
+        for ms in 0..=500 {
+            let now = base + Duration::from_millis(ms);
+            if ms % 10 == 0 {
+                cable.lock().unwrap().push(Presentation {
+                    generation: 0,
+                    sample_rate: session.sample_rate,
+                    system_delay_samples: delay,
+                    pass: 1,
+                    origin: 0,
+                    playing: true,
+                    sample: ms as f64 * 48.,
+                    limit: ms as f64 * 48. + 480.,
+                    heard_at: now + lead,
+                    lead,
+                    samples_per_second: 48000.,
+                    looped: None,
+                    end: None,
+                });
+            }
+            p.poll("MTC", now, &session, &cable, &stats, &mut Vec::new());
+        }
+        let onsets: Vec<_> =
+            packets.lock().unwrap().iter().filter(|(_, _, b)| b[0] == 0xf1).map(|(at, _, _)| at.duration_since(base).as_micros() as i64).collect();
+        assert!(onsets.len() > 40, "{onsets:?}");
+        for (index, onset) in onsets.into_iter().enumerate() {
+            assert!(onset.abs_diff(expected_us + index as i64 * 10000) <= 1, "offset {offset}, delay {delay}, quarter {index}, onset {onset}");
+        }
+        let mut output = Output::default();
+        output.additional = Some(("MTC".into(), offset, true));
+        output.metrics.lead_us.store(20000, Relaxed);
+        output.metrics.system_delay_samples.store(delay as u64, Relaxed);
+        let status = output.status();
+        assert_eq!(status.ports["MTC"].mtc_total_us, Some(expected_us));
+        assert_eq!(status.ports["MTC"].advance_limited, limited);
+    }
 }
 
 /// Route the real encoder through the worker's SyncPort boundary into a second
@@ -101,7 +159,7 @@ fn generator_and_slave_agree_on_heard_time_after_acquisition() {
     let now = Instant::now();
     let lead = Duration::from_millis(30);
     let mut routes = BTreeMap::new();
-    set_route(&mut routes, 1, "cable".into(), Route { offset: 0, compensate: true, encoder: Box::<crate::mtc::Encoder>::default() });
+    set_route(&mut routes, 1, "cable".into(), Route { map: None, offset: 0, compensate: true, encoder: Box::<crate::mtc::Encoder>::default() });
     let port = routes.get_mut("cable").unwrap();
     port.link = Some(Cable { input: input.clone(), epoch: now });
     let master = View::default();
@@ -115,9 +173,12 @@ fn generator_and_slave_agree_on_heard_time_after_acquisition() {
     let mut pending = Vec::new();
     let mut worst = 0.;
     for i in 0..=600 {
-        let sample = f64::from(i * 240);
+        let sample = (i * 240) as f64;
         let clock = now + Duration::from_millis(i as u64 * 5);
         master.lock().unwrap().push(Presentation {
+            generation: 0,
+            sample_rate: soundcraft_time::SampleRate::HZ_48000,
+            system_delay_samples: 0,
             pass: 1,
             origin: 0,
             playing: true,
@@ -130,11 +191,11 @@ fn generator_and_slave_agree_on_heard_time_after_acquisition() {
             lead,
         });
         port.poll("cable", clock, &session, &master, &stats, &mut pending);
-        input.set_clock(i64::from(i) * 5000);
+        input.set_clock(i as i64 * 5000);
         audio.device_timing = Some(DeviceTiming::new(clock, Some(lead), 0));
         audio.fill(&mut [0.; 480], 2);
         if i >= 300 {
-            let audible = |v: &View| v.lock().unwrap().read(clock, true, 0.).0.unwrap().sample_heard_at(clock);
+            let audible = |v: &View| v.lock().unwrap().read(clock, true, 0).0.unwrap().sample_heard_at(clock);
             worst = f64::max(worst, (audible(&master) - audible(&slave)).abs());
         }
     }
@@ -157,6 +218,9 @@ fn measure_native_worker_quarter_frame_spacing() {
         let (tx, rx) = channel();
         let start = Instant::now() + Duration::from_millis(80);
         v.lock().unwrap().push(Presentation {
+            generation: 0,
+            sample_rate: soundcraft_time::SampleRate::HZ_48000,
+            system_delay_samples: 0,
             pass: 1,
             origin: 0,
             playing: true,

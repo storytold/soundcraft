@@ -175,16 +175,18 @@ impl Reader {
         self.jitter_count = 0;
         self.jitter_index = 0;
     }
-    pub(crate) fn incoming_status(&self) -> (Option<Position>,Option<RateMismatch>) {
-        let mismatch=self.incoming.and_then(|p| {
-            if self.source.is_none() { return None; }
+    pub(crate) fn incoming_status(&self) -> (Option<Position>, Option<RateMismatch>) {
+        let mismatch = self.incoming.and_then(|p| {
+            if self.source.is_none() {
+                return None;
+            }
             if p.in_session_rate(self.options.rate).rate != self.options.rate {
                 Some(RateMismatch { incoming: p.rate.label(), session: self.options.rate.label(), speed_deviation_ppm: None })
             } else {
                 self.speed_mismatch.filter(|m| m.session == self.options.rate.label())
             }
         });
-        (self.incoming,mismatch)
+        (self.incoming, mismatch)
     }
     #[cfg(test)]
     pub(crate) fn diagnostics(&self) -> ChaseStats {
@@ -192,16 +194,18 @@ impl Reader {
     }
     pub(crate) fn diagnostics_at(&self, now: i64) -> ChaseStats {
         let mut stats = self.stats;
-        stats.freewheel_state = match (self.locked,self.coasting,self.options.jam,self.lost_code) {
-            (true,true,true,_) => "jam sync running on internal clock",
-            (true,true,false,_) => "freewheeling",
-            (true,_,_,_) => "locked",
-            (_,_,_,true) => "stopped: timecode lost",
+        stats.freewheel_state = match (self.locked, self.coasting, self.options.jam, self.lost_code) {
+            (true, true, true, _) => "jam sync running on internal clock",
+            (true, true, false, _) => "freewheeling",
+            (true, _, _, _) => "locked",
+            (_, _, _, true) => "stopped: timecode lost",
             _ => "waiting",
         };
-        stats.limit_frames=self.options.freewheel;
-        if self.coasting && let (Some(last),Some((p,_)))=(self.last_at,self.rolling) {
-            stats.elapsed_frames=(now.saturating_sub(last).max(0) as f64/p.in_session_rate(self.options.rate).frame_us()) as u64;
+        stats.limit_frames = self.options.freewheel;
+        if self.coasting
+            && let (Some(last), Some((p, _))) = (self.last_at, self.rolling)
+        {
+            stats.elapsed_frames = (now.saturating_sub(last).max(0) as f64 / p.in_session_rate(self.options.rate).frame_us()) as u64;
         }
         stats.incoming_timecode = self.incoming;
         stats.incoming_rate = self.incoming.map(|p| if p.rate.is_drop() { "30df" } else { p.rate.label() });
@@ -259,7 +263,9 @@ impl Reader {
         let last = self.last_at.unwrap_or(now).min(self.last_group.unwrap_or(now).saturating_add((2. * frame_us).ceil() as i64));
         let elapsed = now.saturating_sub(last);
         if self.options.freewheel == 0 && !self.options.jam {
-            if elapsed as f64 >= frame_us * 2. { self.loss(); }
+            if elapsed as f64 >= frame_us * 2. {
+                self.loss();
+            }
             return;
         }
         if self.last_at.is_some_and(|last| now.saturating_sub(last) as f64 > frame_us / 2.) {
@@ -370,14 +376,19 @@ impl Reader {
         };
         let elapsed = now.saturating_sub(time);
         if !matches!(position.rate, FrameRate::Fps24 | FrameRate::Fps30)
-            || rate != old_rate || position.rate != start.rate || position.quarter < start.quarter || elapsed < 0
+            || rate != old_rate
+            || position.rate != start.rate
+            || position.quarter < start.quarter
+            || elapsed < 0
         {
             self.speed_anchor = Some(anchor);
             self.speed_mismatch = None;
             return;
         }
         // Ten seconds bounds the error from 2.4 ms peak-to-peak arrival jitter to 240 ppm.
-        if elapsed < 10_000_000 { return; }
+        if elapsed < 10_000_000 {
+            return;
+        }
         self.speed_anchor = Some(anchor);
         let position_us = (position.quarter - start.quarter) as f64 * position.in_session_rate(rate).frame_us() / 4.;
         let ppm = ((position_us / elapsed as f64 - 1.) * 1_000_000.).round() as i64;
@@ -581,11 +592,13 @@ mod dropout_tests {
         r.reset(Some(3));
         r.options.offset = 123_456;
         let first = 30 * (3600 + 120 + 3) + 4;
-        for b in crate::mtc::quarters(first, FrameRate::Fps30) { r.read(&b, 0); }
+        for b in crate::mtc::quarters(first, FrameRate::Fps30) {
+            r.read(&b, 0);
+        }
         let d = r.diagnostics();
         assert_eq!(d.incoming_timecode.map(Position::label).as_deref(), Some("01:02:03:04"));
         assert_eq!(d.incoming_rate, Some("30"));
-        r.read(&[0xf0,0x7f,127,1,1,0x40,1,0,2,0xf7], 16);
+        r.read(&[0xf0, 0x7f, 127, 1, 1, 0x40, 1, 0, 2, 0xf7], 16);
         r.read(&[0xfc], 18);
         assert_eq!(r.diagnostics().incoming_timecode.map(Position::label).as_deref(), Some("00:01:00;02"));
         assert_eq!(r.diagnostics().incoming_rate, Some("30df"));
@@ -597,39 +610,85 @@ mod dropout_tests {
     fn reader_warns_about_mismatched_code_and_ntsc_speed_without_losing_lock() {
         let mut r = Reader::default();
         r.reset(Some(1));
-        for b in crate::mtc::quarters(0, FrameRate::Fps25) { r.read(&b, 0); }
-        assert_eq!(r.diagnostics().rate_mismatch.map(|m| (m.incoming,m.speed_deviation_ppm)),Some(("25", None)));
-        for (session, source) in [(FrameRate::Fps29_97, FrameRate::Fps30),(FrameRate::Fps30,FrameRate::Fps29_97),(FrameRate::Fps30,FrameRate::Fps30)] {
+        for b in crate::mtc::quarters(0, FrameRate::Fps25) {
+            r.read(&b, 0);
+        }
+        assert_eq!(r.diagnostics().rate_mismatch.map(|m| (m.incoming, m.speed_deviation_ppm)), Some(("25", None)));
+        for (session, source) in
+            [(FrameRate::Fps29_97, FrameRate::Fps30), (FrameRate::Fps30, FrameRate::Fps29_97), (FrameRate::Fps30, FrameRate::Fps30)]
+        {
             let mut r = Reader::default();
             r.reset(Some(1));
             r.options.rate = session;
             let same = session == source;
             for n in 0..if same { 9000 } else { 420 } {
-                for (piece,b) in crate::mtc::quarters(n*2, FrameRate::Fps30).into_iter().enumerate() {
-                    let (num,den) = source.rational();
-                    let us = ((n*8+piece as i64)*1_000_000*i64::from(den))/(4*i64::from(num));
-                    r.read(&b,us+if n%2==0 { 1200 } else { -1200 });
+                for (piece, b) in crate::mtc::quarters(n * 2, FrameRate::Fps30).into_iter().enumerate() {
+                    let (num, den) = source.rational();
+                    let us = ((n * 8 + piece as i64) * 1_000_000 * i64::from(den)) / (4 * i64::from(num));
+                    r.read(&b, us + if n % 2 == 0 { 1200 } else { -1200 });
                 }
-                if same { assert!(r.diagnostics().rate_mismatch.is_none()); }
+                if same {
+                    assert!(r.diagnostics().rate_mismatch.is_none());
+                }
             }
             assert!(r.locked);
-            if !same { assert_eq!(r.diagnostics().rate_mismatch.map(|m| m.incoming),Some(source.label())); }
+            if !same {
+                assert_eq!(r.diagnostics().rate_mismatch.map(|m| m.incoming), Some(source.label()));
+            }
         }
     }
 
     #[test]
     fn none_stops_on_missing_or_discontinuous_code_without_coasting() {
-        for discontinuity in [false,true] {
+        for discontinuity in [false, true] {
             let mut r = Reader::default();
             r.options.freewheel = 0;
-            for i in 0..16 { pulse(&mut r,i); }
-            assert!(matches!(r.tracking(150_000), Tracking::Rolling {..}));
-            assert_eq!(r.stats.freewheel_entries,0);
-            if discontinuity { r.read(&[0xf1, 0x30],151_000); }
-            assert!(matches!(r.tracking(if discontinuity {151_001} else {191_667}),Tracking::Idle));
-            assert_eq!(r.stats.freewheel_entries,0);
-            assert_eq!(r.take(191_668),Some(ChaseEvent::Stop));
+            for i in 0..16 {
+                pulse(&mut r, i);
+            }
+            assert!(matches!(r.tracking(150_000), Tracking::Rolling { .. }));
+            assert_eq!(r.stats.freewheel_entries, 0);
+            if discontinuity {
+                r.read(&[0xf1, 0x30], 151_000);
+            }
+            assert!(matches!(r.tracking(if discontinuity { 151_001 } else { 191_667 }), Tracking::Idle));
+            assert_eq!(r.stats.freewheel_entries, 0);
+            assert_eq!(r.take(191_668), Some(ChaseEvent::Stop));
         }
+    }
+
+    #[test]
+    fn jam_sync_runs_on_internal_clock_and_only_accepts_a_corroborated_seek() {
+        let mut r = Reader::default();
+        r.reset(Some(1));
+        r.options.jam = true;
+        assert!(matches!(r.tracking(10_000_000), Tracking::Idle));
+        for i in 0..16 {
+            pulse(&mut r, i);
+        }
+        r.take(125_000);
+        let Tracking::Rolling { position, stamp, now, .. } = r.tracking(10_125_000) else { panic!("lost jam") };
+        assert_eq!(now - stamp, 10_000_000);
+        assert_eq!(position.quarter, 15);
+        assert_eq!(r.diagnostics_at(now).freewheel_state, "jam sync running on internal clock");
+        for i in 1216..1224 {
+            pulse(&mut r, i);
+        }
+        let restored = 1223 * 1_000_000 / 120;
+        assert_eq!(r.diagnostics_at(restored).freewheel_state, "locked");
+        assert!(matches!(r.take(restored), Some(ChaseEvent::Roll(_, _))));
+        // The next group claims it is a second ahead. Stay on the old timeline until the next group agrees.
+        for piece in 0..8 {
+            let b = crate::mtc::quarters(336, FrameRate::Fps30)[piece];
+            r.read(&b, (1224 + piece as i64) * 1_000_000 / 120);
+        }
+        assert!(r.take(1231 * 1_000_000 / 120).is_none());
+        for piece in 0..8 {
+            let b = crate::mtc::quarters(338, FrameRate::Fps30)[piece];
+            r.read(&b, (1232 + piece as i64) * 1_000_000 / 120);
+        }
+        assert!(matches!(r.take(1239*1_000_000/120),Some(ChaseEvent::Roll(p, _)) if p.quarter==338*4+7));
+        assert_eq!(r.stats.locks, 1);
     }
 
     #[test]
@@ -662,8 +721,11 @@ mod dropout_tests {
             let last = 125_000;
             let expiry = last + (i64::from(frames) * 1_000_000 + 29) / 30;
             assert!(matches!(r.tracking(expiry - 1), Tracking::Rolling { .. }));
+            let state = r.diagnostics_at(expiry - 1);
+            assert_eq!((state.freewheel_state, state.elapsed_frames, state.limit_frames), ("freewheeling", u64::from(frames - 1), frames));
             assert!(matches!(r.tracking(expiry), Tracking::Idle));
             assert_eq!(r.take(expiry), Some(ChaseEvent::Stop));
+            assert_eq!(r.diagnostics_at(expiry).freewheel_state, "stopped: timecode lost");
             r.options.jam = true;
             for i in 0..16 {
                 pulse(&mut r, i);

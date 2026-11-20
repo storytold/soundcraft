@@ -167,7 +167,7 @@ enum Cmd {
         looped: Option<Range>,
     },
     PlayMtc(Samples),
-    EndChase,
+    EndChase(Option<u64>),
     Stop,
     Locate(Samples),
     /// Tracks the latest session no longer has (worked out on the UI thread): their meters go.
@@ -584,7 +584,11 @@ impl Player {
         self.begin_play(from, Cmd::PlayMtc(from));
     }
     pub fn end_mtc_chase(&self) {
-        let _ = self.tx.send(Cmd::EndChase);
+        let _ = self.tx.send(Cmd::EndChase(None));
+    }
+    /// End only the incoming roll whose stop the UI consumed.
+    pub fn end_observed_mtc_chase(&self, lock: u64) {
+        let _ = self.tx.send(Cmd::EndChase(Some(lock)));
     }
     fn begin_play(&self, from: Samples, cmd: Cmd) {
         self.shared.position.store(from, Ordering::Relaxed);

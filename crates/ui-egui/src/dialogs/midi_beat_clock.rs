@@ -36,9 +36,12 @@ impl MidiBeatClock {
                 let changed = ui
                     .horizontal(|ui| {
                         let enabled = crate::widgets::checkbox(ui, &mut port.enabled, name.as_str()).changed();
-                        let limited_lead=timing.as_ref().and_then(|status|status.ports.get(&name))
-                            .filter(|p|p.advance_limited && p.requested_offset_samples==port.offset_samples).map(|p|p.device_lead_us);
-                        let offset = super::port_offset_field(ui,&mut port.offset_samples,rate,limited_lead);
+                        let limited_lead = timing
+                            .as_ref()
+                            .and_then(|status| status.ports.get(&name))
+                            .filter(|p| p.advance_limited && p.requested_offset_samples == port.offset_samples)
+                            .map(|p| p.device_lead_us);
+                        let offset = super::port_offset_field(ui, &mut port.offset_samples, rate, limited_lead);
                         if !available.contains(&name) {
                             ui.label(text("The saved MIDI output is unavailable."));
                         }

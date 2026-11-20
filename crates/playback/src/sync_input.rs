@@ -137,7 +137,7 @@ mod tests {
                 let mapped = clock.map(stamp, arrival);
                 max_error = max_error.max(mapped.abs_diff(actual));
             }
-            
+
             assert!(max_error < 500, "driver {ppm} ppm: max timestamp error {max_error} us");
         }
     }

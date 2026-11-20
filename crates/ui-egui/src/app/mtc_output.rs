@@ -25,9 +25,13 @@ impl SoundApp {
         }
         if let Some(name) = &self.ui.mtc_output_port {
             let mut offset = self.ui.midi_sync.ports.get(name).map_or(0, |cfg| cfg.offset_samples);
-            let timing=self.player.as_ref().map(soundcraft_playback::Player::midi_sync_status);
-            let limited_lead=timing.as_ref().and_then(|status|status.ports.get(name)).filter(|p|p.advance_limited && p.requested_offset_samples==offset).map(|p|p.device_lead_us);
-            if ui.horizontal(|ui| crate::dialogs::port_offset_field(ui, &mut offset, self.engine.session().sample_rate,limited_lead)).inner
+            let timing = self.player.as_ref().map(soundcraft_playback::Player::midi_sync_status);
+            let limited_lead = timing
+                .as_ref()
+                .and_then(|status| status.ports.get(name))
+                .filter(|p| p.advance_limited && p.requested_offset_samples == offset)
+                .map(|p| p.device_lead_us);
+            if ui.horizontal(|ui| crate::dialogs::port_offset_field(ui, &mut offset, self.engine.session().sample_rate, limited_lead)).inner
                 && let Err(err) = self.mtc_output_command(&json!({"offset_samples":offset}))
             {
                 self.ui.status = crate::localization::error_text(&err);
@@ -115,13 +119,13 @@ mod tests {
 
     #[test]
     fn saved_output_calibration_survives_a_lower_rate_and_rejects_new_out_of_range_values() {
-        let mut host=SoundApp::new(crate::Engine::default(),None,crate::Services::default());
-        host.engine.session_mut().sample_rate=soundcraft_time::SampleRate::new(96000).unwrap();
-        host.run("setup.mtc_output",json!({"port":"interface","offset_samples":20000})).unwrap();
-        host.engine.session_mut().sample_rate=soundcraft_time::SampleRate::HZ_48000;
-        assert_eq!(host.run("setup.mtc_output",json!({"offset_samples":20000})).unwrap()["offset_samples"],20000);
-        assert!(host.run("setup.mtc_output",json!({"offset_samples":20001})).is_err());
-        assert_eq!(host.run("setup.mtc_output",json!({})).unwrap()["offset_samples"],20000);
+        let mut host = SoundApp::new(crate::Engine::default(), None, crate::Services::default());
+        host.engine.session_mut().sample_rate = soundcraft_time::SampleRate::new(96000).unwrap();
+        host.run("setup.mtc_output", json!({"port":"interface","offset_samples":20000})).unwrap();
+        host.engine.session_mut().sample_rate = soundcraft_time::SampleRate::HZ_48000;
+        assert_eq!(host.run("setup.mtc_output", json!({"offset_samples":20000})).unwrap()["offset_samples"], 20000);
+        assert!(host.run("setup.mtc_output", json!({"offset_samples":20001})).is_err());
+        assert_eq!(host.run("setup.mtc_output", json!({})).unwrap()["offset_samples"], 20000);
     }
 
     #[cfg(not(target_arch = "wasm32"))]

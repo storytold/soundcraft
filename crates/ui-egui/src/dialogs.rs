@@ -536,16 +536,19 @@ pub(crate) fn port_offset_field(ui: &mut egui::Ui, offset: &mut i64, rate: sound
     let changed = ui.add(egui::DragValue::new(offset).range(-limit..=limit).clamp_existing_to_range(false)).labelled_by(caption.id).changed();
     ui.label(format!("{:.2} ms", *offset as f64 * 1000. / rate.as_f64()));
     if offset.unsigned_abs() > limit as u64 {
-        ui.label(crate::localized_format!("Saved value exceeds ±250 ms at this rate; playback uses {effective} samples.",effective=(*offset).clamp(-limit,limit)));
+        ui.label(crate::localized_format!(
+            "Saved value exceeds ±250 ms at this rate; playback uses {effective} samples.",
+            effective = (*offset).clamp(-limit, limit)
+        ));
     }
-    if let Some(lead)=limited_lead_us {
-        ui.label(crate::localized_format!("Limited by the audio output lead ({lead} ms)",lead=lead as f64/1000.));
+    if let Some(lead) = limited_lead_us {
+        ui.label(crate::localized_format!("Limited by the audio output lead ({lead} ms)", lead = lead as f64 / 1000.));
     }
     changed
 }
 
 fn external_offset_label(session: &soundcraft_model::Session) -> String {
-    soundcraft_engine::cmd::signed_offset(session.edit.value("sync.external_offset",0.) as i64,session.frame_rate, session.sample_rate)
+    soundcraft_engine::cmd::signed_offset(session.edit.value("sync.external_offset", 0.) as i64, session.frame_rate, session.sample_rate)
 }
 
 /// Show the open dialog, if any.
@@ -1125,33 +1128,38 @@ mod tests {
     #[test]
     fn capturing_received_timecode_changes_only_the_pending_session_start() {
         use egui::accesskit::Role;
-        use egui_kittest::{Harness,kittest::{Queryable,NodeT}};
+        use egui_kittest::{
+            Harness,
+            kittest::{NodeT, Queryable},
+        };
         use soundcraft_playback::midi::MidiInputs;
-        for use_keyboard in [false,true] {
-            let mut app=SoundApp::new(Engine::default(),None,crate::Services::default());
-            app.midi_inputs=Some(MidiInputs::with_port_names(vec![],vec!["Clock".into()]));
-            app.run("setup.mtc",json!({"input":"Clock","online":true})).unwrap();
+        for use_keyboard in [false, true] {
+            let mut app = SoundApp::new(Engine::default(), None, crate::Services::default());
+            app.midi_inputs = Some(MidiInputs::with_port_names(vec![], vec!["Clock".into()]));
+            app.run("setup.mtc", json!({"input":"Clock","online":true})).unwrap();
             app.service_mtc_chase();
-            let feed=app.midi_inputs.as_ref().unwrap().feed().clone();
-            assert!(app.dialogs.open_for_command(&app.engine,"setup.session"));
-            let mut h=Harness::builder().with_size(egui::vec2(1400.,850.)).build_ui_state(|ui,app:&mut SoundApp|show(app,ui.ctx()),app);
+            let feed = app.midi_inputs.as_ref().unwrap().feed().clone();
+            assert!(app.dialogs.open_for_command(&app.engine, "setup.session"));
+            let mut h = Harness::builder().with_size(egui::vec2(1400., 850.)).build_ui_state(|ui, app: &mut SoundApp| show(app, ui.ctx()), app);
             h.run_steps(3);
             assert!(h.get_by_label("Use received position").accesskit_node().is_disabled());
-            let port=feed.ports().assign("Clock");
-            feed.receive(port,&[0xf0,0x7f,127,1,1,0x60,0,5,0,0xf7]);
+            let port = feed.ports().assign("Clock");
+            feed.receive(port, &[0xf0, 0x7f, 127, 1, 1, 0x60, 0, 5, 0, 0xf7]);
             h.run_steps(2);
             if use_keyboard {
-                h.get_by_role_and_label(Role::TextInput,"Session Start").click();
+                h.get_by_role_and_label(Role::TextInput, "Session Start").click();
                 h.run_steps(2);
                 h.key_press(egui::Key::Equals);
-            } else { h.get_by_label("Use received position").click(); }
+            } else {
+                h.get_by_label("Use received position").click();
+            }
             h.run_steps(2);
-            let Some(Dialog::Session {start,..})=&h.state().dialogs.open else {panic!("Session Setup closed")};
-            assert_eq!(start,"00:00:05:00");
-            assert_eq!(h.state().engine.session().timecode_start,172_800_000);
-            h.get_by_label(if use_keyboard {"Cancel"} else {"OK"}).click();
+            let Some(Dialog::Session { start, .. }) = &h.state().dialogs.open else { panic!("Session Setup closed") };
+            assert_eq!(start, "00:00:05:00");
+            assert_eq!(h.state().engine.session().timecode_start, 172_800_000);
+            h.get_by_label(if use_keyboard { "Cancel" } else { "OK" }).click();
             h.run_steps(3);
-            assert_eq!(h.state().engine.session().timecode_start,if use_keyboard {172_800_000} else {240000});
+            assert_eq!(h.state().engine.session().timecode_start, if use_keyboard { 172_800_000 } else { 240000 });
         }
     }
 

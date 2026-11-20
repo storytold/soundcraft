@@ -233,7 +233,9 @@ fn migrate_mtc_settings(s: &mut Session) -> Option<&'static str> {
     if existing != 0. && samples != 0. && existing != samples {
         return Some("The session has conflicting timecode offsets. Chase uses the External Timecode Offset.");
     }
-    if existing == 0. { s.edit.values.insert("sync.external_offset".into(), samples); }
+    if existing == 0. {
+        s.edit.values.insert("sync.external_offset".into(), samples);
+    }
     s.edit.values.remove("midi.mtc.external_offset_frames");
     Some("Migrated the MTC reader offset to External Timecode Offset.")
 }
@@ -255,12 +257,24 @@ impl Engine {
         self.mtc_freewheel_mode() == "jam_sync"
     }
 
+    pub fn has_conflicting_timecode_offsets(&self) -> bool {
+        let s = self.session();
+        let old = s.edit.value("midi.mtc.external_offset_frames", 0.) as i64;
+        let external = s.edit.value("sync.external_offset", 0.) as i64;
+        old != 0 && external != 0 && external != s.frame_rate.samples_at_frame(old, s.sample_rate)
+    }
+
     pub fn mtc_freewheel_mode(&self) -> &'static str {
-        self.session().edit.flags.iter().find_map(|flag| match flag.strip_prefix(MTC_FREEWHEEL) {
-            Some("jam_sync") => Some("jam_sync"),
-            Some("none") => Some("none"),
-            _ => None,
-        }).unwrap_or("frames")
+        self.session()
+            .edit
+            .flags
+            .iter()
+            .find_map(|flag| match flag.strip_prefix(MTC_FREEWHEEL) {
+                Some("jam_sync") => Some("jam_sync"),
+                Some("none") => Some("none"),
+                _ => None,
+            })
+            .unwrap_or("frames")
     }
 
     pub fn new(mut session: Session) -> Self {
@@ -342,7 +356,9 @@ impl Engine {
 
     /// Replace the whole document (open / new); clears history.
     pub fn replace_session(&mut self, mut s: Session) {
-        if let Some(note) = migrate_mtc_settings(&mut s) { self.message(note); }
+        if let Some(note) = migrate_mtc_settings(&mut s) {
+            self.message(note);
+        }
         self.transport = TransportStatus { position: s.edit.selection.start.max(0), ..TransportStatus::default() };
         self.transport_requests.clear();
         self.transport_requests.push(TransportRequest::ResetSession);

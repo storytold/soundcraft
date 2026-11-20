@@ -389,13 +389,17 @@ pub fn signed_offset(samples: i64, rate: soundcraft_time::FrameRate, sr: soundcr
     format!("{}{label}", if samples < 0 { "-" } else { "+" })
 }
 
-pub(super) fn parse_offset(input: &str, rate: soundcraft_time::FrameRate, sr: soundcraft_time::SampleRate) -> std::result::Result<i64,&'static str> {
+pub(super) fn parse_offset(input: &str, rate: soundcraft_time::FrameRate, sr: soundcraft_time::SampleRate) -> std::result::Result<i64, &'static str> {
     const INVALID: &str = "Offset must be a signed timecode such as -01:00:00:00.";
-    let raw = input.strip_prefix(['+','-']).ok_or(INVALID)?;
+    let raw = input.strip_prefix(['+', '-']).ok_or(INVALID)?;
     let label = Timecode::parse(raw).map_err(|_| INVALID)?;
-    if label.negative || label.hours > 1 || Timecode::from_frames(label.to_frames(rate),rate) != label { return Err(INVALID); }
-    let n = label.to_samples(rate,sr);
-    if n > sr.samples(3600.) { return Err("External timecode offset exceeds one hour of samples"); }
+    if label.negative || label.hours > 1 || Timecode::from_frames(label.to_frames(rate), rate) != label {
+        return Err(INVALID);
+    }
+    let n = label.to_samples(rate, sr);
+    if n > sr.samples(3600.) {
+        return Err("External timecode offset exceeds one hour of samples");
+    }
     Ok(if input.starts_with('-') { -n } else { n })
 }
 
@@ -403,9 +407,11 @@ fn offset_setting(e: &mut Engine, p: &Value, key: &str) -> Result<Value> {
     let s = e.session_mut();
     let sr = s.sample_rate;
     let per_frame = s.frame_rate.samples_per_frame(sr);
-    if key == "sync.external_offset" && let Some(v) = p.get("timecode") {
-        let label = v.as_str().ok_or_else(|| bad("setup.external_timecode_offset","Expected a timecode label"))?;
-        let samples = parse_offset(label,s.frame_rate,sr).map_err(|m| bad("setup.external_timecode_offset",m))?;
+    if key == "sync.external_offset"
+        && let Some(v) = p.get("timecode")
+    {
+        let label = v.as_str().ok_or_else(|| bad("setup.external_timecode_offset", "Expected a timecode label"))?;
+        let samples = parse_offset(label, s.frame_rate, sr).map_err(|m| bad("setup.external_timecode_offset", m))?;
         s.edit.values.insert(key.into(), samples as f64);
     } else if let Some(f) = p.get("frames").and_then(Value::as_f64).filter(|v| v.is_finite()) {
         s.edit.values.insert(key.to_string(), (f.clamp(-10_000.0, 10_000.0) * per_frame).round());
@@ -415,7 +421,9 @@ fn offset_setting(e: &mut Engine, p: &Value, key: &str) -> Result<Value> {
     }
     let samples = s.edit.value(key, 0.0);
     let mut result = json!({"samples":samples,"frames":samples/per_frame.max(1e-9)});
-    if key == "sync.external_offset" { result["timecode"] = json!(signed_offset(samples as i64,s.frame_rate,sr)); }
+    if key == "sync.external_offset" {
+        result["timecode"] = json!(signed_offset(samples as i64, s.frame_rate, sr));
+    }
     Ok(result)
 }
 
