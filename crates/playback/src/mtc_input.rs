@@ -181,9 +181,7 @@ impl Reader {
     }
     pub(crate) fn incoming_status(&self) -> (Option<Position>, Option<RateMismatch>) {
         let mismatch = self.incoming.and_then(|p| {
-            if self.source.is_none() {
-                return None;
-            }
+            self.source?;
             if p.in_session_rate(self.options.rate).rate != self.options.rate {
                 Some(RateMismatch { incoming: p.rate.label(), session: self.options.rate.label(), speed_deviation_ppm: None })
             } else {
@@ -626,39 +624,56 @@ mod dropout_tests {
     }
 
     #[test]
-    fn reader_warns_about_mismatched_code_and_ntsc_speed_without_losing_lock() {
-        let mut r = Reader::default();
-        r.reset(Some(1));
-        for b in crate::mtc::quarters(0, FrameRate::Fps25) {
-            r.read(&b, 0);
+    fn incompatible_rate_code_reports_a_mismatch() {
+        let mut reader = Reader::default();
+        reader.reset(Some(1));
+        for message in crate::mtc::quarters(0, FrameRate::Fps25) {
+            reader.read(&message, 0);
         }
-        assert_eq!(r.diagnostics().rate_mismatch.map(|m| (m.incoming, m.speed_deviation_ppm)), Some(("25", None)));
-        for (session, source) in [
-            (FrameRate::Fps29_97, FrameRate::Fps30),
-            (FrameRate::Fps30, FrameRate::Fps29_97),
-            (FrameRate::Fps30, FrameRate::Fps30),
-            (FrameRate::Fps23_976, FrameRate::Fps24),
-            (FrameRate::Fps24, FrameRate::Fps23_976),
-            (FrameRate::Fps24, FrameRate::Fps24),
+        assert_eq!(reader.diagnostics().rate_mismatch.map(|m| (m.incoming, m.speed_deviation_ppm)), Some(("25", None)));
+    }
+
+    fn read_with_jitter(reader: &mut Reader, source: FrameRate, group: i64) {
+        let (num, den) = source.rational();
+        for (piece, bytes) in crate::mtc::quarters(group * 2, source).into_iter().enumerate() {
+            let time = ((group * 8 + piece as i64) * 1_000_000 * den) / (4 * num);
+            reader.read(&bytes, time + if group % 2 == 0 { 1200 } else { -1200 });
+        }
+    }
+
+    #[test]
+    fn ntsc_speed_mismatch_is_reported_within_30_seconds() {
+        for (session, source, sign) in [
+            (FrameRate::Fps29_97, FrameRate::Fps30, 1),
+            (FrameRate::Fps30, FrameRate::Fps29_97, -1),
+            (FrameRate::Fps23_976, FrameRate::Fps24, 1),
+            (FrameRate::Fps24, FrameRate::Fps23_976, -1),
         ] {
-            let mut r = Reader::default();
-            r.reset(Some(1));
-            r.options.rate = session;
-            let same = session == source;
-            for n in 0..if same { source.nominal() * 300 } else { source.nominal() * 14 } {
-                for (piece, b) in crate::mtc::quarters(n * 2, source).into_iter().enumerate() {
-                    let (num, den) = source.rational();
-                    let us = ((n * 8 + piece as i64) * 1_000_000 * i64::from(den)) / (4 * i64::from(num));
-                    r.read(&b, us + if n % 2 == 0 { 1200 } else { -1200 });
-                }
-                if same {
-                    assert!(r.diagnostics().rate_mismatch.is_none());
-                }
+            let mut reader = Reader::default();
+            reader.reset(Some(1));
+            reader.options.rate = session;
+            for group in 0..source.nominal() * 14 {
+                read_with_jitter(&mut reader, source, group);
             }
-            assert!(r.locked);
-            if !same {
-                assert_eq!(r.diagnostics().rate_mismatch.map(|m| m.incoming), Some(source.label()));
+            assert!(reader.locked);
+            let warning = reader.diagnostics().rate_mismatch.expect("missed rate warning");
+            assert_eq!((warning.incoming, warning.session), (source.label(), session.label()));
+            let ppm = warning.speed_deviation_ppm.expect("compatible code has measured speed");
+            assert!((750..=1250).contains(&(ppm * sign)), "{source:?} vs {session:?}: {ppm} ppm");
+        }
+    }
+
+    #[test]
+    fn matching_rate_with_jitter_never_reports_a_mismatch() {
+        for source in [FrameRate::Fps24, FrameRate::Fps30, FrameRate::Fps23_976, FrameRate::Fps29_97] {
+            let mut reader = Reader::default();
+            reader.reset(Some(1));
+            reader.options.rate = source;
+            for group in 0..source.nominal() * 300 {
+                read_with_jitter(&mut reader, source, group);
+                assert!(reader.diagnostics().rate_mismatch.is_none());
             }
+            assert!(reader.locked);
         }
     }
 
