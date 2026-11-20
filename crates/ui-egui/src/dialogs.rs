@@ -530,14 +530,16 @@ fn strip_silence_form(
     (action, rename_from)
 }
 
-pub(crate) fn port_offset_field(ui: &mut egui::Ui, offset: &mut i64, rate: soundcraft_time::SampleRate) -> bool {
+pub(crate) fn port_offset_field(ui: &mut egui::Ui, offset: &mut i64, rate: soundcraft_time::SampleRate, limited_lead_us: Option<u64>) -> bool {
     let limit = soundcraft_playback::max_sync_offset_samples(rate);
     let caption = ui.label(crate::localization::text("Offset (samples)"));
     let changed = ui.add(egui::DragValue::new(offset).range(-limit..=limit).clamp_existing_to_range(false)).labelled_by(caption.id).changed();
+    ui.label(format!("{:.2} ms", *offset as f64 * 1000. / rate.as_f64()));
     if offset.unsigned_abs() > limit as u64 {
-        ui.label(crate::localized_format!("Effective at this sample rate: {} samples", (*offset).clamp(-limit,limit)));
-    } else {
-        ui.label(format!("{:.2} ms", *offset as f64 * 1000. / rate.as_f64()));
+        ui.label(crate::localized_format!("Saved value exceeds ±250 ms at this rate; playback uses {effective} samples.",effective=(*offset).clamp(-limit,limit)));
+    }
+    if let Some(lead)=limited_lead_us {
+        ui.label(crate::localized_format!("Limited by the audio output lead ({lead} ms)",lead=lead as f64/1000.));
     }
     changed
 }
@@ -1180,6 +1182,71 @@ mod tests {
     /// Constructs one non-repeating key-press event for dialog tests.
     fn key(key: egui::Key, modifiers: egui::Modifiers) -> egui::Event {
         egui::Event::Key { key, physical_key: None, pressed: true, repeat: false, modifiers }
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+    #[test]
+    fn many_clock_destinations_scroll_without_hiding_ok() {
+        let mut app = SoundApp::new(Engine::default(), None, crate::Services::default());
+        let names: Vec<_> = (0..64).map(|n| format!("Port {n:02}")).collect();
+        let mut form = midi_beat_clock::MidiBeatClock { settings: Default::default(), outputs: Ok(names) };
+        let ctx = egui::Context::default();
+        crate::fonts::install(&ctx, true);
+        let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, vec2(1366., 768.));
+        let mut draw = |events| {
+            let output = ctx.run_ui(egui::RawInput { screen_rect: Some(screen), events, ..Default::default() }, |ui| {
+                form.show(ui, false, &mut app);
+            });
+            output
+                .shapes
+                .into_iter()
+                .filter_map(|shape| {
+                    if let egui::Shape::Text(t) = shape.shape {
+                        let center = t.galley.rect.translate(t.pos.to_vec2()).center();
+                        if screen.contains(center) && shape.clip_rect.contains(center) {
+                            return Some((t.galley.text().to_owned(), center));
+                        }
+                    }
+                    None
+                })
+                .collect::<std::collections::BTreeMap<_, _>>()
+        };
+        draw(vec![]);
+        let rows = draw(vec![]);
+        assert!(rows.contains_key("OK"), "OK must stay within the viewport");
+        let pointer = rows["Port 00"];
+        assert!(!rows.contains_key("Port 63"));
+        for _ in 0..60 {
+            let rows = draw(vec![
+                egui::Event::PointerMoved(pointer),
+                egui::Event::MouseWheel {
+                    unit: egui::MouseWheelUnit::Point,
+                    delta: vec2(0., -100.),
+                    phase: egui::TouchPhase::Move,
+                    source: egui::MouseWheelSource::Wheel,
+                    modifiers: egui::Modifiers::NONE,
+                },
+            ]);
+            assert!(rows.contains_key("OK"));
+            if rows.contains_key("Port 63") {
+                return;
+            }
+        }
+        panic!("last MIDI destination was unreachable");
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+    #[test]
+    fn saved_calibration_survives_the_dialog_at_a_lower_session_rate() {
+        let mut app = SoundApp::new(Engine::default(), None, crate::Services::default());
+        app.ui.midi_sync.ports.insert("DIN".into(), crate::midi_sync::MidiSyncPort { enabled: true, offset_samples: 24_000 });
+        let ctx = egui::Context::default();
+        crate::fonts::install(&ctx, true);
+        crate::menus::invoke_menu(&mut app, "setup.midi_beat_clock", "Setup > MIDI > MIDI Beat Clock...");
+        dialog_frame(&ctx, &mut app, vec![]);
+        dialog_frame(&ctx, &mut app, vec![key(egui::Key::Enter, egui::Modifiers::NONE)]);
+        assert!(app.dialogs.open.is_none());
+        assert_eq!(app.ui.midi_sync.ports["DIN"].offset_samples, 24_000);
     }
 
     #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]

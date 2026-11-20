@@ -258,7 +258,7 @@ mod tests {
         let mut cursor = Cursor::default();
         let mut poll = || {
             let now = Instant::now();
-            let b = view.lock().unwrap().read(now, true, 0.).0.unwrap();
+            let b = view.lock().unwrap().read(now, true, 0).0.unwrap();
             let mut bytes = Vec::new();
             cursor.follow(b, b.sample.floor() as i64, 0, false, &session, |m| bytes.push(m.to_vec()));
             bytes
@@ -284,6 +284,9 @@ mod tests {
     fn wrap_inside_block_matches_generation_of_next_callback() {
         let start = Instant::now();
         let block = Presentation {
+            generation: 0,
+            sample_rate: soundcraft_time::SampleRate::default(),
+            system_delay_samples: 0,
             pass: 3,
             origin: 0,
             playing: true,
@@ -328,6 +331,9 @@ mod tests {
     fn between_blocks_clock_advances_once_then_waits_for_the_audio_device() {
         let start = std::time::Instant::now();
         let block = Presentation {
+            generation: 0,
+            sample_rate: soundcraft_time::SampleRate::default(),
+            system_delay_samples: 0,
             lead: Duration::ZERO,
             pass: 0,
             origin: 0,

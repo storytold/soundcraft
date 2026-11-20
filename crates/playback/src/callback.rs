@@ -74,6 +74,7 @@ pub(crate) struct AudioState {
     rx: Receiver<Cmd>,
     pub(crate) shared: Arc<Shared>,
     pub(crate) session: Arc<Session>,
+    session_generation: u64,
     pub(crate) mix: MixEngine,
     pos: Samples,
     playing: bool,
@@ -175,6 +176,7 @@ impl AudioState {
             shared,
             mix: new_engine(sr),
             session,
+            session_generation: 0,
             pos: 0,
             playing: false,
             chasing: false,
@@ -257,7 +259,8 @@ impl AudioState {
                         self.midi_ended = Some(self.midi_ended.map_or(pass, |p| p.max(pass)));
                     }
                 }
-                Cmd::Session(s, instances) => {
+                Cmd::Session(generation, s, instances) => {
+                    self.session_generation = generation;
                     changed = true;
                     if (s.sample_rate.as_f64() - self.session.sample_rate.as_f64()).abs() > 0.5 {
                         let mut old = std::mem::replace(&mut self.mix, new_engine(s.sample_rate.as_f64() as f32));
@@ -830,7 +833,7 @@ impl AudioState {
         // at the rate that is there now, at the same speed.
         let step = self.step(speed);
         #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
-        if let Some(clock) = &mut self.clock {
+        let presentation = self.clock.as_mut().map(|clock| {
             let sample = self.pos as f64 - self.pending_len as f64 + self.read;
             let limit = sample + callback_frames as f64 * step;
             let origin = *clock.origin.get_or_insert(sample.floor() as i64);
@@ -841,21 +844,22 @@ impl AudioState {
                 }
                 None => (std::time::Instant::now(), std::time::Duration::ZERO),
             };
-            if let Ok(mut timeline) = clock.view.try_lock() {
-                timeline.push(super::sync_clock::Presentation {
-                    pass: clock.pass,
-                    origin,
-                    playing: self.playing,
-                    sample,
-                    limit,
-                    samples_per_second: speed * self.session.sample_rate.as_f64(),
-                    looped: self.looped,
-                    end: self.end,
-                    heard_at,
-                    lead,
-                });
+            super::sync_clock::Presentation {
+                generation: self.session_generation,
+                sample_rate: self.session.sample_rate,
+                system_delay_samples: 0,
+                pass: clock.pass,
+                origin,
+                playing: self.playing,
+                sample,
+                limit,
+                samples_per_second: speed * self.session.sample_rate.as_f64(),
+                looped: self.looped,
+                end: self.end,
+                heard_at,
+                lead,
             }
-        }
+        });
         // A keyboard plays through record-enabled and input-monitored MIDI and instrument tracks.
         let midi_live = self.midi.as_ref().is_some_and(|f| f.connected() > 0)
             && self.session.tracks.iter().any(|t| matches!(t.kind, TrackKind::Instrument | TrackKind::Midi) && midi_thru(t));
@@ -868,6 +872,8 @@ impl AudioState {
             if let Ok(mut m) = self.shared.meters.try_lock() {
                 m.silence();
             }
+            #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+            self.publish_presentation(presentation);
             return;
         }
         let quantum = ((callback_frames as f64 * step).ceil() as usize).clamp(1, BLOCK);
@@ -898,6 +904,16 @@ impl AudioState {
             };
             write_frame(frame, channels, nch, sounding, &self.fold, sample);
             self.read += step;
+        }
+        #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+        self.publish_presentation(presentation);
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+    fn publish_presentation(&self, presentation: Option<super::sync_clock::Presentation>) {
+        if let (Some(clock), Some(mut b)) = (&self.clock, presentation) {
+            b.system_delay_samples = if self.session.edit.delay_compensation { self.mix.latency } else { 0 };
+            clock.publish(b);
         }
     }
 }

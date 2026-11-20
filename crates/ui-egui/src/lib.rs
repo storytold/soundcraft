@@ -435,6 +435,7 @@ pub struct SoundApp {
     last_rev: u64,
     sync_migration_pending: bool,
     applied_midi_sync: Option<midi_sync::MidiSync>,
+    last_midi_sync_error: Option<String>,
     fonts_ready: bool,
     fonts_installed: bool,
     /// Whether the system fonts are loaded next to the bundled ones; set before the first frame.

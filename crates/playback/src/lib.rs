@@ -153,7 +153,7 @@ enum Cmd {
     #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
     Clock(Option<sync_clock::Publisher>),
     /// A new snapshot plus the third-party instances it needs (created on the UI thread).
-    Session(Arc<Session>, Vec<PreparedInstance>),
+    Session(u64, Arc<Session>, Vec<PreparedInstance>),
     /// Where the callback sends the snapshots it replaces (freeing one takes thousands of frees).
     OldSessions(SyncSender<Arc<Session>>),
     Input(Arc<record::InputRing>),
@@ -431,12 +431,14 @@ impl Player {
     /// prepared) instances of any third-party plugin it newly needs. Call on the UI thread.
     pub fn update_session(&self, s: Arc<Session>) {
         #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
-        self.beat_clock.lock().unwrap_or_else(PoisonError::into_inner).configure(&s, &self.tx);
+        let generation = self.beat_clock.lock().unwrap_or_else(PoisonError::into_inner).configure(&s, &self.tx);
+        #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
+        let generation = 0;
         let (instances, gone) = {
             let mut side = self.side();
             (side.prepare(&s), side.gone_tracks(&s))
         };
-        let _ = self.tx.send(Cmd::Session(s, instances));
+        let _ = self.tx.send(Cmd::Session(generation, s, instances));
         if !gone.is_empty() {
             let _ = self.tx.send(Cmd::Forget(gone));
         }
@@ -531,6 +533,8 @@ impl Player {
     }
     /// Notify the sync worker of external transport activity from a MIDI input
     /// thread. The handle does not retain the player and coalesces pending wakes.
+    /// Reserved for single-read notifications from a future input backend. No current backend
+    /// uses this hook. Transport commands use a bounded wait for the corresponding audio block.
     pub fn sync_waker(&self) -> Arc<dyn Fn() + Send + Sync> {
         #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
         {

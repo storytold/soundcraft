@@ -1876,6 +1876,13 @@ fn menu_translate(source: &str) -> Option<&'static str> {
         "No MIDI output devices found" => "Nenhum dispositivo de saída MIDI encontrado",
         "Copy diagnostics" => "Copiar diagnóstico",
         "The saved MIDI output is unavailable." => "A saída MIDI salva está indisponível.",
+        "Saved value exceeds ±250 ms at this rate; playback uses {effective} samples." => {
+            "O valor salvo excede ±250 ms nesta taxa; a reprodução usa {effective} amostras."
+        }
+        "Limited by the audio output lead ({lead} ms)" => "Limitado pela antecedência da saída de áudio ({lead} ms)",
+        "Include the reported audio output lead and the mixer's compensated plug-in delay." => {
+            "Incluir a antecedência informada pela saída de áudio e o atraso compensado dos plug-ins do mixer."
+        }
         "Offset (samples)" => "Deslocamento (amostras)",
         "MIDI Input Monitoring Follows Selected Track" => "O monitoramento de entrada MIDI acompanha a pista selecionada",
         "MIDI Merge Release Mode" => "Modo de liberação da mesclagem MIDI",
@@ -2131,7 +2138,6 @@ macro_rules! error_templates {
 
 error_templates! {
     "Receiving {incoming} fps; session is {session} fps" => "Recebendo {incoming} fps; a sessão está em {session} fps",
-    "Effective at this sample rate: {} samples" => "Efetivo nesta taxa de amostragem: {} amostras",
     "{value} is before the session start ({start})" => "{value} é anterior ao início da sessão ({start})",
     "Freewheel must be 4 to 40 frames" => "A tolerância deve ser de 4 a 40 quadros",
     "Jam Sync must be a boolean" => "Jam Sync deve ser um valor booleano",

@@ -25,7 +25,9 @@ impl SoundApp {
         }
         if let Some(name) = &self.ui.mtc_output_port {
             let mut offset = self.ui.midi_sync.ports.get(name).map_or(0, |cfg| cfg.offset_samples);
-            if ui.horizontal(|ui| crate::dialogs::port_offset_field(ui, &mut offset, self.engine.session().sample_rate)).inner
+            let timing=self.player.as_ref().map(soundcraft_playback::Player::midi_sync_status);
+            let limited_lead=timing.as_ref().and_then(|status|status.ports.get(name)).filter(|p|p.advance_limited && p.requested_offset_samples==offset).map(|p|p.device_lead_us);
+            if ui.horizontal(|ui| crate::dialogs::port_offset_field(ui, &mut offset, self.engine.session().sample_rate,limited_lead)).inner
                 && let Err(err) = self.mtc_output_command(&json!({"offset_samples":offset}))
             {
                 self.ui.status = crate::localization::error_text(&err);
