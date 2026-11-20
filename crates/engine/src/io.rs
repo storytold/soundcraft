@@ -327,8 +327,13 @@ pub struct Bounce {
     bus: Option<BusId>,
     fold: Option<ChannelFormat>,
     normalize: bool,
-    /// Measuring the peak to normalize to, the first of two passes.
+    /// Loudness normalization instead (see [`Bounce::with_loudness`]).
+    loudness: Option<LoudnessTarget>,
+    /// Measuring the peak or the loudness to normalize to, the first of two passes.
     measuring: bool,
+    /// The normalization gain applied (dB) and what a loudness target came to.
+    gain_db: f32,
+    outcome: Option<LoudnessOutcome>,
     render: soundcraft_mix::RangeRender,
     block: Vec<Vec<f32>>,
     done: usize,
@@ -345,13 +350,56 @@ fn time_stamp(s: &Session, at: Samples) -> craft_audio::BwfInfo {
     craft_audio::BwfInfo::default().with_time_reference(time_reference)
 }
 
-/// A finished bounce: the size of its file and its levels.
+/// A loudness to normalize a bounce to: integrated loudness (LUFS, ITU-R BS.1770 / EBU R128) and
+/// a true-peak ceiling (dBTP). The ceiling is hard: the written samples' true peak stays at or under
+/// it, even when the loudness cannot be measured (the bounce is then lowered to it, never raised).
+/// Every format a bounce writes is PCM or lossless, so the file holds those samples.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct LoudnessTarget {
+    pub lufs: f32,
+    pub true_peak_ceiling_db: f32,
+}
+
+/// What a loudness-normalized bounce came to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LoudnessOutcome {
+    /// The gain brought it to the target.
+    Reached,
+    /// The true-peak ceiling held the gain back, so the file is quieter than the target.
+    CeilingHeld,
+    /// Silence, or too short to measure (under one 400 ms gating block): written at unity gain,
+    /// or lowered to the true-peak ceiling when its true peak is over it.
+    Unmeasured,
+    /// Sound, but every 400 ms block is under the -70 LUFS absolute gate, so it has no
+    /// integrated loudness to move: written at unity gain, or lowered to the true-peak ceiling
+    /// when its true peak is over it.
+    TooQuiet,
+    /// The gain was applied, but the written file measures more than [`LOUDNESS_TOLERANCE_LU`]
+    /// away from the target: blocks it pushed under the -70 LUFS gate no longer count.
+    Missed,
+    /// The written true peak is over the ceiling: the second pass rendered louder than the first
+    /// measured (a plugin that does not render the same twice), so the gain could not hold it.
+    CeilingExceeded,
+}
+
+/// How far over the ceiling the written true peak may measure (float rounding) before it counts as
+/// over.
+const CEILING_TOLERANCE_DB: f32 = 0.001;
+
+/// How far from the target a loudness-normalized bounce may measure and still count as reached.
+pub const LOUDNESS_TOLERANCE_LU: f32 = 0.5;
+
+/// A finished bounce: the size of its file and its levels (`lufs` and `true_peak_db` as written).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Bounced {
     pub bytes: u64,
     pub peak_db: f32,
     pub lufs: f32,
     pub true_peak_db: f32,
+    /// The normalization gain applied (0 without normalization).
+    pub gain_db: f32,
+    /// Set when the bounce was normalized to a loudness.
+    pub loudness: Option<LoudnessOutcome>,
 }
 
 impl Bounce {
@@ -392,7 +440,10 @@ impl Bounce {
             EngineError::Io(format!("{}: {err}", path.display()))
         })?;
         let render = soundcraft_mix::RangeRender::new(&s, bus, r, 1024);
-        let meter = soundcraft_dsp::meter::LoudnessMeter::new(s.sample_rate.as_f64() as f32, channels);
+        let meter = match loudness_weights(fmt) {
+            Some(w) if w.len() == channels => soundcraft_dsp::meter::LoudnessMeter::with_weights(s.sample_rate.as_f64() as f32, &w),
+            _ => soundcraft_dsp::meter::LoudnessMeter::new(s.sample_rate.as_f64() as f32, channels),
+        };
         Ok(Bounce {
             session: s,
             path: path.to_path_buf(),
@@ -401,7 +452,10 @@ impl Bounce {
             bus,
             fold,
             normalize,
+            loudness: None,
             measuring: normalize,
+            gain_db: 0.0,
+            outcome: None,
             render,
             block: Vec::new(),
             done: 0,
@@ -410,6 +464,18 @@ impl Bounce {
             meter,
             enc: Some(enc),
         })
+    }
+
+    /// Normalizes to `target` instead of the peak: a first pass measures integrated loudness and
+    /// true peak, and the gain moves the loudness to the target, lowered if needed so the true peak
+    /// stays at or under the ceiling (no limiter: nothing but the level changes). Call before the
+    /// first step.
+    pub fn with_loudness(mut self, target: LoudnessTarget) -> Self {
+        if self.done == 0 && !self.normalize {
+            self.loudness = Some(target);
+            self.measuring = true;
+        }
+        self
     }
 
     pub fn path(&self) -> &Path {
@@ -423,7 +489,7 @@ impl Bounce {
     /// How far along the bounce is, from 0 to 1.
     pub fn progress(&self) -> f32 {
         let pass = (self.done as f64 / self.range.len().max(1) as f64).min(1.0) as f32;
-        match (self.normalize, self.measuring) {
+        match (self.normalize || self.loudness.is_some(), self.measuring) {
             (false, _) => pass,
             (true, true) => pass / 2.0,
             (true, false) => 0.5 + pass / 2.0,
@@ -439,15 +505,25 @@ impl Bounce {
                     fill(&mut self.block, chunk, n, self.fold, self.gain);
                     self.done += n;
                     self.peak = self.peak.max(soundcraft_dsp::offline::peak(&self.block));
-                    if !self.measuring {
+                    if !self.measuring || self.loudness.is_some() {
                         self.meter.process(&self.block, n);
-                        if let Some(enc) = &mut self.enc {
-                            enc.write(&self.block, n).map_err(|err| EngineError::Io(format!("{}: {err}", self.path.display())))?;
-                        }
+                    }
+                    if !self.measuring
+                        && let Some(enc) = &mut self.enc
+                    {
+                        enc.write(&self.block, n).map_err(|err| EngineError::Io(format!("{}: {err}", self.path.display())))?;
                     }
                 }
                 None if self.measuring => {
-                    self.gain = if self.peak > 0.0 { soundcraft_dsp::db_to_gain(-0.1) / self.peak } else { 1.0 };
+                    self.gain = match self.loudness {
+                        Some(t) => self.loudness_gain(t),
+                        None if self.peak > 0.0 => soundcraft_dsp::db_to_gain(-0.1) / self.peak,
+                        None => 1.0,
+                    };
+                    if self.normalize {
+                        self.gain_db = soundcraft_dsp::gain_to_db(self.gain);
+                    }
+                    self.meter.reset();
                     self.peak = 0.0;
                     self.done = 0;
                     self.measuring = false;
@@ -461,6 +537,28 @@ impl Bounce {
         }
     }
 
+    /// The gain that brings the measured loudness to `t`, held back by the true-peak ceiling.
+    fn loudness_gain(&mut self, t: LoudnessTarget) -> f32 {
+        let (lufs, true_peak) = (self.meter.integrated_lufs(), self.meter.true_peak_db());
+        if lufs <= soundcraft_dsp::MIN_DB {
+            // Gating blocks are 400 ms long: a longer range with any sound had blocks to measure,
+            // and all of them were under the absolute gate.
+            let quiet = self.peak > 0.0 && i64::try_from(self.done).unwrap_or(i64::MAX) >= self.session.sample_rate.samples(0.4);
+            self.outcome = Some(if quiet { LoudnessOutcome::TooQuiet } else { LoudnessOutcome::Unmeasured });
+            // Nothing to normalize, but the ceiling still holds: lower to it, never raise.
+            self.gain_db = (t.true_peak_ceiling_db - true_peak).min(0.0);
+            return soundcraft_dsp::db_to_gain(self.gain_db);
+        }
+        let mut gain_db = t.lufs - lufs;
+        self.outcome = Some(LoudnessOutcome::Reached);
+        if true_peak + gain_db > t.true_peak_ceiling_db {
+            gain_db = t.true_peak_ceiling_db - true_peak;
+            self.outcome = Some(LoudnessOutcome::CeilingHeld);
+        }
+        self.gain_db = gain_db;
+        soundcraft_dsp::db_to_gain(gain_db)
+    }
+
     /// Renders the whole bounce (see [`Bounce::step`]).
     pub fn run(mut self) -> Result<Bounced> {
         loop {
@@ -471,6 +569,20 @@ impl Bounce {
     }
 
     fn finish(&mut self) -> Result<Bounced> {
+        // The second pass measures what was written: check it before calling the target reached.
+        let (lufs, true_peak) = (self.meter.integrated_lufs(), self.meter.true_peak_db());
+        if let (Some(t), Some(LoudnessOutcome::Reached)) = (self.loudness, self.outcome)
+            && (lufs <= soundcraft_dsp::MIN_DB || (lufs - t.lufs).abs() > LOUDNESS_TOLERANCE_LU)
+        {
+            self.outcome = Some(LoudnessOutcome::Missed);
+        }
+        // The gain comes from the first pass: a mix that renders louder the second time can still
+        // go over the ceiling, and then no other outcome may say it held.
+        if let Some(t) = self.loudness
+            && true_peak > t.true_peak_ceiling_db + CEILING_TOLERANCE_DB
+        {
+            self.outcome = Some(LoudnessOutcome::CeilingExceeded);
+        }
         let bytes = match self.enc.take() {
             Some(enc) => enc.finish().map_err(|err| EngineError::Io(format!("{}: {err}", self.path.display())))?.complete(&self.part, &self.path)?,
             None => 0,
@@ -478,8 +590,10 @@ impl Bounce {
         Ok(Bounced {
             bytes,
             peak_db: soundcraft_dsp::gain_to_db(self.peak),
-            lufs: self.meter.integrated_lufs(),
-            true_peak_db: self.meter.true_peak_db(),
+            lufs,
+            true_peak_db: true_peak,
+            gain_db: self.gain_db,
+            loudness: self.outcome,
         })
     }
 }
@@ -572,6 +686,24 @@ fn bounce_layout(s: &Session, bus: Option<BusId>, fold_stereo: bool) -> (Channel
         None => s.main_format(),
     };
     if fold_stereo && nch > 2 { (ChannelFormat::Stereo, 2, Some(fmt)) } else { (fmt, nch, None) }
+}
+
+/// BS.1770 channel weights for a bounce of `fmt`, from its speakers in channel order: the LFE
+/// does not count toward loudness, 5.1's surrounds count 1.41, the rest 1. `None` for Ambisonics,
+/// which has no speakers. The meter's own guess goes by channel count alone, so it cannot tell
+/// where a 7.1 or Atmos LFE sits, or that 6.0 has none.
+fn loudness_weights(fmt: ChannelFormat) -> Option<Vec<f32>> {
+    let speakers = fmt.speakers();
+    (!speakers.is_empty()).then(|| {
+        speakers
+            .iter()
+            .map(|sp| match sp {
+                sp if sp.is_lfe() => 0.0,
+                soundcraft_model::Speaker::Ls | soundcraft_model::Speaker::Rs if fmt == ChannelFormat::Surround51 => 1.41,
+                _ => 1.0,
+            })
+            .collect()
+    })
 }
 
 /// The first `n` frames of `chunk`, folded down from `fold` when set and scaled by `gain`.
@@ -1577,6 +1709,57 @@ mod clip_tests {
             super::clip_file(&dir.to_string_lossy(), "Take", &mut names, on_disk).unwrap();
         }
         assert_eq!(looked.get() - before, 1_000);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+#[cfg(test)]
+mod loudness_tests {
+    use super::*;
+
+    /// A session with one stereo track playing a 1 kHz tone of `amp` for 2 s.
+    fn tone_session(amp: f32) -> Session {
+        let mut e = crate::Engine::default();
+        let sr = e.session().sample_rate.hz();
+        let tone: Vec<f32> = (0..96_000).map(|i| amp * (std::f32::consts::TAU * 1000.0 * i as f32 / 48_000.0).sin()).collect();
+        let s = e.session_mut();
+        let track = s.add_track(TrackKind::Audio, ChannelFormat::Stereo, Some("Tone"));
+        let audio = AudioBuffer { sample_rate: sr, channels: vec![tone.clone(), tone] };
+        let source = add_source(s, "tone", audio, None, FileFormat::Wav);
+        let clip = Clip::audio(s.new_clip_id(), "tone", source, 0, 0, 96_000);
+        crate::edit::place_clip(s, track, clip);
+        s.clone()
+    }
+
+    /// The gain comes from the first pass. When the second pass renders louder (here the session
+    /// changes between the passes, as a plugin that does not render the same twice would), the
+    /// written true peak goes over the ceiling, and the outcome must say so instead of `Reached`.
+    #[test]
+    fn a_second_pass_over_the_ceiling_is_reported() {
+        let dir = std::env::temp_dir().join(format!("soundcraft-io-ceiling-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let opts = EncodeOptions::new(craft_audio::EncodeFormat::Wav).with_bit_depth(craft_audio::BitDepth::Float32).with_dither(false);
+        let target = LoudnessTarget { lufs: -16.0, true_peak_ceiling_db: -1.0 };
+        let run = |louder: Option<f32>| {
+            let quiet = Arc::new(tone_session(0.05));
+            let mut b = Bounce::new(quiet, &dir.join("Mix.wav"), Range::new(0, 96_000), &opts, None, false, false).unwrap().with_loudness(target);
+            while b.measuring {
+                assert!(b.step(|| false).unwrap().is_none());
+            }
+            if let Some(amp) = louder {
+                b.session = Arc::new(tone_session(amp));
+                b.render = soundcraft_mix::RangeRender::new(&b.session, None, b.range, 1024);
+            }
+            b.run().unwrap()
+        };
+        let same = run(None);
+        assert_eq!(same.loudness, Some(LoudnessOutcome::Reached), "{same:?}");
+        assert!(same.true_peak_db <= -1.0, "{same:?}");
+        // 0.05 measured, 0.5 written: 20 dB louder than the gain was set for.
+        let louder = run(Some(0.5));
+        assert!(louder.true_peak_db > -1.0, "{louder:?}");
+        assert_eq!(louder.loudness, Some(LoudnessOutcome::CeilingExceeded), "{louder:?}");
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

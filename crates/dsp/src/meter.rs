@@ -190,6 +190,17 @@ fn k_weighting(sr: f32) -> [Coeffs; 2] {
 }
 
 impl LoudnessMeter {
+    /// A meter with one BS.1770 weight per channel, for a caller that knows the speakers: 0 leaves
+    /// a channel out (the LFE), 1.41 weights the 5.1 surrounds. A weight that is not a finite
+    /// number from 0 to 2 counts as 1.
+    pub fn with_weights(sample_rate: f32, weights: &[f32]) -> Self {
+        let mut m = Self::new(sample_rate, weights.len());
+        for (w, &g) in m.weights.iter_mut().zip(weights) {
+            *w = if (0.0..=2.0).contains(&g) { g } else { 1.0 };
+        }
+        m
+    }
+
     /// Creates a meter. Channel weights default to 1.0, except a 6-channel (5.1: L R C LFE Ls Rs)
     /// layout which uses 0 for LFE and 1.41 for the surrounds.
     pub fn new(sample_rate: f32, channels: usize) -> Self {
