@@ -1834,7 +1834,7 @@ fn menu_translate(source: &str) -> Option<&'static str> {
         "Choose a MIDI output" => "Escolher uma saída MIDI",
         "MIDI output" => "Saída MIDI",
         "No MIDI output devices found" => "Nenhum dispositivo de saída MIDI encontrado",
-        "Position exceeds the MIDI Song Position Pointer range." => "A posição excede o limite do ponteiro de posição MIDI.",
+        "Copy diagnostics" => "Copiar diagnóstico",
         "The saved MIDI output is unavailable." => "A saída MIDI salva está indisponível.",
         "Offset (samples)" => "Deslocamento (amostras)",
         "MIDI Input Monitoring Follows Selected Track" => "O monitoramento de entrada MIDI acompanha a pista selecionada",
@@ -2090,6 +2090,11 @@ macro_rules! error_templates {
 }
 
 error_templates! {
+    "Multiple MIDI outputs named {name}; using the first" => "Várias saídas MIDI com o nome {name}; usando a primeira",
+    "MIDI output {name} unavailable" => "Saída MIDI {name} indisponível",
+    "MIDI sync settings require the desktop host" => "As configurações de sincronização MIDI exigem o aplicativo de desktop",
+    "Invalid MIDI sync port name, count or sample offset" => "Nome, quantidade de portas ou deslocamento de amostras MIDI inválido",
+    "Position exceeds the MIDI Song Position Pointer range." => "A posição excede o limite do ponteiro de posição MIDI.",
     "{path} is not valid Unicode" => "{path} não é Unicode válido",
     "unknown command `{c}`" => "comando desconhecido `{c}`",
     "`{c}` is not available: {why}" => "`{c}` não está disponível: {why}",

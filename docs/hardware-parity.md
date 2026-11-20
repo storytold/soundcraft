@@ -55,7 +55,7 @@ Legend: ✅ works · 🟡 partial · ❌ missing.
 | LTC chase, 9-pin machine control | ✅ (Ultimate) | ❌ |
 | Word clock / video reference awareness | ✅ via interface | ❌ |
 | Video output to a second display or video card | ✅ | ❌ (video window only) |
-| MIDI Beat Clock out | ✅ | 🟡 [Named output and sample offset](midi-input.md#send-midi-beat-clock-to-external-hardware). Windows hardware verified at 120 BPM, including Start, Song Position Pointer, Continue and Stop. Linux and macOS share the native output path. |
+| MIDI Beat Clock out | ✅ | 🟡 [Named output and sample offset](midi-input.md#send-midi-beat-clock-to-external-hardware). Shared presentation timing, per-port offsets and multiple destinations. Hardware check pending. Linux and macOS share the native output path. |
 | Satellite linking of systems | ✅ | ❌ |
 
 ## Performance

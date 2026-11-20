@@ -121,6 +121,8 @@ struct PreferencesDraft {
     theme: ThemeMode,
     reduce_visual_effects: ReduceVisualEffects,
     undo_levels: usize,
+    compensation: crate::midi_sync::Compensation,
+    compensation_edited: [bool; 3],
     theme_edited: bool,
     reduce_visual_effects_edited: bool,
     undo_levels_edited: bool,
@@ -133,6 +135,8 @@ impl PreferencesDraft {
             theme: app.ui.theme,
             reduce_visual_effects: app.ui.reduce_visual_effects,
             undo_levels: app.ui.undo_levels,
+            compensation: app.ui.midi_sync.compensation,
+            compensation_edited: [false; 3],
             theme_edited: false,
             reduce_visual_effects_edited: false,
             undo_levels_edited: false,
@@ -141,6 +145,16 @@ impl PreferencesDraft {
 
     /// Pulls in scripted setting changes while retaining fields edited in this window.
     fn sync_unedited_from_live(&mut self, app: &SoundApp) {
+        let c = app.ui.midi_sync.compensation;
+        if !self.compensation_edited[0] {
+            self.compensation.beat_clock = c.beat_clock;
+        }
+        if !self.compensation_edited[1] {
+            self.compensation.mtc = c.mtc;
+        }
+        if !self.compensation_edited[2] {
+            self.compensation.notes = c.notes;
+        }
         if !self.theme_edited {
             self.theme = app.ui.theme;
         }
@@ -154,6 +168,9 @@ impl PreferencesDraft {
 
     /// Remembers which values the user changed during the current UI frame.
     fn remember_user_edits(&mut self, before: Self) {
+        self.compensation_edited[0] |= self.compensation.beat_clock != before.compensation.beat_clock;
+        self.compensation_edited[1] |= self.compensation.mtc != before.compensation.mtc;
+        self.compensation_edited[2] |= self.compensation.notes != before.compensation.notes;
         self.theme_edited |= self.theme != before.theme;
         self.reduce_visual_effects_edited |= self.reduce_visual_effects != before.reduce_visual_effects;
         self.undo_levels_edited |= self.undo_levels != before.undo_levels;
@@ -811,6 +828,7 @@ pub fn show(app: &mut SoundApp, ctx: &egui::Context) {
     }
     match action {
         Some(Action::Apply) => {
+            app.ui.midi_sync.compensation = draft.compensation;
             let _ = app.run("ui.theme", json!({"mode": draft.theme.id()}));
             let _ = app.run("ui.reduce_visual_effects", json!({"mode": draft.reduce_visual_effects.id()}));
             let _ = app.run("ui.undo_levels", json!({"levels": draft.undo_levels}));
@@ -961,6 +979,14 @@ fn control_ui(ui: &mut egui::Ui, page: PreferencesPage, section: &str, index: us
                 ui.label(label("Levels of Undo"));
                 ui.add(egui::DragValue::new(&mut draft.undo_levels).range(1..=64));
             });
+        }
+        Control::Check(text) if section == "Delay Compensation for External Devices" => {
+            let value = match text {
+                "MIDI Beat Clock" => &mut draft.compensation.beat_clock,
+                "MIDI Timecode" => &mut draft.compensation.mtc,
+                _ => &mut draft.compensation.notes,
+            };
+            ui.checkbox(value, label(text));
         }
         Control::Check(text) => {
             let mut value = false;

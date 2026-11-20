@@ -25,7 +25,7 @@ When you close a gap, delete its entry (or shrink it) in the same PR, and bump t
 | G-08 | Built-in plugin catalogue thin and unverified | Features | [plugin-parity.md](plugin-parity.md) | 80–120 |
 | G-09 | English-first UI with a pt-BR catalog (not native-reviewed); all fixed UI strings covered, no CJK/RTL rendering | Localization | [localization-parity.md](localization-parity.md) | 20–40 |
 | G-10 | No control surfaces (HUI/MCU, EUCON) | Hardware | [hardware-parity.md](hardware-parity.md) | 40–70 |
-| G-11 | External MIDI sync, LTC and video reference | Hardware | [hardware-parity.md](hardware-parity.md) | 15–25 |
+| G-11 | External MIDI sync, LTC and video reference | Hardware | [hardware-parity.md](hardware-parity.md) | TBD |
 | G-12 | Immersive delivery: no Dolby Atmos/ADM BWF, MPEG-H, binaural | Features | [file-format-parity.md](file-format-parity.md) | 50–80 |
 | G-13 | Sidechain inputs, ARA, out-of-process plugin sandboxing | Ecosystem | [plugin-parity.md](plugin-parity.md) | 30–50 |
 | G-14 | Windows/Linux/Web exercised only lightly at runtime; no PR CI running the tests | Platforms / Stability | this file | 20–40 |
@@ -185,7 +185,7 @@ switch. ≈ 40–70 h for HUI/MCU plus a mapping layer; hardware needed to verif
 
 ### G-11. Sync
 
-Native MIDI Beat Clock output is available. MIDI Time Code generation and chase are still open in [#1663](https://github.com/storytold/soundcraft/pull/1663). See the [hardware capability tables](hardware-parity.md#midi).
+Native MIDI Beat Clock output supports multiple calibrated destinations. The updated timing host requires hardware verification; remaining work has not been sized. MIDI Time Code generation and chase are still open in [#1663](https://github.com/storytold/soundcraft/pull/1663). See the [hardware capability tables](hardware-parity.md#midi).
 LTC, video reference, word clock awareness and Satellite-style linking remain open.
 
 ### G-12. Immersive delivery
