@@ -280,6 +280,13 @@ impl AudioState {
                 }
                 #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
                 Cmd::Clock(clock) => self.clock = clock,
+                Cmd::FollowGrid(s, busy) => {
+                    let old = std::mem::replace(&mut self.session, s);
+                    if let Some(tx) = &self.old_sessions {
+                        let _ = tx.try_send(old);
+                    }
+                    busy.store(false, Ordering::Release);
+                }
                 Cmd::OldSessions(tx) => self.old_sessions = Some(tx),
                 Cmd::Play { from, end, looped } => self.begin_play(from, end, looped, false),
                 Cmd::PlayMtc(from) => self.begin_play(from, None, None, true),
@@ -1090,6 +1097,8 @@ pub(crate) struct Side {
     /// Instances that refused their stored state: saves keep that state until the plugin's editor
     /// is opened.
     pub(crate) refused: HashSet<(TrackId, usize)>,
+    pub(crate) grid_base: Option<Arc<Session>>,
+    pub(crate) grid_busy: Arc<AtomicBool>,
     garbage: Receiver<Vec<Box<dyn Plugin>>>,
     old_sessions: Option<Receiver<Arc<Session>>>,
     /// The tracks of the session last sent, to tell the audio thread which ones went.
@@ -1099,6 +1108,8 @@ pub(crate) struct Side {
 impl Side {
     pub(crate) fn new(rate: f32, garbage: Receiver<Vec<Box<dyn Plugin>>>) -> Side {
         Side {
+            grid_base: None,
+            grid_busy: Default::default(),
             shadow: HashMap::new(),
             rate,
             editors: HashMap::new(),

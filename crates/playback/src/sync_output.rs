@@ -102,20 +102,20 @@ pub(crate) struct Output {
     worker: Option<(Sender<Update>, std::thread::JoinHandle<()>)>,
 }
 enum Update {
-    Session(Arc<Session>),
+    Session { doc: Arc<Session>, remap: bool },
     Beats(Vec<(String, i64)>, bool),
     Encoder(Option<(String, i64)>, bool, Box<dyn SyncEncoder>),
     Wake,
     InputWake(Arc<AtomicBool>),
 }
 impl Output {
-    pub(crate) fn configure(&mut self, s: &Arc<Session>, audio: &Sender<Cmd>) {
+    pub(crate) fn configure(&mut self, s: &Arc<Session>, audio: &Sender<Cmd>, remap: bool) {
         if self.session.is_none() {
             let _ = audio.send(Cmd::Clock(Some(Publisher::new(self.view.clone(), self.metrics.clone()))));
         }
         self.session = Some(s.clone());
         if let Some((tx, _)) = &self.worker {
-            let _ = tx.send(Update::Session(s.clone()));
+            let _ = tx.send(Update::Session { doc: s.clone(), remap });
         }
     }
     fn send(&mut self, u: Update) {
@@ -358,11 +358,14 @@ fn drive<C: SyncPort>(
         if let Some(u) = update.take() {
             awake = now + Duration::from_millis(150);
             match u {
-                Update::Session(s) => {
-                    for r in ports.values_mut().flat_map(|p| p.routes.iter_mut().flatten()) {
-                        r.encoder.remap(&session, &s);
+                Update::Session { doc, remap } => {
+                    // A running external-clock adjustment preserves the outgoing transport pass.
+                    if remap {
+                        for r in ports.values_mut().flat_map(|p| p.routes.iter_mut().flatten()) {
+                            r.encoder.remap(&session, &doc);
+                        }
                     }
-                    session = s;
+                    session = doc;
                 }
                 Update::Beats(dest, c) => {
                     for (name, p) in &mut ports {

@@ -618,12 +618,18 @@ fn replaced_sessions_are_freed_on_the_ui_thread() {
     side.return_old_sessions(&tx);
     let mut out = vec![0.0f32; 256];
     let mut watched = Vec::new();
-    for _ in 0..3 * OLD_SESSIONS {
+    for index in 0..3 * OLD_SESSIONS {
         let s = Arc::new(soundcraft_model::Session::default());
         watched.push(Arc::downgrade(&s));
         side.collect_garbage();
-        tx.send(Cmd::Session(s, Vec::new())).unwrap();
+        if index % 2 == 0 {
+            tx.send(Cmd::Session(s, Vec::new())).unwrap();
+        } else {
+            side.grid_busy.store(true, Ordering::Release);
+            tx.send(Cmd::FollowGrid(s, side.grid_busy.clone())).unwrap();
+        }
         st.fill(&mut out, 2);
+        assert!(!side.grid_busy.load(Ordering::Acquire));
         let replaced = watched.len().checked_sub(2).and_then(|i| watched.get(i));
         assert!(replaced.is_none_or(|w| w.strong_count() == 1), "freed on the audio thread");
     }

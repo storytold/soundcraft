@@ -12,6 +12,7 @@ pub(crate) struct Host {
     pub(super) snapshot: Snapshot,
     transport_error_us: Option<i64>,
     actions: Vec<Action>,
+    grid_dirty: bool,
     // Musical pulse and timestamp of the last grid segment, in the input clock.
     anchor: Option<(i64, i64)>,
 }
@@ -56,9 +57,10 @@ impl SoundApp {
             _ => return Err("loss_policy must be coast or stop".into()),
         };
         let limit = soundcraft_playback::max_sync_offset_samples(self.engine.session().sample_rate);
-        let offset = args.get("input_offset_samples").map(|v| {
-            v.as_i64().filter(|n| n.unsigned_abs() <= limit as u64).ok_or("MIDI input calibration must be within the sync timing horizon")
-        }).transpose()?;
+        let offset = args
+            .get("input_offset_samples")
+            .map(|v| v.as_i64().filter(|n| n.unsigned_abs() <= limit as u64).ok_or("MIDI input calibration must be within the sync timing horizon"))
+            .transpose()?;
         if enabled && source.is_none() || offset.is_some() && source.is_none() {
             return Err("Select a MIDI clock input".into());
         }
@@ -178,10 +180,11 @@ impl SoundApp {
             }
         }
         self.clock_follow.actions = events;
-        if let Some(grid) = self.engine.playback_tempo.as_mut()
-            && update_grid(grid, &mut self.clock_follow.anchor, s, sr)
-        {
-            self.refresh_follow_playback();
+        if let Some(grid) = self.engine.playback_tempo.as_mut() {
+            self.clock_follow.grid_dirty |= update_grid(grid, &mut self.clock_follow.anchor, s, sr);
+            if self.clock_follow.grid_dirty && self.player.as_ref().is_none_or(|p| p.update_follow_grid(grid)) {
+                self.clock_follow.grid_dirty = false;
+            }
         }
         self.clock_follow.transport_error_us = (s.state == State::Locked && self.is_playing()).then(|| {
             let heard = self.player.as_ref().map_or(self.engine.transport.position, |player| player.presented_position());
