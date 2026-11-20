@@ -626,7 +626,9 @@ fn io_column(app: &mut SoundApp, ui: &mut Ui, track: &Track, r: Rect) {
         ui.painter().rect_filled(vr, 2.0, Color32::from_gray(15));
         ui.painter().rect_filled(vr.shrink(1.5), 1.5, Color32::BLACK);
         let m = &track.mixer;
-        let pan = m.pan.first().map_or("-".into(), |p| crate::widgets::pan_text(*p));
+        // A stereo track shows L and R ("<100 100>"); its popup has a slider for each.
+        let pan =
+            if m.pan.is_empty() { "-".into() } else { m.pan.iter().take(2).map(|p| crate::widgets::pan_text(*p)).collect::<Vec<_>>().join(" ") };
         // The readout is black in both themes, so it takes the dark palette's green.
         let ink = Tokens::DARK.counter_text;
         // The two rows are buttons: a click opens a fader or pan sliders, an Alt-click resets.
@@ -665,9 +667,11 @@ fn io_column(app: &mut SoundApp, ui: &mut Ui, track: &Track, r: Rect) {
         {
             reset_pan(app, track);
         }
-        for (y, label, value) in [(7.5, "vol", vol_text), (22.0, "pan", pan)] {
+        // Two pan values ("<100 100>") take a point less, so they keep clear of the label.
+        let pan_size = if m.pan.len() > 1 { 9.0 } else { 10.0 };
+        for (y, label, value, size) in [(7.5, "vol", vol_text, 10.0), (22.0, "pan", pan, pan_size)] {
             ui.painter().text(pos2(vr.min.x + 7.0, vr.min.y + y), Align2::LEFT_CENTER, label, bold(10.0), ink);
-            ui.painter().text(pos2(vr.max.x - 6.5, vr.min.y + y), Align2::RIGHT_CENTER, value, bold(10.0), ink);
+            ui.painter().text(pos2(vr.max.x - 6.5, vr.min.y + y), Align2::RIGHT_CENTER, value, bold(size), ink);
         }
         ui.painter().hline(vr.min.x + 7.0..=vr.max.x - 6.0, vr.min.y + 14.5, Stroke::new(1.0, Color32::from_gray(35)));
         readout_popup(&vol, !alt).show(|ui| volume_fader(app, ui, track));
