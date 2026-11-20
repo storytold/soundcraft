@@ -303,8 +303,11 @@ const MAX_LOOPS: i64 = 1000;
 /// Time-stretch an audio clip in place to the nearest whole number of beats of the tempo map, so
 /// that loops of it land back on the grid. A clip that already spans whole beats is left alone.
 /// `room` bounds the fitted length: the clip may not grow past it (the next clip's start, or a
-/// requested loop length).
-fn fit_to_beats(s: &mut Session, t: TrackId, c: &mut Clip, room: Option<Samples>) -> Result<()> {
+/// requested loop length). When `partner` is set, a crossfade partner overlaps the clip and the
+/// fit may only shrink it (`room` is capped at the clip's length by the caller): growing would
+/// clear the partner's material when the fitted clip replaces the old one, and a shrinking fit is
+/// written without clearing the partner's range.
+fn fit_to_beats(s: &mut Session, t: TrackId, c: &mut Clip, room: Option<Samples>, partner: bool) -> Result<()> {
     let id = "clip.loop";
     if !c.is_audio() {
         return Err(bad(id, "fitting to the grid needs an audio clip"));
@@ -336,7 +339,22 @@ fn fit_to_beats(s: &mut Session, t: TrackId, c: &mut Clip, room: Option<Samples>
     nc.fade_in.len = scale(c.fade_in.len).clamp(0, nc.length);
     nc.fade_out.len = scale(c.fade_out.len).clamp(0, nc.length);
     nc.sync_point = scale(c.sync_point).clamp(0, nc.length);
-    replace_clip(s, t, c.id, nc.clone());
+    if partner && target < c.length {
+        // A shrinking fit never extends into anything the clip did not already cover, so write the
+        // fitted clip in place instead of place_clip's clear_range: clear_range splits a
+        // crossfade partner at the new end and removes the piece under the new range — that piece
+        // is the partner's crossfade material, and a fit may not touch it. Anything else under the
+        // new range would already have overlapped the old clip, which clips do not do except via
+        // a crossfade partner, so nothing else needs clearing here.
+        let Some(pl) = s.track_mut(t).and_then(|tr| tr.playlist_mut()) else {
+            return Err(bad(id, "the clip's track is gone"));
+        };
+        pl.clips.retain(|c2| c2.id != c.id);
+        pl.clips.push(nc.clone());
+        pl.sort();
+    } else {
+        replace_clip(s, t, c.id, nc.clone());
+    }
     *c = nc;
     Ok(())
 }
@@ -390,7 +408,7 @@ fn loop_clips(e: &mut Engine, p: &Value) -> Result<Value> {
             if partner {
                 room = Some(room.map_or(c.length, |r| r.min(c.length)));
             }
-            fit_to_beats(s, tid, &mut c, room)?;
+            fit_to_beats(s, tid, &mut c, room, partner)?;
         }
         let len = c.length;
         // Whole iterations, then one cut short to reach `end` exactly.
@@ -840,5 +858,30 @@ mod tests {
         assert!(err.contains("48000") && err.contains("40000"), "{err}");
         let clips = e.session().track(t).unwrap().clips();
         assert_eq!(clips.iter().map(|c| (c.start, c.length)).collect::<Vec<_>>(), vec![(0, 40_000), (36_000, 20_000)]);
+    }
+
+    /// A shrinking fit writes the fitted clip without clearing the crossfade partner's overlap:
+    /// clip 0..30000 fits to one beat (24000) with a partner at 20000..50000 extending past its
+    /// end — the partner keeps its material under the new end (20000..24000), and no copy is
+    /// made with count 1 so the partner cannot be overwritten by placement either.
+    #[test]
+    fn a_shrinking_fit_keeps_the_crossfade_partner() {
+        use soundcraft_model::{ChannelFormat, Clip, Session, TrackKind};
+        let mut s = Session::default();
+        let t = s.add_track(TrackKind::Audio, ChannelFormat::Mono, Some("Loop"));
+        let buf = craft_audio::AudioBuffer { sample_rate: 48_000, channels: vec![vec![0.1; 50_000]] };
+        let src = crate::io::add_source(&mut s, "Loop", buf, None, soundcraft_model::FileFormat::Wav);
+        let clip = Clip::audio(s.new_clip_id(), "Loop", src, 0, 0, 30_000);
+        let partner = Clip::audio(s.new_clip_id(), "Partner", src, 0, 20_000, 30_000);
+        // Paste keeps overlapping placed clips, so the pair survives as a crossfade.
+        let id = crate::edit::paste(&mut s, t, 0, &[clip, partner], 50_000, false).unwrap()[0];
+        let mut e = crate::Engine::new(s);
+        assert_eq!(e.execute("clip.loop", &json!({"clips": [id.0], "count": 1, "fit": true})).unwrap()["loops"], 0);
+        let clips = e.session().track(t).unwrap().clips();
+        assert_eq!(
+            clips.iter().map(|c| (c.start, c.length)).collect::<Vec<_>>(),
+            vec![(0, 24_000), (20_000, 30_000)],
+            "the fit shrank the clip and the partner kept its overlap"
+        );
     }
 }
