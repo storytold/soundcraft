@@ -908,8 +908,8 @@ fn holding_cmd_z_or_enter_still_runs_once() {
     hold_key(&ctx, &mut app, egui::Key::Z, egui::Modifiers { command: true, ..egui::Modifiers::NONE });
     assert_eq!(app.engine.undo_history().len(), depth - 1, "auto-repeats of Cmd+Z are ignored");
     let markers = app.engine.session().markers.len();
-    hold_key(&ctx, &mut app, egui::Key::Enter, egui::Modifiers::NONE);
-    assert_eq!(app.engine.session().markers.len(), markers + 1, "auto-repeats of Enter are ignored");
+    hold_key(&ctx, &mut app, egui::Key::NumpadEnter, egui::Modifiers::NONE);
+    assert_eq!(app.engine.session().markers.len(), markers + 1, "auto-repeats of numpad Enter are ignored");
 }
 
 /// A fresh physical Cmd+Z and an identical scripted Cmd+Z in one frame are distinct actions.
