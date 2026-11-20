@@ -81,6 +81,7 @@ pub(crate) struct AudioState {
     chasing: bool,
     drift_since: Option<i64>,
     chase_group: Option<i64>,
+    chase_seek_generation: u64,
     end: Option<Samples>,
     looped: Option<Range>,
     /// Rendered frames waiting to be consumed (planar, main channels) and the fractional read index.
@@ -182,6 +183,7 @@ impl AudioState {
             chasing: false,
             drift_since: None,
             chase_group: None,
+            chase_seek_generation: 0,
             end: None,
             #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
             clock: None,
@@ -379,7 +381,7 @@ impl AudioState {
         let sr = self.session.sample_rate;
         let rate = self.session.frame_rate;
         let start = self.session.timecode_start;
-        let (p, stamp, now, anchor) = match tracking {
+        let (p, stamp, now, anchor, seek_generation) = match tracking {
             Tracking::Idle => {
                 if self.chasing {
                     self.halt();
@@ -407,7 +409,7 @@ impl AudioState {
                 self.shared.position.store(self.pos, Ordering::Relaxed);
                 return;
             }
-            Tracking::Rolling { position, stamp, now, anchor } => (position, stamp, now, anchor),
+            Tracking::Rolling { position, stamp, now, anchor, seek_generation } => (position, stamp, now, anchor, seek_generation),
         };
         if self.chase_group == Some(stamp) {
             return;
@@ -436,7 +438,7 @@ impl AudioState {
             let rendered = self.pos as f64 + self.read - self.pending_len as f64;
             if desired.abs_diff(rendered.round() as i64) > p.in_session_rate(rate).frame_samples(sr) as u64 {
                 let since = *self.drift_since.get_or_insert(stamp);
-                if stamp.saturating_sub(since) >= 1_000_000 {
+                if seek_generation != self.chase_seek_generation || stamp.saturating_sub(since) >= 1_000_000 {
                     feed.mtc_relocated();
                     self.begin_play(desired, None, None, true);
                 }
@@ -444,6 +446,7 @@ impl AudioState {
                 self.drift_since = None;
             }
         }
+        self.chase_seek_generation = seek_generation;
         self.chase_group = Some(stamp);
     }
 

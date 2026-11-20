@@ -118,7 +118,7 @@ fn serialize_incoming_timecode<S: serde::Serializer>(p: &Option<Position>, seria
 pub(crate) enum Tracking {
     Idle,
     Located(Position),
-    Rolling { position: Position, stamp: i64, now: i64, anchor: Option<Position> },
+    Rolling { position: Position, stamp: i64, now: i64, anchor: Option<Position>, seek_generation: u64 },
 }
 
 #[derive(Default)]
@@ -135,6 +135,9 @@ pub(crate) struct Reader {
     located_start: Option<Position>,
     first_anchor: Option<Position>,
     previous: Option<Position>,
+    // While coasting, a timeline jump needs two consecutive groups at the new position.
+    seek_candidate: Option<Position>,
+    seek_generation: u64,
     locked: bool,
     coasting: bool,
     lost_code: bool,
@@ -164,6 +167,7 @@ impl Reader {
         self.located_start = None;
         self.first_anchor = None;
         self.previous = None;
+        self.seek_candidate = None;
         self.locked = false;
         self.coasting = false;
         self.lost_code = false;
@@ -330,7 +334,18 @@ impl Reader {
                             let expected = (elapsed * 4. / live.in_session_rate(self.options.rate).frame_us()).round() as i64;
                             live.advance(expected).quarter.abs_diff(position.advance(7).quarter) <= 4
                         });
-                        if contiguous || (self.locked && self.coasting && plausible) {
+                        let far_recovery = self.locked && self.coasting && !plausible;
+                        let accepted = if far_recovery {
+                            self.seek_candidate.is_some_and(|candidate| candidate.advance(8) == position)
+                        } else {
+                            contiguous || (self.locked && self.coasting && plausible)
+                        };
+                        if accepted {
+                            if far_recovery {
+                                self.seek_generation = self.seek_generation.wrapping_add(1);
+                                self.fit.clear();
+                            }
+                            self.seek_candidate = None;
                             if !contiguous {
                                 self.fit.clear();
                             }
@@ -353,6 +368,7 @@ impl Reader {
                             self.pending = Some(ChaseEvent::Roll(live, stamp));
                         } else {
                             self.discontinuity();
+                            if self.locked { self.seek_candidate=Some(position); }
                         }
                     } else if let Some(start) = self.located_start {
                         // A sender can label the first group at the locate or up to two frames ahead.
@@ -406,7 +422,7 @@ impl Reader {
         self.expire(now);
         if let Some((position, stamp)) = self.rolling {
             let anchor = self.first_anchor.filter(|_| now.saturating_sub(stamp) < 2_000_000 / position.rate.nominal());
-            Tracking::Rolling { position, stamp, now, anchor }
+            Tracking::Rolling { position, stamp, now, anchor, seek_generation: self.seek_generation }
         } else if let Some(p) = self.located_start {
             Tracking::Located(p)
         } else {
@@ -415,6 +431,7 @@ impl Reader {
     }
 
     fn discontinuity(&mut self) {
+        self.seek_candidate = None;
         self.speed_anchor = None;
         self.speed_mismatch = None;
         if self.locked && self.options.freewheel == 0 && !self.options.jam {

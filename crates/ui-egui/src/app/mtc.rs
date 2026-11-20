@@ -303,7 +303,7 @@ mod tests {
         host.ui.show_transport = true;
         let mut h = Harness::builder().with_size(egui::vec2(1400., 900.)).build_ui_state(
             |ui, app: &mut SoundApp| {
-                crate::shortcuts::handle(app, ui.ctx());
+                app.logic(ui.ctx());
                 app.ui(ui);
             },
             host,

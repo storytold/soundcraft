@@ -585,9 +585,10 @@ fn a_failed_stop_on_route_removal_reports_and_reconnects() {
     view.lock().unwrap().push(block(Instant::now(), 0., 480., Duration::ZERO));
     let (tx, rx) = channel();
     let (sent, wire) = channel();
-    let stats = Arc::new(Stats::default());
+    let snapshot = Output::default();
+    let stats = snapshot.stats.clone();
     let metrics = stats.clone();
-    let trouble = Arc::new(Mutex::new(None));
+    let trouble = snapshot.trouble.clone();
     let error = trouble.clone();
     let worker = std::thread::spawn(move || {
         let mut first = true;
@@ -605,8 +606,6 @@ fn a_failed_stop_on_route_removal_reports_and_reconnects() {
         std::thread::yield_now();
     }
     assert_eq!(trouble.lock().unwrap().as_deref(), Some("DIN: stop rejected"));
-    let mut snapshot = Output::default();
-    snapshot.trouble = trouble.clone();
     assert_eq!(snapshot.status().error.as_deref(), Some("DIN: stop rejected"));
     assert!(!stats.connected().contains("DIN"));
     assert_eq!(wire.recv_timeout(Duration::from_secs(3)).unwrap(), (false, vec![STOP]));
