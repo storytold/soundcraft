@@ -7,7 +7,7 @@ impl SoundApp {
         if args.is_empty() {
             return Ok(self.mtc_state());
         }
-        if args.keys().any(|k| !matches!(k.as_str(), "input" | "online" | "freewheel_frames" | "jam_sync")) {
+        if args.keys().any(|k| !matches!(k.as_str(), "input" | "online" | "freewheel" | "freewheel_frames" | "jam_sync")) {
             return Err("Unknown MTC reader setting".into());
         }
         let source = match args.get("input") {
@@ -26,6 +26,9 @@ impl SoundApp {
         if online && source.is_none() {
             return Err("Select an MTC input before going online".into());
         }
+        if online && !soundcraft_playback::mtc::supported(self.engine.session().frame_rate) {
+            return Err(soundcraft_playback::mtc::UNSUPPORTED_RATE.into());
+        }
         if online && self.ui.gen_mtc {
             return Err("Disable MTC output before going online".into());
         }
@@ -33,7 +36,7 @@ impl SoundApp {
             return Err("Stop recording before enabling MTC chase".into());
         }
         let mut session_settings = serde_json::Map::new();
-        for key in ["freewheel_frames", "jam_sync"] {
+        for key in ["freewheel", "freewheel_frames", "jam_sync"] {
             if let Some(value) = args.get(key) {
                 session_settings.insert(key.into(), value.clone());
             }
@@ -46,6 +49,7 @@ impl SoundApp {
                 m.feed().set_mtc_source(None);
             }
             self.stop_mtc_transport();
+            self.update_mtc_warning(None);
             self.ui.mtc_input_port = source;
             self.mtc_online = online;
             self.mtc_status = if online { "Waiting for timecode" } else { "Offline" };
@@ -54,7 +58,7 @@ impl SoundApp {
     }
 
     fn mtc_state(&self) -> Value {
-        json!({"input": self.ui.mtc_input_port, "online": self.mtc_online, "status": self.mtc_status,"freewheel_frames":self.engine.mtc_freewheel_frames(),"jam_sync":self.engine.mtc_jam_sync()})
+        json!({"input": self.ui.mtc_input_port, "online": self.mtc_online, "status": self.mtc_status,"freewheel":self.engine.mtc_freewheel_mode(),"freewheel_frames":self.engine.mtc_freewheel_frames(),"jam_sync":self.engine.mtc_jam_sync()})
     }
 
     fn stop_mtc_transport(&mut self) {
@@ -71,9 +75,21 @@ impl SoundApp {
         }
     }
 
+    fn update_mtc_warning(&mut self, warning: Option<String>) {
+        if self.mtc_warning != warning {
+            if self.mtc_warning.as_ref() == Some(&self.ui.status) { self.ui.status.clear(); }
+            if let Some(msg) = &warning { self.ui.status.clone_from(msg); }
+            self.mtc_warning=warning;
+        }
+    }
+    pub(crate) fn mtc_rate_warning(&self) -> Option<String> {
+        let mismatch = self.midi_inputs.as_ref()?.feed().mtc_input_status().1?;
+        Some(crate::localized_format!("Receiving {incoming} fps; session is {session} fps", incoming=mismatch.incoming, session=mismatch.session))
+    }
+
     fn mtc_at(&self, p: Position) -> i64 {
         let s = self.engine.session();
-        p.session_sample(s.frame_rate, s.sample_rate, s.timecode_start, s.edit.value("midi.mtc.external_offset_frames", 0.) as i64)
+        p.session_sample(s.frame_rate, s.sample_rate, s.timecode_start, s.edit.value("sync.external_offset", 0.) as i64)
     }
 
     pub(crate) fn service_mtc_chase(&mut self) {
@@ -88,6 +104,7 @@ impl SoundApp {
                 m.feed().set_mtc_source(None);
             }
             self.mtc_online = false;
+            self.update_mtc_warning(None);
             self.mtc_chasing = false;
             self.mtc_status = "Offline";
             return;
@@ -102,22 +119,25 @@ impl SoundApp {
         let s = self.engine.session();
         inputs.feed().set_mtc_options(
             s.frame_rate,
-            self.engine.mtc_freewheel_frames(),
+            if self.engine.mtc_freewheel_mode() == "none" { 0 } else { self.engine.mtc_freewheel_frames() },
             self.engine.mtc_jam_sync(),
-            s.edit.value("midi.mtc.external_offset_frames", 0.) as i64,
+            s.edit.value("sync.external_offset", 0.) as i64,
         );
         inputs.feed().set_mtc_source(source);
         if source.is_none() {
             if self.mtc_status != "Input unavailable" {
                 self.stop_mtc_transport();
             }
+            self.update_mtc_warning(None);
             self.mtc_status = "Input unavailable";
             return;
         }
         if self.mtc_status == "Input unavailable" {
             self.mtc_status = "Waiting for timecode";
         }
-        match inputs.feed().take_mtc() {
+        let event = inputs.feed().take_mtc();
+        self.update_mtc_warning(self.mtc_rate_warning());
+        match event {
             Some(ChaseEvent::Locate(p) | ChaseEvent::Roll(p, _)) if self.mtc_at(p) < 0 => {
                 if self.mtc_status != "Before session start" {
                     self.stop_mtc_transport();
@@ -228,6 +248,64 @@ mod tests {
         host.service_mtc_chase();
         host.handle_transport(0.0);
         assert_eq!(host.position(), host.engine.session().sample_rate.samples(3590.));
+    }
+
+    #[test]
+    fn offset_sign_follows_session_setup_semantics_with_absolute_incoming_diagnostics() {
+        let mut host=app();
+        let feed=host.midi_inputs.as_ref().unwrap().feed().clone();
+        let port=feed.ports().assign("Sender");
+        for (offset,expected) in [("+00:00:00:00",None),("+01:00:00:00",Some(480000)),("-01:00:00:00",None)] {
+            host.run("setup.external_timecode_offset",json!({"timecode":offset})).unwrap();
+            feed.receive(port,&[0xf0,0x7f,127,1,1,0x60,0,10,0,0xf7]);
+            host.service_mtc_chase();
+            host.handle_transport(0.);
+            let status=host.run("setup.midi_sync_status",json!({})).unwrap();
+            assert_eq!(status["mtc_chase"]["incoming_timecode"],"00:00:10:00");
+            if let Some(pos)=expected {assert_eq!(host.position(),pos);}
+            else {assert_eq!(status["mtc_chase"]["state"],"Before session start");}
+        }
+    }
+
+    #[test]
+    fn unsupported_session_rates_refuse_generator_and_reader_with_one_message() {
+        let mut host=app();
+        host.run("setup.mtc",json!({"online":false})).unwrap();
+        host.engine.session_mut().frame_rate=soundcraft_time::FrameRate::Fps50;
+        let gen_error=host.run("setup.mtc_output",json!({"enabled":true,"port":"Generator"})).unwrap_err();
+        let online_error=host.run("options.transport_online",json!({"value":true})).unwrap_err();
+        assert_eq!(gen_error,online_error);
+        assert!(gen_error.contains("29.97 non-drop"));
+    }
+
+    #[test]
+    fn ctrl_j_toggles_transport_online_and_the_button_blinks_while_waiting() {
+        use egui_kittest::{Harness,kittest::{NodeT,Queryable}};
+        let mut host=app();
+        host.mtc_command(&json!({"online":false})).unwrap();
+        host.ui.show_transport=true;
+        let mut h=Harness::builder().with_size(egui::vec2(1400.,900.)).build_ui_state(|ui,app:&mut SoundApp|{
+            crate::shortcuts::handle(app,ui.ctx());
+            app.ui(ui);
+        },host);
+        h.ctx.set_os(egui::os::OperatingSystem::Windows);
+        h.run_steps(3);
+        let cmd=egui::Modifiers {ctrl:true,command:true,..Default::default()};
+        h.key_press_modifiers(cmd,egui::Key::J);
+        h.run_steps(2);
+        assert!(h.state().mtc_online);
+        let lit=|h:&Harness<SoundApp>|{
+            let node=h.get_by_label("Online");
+            node.accesskit_node().is_selected()==Some(true) || node.accesskit_node().toggled()==Some(egui::accesskit::Toggled::True)
+        };
+        let mut phases=[false;2];
+        for _ in 0..75 { h.run_steps(1); phases[usize::from(lit(&h))]=true; }
+        assert_eq!(phases,[true,true]);
+        h.state_mut().mtc_status="Locked";
+        for _ in 0..35 { h.run_steps(1);assert!(lit(&h)); }
+        h.key_press_modifiers(cmd,egui::Key::J);
+        h.run_steps(2);
+        assert!(!h.state().mtc_online);
     }
 
     #[test]

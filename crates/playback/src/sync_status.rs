@@ -5,7 +5,11 @@ use std::collections::BTreeMap;
 #[derive(Default, Serialize)]
 pub struct MidiSyncStatus {
     pub sent: u64,
+    pub pending_transition_timeouts: u64,
+    pub oversized_dropped: u64,
+    pub error: Option<String>,
     pub relaunches: u64,
+    pub session_backlog_drops: u64,
     pub catch_up_sends: u64,
     pub stale_dropped: u64,
     pub lateness_buckets: [u64; 7],
@@ -23,6 +27,10 @@ pub struct MidiSyncStatus {
 #[derive(Serialize)]
 pub struct PortTiming {
     pub connected: bool,
+    pub device_lead_us: u64,
+    pub system_delay_samples: u64,
+    pub advance_limited: bool,
+    pub effective_total_us: i64,
     pub requested_offset_samples: i64,
     pub offset_samples: i64,
     pub beat_clock_total_us: Option<i64>,

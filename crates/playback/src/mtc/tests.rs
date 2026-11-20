@@ -24,6 +24,7 @@ fn callback(s: Session, device_rate: f64) -> (AudioState, Sender<Cmd>, View) {
 }
 fn block(at: Instant, position: i64, frames: i64, playing: bool, pass: u64) -> Presentation {
     Presentation {
+        generation:0, sample_rate:soundcraft_time::SampleRate::HZ_48000, system_delay_samples:0,
         pass,
         origin: position,
         playing,
@@ -151,7 +152,7 @@ fn locked_device_tracks_and_stops_during_a_ui_stall() {
             last_sound = onset;
         }
         if started.is_some() {
-            let presented = view.lock().unwrap().read(clock, true, 0.).0.unwrap().sample_heard_at(clock).floor() as i64;
+            let presented = view.lock().unwrap().read(clock, true, 0).0.unwrap().sample_heard_at(clock).floor() as i64;
             if us == 800_000 {
                 assert_eq!(feed.mtc_diagnostics().hard_relocates, 0, "sub-second drift must not seek");
             }
@@ -201,7 +202,7 @@ fn external_lock_starts_and_runs_at_unity_without_repaints() {
     state.fill(&mut [0.; 480], 2);
     assert!(state.shared.playing.load(Ordering::Relaxed), "device callback starts on lock");
 
-    assert!((view.lock().unwrap().read(now + Duration::from_millis(30), true, 0.).0.unwrap().sample - 7440.).abs() < 1., "piece 15 at 125 ms");
+    assert!((view.lock().unwrap().read(now + Duration::from_millis(30), true, 0).0.unwrap().sample - 7440.).abs() < 1., "piece 15 at 125 ms");
     assert_eq!(state.shared.speed.load(Ordering::Relaxed), 1000);
 }
 

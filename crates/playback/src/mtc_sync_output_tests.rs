@@ -36,14 +36,15 @@ fn both_encoders_use_one_connection_and_the_same_offset() {
     let lead = Duration::from_millis(30);
     let due = now + Duration::from_millis(25);
     let mut map = BTreeMap::new();
-    set_route(&mut map, 0, "device".to_owned(), Route { offset: -240, compensate: true, encoder: Box::<Cursor>::default() });
-    set_route(&mut map, 1, "device".to_owned(), Route { offset: -240, compensate: true, encoder: Box::<crate::mtc::Encoder>::default() });
+    set_route(&mut map, 0, "device".to_owned(), Route { map:None, offset: -240, compensate: true, encoder: Box::<Cursor>::default() });
+    set_route(&mut map, 1, "device".to_owned(), Route { map:None, offset: -240, compensate: true, encoder: Box::<crate::mtc::Encoder>::default() });
     assert_eq!(map.len(), 1);
     let messages = Arc::default();
     let p = map.get_mut("device").unwrap();
     p.link = Some(Capture(Arc::clone(&messages)));
     let v = View::default();
     v.lock().unwrap().push(Presentation {
+        generation:0, sample_rate:soundcraft_time::SampleRate::HZ_48000, system_delay_samples:0,
         pass: 1,
         origin: 0,
         playing: true,
@@ -101,7 +102,7 @@ fn generator_and_slave_agree_on_heard_time_after_acquisition() {
     let now = Instant::now();
     let lead = Duration::from_millis(30);
     let mut routes = BTreeMap::new();
-    set_route(&mut routes, 1, "cable".into(), Route { offset: 0, compensate: true, encoder: Box::<crate::mtc::Encoder>::default() });
+    set_route(&mut routes, 1, "cable".into(), Route { map:None, offset: 0, compensate: true, encoder: Box::<crate::mtc::Encoder>::default() });
     let port = routes.get_mut("cable").unwrap();
     port.link = Some(Cable { input: input.clone(), epoch: now });
     let master = View::default();
@@ -115,9 +116,10 @@ fn generator_and_slave_agree_on_heard_time_after_acquisition() {
     let mut pending = Vec::new();
     let mut worst = 0.;
     for i in 0..=600 {
-        let sample = f64::from(i * 240);
+        let sample = (i * 240) as f64;
         let clock = now + Duration::from_millis(i as u64 * 5);
         master.lock().unwrap().push(Presentation {
+            generation:0, sample_rate:soundcraft_time::SampleRate::HZ_48000, system_delay_samples:0,
             pass: 1,
             origin: 0,
             playing: true,
@@ -130,11 +132,11 @@ fn generator_and_slave_agree_on_heard_time_after_acquisition() {
             lead,
         });
         port.poll("cable", clock, &session, &master, &stats, &mut pending);
-        input.set_clock(i64::from(i) * 5000);
+        input.set_clock(i as i64 * 5000);
         audio.device_timing = Some(DeviceTiming::new(clock, Some(lead), 0));
         audio.fill(&mut [0.; 480], 2);
         if i >= 300 {
-            let audible = |v: &View| v.lock().unwrap().read(clock, true, 0.).0.unwrap().sample_heard_at(clock);
+            let audible = |v: &View| v.lock().unwrap().read(clock, true, 0).0.unwrap().sample_heard_at(clock);
             worst = f64::max(worst, (audible(&master) - audible(&slave)).abs());
         }
     }
@@ -157,6 +159,7 @@ fn measure_native_worker_quarter_frame_spacing() {
         let (tx, rx) = channel();
         let start = Instant::now() + Duration::from_millis(80);
         v.lock().unwrap().push(Presentation {
+            generation:0, sample_rate:soundcraft_time::SampleRate::HZ_48000, system_delay_samples:0,
             pass: 1,
             origin: 0,
             playing: true,

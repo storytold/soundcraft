@@ -15,6 +15,9 @@ impl SyncPort for FakePort {
 }
 fn block(start: Instant, sample: f64, frames: f64, lead: Duration) -> Presentation {
     Presentation {
+        generation: 0,
+        sample_rate: soundcraft_time::SampleRate::default(),
+        system_delay_samples: 0,
         pass: 1,
         origin: 0,
         playing: true,
@@ -31,8 +34,10 @@ fn active_port(offset: i64, compensate: bool) -> Port<FakePort> {
     Port {
         link: Some(FakePort::default()),
         retry: Instant::now(),
-        routes: [Some(Route { offset, compensate, encoder: Box::<Cursor>::default() }), None],
+        routes: [Some(Route { map: None, offset, compensate, encoder: Box::<Cursor>::default() }), None],
         failure: None,
+        future: Vec::new(),
+        stop_pending: false,
     }
 }
 
@@ -225,7 +230,7 @@ fn diagnostics_use_fixed_lateness_buckets_and_ignore_callback_subchunks() {
         (10_000, 30_000, 1, 1)
     );
     let port = status.ports.get("DIN").unwrap();
-    assert_eq!((port.beat_clock_total_us, port.mtc_total_us), (Some(5000), Some(-5000)));
+    assert_eq!((port.beat_clock_total_us, port.mtc_total_us), (Some(5000), Some(0)));
 }
 
 #[test]
@@ -236,10 +241,10 @@ fn paused_timeline_sleeps_between_locates_and_keeps_a_future_start() {
     b.playing = false;
     timeline.push(b);
     timeline.push(Presentation { heard_at: now + Duration::from_millis(3), ..b });
-    assert!(timeline.read(now, true, 0.).1.is_none());
+    assert!(timeline.read(now, true, 0).1.is_none());
     let next = now + Duration::from_millis(6);
     timeline.push(Presentation { pass: 2, playing: true, heard_at: next, ..b });
-    assert_eq!(timeline.read(now, true, 0.).1, Some(next));
+    assert_eq!(timeline.read(now, true, 0).1, Some(next));
 }
 
 #[test]
@@ -264,6 +269,8 @@ fn receiver_recovers_grid_through_jitter_quantised_wakes_and_worker_stalls() {
             let mut clocks = 0;
             let mut last_stamp = None;
             let mut gap = Duration::ZERO;
+            let mut recovery_pulses = 0;
+            let recovery = 1_000_000 + stall_ms * 1000;
             for us in (0..=3_030_000).step_by(125) {
                 let now = base + Duration::from_micros(us);
                 while publish_us <= us as i64 {
@@ -272,7 +279,9 @@ fn receiver_recovers_grid_through_jitter_quantised_wakes_and_worker_stalls() {
                     seed = seed.wrapping_mul(1664525).wrapping_add(1013904223);
                     publish_us = sample * 1_000_000 / 48_000 + i64::from(seed % 6001) - 3000;
                 }
-                if us < wake || (1_000_000..1_000_000 + stall_ms * 1000).contains(&us) {
+                // A queued control wake can run between timer ticks immediately after a stall.
+                let extra_wake = stall_ms > 0 && (recovery..recovery + 4_000).contains(&us);
+                if (us < wake && !extra_wake) || (1_000_000..recovery).contains(&us) {
                     continue;
                 }
                 wake = us + quantum_us;
@@ -286,10 +295,21 @@ fn receiver_recovers_grid_through_jitter_quantised_wakes_and_worker_stalls() {
                         [CLOCK] => {
                             if let Some(last) = last_stamp {
                                 gap = gap.max(now - last);
+                                if extra_wake {
+                                    assert!(now - last >= Duration::from_millis(1), "burst at {us} us");
+                                    recovery_pulses += 1;
+                                }
                             }
                             last_stamp = Some(now);
+                            let ideal = base + lead + Duration::from_secs_f64(pulse as f64 / 48.);
+                            if us >= recovery + 50_000 {
+                                assert!(
+                                    now.saturating_duration_since(ideal).max(ideal.saturating_duration_since(now))
+                                        <= Duration::from_micros(quantum_us + 125),
+                                    "actual pulse {pulse} at {us} us"
+                                );
+                            }
                             if pulse % 6 == 0 {
-                                let ideal = base + lead + Duration::from_secs_f64(pulse as f64 / 48.);
                                 // A first F8 bundled with Continue can arrive late by one worker tick.
                                 let diff = if stamp >= ideal { stamp - ideal } else { ideal - stamp };
                                 assert!(diff <= Duration::from_micros(quantum_us + 125), "pulse {pulse}, error {diff:?}");
@@ -301,6 +321,7 @@ fn receiver_recovers_grid_through_jitter_quantised_wakes_and_worker_stalls() {
                     }
                 }
             }
+            assert!(recovery_pulses < crate::sync_clock::RELAUNCH_PULSES);
             assert_eq!(relaunches, usize::from(stall_ms >= 200));
             if stall_ms < 200 {
                 assert!(i64::abs_diff(clocks, 145) <= 1);
@@ -324,7 +345,11 @@ fn saved_external_offset_is_bounded_at_each_session_rate() {
         assert_eq!(timing.beat_clock_total_us, Some(delay_ms * 1000));
         let mut port = active_port(24_000, false);
         let view = View::default();
-        view.lock().unwrap().push(block(base, 0., 48000., Duration::ZERO));
+        view.lock().unwrap().push(Presentation {
+            sample_rate: s.sample_rate,
+            samples_per_second: s.sample_rate.as_f64(),
+            ..block(base, 0., 48000., Duration::ZERO)
+        });
         let due = base + Duration::from_millis(delay_ms as u64);
         for at in [due - Duration::from_micros(1), due] {
             port.poll("DIN", at, &s, &view, &Stats::default(), &mut Vec::new());
@@ -366,4 +391,336 @@ fn input_wakes_reread_an_idle_timeline_without_periodic_polling() {
         let iterations = stats.iterations.load(Relaxed) - before;
         assert!((50..=60).contains(&iterations), "{iterations} iterations for 50 input wakes, configured port: {has_port}");
     }
+}
+
+#[test]
+fn idle_worker_starts_the_device_when_play_publishes_after_a_long_buffer() {
+    struct Sink(Sender<Vec<u8>>);
+    impl SyncPort for Sink {
+        fn send_at(&mut self, _: Instant, bytes: &[u8]) -> Result<Instant, String> {
+            self.0.send(bytes.to_vec()).map_err(|e| e.to_string())?;
+            Ok(Instant::now())
+        }
+    }
+    for delay in [180, 600, 2500] {
+        let view = View::default();
+        let publisher = view.clone();
+        let stats = Arc::new(Stats::default());
+        let metrics = stats.clone();
+        let (tx, rx) = channel();
+        let (events, received) = channel();
+        let (open, ready) = channel();
+        let worker = std::thread::spawn(move || {
+            drive(view, Arc::new(Session::default()), rx, Default::default(), stats, |_| {
+                open.send(()).unwrap();
+                Ok((Sink(events.clone()), None))
+            })
+        });
+        tx.send(Update::Beats(vec![("DIN".into(), 0)], true)).unwrap();
+        ready.recv_timeout(Duration::from_secs(3)).unwrap();
+        std::thread::sleep(Duration::from_millis(300));
+        tx.send(Update::Wake).unwrap();
+        std::thread::sleep(Duration::from_millis(delay));
+        let before = metrics.iterations.load(Relaxed);
+        publisher.lock().unwrap().push(block(Instant::now(), 0., 480., Duration::ZERO));
+        if delay < 2000 {
+            assert_eq!(received.recv_timeout(Duration::from_secs(1)).ok(), Some(vec![START]), "Play delayed by {delay} ms");
+            assert_eq!(received.recv_timeout(Duration::from_secs(1)).ok(), Some(vec![CLOCK]));
+        } else {
+            assert!(received.recv_timeout(Duration::from_millis(100)).is_err());
+            assert_eq!(metrics.iterations.load(Relaxed), before);
+            assert_eq!(metrics.pending_transition_timeouts.load(Relaxed), 1);
+        }
+        drop(tx);
+        worker.join().unwrap();
+    }
+}
+
+#[test]
+fn repeating_beat_settings_starts_a_worker_that_failed_to_start() {
+    let mut output = Output::default();
+    let ports = vec![("DIN".into(), 0)];
+    output.beats(ports.clone(), true);
+    assert!(output.worker.is_none());
+    output.configure(&Arc::new(Session::default()), &channel().0, true);
+    output.beats(ports, true);
+    assert!(output.worker.is_some());
+}
+
+#[test]
+fn negative_offset_is_limited_to_the_output_lead_and_reported() {
+    let base = Instant::now();
+    let session = Session::default();
+    for (offset, compensate, system_delay_samples, expected_us) in [(-4800, true, 0, 1000), (-480, false, 0, 0), (-4800, true, 2400, 1000)] {
+        let lead = Duration::from_millis(20);
+        let view = View::default();
+        let mut port = active_port(offset, compensate);
+        let stats = Stats::default();
+        let mut seen = Vec::new();
+        for us in (0..=500_000).step_by(250) {
+            let now = base + Duration::from_micros(us);
+            if us % 10_000 == 0 {
+                view.lock().unwrap().push(Presentation { system_delay_samples, ..block(now, us as f64 * 0.048, 480., lead) });
+            }
+            port.poll("DIN", now, &session, &view, &stats, &mut Vec::new());
+            for (_, msg) in port.link.as_mut().unwrap().messages.drain(..) {
+                if msg == [CLOCK] {
+                    seen.push(us);
+                }
+            }
+        }
+        let mut out = Output::default();
+        out.beat.push(("DIN".into(), offset));
+        out.compensated = compensate;
+        out.metrics.lead_us.store(20_000, Relaxed);
+        out.metrics.system_delay_samples.store(system_delay_samples as u64, Relaxed);
+        let status = out.status();
+        let info = &status.ports["DIN"];
+        assert!(info.advance_limited);
+        assert_eq!(info.requested_offset_samples, offset);
+        assert_eq!(info.device_lead_us, 20_000);
+        assert_eq!(info.system_delay_samples, system_delay_samples as u64);
+        assert_eq!(info.effective_total_us, expected_us as i64);
+        assert!(seen.len() >= 24);
+        for (i, &actual) in seen.iter().enumerate() {
+            let ideal = expected_us + (i as f64 * 1e6 / 48.).round() as u64;
+            assert!(actual.abs_diff(ideal) <= 1500, "pulse {i} at {actual} us, expected {ideal}");
+        }
+        for pair in seen.windows(2) {
+            assert!((pair[1] - pair[0]).abs_diff(20833) <= 1500);
+        }
+    }
+}
+
+#[test]
+fn a_wrap_at_the_buffer_limit_waits_for_the_next_snapshot() {
+    let base = Instant::now();
+    let session = Session::default();
+    for roll in [false, true] {
+        let view = View::default();
+        let r = soundcraft_time::Range::new(0, 4800);
+        let b = Presentation { looped: Some(r), ..block(base, 4320., 480., Duration::ZERO) };
+        view.lock().unwrap().push(b);
+        let mut port = active_port(0, true);
+        let stats = Stats::default();
+        port.poll("DIN", base, &session, &view, &stats, &mut Vec::new());
+        port.link.as_mut().unwrap().messages.clear();
+        let boundary = base + Duration::from_millis(10);
+        port.poll("DIN", boundary, &session, &view, &stats, &mut Vec::new());
+        assert!(port.link.as_ref().unwrap().messages.is_empty(), "speculative loop transport");
+        view.lock().unwrap().push(Presentation { pass: 2, playing: roll, ..block(boundary, 0., 480., Duration::ZERO) });
+        port.poll("DIN", boundary, &session, &view, &stats, &mut Vec::new());
+        let got: Vec<_> = port.link.unwrap().messages.into_iter().map(|(_, msg)| msg[0]).collect();
+        assert_eq!(got, if roll { vec![STOP, START, CLOCK] } else { vec![STOP] });
+    }
+}
+
+struct Messages(Vec<(Duration, Vec<u8>)>);
+impl SyncEncoder for Messages {
+    fn reset(&mut self) {}
+    fn update(&mut self, _: Presentation, now: Instant, _: &Session, send: &mut dyn FnMut(Instant, &[u8])) -> Option<Instant> {
+        for (delay, msg) in self.0.drain(..) {
+            send(now + delay, &msg);
+        }
+        None
+    }
+}
+
+#[test]
+fn future_messages_wait_in_the_port_queue_without_blocking_other_ports() {
+    let now = Instant::now();
+    let later = Duration::from_secs(2);
+    let view = View::default();
+    view.lock().unwrap().push(block(now, 0., 480., Duration::ZERO));
+    let s = Session::default();
+    let stats = Stats::default();
+    let mut port = active_port(0, false);
+    port.routes[0].as_mut().unwrap().encoder = Box::new(Messages(vec![(later, vec![0xa1]), (later, vec![0xa2])]));
+    let mut clock = active_port(0, false);
+    let mut buf = Vec::new();
+    assert_eq!(port.poll("future", now, &s, &view, &stats, &mut buf), Some(now + later));
+    assert!(port.link.as_ref().unwrap().messages.is_empty());
+    clock.poll("clock", now, &s, &view, &stats, &mut buf);
+    assert_eq!(clock.link.unwrap().messages.len(), 2);
+    port.poll("future", now + later, &s, &view, &stats, &mut buf);
+    assert_eq!(port.link.unwrap().messages, [(now + later, vec![0xa1]), (now + later, vec![0xa2])]);
+}
+
+#[test]
+fn extended_sync_messages_are_delivered_and_oversized_messages_are_reported() {
+    let now = Instant::now();
+    let view = View::default();
+    view.lock().unwrap().push(block(now, 0., 480., Duration::ZERO));
+    let mut port = active_port(0, false);
+    let packet = |len| {
+        let mut m = vec![0; len];
+        m[0] = 0xf0;
+        m[len - 1] = 0xf7;
+        m
+    };
+    port.routes[0].as_mut().unwrap().encoder = Box::new(Messages(vec![(Duration::ZERO, packet(13)), (Duration::ZERO, packet(17))]));
+    let stats = Stats::default();
+    port.poll("DIN", now, &Session::default(), &view, &stats, &mut Vec::new());
+    assert_eq!(stats.oversized_dropped.load(Relaxed), 1);
+    assert_eq!(port.link.unwrap().messages, [(now, packet(13))]);
+    assert_eq!(port.failure.as_deref(), Some("DIN: MIDI message longer than 16 bytes dropped"));
+}
+
+#[test]
+fn a_failed_stop_on_route_removal_reports_and_reconnects() {
+    struct FailStop {
+        first: bool,
+        tx: Sender<(bool, Vec<u8>)>,
+    }
+    impl SyncPort for FailStop {
+        fn send_at(&mut self, _: Instant, msg: &[u8]) -> Result<Instant, String> {
+            let _ = self.tx.send((self.first, msg.to_vec()));
+            if self.first && msg == [STOP] {
+                return Err("stop rejected".into());
+            }
+            Ok(Instant::now())
+        }
+    }
+    let view = View::default();
+    view.lock().unwrap().push(block(Instant::now(), 0., 480., Duration::ZERO));
+    let (tx, rx) = channel();
+    let (sent, wire) = channel();
+    let stats = Arc::new(Stats::default());
+    let metrics = stats.clone();
+    let trouble = Arc::new(Mutex::new(None));
+    let error = trouble.clone();
+    let worker = std::thread::spawn(move || {
+        let mut first = true;
+        drive(view, Arc::new(Session::default()), rx, error, metrics, move |_| {
+            Ok((FailStop { first: std::mem::take(&mut first), tx: sent.clone() }, None))
+        })
+    });
+    tx.send(Update::Beats(vec![("DIN".into(), 0)], true)).unwrap();
+    assert_eq!(wire.recv_timeout(Duration::from_secs(1)).unwrap().1, [START]);
+    tx.send(Update::Encoder(Some(("DIN".into(), 0)), true, Box::new(Messages(vec![])))).unwrap();
+    tx.send(Update::Beats(vec![], true)).unwrap();
+    while wire.recv_timeout(Duration::from_secs(1)).unwrap().1 != [STOP] {}
+    let until = Instant::now() + Duration::from_millis(200);
+    while trouble.lock().unwrap().is_none() && Instant::now() < until {
+        std::thread::yield_now();
+    }
+    assert_eq!(trouble.lock().unwrap().as_deref(), Some("DIN: stop rejected"));
+    let mut snapshot = Output::default();
+    snapshot.trouble = trouble.clone();
+    assert_eq!(snapshot.status().error.as_deref(), Some("DIN: stop rejected"));
+    assert!(!stats.connected().contains("DIN"));
+    assert_eq!(wire.recv_timeout(Duration::from_secs(3)).unwrap(), (false, vec![STOP]));
+    drop(tx);
+    worker.join().unwrap();
+}
+
+#[test]
+fn compensation_includes_the_mixer_system_delay_when_delay_compensation_is_on() {
+    let base = Instant::now();
+    let session = Session::default();
+    for (system_delay_samples, compensate, delay_ms) in [(0, true, 20), (4800, true, 120), (4800, false, 0)] {
+        let view = View::default();
+        view.lock().unwrap().push(Presentation { system_delay_samples, ..block(base, 0., 480., Duration::from_millis(20)) });
+        let mut port = active_port(0, compensate);
+        let stats = Stats::default();
+        let due = base + Duration::from_millis(delay_ms);
+        for ms in 0..=120 {
+            port.poll("DIN", base + Duration::from_millis(ms), &session, &view, &stats, &mut Vec::new());
+        }
+        assert_eq!(port.link.unwrap().messages, [(due, vec![START]), (due, vec![CLOCK])]);
+    }
+}
+
+#[test]
+fn a_follow_grid_revision_changes_pulse_spacing_at_its_audible_block_without_relocating() {
+    let base = Instant::now();
+    let lead = Duration::from_millis(50);
+    let initial = Arc::new(Session::default());
+    let mut changed = (*initial).clone();
+    changed.tempo.set_tempo(soundcraft_time::TICKS_PER_QUARTER, 60.).unwrap();
+    let changed = Arc::new(changed);
+    let mut output = Output::default();
+    output.stats.connected().insert("DIN".into());
+    let (tx, _rx) = channel();
+    let old = output.configure(&initial, &tx, true);
+    let mut new = old;
+    let mut port = active_port(0, true);
+    let mut clocks = Vec::new();
+    let mut transport = Vec::new();
+    for ms in 0..=720 {
+        let now = base + Duration::from_millis(ms);
+        if ms == 500 {
+            new = output.configure(&changed, &tx, false);
+        }
+        if ms % 10 == 0 {
+            let generation = if ms >= 510 {new} else {old};
+            output.view.lock().unwrap().push(Presentation {generation, ..block(now, ms as f64 * 48., 480., lead)});
+        }
+        port.poll("DIN", now, &changed, &output.view, &output.stats, &mut Vec::new());
+        for (_, bytes) in port.link.as_mut().unwrap().messages.drain(..) {
+            if bytes == [CLOCK] {
+                if ms >= 500 {clocks.push(ms);}
+            } else {
+                transport.push((ms, bytes));
+            }
+        }
+    }
+    assert_eq!(transport, [(50, vec![START])], "a live grid correction must preserve the transport pass");
+    assert_eq!(clocks, [509, 530, 550, 592, 634, 675, 717]);
+}
+
+#[test]
+fn tempo_change_relocates_when_the_new_map_becomes_audible() {
+    let base = Instant::now();
+    let lead = Duration::from_millis(50);
+    let initial = Arc::new(Session::default());
+    let mut slow = (*initial).clone();
+    slow.tempo.set_tempo(0, 60.).unwrap();
+    let slow = Arc::new(slow);
+    let view = View::default();
+    view.lock().unwrap().register(SessionRevision { generation: 1, doc: initial.clone(), remap: true }, true);
+    let mut port = active_port(0, true);
+    let stats = Stats::default();
+    let mut changes = Vec::new();
+    let mut before = Vec::new();
+    for ms in 0..=750 {
+        let now = base + Duration::from_millis(ms);
+        if ms == 500 {
+            view.lock().unwrap().register(SessionRevision { generation: 2, doc: slow.clone(), remap: true }, true);
+        }
+        if ms % 10 == 0 {
+            view.lock().unwrap().push(Presentation { generation: if ms >= 510 { 2 } else { 1 }, ..block(now, ms as f64 * 48., 480., lead) });
+        }
+        port.poll("DIN", now, if ms >= 500 { &slow } else { &initial }, &view, &stats, &mut Vec::new());
+        for (_, msg) in port.link.as_mut().unwrap().messages.drain(..) {
+            if msg == [STOP] {
+                changes.push(ms);
+            }
+            if (500..560).contains(&ms) && msg == [CLOCK] {
+                before.push(ms);
+            }
+        }
+    }
+    assert_eq!(before, [509, 530, 550]);
+    assert_eq!(changes, [560]);
+}
+
+#[test]
+fn unavailable_session_generations_fall_forward_and_report_backlog_drops() {
+    use crate::sync_clock::MAX_REVISIONS;
+    let (cmd, _rx) = channel();
+    let mut out = Output::default();
+    out.stats.connected().insert("DIN".into());
+    let s = Arc::new(Session::default());
+    for generation in 1..=MAX_REVISIONS + 1 {
+        assert_eq!(out.configure(&s, &cmd, true), generation as u64);
+    }
+    let latest = out.generation;
+    let mut timeline = out.view.lock().unwrap();
+    assert_eq!(timeline.map(1).unwrap().generation, latest);
+    assert_eq!(timeline.map(2).unwrap().generation, 2);
+    timeline.retire_before(latest);
+    assert_eq!(timeline.map(2).unwrap().generation, latest);
+    drop(timeline);
+    assert_eq!(out.status().session_backlog_drops, 1);
 }

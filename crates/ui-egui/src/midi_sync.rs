@@ -76,7 +76,11 @@ impl SoundApp {
         self.migrate_midi_sync();
         if id == "setup.midi_sync_status" {
             let mut chase = json!(self.midi_inputs.as_ref().map(|inputs| inputs.feed().mtc_diagnostics()).unwrap_or_default());
-            chase["state"] = json!(self.mtc_status);
+            chase["state"] = match chase["freewheel_state"].as_str() {
+                Some("freewheeling") => json!(format!("freewheeling ({}/{} frames)",chase["elapsed_frames"],chase["limit_frames"])),
+                Some(s @ ("jam sync running on internal clock"|"stopped: timecode lost")) if self.mtc_online => json!(s),
+                _ => json!(self.mtc_status),
+            };
             return Ok(json!({"output": self.player.as_ref().map(|p|p.midi_sync_status()).unwrap_or_default(),
                 "audio_device_open":self.player.is_some(), "settings":self.ui.midi_sync,
                 "clock_follow":self.clock_follow_state(),
@@ -185,7 +189,29 @@ impl SoundApp {
         }
     }
 
+    fn update_midi_sync_error(&mut self, error: Option<String>) {
+        if let Some(previous) = self.last_midi_sync_error.take() {
+            let previous = crate::localization::error_text(&previous);
+            if self.ui.status == previous {
+                self.ui.status.clear();
+            } else if let Some(other) = self.ui.status.strip_suffix(&format!(" · {previous}")) {
+                self.ui.status.truncate(other.len());
+            }
+        }
+        if let Some(message) = &error {
+            if !self.ui.status.is_empty() {
+                self.ui.status.push_str(" · ");
+            }
+            self.ui.status.push_str(&crate::localization::error_text(message));
+        }
+        self.last_midi_sync_error = error;
+    }
+
     pub(crate) fn service_midi_sync(&mut self) {
+        let error = self.player.as_ref().and_then(|player| player.midi_clock_error());
+        if error != self.last_midi_sync_error {
+            self.update_midi_sync_error(error);
+        }
         let Some(player) = &self.player else { return };
         if self.applied_midi_sync.as_ref() == Some(&self.ui.midi_sync) {
             return;
@@ -205,6 +231,38 @@ impl SoundApp {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn midi_sync_errors_after_play_update_the_status_line() {
+        let mut app = SoundApp::new(soundcraft_engine::Engine::default(), None, crate::Services::default());
+        app.engine.transport.playing = true;
+        app.ui.status = "Audio output requires attention".into();
+        let error = "MIDI output DIN unavailable";
+        app.update_midi_sync_error(Some(error.into()));
+        assert!(app.ui.status.contains(error));
+        assert!(app.ui.status.starts_with("Audio output requires attention"));
+        app.update_midi_sync_error(None);
+        assert_eq!(app.ui.status, "Audio output requires attention");
+        app.update_midi_sync_error(Some(error.into()));
+        app.ui.status = "Recording stopped".into();
+        app.update_midi_sync_error(None);
+        assert_eq!(app.ui.status, "Recording stopped");
+    }
+
+    #[test]
+    fn unused_destinations_release_their_slots_and_calibration_can_be_removed() {
+        let mut app = SoundApp::new(soundcraft_engine::Engine::default(), None, crate::Services::default());
+        let mut ports = serde_json::Map::new();
+        for i in 0..257 {
+            ports.insert(format!("unused {i}"), json!({"enabled":false,"offset_samples":0}));
+        }
+        ports.insert("DIN".into(), json!({"enabled":true,"offset_samples":16}));
+        let result = app.sync_command("setup.midi_beat_clock", &json!({"ports":ports})).unwrap();
+        assert_eq!(result["ports"].as_object().unwrap().len(), 1);
+        let result = app.sync_command("setup.midi_beat_clock", &json!({"ports":{"DIN":null}})).unwrap();
+        assert_eq!(result["ports"], json!({}));
+    }
+
     #[test]
     fn port_calibration_accepts_quarter_second_at_session_rate_and_rejects_one_sample_more() {
         let mut host = SoundApp::new(Default::default(), None, crate::Services::default());

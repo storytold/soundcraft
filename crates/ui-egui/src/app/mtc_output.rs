@@ -25,7 +25,9 @@ impl SoundApp {
         }
         if let Some(name) = &self.ui.mtc_output_port {
             let mut offset = self.ui.midi_sync.ports.get(name).map_or(0, |cfg| cfg.out_offset_samples);
-            if ui.horizontal(|ui| crate::dialogs::port_offset_field(ui, &mut offset, self.engine.session().sample_rate)).inner
+            let timing=self.player.as_ref().map(soundcraft_playback::Player::midi_sync_status);
+            let limited_lead=timing.as_ref().and_then(|status|status.ports.get(name)).filter(|p|p.advance_limited && p.requested_offset_samples==offset).map(|p|p.device_lead_us);
+            if ui.horizontal(|ui| crate::dialogs::port_offset_field(ui, &mut offset, self.engine.session().sample_rate,limited_lead)).inner
                 && let Err(err) = self.mtc_output_command(&json!({"offset_samples":offset}))
             {
                 self.ui.status = crate::localization::error_text(&err);
@@ -74,7 +76,7 @@ impl SoundApp {
                 return Err("Take MTC chase offline before enabling the generator".into());
             }
             if !mtc::supported(self.engine.session().frame_rate) {
-                return Err("MTC output supports 23.976, 24, 25, 29.97 and 30 fps".into());
+                return Err(mtc::UNSUPPORTED_RATE.into());
             }
         }
         let ports = if list { Some(soundcraft_playback::midi_sync_outputs()?) } else { None };
@@ -83,7 +85,7 @@ impl SoundApp {
             let limit = soundcraft_playback::max_sync_offset_samples(self.engine.session().sample_rate);
             let offset = value
                 .as_i64()
-                .filter(|n| n.unsigned_abs() <= limit as u64)
+                .filter(|n| n.unsigned_abs() <= limit as u64 || self.ui.midi_sync.ports.get(name).is_some_and(|p| p.out_offset_samples == *n))
                 .ok_or("MIDI port calibration must be within 250 ms at the session sample rate")?;
             let ports = &mut self.ui.midi_sync.ports;
             if !ports.contains_key(name) && ports.len() >= 256 {
@@ -110,6 +112,17 @@ impl SoundApp {
 mod tests {
     use super::*;
     use soundcraft_time::FrameRate;
+
+    #[test]
+    fn saved_output_calibration_survives_a_lower_rate_and_rejects_new_out_of_range_values() {
+        let mut host=SoundApp::new(crate::Engine::default(),None,crate::Services::default());
+        host.engine.session_mut().sample_rate=soundcraft_time::SampleRate::new(96000).unwrap();
+        host.run("setup.mtc_output",json!({"port":"interface","offset_samples":20000})).unwrap();
+        host.engine.session_mut().sample_rate=soundcraft_time::SampleRate::HZ_48000;
+        assert_eq!(host.run("setup.mtc_output",json!({"offset_samples":20000})).unwrap()["offset_samples"],20000);
+        assert!(host.run("setup.mtc_output",json!({"offset_samples":20001})).is_err());
+        assert_eq!(host.run("setup.mtc_output",json!({})).unwrap()["offset_samples"],20000);
+    }
 
     #[cfg(not(target_arch = "wasm32"))]
     #[test]

@@ -59,6 +59,9 @@ fn beat_clock_host_timing() {
                 publish_late.push(Instant::now().saturating_duration_since(due).as_secs_f64() * 1000.);
                 for _ in 0..if paired { 2 } else { 1 } {
                     view.lock().unwrap().push(Presentation {
+                        generation: 0,
+                        sample_rate: soundcraft_time::SampleRate::default(),
+                        system_delay_samples: 0,
                         pass: 1,
                         origin: 0,
                         playing: true,
@@ -139,6 +142,9 @@ fn beat_clock_reaches_a_virtual_midi_receiver() {
     let ready = Instant::now() + Duration::from_millis(40);
     let view = View::default();
     view.lock().unwrap().push(Presentation {
+        generation: 0,
+        sample_rate: soundcraft_time::SampleRate::default(),
+        system_delay_samples: 0,
         pass: 1,
         origin: 0,
         playing: true,

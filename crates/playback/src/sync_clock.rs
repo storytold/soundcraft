@@ -31,6 +31,11 @@ impl DeviceTiming {
 
 #[derive(Clone, Copy, Debug)]
 pub struct Presentation {
+    /// Revision of the session actually rendered by this callback.
+    pub generation: u64,
+    pub sample_rate: soundcraft_time::SampleRate,
+    /// Mixer delay in session samples (zero when the session disables delay compensation).
+    pub system_delay_samples: usize,
     pub pass: u64,
     pub origin: i64,
     pub playing: bool,
@@ -60,16 +65,22 @@ impl Presentation {
     pub fn instant_for(self, sample: f64) -> Instant {
         shift(self.heard_at, (sample - self.sample) / self.samples_per_second)
     }
-    fn adjusted(mut self, compensate: bool, offset_seconds: f64) -> Self {
-        self.heard_at = shift(self.heard_at, offset_seconds - if compensate { 0.0 } else { self.lead.as_secs_f64() });
+    fn adjusted(mut self, compensate: bool, offset_samples: i64) -> Self {
+        let (total, _) = delivery_offset(self.lead, self.system_delay_samples, self.sample_rate, compensate, offset_samples);
+        self.heard_at = shift(self.heard_at, total - self.lead.as_secs_f64());
         self
     }
     pub(crate) fn current(mut self, now: Instant) -> Self {
         let projected = self.sample_heard_at(now);
         if self.playing {
             if let Some(range) = self.looped {
-                if projected >= range.end as f64 {
-                    let wraps = 1 + ((projected - range.end as f64) / range.len() as f64).floor() as i64;
+                if projected >= range.end as f64 && self.limit > range.end as f64 {
+                    // A wrap exactly at the rendered end belongs to the next callback,
+                    // including when one short loop repeats several times per block.
+                    let length = range.len() as f64;
+                    let reached = 1. + ((projected - range.end as f64) / length).floor();
+                    let rendered = ((self.limit - range.end as f64) / length).ceil();
+                    let wraps = reached.min(rendered) as i64;
                     let distance = wraps.saturating_mul(range.len()) as f64;
                     self.pass = self.pass.wrapping_add(wraps as u64);
                     self.origin = range.start;
@@ -87,6 +98,16 @@ impl Presentation {
     }
 }
 
+/// Seconds from callback publication. Keep a millisecond of scheduling margin when advancing
+/// a compensated device, but never manufacture lead when the host reported less than that.
+pub(crate) fn delivery_offset(lead: Duration, system_samples: usize, sr: soundcraft_time::SampleRate, compensate: bool, offset: i64) -> (f64, bool) {
+    let available = if compensate { lead.as_secs_f64() + system_samples as f64 / sr.as_f64() } else { 0. };
+    let max = crate::max_sync_offset_samples(sr);
+    let requested = available + offset.clamp(-max, max) as f64 / sr.as_f64();
+    let floor = available.min(0.001);
+    (requested.max(floor), requested < floor)
+}
+
 pub(crate) fn shift(at: Instant, seconds: f64) -> Instant {
     let Ok(dt) = Duration::try_from_secs_f64(seconds.abs()) else { return at };
     if seconds < 0. { at.checked_sub(dt) } else { at.checked_add(dt) }.unwrap_or(at)
@@ -95,29 +116,64 @@ pub(crate) fn shift(at: Instant, seconds: f64) -> Instant {
 // Keep scheduled buffers until they can actually be heard. Publishing two future
 // callbacks back-to-back must not conceal the first one's start or its final clocks.
 const HISTORY: usize = 2048;
+#[derive(Clone)]
+pub(crate) struct SessionRevision {
+    pub generation: u64,
+    pub doc: Arc<Session>,
+    pub remap: bool,
+}
+pub(crate) const MAX_REVISIONS: usize = 8;
+
 pub(crate) struct Timeline {
+    maps: VecDeque<SessionRevision>,
     blocks: VecDeque<Presentation>,
 }
 impl Default for Timeline {
     fn default() -> Self {
-        Self { blocks: VecDeque::with_capacity(HISTORY) }
+        Self { blocks: VecDeque::with_capacity(HISTORY), maps: VecDeque::with_capacity(MAX_REVISIONS) }
     }
 }
 impl Timeline {
+    /// Called by the control thread, never by the audio callback.
+    pub(crate) fn register(&mut self, revision: SessionRevision, active: bool) -> bool {
+        if !active {
+            self.maps.clear();
+        }
+        let full = self.maps.len() == MAX_REVISIONS;
+        if full {
+            self.maps.pop_front();
+        }
+        self.maps.push_back(revision);
+        full
+    }
+    pub(crate) fn map(&self, generation: u64) -> Option<&SessionRevision> {
+        self.maps.iter().find(|r| r.generation == generation).or_else(|| self.maps.back())
+    }
+    pub(crate) fn retire_before(&mut self, generation: u64) {
+        while self.maps.len() > 1 && self.maps.front().is_some_and(|r| r.generation < generation) {
+            self.maps.pop_front();
+        }
+    }
     pub(crate) fn push(&mut self, block: Presentation) {
         if self.blocks.len() == HISTORY {
             self.blocks.pop_front();
         }
         self.blocks.push_back(block);
     }
+    pub(crate) fn transport_state(&self) -> Option<(u64, bool)> {
+        self.blocks.back().map(|block| (block.pass, block.playing))
+    }
     /// Most recent audible block and first future transition for this destination.
-    pub(crate) fn read(&self, now: Instant, compensate: bool, offset_seconds: f64) -> (Option<Presentation>, Option<Instant>) {
-        let adjusted = |block: &Presentation| block.adjusted(compensate, offset_seconds);
+    pub(crate) fn read(&self, now: Instant, compensate: bool, offset_samples: i64) -> (Option<Presentation>, Option<Instant>) {
+        let adjusted = |block: &Presentation| block.adjusted(compensate, offset_samples);
         let Some(index) = self.blocks.iter().rposition(|block| adjusted(block).heard_at <= now) else {
             return (None, self.blocks.front().map(|block| adjusted(block).heard_at));
         };
         let block = adjusted(&self.blocks[index]);
-        let future = self.blocks.range(index + 1..).find(|b| block.playing || b.playing || block.pass != b.pass || block.sample != b.sample);
+        let future = self
+            .blocks
+            .range(index + 1..)
+            .find(|b| block.playing || b.playing || block.pass != b.pass || block.sample != b.sample || block.generation != b.generation);
         (Some(block.current(now)), future.map(|b| adjusted(b).heard_at))
     }
 }
@@ -125,6 +181,7 @@ impl Timeline {
 #[derive(Default)]
 pub(crate) struct CallbackMetrics {
     pub lead_us: AtomicU64,
+    pub system_delay_samples: AtomicU64,
     pub max_gap_us: AtomicU64,
     pub late_buffers: AtomicU64,
     pub clamps: AtomicU64,
@@ -157,6 +214,12 @@ impl Publisher {
             }
         }
     }
+    pub(crate) fn publish(&self, block: Presentation) {
+        self.metrics.system_delay_samples.store(block.system_delay_samples as u64, Relaxed);
+        if let Ok(mut timeline) = self.view.try_lock() {
+            timeline.push(block);
+        }
+    }
     pub(crate) fn locate(&mut self, at: i64) {
         self.pass = self.pass.wrapping_add(1);
         self.origin = Some(at);
@@ -164,6 +227,8 @@ impl Publisher {
 }
 /// An output protocol on the shared worker. Return the next required wake time.
 /// A disconnected port resets its encoders before the next transport snapshot.
+/// Future events are queued per port (up to 256) until their requested deadline;
+/// equal timestamps retain emission order. Emit packets of at most 16 bytes.
 pub trait SyncEncoder: Send {
     fn update(&mut self, block: Presentation, now: Instant, session: &Session, send: &mut dyn FnMut(Instant, &[u8])) -> Option<Instant>;
     fn reset(&mut self);
