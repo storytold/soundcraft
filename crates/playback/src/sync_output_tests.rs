@@ -393,15 +393,59 @@ fn input_wakes_reread_an_idle_timeline_without_periodic_polling() {
     }
 }
 
+struct Sink(Sender<Vec<u8>>);
+impl SyncPort for Sink {
+    fn send_at(&mut self, _: Instant, bytes: &[u8]) -> Result<Instant, String> {
+        self.0.send(bytes.to_vec()).map_err(|e| e.to_string())?;
+        Ok(Instant::now())
+    }
+}
+
+#[test]
+fn player_wakes_a_parked_clock_output_for_follow_transport() {
+    let (audio, commands) = channel();
+    let (retire, garbage) = channel();
+    let session = Arc::new(Session::default());
+    let shared = Arc::new(crate::Shared {
+        position: 0.into(),
+        playing: false.into(),
+        speed: 1000.into(),
+        meters: Mutex::default(),
+    });
+    let side = Mutex::new(crate::Side::new(session.sample_rate.as_f64() as f32, garbage));
+    let player = crate::Player::silent_clock_with(shared, audio, commands, session.clone(), side, retire);
+    let (messages, received) = channel();
+    let (opened, ready) = channel();
+    {
+        let mut output = player.beat_clock.lock().unwrap();
+        let (tx, rx) = channel();
+        let view = output.view.clone();
+        let stats = output.stats.clone();
+        let worker = std::thread::spawn(move || {
+            drive(view, Arc::new(Session::default()), rx, Default::default(), stats, |_| {
+                opened.send(()).unwrap();
+                Ok((Sink(messages.clone()), None))
+            });
+        });
+        let sender = WorkerSender { tx, worker: worker.thread().clone() };
+        output.worker.replace((sender, worker));
+    }
+    player.update_session(session);
+    assert!(player.try_set_beat_clock_outputs(vec![("clock sink".into(), 0)], false));
+    ready.recv_timeout(Duration::from_secs(3)).unwrap();
+    // Let the initial route's grace expire so that only the Player command can wake the worker.
+    std::thread::sleep(Duration::from_millis(300));
+    player.play(0, None, None);
+    assert_eq!(received.recv_timeout(Duration::from_secs(3)).unwrap(), [START]);
+    assert_eq!(received.recv_timeout(Duration::from_secs(3)).unwrap(), [CLOCK]);
+    player.stop();
+    let deadline = Instant::now() + Duration::from_secs(3);
+    while received.recv_timeout(deadline.saturating_duration_since(Instant::now())).unwrap() != [STOP] {}
+    assert_eq!(player.beat_clock.lock().unwrap().stats.pending_transition_timeouts.load(Relaxed), 0);
+}
+
 #[test]
 fn idle_worker_starts_the_device_when_play_publishes_after_a_long_buffer() {
-    struct Sink(Sender<Vec<u8>>);
-    impl SyncPort for Sink {
-        fn send_at(&mut self, _: Instant, bytes: &[u8]) -> Result<Instant, String> {
-            self.0.send(bytes.to_vec()).map_err(|e| e.to_string())?;
-            Ok(Instant::now())
-        }
-    }
     for delay in [180, 600, 2500] {
         let view = View::default();
         let publisher = Publisher::new(view.clone(), Arc::default());

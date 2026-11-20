@@ -171,5 +171,7 @@ fn midi_clock_wakes_only_on_transport_actions() {
     feed.receive(0, &[0]);
     assert_eq!(counter.load(Ordering::Relaxed), 4);
     #[cfg(any(target_os = "windows", target_os = "macos", target_os = "linux"))]
-    assert_eq!(worker.load(Ordering::Relaxed), 4);
+    // Beat Clock transport is applied by the host through Player. Raw input has no
+    // audio command pending and must not start an output-worker timeout.
+    assert_eq!(worker.load(Ordering::Relaxed), 0);
 }
