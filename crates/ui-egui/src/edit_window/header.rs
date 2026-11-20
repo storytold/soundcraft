@@ -252,9 +252,10 @@ fn view_selector(app: &mut SoundApp, ui: &mut Ui, track: &Track, head: Rect) {
     let view_y = if is_master { 20.0 } else { 39.0 };
     let view_min_h = if is_master { 37.0 } else { 58.0 };
     if h >= view_min_h {
+        let compact_actions = h >= 76.0 && track.kind.has_playlist();
         let vresp = header_selector(
             ui,
-            at(17.0, view_y, 105.0, 17.0),
+            at(if compact_actions { 47.0 } else { 17.0 }, view_y, if compact_actions { 75.0 } else { 105.0 }, 17.0),
             ui.scope_id().with(("view", id.0)),
             crate::localization::text(&view_label(&track.view)),
             t.text,
@@ -262,6 +263,26 @@ fn view_selector(app: &mut SoundApp, ui: &mut Ui, track: &Track, head: Rect) {
             &crate::localized_format!("Track view for {}", track.name),
         );
         egui::Popup::menu(&vresp).show(|ui| view_menu(app, ui, track));
+        if compact_actions {
+            let mix_r = at(17.0, view_y, 14.0, 17.0);
+            let mix = ui.interact(mix_r, ui.scope_id().with(("track_mix", id.0)), Sense::click());
+            mix.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, crate::localized_format!("Mixer for {}", track.name)));
+            raised_key(ui.painter(), mix_r, t.slot_face, mix.hovered());
+            ui.painter().text(mix_r.center(), Align2::CENTER_CENTER, "M", bold(9.0), t.text);
+            if mix.on_hover_text(crate::localization::text("Open Mix window")).clicked() {
+                let _ = app.run("window.mix", json!({}));
+            }
+            ui.push_id(("track_effect", id.0), |ui| {
+                crate::mix_window::insert_slot_named(
+                    app,
+                    ui,
+                    track,
+                    0,
+                    at(32.0, view_y, 14.0, 17.0),
+                    crate::localized_format!("Effect slot for {}", track.name),
+                );
+            });
+        }
     }
     if is_master && h >= 58.0 {
         let mode = track.mixer.automation_mode;
