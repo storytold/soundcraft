@@ -37,8 +37,7 @@ impl MidiBeatClock {
                 .horizontal(|ui| {
                     let enabled = crate::widgets::checkbox(ui, &mut port.enabled, name.as_str()).changed();
                     let label = ui.label(text("Offset (samples)"));
-                    let offset =
-                        ui.add(egui::DragValue::new(&mut port.offset_samples).range(-limit..=limit)).labelled_by(label.id).changed();
+                    let offset = ui.add(egui::DragValue::new(&mut port.offset_samples).range(-limit..=limit)).labelled_by(label.id).changed();
                     ui.label(format!("{:.2} ms", port.offset_samples as f64 * 1000. / sr));
                     if !available.contains(&name) {
                         ui.label(text("The saved MIDI output is unavailable."));
