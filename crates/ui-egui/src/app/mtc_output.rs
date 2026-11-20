@@ -45,9 +45,7 @@ impl SoundApp {
             self.ui.mtc_output_port.as_ref().filter(|_| self.ui.gen_mtc && !self.mtc_online && mtc::supported(self.engine.session().frame_rate));
         let desired = port.map(|name| (name.as_str(), self.ui.midi_sync.ports.get(name).map_or(0, |p| p.offset_samples)));
         let compensate = self.ui.midi_sync.compensation.mtc;
-        apply_mtc_route(&mut self.applied_mtc_output, desired, compensate, |route, compensation| {
-            player.try_set_mtc_generator(route, compensation)
-        });
+        apply_mtc_route(&mut self.applied_mtc_output, desired, compensate, |route, compensation| player.try_set_mtc_generator(route, compensation));
     }
 
     pub(crate) fn mtc_output_command(&mut self, p: &Value) -> Result<Value, String> {

@@ -75,6 +75,9 @@ pub(crate) struct AudioState {
     pub(crate) shared: Arc<Shared>,
     pub(crate) session: Arc<Session>,
     session_generation: u64,
+    /// Session and measured latency of the samples already rendered into pending.
+    #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+    pending_revision: Option<(u64, soundcraft_time::SampleRate, usize)>,
     pub(crate) mix: MixEngine,
     pos: Samples,
     playing: bool,
@@ -178,6 +181,8 @@ impl AudioState {
             mix: new_engine(sr),
             session,
             session_generation: 0,
+            #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+            pending_revision: None,
             pos: 0,
             playing: false,
             chasing: false,
@@ -745,6 +750,10 @@ impl AudioState {
         self.mix.render(&self.session, self.pos, n, &mut self.pending);
         self.send_garbage();
         self.pending_len = n;
+        #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+        {
+            self.pending_revision = Some((self.session_generation, self.session.sample_rate, self.system_delay()));
+        }
         self.publish_meters();
         if self.playing {
             self.pos += n as i64;
@@ -836,7 +845,7 @@ impl AudioState {
         // at the rate that is there now, at the same speed.
         let step = self.step(speed);
         #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
-        let presentation = self.clock.as_mut().map(|clock| {
+        let mut presentation = self.clock.as_mut().map(|clock| {
             let sample = self.pos as f64 - self.pending_len as f64 + self.read;
             let limit = sample + callback_frames as f64 * step;
             let origin = *clock.origin.get_or_insert(sample.floor() as i64);
@@ -879,17 +888,38 @@ impl AudioState {
             self.publish_presentation(presentation);
             return;
         }
+        // A session edit preserves audio already rendered by the previous revision.
+        // A callback can play that tail, then start the new revision mid-buffer.
+        #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+        let mut previous_tail = self.pending_revision.and_then(|(generation, sample_rate, delay)| {
+            if self.read >= self.pending_len as f64 || generation == self.session_generation {
+                return None;
+            }
+            let mut block = presentation?;
+            block.generation = generation;
+            block.sample_rate = sample_rate;
+            block.system_delay_samples = delay;
+            Some(block)
+        });
         let quantum = ((callback_frames as f64 * step).ceil() as usize).clamp(1, BLOCK);
         if !midi_live {
             self.drop_midi();
         }
-        for frame in out.chunks_mut(channels) {
+        for (frame_index, frame) in out.chunks_mut(channels).enumerate() {
+            #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
+            let _ = frame_index;
             while self.read >= self.pending_len as f64 {
                 self.read -= self.pending_len as f64;
                 if !self.playing && !monitoring {
                     break;
                 }
                 self.render_next(quantum);
+                #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+                if let Some(tail) = previous_tail.take()
+                    && let Some(block) = &mut presentation
+                {
+                    self.finish_previous_revision(tail, block, frame_index, callback_frames, step);
+                }
                 if self.pending_len == 0 {
                     break;
                 }
@@ -909,13 +939,48 @@ impl AudioState {
             self.read += step;
         }
         #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
-        self.publish_presentation(presentation);
+        if let (Some(clock), Some(tail)) = (&self.clock, previous_tail) {
+            clock.publish(tail);
+        } else {
+            self.publish_presentation(presentation);
+        }
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+    fn finish_previous_revision(
+        &self,
+        mut tail: super::sync_clock::Presentation,
+        next: &mut super::sync_clock::Presentation,
+        at: usize,
+        frames: usize,
+        step: f64,
+    ) {
+        let Some(clock) = &self.clock else { return };
+        tail.limit = tail.sample + at as f64 * step;
+        if at != 0 {
+            clock.publish(tail);
+        }
+        next.playing = self.playing;
+        next.sample = if self.playing { self.pos as f64 - self.pending_len as f64 + self.read } else { self.pos as f64 };
+        next.limit = next.sample + (frames - at) as f64 * step;
+        next.heard_at = self.device_timing.map_or_else(
+            || super::sync_clock::shift(next.heard_at, at as f64 / self.device_rate),
+            |timing| timing.heard_instant(self.device_rate, at),
+        );
+        next.pass = clock.pass;
+        next.origin = clock.origin.unwrap_or(next.sample.floor() as i64);
+        next.end = self.end;
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+    fn system_delay(&self) -> usize {
+        if self.session.edit.delay_compensation { self.mix.latency } else { 0 }
     }
 
     #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
     fn publish_presentation(&self, presentation: Option<super::sync_clock::Presentation>) {
         if let (Some(clock), Some(mut b)) = (&self.clock, presentation) {
-            b.system_delay_samples = if self.session.edit.delay_compensation { self.mix.latency } else { 0 };
+            b.system_delay_samples = self.system_delay();
             clock.publish(b);
         }
     }
