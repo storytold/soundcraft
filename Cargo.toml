@@ -15,6 +15,7 @@ craft-score = { git = "https://github.com/storytold/craft-libs", rev = "3a1a627d
 craft-xml = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "ea24422ae9859dc5da398d0462bc87f8e02e0d10" }
 craft-mime = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "ea24422ae9859dc5da398d0462bc87f8e02e0d10" }
 # internal
+soundcraft-interchange = { path = "crates/interchange" }
 soundcraft-time = { path = "crates/time" }
 soundcraft-midi = { path = "crates/midi" }
 soundcraft-video = { path = "crates/video" }
@@ -46,9 +47,18 @@ proptest = "1"
 
 # audio
 rustfft = "6"
+# AAF interchange: Compound File Binary (structured storage) container reader.
+cfb = "0.15"
 # Session bundles (one file holding a session and its audio, for the browser): stored entries only.
 zip = { version = "9", default-features = false }
 cpal = "0.18"
+# MIDI input devices. Pinned: it talks to the system's MIDI service and runs on its threads.
+# Only soundcraft-playback depends on it, and only on Linux, macOS and Windows; there it builds
+# alsa (already used by cpal), coremidi + coremidi-sys, or the `windows` crate (already in the
+# tree). Its Android and web dependencies (jni, android-build, java-locator, dlopen2,
+# process_path, wasm-bindgen) are in Cargo.lock because the lock file covers every target, and
+# are never compiled for SoundCraft.
+midir = "=0.11.1"
 
 # Which file paths stored in a session may be opened.
 craft-docpath = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "ea24422ae9859dc5da398d0462bc87f8e02e0d10" }
@@ -66,6 +76,7 @@ craft-time = { version = "0.1.0", git = "https://github.com/storytold/craft-libs
 craft-scraft-format = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "6dbf8871ab7eabde575650cfb30a385eec884733" }
 # craft-update: app-specific pretend versions apply to startup and manual checks.
 craft-update = { version = "=0.1.0", git = "https://github.com/storytold/craft-libs", rev = "ea24422ae9859dc5da398d0462bc87f8e02e0d10", features = ["egui"] }
+craft-mcp-server = { version = "=0.1.0", git = "https://github.com/storytold/craft-libs", rev = "08da5e1486ee640de1d2cccd8fe8dd32b1d3b62c" }
 
 # ui
 craft-ui = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "ea24422ae9859dc5da398d0462bc87f8e02e0d10", features = ["serde"] }

@@ -8,6 +8,7 @@ rust-version.workspace = true
 repository.workspace = true
 
 [dependencies]
+soundcraft-interchange.workspace = true
 craft-score.workspace = true
 craft-xml.workspace = true
 soundcraft-time.workspace = true
@@ -31,6 +32,7 @@ craft-docpath.workspace = true
 winsafe = { version = "0.0.29", features = ["kernel"] }
 
 [dev-dependencies]
+cfb.workspace = true
 proptest.workspace = true
 zip.workspace = true
 
