@@ -213,24 +213,63 @@ impl SoundApp {
             self.update_midi_sync_error(error);
         }
         let Some(player) = &self.player else { return };
-        if self.applied_midi_sync.as_ref() == Some(&self.ui.midi_sync) {
-            return;
-        }
-        let config = &self.ui.midi_sync;
-        let outputs = config
-            .ports
-            .iter()
-            .filter(|(name, p)| config.enabled && p.enabled && valid_port(name))
-            .map(|(k, p)| (k.clone(), p.out_offset_samples.clamp(-10_000_000, 10_000_000)))
-            .collect();
-        player.set_beat_clock_outputs(outputs, config.compensation.beat_clock);
-        self.applied_midi_sync = Some(config.clone());
+        apply_beat_clock_routes(&self.ui.midi_sync, &mut self.applied_midi_sync, |ports, compensate| {
+            player.try_set_beat_clock_outputs(ports, compensate)
+        });
     }
+}
+
+fn apply_beat_clock_routes(config: &MidiSync, applied: &mut Option<MidiSync>, enqueue: impl FnOnce(Vec<(String, i64)>, bool) -> bool) {
+    if applied.as_ref() == Some(config) {
+        return;
+    }
+    let outputs = config
+        .ports
+        .iter()
+        .filter(|(name, p)| config.enabled && p.enabled && valid_port(name))
+        .map(|(k, p)| (k.clone(), p.out_offset_samples.clamp(-10_000_000, 10_000_000)))
+        .collect();
+    *applied = enqueue(outputs, config.compensation.beat_clock).then(|| config.clone());
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn recurring_sync_retries_unchanged_routes_until_the_worker_accepts_them() {
+        let mut config = MidiSync { enabled: true, ..MidiSync::default() };
+        config.ports.insert("DIN".into(), MidiSyncPort { enabled: true, out_offset_samples: -20, ..Default::default() });
+        let mut applied = Some(MidiSync::default());
+        for accepted in [false, true] {
+            apply_beat_clock_routes(&config, &mut applied, |ports, _| {
+                assert_eq!(ports, [("DIN".into(), -20)]);
+                accepted
+            });
+            assert_eq!(applied.is_some(), accepted);
+        }
+        apply_beat_clock_routes(&config, &mut applied, |_, _| panic!("accepted routes must be cached"));
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn recurring_sync_poll_reports_a_late_port_failure() {
+        let engine = soundcraft_engine::Engine::default();
+        let player = soundcraft_playback::Player::new(engine.session_arc());
+        let mut app = SoundApp::new(engine, Some(player), crate::Services::default());
+        app.engine.transport.playing = true;
+        let port = "SoundCraft test unavailable sync destination";
+        app.sync_command("setup.midi_beat_clock", &json!({"enabled":true,"ports":{(port):{"enabled":true}}})).unwrap();
+        app.ui.status = "Audio output requires attention".into();
+        let until = std::time::Instant::now() + std::time::Duration::from_secs(4);
+        while !app.ui.status.contains(port) && std::time::Instant::now() < until {
+            app.service_midi_sync();
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        assert!(app.ui.status.contains(port), "{}", app.ui.status);
+        assert!(app.ui.status.contains("Audio output requires attention"));
+        assert!(app.sync_command("setup.midi_sync_status", &json!({})).unwrap()["output"]["error"].as_str().unwrap().contains(port));
+    }
 
     #[test]
     fn midi_sync_errors_after_play_update_the_status_line() {

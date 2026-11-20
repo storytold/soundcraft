@@ -51,10 +51,20 @@ pub(crate) fn quarters(frame: i64, rate: FrameRate) -> [[u8; 2]; 8] {
 /// The generator follows the same per-port DAC timeline and calibration as Beat Clock.
 impl Player {
     pub fn set_mtc_generator(&self, port: Option<(String, i64)>, compensate: bool) {
+        self.try_set_mtc_generator(port, compensate);
+    }
+
+    /// A rejected update can be retried during the next transport refresh.
+    pub fn try_set_mtc_generator(&self, port: Option<(String, i64)>, compensate: bool) -> bool {
         #[cfg(any(target_os = "windows", target_os = "macos", target_os = "linux"))]
-        self.set_sync_encoder(port, compensate, Box::<Encoder>::default());
+        {
+            self.try_set_sync_encoder(port, compensate, Box::<Encoder>::default())
+        }
         #[cfg(not(any(target_os = "windows", target_os = "macos", target_os = "linux")))]
-        let _ = (port, compensate);
+        {
+            let _ = compensate;
+            port.is_none()
+        }
     }
 }
 

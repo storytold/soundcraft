@@ -13,11 +13,26 @@ impl SyncPort for Capture {
 }
 
 #[test]
+fn an_mtc_route_is_cached_only_after_the_worker_accepts_it() {
+    let mut output = Output::default();
+    let port = Some(("model".to_owned(), 240));
+    assert!(!output.encoder(port.clone(), true, Box::<crate::mtc::Encoder>::default()));
+    assert_eq!(output.additional, None, "no session or worker accepted this route");
+
+    let (tx, rx) = channel();
+    let worker = std::thread::spawn(|| {});
+    output.worker = Some((WorkerSender { tx, worker: worker.thread().clone() }, worker));
+    assert!(output.encoder(port.clone(), true, Box::<crate::mtc::Encoder>::default()));
+    assert!(matches!(rx.try_recv(), Ok(Update::Encoder(name, true, _)) if name == port));
+    assert_eq!(output.additional, Some(("model".to_owned(), 240, true)));
+}
+
+#[test]
 fn a_burst_of_external_locates_queues_one_transport_refresh() {
     let output = Output::default();
     let wake = output.transport_waker();
     let (tx, rx) = channel();
-    *output.wake_tx.lock().unwrap() = Some(tx);
+    *output.wake_tx.lock().unwrap() = Some(WorkerSender { tx, worker: std::thread::current() });
     for _ in 0..100 {
         wake();
     }

@@ -1149,13 +1149,13 @@ mod tests {
     fn many_clock_destinations_scroll_without_hiding_ok() {
         let mut app = SoundApp::new(Engine::default(), None, crate::Services::default());
         let names: Vec<_> = (0..64).map(|n| format!("Port {n:02}")).collect();
-        let mut form = midi_beat_clock::MidiBeatClock { settings: Default::default(), outputs: Ok(names) };
+        app.dialogs.set(Dialog::MidiBeatClock(midi_beat_clock::MidiBeatClock { settings: Default::default(), outputs: Ok(names) }));
         let ctx = egui::Context::default();
         crate::fonts::install(&ctx, true);
         let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, vec2(1366., 768.));
         let mut draw = |events| {
             let output = ctx.run_ui(egui::RawInput { screen_rect: Some(screen), events, ..Default::default() }, |ui| {
-                form.show(ui, false, &mut app);
+                show(&mut app, ui.ctx());
             });
             visible_labels(output, screen)
         };

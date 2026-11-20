@@ -2042,3 +2042,40 @@ fn profile_external_clock_snapshot_updates() {
     new.sort_unstable();
     eprintln!("128 tracks, 4096 clips, 1024 grid revisions. Old p50/p95: {}/{} us; pooled p50/p95: {}/{} us", old[512], old[972], new[512], new[972]);
 }
+
+#[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+#[test]
+fn retained_audio_keeps_its_session_generation_until_the_first_new_rendered_frame() {
+    use crate::sync_clock::{DeviceTiming, Publisher, View};
+    use std::time::{Duration, Instant};
+    for chunks in [&[600][..], &[128, 472][..]] {
+        let (_, mut state, tx, track) = spike_session(0);
+        let source = state.session.clone();
+        let view = View::default();
+        tx.send(Cmd::Clock(Some(Publisher::new(view.clone(), Arc::default())))).unwrap();
+        tx.send(Cmd::Session(1, source.clone(), vec![])).unwrap();
+        let start = Instant::now();
+        let timing = |frame: usize| DeviceTiming::new(start, Some(Duration::ZERO), frame);
+        state.device_timing = Some(timing(0));
+        state.fill(&mut vec![0.; 1200], 2);
+        let mut next = (*source).clone();
+        next.track_mut(track).unwrap().playlist_mut().unwrap().clips.clear();
+        next.tempo.set_tempo(0, 60.).unwrap();
+        tx.send(Cmd::Session(2, Arc::new(next), vec![])).unwrap();
+        let mut audio = vec![0.; 1200];
+        let mut start = 0;
+        for &frames in chunks {
+            state.device_timing = Some(timing(600 + start));
+            state.fill(&mut audio[start * 2..(start + frames) * 2], 2);
+            start += frames;
+        }
+        assert!(audio[..848].iter().step_by(2).all(|left| left.abs() > 0.001));
+        assert!(audio[848..].iter().all(|sample| sample.abs() < 0.00001));
+        let timeline = view.lock().unwrap();
+        for (frame, generation) in [(600, 1), (1023, 1), (1024, 2), (1199, 2)] {
+            let now = timing(frame).heard_instant(48_000., 0);
+            let block = timeline.read(now, true, 0).0.unwrap();
+            assert_eq!(block.generation, generation, "audible generation at device frame {frame}");
+        }
+    }
+}

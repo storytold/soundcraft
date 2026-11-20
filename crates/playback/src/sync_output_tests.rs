@@ -404,7 +404,9 @@ fn idle_worker_starts_the_device_when_play_publishes_after_a_long_buffer() {
     }
     for delay in [180, 600, 2500] {
         let view = View::default();
-        let publisher = view.clone();
+        let publisher = Publisher::new(view.clone(), Arc::default());
+        let stopped = Presentation { pass: 0, playing: false, ..block(Instant::now(), 0., 0., Duration::ZERO) };
+        publisher.publish(stopped);
         let stats = Arc::new(Stats::default());
         let metrics = stats.clone();
         let (tx, rx) = channel();
@@ -421,19 +423,60 @@ fn idle_worker_starts_the_device_when_play_publishes_after_a_long_buffer() {
         std::thread::sleep(Duration::from_millis(300));
         tx.send(Update::Wake).unwrap();
         std::thread::sleep(Duration::from_millis(delay));
-        let before = metrics.iterations.load(Relaxed);
-        publisher.lock().unwrap().push(block(Instant::now(), 0., 480., Duration::ZERO));
-        if delay < 2000 {
-            assert_eq!(received.recv_timeout(Duration::from_secs(1)).ok(), Some(vec![START]), "Play delayed by {delay} ms");
-            assert_eq!(received.recv_timeout(Duration::from_secs(1)).ok(), Some(vec![CLOCK]));
-        } else {
-            assert!(received.recv_timeout(Duration::from_millis(100)).is_err());
-            assert_eq!(metrics.iterations.load(Relaxed), before);
+        if delay > 2000 {
             assert_eq!(metrics.pending_transition_timeouts.load(Relaxed), 1);
+            let before = metrics.iterations.load(Relaxed);
+            // The audio device keeps publishing stopped frames. They must not cause polling.
+            for _ in 0..50 {
+                publisher.publish(Presentation { heard_at: Instant::now(), ..stopped });
+                std::thread::sleep(Duration::from_millis(2));
+            }
+            assert_eq!(metrics.iterations.load(Relaxed), before);
         }
+        let started = Instant::now();
+        publisher.publish(block(started, 0., 480., Duration::ZERO));
+        assert_eq!(received.recv_timeout(Duration::from_secs(1)).ok(), Some(vec![START]), "Play delayed by {delay} ms");
+        assert_eq!(received.recv_timeout(Duration::from_secs(1)).ok(), Some(vec![CLOCK]));
+        eprintln!("Play delayed by {delay} ms: Start + F8 in {:?}", started.elapsed());
         drop(tx);
         worker.join().unwrap();
     }
+}
+
+#[test]
+fn parked_worker_handles_control_and_shutdown_without_a_new_audio_block() {
+    let mut output = Output::default();
+    let (tx, rx) = channel();
+    let (opened, ready) = channel();
+    let view = output.view.clone();
+    let stats = output.stats.clone();
+    let worker = std::thread::spawn(move || {
+        drive(view, Arc::new(Session::default()), rx, Default::default(), stats, move |_| {
+            opened.send(()).unwrap();
+            Ok((FakePort::default(), None))
+        });
+    });
+    let sender = WorkerSender { tx, worker: worker.thread().clone() };
+    output.wake_tx.lock().unwrap().replace(sender.clone());
+    output.worker.replace((sender, worker));
+    output.beats(vec![("DIN".into(), 0)], true);
+    ready.recv_timeout(Duration::from_secs(3)).unwrap();
+    output.wake();
+    let limit = Instant::now() + Duration::from_secs(4);
+    while output.stats.pending_transition_timeouts.load(Relaxed) == 0 {
+        assert!(Instant::now() < limit, "worker never entered its post-timeout wait");
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    let wake = output.waker();
+    wake();
+    let limit = Instant::now() + Duration::from_millis(100);
+    while output.pending_wake.load(Relaxed) {
+        assert!(Instant::now() < limit, "input control failed to wake the parked worker");
+        std::thread::yield_now();
+    }
+    let start = Instant::now();
+    drop(output);
+    assert!(start.elapsed() < Duration::from_millis(100));
 }
 
 #[test]
@@ -724,4 +767,48 @@ fn unavailable_session_generations_fall_forward_and_report_backlog_drops() {
     assert_eq!(timeline.map(2).unwrap().generation, latest);
     drop(timeline);
     assert_eq!(out.status().session_backlog_drops, 1);
+}
+
+#[test]
+fn connected_worker_accepts_control_and_shuts_down_while_a_future_message_is_pending() {
+    struct Future(Option<Sender<()>>);
+    impl SyncEncoder for Future {
+        fn reset(&mut self) {}
+        fn update(&mut self, _: Presentation, now: Instant, _: &Session, send: &mut dyn FnMut(Instant, &[u8])) -> Option<Instant> {
+            if let Some(started) = self.0.take() {
+                send(now + Duration::from_secs(2), &[0xf8]);
+                started.send(()).unwrap();
+            }
+            None
+        }
+    }
+    let view = View::default();
+    view.lock().unwrap().push(block(Instant::now(), 0., 480., Duration::ZERO));
+    let (tx, rx) = channel();
+    let (queued, ready) = channel();
+    let (opened, devices) = channel();
+    let worker = std::thread::spawn(move || {
+        drive(view, Arc::new(Session::default()), rx, Default::default(), Arc::new(Stats::default()), |name| {
+            let _ = opened.send(name.to_owned());
+            Ok((FakePort::default(), None))
+        });
+    });
+    tx.send(Update::Encoder(Some(("future".into(), 0)), false, Box::new(Future(Some(queued))))).unwrap();
+    assert_eq!(devices.recv_timeout(Duration::from_secs(3)).unwrap(), "future");
+    ready.recv_timeout(Duration::from_secs(3)).unwrap();
+    std::thread::sleep(Duration::from_millis(225));
+    let elapsed = Instant::now();
+    tx.send(Update::Beats(vec![("controller".into(), 0)], false)).unwrap();
+    let bound = Duration::from_millis(100);
+    assert_eq!(devices.recv_timeout(bound).unwrap(), "controller");
+    let control = elapsed.elapsed();
+    std::thread::sleep(Duration::from_millis(225));
+    let mut output = Output::default();
+    let control_tx = WorkerSender { tx, worker: worker.thread().clone() };
+    output.worker.replace((control_tx, worker));
+    let elapsed = Instant::now();
+    drop(output);
+    let shutdown = elapsed.elapsed();
+    eprintln!("control={control:?} shutdown={shutdown:?}");
+    assert!(shutdown < bound, "Output::drop took {shutdown:?}");
 }

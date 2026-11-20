@@ -90,6 +90,19 @@ fn percentile(buckets: [u64; 7], p: u64, max: u64) -> u64 {
     }
     max
 }
+#[derive(Clone)]
+struct WorkerSender {
+    tx: Sender<Update>,
+    worker: std::thread::Thread,
+}
+impl WorkerSender {
+    fn send(&self, update: Update) -> Result<(), std::sync::mpsc::SendError<Update>> {
+        self.tx.send(update)?;
+        // A timed-out transition can park on a late presentation as well as on control.
+        self.worker.unpark();
+        Ok(())
+    }
+}
 #[derive(Default)]
 pub(crate) struct Output {
     view: View,
@@ -101,9 +114,10 @@ pub(crate) struct Output {
     additional: Option<(String, i64, bool)>,
     stats: Arc<Stats>,
     trouble: Arc<Mutex<Option<String>>>,
-    wake_tx: Arc<Mutex<Option<Sender<Update>>>>,
+    wake_tx: Arc<Mutex<Option<WorkerSender>>>,
     pending_wake: Arc<AtomicBool>,
-    worker: Option<(Sender<Update>, std::thread::JoinHandle<()>)>,
+    worker: Option<(WorkerSender, std::thread::JoinHandle<()>)>,
+    retry_spawn_at: Option<Instant>,
 }
 enum Update {
     Session(Arc<Session>),
@@ -130,41 +144,53 @@ impl Output {
         }
         self.generation
     }
-    fn send(&mut self, u: Update) {
+    fn send(&mut self, u: Update) -> bool {
         if self.worker.is_none() {
-            let Some(s) = self.session.clone() else { return };
+            let Some(s) = self.session.clone() else { return false };
+            if self.retry_spawn_at.is_some_and(|at| Instant::now() < at) {
+                return false;
+            }
             let (tx, rx) = channel();
             let view = self.view.clone();
             let trouble = self.trouble.clone();
             let stats = self.stats.clone();
             match std::thread::Builder::new().name("MIDI sync output".into()).spawn(move || drive(view, s, rx, trouble, stats, open_unique)) {
                 Ok(thread) => {
+                    let tx = WorkerSender { tx, worker: thread.thread().clone() };
                     *self.wake_tx.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(tx.clone());
                     self.worker = Some((tx, thread));
                 }
                 Err(e) => {
                     *self.trouble.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(format!("MIDI sync worker could not start: {e}"));
-                    return;
+                    self.retry_spawn_at = Some(Instant::now() + Duration::from_secs(1));
+                    return false;
                 }
             }
         }
-        if let Some((tx, _)) = &self.worker {
-            let _ = tx.send(u);
+        let queued = self.worker.as_ref().is_some_and(|(tx, _)| tx.send(u).is_ok());
+        if !queued {
+            self.worker = None;
+            *self.wake_tx.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = None;
         }
+        queued
     }
-    pub(crate) fn beats(&mut self, ports: Vec<(String, i64)>, compensate: bool) {
-        if self.worker.is_some() && self.beat == ports && self.compensated == compensate {
-            return;
+    pub(crate) fn beats(&mut self, ports: Vec<(String, i64)>, compensate: bool) -> bool {
+        if self.worker.as_ref().is_some_and(|(_, task)| !task.is_finished()) && self.beat == ports && self.compensated == compensate {
+            return true;
         }
         self.beat = ports.clone();
         self.compensated = compensate;
-        if !ports.is_empty() || self.worker.is_some() {
-            self.send(Update::Beats(ports, compensate));
-        }
+        (ports.is_empty() && self.worker.is_none()) || self.send(Update::Beats(ports, compensate))
     }
-    pub(crate) fn encoder(&mut self, port: Option<(String, i64)>, compensate: bool, encoder: Box<dyn SyncEncoder>) {
-        self.additional = port.clone().map(|(n, o)| (n, o, compensate));
-        self.send(Update::Encoder(port, compensate, encoder));
+    pub(crate) fn encoder(&mut self, port: Option<(String, i64)>, compensate: bool, encoder: Box<dyn SyncEncoder>) -> bool {
+        if port.is_none() && self.additional.is_none() && self.worker.is_none() {
+            return true;
+        }
+        let accepted = self.send(Update::Encoder(port.clone(), compensate, encoder));
+        if accepted {
+            self.additional = port.map(|(name, offset)| (name, offset, compensate));
+        }
+        accepted
     }
     pub(crate) fn waker(&self) -> Arc<dyn Fn() + Send + Sync> {
         self.coalesced_waker(self.pending_wake.clone(), Update::InputWake)
@@ -265,6 +291,7 @@ impl Drop for Output {
         self.wake_tx.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take();
         if let Some((tx, worker)) = self.worker.take() {
             drop(tx);
+            worker.thread().unpark();
             let _ = worker.join();
         }
     }
@@ -428,6 +455,37 @@ fn clear_route<C: SyncPort>(name: &str, port: &mut Port<C>, index: usize, stats:
         });
     }
 }
+/// With a timed-out transport command the worker can be woken by either a control
+/// message or the first changed presentation. The thread park token survives a
+/// publication between reading the channel and entering the wait.
+fn wait_for_update(rx: &Receiver<Update>, next: Option<Instant>, connected: bool, wait_for_late_block: bool) -> Result<Option<Update>, ()> {
+    if let Some(at) = next {
+        let delay = at.saturating_duration_since(Instant::now());
+        if !connected && delay > Duration::from_millis(100) {
+            return match rx.recv_timeout((delay - Duration::from_millis(30)).min(Duration::from_millis(250))) {
+                Ok(update) => Ok(Some(update)),
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => Ok(None),
+                Err(_) => Err(()),
+            };
+        }
+        // Keep native sub-millisecond precision. Check control and shutdown after at
+        // most 10 ms of requested sleep; distant events stay queued across checks.
+        std::thread::sleep(delay.min(Duration::from_millis(10)));
+    } else if !wait_for_late_block {
+        return rx.recv().map(Some).map_err(|_| ());
+    }
+    match rx.try_recv() {
+        Ok(update) => Ok(Some(update)),
+        Err(std::sync::mpsc::TryRecvError::Empty) => {
+            if next.is_none() {
+                std::thread::park();
+            }
+            Ok(None)
+        }
+        Err(_) => Err(()),
+    }
+}
+
 fn drive<C: SyncPort>(
     view: View,
     mut session: Arc<Session>,
@@ -445,6 +503,7 @@ fn drive<C: SyncPort>(
     let mut ports = BTreeMap::<String, Port<C>>::new();
     let mut awake = Instant::now();
     let mut transition = None;
+    let mut wait_for_late_block = false;
     let state = || view.lock().unwrap_or_else(std::sync::PoisonError::into_inner).transport_state();
     let mut update = None;
     let mut pending = Vec::<Event>::new();
@@ -498,6 +557,9 @@ fn drive<C: SyncPort>(
         let mut soon = |at: Instant| next = Some(next.map_or(at, |t: Instant| t.min(at)));
         // Sample before polling so a callback racing this iteration cannot cancel
         // the final read of its newly published transport state.
+        if wait_for_late_block {
+            wait_for_late_block = view.lock().unwrap_or_else(std::sync::PoisonError::into_inner).late_transport_waiter.is_some();
+        }
         let observed_state = transition.and_then(|_| state());
         for (name, p) in &mut ports {
             if p.link.is_none() && now >= p.retry {
@@ -546,38 +608,27 @@ fn drive<C: SyncPort>(
             if !connected || observed_state != previous {
                 transition = None;
             } else if now >= deadline {
-                stats.pending_transition_timeouts.fetch_add(1, Relaxed);
+                let mut timeline = view.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+                if timeline.transport_state() == previous {
+                    stats.pending_transition_timeouts.fetch_add(1, Relaxed);
+                    timeline.late_transport_waiter = Some(std::thread::current());
+                    wait_for_late_block = true;
+                } else {
+                    // The callback published between polling and arming; read it immediately.
+                    soon(now);
+                }
                 transition = None;
             }
         }
         if connected && (now < awake || transition.is_some()) {
             soon(now + Duration::from_millis(1));
         }
-        if let Some(at) = next {
-            let delay = at.saturating_duration_since(Instant::now());
-            // Only sleep is used for protocol deadlines. A long reconnect wait is
-            // interruptible by control changes. Recheck every 10 ms during playback.
-            if connected || delay <= Duration::from_millis(100) {
-                std::thread::sleep(delay.min(Duration::from_millis(10)));
-                match rx.try_recv() {
-                    Ok(u) => update = Some(u),
-                    Err(std::sync::mpsc::TryRecvError::Empty) => {}
-                    Err(_) => break,
-                }
-            } else {
-                match rx.recv_timeout((delay - Duration::from_millis(30)).min(Duration::from_millis(250))) {
-                    Ok(u) => update = Some(u),
-                    Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
-                    Err(_) => break,
-                }
-            }
-        } else {
-            match rx.recv() {
-                Ok(u) => update = Some(u),
-                Err(_) => break,
-            }
+        match wait_for_update(&rx, next, connected, wait_for_late_block) {
+            Ok(next_update) => update = next_update,
+            Err(()) => break,
         }
     }
+    view.lock().unwrap_or_else(std::sync::PoisonError::into_inner).late_transport_waiter = None;
     for (name, p) in &mut ports {
         clear_route(name, p, 0, &stats);
         clear_route(name, p, 1, &stats);

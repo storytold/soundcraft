@@ -45,15 +45,7 @@ impl SoundApp {
             self.ui.mtc_output_port.as_ref().filter(|_| self.ui.gen_mtc && !self.mtc_online && mtc::supported(self.engine.session().frame_rate));
         let desired = port.map(|name| (name.as_str(), self.ui.midi_sync.ports.get(name).map_or(0, |p| p.out_offset_samples)));
         let compensate = self.ui.midi_sync.compensation.mtc;
-        if let Some((applied, previous_compensation)) = &self.applied_mtc_output
-            && applied.as_ref().map(|(name, offset)| (name.as_str(), *offset)) == desired
-            && *previous_compensation == compensate
-        {
-            return;
-        }
-        let owned = desired.map(|(name, offset)| (name.to_owned(), offset));
-        player.set_mtc_generator(owned.clone(), compensate);
-        self.applied_mtc_output = Some((owned, compensate));
+        apply_mtc_route(&mut self.applied_mtc_output, desired, compensate, |route, compensation| player.try_set_mtc_generator(route, compensation));
     }
 
     pub(crate) fn mtc_output_command(&mut self, p: &Value) -> Result<Value, String> {
@@ -120,10 +112,41 @@ impl SoundApp {
     }
 }
 
+fn apply_mtc_route(
+    applied: &mut Option<(Option<(String, i64)>, bool)>,
+    desired: Option<(&str, i64)>,
+    compensate: bool,
+    enqueue: impl FnOnce(Option<(String, i64)>, bool) -> bool,
+) {
+    if let Some((previous, previous_compensation)) = applied
+        && previous.as_ref().map(|(name, offset)| (name.as_str(), *offset)) == desired
+        && *previous_compensation == compensate
+    {
+        return;
+    }
+    let owned = desired.map(|(name, offset)| (name.to_owned(), offset));
+    *applied = enqueue(owned.clone(), compensate).then_some((owned, compensate));
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use soundcraft_time::FrameRate;
+
+    #[test]
+    fn recurring_mtc_output_retries_an_unchanged_target_after_the_worker_refuses_it() {
+        let mut applied = Some((None, false));
+        let desired = Some(("MTC out", 240));
+        for accepted in [false, true] {
+            apply_mtc_route(&mut applied, desired, true, |route, compensate| {
+                assert_eq!(route.as_ref().map(|(name, offset)| (name.as_str(), *offset)), desired);
+                assert!(compensate);
+                accepted
+            });
+            assert_eq!(applied.is_some(), accepted);
+        }
+        apply_mtc_route(&mut applied, desired, true, |_, _| panic!("accepted unchanged route was resent"));
+    }
 
     #[test]
     fn clearing_unused_mtc_calibration_frees_the_shared_port_slot() {
