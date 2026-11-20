@@ -189,9 +189,8 @@ impl SoundApp {
                     let origin = self.engine.transport_tempo().tick_to_samples(tick, sr);
                     let age = sr.samples(s.now_us.saturating_sub(at).max(0) as f64 / 1e6);
                     let lead = self.player.as_ref().map_or(0, |p| sr.samples(p.midi_sync_status().reported_lead_us as f64 / 1e6));
-                    self.engine
-                        .transport_requests
-                        .push(TransportRequest::PlayFrom(origin.saturating_add(age).saturating_add(lead).saturating_sub(offset).max(0)));
+                    let render_from = origin.saturating_add(age).saturating_add(lead).saturating_sub(offset).max(0);
+                    self.engine.transport_requests.push(TransportRequest::PlayFromClock { origin, render_from });
                 }
                 Action::Stop => {
                     self.clock_follow.anchor = None;
@@ -312,7 +311,9 @@ mod tests {
         feed.receive(src, &[0xfb]);
         feed.receive(src, &[0xf8]);
         app.service_clock_follow();
-        assert!(matches!(app.engine.transport_requests.as_slice(), [TransportRequest::PlayFrom(p)] if *p>=72_120));
+        assert!(
+            matches!(app.engine.transport_requests.as_slice(), [TransportRequest::PlayFromClock { origin: 72_000, render_from }] if *render_from>=72_120)
+        );
         app.handle_transport(0.);
         feed.receive(src, &[0xfc]);
         app.service_clock_follow();
@@ -325,7 +326,9 @@ mod tests {
         feed.receive(src, &[0xfb]);
         feed.receive(src, &[0xf8]);
         app.service_clock_follow();
-        assert!(matches!(app.engine.transport_requests.as_slice(),[TransportRequest::PlayFrom(p)] if *p>=at+120));
+        assert!(
+            matches!(app.engine.transport_requests.as_slice(),[TransportRequest::PlayFromClock { origin, render_from }] if *origin==at && *render_from>=at+120)
+        );
         app.handle_transport(0.);
         assert!(app.is_playing());
         app.engine.transport.recording = true;
@@ -445,7 +448,7 @@ mod tests {
             let age = sr.samples((app.clock_follow.snapshot.now_us - stamp).max(0) as f64 / 1e6);
             let anchor = app.engine.transport_tempo().tick_to_samples(pulse * TICKS_PER_PULSE, sr);
             assert!(
-                matches!(app.engine.transport_requests.as_slice(), [TransportRequest::PlayFrom(p)] if *p == anchor + age - offset),
+                matches!(app.engine.transport_requests.as_slice(), [TransportRequest::PlayFromClock { origin, render_from }] if *origin == anchor && *render_from == anchor + age - offset),
                 "offset {offset}, reference {}, requests {:?}",
                 anchor + age,
                 app.engine.transport_requests

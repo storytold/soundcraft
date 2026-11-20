@@ -30,9 +30,15 @@ impl SoundApp {
     }
 
     fn start_play(&mut self, from: Samples, end: Option<Samples>, looped: Option<Range>) {
+        self.start_play_with_origin(from, end, looped, None);
+    }
+
+    fn start_play_with_origin(&mut self, from: Samples, end: Option<Samples>, looped: Option<Range>, midi_origin: Option<Samples>) {
         if let Some(p) = &self.player {
             p.update_session(self.engine.playback_session());
-            if self.mtc_chasing && end.is_none() && looped.is_none() {
+            if let Some(origin) = midi_origin {
+                p.play_from_clock(origin, from);
+            } else if self.mtc_chasing && end.is_none() && looped.is_none() {
                 p.play_chasing_mtc(from);
             } else {
                 p.play(from, end, looped);
@@ -441,7 +447,11 @@ impl SoundApp {
                         self.play_from_selection();
                     }
                 }
-                TransportRequest::PlayFrom(at) => {
+                TransportRequest::PlayFromClock { origin, render_from } if !self.is_playing() => {
+                    self.start_play_with_origin(render_from, None, None, Some(origin));
+                }
+                // A clock re-lock during coast resumes the rolling transport without a second attack.
+                TransportRequest::PlayFrom(at) | TransportRequest::PlayFromClock { render_from: at, .. } => {
                     if self.is_playing() {
                         // Playing on from `at` drops the end and loop of the earlier selection.
                         if let Some(p) = &self.player {

@@ -223,6 +223,7 @@ pub(crate) struct LiveInput<'a> {
 /// The block being rendered: where it starts, its length, and whether any track is soloed.
 #[derive(Clone, Copy)]
 pub(crate) struct Block {
+    pub(crate) note_start: Samples,
     pub(crate) pos: Samples,
     pub(crate) frames: usize,
     pub(crate) any_solo: bool,
@@ -340,7 +341,7 @@ fn render_instrument(s: &Session, t: &Track, strip: &mut Strip, live: &LiveInput
             chased = true;
         }
         if !live.monitor_only {
-            schedule_notes(s, t, pos, frames, inst, &mut strip.held, &mut strip.live);
+            schedule_notes(s, t, blk, inst, &mut strip.held, &mut strip.live);
             strip.clips_played = true;
         } else {
             // Stopped: the clips are silent, only live MIDI input plays. Playback that ran to its
@@ -458,7 +459,7 @@ fn gate_mute_automation(t: &Track, strip: &mut Strip, blk: Block) {
 }
 
 pub(crate) fn process_strip(s: &Session, t: &Track, strip: &mut Strip, busses: &HashMap<BusId, BusBuf>, live: &LiveInput<'_>, blk: Block) {
-    let Block { pos, frames, any_solo } = blk;
+    let Block { pos, frames, any_solo, .. } = blk;
     zero_buf(&mut strip.buf, frames);
     let transport = transport_at(s, pos, !live.monitor_only, live.recording);
     match t.kind {

@@ -149,6 +149,7 @@ pub struct MixEngine {
     pub midi_lost: u64,
     /// Transport stopped: only monitored inputs sound (no clips).
     pub monitor_only: bool,
+    midi_origin: Option<Samples>,
     /// Recording: record-armed tracks hear their input (auto input).
     pub recording: bool,
     /// Mix the metronome (Options > Click) into the output. Playback turns this on; offline renders
@@ -191,6 +192,7 @@ impl MixEngine {
             midi_ports: None,
             midi_lost: 0,
             monitor_only: false,
+            midi_origin: None,
             recording: false,
             metronome: false,
             external: false,
@@ -258,8 +260,14 @@ impl MixEngine {
         self.main.len()
     }
 
+    /// Lower bound for clip notes on the first block of externally clocked playback.
+    pub fn start_midi_at(&mut self, origin: Samples) {
+        self.midi_origin = Some(origin);
+    }
+
     /// Reset all plugin state (on stop / seek).
     pub fn reset(&mut self) {
+        self.midi_origin = None;
         for s in self.strips.values_mut() {
             for p in s.plugins.iter_mut().flatten() {
                 p.plugin.reset();
@@ -381,7 +389,11 @@ impl MixEngine {
     pub fn render(&mut self, s: &Session, pos: Samples, frames: usize, out: &mut [Vec<f32>]) {
         let frames = frames.min(self.max_block);
         self.begin_block(s, pos, frames);
-        let blk = Block { pos, frames, any_solo: any_solo(s) };
+        let note_start = self.midi_origin.unwrap_or(pos);
+        if frames > 0 && !self.monitor_only && note_start < pos.saturating_add(frames as i64) {
+            self.midi_origin = None;
+        }
+        let blk = Block { pos, frames, note_start, any_solo: any_solo(s) };
         let order = std::mem::take(&mut self.order);
         // Phase 1: independent strips (audio, instrument, MIDI) in parallel.
         let mut work = std::mem::take(&mut self.work);

@@ -579,6 +579,45 @@ impl Plugin for Keys {
     fn note_on(&mut self, _offset: usize, note: u8, velocity: u8) {
         self.heard.lock().unwrap().push((note, velocity));
     }
+    fn note_off(&mut self, _offset: usize, note: u8) {
+        self.heard.lock().unwrap().push((note, 0));
+    }
+}
+
+#[test]
+fn compensated_clock_start_keeps_boundary_notes_once_without_replaying_earlier_attacks() {
+    use soundcraft_midi::{Note, Sequence};
+
+    for (bpm, start_tick) in [(120., 15360), (90., 2880)] {
+        for (origin_delta, render_delta, expected) in [(0, 1440, true), (240, 1440, false), (0, -720, true)] {
+            let mut s = Session::default();
+            s.tempo.set_tempo(0, bpm).unwrap();
+            let origin = s.tempo.tick_to_samples(start_tick + origin_delta, s.sample_rate);
+            let t = s.add_track(TrackKind::Instrument, ChannelFormat::Stereo, None);
+            let mut seq = Sequence::default();
+            for (start, pitch, length) in [(start_tick - 1, 59, 960), (start_tick, 60, 960), (start_tick, 61, 1)] {
+                seq.notes.push(Note { start, pitch, velocity: 100, length, channel: 0, release_velocity: 64 });
+            }
+            let cid = s.new_clip_id();
+            let track = s.track_mut(t).unwrap();
+            track.playlist_mut().unwrap().clips.push(Clip::midi(cid, "boundary", 0, origin + 48000, seq));
+            track.instrument = Some(Insert::new("clap:test.keys"));
+            let heard = Arc::new(std::sync::Mutex::new(Vec::new()));
+            let keys = Keys { inner: soundcraft_dsp::create("gain").unwrap(), heard: Arc::clone(&heard) };
+            let mut eng = MixEngine::new(s.sample_rate.hz() as f32, 512);
+            eng.set_external_instances(true);
+            eng.adopt(vec![PreparedInstance { track: t, slot: INSTRUMENT_SLOT, id: "clap:test.keys".into(), ch: 2, plugin: Box::new(keys) }]);
+            eng.start_midi_at(origin);
+            eng.render(&s, origin + render_delta, 0, &mut [Vec::new(), Vec::new()]);
+            assert!(heard.lock().unwrap().is_empty());
+            // The player starts at the compensated render cursor for this clock pulse.
+            for block in 0..4 {
+                render_block(&mut eng, &s, origin + render_delta + block * 512);
+            }
+            let events = if expected { vec![(60, 100), (61, 100), (61, 0)] } else { Vec::new() };
+            assert_eq!(*heard.lock().unwrap(), events, "bpm={bpm}, origin={origin}, render delta={render_delta}");
+        }
+    }
 }
 
 #[test]

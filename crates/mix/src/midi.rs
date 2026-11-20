@@ -1,6 +1,6 @@
 use super::clips::Key;
 use super::live_midi::LiveNotes;
-use super::strip::{PluginSlot, Strip};
+use super::strip::{Block, PluginSlot, Strip};
 use super::{ClipContent, CtrlKind, Range, SampleSource, Samples, Session, SourceAudio, Track};
 use std::sync::Arc;
 
@@ -24,19 +24,24 @@ fn midi_offset(s: &Session, t: &Track) -> i64 {
 /// a clip note-off is not sent while a live key holds that pitch: the key's own release ends it.
 /// A note-off held back that way is told to `live`: when the key goes up earlier in the same
 /// block, the note still lasts until the clip's note-off.
-pub(crate) fn schedule_notes(s: &Session, t: &Track, pos: Samples, frames: usize, inst: &mut PluginSlot, held: &mut Vec<u8>, live: &mut LiveNotes) {
+pub(crate) fn schedule_notes(s: &Session, t: &Track, blk: Block, inst: &mut PluginSlot, held: &mut Vec<u8>, live: &mut LiveNotes) {
+    if blk.frames == 0 {
+        return;
+    }
     let sr = s.sample_rate;
     // MIDI Track Offsets: the track's notes sound `offset` samples later (earlier if negative), so
     // the block looks that far back into the clips.
     let offset = midi_offset(s, t);
-    let pos = pos.saturating_sub(offset);
-    let end = pos.saturating_add(frames as i64);
+    let pos = blk.pos.saturating_sub(offset);
+    let end = pos.saturating_add(blk.frames as i64);
+    let note_start = blk.note_start.saturating_sub(offset);
+    let scan_start = note_start.min(pos);
     for clip in t.clips() {
         if clip.muted {
             continue;
         }
         let ClipContent::Midi { sequence } = &clip.content else { continue };
-        if !clip.range().overlaps(&Range { start: pos, end }) {
+        if !clip.range().overlaps(&Range { start: scan_start, end }) {
             continue;
         }
         let base = s.tempo.samples_to_ticks(clip.start, sr);
@@ -53,7 +58,7 @@ pub(crate) fn schedule_notes(s: &Session, t: &Track, pos: Samples, frames: usize
             )
         };
         // The block in clip ticks, one tick wider on each side so rounding never drops an event.
-        let near = s.tempo.samples_to_ticks(pos, sr).saturating_sub(base).saturating_sub(1)
+        let near = s.tempo.samples_to_ticks(scan_start, sr).saturating_sub(base).saturating_sub(1)
             ..=s.tempo.samples_to_ticks(end, sr).saturating_sub(base).saturating_add(1);
         for n0 in &sequence.notes {
             let mut n = *n0;
@@ -71,14 +76,18 @@ pub(crate) fn schedule_notes(s: &Session, t: &Track, pos: Samples, frames: usize
             if on >= clip.end() {
                 continue;
             }
-            if on >= pos && on < end {
-                inst.plugin.note_on(usize::try_from(on - pos).unwrap_or(0), n.pitch, n.velocity);
+            // Clock compensation can put the first device buffer after the requested onset.
+            // Deliver due attacks at frame zero without chasing notes from before the locate.
+            let attack = on >= note_start && on < end && (on == note_start || off >= pos);
+            if attack {
+                inst.plugin.note_on(usize::try_from(on.saturating_sub(pos)).unwrap_or(0), n.pitch, n.velocity);
                 if !held.contains(&n.pitch) && held.len() < 128 {
                     held.push(n.pitch);
                 }
             }
-            if off >= pos && off < end {
-                let at = usize::try_from(off - pos).unwrap_or(0);
+            if off < end && (off >= pos || attack) {
+                // Even a boundary note shorter than the startup latency needs its release.
+                let at = if attack && on < pos && off <= pos { 1.min(blk.frames.saturating_sub(1)) } else { usize::try_from(off - pos).unwrap_or(0) };
                 if live.holds(n.pitch) {
                     live.clip_off_held_back(n.pitch, at);
                 } else {

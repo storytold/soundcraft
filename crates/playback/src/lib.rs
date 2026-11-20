@@ -172,6 +172,10 @@ enum Cmd {
         looped: Option<Range>,
     },
     PlayMtc(Samples),
+    PlayClock {
+        origin: Samples,
+        render_from: Samples,
+    },
     EndChase(Option<u64>),
     Stop,
     Locate(Samples),
@@ -629,6 +633,10 @@ impl Player {
     /// Start playback at `from`, stopping at `end`, or looping `looped`.
     pub fn play(&self, from: Samples, end: Option<Samples>, looped: Option<Range>) {
         self.begin_play(from, Cmd::Play { from, end, looped });
+    }
+    /// Preserve the musical onset even when the first audible buffer is already due.
+    pub fn play_from_clock(&self, origin: Samples, render_from: Samples) {
+        self.begin_play(render_from, Cmd::PlayClock { origin, render_from });
     }
     pub fn play_chasing_mtc(&self, from: Samples) {
         self.begin_play(from, Cmd::PlayMtc(from));

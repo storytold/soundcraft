@@ -88,6 +88,11 @@ pub enum TransportRequest {
     Play,
     /// Start playing at this position (or move there if already playing), ignoring the selection.
     PlayFrom(Samples),
+    /// MIDI Clock starts at a musical boundary, while the render cursor includes output latency.
+    PlayFromClock {
+        origin: Samples,
+        render_from: Samples,
+    },
     Stop,
     TogglePlay,
     Record,

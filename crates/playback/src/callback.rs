@@ -299,6 +299,10 @@ impl AudioState {
                 }
                 Cmd::OldSessions(tx) => self.old_sessions = Some(tx),
                 Cmd::Play { from, end, looped } => self.begin_play(from, end, looped, false),
+                Cmd::PlayClock { origin, render_from } => {
+                    self.begin_play(render_from, None, None, false);
+                    self.mix.start_midi_at(origin);
+                }
                 Cmd::PlayMtc(from) => self.begin_play(from, None, None, true),
                 Cmd::Stop => self.halt(),
                 Cmd::EndChase(observed) => {
