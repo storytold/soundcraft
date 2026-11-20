@@ -182,7 +182,7 @@ impl SoundApp {
         }
         // Early Clock Follow builds persisted a separate advance (positive = earlier).
         // Drain it once; output calibration on a same-named port remains independent.
-        for (name, advance) in std::mem::take(&mut self.ui.legacy_clock_follow_input_offsets).into_iter().take(256) {
+        for (name, advance) in std::mem::take(&mut self.ui.clock_follow_input_offsets).into_iter().take(256) {
             if valid_port(&name) && advance.unsigned_abs() <= 10_000_000 {
                 self.ui.midi_sync.ports.entry(name).or_default().in_offset_samples = -advance;
             }
