@@ -335,6 +335,8 @@ pub struct Bounce {
     gain: f32,
     peak: f32,
     meter: soundcraft_dsp::meter::LoudnessMeter,
+    /// The file has an integer bit depth, so the encoder clips to full scale (a float file keeps its headroom).
+    integer: bool,
     enc: Option<craft_audio::FileEncoder<Out>>,
 }
 
@@ -409,6 +411,7 @@ impl Bounce {
             peak: 0.0,
             meter,
             enc: Some(enc),
+            integer: opts.bit_depth != craft_audio::BitDepth::Float32,
         })
     }
 
@@ -438,6 +441,19 @@ impl Bounce {
                 Some((chunk, n)) => {
                     fill(&mut self.block, chunk, n, self.fold, self.gain);
                     self.done += n;
+                    if !self.measuring {
+                        // The encoder clips an integer file to full scale and maps a float file's NaN to 0 and
+                        // infinities to +-1, so the report must describe what it writes.
+                        for v in self.block.iter_mut().flatten() {
+                            *v = if v.is_nan() {
+                                0.0
+                            } else if self.integer || v.is_infinite() {
+                                v.clamp(-1.0, 1.0)
+                            } else {
+                                *v
+                            };
+                        }
+                    }
                     self.peak = self.peak.max(soundcraft_dsp::offline::peak(&self.block));
                     if !self.measuring {
                         self.meter.process(&self.block, n);
