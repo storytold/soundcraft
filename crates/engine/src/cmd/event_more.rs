@@ -140,7 +140,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Identify Beat...",
             ["Event"],
             Some("Cmd+I"),
-            "{start?, end?, bars?: 1, beats?: 0} — sets the tempo so the selection lasts that many bars",
+            "{start?, end?, bars?: 1, beats?: 0, numerator?, denominator?} — sets the tempo so the selection lasts that many bars; a meter writes a meter event on the selection's bar first",
             has_range,
             identify_beat
         ),
@@ -729,6 +729,14 @@ fn beat_detective(e: &mut Engine, p: &Value) -> Result<Value> {
 fn identify_beat(e: &mut Engine, p: &Value) -> Result<Value> {
     let id = "event.identify_beat";
     let (r, t0, _) = selection_ticks(e, p, id)?;
+    // A declared meter writes its event first (snapped to the containing bar line, where
+    // meter changes live): Pro Tools' Identify Beat writes meter and tempo together, and
+    // the tempo below is computed in that meter.
+    if p.get("numerator").is_some() || p.get("denominator").is_some() {
+        let num = i64_or(p, "numerator", 4).clamp(1, 64) as u32;
+        let den = i64_or(p, "denominator", 4).clamp(1, 64) as u32;
+        e.session_mut().tempo.set_meter(t0, num, den).map_err(|err| bad(id, err.to_string()))?;
+    }
     let s = e.session();
     let m = s.tempo.meter_at_tick(t0);
     let bars = f64_or(p, "bars", 1.0).max(0.0);
@@ -938,6 +946,20 @@ mod tests {
         assert!((e.session().tempo.tempo_at_tick(0) - 120.0).abs() < 1e-9);
         e.execute("event.identify_beat", &json!({"start": 0, "end": 192_000, "bars": 1})).unwrap();
         assert!((e.session().tempo.tempo_at_tick(0) - 60.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn identify_beat_writes_the_declared_meter() {
+        let mut e = Engine::default();
+        e.execute("event.identify_beat", &json!({"start": 0, "end": 96_000, "bars": 1, "numerator": 6, "denominator": 8})).unwrap();
+        // 2 s = 1 bar of 6/8 = 3 quarter notes -> 90 bpm; the meter event lands at the selection's start.
+        assert!((e.session().tempo.tempo_at_tick(0) - 90.0).abs() < 1e-9);
+        assert_eq!(e.session().tempo.meter_at_tick(0).numerator, 6);
+        assert_eq!(e.session().tempo.meter_at_tick(0).denominator, 8);
+        // Beats without bars still describe a positive length.
+        let mut e = Engine::default();
+        e.execute("event.identify_beat", &json!({"start": 0, "end": 96_000, "bars": 0, "beats": 4})).unwrap();
+        assert!((e.session().tempo.tempo_at_tick(0) - 120.0).abs() < 1e-9);
     }
 
     #[test]
