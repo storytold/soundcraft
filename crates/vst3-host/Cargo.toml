@@ -30,7 +30,7 @@ windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Graphic
 # The X11 editor host window on Linux and the BSDs (a top-level window the plugin view embeds
 # into) and the view's run loop (polling the descriptors plugins register).
 [target.'cfg(all(unix, not(target_os = "macos")))'.dependencies]
-x11rb = "0.13"
+x11rb = "0.14"
 libc = "0.2"
 
 [[test]]
