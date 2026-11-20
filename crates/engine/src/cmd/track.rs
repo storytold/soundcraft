@@ -288,6 +288,20 @@ fn new_track_row(e: &mut Engine, p: &Value) -> Result<Vec<TrackId>> {
     let name = str_param(p, "name").map(str::to_string);
     let ticks = str_param(p, "timebase").map(|t| t == "ticks");
     let instrument = str_param(p, "instrument").map(str::to_string);
+    let instrument = if kind == TrackKind::Instrument {
+        match instrument {
+            Some(id) => {
+                let info = super::clap::plugin_info(&id).ok_or_else(|| bad("track.new", format!("unknown plugin `{id}`")))?;
+                if !info.is_instrument {
+                    return Err(bad("track.new", format!("`{id}` is not an instrument")));
+                }
+                Some(info.id.to_string())
+            }
+            None => None,
+        }
+    } else {
+        None
+    };
     let s = e.session_mut();
     let mut ids = Vec::new();
     for _ in 0..count {
@@ -1284,5 +1298,17 @@ mod tests {
         assert_eq!(vca(&e), None);
         assert!(e.undo());
         assert_eq!(vca(&e), Some(master.0));
+    }
+
+    #[test]
+    fn new_instrument_track_validates_the_instrument_id() {
+        let mut e = Engine::default();
+        assert!(e.execute("track.new", &json!({"kind": "instrument", "instrument": "no.such.plugin"})).is_err());
+        assert_eq!(e.session().tracks.len(), 0);
+        assert!(e.execute("track.new", &json!({"kind": "instrument", "instrument": "eq_7band"})).is_err());
+        assert_eq!(e.session().tracks.len(), 0);
+        let r = e.execute("track.new", &json!({"kind": "instrument", "instrument": "drum_synth"})).unwrap();
+        let id = TrackId(r["tracks"][0].as_u64().unwrap());
+        assert_eq!(e.session().track(id).unwrap().instrument.as_ref().unwrap().plugin, "drum_synth");
     }
 }
