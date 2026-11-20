@@ -8,4 +8,9 @@ fn min_secs_string_is_not_misread_as_timecode_when_the_counter_is_timecode() {
     e.execute("edit.select", &json!({"start": "0:12.500", "end": "0:20.000"})).unwrap();
     let sel = e.session().edit.selection;
     assert_eq!((sel.start, sel.end), (600_000, 960_000));
+
+    // Absolute labels still use the project's hour start.
+    e.execute("edit.select", &json!({"start":"01:00:12:00","end":"timecode:01:00:20:00"})).unwrap();
+    let sel = e.session().edit.selection;
+    assert_eq!((sel.start, sel.end), (576_000, 960_000));
 }
