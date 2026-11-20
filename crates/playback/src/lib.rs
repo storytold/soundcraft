@@ -539,7 +539,13 @@ impl Player {
     /// Add a second protocol to the same MIDI worker and port pool.
     #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
     pub fn set_sync_encoder(&self, port: Option<(String, i64)>, compensate: bool, encoder: Box<dyn sync_clock::SyncEncoder>) {
-        self.beat_clock.lock().unwrap_or_else(PoisonError::into_inner).encoder(port, compensate, encoder);
+        self.try_set_sync_encoder(port, compensate, encoder);
+    }
+
+    /// Returns whether the worker accepted the encoder update.
+    #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+    pub fn try_set_sync_encoder(&self, port: Option<(String, i64)>, compensate: bool, encoder: Box<dyn sync_clock::SyncEncoder>) -> bool {
+        self.beat_clock.lock().unwrap_or_else(PoisonError::into_inner).encoder(port, compensate, encoder)
     }
     /// Notify the sync worker of external transport activity from a MIDI input
     /// thread. The handle does not retain the player and coalesces pending wakes.

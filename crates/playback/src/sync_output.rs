@@ -168,9 +168,15 @@ impl Output {
         self.compensated = compensate;
         (ports.is_empty() && self.worker.is_none()) || self.send(Update::Beats(ports, compensate))
     }
-    pub(crate) fn encoder(&mut self, port: Option<(String, i64)>, compensate: bool, encoder: Box<dyn SyncEncoder>) {
-        self.additional = port.clone().map(|(n, o)| (n, o, compensate));
-        self.send(Update::Encoder(port, compensate, encoder));
+    pub(crate) fn encoder(&mut self, port: Option<(String, i64)>, compensate: bool, encoder: Box<dyn SyncEncoder>) -> bool {
+        if port.is_none() && self.additional.is_none() && self.worker.is_none() {
+            return true;
+        }
+        let accepted = self.send(Update::Encoder(port.clone(), compensate, encoder));
+        if accepted {
+            self.additional = port.map(|(name, offset)| (name, offset, compensate));
+        }
+        accepted
     }
     pub(crate) fn waker(&self) -> Arc<dyn Fn() + Send + Sync> {
         self.coalesced_waker(self.pending_wake.clone(), Update::InputWake)
