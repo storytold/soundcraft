@@ -55,6 +55,10 @@ fn clear(e: &mut Engine, p: &Value) -> Result<Value> {
         pl.clips.retain(|c| !gone.contains(&c.id));
     }
     s.sources.retain(|f| !sources.contains(&f.id));
+    // The room tone plays one of the removed files: nothing is left for it to play.
+    if s.room_tone.is_some_and(|t| sources.contains(&t.source)) {
+        s.room_tone = None;
+    }
     for f in &sources {
         s.pool.remove(*f);
     }
@@ -104,6 +108,18 @@ mod tests {
         assert!(e.undo());
         assert!(e.session().pool.contains(f));
         assert_eq!(e.session().clips_using(f).count(), 6);
+    }
+
+    #[test]
+    fn removing_the_room_tones_file_forgets_the_room_tone() {
+        let mut e = crate::demo::demo_engine();
+        let (f, clips) = kick(&e);
+        e.execute("edit.room_tone_set", &json!({"clip": clips[0]})).unwrap();
+        assert_eq!(e.session().room_tone.map(|t| t.source), Some(f));
+        e.execute("clip.clear", &json!({"sources": [f], "with_clips": true})).unwrap();
+        assert_eq!(e.session().room_tone, None);
+        assert!(e.undo());
+        assert_eq!(e.session().room_tone.map(|t| t.source), Some(f), "undo brings it back with the file");
     }
 
     #[test]

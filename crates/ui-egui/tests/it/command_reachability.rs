@@ -108,6 +108,22 @@ fn new_midi_clip_is_in_the_clip_menu() {
 }
 
 #[test]
+fn room_tone_follows_strip_silence_in_the_edit_menu() {
+    let extra = menus::ui_aliases();
+    for (label, id) in
+        [("Set Room Tone", "edit.room_tone_set"), ("Fill Gaps with Room Tone", "edit.room_tone_fill"), ("Clear Room Tone", "edit.room_tone_clear")]
+    {
+        assert_eq!(catalog::implemented_by(&format!("Edit > Room Tone > {label}"), &extra).as_deref(), Some(id));
+        assert!(menu_commands().contains(id), "{id}");
+    }
+    let tree = menus::tree();
+    let edit = tree.iter().find(|n| n.label == "Edit").unwrap();
+    let labels: Vec<&str> = edit.children.iter().map(|n| n.label.as_str()).collect();
+    let at = labels.iter().position(|l| *l == "Strip Silence").unwrap();
+    assert_eq!(labels.get(at + 1), Some(&"Room Tone"));
+}
+
+#[test]
 fn remove_sync_point_follows_identify_and_is_greyed_out_without_a_point() {
     let tree = menus::tree();
     let clip = tree.iter().find(|n| n.label == "Clip").unwrap();

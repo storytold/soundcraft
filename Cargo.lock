@@ -305,7 +305,7 @@ dependencies = [
  "objc2-foundation 0.3.2",
  "parking_lot",
  "percent-encoding",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
  "wl-clipboard-rs",
  "x11rb",
 ]
@@ -1204,9 +1204,10 @@ dependencies = [
 [[package]]
 name = "craft-audio"
 version = "0.1.0"
-source = "git+https://github.com/storytold/craft-libs?rev=45a8e16669e70dadb780dfbc759c882dd5b7ea1c#45a8e16669e70dadb780dfbc759c882dd5b7ea1c"
+source = "git+https://github.com/storytold/craft-libs?rev=6dbf8871ab7eabde575650cfb30a385eec884733#6dbf8871ab7eabde575650cfb30a385eec884733"
 dependencies = [
- "craft-media 0.1.0 (git+https://github.com/storytold/craft-libs?rev=45a8e16669e70dadb780dfbc759c882dd5b7ea1c)",
+ "craft-media",
+ "craft-xml 0.1.0 (git+https://github.com/storytold/craft-libs?rev=6dbf8871ab7eabde575650cfb30a385eec884733)",
  "log",
  "serde",
  "symphonia",
@@ -1254,7 +1255,7 @@ dependencies = [
 [[package]]
 name = "craft-jpeg"
 version = "0.1.0"
-source = "git+https://github.com/storytold/craft-libs?rev=ddbe78231b5b23273b3d191f04b1a38f4c0445b3#ddbe78231b5b23273b3d191f04b1a38f4c0445b3"
+source = "git+https://github.com/storytold/craft-libs?rev=6dbf8871ab7eabde575650cfb30a385eec884733#6dbf8871ab7eabde575650cfb30a385eec884733"
 dependencies = [
  "thiserror 2.0.21",
 ]
@@ -1270,21 +1271,16 @@ dependencies = [
 [[package]]
 name = "craft-media"
 version = "0.1.0"
-source = "git+https://github.com/storytold/craft-libs?rev=45a8e16669e70dadb780dfbc759c882dd5b7ea1c#45a8e16669e70dadb780dfbc759c882dd5b7ea1c"
+source = "git+https://github.com/storytold/craft-libs?rev=6dbf8871ab7eabde575650cfb30a385eec884733#6dbf8871ab7eabde575650cfb30a385eec884733"
 dependencies = [
  "serde",
  "thiserror 2.0.21",
 ]
 
 [[package]]
-name = "craft-media"
-version = "0.1.0"
-source = "git+https://github.com/storytold/craft-libs?rev=ddbe78231b5b23273b3d191f04b1a38f4c0445b3#ddbe78231b5b23273b3d191f04b1a38f4c0445b3"
-
-[[package]]
 name = "craft-midi"
 version = "0.1.0"
-source = "git+https://github.com/storytold/craft-libs?rev=45a8e16669e70dadb780dfbc759c882dd5b7ea1c#45a8e16669e70dadb780dfbc759c882dd5b7ea1c"
+source = "git+https://github.com/storytold/craft-libs?rev=6dbf8871ab7eabde575650cfb30a385eec884733#6dbf8871ab7eabde575650cfb30a385eec884733"
 dependencies = [
  "serde",
  "thiserror 2.0.21",
@@ -1311,7 +1307,7 @@ dependencies = [
 [[package]]
 name = "craft-scraft-format"
 version = "0.1.0"
-source = "git+https://github.com/storytold/craft-libs?rev=45a8e16669e70dadb780dfbc759c882dd5b7ea1c#45a8e16669e70dadb780dfbc759c882dd5b7ea1c"
+source = "git+https://github.com/storytold/craft-libs?rev=6dbf8871ab7eabde575650cfb30a385eec884733#6dbf8871ab7eabde575650cfb30a385eec884733"
 dependencies = [
  "craft-audio",
  "craft-midi",
@@ -1325,7 +1321,7 @@ dependencies = [
 [[package]]
 name = "craft-time"
 version = "0.1.0"
-source = "git+https://github.com/storytold/craft-libs?rev=45a8e16669e70dadb780dfbc759c882dd5b7ea1c#45a8e16669e70dadb780dfbc759c882dd5b7ea1c"
+source = "git+https://github.com/storytold/craft-libs?rev=6dbf8871ab7eabde575650cfb30a385eec884733#6dbf8871ab7eabde575650cfb30a385eec884733"
 dependencies = [
  "serde",
  "thiserror 2.0.21",
@@ -1382,10 +1378,10 @@ dependencies = [
 [[package]]
 name = "craft-video"
 version = "0.1.0"
-source = "git+https://github.com/storytold/craft-libs?rev=ddbe78231b5b23273b3d191f04b1a38f4c0445b3#ddbe78231b5b23273b3d191f04b1a38f4c0445b3"
+source = "git+https://github.com/storytold/craft-libs?rev=6dbf8871ab7eabde575650cfb30a385eec884733#6dbf8871ab7eabde575650cfb30a385eec884733"
 dependencies = [
  "craft-jpeg",
- "craft-media 0.1.0 (git+https://github.com/storytold/craft-libs?rev=ddbe78231b5b23273b3d191f04b1a38f4c0445b3)",
+ "craft-media",
  "rav1e",
  "rayon",
  "thiserror 2.0.21",
@@ -1404,6 +1400,16 @@ dependencies = [
 [[package]]
 name = "craft-xml"
 version = "0.1.0"
+source = "git+https://github.com/storytold/craft-libs?rev=6dbf8871ab7eabde575650cfb30a385eec884733#6dbf8871ab7eabde575650cfb30a385eec884733"
+dependencies = [
+ "quick-xml 0.41.0",
+ "serde",
+ "thiserror 2.0.21",
+]
+
+[[package]]
+name = "craft-xml"
+version = "0.1.0"
 source = "git+https://github.com/storytold/craft-libs?rev=ea24422ae9859dc5da398d0462bc87f8e02e0d10#ea24422ae9859dc5da398d0462bc87f8e02e0d10"
 dependencies = [
  "quick-xml 0.41.0",
@@ -1413,7 +1419,7 @@ dependencies = [
 [[package]]
 name = "craft-zip"
 version = "0.1.0"
-source = "git+https://github.com/storytold/craft-libs?rev=45a8e16669e70dadb780dfbc759c882dd5b7ea1c#45a8e16669e70dadb780dfbc759c882dd5b7ea1c"
+source = "git+https://github.com/storytold/craft-libs?rev=6dbf8871ab7eabde575650cfb30a385eec884733#6dbf8871ab7eabde575650cfb30a385eec884733"
 dependencies = [
  "flate2",
  "thiserror 2.0.21",
@@ -1888,7 +1894,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -3758,7 +3764,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7d8fae84b431384b68627d0f9b3b1245fcf9f46f6c0e3dc902e9dce64edd1967"
 dependencies = [
  "libc",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -4501,7 +4507,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys 0.12.1",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -4558,7 +4564,7 @@ dependencies = [
  "security-framework",
  "security-framework-sys",
  "webpki-root-certs",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -5140,7 +5146,7 @@ dependencies = [
 name = "soundcraft-video"
 version = "0.20.1"
 dependencies = [
- "craft-media 0.1.0 (git+https://github.com/storytold/craft-libs?rev=45a8e16669e70dadb780dfbc759c882dd5b7ea1c)",
+ "craft-media",
  "craft-video",
  "proptest",
  "serde",
@@ -5489,10 +5495,10 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "32497e9a4c7b38532efcdebeef879707aa9f794296a4f0244f6f69e9bc8574bd"
 dependencies = [
  "fastrand",
- "getrandom 0.4.3",
+ "getrandom 0.3.4",
  "once_cell",
  "rustix 1.1.5",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -6437,7 +6443,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]

@@ -44,6 +44,7 @@ pub fn specs() -> Vec<CommandSpec> {
             for t in &mut s.tracks { for pl in &mut t.playlists { pl.clips.clear() } }
             s.sources.clear();
             s.videos.clear();
+            s.room_tone = None;
             let text = s.to_json().map_err(|err| EngineError::Io(err.to_string()))?;
             // A template too large to open is not saved (#892).
             crate::io::session_size(file.display(), text.len() as u64, true)?;
