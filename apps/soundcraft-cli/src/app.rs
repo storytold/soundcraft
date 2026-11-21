@@ -22,6 +22,8 @@ fn is_control_method(method: &str) -> bool {
             | "ui.move"
             | "ui.click"
             | "ui.drag"
+            | "ui.scroll"
+            | "ui.zoom"
             | "ui.key"
             | "ui.text"
             | "ui.screenshot"
@@ -67,6 +69,12 @@ mod tests {
         assert_eq!(m, "engine.execute");
         for method in ["session.inspect", "engine.commands", "engine.parity", "ui.screenshot", "app.quit"] {
             assert_eq!(app_request(method, json!({})).0, method);
+        }
+        for (method, params) in [
+            ("ui.scroll", json!({"x": 120, "y": 80, "dx": 5, "dy": -15, "unit": "line"})),
+            ("ui.zoom", json!({"x": 120, "y": 80, "factor": 1.5, "steps": 4})),
+        ] {
+            assert_eq!(app_request(method, params.clone()), (method.to_string(), params));
         }
     }
 }
