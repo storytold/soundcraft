@@ -39,6 +39,7 @@ zbus = "5"
 craft-update = { workspace = true }
 
 [dev-dependencies]
+soundcraft-playback = { workspace = true, features = ["test-input"] }
 egui_kittest = { workspace = true, features = ["wgpu", "snapshot"] }
 
 [lints]

@@ -135,7 +135,7 @@ fn process(e: &mut Engine, p: &Value) -> Result<Value> {
         }
         let buf = AudioBuffer { sample_rate: sr.hz(), channels: out };
         let new_name = format!("{}-{}", clip.name, short(&name));
-        let s = e.session_mut();
+        let s = &mut e.clip_edit();
         let src = crate::io::add_source(s, &new_name, buf, None, FileFormat::Wav);
         let mut nc: Clip = clip.clone();
         nc.name = new_name;
@@ -181,7 +181,7 @@ fn generate(e: &mut Engine, p: &Value, name: &str, params: &[(String, f32)], r: 
         let clip_name = format!("{}-{}", t.name, short(name));
         let mut audio = vec![vec![0.0; frames]; channels];
         apply(name, params, &mut audio, sr.as_f64() as f32)?;
-        let s = e.session_mut();
+        let s = &mut e.clip_edit();
         let src = crate::io::add_source(s, &clip_name, AudioBuffer { sample_rate: sr.hz(), channels: audio }, None, FileFormat::Wav);
         let id = s.new_clip_id();
         crate::edit::place_clip(s, track, Clip::audio(id, &clip_name, src, 0, r.start, i64::try_from(frames).unwrap_or(0)));

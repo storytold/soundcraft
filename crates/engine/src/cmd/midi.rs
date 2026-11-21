@@ -54,7 +54,7 @@ fn new_clip(e: &mut Engine, p: &Value) -> Result<Value> {
         let start = bar.line_at_or_before(r.start, s.sample_rate, &s.tempo, s.frame_rate);
         r = soundcraft_time::Range::new(start, bar.next_line(start, s.sample_rate, &s.tempo, s.frame_rate));
     }
-    let s = e.session_mut();
+    let s = &mut e.clip_edit();
     let id = s.new_clip_id();
     let name = s.track(t).map(|x| x.name.clone()).unwrap_or_default();
     crate::edit::place_clip(s, t, Clip::midi(id, name, r.start, r.len(), Sequence::default()));
@@ -106,12 +106,20 @@ fn indices(p: &Value) -> Vec<usize> {
 
 fn note_delete(e: &mut Engine, p: &Value) -> Result<Value> {
     let id = clip_id(p, "midi.note_delete")?;
-    let idx = indices(p);
-    let seq = seq_mut(e, id, "midi.note_delete")?;
+    let deleted: std::collections::HashSet<_> = indices(p).into_iter().collect();
+    let crate::edit::ClipEdit { doc, takes, .. } = e.clip_edit();
+    let clip = doc.find_clip_mut(id).ok_or_else(|| bad("midi.note_delete", "no such clip"))?;
+    let ClipContent::Midi { sequence: seq } = &mut clip.content else { return Err(bad("midi.note_delete", "not a MIDI clip")) };
     let before = seq.notes.len();
+    if !deleted.iter().any(|&i| i < before) {
+        return Ok(json!({"deleted": 0}));
+    }
+    if let Some(take) = takes.and_then(|takes| takes.get_mut(&id)) {
+        take.remove_notes(seq, &deleted);
+    }
     let mut i = 0;
     seq.notes.retain(|_| {
-        let keep = !idx.contains(&i);
+        let keep = !deleted.contains(&i);
         i += 1;
         keep
     });

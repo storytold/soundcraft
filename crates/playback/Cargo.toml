@@ -25,8 +25,12 @@ cpal = { workspace = true, features = ["wasm-bindgen"] }
 # MIDI devices (ALSA sequencer, CoreMIDI, WinMM). Elsewhere there is no MIDI input (midi.rs).
 [target.'cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))'.dependencies]
 midir.workspace = true
+craft-midi-sync.workspace = true
+thread-priority = "3.1.1"
 
 [features]
+# Device-free capture for desktop recording integration tests.
+test-input = []
 # ASIO on Windows (cpal's ASIO host). Off by default: building it downloads Steinberg's ASIO SDK
 # (its own licence) and needs LLVM (libclang) for the bindings. `cargo build -p soundcraft --features asio`.
 asio = ["cpal/asio"]

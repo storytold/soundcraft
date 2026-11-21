@@ -1,7 +1,7 @@
 use super::import::{MAX_IMPORT_SAMPLES, add_source};
 #[cfg(test)]
 use super::session::{save_copy, save_session};
-use super::{AudioBuffer, Clip, Engine, EngineError, FileFormat, OsStr, Path, PathBuf, Range, Samples, Session, TrackId, read_file};
+use super::{AudioBuffer, Clip, Engine, EngineError, FileFormat, OsStr, Path, PathBuf, Range, Samples, TrackId, read_file};
 
 /// A recording's plan, made when it starts: each record-enabled track's take file, where the
 /// takes start on the timeline, the loop length they split into when loop recording, and the
@@ -75,6 +75,7 @@ fn add_recording_in(
     punch: Option<Range>,
 ) -> Vec<soundcraft_model::ClipId> {
     let before = e.session_arc();
+    let before_takes = std::sync::Arc::clone(&e.follow_takes);
     let hz = e.session().sample_rate.hz();
     let mut tracks: Vec<(TrackId, Vec<PathBuf>)> = Vec::new();
     for (tid, path) in takes {
@@ -97,14 +98,14 @@ fn add_recording_in(
             let Ok(file) = read.inspect_err(|err| e.message(err.to_string())) else { break };
             files.push(file);
         }
-        let (clips, problems) = place_take(e.session_mut(), tid, files, start, pass, punch);
+        let (clips, problems) = place_take(&mut e.clip_edit(), tid, files, start, pass, punch);
         for problem in problems {
             e.message(problem);
         }
         out.extend(clips);
     }
     if !out.is_empty() {
-        e.push_undo("Record", before);
+        e.push_undo_with_takes("Record", before, before_takes);
     }
     out
 }
@@ -151,7 +152,7 @@ fn measure_take_file(path: &Path, hz: u32) -> Result<TakeFile, EngineError> {
 /// holds a kept span and isn't decoded yet is decoded now; one that can't be ends the take there,
 /// as an unreadable file does, and what went wrong is returned beside the clips.
 fn place_take(
-    s: &mut Session,
+    s: &mut crate::edit::ClipEdit<'_>,
     tid: TrackId,
     files: Vec<TakeFile>,
     start: Samples,
@@ -536,7 +537,7 @@ mod record_tests {
         let measured = |f: &PathBuf| measure_take_file(f, 48_000).unwrap();
         let mut take: Vec<_> = files.iter().map(measured).collect();
         std::fs::remove_file(&files[2]).unwrap();
-        let (clips, problems) = place_take(e.session_mut(), vox, std::mem::take(&mut take), 0, None, Some(Range::new(100, 500)));
+        let (clips, problems) = place_take(&mut e.clip_edit(), vox, std::mem::take(&mut take), 0, None, Some(Range::new(100, 500)));
         assert_eq!((clips.len(), problems), (2, Vec::<String>::new()), "the third file is outside the punch: never read");
         assert_eq!(heard(&e, vox), [vec![0.1, 0.2]]);
 
@@ -545,7 +546,7 @@ mod record_tests {
         write_take_of(&files[2], 300, 0.3);
         let take: Vec<_> = files.iter().map(measured).collect();
         std::fs::remove_file(&files[1]).unwrap();
-        let (clips, problems) = place_take(e.session_mut(), vox, take, 0, None, Some(Range::new(100, 800)));
+        let (clips, problems) = place_take(&mut e.clip_edit(), vox, take, 0, None, Some(Range::new(100, 800)));
         assert_eq!(clips.len(), 1, "the take ends at the file that can't be decoded");
         assert!(problems.len() == 1 && problems[0].contains("Vox_01-2.wav"), "{problems:?}");
         assert_eq!(heard(&e, vox), [vec![0.1]]);

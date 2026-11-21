@@ -58,13 +58,16 @@ pub fn specs() -> Vec<CommandSpec> {
         ),
         cmd!("event.remove_duplicate_notes", "Remove Duplicate Notes", ["Event"], None, "{clips?}", has_selection, |e, p| {
             let ids = clip_ids_param(e, p);
-            let s = e.session_mut();
+            let crate::edit::ClipEdit { doc, mut takes, .. } = e.clip_edit();
             let mut n = 0;
             for id in ids {
-                if let Some(c) = s.find_clip_mut(id)
+                if let Some(c) = doc.find_clip_mut(id)
                     && let ClipContent::Midi { sequence } = &mut c.content
                 {
-                    n += sequence.remove_duplicates()
+                    n += match takes.as_deref_mut().and_then(|takes| takes.get_mut(&id)) {
+                        Some(take) => take.remove_duplicates(sequence),
+                        None => sequence.remove_duplicates(),
+                    };
                 }
             }
             Ok(json!({"removed": n}))
@@ -151,7 +154,7 @@ fn insert_time(e: &mut Engine, p: &Value) -> Result<Value> {
     if r.is_empty() {
         return Err(bad("event.insert_time", "give `start` and `length` or `end`"));
     }
-    let s = e.session_mut();
+    let s = &mut e.clip_edit();
     let ids: Vec<_> = s.tracks.iter().map(|t| t.id).collect();
     for t in ids {
         crate::edit::separate_all_at(s, t, r.start);
@@ -183,7 +186,7 @@ fn cut_time(e: &mut Engine, p: &Value) -> Result<Value> {
     if r.is_empty() {
         return Err(bad("event.cut_time", "selection is empty"));
     }
-    let s = e.session_mut();
+    let s = &mut e.clip_edit();
     let ids: Vec<_> = s.tracks.iter().map(|t| t.id).collect();
     for t in ids {
         crate::edit::clear_all_range(s, t, r, false);

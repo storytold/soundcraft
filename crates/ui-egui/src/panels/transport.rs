@@ -15,6 +15,25 @@ pub(super) fn transport_window(app: &mut SoundApp, ctx: &egui::Context) {
             let flags = app.engine.session().edit.flags.clone();
             let expanded = flags.contains("view.transport.expanded");
             ui.horizontal(|ui| {
+                if ui.selectable_label(app.ui.gen_mtc, crate::localization::text("Gen MTC")).clicked()
+                    && let Err(e) = app.run("setup.mtc_output", json!({"enabled":!app.ui.gen_mtc}))
+                {
+                    app.ui.status = crate::localization::error_text(&e);
+                }
+                let waiting = app.mtc_online && app.mtc_status == "Waiting for timecode";
+                if waiting {
+                    ctx.request_repaint_after(std::time::Duration::from_millis(500));
+                }
+                let online_lamp = app.mtc_online && (!waiting || ctx.input(|i| i.time.rem_euclid(1.0) < 0.5));
+                if app.ui.mtc_input_port.is_some()
+                    && ui
+                        .selectable_label(online_lamp, crate::localization::text("Online"))
+                        .on_hover_text(crate::localization::text(app.mtc_status))
+                        .clicked()
+                    && let Err(e) = app.run("options.transport_online", json!({}))
+                {
+                    app.ui.status = crate::localization::error_text(&e);
+                }
                 for (icon, cmd) in [
                     ("rtz", "transport.rtz"),
                     ("rewind", "transport.rewind"),
@@ -48,7 +67,7 @@ pub(super) fn transport_window(app: &mut SoundApp, ctx: &egui::Context) {
                 }
             });
             let s = app.engine.session();
-            let fmt = |x: i64| s.format_position(x, s.edit.main_counter);
+            let fmt = |x: i64| app.engine.format_transport_position(x, s.edit.main_counter);
             if flags.contains("view.transport.counters") || expanded || flags.is_empty() {
                 ui.label(egui::RichText::new(fmt(app.position())).font(mono(20.0)).color(t.counter_text));
             }
@@ -90,8 +109,8 @@ pub(super) fn transport_window(app: &mut SoundApp, ctx: &egui::Context) {
                         }
                     }
                 });
-                let tick = app.engine.session().tempo.samples_to_ticks(app.position(), app.engine.session().sample_rate);
-                let bpm = app.engine.session().tempo.tempo_at_tick(tick);
+                let tick = app.engine.transport_tempo().samples_to_ticks(app.position(), app.engine.session().sample_rate);
+                let bpm = app.engine.transport_tempo().tempo_at_tick(tick);
                 let m = app.engine.session().tempo.meter_at_tick(tick);
                 ui.label(
                     egui::RichText::new(crate::localized_format!("♩ = {bpm:.2}   {n}/{d}", bpm = bpm, n = m.numerator, d = m.denominator))
@@ -114,7 +133,7 @@ pub(super) fn big_counter(app: &mut SoundApp, ctx: &egui::Context) {
         .default_size(vec2(520.0, 110.0))
         .show(ctx, |ui| {
             let s = app.engine.session();
-            let txt = s.format_position(app.position(), s.edit.main_counter);
+            let txt = app.engine.format_transport_position(app.position(), s.edit.main_counter);
             let r = ui.available_rect_before_wrap();
             let t = Tokens::current();
             ui.painter().rect_filled(r, 4.0, t.big_counter_bg);

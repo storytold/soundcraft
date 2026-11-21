@@ -5,6 +5,11 @@ impl SoundApp {
     /// as bytes). Screenshot requests admitted for the old document must never receive the new
     /// one's pixels, so every replacement path bumps the epoch.
     pub(crate) fn document_replaced(&mut self) {
+        if self.engine.has_conflicting_timecode_offsets() {
+            self.ui.status =
+                crate::localization::text("The session has conflicting timecode offsets. Chase uses the External Timecode Offset.").to_owned();
+        }
+        self.sync_migration_pending = true;
         self.doc_epoch = self.doc_epoch.wrapping_add(1);
         // Note indices and gestures belong to the old session's clips (#443); every document
         // replacement (run, Recover, a session the browser read) goes through here.
@@ -127,6 +132,7 @@ impl SoundApp {
         match soundcraft_engine::autosave::recover(&mut self.engine, left) {
             Ok(missing) => {
                 self.document_replaced();
+                let offset_warning = self.engine.has_conflicting_timecode_offsets().then(|| self.ui.status.clone());
                 if self.write_autosave() {
                     soundcraft_engine::autosave::discard(left);
                 }
@@ -138,6 +144,10 @@ impl SoundApp {
                         n = n
                     ),
                 };
+                if let Some(warning) = offset_warning {
+                    self.ui.status.push(' ');
+                    self.ui.status.push_str(&warning);
+                }
             }
             Err(e) => self.ui.status = crate::localized_format!("Couldn't recover “{name}”: {e}", name = left.name, e = e),
         }
@@ -159,5 +169,30 @@ impl SoundApp {
             }
         }
         best.map(|(_, p)| p)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn recovery_reports_both_the_document_and_its_conflicting_timecode_offsets() {
+        use soundcraft_engine::autosave::{Autosaver, create_unique_folder, leftovers};
+
+        let root = create_unique_folder(&std::env::temp_dir(), "soundcraft-offset-recovery").unwrap();
+        let mut host = SoundApp::new(Default::default(), None, crate::Services::default());
+        let edit = &mut host.engine.session_mut().edit;
+        edit.values.insert("midi.mtc.external_offset_frames".into(), 2.);
+        edit.values.insert("sync.external_offset".into(), 123.);
+        let writer = Autosaver::new(root.clone());
+        writer.write(host.engine.session_arc(), None, None);
+        writer.flush().unwrap();
+        drop(writer);
+
+        host.recover(&leftovers(&root)[0]);
+        assert!(host.ui.status.contains("Recovered"), "{}", host.ui.status);
+        assert!(host.ui.status.contains("conflicting timecode offsets"), "{}", host.ui.status);
+        std::fs::remove_dir_all(root).unwrap();
     }
 }

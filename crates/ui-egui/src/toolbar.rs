@@ -251,8 +251,7 @@ fn option_toggles(e: &EditState) -> [(&'static str, &'static str, bool, &'static
 }
 
 fn fmt_pos(app: &SoundApp, at: i64, f: TimeFormat) -> String {
-    let s = app.engine.session();
-    s.format_position(at, f)
+    app.engine.format_transport_position(at, f)
 }
 
 /// Main and sub position counters with their format menus, selection readouts and dirty/device status.
@@ -276,12 +275,17 @@ fn counters(app: &mut SoundApp, ui: &mut Ui) {
     let rows = [
         ("Start", fmt_pos(app, sel.start, main_fmt)),
         ("End", fmt_pos(app, sel.end, main_fmt)),
-        ("Length", format_length(sel.start, sel.len(), main_fmt, s.sample_rate, &s.tempo, s.frame_rate)),
+        ("Length", format_length(sel.start, sel.len(), main_fmt, s.sample_rate, app.engine.transport_tempo(), s.frame_rate)),
     ];
     for (i, (label, val)) in rows.iter().enumerate() {
         let y = r.min.y + 10.0 + i as f32 * 13.0;
         ui.painter().text(pos2(r.min.x + 214.0, y), Align2::RIGHT_CENTER, crate::localization::text(label), regular(11.0), t.counter_label);
-        ui.painter().text(pos2(r.max.x - 8.0, y), Align2::RIGHT_CENTER, val, mono(11.0), t.counter_text);
+        let text_rect = ui.painter().text(pos2(r.max.x - 8.0, y), Align2::RIGHT_CENTER, val, mono(11.0), t.counter_text);
+        if let Some(field) = [crate::dialogs::CounterField::SelectionStart, crate::dialogs::CounterField::SelectionEnd].get(i)
+            && ui.interact(text_rect, ui.scope_id().with(("selection_counter", i)), Sense::click()).clicked()
+        {
+            field.open(app);
+        }
     }
     // Sub counter row.
     let y = r.max.y - 11.0;
@@ -307,6 +311,9 @@ fn counters(app: &mut SoundApp, ui: &mut Ui) {
 /// `view.sub_counter`) with it.
 fn format_menu(app: &mut SoundApp, resp: &egui::Response, current: TimeFormat, command: &str) {
     egui::Popup::menu(resp).show(|ui| {
+        if command == "view.main_counter" && ui.button(crate::localization::text("Enter position…")).clicked() {
+            crate::dialogs::CounterField::Position.open(app);
+        }
         for f in TimeFormat::ALL {
             if ui.selectable_label(current == f, crate::localization::text(f.label())).clicked() {
                 let _ = app.run(command, json!({"format": f.id()}));
@@ -639,9 +646,10 @@ fn tempo_meter(app: &mut SoundApp, ui: &mut Ui) {
     let t = Tokens::current();
     let (bpm, meter, countoff, click, bars) = {
         let s = app.engine.session();
-        let tick = s.tempo.samples_to_ticks(app.position(), s.sample_rate);
-        let m = s.tempo.meter_at_tick(tick);
-        (s.tempo.tempo_at_tick(tick), format!("{}/{}", m.numerator, m.denominator), s.edit.countoff, s.edit.click, s.edit.countoff_bars)
+        let map = app.engine.transport_tempo();
+        let tick = map.samples_to_ticks(app.position(), s.sample_rate);
+        let m = map.meter_at_tick(tick);
+        (map.tempo_at_tick(tick), format!("{}/{}", m.numerator, m.denominator), s.edit.countoff, s.edit.click, s.edit.countoff_bars)
     };
     let (r, _) = ui.allocate_exact_size(vec2(150.0, 64.0), Sense::hover());
     ui.painter().rect(r, CornerRadius::same(4), t.counter_bg, Stroke::new(1.0, t.counter_border), StrokeKind::Inside);
@@ -692,6 +700,10 @@ fn tempo_value(app: &mut SoundApp, ui: &mut Ui, right: f32, y: f32, bpm: f64) {
         w.bg_stroke = Stroke::NONE;
     }
     v.widgets.hovered.bg_stroke = Stroke::new(1.0, t.counter_border);
+    if app.clock_follow.enabled {
+        c.painter().text(rect.right_center(), Align2::RIGHT_CENTER, format!("{bpm:.4}"), mono(11.0), t.counter_text);
+        return;
+    }
     let mut value = bpm;
     let resp = c
         .add_sized(rect.size(), egui::DragValue::new(&mut value).speed(0.1).range(5.0..=1000.0).fixed_decimals(4))

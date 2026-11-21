@@ -353,7 +353,7 @@ pub fn resample(ch: &[Vec<f32>], from: u32, to: u32) -> Vec<Vec<f32>> {
 
 /// Start position in the guide signal whose `hop` samples best match the natural continuation at
 /// `natural`, searched within `tol` of `nominal` (coarse stride 4, then refined +-3).
-fn best_start(g: &impl Fn(i64) -> f32, nominal: i64, natural: i64, tol: i64, hop: usize) -> i64 {
+pub fn best_overlap_start(g: &impl Fn(i64) -> f32, nominal: i64, natural: i64, tol: i64, hop: usize) -> i64 {
     // Similarity of candidate start `p` with the natural continuation (stride 2).
     let score = |p: i64| -> f32 {
         let (mut xy, mut yy) = (0.0f32, 1e-9f32);
@@ -454,7 +454,7 @@ pub fn time_stretch(ch: &[Vec<f32>], ratio: f64, sample_rate: f32) -> Vec<Vec<f3
         if out_pos >= out_len {
             break;
         }
-        let in_pos = if k == 0 { 0 } else { best_start(&g, (out_pos as f64 / ratio).round() as i64, prev_in + hop as i64, tol, hop) };
+        let in_pos = if k == 0 { 0 } else { best_overlap_start(&g, (out_pos as f64 / ratio).round() as i64, prev_in + hop as i64, tol, hop) };
         overlap_add(ch, &mut out, &mut wsum, &window, (in_pos as usize, out_pos));
         prev_in = in_pos;
         k += 1;

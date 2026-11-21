@@ -28,9 +28,40 @@ pub fn loops(range: Range) -> bool {
     range.len() > 64
 }
 
+#[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+mod beat_clock;
+pub mod clock_follow;
+#[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+pub mod sync_clock;
+#[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+mod sync_output;
+mod sync_status;
+pub use sync_status::{MidiSyncStatus, OutputLeadSource, OutputTimingIssue};
+
+/// Bound per-device compensation in time when a session changes sample rate.
+pub fn max_sync_offset_samples(sr: soundcraft_time::SampleRate) -> i64 {
+    sr.samples(0.25)
+}
+/// Named destinations offered by the native MIDI Beat Clock setup dialog.
+pub fn midi_clock_outputs() -> Result<Vec<String>, String> {
+    midi_sync_outputs()
+}
+pub fn midi_sync_outputs() -> Result<Vec<String>, String> {
+    #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+    {
+        sync_output::output_names()
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
+    {
+        Ok(Vec::new())
+    }
+}
 pub mod devices;
 pub mod midi;
+pub mod mtc;
+pub mod mtc_input;
 pub mod record;
+pub mod sync_input;
 
 pub use devices::AudioConfig;
 
@@ -54,6 +85,8 @@ pub use soundcraft_mix::{mark_audio_thread, on_audio_thread};
 
 mod callback;
 mod stream;
+#[cfg(target_os = "windows")]
+mod stream_recovery;
 
 use callback::{AudioState, Fault, Side, take_meter_snapshot};
 #[cfg(test)]
@@ -62,7 +95,7 @@ use callback::{STALL, copy_meter_snapshot};
 use callback::{guarded_block, stalled};
 #[cfg(test)]
 use stream::pick_output_config;
-use stream::{Opened, build_output, first_started, open_device, start_stream};
+use stream::{Opened, build_format, first_started, open_device, start_stream};
 
 /// Meter values for the UI: the highest peak (and gain reduction) of every block rendered since
 /// the UI last took them with [`Player::take_meters`]. The audio thread renders blocks faster than
@@ -119,9 +152,17 @@ pub type PluginStates = Vec<(TrackId, usize, Vec<u8>)>;
 /// A parameter edit made in a plugin's own editor: `(track, slot, param id, value)`.
 pub type EditorEdit = (TrackId, usize, String, f32);
 
+/// Always retire the unused snapshot on the host. On a missed update deadline also
+/// return the map that kept rendering so the next correction can start from it.
+type GridReturn = Arc<std::sync::OnceLock<(Arc<Session>, Option<Arc<Session>>)>>;
+
 enum Cmd {
+    #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+    Clock(Option<sync_clock::Publisher>),
     /// A new snapshot plus the third-party instances it needs (created on the UI thread).
-    Session(Arc<Session>, Vec<PreparedInstance>),
+    Session(u64, Arc<Session>, Vec<PreparedInstance>),
+    /// Host-built copy of the last published snapshot with only its live tempo changed.
+    FollowGrid(u64, Samples, Arc<Session>, GridReturn),
     /// Where the callback sends the snapshots it replaces (freeing one takes thousands of frees).
     OldSessions(SyncSender<Arc<Session>>),
     Input(Arc<record::InputRing>),
@@ -134,6 +175,12 @@ enum Cmd {
         end: Option<Samples>,
         looped: Option<Range>,
     },
+    PlayMtc(Samples),
+    PlayClock {
+        origin: Samples,
+        render_from: Samples,
+    },
+    EndChase(Option<u64>),
     Stop,
     Locate(Samples),
     /// Tracks the latest session no longer has (worked out on the UI thread): their meters go.
@@ -166,12 +213,19 @@ pub struct Player {
     /// The block count last seen while playing, and since when.
     #[cfg(not(target_arch = "wasm32"))]
     watch: Mutex<Option<(u64, std::time::Instant)>>,
-    tx: Sender<Cmd>,
-    side: Mutex<Side>,
+    tx: Arc<Sender<Cmd>>,
+    prepared_clock_feed: Mutex<std::sync::Weak<midi::MidiFeed>>,
     #[cfg(not(target_arch = "wasm32"))]
     _stream: Option<cpal::Stream>,
     #[cfg(target_arch = "wasm32")]
     _stream: Option<cpal::Stream>,
+    #[cfg(target_os = "windows")]
+    recovery: Option<stream_recovery::Recovery>,
+    // Both streams must release their snapshot-return tickets before the host reclaims them.
+    side: Mutex<Side>,
+    // Hold the publication storage until the native callback has shut down.
+    #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+    beat_clock: Arc<Mutex<sync_output::Output>>,
     pub device_name: String,
     pub device_rate: u32,
     /// Output channels the device was opened with (0 for the silent clock).
@@ -191,7 +245,17 @@ impl Player {
     /// Open the output device `cfg` chooses (system, device, rate, buffer size), falling back to the
     /// defaults for whatever is unavailable. Never fails: without a device it runs a silent clock.
     pub fn with_config(session: Arc<Session>, cfg: &AudioConfig) -> Player {
-        let p = Player::open(Arc::clone(&session), cfg);
+        Self::open_configured(session, cfg, None)
+    }
+
+    /// Reconnect the named physical output. If it is still unavailable, use the silent
+    /// clock. An explicit device change belongs to Setup > Playback Engine.
+    pub fn reconnect_output(session: Arc<Session>, cfg: &AudioConfig, name: &str) -> Player {
+        Self::open_configured(session, cfg, Some(name))
+    }
+
+    fn open_configured(session: Arc<Session>, cfg: &AudioConfig, required_output: Option<&str>) -> Player {
+        let p = Player::open(Arc::clone(&session), cfg, required_output);
         p.side().return_old_sessions(&p.tx);
         // Hand the initial session's third-party plugins over.
         p.update_session(session);
@@ -211,6 +275,17 @@ impl Player {
         self.fault.trouble(stalled)
     }
 
+    /// Service a stopped transport's output timing recovery. The caller includes any
+    /// pending transport starts and active recording in the safety check.
+    pub fn service_output_recovery(&mut self, safe_to_switch: bool) -> bool {
+        #[cfg(target_os = "windows")]
+        if let Some(recovery) = &mut self.recovery {
+            return recovery.service(safe_to_switch, &self.shared, &mut self._stream, &mut self.fault);
+        }
+        let _ = safe_to_switch;
+        false
+    }
+
     fn side(&self) -> std::sync::MutexGuard<'_, Side> {
         self.side.lock().unwrap_or_else(PoisonError::into_inner)
     }
@@ -218,7 +293,7 @@ impl Player {
     /// Open the output device for `session`, trying the requested buffer size before the device default, then build
     /// the shared player state. If no configuration starts or the device cannot open, fall back to a silent clock at
     /// the session rate.
-    fn open(session: Arc<Session>, cfg: &AudioConfig) -> Player {
+    fn open(session: Arc<Session>, cfg: &AudioConfig, required_output: Option<&str>) -> Player {
         let shared = Arc::new(Shared {
             position: AtomicI64::new(0),
             playing: AtomicBool::new(false),
@@ -233,7 +308,7 @@ impl Player {
             side.gone_tracks(&session);
             Mutex::new(side)
         };
-        match open_device(want, want_ch, cfg) {
+        match open_device(want, want_ch, cfg, required_output) {
             Ok((device, config, format, name)) => {
                 // The chosen buffer size first; if the device refuses it, its default.
                 let mut attempts = vec![config];
@@ -244,22 +319,37 @@ impl Player {
                     attempts,
                     |config: &cpal::StreamConfig| -> Result<Opened, cpal::Error> {
                         let rate = config.sample_rate;
-                        let channels = usize::from(config.channels);
                         let (tx, rx) = channel();
                         let (gtx, grx) = channel();
                         let state = AudioState::new(rx, Arc::clone(&shared), Arc::clone(&session), f64::from(rate), gtx);
                         let fault = Arc::new(Fault::default());
-                        let stream = match format {
-                            cpal::SampleFormat::I32 => build_output::<i32>(&device, *config, state, channels, &fault, &shared),
-                            cpal::SampleFormat::I16 => build_output::<i16>(&device, *config, state, channels, &fault, &shared),
-                            _ => build_output::<f32>(&device, *config, state, channels, &fault, &shared),
-                        }?;
-                        Ok(Opened { stream, tx, grx, fault })
+                        #[cfg(target_os = "windows")]
+                        let (stream, recovery) = stream_recovery::open(&device, *config, format, state, &fault, &shared)?;
+                        #[cfg(not(target_os = "windows"))]
+                        let stream = build_format(&device, *config, format, state, &fault, &shared)?;
+                        Ok(Opened {
+                            stream,
+                            tx,
+                            grx,
+                            fault,
+                            #[cfg(target_os = "windows")]
+                            recovery,
+                        })
                     },
                     |opened| start_stream(&opened.stream),
                 );
                 match opened {
-                    Some((config, Opened { stream, tx, grx, fault })) => {
+                    Some((
+                        config,
+                        Opened {
+                            stream,
+                            tx,
+                            grx,
+                            fault,
+                            #[cfg(target_os = "windows")]
+                            recovery,
+                        },
+                    )) => {
                         let rate = config.sample_rate;
                         let channels = usize::from(config.channels);
                         let buffer = match config.buffer_size {
@@ -275,9 +365,14 @@ impl Player {
                             fault,
                             #[cfg(not(target_arch = "wasm32"))]
                             watch: Mutex::new(None),
-                            tx,
+                            #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+                            beat_clock: Arc::default(),
+                            tx: Arc::new(tx),
+                            prepared_clock_feed: Mutex::default(),
                             side: new_side(grx),
                             _stream: Some(stream),
+                            #[cfg(target_os = "windows")]
+                            recovery,
                             device_name: name,
                             device_rate: rate,
                             device_channels: config.channels,
@@ -352,9 +447,14 @@ impl Player {
             shared,
             fault,
             watch: Mutex::new(None),
-            tx,
+            #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+            beat_clock: Arc::default(),
+            tx: Arc::new(tx),
+            prepared_clock_feed: Mutex::default(),
             side,
             _stream: None,
+            #[cfg(target_os = "windows")]
+            recovery: None,
             device_name: "No audio device (silent)".into(),
             device_rate: rate,
             device_channels: 0,
@@ -375,7 +475,8 @@ impl Player {
         Player {
             shared,
             fault: Arc::default(),
-            tx,
+            tx: Arc::new(tx),
+            prepared_clock_feed: Mutex::default(),
             side,
             _stream: None,
             device_name: "No audio device".into(),
@@ -389,14 +490,110 @@ impl Player {
     /// Sends a new session snapshot to the audio thread, with freshly created (state-restored,
     /// prepared) instances of any third-party plugin it newly needs. Call on the UI thread.
     pub fn update_session(&self, s: Arc<Session>) {
+        self.publish_session(s, Default::default(), Default::default());
+    }
+
+    fn publish_session(&self, s: Arc<Session>, clock_document: std::sync::Weak<Session>, bounds: soundcraft_mix::MidiClipBeatBounds) {
+        self.cancel_clock_resume();
+        #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+        let generation = self.beat_clock.lock().unwrap_or_else(PoisonError::into_inner).configure(&s, &self.tx, None);
+        #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
+        let generation = 0;
         let (instances, gone) = {
             let mut side = self.side();
+            side.set_follow_base(s.clone(), bounds);
+            side.clock_document = clock_document;
             (side.prepare(&s), side.gone_tracks(&s))
         };
-        let _ = self.tx.send(Cmd::Session(s, instances));
+        let _ = self.tx.send(Cmd::Session(generation, s, instances));
         if !gone.is_empty() {
             let _ = self.tx.send(Cmd::Forget(gone));
         }
+    }
+
+    /// Prepare the project and transient grid for external-clock playback.
+    pub fn prepare_clock_session(&self, score: Arc<Session>, tempo: &soundcraft_time::TempoMap) {
+        self.prepare_clock_session_with(score, tempo, |_| {});
+    }
+
+    /// Project clock-recorded MIDI takes only when the editable document needs preparing.
+    pub fn prepare_clock_session_with(&self, score: Arc<Session>, tempo: &soundcraft_time::TempoMap, project: impl FnOnce(&mut Session)) {
+        self.prepare_projected_clock_session(score, tempo, |doc| {
+            project(doc);
+            soundcraft_mix::MidiClipBeatBounds::from_score(doc, |_| true)
+        });
+    }
+
+    /// Prepare the score projection and retain its musical clip bounds for later grid updates.
+    pub fn prepare_projected_clock_session(
+        &self,
+        mut score: Arc<Session>,
+        tempo: &soundcraft_time::TempoMap,
+        project: impl FnOnce(&mut Session) -> soundcraft_mix::MidiClipBeatBounds,
+    ) {
+        let source = Arc::downgrade(&score);
+        {
+            let mut side = self.side();
+            if source.ptr_eq(&side.clock_document) && Arc::get_mut(&mut side.grid_return).is_some() {
+                side.collect_garbage();
+                if side.published_session().is_some_and(|s| &s.tempo == tempo) {
+                    return;
+                }
+            }
+        }
+        let session = Arc::make_mut(&mut score);
+        let bounds = project(session);
+        bounds.apply(session, tempo);
+        session.tempo.clone_from(tempo);
+        self.publish_session(score, source, bounds);
+    }
+
+    /// Publish a tempo-only revision without rebuilding the mixer. Leave at most one grid
+    /// update in the device queue; a busy host retries with the newest map.
+    pub fn update_follow_grid(&self, tempo: &soundcraft_time::TempoMap) -> bool {
+        let mut side = self.side();
+        if Arc::get_mut(&mut side.grid_return).is_none() {
+            return false;
+        }
+        side.collect_garbage();
+        let Some(accepted) = side.published_session().cloned() else { return true };
+        if side.retry_grid.is_some() {
+            return false;
+        }
+        // Compute this on the host. The callback needs only an integer comparison.
+        let old = &accepted.tempo;
+        let prior = old.tempos();
+        let next = tempo.tempos();
+        let common = prior.iter().zip(next).take_while(|(a, b)| a == b).count();
+        let boundary = prior
+            .get(common)
+            .into_iter()
+            .chain(next.get(common))
+            .map(|event| event.tick)
+            .min()
+            .map_or(Samples::MAX, |tick| old.tick_to_samples(tick, accepted.sample_rate));
+        #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+        let snapshot = side.follow_snapshot(tempo).or_else(|| {
+            self.beat_clock.lock().unwrap_or_else(PoisonError::into_inner).reclaim_grid_snapshots(&accepted);
+            side.follow_snapshot(tempo)
+        });
+        #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
+        let snapshot = side.follow_snapshot(tempo);
+        let Some(s) = snapshot else { return false };
+        self.cancel_clock_resume();
+        #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+        let generation = self.beat_clock.lock().unwrap_or_else(PoisonError::into_inner).configure(&s, &self.tx, Some(&accepted));
+        #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
+        let generation = 0;
+        let _ = self.tx.send(Cmd::FollowGrid(generation, boundary, s, side.grid_return.clone()));
+        true
+    }
+
+    /// A tempo correction missed its render boundary. Continue from the accepted grid.
+    pub fn take_rejected_follow_grid(&self) -> Option<soundcraft_time::TempoMap> {
+        let mut side = self.side();
+        side.collect_garbage();
+        side.retry_grid.take()
     }
 
     /// Reads the state of every live third-party plugin, for saving the session.
@@ -474,11 +671,175 @@ impl Player {
         self.side().editors.get_mut(&(track, slot))?.value_text(id, value)
     }
 
+    /// Active machine-configured destinations and their signed external latency offsets in samples.
+    pub fn set_beat_clock_outputs(&self, ports: Vec<(String, i64)>, compensate: bool) {
+        self.try_set_beat_clock_outputs(ports, compensate);
+    }
+
+    /// Whether the worker accepted these settings. A transient startup failure can be retried.
+    pub fn try_set_beat_clock_outputs(&self, ports: Vec<(String, i64)>, compensate: bool) -> bool {
+        #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+        {
+            self.beat_clock.lock().unwrap_or_else(PoisonError::into_inner).beats(ports, compensate)
+        }
+        #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
+        {
+            let _ = compensate;
+            ports.is_empty()
+        }
+    }
+    /// Add a second protocol to the same MIDI worker and port pool.
+    #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+    pub fn set_sync_encoder(&self, port: Option<(String, i64)>, compensate: bool, encoder: Box<dyn sync_clock::SyncEncoder>) {
+        self.try_set_sync_encoder(port, compensate, encoder);
+    }
+
+    /// Returns whether the worker accepted the encoder update.
+    #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+    pub fn try_set_sync_encoder(&self, port: Option<(String, i64)>, compensate: bool, encoder: Box<dyn sync_clock::SyncEncoder>) -> bool {
+        self.beat_clock.lock().unwrap_or_else(PoisonError::into_inner).encoder(port, compensate, encoder)
+    }
+    /// Notify the sync worker of external transport activity from a MIDI input
+    /// thread. The handle does not retain the player and coalesces pending wakes.
+    /// Reserved for single-read notifications from a future input backend. No current backend
+    /// uses this hook. Transport commands use a bounded wait for the corresponding audio block.
+    pub fn sync_waker(&self) -> Arc<dyn Fn() + Send + Sync> {
+        #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+        {
+            self.beat_clock.lock().unwrap_or_else(PoisonError::into_inner).waker()
+        }
+        #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
+        {
+            Arc::new(|| {})
+        }
+    }
+    pub fn midi_sync_status(&self) -> MidiSyncStatus {
+        #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+        {
+            self.beat_clock.lock().unwrap_or_else(PoisonError::into_inner).status()
+        }
+        #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
+        {
+            MidiSyncStatus::default()
+        }
+    }
+    /// Device compensation for a followed start. The silent transport has no device latency.
+    pub fn clock_follow_output_lead_us(&self) -> Option<u64> {
+        if self.silent {
+            return Some(0);
+        }
+        #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+        {
+            self.beat_clock.lock().unwrap_or_else(PoisonError::into_inner).reported_lead_us()
+        }
+        #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
+        {
+            Some(0)
+        }
+    }
+
+    /// Number of fresh hardware lead reports observed on this output stream.
+    pub fn reported_output_timing_count(&self) -> u64 {
+        #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+        {
+            self.beat_clock.lock().unwrap_or_else(PoisonError::into_inner).reported_timing_count()
+        }
+        #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
+        {
+            0
+        }
+    }
+
+    /// The latest unusable hardware timestamp, if the current stream reported one.
+    pub fn output_timing_issue(&self) -> Option<OutputTimingIssue> {
+        #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+        {
+            self.beat_clock.lock().unwrap_or_else(PoisonError::into_inner).timing_issue()
+        }
+        #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
+        {
+            None
+        }
+    }
+    pub fn presented_position(&self) -> Samples {
+        #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+        if self.is_playing()
+            && let Some(sample) = self.beat_clock.lock().unwrap_or_else(PoisonError::into_inner).presented()
+        {
+            return sample;
+        }
+        self.position()
+    }
+    /// Latest clock destination or synchronization error for the setup dialog.
+    pub fn midi_clock_error(&self) -> Option<String> {
+        #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+        {
+            self.beat_clock.lock().unwrap_or_else(PoisonError::into_inner).trouble()
+        }
+        #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
+        {
+            None
+        }
+    }
+
+    fn send_transport(&self, command: Cmd) {
+        self.cancel_clock_resume();
+        #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+        self.beat_clock.lock().unwrap_or_else(PoisonError::into_inner).send_transport(&self.tx, command);
+        #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
+        let _ = self.tx.send(command);
+    }
+
     /// Start playback at `from`, stopping at `end`, or looping `looped`.
     pub fn play(&self, from: Samples, end: Option<Samples>, looped: Option<Range>) {
+        self.begin_play(from, Cmd::Play { from, end, looped });
+    }
+    /// Preserve the musical onset even when the first audible buffer is already due.
+    pub fn play_from_clock(&self, origin: Samples, render_from: Samples) {
+        self.begin_play(render_from, Cmd::PlayClock { origin, render_from });
+    }
+    /// Prepare one already located, stopped position. A later edit or transport command
+    /// cancels it under the same input lock used to submit PlayClock.
+    pub fn arm_clock_resume(&self, feed: &Arc<midi::MidiFeed>, port: u8, location: clock_follow::LocatedCue) {
+        self.cancel_clock_resume();
+        let cue = clock_follow::PreparedResume {
+            pulse: location.pulse,
+            origin: location.origin,
+            offset: location.offset,
+            sr: location.rate,
+            revision: location.revision,
+            shared: Arc::downgrade(&self.shared),
+            tx: Arc::downgrade(&self.tx),
+            #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+            output: Arc::downgrade(&self.beat_clock),
+            #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+            silent: self.silent,
+        };
+        if feed.arm_clock_resume(port, cue) {
+            *self.prepared_clock_feed.lock().unwrap_or_else(PoisonError::into_inner) = Arc::downgrade(feed);
+        }
+    }
+
+    pub fn cancel_clock_resume(&self) {
+        if let Some(feed) = std::mem::take(&mut *self.prepared_clock_feed.lock().unwrap_or_else(PoisonError::into_inner)).upgrade() {
+            feed.cancel_clock_resume();
+        }
+    }
+
+    pub fn play_chasing_mtc(&self, from: Samples) {
+        self.begin_play(from, Cmd::PlayMtc(from));
+    }
+    pub fn end_mtc_chase(&self) {
+        let _ = self.tx.send(Cmd::EndChase(None));
+    }
+    /// End only the incoming roll whose stop the UI consumed.
+    pub fn end_observed_mtc_chase(&self, lock: u64) {
+        let _ = self.tx.send(Cmd::EndChase(Some(lock)));
+    }
+    fn begin_play(&self, from: Samples, cmd: Cmd) {
         self.shared.position.store(from, Ordering::Relaxed);
-        self.shared.playing.store(true, Ordering::Relaxed);
-        let _ = self.tx.send(Cmd::Play { from, end, looped });
+        self.shared.playing.store(true, Ordering::Release);
+        self.send_transport(cmd);
     }
 
     /// Feed live input (from a `record::Recorder`) into the mix for input monitoring.
@@ -488,10 +849,14 @@ impl Player {
 
     /// Play MIDI devices through record-enabled and input-monitored MIDI and instrument tracks.
     pub fn set_midi(&self, feed: Arc<midi::MidiFeed>) {
+        self.cancel_clock_resume();
+        #[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
+        feed.set_sync_waker(self.beat_clock.lock().unwrap_or_else(PoisonError::into_inner).transport_waker());
         let _ = self.tx.send(Cmd::Midi(feed));
     }
 
     pub fn set_recording(&self, on: bool) {
+        self.cancel_clock_resume();
         let _ = self.tx.send(Cmd::Recording(on, 0));
     }
 
@@ -504,12 +869,12 @@ impl Player {
 
     pub fn stop(&self) {
         self.shared.playing.store(false, Ordering::Relaxed);
-        let _ = self.tx.send(Cmd::Stop);
+        self.send_transport(Cmd::Stop);
     }
 
     pub fn locate(&self, at: Samples) {
         self.shared.position.store(at, Ordering::Relaxed);
-        let _ = self.tx.send(Cmd::Locate(at));
+        self.send_transport(Cmd::Locate(at));
     }
 
     pub fn set_speed(&self, speed: f32) {

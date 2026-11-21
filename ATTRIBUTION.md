@@ -55,3 +55,12 @@ here. The subset uses default_fonts; the parent face uses monochrome_emoji_fonts
 | `assets/app-icon/soundcraft.ico` | SoundCraft contributors | original, rendered from `icon.svg` | MIT OR Apache-2.0 |
 | `assets/app-icon/hicolor/` | SoundCraft contributors | original, rendered from `icon.svg` (16–512 px PNGs and the scalable SVG) | MIT OR Apache-2.0 |
 | `docs/images/` | SoundCraft contributors | screenshots of SoundCraft rendered from the synthesised demo session | MIT OR Apache-2.0 |
+| `docs/images/midi-clock-resume-latency.png` | SoundCraft contributors | original graph of physical MIDI and audio timing measurements for #1675 | MIT OR Apache-2.0 |
+| `docs/images/midi-clock-resume-boundary.png` | SoundCraft contributors | original graphs of recorded amplitudes and crash waveform correlations for #1675 | MIT OR Apache-2.0 |
+| `docs/images/midi-clock-resume-dispatch.png` | SoundCraft contributors | original per-take comparison of playback submission and recorded downbeat timing on the physical MIDI loop | MIT OR Apache-2.0 |
+| `docs/images/midi-clock-main-return.png` | SoundCraft contributors | original stage measurements of the digital loopback, ASIO monitor and Model 12 MAIN return | MIT OR Apache-2.0 |
+| `docs/images/midi-clock-direct-asio.png` | SoundCraft contributors | original comparison of direct ASIO and monitored playback on the Model 12 MAIN return | MIT OR Apache-2.0 |
+| `docs/images/midi-clock-asio-buffer-sizes.png` | SoundCraft contributors | original per-take comparison of measured ASIO callback sizes and MIDI Clock to Model 12 MAIN latency | MIT OR Apache-2.0 |
+| `docs/images/midi-clock-asio-waveform-detail.png` | SoundCraft contributors | original comparison of rendered and recorded waveforms at two Model 12 ASIO buffer sizes | MIT OR Apache-2.0 |
+| `docs/images/midi-clock-256-main-residual.png` | SoundCraft contributors | original residual and waveform measurements from 12 Model 12 takes at 256 frames | MIT OR Apache-2.0 |
+| `docs/images/model-12-main-loop-clock-follow.png` | SoundCraft contributors | original comparison of ASIO output, USB MAIN, internal SD MAIN and physical MAIN loopback at 64 and 128 frames | MIT OR Apache-2.0 |
