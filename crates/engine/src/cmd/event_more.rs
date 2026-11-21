@@ -349,6 +349,11 @@ fn select_split(e: &mut Engine, p: &Value) -> Result<Value> {
         };
         let mut nc = c.clone();
         nc.id = s.new_clip_id();
+        if let Some(takes) = &mut s.takes
+            && let Some(take) = takes.get(&cid).cloned()
+        {
+            takes.insert(nc.id, take);
+        }
         nc.content = ClipContent::Midi { sequence: soundcraft_midi::Sequence { notes: hit, ctrls: Vec::new() } };
         crate::edit::place_clip(s, nt, nc);
     }

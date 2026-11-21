@@ -503,6 +503,11 @@ fn paste_merge_midi(e: &mut Engine, p: &Value) -> Result<Value> {
                 None => {
                     let mut nc = c.clone();
                     nc.id = s.new_clip_id();
+                    if let Some(takes) = &mut s.takes
+                        && let Some(take) = cb.clock_takes.get(&c.id)
+                    {
+                        takes.insert(nc.id, take.clone());
+                    }
                     nc.start = pos;
                     ops::place_clip(s, *t, nc);
                     placed += 1;
@@ -557,8 +562,8 @@ fn duplicate_extend(e: &mut Engine, p: &Value) -> Result<Value> {
     let (sh, follow) = (shuffle(e.session()), e.session().edit.automation_follows_edit);
     let mut n = 0;
     for t in &tracks {
-        let clips = ops::copy_range(e.session(), *t, r);
-        n += e.paste_clips(*t, r.end, &clips, r.len(), sh).map_err(|why| bad(id, why))?.len();
+        let (clips, takes) = e.copy_clip_range(*t, r, false);
+        n += e.paste_clips(*t, r.end, &clips, r.len(), sh, Some(&takes)).map_err(|why| bad(id, why))?.len();
         if follow && let Some(tr) = e.session_mut().track_mut(*t) {
             for l in &mut tr.automation {
                 let pts: Vec<_> = l.points.iter().filter(|pt| r.contains(pt.at)).copied().collect();
@@ -715,7 +720,7 @@ fn to_playlist(e: &mut Engine, p: &Value, dest: Dest, mv: bool, id: &str) -> Res
                 let mut clips: Vec<Clip> =
                     if dest == Dest::Duplicate { s.track(*t).map(|tr| tr.clips().to_vec()).unwrap_or_default() } else { Vec::new() };
                 for c in &mut clips {
-                    c.id = s.new_clip_id();
+                    s.assign_copied_id(c, None);
                 }
                 let Some(tr) = s.track_mut(*t) else { continue };
                 let name = format!("{}.{:02}", tr.name, tr.playlists.len() + 1);
@@ -724,13 +729,13 @@ fn to_playlist(e: &mut Engine, p: &Value, dest: Dest, mv: bool, id: &str) -> Res
             }
         };
         // A move carries only what it clears from the main playlist; locked clips stay there.
-        let clips = if mv { ops::take_range(s, *t, r) } else { ops::copy_range(s, *t, r) };
+        let (clips, takes) = ops::copy_range_with_takes(s, s.takes.as_deref(), *t, r, mv);
         let main = s.track(*t).map_or(0, |tr| tr.active_playlist);
         if let Some(tr) = s.track_mut(*t) {
             tr.active_playlist = idx;
         }
         for mut c in clips {
-            c.id = s.new_clip_id();
+            s.assign_copied_id(&mut c, Some(&takes));
             c.start = c.start.saturating_add(r.start);
             ops::place_clip(s, *t, c);
         }

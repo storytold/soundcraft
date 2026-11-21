@@ -355,7 +355,7 @@ fn loop_clips(e: &mut Engine, p: &Value) -> Result<Value> {
         }
         for (at, nc) in copies {
             let length = nc.length;
-            let _ = e.paste_clips(tid, at, &[nc], length, false);
+            let _ = e.paste_clips(tid, at, &[nc], length, false, None);
             made += 1;
         }
     }

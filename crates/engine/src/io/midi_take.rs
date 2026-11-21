@@ -65,10 +65,80 @@ pub struct MidiTake {
 pub(crate) struct ClockTakeProjection {
     score: Sequence,
     played: Sequence,
+    // Consolidation can place ordinary notes and several capture grids in one clip.
+    parts: Vec<ClockPart>,
     score_grid: TempoMap,
     played_grid: TempoMap,
     sr: SampleRate,
     range: Range,
+}
+
+impl crate::ClockTake {
+    /// Score tick at a physical distance into this piece, measured from its capture origin.
+    pub(crate) fn score_ticks_after(&self, samples: Samples) -> i64 {
+        let capture = &self.capture;
+        let start = capture.range.start.saturating_add(self.offset);
+        let origin = capture.score_grid.samples_to_ticks(start, capture.sr);
+        capture.score_grid.samples_to_ticks(start.saturating_add(samples), capture.sr).saturating_sub(origin)
+    }
+}
+
+#[derive(Debug, PartialEq)]
+struct ClockPart {
+    // Absolute ticks on the two grids at the time of consolidation.
+    score_start: i64,
+    score_end: i64,
+    played_start: i64,
+    source: Option<crate::ClockTake>,
+}
+
+impl crate::ClockTake {
+    pub(crate) fn merged(
+        doc: &Session,
+        grid: &TempoMap,
+        range: Range,
+        clips: &[Clip],
+        takes: &crate::ClockTakes,
+        score: &Sequence,
+        played: Sequence,
+    ) -> Self {
+        if let [clip] = clips
+            && clip.start == 0
+            && clip.length == range.len()
+            && let Some(take) = takes.get(&clip.id)
+        {
+            let mut projected = score.clone();
+            take.capture.project(&mut projected, take.offset);
+            if projected == played {
+                return take.clone();
+            }
+        }
+        let sr = doc.sample_rate;
+        let mut parts = Vec::new();
+        for clip in clips.iter().filter(|c| !c.muted && matches!(c.content, soundcraft_model::ClipContent::Midi { .. })) {
+            let start = range.start.saturating_add(clip.start);
+            let end = range.start.saturating_add(clip.end());
+            parts.push(ClockPart {
+                score_start: doc.tempo.samples_to_ticks(start, sr),
+                score_end: doc.tempo.samples_to_ticks(end, sr),
+                played_start: grid.samples_to_ticks(start, sr),
+                source: takes.get(&clip.id).cloned(),
+            });
+        }
+        parts.sort_by_key(|p| p.score_start);
+        Self {
+            capture: Arc::new(ClockTakeProjection {
+                score: score.clone(),
+                played,
+                parts,
+                score_grid: doc.tempo.clone(),
+                played_grid: grid.clone(),
+                sr,
+                range,
+            }),
+            offset: 0,
+        }
+    }
 }
 
 impl ClockTakeProjection {
@@ -82,24 +152,45 @@ impl ClockTakeProjection {
         let origin = self.range.start.saturating_add(offset);
         let score_origin = self.score_grid.samples_to_ticks(origin, self.sr);
         let played_origin = self.played_grid.samples_to_ticks(origin, self.sr);
-        let project = |tick: i64| {
-            let at = self.score_grid.tick_to_samples(score_origin.saturating_add(tick), self.sr);
-            self.played_grid.samples_to_ticks(at, self.sr).saturating_sub(played_origin).max(0)
+        let project = |onset: i64, tick: i64, attack: bool| {
+            self.played_tick(score_origin.saturating_add(onset), score_origin.saturating_add(tick), attack).saturating_sub(played_origin).max(0)
         };
-        let score_end = self.score_grid.samples_to_ticks(self.range.end, self.sr).saturating_sub(score_origin).max(1);
-        let played_end = self.played_grid.samples_to_ticks(self.range.end, self.sr).saturating_sub(played_origin).max(1);
-        // The original take deliberately clamps attacks just inside the half-open clip.
-        // Rounding to a coarser grid must not move them beyond its right edge after an edit.
-        let attack = |tick: i64| if tick < score_end { project(tick).min(played_end - 1) } else { project(tick) };
         for note in &mut seq.notes {
-            let end = project(note.end());
-            note.start = attack(note.start);
+            let end = project(note.start, note.end(), false);
+            note.start = project(note.start, note.start, true);
             note.length = end.saturating_sub(note.start).max(1);
         }
         for ctrl in &mut seq.ctrls {
-            ctrl.tick = attack(ctrl.tick);
+            ctrl.tick = project(ctrl.tick, ctrl.tick, true);
         }
         seq.sort();
+    }
+
+    /// Resolve an edit on the source clip's grids, even if another part of a
+    /// consolidation came from a different clock or was ordinary score MIDI.
+    fn played_tick(&self, onset: i64, tick: i64, attack: bool) -> i64 {
+        let index = self.parts.partition_point(|p| p.score_start <= onset);
+        if let Some(part) = index.checked_sub(1).and_then(|i| self.parts.get(i)).filter(|part| onset < part.score_end) {
+            let local = tick.saturating_sub(part.score_start);
+            let delta = if let Some(take) = &part.source {
+                let src = &take.capture;
+                let origin = src.range.start.saturating_add(take.offset);
+                let score = src.score_grid.samples_to_ticks(origin, src.sr);
+                let played = src.played_grid.samples_to_ticks(origin, src.sr);
+                src.played_tick(score.saturating_add(onset - part.score_start), score.saturating_add(local), attack).saturating_sub(played)
+            } else {
+                local
+            };
+            return part.played_start.saturating_add(delta);
+        }
+        let at = self.score_grid.tick_to_samples(tick, self.sr);
+        let played = self.played_grid.samples_to_ticks(at, self.sr);
+        // Keep attacks in a half-open take inside its last playable tick.
+        if attack && tick < self.score_grid.samples_to_ticks(self.range.end, self.sr) {
+            played.min(self.played_grid.samples_to_ticks(self.range.end, self.sr).saturating_sub(1))
+        } else {
+            played
+        }
     }
 }
 
@@ -336,12 +427,13 @@ pub fn add_midi_recording_from(
             let projection = ClockTakeProjection {
                 score: seq.clone(),
                 played: live,
+                parts: Vec::new(),
                 score_grid: s.tempo.clone(),
                 played_grid: grid.clone(),
                 sr: s.sample_rate,
                 range,
             };
-            e.follow_takes.insert(cid, crate::ClockTake { capture: Arc::new(projection), offset: 0 });
+            Arc::make_mut(&mut e.follow_takes).insert(cid, crate::ClockTake { capture: Arc::new(projection), offset: 0 });
         }
         crate::edit::place_clip(e, tid, Clip::midi(cid, name, range.start, range.len(), seq));
         out.clips.push(cid);
@@ -384,6 +476,97 @@ mod tests {
         let take =
             add_midi_recording(&mut e, Range::new(0, 96_000), &[ev(48_000, 0, 0x90, 65, 127), ev(72_000, 0, 0x80, 65, 0)], &["keys".into()], false);
         (e, track, take.clips[0])
+    }
+
+    #[test]
+    fn clock_merge_paste_to_empty_destination_keeps_copied_take_after_undo() {
+        let (mut e, track, _) = captured_clock_note();
+        e.execute("edit.copy", &json!({"tracks": [track.0], "start": 0, "end": 96_000})).unwrap();
+        assert!(e.undo());
+        e.execute("edit.paste_merge_midi", &json!({"tracks": [track.0], "at": 96_000})).unwrap();
+        let doc = e.playback_session();
+        let clip = &doc.track(track).unwrap().clips()[0];
+        let ClipContent::Midi { sequence } = &clip.content else { panic!("expected MIDI") };
+        assert_eq!((clip.start, sequence.notes[0].start), (96_000, 960));
+    }
+
+    #[test]
+    fn clock_pitch_split_preserves_both_parts_on_the_capture_grid() {
+        let (mut e, track, clip) = captured_clock_note();
+        let ClipContent::Midi { sequence } = &mut e.session_mut().find_clip_mut(clip).unwrap().content else { panic!("expected MIDI") };
+        sequence.notes.push(soundcraft_midi::Note { pitch: 50, ..sequence.notes[0] });
+        let split = e.execute("event.select_split_notes", &json!({"clips":[clip.0],"pitch_from":60,"action":"split"})).unwrap();
+        let target = TrackId(split["tracks"][0].as_u64().unwrap());
+        let doc = e.playback_session();
+        for (track, pitch) in [(track, 50), (target, 65)] {
+            let ClipContent::Midi { sequence } = &doc.track(track).unwrap().clips()[0].content else { panic!("expected MIDI") };
+            assert_eq!((sequence.notes[0].pitch, sequence.notes[0].start, sequence.notes[0].length), (pitch, 960, 480));
+        }
+    }
+
+    #[test]
+    fn clock_consolidation_trims_each_grid_at_its_audible_range() {
+        let (mut e, track, _) = captured_clock_note();
+        e.execute("edit.copy", &json!({"tracks":[track.0],"start":0,"end":96_000})).unwrap();
+        e.execute("edit.paste", &json!({"tracks":[track.0],"at":192_000})).unwrap();
+        let ClipContent::Midi { mut sequence } = e.session().track(track).unwrap().clips()[0].content.clone() else { panic!("expected MIDI") };
+        sequence.notes[0].pitch = 71;
+        sequence.notes[0].start = 360;
+        sequence.notes[0].length = 120;
+        let id = e.session_mut().new_clip_id();
+        crate::edit::place_clip(&mut e, track, Clip::midi(id, "score", 120_000, 48_000, sequence));
+        e.execute("edit.consolidate", &json!({"tracks":[track.0],"start":132_000,"end":288_000})).unwrap();
+        for (doc, expected) in [(e.session_arc(), vec![(65, 4320)]), (e.playback_session(), vec![(71, 120), (65, 2160)])] {
+            let clip = doc.track(track).unwrap().clips().iter().find(|clip| clip.start == 132_000).unwrap();
+            let ClipContent::Midi { sequence } = &clip.content else { panic!("expected MIDI") };
+            assert_eq!(sequence.notes.iter().map(|n| (n.pitch, n.start)).collect::<Vec<_>>(), expected);
+        }
+    }
+
+    #[test]
+    fn clock_consolidation_keeps_notes_and_controllers_from_distinct_capture_grids() {
+        let (mut e, track, _) = captured_clock_note();
+        e.playback_tempo = Some(TempoMap::new(90., 4, 4).unwrap());
+        let at = 168_000;
+        add_midi_recording(
+            &mut e,
+            Range::new(120_000, 216_000),
+            &[ev(at, 0, 0x90, 72, 100), ev(at, 0, 0xb0, 7, 100), ev(at + 12_000, 0, 0x80, 72, 0)],
+            &["keys".into()],
+            false,
+        );
+        e.playback_tempo = Some(TempoMap::new(60., 4, 4).unwrap());
+        e.execute("edit.consolidate", &json!({"tracks":[track.0],"start":0,"end":216_000})).unwrap();
+        let doc = e.playback_session();
+        let ClipContent::Midi { sequence } = &doc.track(track).unwrap().clips()[0].content else { panic!("expected MIDI") };
+        assert_eq!(sequence.notes.iter().map(|n| n.start).collect::<Vec<_>>(), [960, 3840]);
+        assert_eq!(sequence.ctrls[0].tick, 3840);
+    }
+
+    #[test]
+    fn clock_consolidation_preserves_normal_and_captured_timing_across_a_gap() {
+        let (mut e, track, _) = captured_clock_note();
+        let id = e.session_mut().new_clip_id();
+        let ClipContent::Midi { mut sequence } = e.session().track(track).unwrap().clips()[0].content.clone() else { panic!("expected MIDI") };
+        sequence.notes[0].pitch = 71;
+        sequence.notes[0].start = 240;
+        sequence.notes[0].length = 120;
+        crate::edit::place_clip(&mut e, track, Clip::midi(id, "score", 120_000, 48_000, sequence));
+        e.execute("edit.consolidate", &json!({"tracks":[track.0], "start":0,"end":168_000})).unwrap();
+        for (doc, expected) in [(e.session_arc(), [1920, 5040]), (e.playback_session(), [960, 2640])] {
+            let clip = &doc.track(track).unwrap().clips()[0];
+            let ClipContent::Midi { sequence } = &clip.content else { panic!("expected MIDI") };
+            assert_eq!(sequence.notes.iter().map(|n| n.start).collect::<Vec<_>>(), expected);
+        }
+        // Subsequent edits cannot change which of the two source grids a note uses.
+        let cid = e.session().track(track).unwrap().clips()[0].id;
+        let ClipContent::Midi { sequence } = &mut e.session_mut().find_clip_mut(cid).unwrap().content else { panic!("expected MIDI") };
+        for n in &mut sequence.notes {
+            n.pitch += 1;
+        }
+        let doc = e.playback_session();
+        let ClipContent::Midi { sequence } = &doc.track(track).unwrap().clips()[0].content else { panic!("expected MIDI") };
+        assert_eq!(sequence.notes.iter().map(|n| (n.pitch, n.start)).collect::<Vec<_>>(), [(66, 960), (72, 2640)]);
     }
 
     #[test]
@@ -452,6 +635,17 @@ mod tests {
     }
 
     #[test]
+    fn clock_regression_extract_midi_retains_the_take_grid() {
+        let (mut engine, track, _) = captured_clock_note();
+        let extracted = engine.execute("track.extract_midi", &json!({"tracks": [track.0]})).unwrap();
+        let track = TrackId(extracted["tracks"][0]["track"].as_u64().unwrap());
+        let playback = engine.playback_session();
+        let clip = &playback.track(track).unwrap().clips()[0];
+        let ClipContent::Midi { sequence } = &clip.content else { panic!("expected MIDI") };
+        assert_eq!(playback.tempo.tick_to_samples(sequence.notes[0].start, playback.sample_rate), 48_000);
+    }
+
+    #[test]
     fn clock_regression_duplicated_tracks_and_playlists_retain_the_captured_grid() {
         let (mut e, track, _) = captured_clock_note();
         e.execute("track.playlist_duplicate", &json!({"tracks": [track.0]})).unwrap();
@@ -469,11 +663,7 @@ mod tests {
 
     #[test]
     fn clock_split_rebases_the_right_piece_at_its_capture_grid_origin() {
-        let mut e = Engine::default();
-        let track = armed(&mut e, "Follow", "MIDI:*:keys");
-        e.session_mut().tempo.set_tempo(960, 240.).unwrap();
-        e.playback_tempo = Some(TempoMap::new(60., 4, 4).unwrap());
-        add_midi_recording(&mut e, Range::new(0, 96_000), &[ev(48_000, 0, 0x90, 65, 127), ev(72_000, 0, 0x80, 65, 0)], &["keys".into()], false);
+        let (mut e, track) = clock_take_across_tempo_change();
         e.execute("edit.separate", &json!({"tracks": [track.0], "at": 24_000})).unwrap();
         let playback = e.playback_session();
         let clips = playback.track(track).unwrap().clips();
@@ -545,6 +735,111 @@ mod tests {
             })
             .collect();
         assert_eq!(attacks, [1440, 960]);
+    }
+
+    fn clock_take_across_tempo_change() -> (Engine, TrackId) {
+        let mut e = Engine::default();
+        let track = armed(&mut e, "Follow", "MIDI:*:keys");
+        e.session_mut().tempo.set_tempo(960, 240.).unwrap();
+        e.playback_tempo = Some(TempoMap::new(60., 4, 4).unwrap());
+        add_midi_recording(
+            &mut e,
+            Range::new(0, 96_000),
+            &[ev(30_000, 0, 0xB0, 7, 101), ev(48_000, 0, 0x90, 65, 127), ev(72_000, 0, 0x80, 65, 0)],
+            &["keys".into()],
+            false,
+        );
+        (e, track)
+    }
+
+    fn attack_samples(e: &Engine, track: TrackId, start: Samples) -> Samples {
+        let playback = e.playback_session();
+        let clip = playback.track(track).unwrap().clips().iter().find(|c| c.start == start).unwrap();
+        let ClipContent::Midi { sequence } = &clip.content else { panic!("expected MIDI") };
+        let origin_tick = playback.tempo.samples_to_ticks(start, playback.sample_rate);
+        playback.tempo.tick_to_samples(origin_tick + sequence.notes[0].start, playback.sample_rate)
+    }
+
+    #[test]
+    fn clock_range_left_trim_and_undo_keep_the_moved_take_at_192000_samples() {
+        for command in ["edit.trim_to_selection", "edit.trim_start_to_insertion", "edit.trim_clip"] {
+            let (mut engine, track) = clock_take_across_tempo_change();
+            engine.execute("edit.copy", &json!({"tracks": [track.0], "start": 0, "end": 96_000})).unwrap();
+            engine.execute("edit.paste", &json!({"tracks": [track.0], "at": 144_000})).unwrap();
+            let id = engine.session().track(track).unwrap().clips()[1].id;
+            let params = json!({"tracks": [track.0], "clip": id.0, "at": 168_000, "start": 168_000, "end": 240_000});
+            let assert_ctrl = |e: &Engine, tick| {
+                let doc = e.playback_session();
+                let ClipContent::Midi { sequence } = &doc.find_clip(id).unwrap().1.content else { panic!("expected MIDI") };
+                assert_eq!(sequence.ctrls.iter().map(|c| (c.tick, c.value)).collect::<Vec<_>>(), [(tick, 101)], "{command}");
+            };
+            engine.execute(command, &params).unwrap();
+            assert_ctrl(&engine, 120);
+            assert_eq!(attack_samples(&engine, track, 168_000), 192_000, "{command}");
+            assert!(engine.undo());
+            assert_ctrl(&engine, 600);
+            assert_eq!(attack_samples(&engine, track, 144_000), 192_000, "Undo {command}");
+            assert!(engine.redo());
+            assert_ctrl(&engine, 120);
+            assert_eq!(attack_samples(&engine, track, 168_000), 192_000, "Redo {command}");
+        }
+    }
+
+    #[test]
+    fn clock_range_split_after_move_keeps_the_attack_at_192000_samples() {
+        let (mut e, t) = clock_take_across_tempo_change();
+        e.execute("edit.copy", &json!({"tracks": [t.0], "start": 0, "end": 96_000})).unwrap();
+        e.execute("edit.paste", &json!({"tracks": [t.0], "at": 144_000})).unwrap();
+        assert_eq!(attack_samples(&e, t, 144_000), 192_000);
+        e.execute("edit.separate", &json!({"tracks": [t.0], "at": 168_000})).unwrap();
+        assert_eq!(attack_samples(&e, t, 168_000), 192_000);
+        // The controller at original sample 30,000 falls between the correct cut and the
+        // destination-tempo cut. It must stay on the right at its original relative time.
+        let playback = e.playback_session();
+        let right = playback.track(t).unwrap().clips().last().unwrap();
+        let ClipContent::Midi { sequence } = &right.content else { panic!("expected MIDI") };
+        assert_eq!(sequence.ctrls.len(), 1);
+        assert_eq!((sequence.ctrls[0].tick, sequence.ctrls[0].value), (120, 101));
+    }
+
+    #[test]
+    fn clock_range_partial_duplicates_use_the_trimmed_capture_origin() {
+        for cmd in ["edit.duplicate", "edit.repeat", "edit.duplicate_extend"] {
+            let (mut e, t) = clock_take_across_tempo_change();
+            e.execute(cmd, &json!({"tracks": [t.0], "start": 24_000, "end": 72_000, "count": 1})).unwrap();
+            assert_eq!(attack_samples(&e, t, 72_000), 96_000, "{cmd}");
+        }
+    }
+
+    #[test]
+    fn clock_range_playlist_placements_retain_whole_and_trimmed_capture_origins() {
+        for cmd in ["edit.copy_to_duplicate_playlist", "edit.move_to_new_playlist", "edit.copy_to_new_playlist"] {
+            let (mut e, t) = clock_take_across_tempo_change();
+            e.execute(cmd, &json!({"tracks": [t.0], "start": 24_000, "end": 72_000})).unwrap();
+            e.execute("track.playlist_select", &json!({"tracks": [t.0], "index": 1})).unwrap();
+            assert_eq!(attack_samples(&e, t, 24_000), 48_000, "{cmd}");
+        }
+    }
+
+    #[test]
+    fn clock_range_playlist_promotion_and_unselected_duplicate_keep_their_own_origins() {
+        let (mut e, t) = clock_take_across_tempo_change();
+        let sr = e.session().sample_rate;
+        let make_copy = json!({"tracks": [t.0], "start": 0, "end": 96_000});
+        e.execute("edit.copy", &make_copy).unwrap();
+        e.execute("edit.paste", &json!({"tracks": [t.0], "at": 144_000})).unwrap();
+        e.execute("edit.copy_to_duplicate_playlist", &json!({"tracks": [t.0], "start": 24_000, "end": 72_000})).unwrap();
+        e.execute("track.playlist_select", &json!({"tracks": [t.0], "index": 1})).unwrap();
+        assert_eq!(attack_samples(&e, t, 144_000), 192_000, "whole unselected clip");
+        e.execute("track.playlist_new", &json!({"tracks": [t.0]})).unwrap();
+        // This selection starts halfway through the relocated copy's first second. Its
+        // original tempo change is still 24,000 samples after the start of that copy.
+        e.execute("track.playlist_promote", &json!({"track": t.0, "playlist": 1, "start": 168_000, "end": 216_000})).unwrap();
+        assert_eq!(attack_samples(&e, t, 168_000), 192_000);
+        let playback = e.playback_session();
+        let clip = &playback.track(t).unwrap().clips()[0];
+        let ClipContent::Midi { sequence } = &clip.content else { panic!("expected MIDI") };
+        assert_eq!(playback.tempo.tick_to_samples(sequence.notes[0].length, sr), 24_000);
     }
 
     fn armed(e: &mut Engine, name: &str, input: &str) -> TrackId {

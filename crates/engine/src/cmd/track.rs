@@ -181,9 +181,10 @@ pub fn specs() -> Vec<CommandSpec> {
                     return Err(bad("track.playlist_promote", "give `start` and `end`"));
                 }
                 let s = e.session_mut();
-                let (src, active) = {
+                let active = {
                     let tr = s.track(t).ok_or_else(|| bad("track.playlist_promote", "no track"))?;
-                    (tr.playlists.get(idx).cloned().ok_or_else(|| bad("track.playlist_promote", "no such playlist"))?, tr.active_playlist)
+                    tr.playlists.get(idx).ok_or_else(|| bad("track.playlist_promote", "no such playlist"))?;
+                    tr.active_playlist
                 };
                 if idx == active {
                     return Err(bad("track.playlist_promote", "that playlist is already active"));
@@ -192,12 +193,11 @@ pub fn specs() -> Vec<CommandSpec> {
                 if let Some(tr) = s.track_mut(t) {
                     tr.active_playlist = idx;
                 }
-                let clips = crate::edit::copy_range(s, t, r);
-                if let Some(tr) = s.track_mut(t) {
+                let (clips, takes) = e.copy_clip_range(t, r, false);
+                if let Some(tr) = e.session_mut().track_mut(t) {
                     tr.active_playlist = active;
                 }
-                let _ = src;
-                let ids = e.paste_clips(t, r.start, &clips, r.len(), false).unwrap_or_default();
+                let ids = e.paste_clips(t, r.start, &clips, r.len(), false, Some(&takes)).unwrap_or_default();
                 Ok(json!({"clips": ids}))
             }
         ),

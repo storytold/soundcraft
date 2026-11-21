@@ -259,7 +259,9 @@ fn cut_copy(e: &mut Engine, p: &Value, cut: bool, id: &str) -> Result<Value> {
     let follow = e.session().edit.automation_follows_edit;
     for t in &tracks {
         // Cut carries only what it removes; a locked clip stays where it is (see `ops::take_range`).
-        cb.tracks.push(if cut { ops::take_range(e.session(), *t, range) } else { ops::copy_range(e.session(), *t, range) });
+        let (clips, takes) = e.copy_clip_range(*t, range, cut);
+        cb.tracks.push(clips);
+        cb.clock_takes.extend(takes);
         let lanes = e
             .session()
             .track(*t)
@@ -282,13 +284,6 @@ fn cut_copy(e: &mut Engine, p: &Value, cut: bool, id: &str) -> Result<Value> {
         cb.automation.push(lanes);
     }
     cb.keep_auto_names(e.session());
-    for clip in cb.tracks.iter().flatten() {
-        if let Some(take) = e.follow_takes.get(&clip.id)
-            && let Some((_, original)) = e.session().find_clip(clip.id)
-        {
-            cb.clock_takes.insert(clip.id, take.after(range.start.saturating_sub(original.start).max(0)));
-        }
-    }
     cb.markers = e
         .session()
         .markers
@@ -360,7 +355,7 @@ fn paste(e: &mut Engine, p: &Value) -> Result<Value> {
         if let Some(r) = replace {
             cut_track(&mut e.clip_edit(), *t, r, true, follow);
         }
-        pasted += cb.paste_clips(e, *t, at, clips, cb.length, sh).map_err(|why| bad("edit.paste", why))?.len();
+        pasted += e.paste_clips(*t, at, clips, cb.length, sh, Some(&cb.clock_takes)).map_err(|why| bad("edit.paste", why))?.len();
         if follow && let (Some(lanes), Some(tr)) = (cb.automation.get(i % cb.automation.len().max(1)), e.session_mut().track_mut(*t)) {
             for l in lanes {
                 let dst = tr.lane_mut(&l.param);
@@ -451,7 +446,7 @@ fn repeat_to_fill(e: &mut Engine, p: &Value) -> Result<Value> {
                         c
                     })
                     .collect();
-                let _ = cb.paste_clips(e, *t, at, &trimmed, (range.end - at).min(len), false);
+                let _ = e.paste_clips(*t, at, &trimmed, (range.end - at).min(len), false, Some(&cb.clock_takes));
             }
         }
         at += len;
@@ -594,8 +589,8 @@ fn duplicate(e: &mut Engine, p: &Value) -> Result<Value> {
     let follow = e.session().edit.automation_follows_edit;
     let mut n = 0;
     for t in &tracks {
-        let clips = ops::copy_range(e.session(), *t, range);
-        n += e.paste_clips(*t, range.end, &clips, range.len(), sh).map_err(|why| bad("edit.duplicate", why))?.len();
+        let (clips, takes) = e.copy_clip_range(*t, range, false);
+        n += e.paste_clips(*t, range.end, &clips, range.len(), sh, Some(&takes)).map_err(|why| bad("edit.duplicate", why))?.len();
         if follow && let Some(tr) = e.session_mut().track_mut(*t) {
             for l in &mut tr.automation {
                 let pts: Vec<_> = l.points.iter().filter(|p| range.contains(p.at)).copied().collect();
@@ -618,10 +613,10 @@ fn repeat(e: &mut Engine, p: &Value) -> Result<Value> {
     }
     let sh = shuffle(e.session());
     for t in &tracks {
-        let clips = ops::copy_range(e.session(), *t, range);
+        let (clips, takes) = e.copy_clip_range(*t, range, false);
         for k in 1..=count {
             let at = range.start.saturating_add(range.len().saturating_mul(k));
-            e.paste_clips(*t, at, &clips, range.len(), sh).map_err(|why| bad("edit.repeat", why))?;
+            e.paste_clips(*t, at, &clips, range.len(), sh, Some(&takes)).map_err(|why| bad("edit.repeat", why))?;
         }
     }
     Ok(json!({"repeats": count}))
@@ -723,16 +718,14 @@ fn heal(e: &mut Engine, p: &Value) -> Result<Value> {
 fn trim_to_selection(e: &mut Engine, p: &Value) -> Result<Value> {
     let tracks = tracks_required(e, "edit.trim_to_selection", p)?;
     let r = range_param(e, "edit.trim_to_selection", p)?;
-    let s = e.session_mut();
-    let n: usize = tracks.iter().map(|t| ops::trim_to(s, *t, r)).sum();
+    let n: usize = tracks.iter().map(|t| ops::trim_to(e, *t, r)).sum();
     Ok(json!({"trimmed": n}))
 }
 
 fn trim_edge(e: &mut Engine, p: &Value, start: bool) -> Result<Value> {
     let tracks = tracks_required(e, "edit.trim", p)?;
     let at = position_param(e, "edit.trim", p, "at")?.unwrap_or(e.session().edit.selection.start);
-    let s = e.session_mut();
-    let n: usize = tracks.iter().map(|t| if start { ops::trim_start_to(s, *t, at) } else { ops::trim_end_to(s, *t, at) }).sum();
+    let n: usize = tracks.iter().map(|t| if start { ops::trim_start_to(e, *t, at) } else { ops::trim_end_to(e.session_mut(), *t, at) }).sum();
     Ok(json!({"trimmed": n}))
 }
 
@@ -800,12 +793,12 @@ fn mute_clips(e: &mut Engine, p: &Value) -> Result<Value> {
 fn copy_to_new_playlist(e: &mut Engine, p: &Value) -> Result<Value> {
     let tracks = tracks_required(e, "edit.copy_to_new_playlist", p)?;
     let r = range_param(e, "edit.copy_to_new_playlist", p)?;
-    let s = e.session_mut();
+    let s = &mut e.clip_edit();
     for t in &tracks {
-        let clips = ops::copy_range(s, *t, r);
+        let (clips, takes) = ops::copy_range_with_takes(s, s.takes.as_deref(), *t, r, false);
         let mut fresh = Vec::new();
         for mut c in clips {
-            c.id = s.new_clip_id();
+            s.assign_copied_id(&mut c, Some(&takes));
             c.start += r.start;
             fresh.push(c);
         }
@@ -1016,7 +1009,7 @@ fn trim_clip(e: &mut Engine, p: &Value) -> Result<Value> {
         return Err(bad("edit.trim_clip", "pass `start` and/or `end`"));
     }
     let sh = shuffle(e.session());
-    let c = ops::trim_clip(e.session_mut(), id, start, end, sh).ok_or_else(|| bad("edit.trim_clip", "no such clip, or it is edit-locked"))?;
+    let c = ops::trim_clip(e, id, start, end, sh).ok_or_else(|| bad("edit.trim_clip", "no such clip, or it is edit-locked"))?;
     Ok(json!({"start": c.start, "end": c.end()}))
 }
 
@@ -1029,7 +1022,7 @@ fn consolidate(e: &mut Engine, p: &Value) -> Result<Value> {
     if tracks.iter().any(|&t| ops::holds_locked(e.session(), t, r)) {
         return Err(bad("edit.consolidate", ops::LOCKED_IN_RANGE));
     }
-    let midi = tracks.iter().filter(|&&t| crate::edit::consolidate_midi(e.session_mut(), t, r)).count();
+    let midi = tracks.iter().filter(|&&t| crate::edit::consolidate_midi(e, t, r)).count();
     let mut n = 0;
     for t in tracks {
         if crate::io::consolidate(e, "edit.consolidate", t, r)? {
