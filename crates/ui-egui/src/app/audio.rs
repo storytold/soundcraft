@@ -153,7 +153,10 @@ impl SoundApp {
     }
 
     fn transport_active_for_reconnect(&self) -> bool {
-        self.is_playing() || self.engine.transport.recording || self.player.as_ref().is_some_and(Player::is_playing)
+        self.is_playing()
+            || self.engine.transport.recording
+            || self.player.as_ref().is_some_and(Player::is_playing)
+            || (self.mtc_online && self.midi_inputs.as_ref().is_some_and(|inputs| inputs.feed().mtc_transport_active()))
     }
 
     pub(crate) fn timing_reconnect_allowed(&self) -> bool {
@@ -285,6 +288,31 @@ mod audio_input_tests {
 #[cfg(test)]
 mod timing_warning_tests {
     use super::*;
+
+    #[test]
+    fn online_locate_preserves_the_cursor_and_first_quarter_defers_stream_switch() {
+        let mut app = SoundApp::new(crate::Engine::default(), None, crate::Services::default());
+        app.engine.session_mut().timecode_start = 0;
+        app.midi_inputs = Some(soundcraft_playback::midi::MidiInputs::with_port_names(vec![], vec!["Timecode".into()]));
+        app.run("setup.mtc", serde_json::json!({"input":"Timecode","online":true})).unwrap();
+        app.service_mtc_chase();
+        let feed = app.midi_inputs.as_ref().unwrap().feed().clone();
+        let port = feed.ports().assign("Timecode");
+        feed.receive(port, &[0xf0, 0x7f, 0x7f, 1, 1, 0x60, 0, 5, 0, 0xf7]);
+        app.service_mtc_chase();
+        app.handle_transport(0.);
+        let at = app.engine.session().sample_rate.samples(5.);
+        assert_eq!(app.position(), at);
+        assert!(app.mtc_online && !app.transport_active_for_reconnect());
+
+        feed.receive(port, &[0xf1, 0]);
+        assert!(app.transport_active_for_reconnect(), "defer during acquisition, even before the UI sees Roll");
+        assert!(!app.is_playing());
+        feed.receive(port, &[0xfc]);
+        assert!(!app.transport_active_for_reconnect());
+        assert!(app.mtc_online);
+        assert_eq!(app.position(), at);
+    }
 
     #[test]
     fn storage_loss_warning_stays_visible_after_other_status_updates() {
