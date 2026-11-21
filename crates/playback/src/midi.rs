@@ -380,6 +380,11 @@ impl MidiFeed {
         input.waiting_for_output = waiting_for_output;
     }
 
+    /// Includes a Start/Continue received between host frames and its as-yet unacknowledged first pulse.
+    pub fn clock_start_pending(&self) -> bool {
+        self.clock_follow.lock().unwrap_or_else(PoisonError::into_inner).start_pending()
+    }
+
     /// Called on the host, never the device audio thread. At most 32 transport transitions can wait.
     pub fn clock_follow_status(&self, actions: &mut Vec<crate::clock_follow::Action>) -> crate::clock_follow::Snapshot {
         let mut input = self.clock_follow.lock().unwrap_or_else(PoisonError::into_inner);

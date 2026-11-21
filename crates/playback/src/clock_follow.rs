@@ -206,6 +206,10 @@ impl Follower {
         self.count -= 1;
         a
     }
+    pub(crate) fn start_pending(&self) -> bool {
+        self.awaiting_clock.is_some() || self.events.iter().flatten().any(|action| matches!(action, Action::Play { .. } | Action::Started { .. }))
+    }
+
     fn bpm(&self) -> Option<f64> {
         self.steady.period_us().or_else(|| self.short.period_us()).filter(|p| (2500. ..=500_000.).contains(p)).map(|p| 2_500_000. / p)
     }

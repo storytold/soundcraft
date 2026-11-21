@@ -153,7 +153,7 @@ impl SoundApp {
     }
 
     fn transport_active_for_reconnect(&self) -> bool {
-        self.is_playing() || self.engine.transport.recording || self.player.as_ref().is_some_and(Player::is_playing)
+        self.is_playing() || self.engine.transport.recording || self.player.as_ref().is_some_and(Player::is_playing) || self.clock_start_pending()
     }
 
     pub(crate) fn timing_reconnect_allowed(&self) -> bool {

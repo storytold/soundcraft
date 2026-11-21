@@ -182,6 +182,11 @@ impl SoundApp {
         player.arm_clock_resume(feed, feed.ports().assign(name), location);
     }
 
+    pub(super) fn clock_start_pending(&self) -> bool {
+        self.clock_follow.enabled
+            && (self.clock_follow.waiting_start.is_some() || self.midi_inputs.as_ref().is_some_and(|m| m.feed().clock_start_pending()))
+    }
+
     pub(crate) fn service_clock_follow(&mut self) {
         self.service_clock_follow_with_timing(|app| app.player.as_ref().map_or(Some(0), |p| p.clock_follow_output_lead_us()));
     }
@@ -210,7 +215,8 @@ impl SoundApp {
         let sr = self.engine.session().sample_rate;
         let initial_pulse = self.engine.transport_tempo().samples_to_ticks(self.position(), sr) / TICKS_PER_PULSE;
         let lead = lead_us(self);
-        let waiting_for_output = lead.is_none() && !self.is_playing() && !self.player.as_ref().is_some_and(|p| p.is_playing());
+        let waiting_for_output =
+            lead.is_none() && !self.engine.transport.recording && !self.is_playing() && !self.player.as_ref().is_some_and(|p| p.is_playing());
         feed.set_clock_follow(Some(id), !self.ui.clock_follow_stop_on_loss, initial_pulse, waiting_for_output);
         let limit = soundcraft_playback::max_sync_offset_samples(sr);
         let offset = self.ui.clock_follow_input_offset().clamp(-limit, limit);
@@ -449,6 +455,37 @@ mod tests {
                 assert!(matches!(app.engine.transport_requests.as_slice(), [TransportRequest::PlayFromClock { origin: 192_000, .. }]));
             }
         }
+    }
+
+    #[test]
+    fn clock_start_blocks_output_recovery_from_continue_until_acknowledged_or_stopped() {
+        let mut app = SoundApp::new(Default::default(), None, crate::Services::default());
+        app.midi_inputs = Some(MidiInputs::with_port_names(vec![], vec!["DIN".into()]));
+        let feed = app.midi_inputs.as_ref().unwrap().feed().clone();
+        let port = feed.ports().assign("DIN");
+        app.run("setup.midi_clock_follow", json!({"input":"DIN","enabled":true})).unwrap();
+        app.service_clock_follow_with_timing(|_| None);
+        app.unavailable_output = Some(crate::UnavailableOutput { name: "offline".into(), stalled_at_report: None });
+        feed.receive(port, &[0xf2, 32, 0]);
+        assert!(!app.clock_start_pending(), "a stopped location can wait on a healthy replacement stream");
+        app.service_clock_follow_with_timing(|_| None);
+        app.handle_transport(0.);
+        feed.receive(port, &[0xfb]);
+        assert!(app.clock_start_pending(), "the host has not seen Continue yet");
+        assert!(!app.timing_reconnect_allowed());
+        feed.receive(port, &[0xf8]);
+        assert!(app.clock_start_pending(), "first pulse before the host frame");
+        app.service_clock_follow_with_timing(|_| None);
+        assert!(app.clock_start_pending(), "waiting for timing after the first pulse");
+        assert!(!app.timing_reconnect_allowed());
+        feed.receive(port, &[0xfc]);
+        app.service_clock_follow_with_timing(|_| None);
+        app.handle_transport(0.);
+        assert!(!app.clock_start_pending(), "Stop releases the switch");
+        assert!(app.timing_reconnect_allowed());
+        feed.receive(port, &[0xfb]);
+        app.run("setup.midi_clock_follow", json!({"enabled":false})).unwrap();
+        assert!(!app.clock_start_pending());
     }
 
     #[test]
