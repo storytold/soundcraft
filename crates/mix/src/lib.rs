@@ -263,12 +263,18 @@ impl MixEngine {
         for s in self.strips.values_mut() {
             for p in s.plugins.iter_mut().flatten() {
                 p.plugin.reset();
-                p.failed = false;
+                if p.failed && !p.retried {
+                    p.failed = false;
+                    p.retried = true;
+                }
             }
             if let Some(i) = &mut s.instrument {
                 i.plugin.all_notes_off();
                 i.plugin.reset();
-                i.failed = false;
+                if i.failed && !i.retried {
+                    i.failed = false;
+                    i.retried = true;
+                }
             }
             s.held.clear();
             s.chase = true;
