@@ -41,6 +41,7 @@ impl SoundApp {
             record_start: 0,
             punch: None,
             recorder_failed: false,
+            unavailable_output: None,
             midi_inputs: None,
             midi_scan_at: 0.0,
             midi_take: Vec::new(),
@@ -106,6 +107,9 @@ impl SoundApp {
             last_rendered_tick: None,
             pending_open: None,
             last_rev: 0,
+            applied_midi_sync: None,
+            last_midi_sync_error: None,
+            sync_migration_pending: true,
             fonts_ready: false,
             fonts_installed: false,
             system_fonts: true,
@@ -202,6 +206,8 @@ impl SoundApp {
                 self.engine.end_merge();
             }
         }
+        self.migrate_midi_sync();
+        self.service_midi_sync();
         self.watch_output();
         self.watch_input();
         // Stop the old playback before sending a replacement session to the audio thread.
@@ -336,6 +342,7 @@ impl SoundApp {
         if !self.native_menu_bar {
             menus::menu_bar(self, ui);
         }
+        self.show_output_warning(ui);
         // With the Mix window in its own native window, the main window keeps Edit.
         match if self.ui.mix_separate { MainWindow::Edit } else { self.ui.window } {
             MainWindow::Edit => edit_window::show(self, ui),

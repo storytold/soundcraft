@@ -26,6 +26,7 @@ pub mod icons;
 pub mod import;
 pub mod localization;
 pub mod menus;
+pub mod midi_sync;
 pub mod mix_window;
 pub mod palette;
 pub mod panels;
@@ -129,6 +130,7 @@ pub struct UiState {
     pub undo_levels: usize,
     /// The audio device choice (Setup › Playback Engine), kept with the preferences: per machine.
     pub audio: soundcraft_playback::AudioConfig,
+    pub midi_sync: midi_sync::MidiSync,
     /// The Mix window lives in its own native window (Window › Mix in Separate Window); the main
     /// window then always shows Edit.
     pub mix_separate: bool,
@@ -206,6 +208,7 @@ impl Default for UiState {
             reduce_visual_effects: preferences::ReduceVisualEffects::default(),
             undo_levels: 64,
             audio: soundcraft_playback::AudioConfig::default(),
+            midi_sync: Default::default(),
             mix_separate: false,
             show_io_setup: false,
             show_shortcuts: false,
@@ -277,6 +280,14 @@ pub enum Gesture {
     ZoomBox { start: f32 },
 }
 
+struct UnavailableOutput {
+    name: String,
+    // A stalled callback may resume. A stream explicitly invalidated by CPAL must be reopened.
+    stalled_at_report: Option<u64>,
+    // Dismiss our idle warning on recovery only if it still occupies the status line.
+    idle_status: Option<String>,
+}
+
 pub struct SoundApp {
     pub engine: Engine,
     /// The session path as of the last frame, and whether the recent list changed since the host
@@ -292,6 +303,7 @@ pub struct SoundApp {
     /// Punch range to trim the take to (pre/post-roll recordings).
     punch: Option<Range>,
     recorder_failed: bool,
+    unavailable_output: Option<UnavailableOutput>,
     /// MIDI device input, opened on the first frame of an app that has an audio engine.
     pub midi_inputs: Option<soundcraft_playback::midi::MidiInputs>,
     /// When the MIDI ports were last looked for (app uptime, seconds).
@@ -419,6 +431,9 @@ pub struct SoundApp {
     /// An insert just picked from its menu, opened once the audio engine has its instance.
     pub(crate) pending_open: Option<(TrackId, usize)>,
     last_rev: u64,
+    sync_migration_pending: bool,
+    applied_midi_sync: Option<midi_sync::MidiSync>,
+    last_midi_sync_error: Option<String>,
     fonts_ready: bool,
     fonts_installed: bool,
     /// Whether the system fonts are loaded next to the bundled ones; set before the first frame.

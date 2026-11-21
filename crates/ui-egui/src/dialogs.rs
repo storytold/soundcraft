@@ -13,6 +13,7 @@ use std::sync::Arc;
 
 mod audiosuite;
 mod files;
+mod midi_beat_clock;
 mod strip_silence;
 
 #[cfg(test)]
@@ -51,6 +52,7 @@ pub enum Dialog {
     // `id: None` creates (Track › Group…); `id: Some` modifies that group (Groups list › Modify Group…).
     Group { id: Option<GroupId>, name: String, edit: bool, mix: bool, members: Vec<(u64, String, bool)> },
     Session { frame_rate: String, bit_depth: String },
+    MidiBeatClock(midi_beat_clock::MidiBeatClock),
     // Clip › Loop…: `length` is typed in `format`, measured from `start` (the first selected clip's).
     // `filled` is the text the field opened with and the exact length it stands for.
     Loop { by: LoopBy, count: u32, length: String, format: soundcraft_time::TimeFormat, start: Samples, filled: (String, Samples) },
@@ -108,6 +110,7 @@ impl Dialogs {
             Dialog::Group { id: None, .. } => "group",
             Dialog::Group { id: Some(_), .. } => "modify_group",
             Dialog::Session { .. } => "session",
+            Dialog::MidiBeatClock(_) => "midi_beat_clock",
             Dialog::Loop { .. } => "clip_looping",
             Dialog::ScoreSetup { .. } => "score_setup",
             Dialog::SaveChanges { .. } => "save_changes",
@@ -173,6 +176,11 @@ impl Dialogs {
     }
 
     /// Open the dialog for a command; false when the command has no dialog.
+    pub(crate) fn open_beat_clock(&mut self, settings: &crate::midi_sync::MidiSync) -> bool {
+        self.set(Dialog::MidiBeatClock(midi_beat_clock::MidiBeatClock::new(settings)));
+        true
+    }
+
     pub fn open_for_command(&mut self, e: &Engine, id: &str) -> bool {
         self.after_save = None;
         let home = default_dir();
@@ -502,6 +510,7 @@ pub fn show(app: &mut SoundApp, ctx: &egui::Context) {
         Dialog::Group { id: None, .. } => "Create Group",
         Dialog::Group { id: Some(_), .. } => "Modify Group",
         Dialog::Session { .. } => "Session Setup",
+        Dialog::MidiBeatClock(_) => "MIDI Beat Clock",
         Dialog::Loop { .. } => "Clip Looping",
         Dialog::ScoreSetup { .. } => "Score Setup",
         Dialog::SaveChanges { then } if then.0 == "session.revert" => "Revert to Saved",
@@ -698,6 +707,11 @@ pub fn show(app: &mut SoundApp, ctx: &egui::Context) {
                             None => "track.group",
                         };
                         action = Some((cmd.into(), params));
+                    }
+                }
+                Dialog::MidiBeatClock(clock) => {
+                    if let Some(params) = clock.show(ui, enter, app) {
+                        action = Some(("setup.midi_beat_clock".into(), params));
                     }
                 }
                 Dialog::Session { frame_rate, bit_depth } => {
@@ -981,6 +995,160 @@ mod tests {
     /// Constructs one non-repeating key-press event for dialog tests.
     fn key(key: egui::Key, modifiers: egui::Modifiers) -> egui::Event {
         egui::Event::Key { key, physical_key: None, pressed: true, repeat: false, modifiers }
+    }
+
+    fn visible_labels(mut output: egui::FullOutput, screen: egui::Rect) -> std::collections::BTreeMap<String, egui::Pos2> {
+        output.textures_delta.clear();
+        output
+            .shapes
+            .into_iter()
+            .filter_map(|shape| {
+                if let egui::Shape::Text(t) = shape.shape {
+                    let center = t.galley.rect.translate(t.pos.to_vec2()).center();
+                    if screen.contains(center) && shape.clip_rect.contains(center) {
+                        return Some((t.galley.text().to_owned(), center));
+                    }
+                }
+                None
+            })
+            .collect()
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+    #[test]
+    fn many_clock_destinations_scroll_without_hiding_ok() {
+        let mut app = SoundApp::new(Engine::default(), None, crate::Services::default());
+        let names: Vec<_> = (0..64).map(|n| format!("Port {n:02}")).collect();
+        app.dialogs.set(Dialog::MidiBeatClock(midi_beat_clock::MidiBeatClock { settings: Default::default(), outputs: Ok(names) }));
+        let ctx = egui::Context::default();
+        crate::fonts::install(&ctx, true);
+        let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, vec2(1366., 768.));
+        let mut draw = |events| {
+            let output = ctx.run_ui(egui::RawInput { screen_rect: Some(screen), events, ..Default::default() }, |ui| {
+                show(&mut app, ui.ctx());
+            });
+            visible_labels(output, screen)
+        };
+        draw(vec![]);
+        let rows = draw(vec![]);
+        assert!(rows.contains_key("OK"), "OK must stay within the viewport");
+        let pointer = rows["Port 00"];
+        assert!(!rows.contains_key("Port 63"));
+        for _ in 0..60 {
+            let rows = draw(vec![
+                egui::Event::PointerMoved(pointer),
+                egui::Event::MouseWheel {
+                    unit: egui::MouseWheelUnit::Point,
+                    delta: vec2(0., -100.),
+                    phase: egui::TouchPhase::Move,
+                    source: egui::MouseWheelSource::Wheel,
+                    modifiers: egui::Modifiers::NONE,
+                },
+            ]);
+            assert!(rows.contains_key("OK"));
+            if rows.contains_key("Port 63") {
+                return;
+            }
+        }
+        panic!("last MIDI destination was unreachable");
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+    #[test]
+    fn saved_calibration_survives_the_dialog_at_a_lower_session_rate() {
+        let mut app = SoundApp::new(Engine::default(), None, crate::Services::default());
+        app.ui.midi_sync.ports.insert("DIN".into(), crate::midi_sync::MidiSyncPort { enabled: true, offset_samples: 24_000 });
+        let ctx = egui::Context::default();
+        crate::fonts::install(&ctx, true);
+        crate::menus::invoke_menu(&mut app, "setup.midi_beat_clock", "Setup > MIDI > MIDI Beat Clock...");
+        dialog_frame(&ctx, &mut app, vec![]);
+        dialog_frame(&ctx, &mut app, vec![key(egui::Key::Enter, egui::Modifiers::NONE)]);
+        assert!(app.dialogs.open.is_none());
+        assert_eq!(app.ui.midi_sync.ports["DIN"].offset_samples, 24_000);
+
+        // An explicit edit still goes through the control's current rate-dependent range.
+        let mut form = midi_beat_clock::MidiBeatClock { settings: app.ui.midi_sync.clone(), outputs: Ok(vec!["DIN".into()]) };
+        let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, vec2(1366., 768.));
+        let mut draw = |events| {
+            let output = ctx.run_ui(egui::RawInput { screen_rect: Some(screen), events, ..Default::default() }, |ui| {
+                form.show(ui, false, &mut app);
+            });
+            visible_labels(output, screen)
+        };
+        draw(vec![]);
+        let position = draw(vec![])["24000"];
+        for pressed in [true, false] {
+            draw(vec![
+                egui::Event::PointerMoved(position),
+                egui::Event::PointerButton { pos: position, button: egui::PointerButton::Primary, pressed, modifiers: egui::Modifiers::NONE },
+            ]);
+        }
+        draw(vec![]);
+        draw(vec![egui::Event::Text("20000".into())]);
+        draw(vec![key(egui::Key::Enter, egui::Modifiers::NONE)]);
+        assert_eq!(form.settings.ports["DIN"].offset_samples, 12_000);
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+    #[test]
+    fn machine_clock_ports_survive_session_replacement_and_reject_long_names() {
+        let mut app = SoundApp::new(Engine::default(), None, crate::Services::default());
+        let revision = app.engine.revision;
+        let ports = json!({"Main":{"enabled":true,"offset_samples":-200},"DIN":{"enabled":true,"offset_samples":48}});
+        let got = app.run("setup.midi_beat_clock", json!({"enabled":true,"ports":ports})).unwrap();
+        assert_eq!(got["ports"], ports);
+        assert_eq!(app.engine.revision, revision);
+        let prefs = serde_json::to_string(&app.ui).unwrap();
+        app.run("session.new", json!({"name":"Next"})).unwrap();
+        app.ui = serde_json::from_str(&prefs).unwrap();
+        assert_eq!(app.run("setup.midi_beat_clock", json!({})).unwrap()["ports"], ports);
+        assert!(app.run("setup.midi_beat_clock", json!({"destination":"A".repeat(1025)})).is_err());
+        assert!(app.run("setup.midi_sync_status", json!({})).unwrap().get("output").is_some());
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+    #[test]
+    fn beat_clock_menu_applies_the_selected_port_and_preserves_an_unavailable_destination() {
+        let port = format!("  {}  ", "B".repeat(210));
+        const CMD: &str = "setup.midi_beat_clock";
+        const PATH: &str = "Setup > MIDI > MIDI Beat Clock...";
+        let mut app = SoundApp::new(Engine::default(), None, crate::Services::default());
+        let ctx = egui::Context::default();
+        crate::fonts::install(&ctx, true);
+        let open = |app: &mut SoundApp| {
+            assert_eq!(crate::menus::command_for_path(PATH, &[]).as_deref(), Some(CMD));
+            assert!(crate::menus::item_state(app, PATH, Some(CMD)).0);
+            crate::menus::invoke_menu(app, CMD, PATH);
+            assert_eq!(app.dialogs.open_name(), Some("midi_beat_clock"));
+        };
+        let enter = |app: &mut SoundApp| {
+            let press = key(egui::Key::Enter, egui::Modifiers::NONE);
+            let mut release = press.clone();
+            if let egui::Event::Key { pressed, .. } = &mut release {
+                *pressed = false;
+            }
+            dialog_frame(&ctx, app, vec![press, release]);
+        };
+        let revision = app.engine.revision;
+        open(&mut app);
+        let Some(Dialog::MidiBeatClock(form)) = &mut app.dialogs.open else { panic!("missing clock dialog") };
+        form.outputs = Ok(vec!["Clock A".into(), port.clone()]);
+        form.settings.enabled = true;
+        form.settings.ports.insert(port.clone(), crate::midi_sync::MidiSyncPort { enabled: true, offset_samples: -240 });
+        dialog_frame(&ctx, &mut app, vec![]);
+        enter(&mut app);
+        assert!(app.dialogs.open.is_none());
+        assert_eq!(app.engine.revision, revision);
+        assert_eq!(app.ui.midi_sync.ports[&port].offset_samples, -240);
+        dialog_frame(&ctx, &mut app, vec![]);
+        open(&mut app);
+        let Some(Dialog::MidiBeatClock(form)) = &mut app.dialogs.open else { panic!("missing clock dialog") };
+        form.outputs = Ok(vec!["Clock A".into()]);
+        form.settings.ports.get_mut(&port).unwrap().offset_samples = 64;
+        dialog_frame(&ctx, &mut app, vec![]);
+        dialog_frame(&ctx, &mut app, vec![key(egui::Key::Escape, egui::Modifiers::NONE)]);
+        assert!(app.dialogs.open.is_none());
+        assert_eq!(app.ui.midi_sync.ports[&port].offset_samples, -240);
     }
 
     /// Returns every editable value from the active New Tracks row.
