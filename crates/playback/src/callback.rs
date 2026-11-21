@@ -724,9 +724,9 @@ impl AudioState {
             let (heard_at, lead) = match self.device_timing {
                 Some(t) => {
                     clock.observe(t, self.device_buffer_frames as f64 / self.device_rate);
-                    (t.heard_instant(self.device_rate, 0), t.lead)
+                    (t.heard_instant(self.device_rate, 0), t.lead())
                 }
-                None => (std::time::Instant::now(), std::time::Duration::ZERO),
+                None => (std::time::Instant::now(), None),
             };
             super::sync_clock::Presentation {
                 generation: self.session_generation,

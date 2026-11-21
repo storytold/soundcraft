@@ -56,6 +56,8 @@ where
     let frame = channels.max(1);
     let mut scratch = vec![0.0f32; 8192 * frame];
     let chunk = scratch.len();
+    #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+    let mut stream_lead = super::sync_clock::StreamLead::default();
     let (failed, guard, gone) = (Arc::clone(fault), Arc::clone(shared), Arc::clone(fault));
     device.build_output_stream(
         config,
@@ -65,14 +67,15 @@ where
             #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
             let timestamp = info.timestamp();
             #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
-            let lead = timestamp.playback.checked_duration_since(timestamp.callback);
+            let mut timing = stream_lead.observe(now, timestamp.playback.checked_duration_since(timestamp.callback));
             let _ = info;
             mark_audio_thread();
             let frames = data.len() / frame;
             for (index, out) in data.chunks_mut(chunk).enumerate() {
                 #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
                 {
-                    state.device_timing = Some(super::sync_clock::DeviceTiming::new(now, lead, index * (chunk / frame)));
+                    timing.frame_offset = index * (chunk / frame);
+                    state.device_timing = Some(timing);
                     state.device_buffer_frames = frames;
                 }
                 let _ = (frames, index);

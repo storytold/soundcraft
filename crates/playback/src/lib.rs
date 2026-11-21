@@ -35,7 +35,7 @@ pub mod sync_clock;
 #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
 mod sync_output;
 mod sync_status;
-pub use sync_status::MidiSyncStatus;
+pub use sync_status::{MidiSyncStatus, OutputLeadSource, OutputTimingIssue};
 
 /// Bound per-device compensation in time when a session changes sample rate.
 pub fn max_sync_offset_samples(sr: soundcraft_time::SampleRate) -> i64 {
@@ -558,6 +558,29 @@ impl Player {
         #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
         {
             MidiSyncStatus::default()
+        }
+    }
+    /// Number of fresh hardware lead reports observed on this output stream.
+    pub fn reported_output_timing_count(&self) -> u64 {
+        #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+        {
+            self.beat_clock.lock().unwrap_or_else(PoisonError::into_inner).reported_timing_count()
+        }
+        #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
+        {
+            0
+        }
+    }
+
+    /// The latest unusable hardware timestamp, if the current stream reported one.
+    pub fn output_timing_issue(&self) -> Option<OutputTimingIssue> {
+        #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+        {
+            self.beat_clock.lock().unwrap_or_else(PoisonError::into_inner).timing_issue()
+        }
+        #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
+        {
+            None
         }
     }
     pub fn presented_position(&self) -> Samples {
