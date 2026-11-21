@@ -69,7 +69,7 @@ fn harness(track: &str, height: &str, view: &str) -> (Harness<'static, SoundApp>
 
 #[test]
 fn header_keys_freeze_silence_and_show_automation() {
-    let (mut h, _, row) = harness("Kick", "medium", "view.edit_io");
+    let (mut h, kick_id, row) = harness("Kick", "medium", "view.edit_io");
     let at = |x: f32, y: f32| pos2(row[0] + x, row[1] + y);
 
     click(&mut h, at(23.5, 65.5));
@@ -83,8 +83,10 @@ fn header_keys_freeze_silence_and_show_automation() {
     click(&mut h, at(7.5, row[3] - row[1] - 7.5));
     assert_eq!(kick(&h).view, "volume");
 
+    // The fader button beside the Output selector opens Kick's Output window (#1392).
     click(&mut h, at(HEADER_W + 81.5, 29.5));
-    assert_eq!(h.state().ui.window, MainWindow::Mix);
+    assert_eq!(h.state().ui.output_window, Some(kick_id));
+    assert_eq!(h.state().ui.window, MainWindow::Edit);
 }
 
 /// From the Edit window's insert column, clicking a plugin opens it, Cmd-click bypasses it, right-click changes or
