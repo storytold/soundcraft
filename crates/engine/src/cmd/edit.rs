@@ -347,15 +347,14 @@ fn paste(e: &mut Engine, p: &Value) -> Result<Value> {
     let sh = shuffle(s) && !cb.automation_only;
     let follow = s.edit.automation_follows_edit;
     let replace = Some(s.edit.selection).filter(|r| sh && given.is_none() && !r.is_empty());
-    let s = e.session_mut();
     let mut pasted = 0;
     for (i, t) in tracks.iter().enumerate() {
         let Some(clips) = cb.tracks.get(i % cb.tracks.len().max(1)) else { continue };
         if let Some(r) = replace {
-            cut_track(s, *t, r, true, follow);
+            cut_track(e.session_mut(), *t, r, true, follow);
         }
-        pasted += ops::paste(s, *t, at, clips, cb.length, sh).map_err(|why| bad("edit.paste", why))?.len();
-        if follow && let (Some(lanes), Some(tr)) = (cb.automation.get(i % cb.automation.len().max(1)), s.track_mut(*t)) {
+        pasted += e.paste_clips(*t, at, clips, cb.length, sh).map_err(|why| bad("edit.paste", why))?.len();
+        if follow && let (Some(lanes), Some(tr)) = (cb.automation.get(i % cb.automation.len().max(1)), e.session_mut().track_mut(*t)) {
             for l in lanes {
                 let dst = tr.lane_mut(&l.param);
                 if !l.points.is_empty() {
@@ -367,7 +366,7 @@ fn paste(e: &mut Engine, p: &Value) -> Result<Value> {
             }
         }
     }
-    s.edit.selection = soundcraft_time::Range::new(at, at + cb.length);
+    e.session_mut().edit.selection = soundcraft_time::Range::new(at, at + cb.length);
     e.clipboard = cb;
     Ok(json!({"pasted": pasted}))
 }
@@ -429,7 +428,6 @@ fn repeat_to_fill(e: &mut Engine, p: &Value) -> Result<Value> {
     let len = e.clipboard.length.max(1);
     let tracks = tracks_required(e, "edit.paste_repeat_to_fill", p)?;
     let cb = clipboard_for_paste(e);
-    let s = e.session_mut();
     let mut at = range.start;
     let mut n = 0;
     while at < range.end && n < 10_000 {
@@ -446,7 +444,7 @@ fn repeat_to_fill(e: &mut Engine, p: &Value) -> Result<Value> {
                         c
                     })
                     .collect();
-                let _ = ops::paste(s, *t, at, &trimmed, (range.end - at).min(len), false);
+                let _ = e.paste_clips(*t, at, &trimmed, (range.end - at).min(len), false);
             }
         }
         at += len;
@@ -587,12 +585,11 @@ fn duplicate(e: &mut Engine, p: &Value) -> Result<Value> {
     }
     let sh = shuffle(e.session());
     let follow = e.session().edit.automation_follows_edit;
-    let s = e.session_mut();
     let mut n = 0;
     for t in &tracks {
-        let clips = ops::copy_range(s, *t, range);
-        n += ops::paste(s, *t, range.end, &clips, range.len(), sh).map_err(|why| bad("edit.duplicate", why))?.len();
-        if follow && let Some(tr) = s.track_mut(*t) {
+        let clips = ops::copy_range(e.session(), *t, range);
+        n += e.paste_clips(*t, range.end, &clips, range.len(), sh).map_err(|why| bad("edit.duplicate", why))?.len();
+        if follow && let Some(tr) = e.session_mut().track_mut(*t) {
             for l in &mut tr.automation {
                 let pts: Vec<_> = l.points.iter().filter(|p| range.contains(p.at)).copied().collect();
                 for pt in pts {
@@ -601,7 +598,7 @@ fn duplicate(e: &mut Engine, p: &Value) -> Result<Value> {
             }
         }
     }
-    s.edit.selection = range.shifted(range.len());
+    e.session_mut().edit.selection = range.shifted(range.len());
     Ok(json!({"clips": n}))
 }
 
@@ -613,12 +610,11 @@ fn repeat(e: &mut Engine, p: &Value) -> Result<Value> {
         return Err(bad("edit.repeat", "selection is empty"));
     }
     let sh = shuffle(e.session());
-    let s = e.session_mut();
     for t in &tracks {
-        let clips = ops::copy_range(s, *t, range);
+        let clips = ops::copy_range(e.session(), *t, range);
         for k in 1..=count {
             let at = range.start.saturating_add(range.len().saturating_mul(k));
-            ops::paste(s, *t, at, &clips, range.len(), sh).map_err(|why| bad("edit.repeat", why))?;
+            e.paste_clips(*t, at, &clips, range.len(), sh).map_err(|why| bad("edit.repeat", why))?;
         }
     }
     Ok(json!({"repeats": count}))

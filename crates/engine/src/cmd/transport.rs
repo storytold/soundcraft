@@ -48,7 +48,9 @@ fn cur(e: &Engine) -> i64 {
 }
 
 fn locate(e: &mut Engine, at: i64) -> Result<Value> {
-    e.set_stopped_cursor(at);
+    let edit = &mut e.session_mut().edit;
+    edit.playhead = at;
+    edit.selection = soundcraft_time::Range::point(at);
     e.transport_requests.push(TransportRequest::Locate(at));
     Ok(json!({"at": at}))
 }
@@ -61,5 +63,22 @@ impl Engine {
         if s.edit.selection.is_empty() || !s.edit.selection.contains(at) {
             s.edit.selection = soundcraft_time::Range::point(at);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use soundcraft_time::Range;
+
+    #[test]
+    fn clock_regression_explicit_locate_inside_a_selection_sets_the_insertion() {
+        let mut e = Engine::default();
+        e.session_mut().edit.selection = Range::new(0, 480_000);
+        e.set_stopped_cursor(384_000);
+        assert_eq!(e.session().edit.selection, Range::new(0, 480_000));
+        e.execute("transport.locate", &json!({"at": 384_000})).unwrap();
+        assert_eq!(e.session().edit.selection, Range::point(384_000));
+        assert_eq!(e.session().edit.playhead, 384_000);
     }
 }

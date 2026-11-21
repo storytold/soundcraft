@@ -147,6 +147,23 @@ impl Timeline {
         self.maps.push_back(revision);
         full
     }
+    // A candidate is available to the worker immediately. Before registering the
+    // next one, remove revisions the callback declined so they cannot evict the
+    // accepted grid, including while all MIDI outputs are disconnected.
+    pub(crate) fn register_grid(&mut self, candidate: SessionRevision, accepted: &Arc<Session>, active: bool) -> bool {
+        if let Some(index) = self.maps.iter().rposition(|r| Arc::ptr_eq(&r.doc, accepted)) {
+            self.maps.truncate(index + 1);
+            if !active {
+                let generation = self.maps[index].generation;
+                let (audible, _) = self.read(Instant::now(), false, 0);
+                // When the device lead puts every block in the future, the first queued
+                // block still needs its map as soon as a destination connects.
+                let first_needed = audible.as_ref().or(self.blocks.front()).map_or(generation, |b| b.generation);
+                self.retire_before(generation.min(first_needed));
+            }
+        }
+        self.register(candidate, true)
+    }
     pub(crate) fn unconfigured(&self) -> bool {
         self.maps.is_empty()
     }

@@ -2011,7 +2011,11 @@ fn clock_resume_reuses_the_prepared_session_and_observes_edits() {
     let mut doc = Arc::new(Session::default());
     let shared = Arc::new(Shared { position: 0.into(), playing: false.into(), speed: 1000.into(), meters: Mutex::default() });
     let side = Mutex::new(Side::new(doc.sample_rate.as_f64() as f32, garbage));
-    let player = Player::silent_clock_with(shared, tx, rx, doc.clone(), side, retire);
+    let mut player = Player::silent_clock_with(shared, tx, rx, doc.clone(), side, retire);
+    // Advance the callback explicitly to exercise returns on either side of Continue.
+    let (tx, queue) = channel();
+    player.tx = Arc::new(tx);
+    let mut callback = AudioState::new(queue, player.shared.clone(), doc.clone(), 48_000., channel().0);
     let mut grid = doc.tempo.clone();
     player.prepare_clock_session(doc.clone(), &grid);
     let original = player.side().grid_base.clone().unwrap();
@@ -2020,7 +2024,20 @@ fn clock_resume_reuses_the_prepared_session_and_observes_edits() {
     grid.set_tempo(0, 90.).unwrap();
     assert!(player.update_follow_grid(&grid));
     player.prepare_clock_session(doc.clone(), &grid);
-    assert!(Arc::ptr_eq(player.side().grid_base.as_ref().unwrap(), &original), "an already queued tempo grid should be reused");
+    assert_eq!(player.side().grid_base.as_ref().unwrap().tempo, grid, "an unconfirmed grid requires a full prepare");
+    let base = player.side().grid_base.clone().unwrap();
+    player.play_from_clock(0, 0);
+    callback.fill(&mut [0.; 128], 2);
+    for (tick, bpm, accepted) in [(960, 95., true), (0, 98., false)] {
+        grid.set_tempo(tick, bpm).unwrap();
+        assert!(player.update_follow_grid(&grid));
+        callback.fill(&mut [0.; 128], 2);
+        assert_eq!(callback.session.tempo == grid, accepted);
+        player.prepare_clock_session(doc.clone(), &grid);
+        assert_eq!(Arc::ptr_eq(player.side().grid_base.as_ref().unwrap(), &base), accepted);
+        callback.fill(&mut [0.; 128], 2);
+        assert_eq!(callback.session.tempo, grid);
+    }
     grid.set_tempo(0, 100.).unwrap();
     player.prepare_clock_session(doc.clone(), &grid);
     assert_eq!(player.side().grid_base.as_ref().unwrap().tempo, grid);

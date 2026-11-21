@@ -582,7 +582,7 @@ fn repeating_beat_settings_starts_a_worker_that_failed_to_start() {
     let ports = vec![("DIN".into(), 0)];
     output.beats(ports.clone(), true);
     assert!(output.worker.is_none());
-    output.configure(&Arc::new(Session::default()), &channel().0, true);
+    output.configure(&Arc::new(Session::default()), &channel().0, None);
     output.beats(ports, true);
     assert!(output.worker.is_some());
 }
@@ -781,7 +781,7 @@ fn a_follow_grid_revision_changes_pulse_spacing_at_its_audible_block_without_rel
     let mut output = Output::default();
     output.stats.connected().insert("DIN".into());
     let (tx, _rx) = channel();
-    let old = output.configure(&initial, &tx, true);
+    let old = output.configure(&initial, &tx, None);
     let mut new = old;
     let mut port = active_port(0, true);
     let mut clocks = Vec::new();
@@ -789,7 +789,7 @@ fn a_follow_grid_revision_changes_pulse_spacing_at_its_audible_block_without_rel
     for ms in 0..=720 {
         let now = base + Duration::from_millis(ms);
         if ms == 500 {
-            new = output.configure(&changed, &tx, false);
+            new = output.configure(&changed, &tx, Some(&initial));
         }
         if ms % 10 == 0 {
             let generation = if ms >= 510 { new } else { old };
@@ -854,7 +854,7 @@ fn unavailable_session_generations_cannot_encode_with_a_future_map() {
     out.stats.connected().insert("DIN".into());
     let s = Arc::new(Session::default());
     for generation in 1..=MAX_REVISIONS + 1 {
-        assert_eq!(out.configure(&s, &cmd, true), generation as u64);
+        assert_eq!(out.configure(&s, &cmd, None), generation as u64);
     }
     let latest = out.generation;
     let mut timeline = out.view.lock().unwrap();
@@ -992,6 +992,72 @@ fn active_route_keeps_exact_evicted_map_new_route_waits_and_disconnect_releases_
     view.lock().unwrap().push(Presentation { generation: 2, ..block(later, 1008., 48_000., Duration::ZERO) });
     fresh.poll("new", later, &next, &view, &stats, &mut vec![]);
     assert!(!fresh.link.as_ref().unwrap().messages.is_empty());
+}
+
+#[test]
+fn late_connection_after_rejected_grid_still_emits_the_accepted_clock() {
+    let mut out = Output::default();
+    let (cmd, _rx) = channel();
+    let accepted = Arc::new(Session::default());
+    let generation = out.configure(&accepted, &cmd, None);
+    let now = Instant::now();
+    out.view.lock().unwrap().push(Presentation { generation, ..block(now, 0., 48_000., Duration::ZERO) });
+    for _ in 0..=crate::sync_clock::MAX_REVISIONS {
+        let mut rejected = (*accepted).clone();
+        rejected.tempo.set_tempo(0, 60.).unwrap();
+        out.configure(&Arc::new(rejected), &cmd, Some(&accepted));
+    }
+    let mut port = active_port(0, false);
+    port.poll("connected later", now, &accepted, &out.view, &out.stats, &mut vec![]);
+    assert!(port.link.unwrap().messages.iter().any(|(_, msg)| msg == &[CLOCK]));
+    // A disconnected rig can also run for many accepted changes without reporting overflow.
+    let mut old = accepted;
+    for _ in 0..=crate::sync_clock::MAX_REVISIONS {
+        let next = Arc::new((*old).clone());
+        let generation = out.configure(&next, &cmd, Some(&old));
+        out.view.lock().unwrap().push(Presentation { generation, ..block(now, 0., 48_000., Duration::ZERO) });
+        old = next;
+    }
+    assert_eq!(out.status().session_backlog_drops, 0);
+}
+
+#[test]
+fn first_future_block_keeps_its_map_when_more_grids_are_accepted() {
+    let mut out = Output::default();
+    let (cmd, _rx) = channel();
+    let first = Arc::new(Session::default());
+    let generation = out.configure(&first, &cmd, None);
+    let future = Instant::now() + Duration::from_secs(5);
+    out.view.lock().unwrap().push(Presentation { generation, ..block(future, 0., 48_000., Duration::ZERO) });
+    let second = Arc::new((*first).clone());
+    out.configure(&second, &cmd, Some(&first));
+    out.configure(&Arc::new((*first).clone()), &cmd, Some(&second));
+    assert!(out.view.lock().unwrap().map(generation).is_some());
+}
+
+#[test]
+fn final_stop_survives_failed_clock_and_retries_a_rejected_stop() {
+    struct Flaky(Sender<u8>, bool);
+    impl SyncPort for Flaky {
+        fn send_at(&mut self, at: Instant, msg: &[u8]) -> Result<Instant, String> {
+            if msg == [CLOCK] || (msg == [STOP] && std::mem::take(&mut self.1)) {
+                return Err("transient send failure".into());
+            }
+            self.0.send(msg[0]).unwrap();
+            Ok(at)
+        }
+    }
+    let stats = Arc::<Stats>::default();
+    let (wire, rx) = channel();
+    let mut link = PortIo::new(Flaky(wire, true), stats.clone()).unwrap();
+    let now = Instant::now();
+    link.submit(now, &[START], false, &stats).unwrap();
+    link.submit(now, &[CLOCK], false, &stats).unwrap();
+    link.flush();
+    assert_eq!(rx.recv_timeout(Duration::from_secs(2)).unwrap(), START);
+    let port = Port { link: Some(link), retry: now, routes: [None, None], future: vec![], cleanup: VecDeque::from([vec![STOP]]), failure: None };
+    stop_and_flush_ports(&mut BTreeMap::from([("DIN".into(), port)]), &stats);
+    assert_eq!(rx.try_iter().collect::<Vec<_>>(), [STOP]);
 }
 
 #[test]

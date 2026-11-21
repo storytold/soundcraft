@@ -908,7 +908,17 @@ pub fn run_ui_command(app: &mut SoundApp, id: &str, p: &Value) -> Option<Result<
                         }
                         let closed_preferences = app.ui.show_preferences && !ns.show_preferences;
                         crate::docking::cancel_replaced_state(app, &ns);
+                        let source_changed = app.ui.clock_follow_input != ns.clock_follow_input;
+                        if source_changed {
+                            app.transition_clock_source(
+                                app.clock_follow.enabled && ns.clock_follow_input.is_some(),
+                                ns.clock_follow_input.as_deref(),
+                            );
+                        }
                         app.ui = ns;
+                        if source_changed {
+                            app.service_clock_follow();
+                        }
                         app.ui.undo_levels = app.ui.undo_levels.clamp(1, 64);
                         app.engine.set_history_limit(app.ui.undo_levels);
                         if closed_preferences {

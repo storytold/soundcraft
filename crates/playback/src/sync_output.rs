@@ -164,16 +164,22 @@ enum Update {
     TransportWake(Arc<AtomicBool>, Option<(u64, bool)>),
 }
 impl Output {
-    pub(crate) fn configure(&mut self, s: &Arc<Session>, audio: &Sender<Cmd>, remap: bool) -> u64 {
+    pub(crate) fn configure(&mut self, s: &Arc<Session>, audio: &Sender<Cmd>, accepted_grid: Option<&Arc<Session>>) -> u64 {
         if self.session.is_none() {
             let _ = audio.send(Cmd::Clock(Some(Publisher::new(self.view.clone(), self.metrics.clone()))));
         }
         self.generation = self.generation.wrapping_add(1);
-        let revision = SessionRevision { generation: self.generation, doc: s.clone(), remap };
+        let revision = SessionRevision { generation: self.generation, doc: s.clone(), remap: accepted_grid.is_none() };
         let active = !self.stats.connected().is_empty();
-        if self.view.lock().unwrap_or_else(std::sync::PoisonError::into_inner).register(revision, active) {
+        let mut timeline = self.view.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let evicted = match accepted_grid {
+            Some(grid) => timeline.register_grid(revision, grid, active),
+            None => timeline.register(revision, active),
+        };
+        if evicted {
             self.stats.session_backlog_drops.fetch_add(1, Relaxed);
         }
+        drop(timeline);
         self.session = Some(s.clone());
         if let Some((tx, _)) = &self.worker {
             let _ = tx.send(Update::Session);
@@ -396,6 +402,17 @@ impl Event {
     }
 }
 impl<C: Destination> Port<C> {
+    fn flush_final_cleanup(&mut self, stats: &Stats) {
+        let Some(link) = &mut self.link else { return };
+        while let Some(bytes) = self.cleanup.front() {
+            if link.submit(Instant::now(), bytes, true, stats).is_err() {
+                break;
+            }
+            self.cleanup.pop_front();
+        }
+        link.flush();
+    }
+
     fn disconnect(&mut self, name: &str, error: String, now: Instant, stats: &Stats) {
         self.failure = Some(format!("{name}: {error}"));
         stats.connected().remove(name);
@@ -716,12 +733,7 @@ fn stop_and_flush_ports<C: Destination>(ports: &mut BTreeMap<String, Port<C>>, s
     for p in ports.values_mut() {
         clear_route(p, 0);
         clear_route(p, 1);
-        if let Some(link) = &mut p.link {
-            for bytes in p.cleanup.drain(..) {
-                let _ = link.submit(Instant::now(), &bytes, true, stats);
-            }
-            link.flush();
-        }
+        p.flush_final_cleanup(stats);
     }
     // Let healthy drivers hand off their final Stop before application exit.
     // All destinations share this deadline, including any stalled in the OS.
@@ -730,7 +742,13 @@ fn stop_and_flush_ports<C: Destination>(ports: &mut BTreeMap<String, Port<C>>, s
         let mut outstanding = false;
         for p in ports.values_mut() {
             if let Some(link) = &mut p.link {
-                outstanding |= matches!(link.ready(&mut p.cleanup), Ok(false));
+                let ready = link.ready(&mut p.cleanup);
+                if !matches!(ready, Ok(false)) && !p.cleanup.is_empty() {
+                    p.flush_final_cleanup(stats);
+                    outstanding = true;
+                } else {
+                    outstanding |= link.busy();
+                }
             }
         }
         if !outstanding {

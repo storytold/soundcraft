@@ -45,7 +45,7 @@ impl CounterField {
             Self::SelectionStart => s.edit.selection.start,
             Self::SelectionEnd => s.edit.selection.end,
         };
-        let value = s.format_position(at, s.edit.main_counter);
+        let value = app.engine.format_transport_position(at, s.edit.main_counter);
         app.dialogs.set(Dialog::Counter { field: self, value });
     }
 
@@ -66,6 +66,11 @@ impl CounterField {
     }
 
     fn submit(self, app: &mut SoundApp, value: &str) -> Result<Value, String> {
+        let cmd = if matches!(self, Self::Position) { "transport.locate" } else { "edit.select" };
+        let value = soundcraft_engine::cmd::transport_counter_position(&app.engine, cmd, value).map_err(|e| {
+            app.ui.status = crate::localization::error_text(&e.to_string());
+            e.to_string()
+        })?;
         let selection = app.engine.session().edit.selection;
         match self {
             Self::Position => app.run("transport.locate", json!({"at":value})),
@@ -1045,6 +1050,28 @@ fn loop_length(s: &Session, text: &str, format: soundcraft_time::TimeFormat, sta
 mod tests {
     use super::*;
     use crate::dialogs::new_tracks::set_new_track_kind;
+
+    #[test]
+    fn followed_counter_fields_use_the_displayed_bars_for_entry() {
+        use soundcraft_time::{TempoMap, TimeFormat};
+        let mut app = SoundApp::new(Engine::default(), None, crate::Services::default());
+        app.engine.session_mut().edit.main_counter = TimeFormat::BarsBeats;
+        let four_seconds = app.engine.session().sample_rate.samples(4.);
+        app.engine.playback_tempo = Some(TempoMap::new(60., 4, 4).unwrap());
+        let locate = CounterField::Position.submit(&mut app, "bars_beats:2|1|000").unwrap();
+        assert_eq!(locate["at"], four_seconds);
+        CounterField::SelectionEnd.submit(&mut app, "3|1|000").unwrap();
+        CounterField::SelectionStart.submit(&mut app, "2|1|000").unwrap();
+        let selection = app.engine.session().edit.selection;
+        assert_eq!((selection.start, selection.end), (four_seconds, 2 * four_seconds));
+        for (field, bar) in [(CounterField::Position, 2), (CounterField::SelectionStart, 2), (CounterField::SelectionEnd, 3)] {
+            field.open(&mut app);
+            let Some(Dialog::Counter { value, .. }) = &app.dialogs.open else { panic!("expected a counter") };
+            assert_eq!(value.split('|').next().unwrap().parse::<u32>().unwrap(), bar);
+        }
+        let locate = app.run("transport.locate", json!({"at":"bars_beats:2|1|000"})).unwrap();
+        assert_eq!(locate["at"], four_seconds / 2);
+    }
 
     #[test]
     fn capturing_received_timecode_changes_only_the_pending_session_start() {

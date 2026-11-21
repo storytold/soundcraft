@@ -197,7 +197,7 @@ pub fn specs() -> Vec<CommandSpec> {
                     tr.active_playlist = active;
                 }
                 let _ = src;
-                let ids = crate::edit::paste(s, t, r.start, &clips, r.len(), false).unwrap_or_default();
+                let ids = e.paste_clips(t, r.start, &clips, r.len(), false).unwrap_or_default();
                 Ok(json!({"clips": ids}))
             }
         ),
@@ -414,9 +414,9 @@ fn duplicate(e: &mut Engine, p: &Value) -> Result<Value> {
     let tracks = tracks_required(e, "track.duplicate", p)?;
     let (pl, auto, ins, snd) =
         (bool_or(p, "playlists", true), bool_or(p, "automation", true), bool_or(p, "inserts", true), bool_or(p, "sends", true));
-    let s = e.session_mut();
     let mut out = Vec::new();
     for t in tracks {
+        let s = e.session_mut();
         let Some(idx) = s.track_index(t) else { continue };
         let Some(mut nt) = s.tracks.get(idx).cloned() else { continue };
         nt.id = soundcraft_model::TrackId(s.alloc());
@@ -428,7 +428,7 @@ fn duplicate(e: &mut Engine, p: &Value) -> Result<Value> {
         } else {
             for p in &mut nt.playlists {
                 for c in &mut p.clips {
-                    c.id = s.new_clip_id();
+                    e.assign_copied_clip_id(c);
                 }
             }
         }
@@ -442,9 +442,10 @@ fn duplicate(e: &mut Engine, p: &Value) -> Result<Value> {
             nt.mixer.sends.iter_mut().for_each(|i| *i = None);
         }
         out.push(nt.id);
+        let s = e.session_mut();
         s.tracks.insert((idx + 1).min(s.tracks.len()), nt);
     }
-    s.edit.selected_tracks = out.clone();
+    e.session_mut().edit.selected_tracks = out.clone();
     Ok(json!({"tracks": out}))
 }
 
@@ -979,16 +980,15 @@ fn create_click(e: &mut Engine, _: &Value) -> Result<Value> {
 fn new_playlist(e: &mut Engine, p: &Value, dup: bool) -> Result<Value> {
     let tracks = tracks_required(e, "track.playlist_new", p)?;
     let name = str_param(p, "name").map(str::to_string);
-    let s = e.session_mut();
     for t in &tracks {
         let mut clips = Vec::new();
-        if dup && let Some(tr) = s.track(*t) {
+        if dup && let Some(tr) = e.session().track(*t) {
             clips = tr.clips().to_vec();
         }
         for c in &mut clips {
-            c.id = s.new_clip_id();
+            e.assign_copied_clip_id(c);
         }
-        if let Some(tr) = s.track_mut(*t) {
+        if let Some(tr) = e.session_mut().track_mut(*t) {
             let n = name.clone().unwrap_or_else(|| format!("{}.{:02}", tr.name, tr.playlists.len() + 1));
             tr.playlists.push(Playlist { name: n, clips });
             tr.active_playlist = tr.playlists.len() - 1;

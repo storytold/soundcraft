@@ -452,7 +452,7 @@ impl Player {
     fn publish_session(&self, s: Arc<Session>, clock_document: std::sync::Weak<Session>) {
         self.cancel_clock_resume();
         #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
-        let generation = self.beat_clock.lock().unwrap_or_else(PoisonError::into_inner).configure(&s, &self.tx, true);
+        let generation = self.beat_clock.lock().unwrap_or_else(PoisonError::into_inner).configure(&s, &self.tx, None);
         #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
         let generation = 0;
         let (instances, gone) = {
@@ -476,9 +476,12 @@ impl Player {
     pub fn prepare_clock_session_with(&self, mut score: Arc<Session>, tempo: &soundcraft_time::TempoMap, project: impl FnOnce(&mut Session)) {
         let source = Arc::downgrade(&score);
         {
-            let side = self.side();
-            if source.ptr_eq(&side.clock_document) && side.published_tempo() == Some(tempo) {
-                return;
+            let mut side = self.side();
+            if source.ptr_eq(&side.clock_document) && Arc::get_mut(&mut side.grid_return).is_some() {
+                side.collect_garbage();
+                if side.published_session().is_some_and(|s| &s.tempo == tempo) {
+                    return;
+                }
             }
         }
         let session = Arc::make_mut(&mut score);
@@ -495,24 +498,26 @@ impl Player {
             return false;
         }
         side.collect_garbage();
-        let Some(rate) = side.grid_base.as_ref().map(|s| s.sample_rate) else { return true };
+        let Some(accepted) = side.published_session().cloned() else { return true };
         if side.retry_grid.is_some() {
             return false;
         }
         // Compute this on the host. The callback needs only an integer comparison.
-        let boundary = side
-            .published_tempo()
-            .and_then(|old| {
-                let prior = old.tempos();
-                let next = tempo.tempos();
-                let common = prior.iter().zip(next).take_while(|(a, b)| a == b).count();
-                prior.get(common).into_iter().chain(next.get(common)).map(|event| event.tick).min().map(|tick| old.tick_to_samples(tick, rate))
-            })
-            .unwrap_or(Samples::MAX);
+        let old = &accepted.tempo;
+        let prior = old.tempos();
+        let next = tempo.tempos();
+        let common = prior.iter().zip(next).take_while(|(a, b)| a == b).count();
+        let boundary = prior
+            .get(common)
+            .into_iter()
+            .chain(next.get(common))
+            .map(|event| event.tick)
+            .min()
+            .map_or(Samples::MAX, |tick| old.tick_to_samples(tick, accepted.sample_rate));
         let Some(s) = side.follow_snapshot(tempo) else { return false };
         self.cancel_clock_resume();
         #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
-        let generation = self.beat_clock.lock().unwrap_or_else(PoisonError::into_inner).configure(&s, &self.tx, false);
+        let generation = self.beat_clock.lock().unwrap_or_else(PoisonError::into_inner).configure(&s, &self.tx, Some(&accepted));
         #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
         let generation = 0;
         let _ = self.tx.send(Cmd::FollowGrid(generation, boundary, s, side.grid_return.clone()));

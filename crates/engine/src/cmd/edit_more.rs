@@ -555,12 +555,11 @@ fn duplicate_extend(e: &mut Engine, p: &Value) -> Result<Value> {
     let tracks = tracks_required(e, id, p)?;
     let r = nonempty_range(e, p, id)?;
     let (sh, follow) = (shuffle(e.session()), e.session().edit.automation_follows_edit);
-    let s = e.session_mut();
     let mut n = 0;
     for t in &tracks {
-        let clips = ops::copy_range(s, *t, r);
-        n += ops::paste(s, *t, r.end, &clips, r.len(), sh).map_err(|why| bad(id, why))?.len();
-        if follow && let Some(tr) = s.track_mut(*t) {
+        let clips = ops::copy_range(e.session(), *t, r);
+        n += e.paste_clips(*t, r.end, &clips, r.len(), sh).map_err(|why| bad(id, why))?.len();
+        if follow && let Some(tr) = e.session_mut().track_mut(*t) {
             for l in &mut tr.automation {
                 let pts: Vec<_> = l.points.iter().filter(|pt| r.contains(pt.at)).copied().collect();
                 for pt in pts {
@@ -569,6 +568,7 @@ fn duplicate_extend(e: &mut Engine, p: &Value) -> Result<Value> {
             }
         }
     }
+    let s = e.session_mut();
     s.edit.selection = Range::new(r.start, r.end.saturating_add(r.len()));
     if s.edit.link_timeline_edit {
         s.edit.timeline_selection = s.edit.selection;

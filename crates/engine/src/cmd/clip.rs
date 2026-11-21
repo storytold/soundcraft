@@ -304,10 +304,10 @@ fn loop_clips(e: &mut Engine, p: &Value) -> Result<Value> {
     let count = i64_or(p, "count", 4).clamp(1, 512);
     let total = super::duration_param(e, "clip.loop", p, "length")?;
     let fill = p.get("fill").and_then(Value::as_bool).unwrap_or(false);
-    let s = e.session_mut();
-    let session_end = s.content_end();
+    let session_end = e.session().content_end();
     let mut made = 0;
     for id in ids {
+        let s = e.session_mut();
         let Some((tid, mut c)) = s.find_clip(id).map(|(t, c)| (t, c.clone())) else { continue };
         if c.length <= 0 {
             continue;
@@ -355,7 +355,7 @@ fn loop_clips(e: &mut Engine, p: &Value) -> Result<Value> {
         }
         for (at, nc) in copies {
             let length = nc.length;
-            let _ = crate::edit::paste(s, tid, at, &[nc], length, false);
+            let _ = e.paste_clips(tid, at, &[nc], length, false);
             made += 1;
         }
     }

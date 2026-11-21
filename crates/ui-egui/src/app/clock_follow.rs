@@ -96,7 +96,15 @@ impl SoundApp {
                 self.ui.midi_sync.ports.entry(name.clone()).or_default().in_offset_samples = offset;
             }
         }
-        if self.clock_follow.enabled != enabled || self.ui.clock_follow_input != source {
+        self.transition_clock_source(enabled, source.as_deref());
+        self.ui.clock_follow_input = source;
+        self.ui.clock_follow_stop_on_loss = stop;
+        self.service_clock_follow();
+        Ok(self.clock_follow_state())
+    }
+
+    pub(crate) fn transition_clock_source(&mut self, enabled: bool, source: Option<&str>) {
+        if self.clock_follow.enabled != enabled || self.ui.clock_follow_input.as_deref() != source {
             // Disarm the old source before checking for a start submitted between host frames.
             if let Some(m) = &self.midi_inputs {
                 m.feed().set_clock_follow(None, true, 0);
@@ -108,10 +116,6 @@ impl SoundApp {
             self.clock_follow = Host { enabled, ..Host::default() };
             self.refresh_playback_session();
         }
-        self.ui.clock_follow_input = source;
-        self.ui.clock_follow_stop_on_loss = stop;
-        self.service_clock_follow();
-        Ok(self.clock_follow_state())
     }
 
     fn clock_master_uses(&self, name: &str) -> bool {
@@ -420,6 +424,29 @@ mod tests {
         app.run("ui.set", patch(false, "DIN")).unwrap();
         app.run("ui.set", patch(true, "OUT")).unwrap();
         assert!(app.ui.midi_sync.ports["OUT"].enabled);
+    }
+
+    #[test]
+    fn ui_patch_clearing_the_clock_source_disarms_a_prepared_resume() {
+        let engine = soundcraft_engine::Engine::default();
+        let player = soundcraft_playback::Player::new(engine.session_arc());
+        let mut app = SoundApp::new(engine, Some(player), crate::Services::default());
+        app.midi_inputs = Some(MidiInputs::with_port_names(vec![], vec!["DIN".into()]));
+        let feed = app.midi_inputs.as_ref().unwrap().feed().clone();
+        let port = feed.ports().assign("DIN");
+        app.run("setup.midi_clock_follow", json!({"input":"DIN","enabled":true})).unwrap();
+        feed.receive(port, &[0xf2, 64, 0]);
+        let ctx = egui::Context::default();
+        ctx.run_ui(Default::default(), |_| app.logic(&ctx)).textures_delta.clear();
+        assert!(app.run("ui.set", json!({"clock_follow_input":" "})).is_err());
+        assert_eq!(app.ui.clock_follow_input.as_deref(), Some("DIN"));
+        app.run("ui.set", json!({"clock_follow_input":null})).unwrap();
+        assert!(!app.clock_follow.enabled);
+        assert!(app.engine.playback_tempo.is_none());
+        feed.receive(port, &[0xfb]);
+        feed.receive(port, &[0xf8]);
+        assert!(!app.player.as_ref().unwrap().is_playing());
+        app.run("ui.set", json!({"clock_follow_input":null})).unwrap();
     }
 
     #[test]

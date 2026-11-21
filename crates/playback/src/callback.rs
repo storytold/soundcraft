@@ -1250,12 +1250,11 @@ impl Side {
         self.follow_pool = Default::default();
     }
 
-    pub(crate) fn published_tempo(&self) -> Option<&soundcraft_time::TempoMap> {
-        let snapshot = match self.published_grid {
-            Some(index) => self.follow_pool.get(index)?.as_ref()?,
-            None => self.grid_base.as_ref()?,
-        };
-        Some(&snapshot.tempo)
+    pub(crate) fn published_session(&self) -> Option<&Arc<Session>> {
+        match self.published_grid {
+            Some(index) => self.follow_pool[index].as_ref(),
+            None => self.grid_base.as_ref(),
+        }
     }
 
     pub(crate) fn follow_snapshot(&mut self, tempo: &soundcraft_time::TempoMap) -> Option<Arc<Session>> {

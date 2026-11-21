@@ -320,41 +320,60 @@ fn parse_position_param(
         return Ok(Some(s.sample_rate.samples(secs)));
     }
     if let Some(text) = v.as_str() {
-        // Try each format, starting with an explicit prefix like "bars:5|1|000".
-        let (fmt, body) = match text.split_once(':') {
-            Some((f, b)) if soundcraft_time::TimeFormat::from_id(f).is_some() => (soundcraft_time::TimeFormat::from_id(f), b),
-            _ => (None, text),
-        };
-        // Minutes:seconds with a fractional second identifies an elapsed time even
-        // when the main counter shows absolute timecode with a nonzero session start.
-        let fmt = fmt.or_else(|| {
-            let (_, seconds) = body.trim().split_once(':')?;
-            (seconds.contains('.') && !seconds.contains([':', ';'])).then_some(soundcraft_time::TimeFormat::MinSecs)
-        });
-        let fmts: Vec<soundcraft_time::TimeFormat> = match fmt {
-            Some(f) => vec![f],
-            None => {
-                let mut v = vec![s.edit.main_counter];
-                v.extend(soundcraft_time::TimeFormat::ALL);
-                v
-            }
-        };
-        for f in fmts {
-            let parsed = match timecode_from_zero {
-                Some(rate) => soundcraft_time::parse_position(body, f, s.sample_rate, &s.tempo, rate, 0, 0),
-                None => s.parse_position(body, f),
-            };
-            if let Ok(x) = parsed {
-                if timecode_from_zero.is_none() && f == soundcraft_time::TimeFormat::Timecode && x < 0 {
-                    let start = s.format_position(0, f);
-                    return Err(bad(cmd, format!("{body} is before the session start ({start})")));
-                }
-                return Ok(Some(x));
-            }
-        }
-        return Err(bad(cmd, format!("cannot parse position `{text}`")));
+        return parse_counter_text(e, cmd, text, &s.tempo, timecode_from_zero).map(Some);
     }
     Err(bad(cmd, format!("`{key}` must be samples, {{seconds}}, or a time string")))
+}
+
+/// Parse a toolbar counter entry in the same beat grid as the displayed transport.
+pub fn transport_counter_position(e: &Engine, cmd: &str, text: &str) -> Result<Samples> {
+    parse_counter_text(e, cmd, text, e.transport_tempo(), None)
+}
+
+fn parse_counter_text(
+    e: &Engine,
+    cmd: &str,
+    text: &str,
+    tempo: &soundcraft_time::TempoMap,
+    timecode_from_zero: Option<soundcraft_time::FrameRate>,
+) -> Result<Samples> {
+    let s = e.session();
+    // Try each format, starting with an explicit prefix like "bars_beats:5|1|000".
+    let (fmt, body) = match text.split_once(':') {
+        Some((f, b)) if soundcraft_time::TimeFormat::from_id(f).is_some() => (soundcraft_time::TimeFormat::from_id(f), b),
+        _ => (None, text),
+    };
+    // Minutes:seconds with a fractional second identifies an elapsed time even
+    // when the main counter shows absolute timecode with a nonzero session start.
+    let fmt = fmt.or_else(|| {
+        let (_, seconds) = body.trim().split_once(':')?;
+        (seconds.contains('.') && !seconds.contains([':', ';'])).then_some(soundcraft_time::TimeFormat::MinSecs)
+    });
+    let fmts: Vec<soundcraft_time::TimeFormat> = match fmt {
+        Some(f) => vec![f],
+        None => {
+            let mut v = vec![s.edit.main_counter];
+            v.extend(soundcraft_time::TimeFormat::ALL);
+            v
+        }
+    };
+    for f in fmts {
+        let parsed = match timecode_from_zero {
+            Some(rate) => soundcraft_time::parse_position(body, f, s.sample_rate, &s.tempo, rate, 0, 0),
+            None if f == soundcraft_time::TimeFormat::BarsBeats => {
+                soundcraft_time::parse_position(body, f, s.sample_rate, tempo, s.frame_rate, s.timecode_start, s.feet_frames_start())
+            }
+            None => s.parse_position(body, f),
+        };
+        if let Ok(x) = parsed {
+            if timecode_from_zero.is_none() && f == soundcraft_time::TimeFormat::Timecode && x < 0 {
+                let start = s.format_position(0, f);
+                return Err(bad(cmd, format!("{body} is before the session start ({start})")));
+            }
+            return Ok(x.clamp(-MAX_POSITION, MAX_POSITION));
+        }
+    }
+    Err(bad(cmd, format!("cannot parse position `{text}`")))
 }
 
 /// Range from `start`/`end`/`length` params. A missing `start` defaults to the edit selection start;

@@ -65,11 +65,9 @@ impl PortIo {
                             Err(e) => Some((index, e)),
                         }
                     });
-                    let failed = failure.is_some();
+                    // Normal errors disconnect the scheduler's handle. During shutdown
+                    // keep consuming its queued Stop and any unacknowledged cleanup.
                     let _ = done.send(Completion { packets, failure });
-                    if failed {
-                        break;
-                    }
                 }
             })
             .map_err(|e| e.to_string())?;

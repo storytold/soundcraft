@@ -15,6 +15,7 @@ mod bundle;
 mod import;
 mod midi;
 mod midi_take;
+pub(crate) use midi_take::ClockTakeProjection;
 mod record;
 mod render;
 mod session;

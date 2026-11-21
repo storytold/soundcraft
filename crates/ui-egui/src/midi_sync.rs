@@ -74,6 +74,9 @@ impl MidiSync {
 impl SoundApp {
     pub(crate) fn validate_sync_routing(&self, next: &MidiSync, input: Option<&str>) -> Result<(), String> {
         next.validate(self.ui.midi_sync.ports.len())?;
+        if input.is_some_and(|name| name.trim().is_empty() || name.len() > 1024) {
+            return Err("input must be a MIDI port name of up to 1024 bytes or null".into());
+        }
         if self.clock_follow.enabled && next.enabled && input.is_some_and(|name| next.ports.get(name).is_some_and(|p| p.enabled)) {
             return Err("Choose separate MIDI ports for Beat Clock output and external clock follow".into());
         }

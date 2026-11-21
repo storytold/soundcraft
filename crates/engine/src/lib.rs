@@ -177,9 +177,13 @@ impl Clipboard {
     }
 }
 
+type ClockTakes = std::collections::BTreeMap<soundcraft_model::ClipId, Arc<io::ClockTakeProjection>>;
+
 #[derive(Debug, Clone)]
 struct HistoryEntry {
     label: String,
+    // Projections for clip IDs allocated only by the undone edit.
+    clock_takes: ClockTakes,
     doc: Arc<Session>,
 }
 
@@ -200,7 +204,7 @@ pub struct Engine {
     pub playback_tempo: Option<soundcraft_time::TempoMap>,
     // While following the source, replay each new take in the grid it was played on.
     // The editable document always stores the same performance in its own score grid.
-    follow_takes: std::collections::HashMap<soundcraft_model::ClipId, (soundcraft_midi::Sequence, soundcraft_midi::Sequence)>,
+    follow_takes: ClockTakes,
     /// Command journal (id, params) for macro recording / agents. Ring buffer: capped at
     /// [`MAX_JOURNAL_ENTRIES`] entries of up to [`MAX_JOURNAL_ENTRY_BYTES`] params each.
     pub journal: std::collections::VecDeque<(String, Value)>,
@@ -367,17 +371,46 @@ impl Engine {
         doc
     }
 
-    /// Restore the live-grid notes of unedited takes in an external-clock playback snapshot.
+    /// Paste in score time, retaining the capture grid for every new copy of a followed take.
+    fn paste_clips(
+        &mut self,
+        track: TrackId,
+        at: Samples,
+        clips: &[Clip],
+        length: Samples,
+        shuffle: bool,
+    ) -> std::result::Result<Vec<soundcraft_model::ClipId>, &'static str> {
+        let ids = edit::paste(self.session_mut(), track, at, clips, length, shuffle)?;
+        if !self.follow_takes.is_empty() {
+            for (src, id) in clips.iter().zip(&ids) {
+                self.copy_clock_take(src.id, *id);
+            }
+        }
+        Ok(ids)
+    }
+
+    fn copy_clock_take(&mut self, source: soundcraft_model::ClipId, copy: soundcraft_model::ClipId) {
+        if let Some(grid) = self.follow_takes.get(&source).cloned() {
+            self.follow_takes.insert(copy, grid);
+        }
+    }
+
+    fn assign_copied_clip_id(&mut self, clip: &mut Clip) {
+        let id = self.session_mut().new_clip_id();
+        self.copy_clock_take(clip.id, id);
+        clip.id = id;
+    }
+
+    /// Give followed takes their captured beat timing in the external-clock playback snapshot.
     pub fn project_clock_takes(&self, doc: &mut Session) {
         if self.follow_takes.is_empty() {
             return;
         }
         for clip in doc.tracks.iter_mut().flat_map(|t| &mut t.playlists).flat_map(|p| &mut p.clips) {
-            if let Some((saved, live)) = self.follow_takes.get(&clip.id)
+            if let Some(grid) = self.follow_takes.get(&clip.id)
                 && let soundcraft_model::ClipContent::Midi { sequence } = &mut clip.content
-                && sequence == saved
             {
-                sequence.clone_from(live);
+                grid.project(sequence);
             }
         }
     }
@@ -392,6 +425,7 @@ impl Engine {
             .flat_map(|s| &s.tracks)
             .flat_map(|t| &t.playlists)
             .flat_map(|p| &p.clips)
+            .chain(self.clipboard.tracks.iter().flatten())
             .filter_map(|clip| self.follow_takes.contains_key(&clip.id).then_some(clip.id))
             .collect();
         self.follow_takes.retain(|id, _| retained.contains(id));
@@ -399,6 +433,9 @@ impl Engine {
 
     pub fn clear_follow_grid(&mut self) {
         self.follow_takes.clear();
+        for entry in &mut self.redo {
+            entry.clock_takes.clear();
+        }
         self.playback_tempo = None;
     }
 
@@ -504,7 +541,10 @@ impl Engine {
         let cur = std::mem::replace(&mut self.doc, h.doc);
         self.keep_edit_mode(&cur);
         self.keep_runtime_track_states(&cur);
-        self.redo.push(HistoryEntry { label: h.label, doc: cur });
+        // A subsequent edit can reuse IDs after the restored document's allocation point.
+        // Hold their projections with this redo entry until those exact clips come back.
+        let clock_takes = self.follow_takes.split_off(&soundcraft_model::ClipId(self.doc.next_id));
+        self.redo.push(HistoryEntry { label: h.label, doc: cur, clock_takes });
         self.revision = self.revision.wrapping_add(1);
         self.dirty = true;
         true
@@ -517,7 +557,8 @@ impl Engine {
         let cur = std::mem::replace(&mut self.doc, h.doc);
         self.keep_edit_mode(&cur);
         self.keep_runtime_track_states(&cur);
-        self.undo.push(HistoryEntry { label: h.label, doc: cur });
+        self.follow_takes.extend(h.clock_takes);
+        self.undo.push(HistoryEntry { label: h.label, doc: cur, clock_takes: ClockTakes::new() });
         self.revision = self.revision.wrapping_add(1);
         self.dirty = true;
         true
@@ -561,7 +602,7 @@ impl Engine {
         if Arc::ptr_eq(&before, &self.doc) {
             return;
         }
-        self.undo.push(HistoryEntry { label: label.to_string(), doc: before });
+        self.undo.push(HistoryEntry { label: label.to_string(), doc: before, clock_takes: ClockTakes::new() });
         self.redo.clear();
         if self.undo.len() > self.history_limit {
             let excess = self.undo.len() - self.history_limit;
@@ -601,6 +642,7 @@ impl Engine {
         let result = match result {
             Ok(r) => r,
             Err(p) => {
+                let _ = self.follow_takes.split_off(&soundcraft_model::ClipId(before.next_id));
                 self.doc = before;
                 self.revision = rev.wrapping_add(1);
                 self.dirty = dirty;
@@ -626,6 +668,7 @@ impl Engine {
             Err(e) => {
                 // Commands must not leave half-applied edits behind.
                 if !Arc::ptr_eq(&before, &self.doc) {
+                    let _ = self.follow_takes.split_off(&soundcraft_model::ClipId(before.next_id));
                     self.doc = before;
                     self.revision = self.revision.wrapping_add(1);
                     self.dirty = dirty;
