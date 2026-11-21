@@ -191,7 +191,7 @@ pub(super) fn view_menu(app: &mut SoundApp, ui: &mut Ui, track: &Track) {
     }
     for (slot, ins) in track.mixer.inserts.iter().enumerate() {
         let Some(ins) = ins else { continue };
-        let Some(info) = soundcraft_dsp::plugin_info(&ins.plugin) else { continue };
+        let Some(info) = crate::mix_window::plugin_info(&ins.plugin) else { continue };
         ui.menu_button(info.name, |ui| {
             for p in info.params {
                 let v = format!("plugin:{}:{}", (b'a' + slot as u8) as char, p.id);
