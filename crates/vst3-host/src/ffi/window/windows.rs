@@ -1,11 +1,12 @@
 use std::ffi::{c_char, c_void};
 use std::sync::OnceLock;
-use windows_sys::Win32::Foundation::{HWND, LPARAM, LRESULT, RECT, WPARAM};
+use windows_sys::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
+use windows_sys::Win32::Graphics::Gdi::{GetMonitorInfoW, MONITOR_DEFAULTTONEAREST, MONITORINFO, MonitorFromPoint, MonitorFromWindow};
 use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows_sys::Win32::UI::Input::KeyboardAndMouse::GetActiveWindow;
 use windows_sys::Win32::UI::WindowsAndMessaging::{
-    AdjustWindowRectEx, CS_HREDRAW, CS_VREDRAW, CW_USEDEFAULT, CreateWindowExW, DefWindowProcW, DestroyWindow, GWL_EXSTYLE, GWL_STYLE,
-    GetWindowLongPtrW, IDC_ARROW, IsWindow, IsWindowVisible, LoadCursorW, RegisterClassExW, SW_HIDE, SW_SHOW, SWP_NOACTIVATE, SWP_NOMOVE,
+    AdjustWindowRectEx, CS_HREDRAW, CS_VREDRAW, CreateWindowExW, DefWindowProcW, DestroyWindow, GWL_EXSTYLE, GWL_STYLE, GetCursorPos,
+    GetWindowLongPtrW, GetWindowRect, IDC_ARROW, IsWindow, IsWindowVisible, LoadCursorW, RegisterClassExW, SW_HIDE, SW_SHOW, SWP_NOACTIVATE,
     SWP_NOZORDER, SetForegroundWindow, SetWindowPos, ShowWindow, WM_CLOSE, WNDCLASSEXW, WS_CAPTION, WS_CLIPCHILDREN, WS_OVERLAPPED, WS_SYSMENU,
 };
 
@@ -92,6 +93,9 @@ impl HostWindow {
         let class = class_name().ok_or_else(|| "cannot register the editor window class".to_string())?;
         let title = wide(title);
         let (ow, oh) = outer_size(STYLE, 0, w, h);
+        // #1448: land fully inside the work area of the monitor under the pointer — the slot
+        // that was clicked — rather than wherever Windows happens to cascade the window.
+        let (x, y, ow, oh) = opening_rect(ow, oh);
         // SAFETY: main thread; the active window (or null) of this thread's queue.
         let owner = unsafe { GetActiveWindow() };
         // SAFETY: registered class and NUL-terminated strings that outlive the call; the
@@ -102,8 +106,8 @@ impl HostWindow {
                 class.as_ptr(),
                 title.as_ptr(),
                 STYLE,
-                CW_USEDEFAULT,
-                CW_USEDEFAULT,
+                x,
+                y,
                 ow,
                 oh,
                 owner,
@@ -152,6 +156,7 @@ impl HostWindow {
 }
 
 /// Resizes a host window's client area (`window` from [`HostWindow::raw`]); main thread only.
+/// The window stays on its monitor, fitted to the work area (#1448).
 pub fn resize(window: *mut c_void, w: f64, h: f64) {
     // SAFETY: `IsWindow` accepts any value.
     if !on_main_thread() || window.is_null() || unsafe { IsWindow(window) } == 0 {
@@ -160,6 +165,104 @@ pub fn resize(window: *mut c_void, w: f64, h: f64) {
     // SAFETY: a live window of this thread; style values are read, not changed.
     let (style, ex) = unsafe { (GetWindowLongPtrW(window, GWL_STYLE) as u32, GetWindowLongPtrW(window, GWL_EXSTYLE) as u32) };
     let (ow, oh) = outer_size(style, ex, w, h);
-    // SAFETY: as above; only the size changes.
-    unsafe { SetWindowPos(window, std::ptr::null_mut(), 0, 0, ow, oh, SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE) };
+    let mut rect = RECT::default();
+    // SAFETY: a live window of this thread; `rect` is valid, writable memory.
+    if unsafe { GetWindowRect(window, &mut rect) } == 0 {
+        return;
+    }
+    let (x, y, ow, oh) = fit_window(rect.left, rect.top, ow, oh, work_area_of(window));
+    // SAFETY: as above; the window keeps its monitor and stays inside its work area.
+    unsafe { SetWindowPos(window, std::ptr::null_mut(), x, y, ow, oh, SWP_NOZORDER | SWP_NOACTIVATE) };
+}
+
+/// The work area (screen minus taskbar and docked bars) of the monitor nearest `pt`.
+fn work_area_at(pt: POINT) -> RECT {
+    let unclamped = RECT { left: i32::MIN / 2, top: i32::MIN / 2, right: i32::MAX / 2, bottom: i32::MAX / 2 };
+    // SAFETY: `monitor` is null or a monitor handle; `info` is valid, writable memory.
+    unsafe {
+        let monitor = MonitorFromPoint(pt, MONITOR_DEFAULTTONEAREST);
+        let mut info: MONITORINFO = std::mem::zeroed();
+        info.cbSize = std::mem::size_of::<MONITORINFO>() as u32;
+        if monitor.is_null() || GetMonitorInfoW(monitor, &mut info) == 0 { unclamped } else { info.rcWork }
+    }
+}
+
+/// The work area of the monitor `window` is mostly on.
+fn work_area_of(window: HWND) -> RECT {
+    let unclamped = RECT { left: i32::MIN / 2, top: i32::MIN / 2, right: i32::MAX / 2, bottom: i32::MAX / 2 };
+    // SAFETY: as above.
+    unsafe {
+        let monitor = MonitorFromWindow(window, MONITOR_DEFAULTTONEAREST);
+        let mut info: MONITORINFO = std::mem::zeroed();
+        info.cbSize = std::mem::size_of::<MONITORINFO>() as u32;
+        if monitor.is_null() || GetMonitorInfoW(monitor, &mut info) == 0 { unclamped } else { info.rcWork }
+    }
+}
+
+/// Where a `w`×`h` window opens: at the pointer, fitted into that monitor's work area; centered
+/// on the primary monitor's work area when the pointer cannot be read (#1448).
+fn opening_rect(w: i32, h: i32) -> (i32, i32, i32, i32) {
+    let mut pt = POINT { x: 0, y: 0 };
+    // SAFETY: `pt` is valid, writable memory.
+    if unsafe { GetCursorPos(&mut pt) } != 0 {
+        return fit_window(pt.x, pt.y, w, h, work_area_at(pt));
+    }
+    let work = work_area_at(pt);
+    let x = work.left + ((work.right - work.left - w) / 2).max(0);
+    let y = work.top + ((work.bottom - work.top - h) / 2).max(0);
+    fit_window(x, y, w, h, work)
+}
+
+/// The window rect `x`,`y`,`w`,`h` constrained to `work` (#1448): an oversized window shrinks to
+/// the largest size that fits, and the origin moves only as much as needed to land fully inside
+/// (an oversized window keeps its top-left at the work area's — always reachable).
+fn fit_window(x: i32, y: i32, w: i32, h: i32, work: RECT) -> (i32, i32, i32, i32) {
+    let ww = (work.right - work.left).max(1);
+    let wh = (work.bottom - work.top).max(1);
+    let w = w.clamp(1, ww);
+    let h = h.clamp(1, wh);
+    let x = x.clamp(work.left, work.left + (ww - w).max(0));
+    let y = y.clamp(work.top, work.top + (wh - h).max(0));
+    (x, y, w, h)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const WORK: RECT = RECT { left: -1920, top: 0, right: 0, bottom: 1040 };
+
+    #[test]
+    fn fit_window_keeps_origin_inside() {
+        // Right/bottom and left/top overhangs are pulled back inside (#1448).
+        let (x, y, w, h) = fit_window(-50, 1000, 400, 300, WORK);
+        assert!((x, y, w, h) == (-400, 740, 400, 300));
+        let (x, y, w, h) = fit_window(-2500, -100, 400, 300, WORK);
+        assert!((x, y, w, h) == (-1920, 0, 400, 300));
+    }
+
+    #[test]
+    fn fit_window_shrinks_oversized() {
+        // Bigger than the monitor: largest size that fits, top-left at the work area's (#1448).
+        let (x, y, w, h) = fit_window(500, 500, 4000, 2000, WORK);
+        assert!((x, y, w, h) == (-1920, 0, 1920, 1040));
+    }
+
+    #[test]
+    fn new_window_lands_inside_the_work_area() {
+        std::thread::Builder::new()
+            .name("main".into())
+            .spawn(|| {
+                let host = HostWindow::new("editor", 400.0, 300.0).unwrap();
+                let mut r = RECT::default();
+                // SAFETY: `host` is a live window on this thread; `r` is valid, writable memory.
+                assert!(unsafe { GetWindowRect(host.raw() as HWND, &mut r) } != 0);
+                let work = work_area_of(host.raw() as HWND);
+                assert!(r.left >= work.left && r.top >= work.top && r.right <= work.right && r.bottom <= work.bottom);
+                host.close();
+            })
+            .unwrap()
+            .join()
+            .unwrap();
+    }
 }
