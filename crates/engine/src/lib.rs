@@ -182,14 +182,6 @@ impl Clipboard {
 #[derive(Clone, Debug, PartialEq)]
 struct ClockTake {
     capture: Arc<io::ClockTakeProjection>,
-    /// Distance from the capture start to the material at this clip's local tick zero.
-    offset: Samples,
-}
-
-impl ClockTake {
-    fn after(&self, samples: Samples) -> Self {
-        Self { capture: Arc::clone(&self.capture), offset: self.offset.saturating_add(samples) }
-    }
 }
 
 type ClockTakes = std::collections::BTreeMap<soundcraft_model::ClipId, ClockTake>;
@@ -412,7 +404,7 @@ impl Engine {
     }
 
     fn copy_clip_range(&self, track: TrackId, range: soundcraft_time::Range, unlocked_only: bool) -> (Vec<Clip>, ClockTakes) {
-        edit::copy_range_with_takes(self.session(), Some(&self.follow_takes), track, range, unlocked_only)
+        edit::copy_range_with_takes(self.session(), Some(&self.follow_takes), self.playback_tempo.as_ref(), track, range, unlocked_only)
     }
 
     /// Give followed takes their captured beat timing in the external-clock playback snapshot.
@@ -424,7 +416,7 @@ impl Engine {
             if let Some(grid) = self.follow_takes.get(&clip.id)
                 && let soundcraft_model::ClipContent::Midi { sequence } = &mut clip.content
             {
-                grid.capture.project(sequence, grid.offset);
+                grid.capture.project(sequence);
             }
         }
     }

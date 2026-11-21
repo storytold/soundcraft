@@ -473,29 +473,48 @@ fn paste_merge_midi(e: &mut Engine, p: &Value) -> Result<Value> {
             let target = s.track(*t).and_then(|tr| {
                 let host = tr.clips().iter().find(|x| matches!(x.content, ClipContent::Midi { .. }) && x.range().contains(pos))?;
                 let next_start = tr.clips().iter().filter(|x| x.start > host.start && x.id != host.id).map(|x| x.start).min();
-                Some((host.id, host.start, next_start))
+                Some((host, next_start))
             });
             match target {
-                Some((hid, hstart, next_start)) => {
-                    let diff = tempo.samples_to_ticks(pos, sr) - tempo.samples_to_ticks(hstart, sr);
+                Some((host, next_start)) => {
+                    let (hid, hstart) = (host.id, host.start);
                     let want_end = pos.saturating_add(c.length);
-                    let limit = next_start.unwrap_or(Samples::MAX);
+                    let end = if want_end > host.end() { want_end.min(next_start.unwrap_or(Samples::MAX)) } else { host.end() };
+                    let host_take = s.takes.as_deref().and_then(|takes| takes.get(&hid));
+                    let incoming_take = cb.clock_takes.get(&c.id);
+                    let composed = s.follow_grid.filter(|_| host_take.is_some() || incoming_take.is_some()).map(|grid| {
+                        // Clipboard IDs can be reused by the current document after Undo.
+                        // Keep the two source mappings distinct even when their IDs match.
+                        let mut incoming = c.clone();
+                        incoming.start = pos;
+                        ops::compose_clock_midi(s, grid, Range::new(hstart, end), [(host, host_take), (&incoming, incoming_take)])
+                    });
                     if let Some(h) = s.find_clip_mut(hid)
                         && let ClipContent::Midi { sequence: hs } = &mut h.content
                     {
-                        for n in &sequence.notes {
-                            let mut n = *n;
-                            n.start = n.start.saturating_add(diff);
-                            hs.notes.push(n);
+                        let take = if let Some((score, take)) = composed {
+                            *hs = score;
+                            Some(take)
+                        } else {
+                            let diff = tempo.samples_to_ticks(pos, sr) - tempo.samples_to_ticks(hstart, sr);
+                            for n in &sequence.notes {
+                                let mut n = *n;
+                                n.start = n.start.saturating_add(diff);
+                                hs.notes.push(n);
+                            }
+                            for cc in &sequence.ctrls {
+                                let mut cc = *cc;
+                                cc.tick = cc.tick.saturating_add(diff);
+                                hs.ctrls.push(cc);
+                            }
+                            hs.sort();
+                            None
+                        };
+                        if end != h.end() {
+                            h.trim_end_to(end);
                         }
-                        for cc in &sequence.ctrls {
-                            let mut cc = *cc;
-                            cc.tick = cc.tick.saturating_add(diff);
-                            hs.ctrls.push(cc);
-                        }
-                        hs.sort();
-                        if want_end > h.end() {
-                            h.trim_end_to(want_end.min(limit));
+                        if let (Some(take), Some(takes)) = (take, &mut s.takes) {
+                            takes.insert(hid, take);
                         }
                         merged += 1;
                     }
@@ -729,7 +748,7 @@ fn to_playlist(e: &mut Engine, p: &Value, dest: Dest, mv: bool, id: &str) -> Res
             }
         };
         // A move carries only what it clears from the main playlist; locked clips stay there.
-        let (clips, takes) = ops::copy_range_with_takes(s, s.takes.as_deref(), *t, r, mv);
+        let (clips, takes) = ops::copy_range_with_takes(s, s.takes.as_deref(), s.follow_grid, *t, r, mv);
         let main = s.track(*t).map_or(0, |tr| tr.active_playlist);
         if let Some(tr) = s.track_mut(*t) {
             tr.active_playlist = idx;
