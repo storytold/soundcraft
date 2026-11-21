@@ -395,3 +395,41 @@ fn a_track_on_a_surround_output_keeps_a_text_only_pan() {
     assert_eq!(kick(&h).mixer.pan, [0.5]);
     assert_eq!(undo_steps(&h), before);
 }
+
+#[test]
+fn an_insert_hosted_submenu_scans_in_the_background() {
+    // #596: opening the CLAP/VST3 submenu used to run the plugin scan on the UI thread and freeze
+    // it on large collections. The scan now runs on a background thread; until it lands the
+    // submenu says it is scanning, then lists the cached results.
+    let (mut h, _kick, row) = harness("Kick", "medium", "view.edit_inserts_ae");
+    let slot = pos2(row[0] + HEADER_W + 37.5, row[1] + 8.5 + 4.0 * 18.0);
+    click(&mut h, slot);
+    let clap = h.get_by_label("CLAP").rect().center();
+    h.state_mut().synthetic.push(Event::PointerMoved(clap));
+    for _ in 0..10 {
+        step(&mut h);
+    }
+    assert!(
+        h.query_by_label("Scanning plugins…").is_some()
+            || h.query_by_label("No CLAP plugins found").is_some()
+            || soundcraft_clap_host::cached().is_some_and(|l| !l.is_empty()),
+        "the CLAP submenu is neither scanning nor listing results"
+    );
+    for _ in 0..200 {
+        if soundcraft_clap_host::cached().is_some() {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    click(&mut h, pos2(800.0, 990.0));
+    click(&mut h, slot);
+    let clap = h.get_by_label("CLAP").rect().center();
+    h.state_mut().synthetic.push(Event::PointerMoved(clap));
+    for _ in 0..10 {
+        step(&mut h);
+    }
+    assert!(
+        h.query_by_label("No CLAP plugins found").is_some() || soundcraft_clap_host::cached().is_some_and(|l| !l.is_empty()),
+        "the scan finished but the reopened submenu still shows nothing"
+    );
+}
