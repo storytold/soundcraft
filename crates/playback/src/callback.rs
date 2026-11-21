@@ -16,7 +16,7 @@ pub(crate) struct Fault {
     /// Blocks so far, to tell a device that stopped asking for audio.
     pub(crate) beats: std::sync::atomic::AtomicU64,
     /// The UI has been told.
-    reported: AtomicBool,
+    reported: std::sync::atomic::AtomicU8,
 }
 
 impl Fault {
@@ -29,9 +29,12 @@ impl Fault {
         } else if stalled {
             OutputTrouble::Stalled
         } else {
+            self.reported.store(0, Ordering::Relaxed);
             return None;
         };
-        (!self.reported.swap(true, Ordering::Relaxed)).then_some(trouble)
+        // A transient stall can recover or be superseded by stream invalidation.
+        let kind = trouble as u8 + 1;
+        (self.reported.swap(kind, Ordering::Relaxed) != kind).then_some(trouble)
     }
 }
 

@@ -1,5 +1,11 @@
 use super::{MeterDisplay, OutputTrouble, Player, SoundApp, Trouble};
 
+impl crate::UnavailableOutput {
+    fn recovered(&self, valid_reports: u64) -> bool {
+        self.stalled_at_report.is_some_and(|at| at != valid_reports)
+    }
+}
+
 impl SoundApp {
     /// Whether the meters are live: while playing, and while armed or input-monitored tracks are heard.
     pub(crate) fn meters_live(&self) -> bool {
@@ -61,14 +67,23 @@ impl SoundApp {
     /// Stop the transport, keeping a take in progress, when the audio output fails.
     pub(super) fn watch_output(&mut self) {
         let Some(p) = &self.player else { return };
-        let Some(trouble) = p.trouble() else { return };
+        let Some(trouble) = p.trouble() else {
+            if self.unavailable_output.as_ref().is_some_and(|o| o.recovered(p.reported_output_timing_count())) {
+                self.unavailable_output = None;
+            }
+            return;
+        };
         let name = p.device_name.clone();
-        self.report_output_trouble(trouble, name);
+        let valid_reports = p.reported_output_timing_count();
+        self.report_output_trouble(trouble, name, valid_reports);
     }
 
-    fn report_output_trouble(&mut self, trouble: OutputTrouble, name: String) {
+    fn report_output_trouble(&mut self, trouble: OutputTrouble, name: String, valid_reports: u64) {
         if matches!(trouble, OutputTrouble::Gone | OutputTrouble::Stalled) {
-            self.unavailable_output = Some(name.clone());
+            self.unavailable_output = Some(crate::UnavailableOutput {
+                name: name.clone(),
+                stalled_at_report: (trouble == OutputTrouble::Stalled).then_some(valid_reports),
+            });
         }
         let (cause, then) = match trouble {
             OutputTrouble::Bug => (
@@ -129,7 +144,7 @@ impl SoundApp {
     }
 
     fn recovery_output(&self) -> Option<String> {
-        self.unavailable_output.clone().or_else(|| {
+        self.unavailable_output.as_ref().map(|o| o.name.clone()).or_else(|| {
             let p = self.player.as_ref()?;
             p.output_timing_issue().map(|_| p.device_name.clone())
         })
@@ -145,7 +160,7 @@ impl SoundApp {
 
     pub(super) fn show_output_warning(&mut self, ui: &mut egui::Ui) {
         let timing = self.player.as_ref().and_then(Player::output_timing_issue);
-        let Some(message) = output_warning(self.unavailable_output.as_deref(), timing) else { return };
+        let Some(message) = output_warning(self.unavailable_output.as_ref().map(|o| o.name.as_str()), timing) else { return };
         egui::Panel::top("output_timing_warning").show(ui, |ui| {
             ui.horizontal_wrapped(|ui| {
                 ui.colored_label(ui.visuals().warn_fg_color, message);
@@ -177,7 +192,7 @@ impl SoundApp {
         let player = match required {
             Some(name) => {
                 let player = Player::reconnect_output(session, &self.ui.audio, &name);
-                self.unavailable_output = player.silent.then_some(name);
+                self.unavailable_output = player.silent.then_some(crate::UnavailableOutput { name, stalled_at_report: None });
                 player
             }
             None => Player::with_config(session, &self.ui.audio),
@@ -270,7 +285,7 @@ mod timing_warning_tests {
     #[test]
     fn storage_loss_warning_stays_visible_after_other_status_updates() {
         let mut app = SoundApp::new(crate::Engine::default(), None, crate::Services::default());
-        app.report_output_trouble(OutputTrouble::Gone, "Previous USB output".into());
+        app.report_output_trouble(OutputTrouble::Gone, "Previous USB output".into(), 4);
         assert!(app.ui.status.contains("Previous USB output"));
         app.ui.status = "Saved".into();
         let ctx = egui::Context::default();
@@ -279,10 +294,11 @@ mod timing_warning_tests {
         for _ in 0..4 {
             let raw =
                 egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1300., 800.))), ..Default::default() };
-            let output = ctx.run_ui(raw, |ui| {
+            let mut output = ctx.run_ui(raw, |ui| {
                 app.logic(ui.ctx());
                 app.ui(ui);
             });
+            output.textures_delta.clear();
             found |= output.shapes.iter().any(|s| matches!(&s.shape, egui::Shape::Text(t) if t.galley.text().contains("Previous USB output")));
         }
         assert!(found, "The visible device warning disappeared after an unrelated status update");
@@ -301,12 +317,23 @@ mod timing_warning_tests {
     }
 
     #[test]
+    fn callback_stall_clears_only_after_a_fresh_measurement_and_a_gone_stream_needs_reopen() {
+        let mut app = SoundApp::new(crate::Engine::default(), None, crate::Services::default());
+        app.report_output_trouble(OutputTrouble::Stalled, "USB".into(), 7);
+        let stalled = app.unavailable_output.as_ref().unwrap();
+        assert!(!stalled.recovered(7));
+        assert!(stalled.recovered(8));
+        app.report_output_trouble(OutputTrouble::Gone, "USB".into(), 8);
+        assert!(!app.unavailable_output.as_ref().unwrap().recovered(9));
+    }
+
+    #[test]
     fn timing_recovery_during_record_or_play_leaves_the_take_and_routing_untouched() {
         let mut app = SoundApp::new(crate::Engine::default(), None, crate::Services::default());
         app.ui.audio.output = Some("Output A".into());
         app.ui.audio.input = Some("Input B".into());
         app.engine.session_mut().edit.selection = crate::Range::point(66_150);
-        app.unavailable_output = Some("Output A".into());
+        app.unavailable_output = Some(crate::UnavailableOutput { name: "Output A".into(), stalled_at_report: None });
         let before = app.engine.session_arc();
         for (playing, recording) in [(true, false), (true, true), (false, true)] {
             app.engine.transport.playing = playing;
