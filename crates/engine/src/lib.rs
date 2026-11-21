@@ -197,10 +197,20 @@ struct HistoryEntry {
 /// Most decoded imports [`Engine::offer_import`] holds at once (each can be gigabytes).
 const MAX_OFFERED_IMPORTS: usize = 4;
 
+/// Sole owner of a prepared session's start permission. Invalidating the revision
+/// and queueing its transport command are ordered even if the input has upgraded its Weak.
+struct PreparedRevision(Arc<std::sync::Mutex<bool>>);
+
+impl Drop for PreparedRevision {
+    fn drop(&mut self) {
+        *self.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = false;
+    }
+}
+
 /// Engine state: the document, history, clipboard and transport plumbing.
 pub struct Engine {
     doc: Arc<Session>,
-    prepared_revision: std::cell::OnceCell<Arc<()>>,
+    prepared_revision: std::cell::OnceCell<PreparedRevision>,
     undo: Vec<HistoryEntry>,
     redo: Vec<HistoryEntry>,
     pub history_limit: usize,
@@ -447,8 +457,8 @@ impl Engine {
     }
 
     /// A prepared external start can use this revision only while its token is live.
-    pub fn prepared_revision(&self) -> std::sync::Weak<()> {
-        Arc::downgrade(self.prepared_revision.get_or_init(|| Arc::new(())))
+    pub fn prepared_revision(&self) -> std::sync::Weak<std::sync::Mutex<bool>> {
+        Arc::downgrade(&self.prepared_revision.get_or_init(|| PreparedRevision(Arc::new(std::sync::Mutex::new(true)))).0)
     }
 
     /// Mutable access (copy-on-write). Callers outside commands should prefer `execute`.

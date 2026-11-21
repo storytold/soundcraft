@@ -405,7 +405,7 @@ impl MidiFeed {
         if input.source == Some(port) && open.is_none_or(|g| g.load(Ordering::Acquire)) {
             let action = input.receive(bytes, at);
             if action {
-                input.dispatch_prepared(self.now());
+                input.dispatch_prepared(|| self.now());
             }
             drop(input);
             if action {

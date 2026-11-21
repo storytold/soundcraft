@@ -44,12 +44,12 @@ pub struct LocatedCue {
     pub origin: i64,
     pub offset: i64,
     pub rate: soundcraft_time::SampleRate,
-    pub revision: std::sync::Weak<()>,
+    pub revision: std::sync::Weak<std::sync::Mutex<bool>>,
 }
 
 /// One-shot transport handoff. Device callbacks never prepare plugins or retain a player.
 pub(crate) struct PreparedResume {
-    pub(crate) revision: std::sync::Weak<()>,
+    pub(crate) revision: std::sync::Weak<std::sync::Mutex<bool>>,
     pub(crate) pulse: i64,
     pub(crate) origin: i64,
     pub(crate) offset: i64,
@@ -60,11 +60,9 @@ pub(crate) struct PreparedResume {
     pub(crate) output: std::sync::Weak<super::Mutex<super::sync_output::Output>>,
 }
 impl PreparedResume {
-    fn dispatch(&self, age_us: i64) -> Option<i64> {
+    fn dispatch(&self, age_us: impl FnOnce() -> i64) -> Option<i64> {
         use super::{Cmd, Ordering};
-        if self.revision.strong_count() == 0 {
-            return None;
-        }
+        let revision = self.revision.upgrade()?;
         let shared = self.shared.upgrade()?;
         let tx = self.tx.upgrade()?;
         if shared.playing.load(Ordering::Acquire) {
@@ -80,10 +78,17 @@ impl PreparedResume {
         let lead = 0;
         let render_from = self
             .origin
-            .saturating_add(self.sr.samples(age_us.max(0) as f64 / 1e6))
+            .saturating_add(self.sr.samples(age_us().max(0) as f64 / 1e6))
             .saturating_add(self.sr.samples(lead as f64 / 1e6))
             .saturating_sub(self.offset)
             .max(0);
+        // The host revokes this gate before an edit can mutate the prepared document.
+        // Hold it through queueing and publishing the start. An edit that won this race
+        // leaves the original Play action for the host to prepare against its fresh session.
+        let current = revision.try_lock().ok()?;
+        if !*current {
+            return None;
+        }
         let cmd = Cmd::PlayClock { origin: self.origin, render_from };
         #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
         let queued = output.send_transport(&tx, cmd);
@@ -157,12 +162,12 @@ impl Follower {
         false
     }
 
-    pub(crate) fn dispatch_prepared(&mut self, now: i64) {
+    pub(crate) fn dispatch_prepared(&mut self, now: impl FnOnce() -> i64) {
         if self.count == 1
             && let Some(Action::Play { pulse, at }) = self.events[self.head]
             && let Some(cue) = self.cue.take()
             && cue.pulse == pulse
-            && let Some(render_from) = cue.dispatch(now.saturating_sub(at))
+            && let Some(render_from) = cue.dispatch(|| now().saturating_sub(at))
         {
             self.events[self.head] = Some(Action::Started { pulse, at, render_from });
         }

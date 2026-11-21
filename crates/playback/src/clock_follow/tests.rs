@@ -203,7 +203,7 @@ fn failed_prepared_send_leaves_the_start_for_the_host() {
     let (sender, receiver) = crate::channel();
     drop(receiver);
     let tx = Arc::new(sender);
-    let revision = Arc::new(());
+    let revision = Arc::new(Mutex::new(true));
     #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
     let output: Arc<Mutex<crate::sync_output::Output>> = Arc::default();
     let cue = PreparedResume {
@@ -219,8 +219,54 @@ fn failed_prepared_send_leaves_the_start_for_the_host() {
     };
     let mut r = Follower { cue: Some(cue), ..Default::default() };
     r.push(Action::Play { pulse: 0, at: 20 });
-    r.dispatch_prepared(21);
+    r.dispatch_prepared(|| 21);
     assert_eq!(r.take(), Some(Action::Play { pulse: 0, at: 20 }));
+    assert!(!shared.playing.load(Ordering::Acquire));
+    assert_eq!(shared.position.load(Ordering::Relaxed), 16);
+}
+
+#[test]
+fn edit_during_prepared_clock_dispatch_leaves_the_original_start_for_the_host() {
+    use std::sync::{Arc, Mutex, atomic::Ordering, mpsc::sync_channel};
+    let shared = Arc::new(crate::Shared { position: 16.into(), playing: false.into(), speed: 1000.into(), meters: Mutex::default() });
+    let (sender, receiver) = crate::channel();
+    let tx = Arc::new(sender);
+    let revision = Arc::new(Mutex::new(true));
+    #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+    let output: Arc<Mutex<crate::sync_output::Output>> = Arc::default();
+    let cue = PreparedResume {
+        revision: Arc::downgrade(&revision),
+        pulse: 0,
+        origin: 1000,
+        offset: 0,
+        sr: soundcraft_model::Session::default().sample_rate,
+        tx: Arc::downgrade(&tx),
+        shared: Arc::downgrade(&shared),
+        #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+        output: Arc::downgrade(&output),
+    };
+    let mut follow = Follower { cue: Some(cue), ..Default::default() };
+    follow.push(Action::Play { pulse: 0, at: 20 });
+    let (checking, suspend) = sync_channel(0);
+    let (edited, resume) = sync_channel(0);
+    std::thread::scope(|scope| {
+        scope.spawn(move || {
+            suspend.recv().unwrap();
+            *revision.lock().unwrap() = false;
+            drop(revision);
+            edited.send(()).unwrap();
+        });
+        // On the input thread the destination is available and the cue was observed
+        // before the edit. Resume after invalidation, while calculating the last timing offset.
+        follow.dispatch_prepared(|| {
+            checking.send(()).unwrap();
+            resume.recv().unwrap();
+            21
+        });
+    });
+    assert!(receiver.try_recv().is_err(), "the renderer must not receive a stale start");
+    assert_eq!(follow.take(), Some(Action::Play { pulse: 0, at: 20 }));
+    assert_eq!(follow.take(), None);
     assert!(!shared.playing.load(Ordering::Acquire));
     assert_eq!(shared.position.load(Ordering::Relaxed), 16);
 }

@@ -1023,16 +1023,33 @@ fn late_connection_after_rejected_grid_still_emits_the_accepted_clock() {
 
 #[test]
 fn first_future_block_keeps_its_map_when_more_grids_are_accepted() {
-    let mut out = Output::default();
-    let (cmd, _rx) = channel();
-    let first = Arc::new(Session::default());
-    let generation = out.configure(&first, &cmd, None);
-    let future = Instant::now() + Duration::from_secs(5);
-    out.view.lock().unwrap().push(Presentation { generation, ..block(future, 0., 48_000., Duration::ZERO) });
-    let second = Arc::new((*first).clone());
-    out.configure(&second, &cmd, Some(&first));
-    out.configure(&Arc::new((*first).clone()), &cmd, Some(&second));
-    assert!(out.view.lock().unwrap().map(generation).is_some());
+    for publish_each in [false, true] {
+        let mut out = Output::default();
+        let (cmd, _rx) = channel();
+        let first = Arc::new(Session::default());
+        let generation = out.configure(&first, &cmd, None);
+        let future = Instant::now() + Duration::from_secs(5);
+        out.view.lock().unwrap().push(Presentation { generation, ..block(future, 0., 1024., Duration::ZERO) });
+        let mut accepted = first.clone();
+        for step in 1..=crate::sync_clock::MAX_REVISIONS + 3 {
+            let mut next = (*accepted).clone();
+            next.tempo.set_tempo(0, 60. + step as f64).unwrap();
+            let next = Arc::new(next);
+            let generation = out.configure(&next, &cmd, Some(&accepted));
+            if publish_each {
+                let at = future + Duration::from_millis(22 * step as u64);
+                out.view.lock().unwrap().push(Presentation { generation, ..block(at, 1024. * step as f64, 1024., Duration::ZERO) });
+            }
+            accepted = next;
+        }
+        let mut port = active_port(0, false);
+        port.poll("late connection", future - Duration::from_millis(1), &accepted, &out.view, &out.stats, &mut vec![]);
+        assert!(port.link.as_ref().unwrap().messages.is_empty());
+        port.poll("late connection", future, &accepted, &out.view, &out.stats, &mut vec![]);
+        assert_eq!(port.link.as_ref().unwrap().messages, [(future, vec![START]), (future, vec![CLOCK])]);
+        assert!(Arc::ptr_eq(&port.routes[0].as_ref().unwrap().map.as_ref().unwrap().doc, &first));
+        assert_eq!(out.status().session_backlog_drops > 0, publish_each);
+    }
 }
 
 #[test]

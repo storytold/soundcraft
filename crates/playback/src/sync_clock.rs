@@ -153,13 +153,24 @@ impl Timeline {
     pub(crate) fn register_grid(&mut self, candidate: SessionRevision, accepted: &Arc<Session>, active: bool) -> bool {
         if let Some(index) = self.maps.iter().rposition(|r| Arc::ptr_eq(&r.doc, accepted)) {
             self.maps.truncate(index + 1);
-            if !active {
+            if !active || self.maps.len() == MAX_REVISIONS {
                 let generation = self.maps[index].generation;
-                let (audible, _) = self.read(Instant::now(), false, 0);
-                // When the device lead puts every block in the future, the first queued
-                // block still needs its map as soon as a destination connects.
-                let first_needed = audible.as_ref().or(self.blocks.front()).map_or(generation, |b| b.generation);
-                self.retire_before(generation.min(first_needed));
+                let now = Instant::now();
+                let first_needed = self.blocks.iter().rfind(|b| b.heard_at <= now).or(self.blocks.front()).map_or(generation, |b| b.generation);
+                if !active {
+                    self.retire_before(generation.min(first_needed));
+                }
+                if self.maps.len() == MAX_REVISIONS && self.maps[0].generation == first_needed {
+                    // The first scheduled block can still be ahead of the device. Keep
+                    // its map and the last accepted grid (the candidate can be rejected).
+                    let spare =
+                        self.maps.range(1..MAX_REVISIONS - 1).position(|revision| !self.blocks.iter().any(|b| b.generation == revision.generation));
+                    // If all maps back real blocks, keep the nearest transitions first
+                    // and report the dropped revision through the existing backlog metric.
+                    self.maps.remove(spare.map_or(MAX_REVISIONS - 2, |i| i + 1));
+                    self.maps.push_back(candidate);
+                    return spare.is_none();
+                }
             }
         }
         self.register(candidate, true)

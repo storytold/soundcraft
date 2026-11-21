@@ -400,7 +400,11 @@ mod tests {
         ctx.run_ui(Default::default(), |_| app.logic(&ctx)).textures_delta.clear();
         feed.receive(port, &[0xf2, 65, 0]);
         ctx.run_ui(Default::default(), |_| app.logic(&ctx)).textures_delta.clear();
+        // The input may already own a temporary strong reference to the old gate.
+        // A real edit must revoke that gate before it publishes any changed document.
+        let observed = app.engine.prepared_revision().upgrade().unwrap();
         app.run("track.new", json!({"kind":"midi"})).unwrap(); // edit between host frames; no session refresh
+        assert!(!*observed.lock().unwrap());
         feed.receive(port, &[0xfb]);
         feed.receive(port, &[0xf8]);
         assert!(!app.player.as_ref().unwrap().is_playing());
