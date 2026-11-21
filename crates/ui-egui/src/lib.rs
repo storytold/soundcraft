@@ -290,6 +290,8 @@ struct UnavailableOutput {
     name: String,
     // A stalled callback may resume. A stream explicitly invalidated by CPAL must be reopened.
     stalled_at_report: Option<u64>,
+    // Dismiss our idle warning on recovery only if it still occupies the status line.
+    idle_status: Option<String>,
 }
 
 pub struct SoundApp {
