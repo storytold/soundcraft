@@ -625,7 +625,7 @@ fn repeat(e: &mut Engine, p: &Value) -> Result<Value> {
 }
 
 fn shift(e: &mut Engine, p: &Value) -> Result<Value> {
-    let by = position_param(e, "edit.shift", p, "by")?.ok_or_else(|| bad("edit.shift", "`by` is required"))?;
+    let by = super::duration_param(e, "edit.shift", p, "by")?.ok_or_else(|| bad("edit.shift", "`by` is required"))?;
     let later = bool_or(p, "later", true);
     let ids = clip_ids_param(e, p);
     let s = e.session_mut();
@@ -981,7 +981,7 @@ fn move_clips(e: &mut Engine, p: &Value) -> Result<Value> {
         None => Vec::new(),
     };
     let first = ops::first_movable(s, &ids);
-    let delta = match (position_param(e, "edit.move_clips", p, "by")?, position_param(e, "edit.move_clips", p, "to")?) {
+    let delta = match (super::duration_param(e, "edit.move_clips", p, "by")?, position_param(e, "edit.move_clips", p, "to")?) {
         (Some(by), _) => by,
         (None, Some(to)) => to.saturating_sub(first.map_or(0, |c| c.start)),
         _ => 0,

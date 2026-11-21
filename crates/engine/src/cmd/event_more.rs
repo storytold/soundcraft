@@ -280,7 +280,7 @@ fn tempo_stretch(e: &mut Engine, p: &Value) -> Result<Value> {
         m.remove("length");
     }
     let (r, t0, t1) = selection_ticks(e, &range_params, id)?;
-    let factor = match position_param(e, id, p, "length")? {
+    let factor = match super::duration_param(e, id, p, "length")? {
         Some(l) if l > 0 => l as f64 / r.len() as f64,
         _ => f64_or(p, "factor", f64::NAN),
     };
@@ -484,7 +484,7 @@ fn performance(e: &mut Engine, p: &Value, flatten: bool) -> Result<Value> {
 fn midi_offsets(e: &mut Engine, p: &Value) -> Result<Value> {
     let id = "event.midi_track_offsets";
     let t = track_param(e, id, p, "track")?;
-    let off = position_param(e, id, p, "offset")?;
+    let off = super::duration_param(e, id, p, "offset")?;
     let s = e.session_mut();
     if let (Some(t), Some(o)) = (t, off) {
         let lim = s.sample_rate.samples(10.0);

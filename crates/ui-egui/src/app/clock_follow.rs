@@ -104,7 +104,7 @@ impl SoundApp {
             if self.clock_follow.enabled && (self.is_playing() || self.player.as_ref().is_some_and(|p| p.is_playing())) {
                 self.stop_play();
             }
-            self.engine.playback_tempo = None;
+            self.engine.clear_follow_grid();
             self.clock_follow = Host { enabled, ..Host::default() };
             self.refresh_playback_session();
         }
@@ -137,7 +137,7 @@ impl SoundApp {
     pub(super) fn refresh_playback_session(&self) {
         if let Some(player) = &self.player {
             if let Some(grid) = &self.engine.playback_tempo {
-                player.prepare_clock_session(self.engine.session_arc(), grid);
+                player.prepare_clock_session_with(self.engine.session_arc(), grid, |doc| self.engine.project_clock_takes(doc));
             } else {
                 player.update_session(self.engine.session_arc());
             }
@@ -163,10 +163,11 @@ impl SoundApp {
         let offset = self.ui.midi_sync.ports.get(name).map_or(0, |p| p.in_offset_samples).clamp(-limit, limit);
         // A previous grid may still be returning from the callback after rapid locates.
         // Prepare the exact settled grid here, before arming the next start.
-        player.prepare_clock_session(self.engine.session_arc(), grid);
+        player.prepare_clock_session_with(self.engine.session_arc(), grid, |doc| self.engine.project_clock_takes(doc));
         self.clock_follow.grid_dirty = false;
         let feed = inputs.feed();
-        player.arm_clock_resume(feed, feed.ports().assign(name), pulse, origin, offset, sr);
+        let location = soundcraft_playback::clock_follow::LocatedCue { pulse, origin, offset, rate: sr, revision: self.engine.prepared_revision() };
+        player.arm_clock_resume(feed, feed.ports().assign(name), location);
     }
 
     pub(crate) fn service_clock_follow(&mut self) {
@@ -178,7 +179,7 @@ impl SoundApp {
                 inputs.feed().set_clock_follow(None, true, 0);
             }
             self.clock_follow = Host::default();
-            self.engine.playback_tempo = None;
+            self.engine.clear_follow_grid();
             return;
         }
         let Some(name) = &self.ui.clock_follow_input else { return };
@@ -201,13 +202,20 @@ impl SoundApp {
         if self.engine.playback_tempo.is_none() {
             self.reset_follow_grid(initial_pulse, s.bpm);
         }
+        if let Some(grid) = self.player.as_ref().and_then(|p| p.take_rejected_follow_grid()) {
+            self.engine.playback_tempo = Some(grid);
+            self.clock_follow.grid_dirty = false;
+        }
         for event in events.drain(..) {
             self.clock_follow.pending_cue = None;
             match event {
                 Action::Locate(pulse) => {
                     self.clock_follow.pending_cue = Some(pulse);
                     self.clock_follow.anchor = None;
-                    if self.is_playing() {
+                    self.engine
+                        .transport_requests
+                        .retain(|r| !matches!(r, TransportRequest::ClockPlaybackStarted(_) | TransportRequest::PlayFromClock { .. }));
+                    if self.is_playing() || self.player.as_ref().is_some_and(|p| p.is_playing()) {
                         self.stop_play();
                     }
                     self.reset_follow_grid(pulse, s.bpm);
@@ -218,12 +226,15 @@ impl SoundApp {
                 Action::Play { pulse, at } | Action::Started { pulse, at, .. } => {
                     self.clock_follow.anchor = Some((pulse, at));
                     let tick = pulse.saturating_mul(TICKS_PER_PULSE);
-                    if let (Some(bpm), Some(grid)) = (s.bpm, &mut self.engine.playback_tempo)
+                    if !self.is_playing()
+                        && let (Some(bpm), Some(grid)) = (s.bpm, &mut self.engine.playback_tempo)
                         && grid.tempo_at_tick(tick) != bpm
                     {
                         self.clock_follow.grid_dirty |= grid.set_tempo(tick, bpm).is_ok();
                     }
-                    if let Action::Started { render_from, .. } = event {
+                    if let Action::Started { render_from, .. } = event
+                        && self.player.as_ref().is_some_and(|p| p.is_playing())
+                    {
                         self.engine.transport_requests.push(TransportRequest::ClockPlaybackStarted(render_from));
                         continue;
                     }
@@ -241,7 +252,19 @@ impl SoundApp {
         }
         self.clock_follow.actions = events;
         if let Some(grid) = self.engine.playback_tempo.as_mut() {
-            self.clock_follow.grid_dirty |= update_grid(grid, self.clock_follow.anchor, self.clock_follow.waiting_tick, s, sr);
+            self.clock_follow.grid_dirty |= update_grid(
+                grid,
+                self.clock_follow.anchor,
+                self.clock_follow.waiting_tick,
+                s,
+                sr,
+                self.player.as_ref().filter(|p| p.is_playing()).map_or(0, |p| {
+                    // Leave at least one external pulse and one device buffer for delivery.
+                    let pulse = 2.5 / s.bpm.unwrap_or(120.);
+                    let buffer = f64::from(p.device_buffer.unwrap_or(512)) / f64::from(p.device_rate.max(1));
+                    p.position().saturating_add(sr.samples(pulse.max(buffer)))
+                }),
+            );
             if self.clock_follow.grid_dirty && self.player.as_ref().is_none_or(|p| p.update_follow_grid(grid)) {
                 self.clock_follow.grid_dirty = false;
             }
@@ -297,7 +320,7 @@ impl SoundApp {
 
 // Only append tempo changes at or after the latest pulse. Elapsed playback and recorded
 // note positions remain fixed; future beat spacing follows the incoming clock and phase.
-fn update_grid(grid: &mut TempoMap, anchor: Option<(i64, i64)>, waiting_tick: i64, s: Snapshot, sr: SampleRate) -> bool {
+fn update_grid(grid: &mut TempoMap, anchor: Option<(i64, i64)>, waiting_tick: i64, s: Snapshot, sr: SampleRate, render_until: i64) -> bool {
     let Some(bpm) = s.bpm else { return false };
     let Some((origin, stamp)) = anchor else {
         if s.state == State::Waiting && (grid.tempo_at_tick(waiting_tick) - bpm).abs() >= 0.05 {
@@ -307,6 +330,9 @@ fn update_grid(grid: &mut TempoMap, anchor: Option<(i64, i64)>, waiting_tick: i6
         return false;
     };
     let tick = s.pulse.saturating_mul(TICKS_PER_PULSE);
+    if grid.tempos().last().is_some_and(|event| event.tick > tick) {
+        return false;
+    }
     let before = grid.tempos().partition_point(|event| event.tick <= tick);
     let last_edit_tick = grid.tempos()[..before].last().map_or(0, |event| event.tick);
     let since_edit = tick.saturating_sub(last_edit_tick);
@@ -325,7 +351,8 @@ fn update_grid(grid: &mut TempoMap, anchor: Option<(i64, i64)>, waiting_tick: i6
     // An event at this pulse leaves every earlier tick at precisely the same sample.
     let recovery_beats = if phase.abs() <= 0.006 { 8. } else { 4. };
     let target = bpm / (1. + (phase * bpm / (60. * recovery_beats)).clamp(-0.05, 0.05));
-    (slope - target).abs() >= 0.15 && grid.set_tempo(tick, target.clamp(5., 1000.)).is_ok()
+    (slope - target).abs() >= 0.15
+        && grid.set_tempo(tick.max(grid.samples_to_ticks(render_until, sr).saturating_add(1)), target.clamp(5., 1000.)).is_ok()
 }
 
 #[cfg(test)]
@@ -363,8 +390,7 @@ mod tests {
         ctx.run_ui(Default::default(), |_| app.logic(&ctx)).textures_delta.clear();
         feed.receive(port, &[0xf2, 65, 0]);
         ctx.run_ui(Default::default(), |_| app.logic(&ctx)).textures_delta.clear();
-        app.engine.session_mut().name = "edited".into();
-        app.refresh_playback_session();
+        app.run("track.new", json!({"kind":"midi"})).unwrap(); // edit between host frames; no session refresh
         feed.receive(port, &[0xfb]);
         feed.receive(port, &[0xf8]);
         assert!(!app.player.as_ref().unwrap().is_playing());
@@ -382,6 +408,64 @@ mod tests {
         assert!(app.player.as_ref().unwrap().is_playing());
         app.run("setup.midi_clock_follow", json!({"enabled":false})).unwrap();
         assert!(!app.player.as_ref().unwrap().is_playing());
+    }
+
+    #[test]
+    fn ui_patch_cannot_feed_beat_clock_back_into_the_source() {
+        let mut app = SoundApp::new(Default::default(), None, crate::Services::default());
+        app.run("setup.midi_clock_follow", json!({"input":"DIN","enabled":true})).unwrap();
+        let patch = |enabled: bool, port: &str| json!({"midi_sync":{"enabled":enabled,"ports":{(port):{"enabled":true}}}});
+        assert!(app.run("ui.set", patch(true, "DIN")).is_err());
+        assert!(!app.ui.midi_sync.enabled);
+        app.run("ui.set", patch(false, "DIN")).unwrap();
+        app.run("ui.set", patch(true, "OUT")).unwrap();
+        assert!(app.ui.midi_sync.ports["OUT"].enabled);
+    }
+
+    #[test]
+    fn replacement_player_handles_a_start_already_delivered_to_the_old_player() {
+        let engine = soundcraft_engine::Engine::default();
+        let player = soundcraft_playback::Player::new(engine.session_arc());
+        let mut app = SoundApp::new(engine, Some(player), crate::Services::default());
+        app.midi_inputs = Some(MidiInputs::with_port_names(vec![], vec!["DIN".into()]));
+        let feed = app.midi_inputs.as_ref().unwrap().feed().clone();
+        let port = feed.ports().assign("DIN");
+        app.run("setup.midi_clock_follow", json!({"input":"DIN","enabled":true})).unwrap();
+        let ctx = egui::Context::default();
+        feed.receive(port, &[0xf2, 64, 0]);
+        ctx.run_ui(Default::default(), |_| app.logic(&ctx)).textures_delta.clear();
+        feed.receive(port, &[0xfb, 0xf8]);
+        assert!(app.player.as_ref().unwrap().is_playing());
+        app.reconnect_audio();
+        assert!(!app.player.as_ref().unwrap().is_playing());
+        ctx.run_ui(Default::default(), |_| app.logic(&ctx)).textures_delta.clear();
+        assert!(app.player.as_ref().unwrap().is_playing());
+        assert!(app.is_playing());
+        assert!(app.position() >= 384_000);
+    }
+
+    #[test]
+    fn new_start_before_host_frame_cancels_the_acknowledgement_of_the_previous_roll() {
+        let engine = soundcraft_engine::Engine::default();
+        let player = soundcraft_playback::Player::new(engine.session_arc());
+        let mut app = SoundApp::new(engine, Some(player), crate::Services::default());
+        app.midi_inputs = Some(MidiInputs::with_port_names(vec![], vec!["DIN".into()]));
+        let feed = app.midi_inputs.as_ref().unwrap().feed().clone();
+        let port = feed.ports().assign("DIN");
+        app.run("setup.midi_clock_follow", json!({"input":"DIN","enabled":true})).unwrap();
+        feed.receive(port, &[0xf2, 64, 0]);
+        let ctx = egui::Context::default();
+        ctx.run_ui(Default::default(), |_| app.logic(&ctx)).textures_delta.clear();
+        feed.receive(port, &[0xfb, 0xf8]);
+        assert!(app.player.as_ref().unwrap().is_playing());
+        feed.receive(port, &[0xfa]);
+        ctx.run_ui(Default::default(), |_| app.logic(&ctx)).textures_delta.clear();
+        assert!(!app.player.as_ref().unwrap().is_playing());
+        assert!(!app.is_playing());
+        assert_eq!(app.position(), 0);
+        feed.receive(port, &[0xf8]);
+        ctx.run_ui(Default::default(), |_| app.logic(&ctx)).textures_delta.clear();
+        assert!(app.is_playing());
     }
 
     #[test]
@@ -474,7 +558,7 @@ mod tests {
         for pulse in 241..=1050 {
             let elapsed = (pulse - 240) as f64 * 2.5 / 130.;
             let snap = Snapshot { state: State::Locked, bpm: Some(130.), pulse, stamp_us: (elapsed * 1e6).round() as i64, ..Default::default() };
-            update_grid(grid, Some((240, 0)), 0, snap, sr);
+            update_grid(grid, Some((240, 0)), 0, snap, sr, 0);
             peak = peak.max(grid.tick_to_samples(pulse * TICKS_PER_PULSE, sr).abs_diff(origin + sr.samples(elapsed)));
         }
         eprintln!("backward SPP/Continue: peak {peak} samples");
@@ -586,18 +670,30 @@ mod tests {
     }
 
     #[test]
+    fn live_correction_keeps_notes_inside_already_rendered_audio() {
+        let mut grid = TempoMap::default();
+        let rate = SampleRate::new(48_000).unwrap();
+        let at = 121 * TICKS_PER_PULSE;
+        let before = grid.tick_to_samples(at, rate);
+        let s = Snapshot { pulse: 120, stamp_us: 2_666_667, bpm: Some(90.), state: State::Locked, ..Default::default() };
+        assert!(update_grid(&mut grid, Some((96, 2_000_000)), 0, s, rate, 121_200));
+        assert_eq!(grid.tick_to_samples(at, rate), before);
+        assert!(grid.tempo_at_tick(at + 2 * TICKS_PER_PULSE) < 120.);
+    }
+
+    #[test]
     fn tempo_step_updates_future_beat_spacing_and_preserves_elapsed_bars() {
         let mut grid = TempoMap::default();
         let rate = SampleRate::new(48000).unwrap();
         let anchor = Some((96, 2_000_000));
         let s = Snapshot { pulse: 120, stamp_us: 2_666_667, bpm: Some(90.), state: State::Locked, ..Default::default() };
-        assert!(update_grid(&mut grid, anchor, 0, s, rate));
+        assert!(update_grid(&mut grid, anchor, 0, s, rate, 0));
         assert_eq!(grid.tick_to_samples(96 * TICKS_PER_PULSE, rate), 96_000);
         // When the source stepped between observations, preserve the samples already played.
         assert_eq!(grid.tick_to_samples(120 * TICKS_PER_PULSE, rate), 120_000);
         for pulse in 121..=504 {
             let s = Snapshot { pulse, stamp_us: 2_000_000 + (pulse - 96) * 2_000_000 / 72, ..s };
-            update_grid(&mut grid, anchor, 0, s, rate);
+            update_grid(&mut grid, anchor, 0, s, rate, 0);
         }
         assert_eq!(grid.tick_to_samples(120 * TICKS_PER_PULSE, rate), 120_000);
         let master = rate.samples(2. + 408. * 2.5 / 90.);
@@ -626,7 +722,7 @@ mod tests {
             }
             let snapshot = Snapshot { state: State::Locked, bpm: Some(bpm), pulse, stamp_us: stamp.round() as i64, ..Default::default() };
             let update_started = std::time::Instant::now();
-            if update_grid(&mut grid, anchor, 0, snapshot, sr) {
+            if update_grid(&mut grid, anchor, 0, snapshot, sr, sr.samples(stamp / 1e6 + 0.025)) {
                 published_cost.push(update_started.elapsed());
                 let actual = grid.tick_to_samples(passed_bar.0, sr);
                 if actual != passed_bar.1 && first_rewrite.is_none() {
@@ -671,7 +767,7 @@ mod tests {
             pulse += 1;
             if pulse % 6 == 0 {
                 let snapshot = Snapshot { state: State::Locked, bpm: Some(bpm), pulse, stamp_us: stamp.round() as i64, ..Default::default() };
-                update_grid(&mut grid, Some((0, 0)), 0, snapshot, rate);
+                update_grid(&mut grid, Some((0, 0)), 0, snapshot, rate, rate.samples(stamp / 1e6 + 0.025));
                 let now = std::time::Instant::now();
                 let sample = std::hint::black_box(grid.tick_to_samples(pulse * TICKS_PER_PULSE, rate));
                 lookup_cost.push(now.elapsed());

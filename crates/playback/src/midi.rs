@@ -155,6 +155,7 @@ pub struct MidiFeed {
     sync_wake: Mutex<Option<TransportWaker>>,
     mtc_online: AtomicBool,
     mtc_relocates: AtomicU64,
+    mtc_lock_generation: AtomicU64,
     mtc_wake: std::sync::OnceLock<Box<dyn Fn() + Send + Sync>>,
     ports: Arc<MidiPorts>,
     incoming: Ring,
@@ -213,6 +214,7 @@ impl Default for MidiFeed {
             sync_wake: Mutex::default(),
             mtc_online: false.into(),
             mtc_relocates: 0.into(),
+            mtc_lock_generation: 0.into(),
             ports: Arc::new(MidiPorts::default()),
             incoming: Ring::new(INCOMING),
             writers: Mutex::new(0),
@@ -326,12 +328,12 @@ impl MidiFeed {
 
     pub fn set_mtc_options(&self, rate: soundcraft_time::FrameRate, freewheel_frames: u8, jam_sync: bool, external_offset_samples: i64) {
         let mut r = self.mtc.lock().unwrap_or_else(PoisonError::into_inner);
-        r.options = crate::mtc_input::Options {
+        r.set_options(crate::mtc_input::Options {
             rate,
             freewheel: if freewheel_frames == 0 { 0 } else { freewheel_frames.clamp(4, 40) },
             jam: jam_sync,
             offset: external_offset_samples,
-        };
+        });
     }
     pub fn mtc_input_status(&self) -> (Option<crate::mtc_input::Position>, Option<crate::mtc_input::RateMismatch>) {
         self.mtc.lock().unwrap_or_else(PoisonError::into_inner).incoming_status()
@@ -363,7 +365,7 @@ impl MidiFeed {
     }
 
     pub(crate) fn is_mtc_lock(&self, lock: u64) -> bool {
-        self.mtc.try_lock().is_ok_and(|reader| reader.stats.locks == lock)
+        self.mtc_lock_generation.load(Ordering::Acquire) == lock
     }
 
     pub fn set_clock_follow(&self, port: Option<u8>, coast: bool, initial_pulse: i64) {
@@ -418,6 +420,7 @@ impl MidiFeed {
             let arrival = self.now();
             let mut reader = self.mtc.lock().unwrap_or_else(PoisonError::into_inner);
             if reader.source == Some(port) && open.is_none_or(|gate| gate.load(Ordering::Acquire)) && reader.receive(bytes, at_us, arrival) {
+                self.mtc_lock_generation.store(reader.stats.locks, Ordering::Release);
                 self.wake_mtc_output(&reader);
                 drop(reader);
                 self.wake_mtc_host();
@@ -439,7 +442,9 @@ impl MidiFeed {
             if open.is_some_and(|o| !o.load(Ordering::Acquire)) {
                 return;
             }
-            let now = at_us;
+            // The channel-event FIFO uses host arrival order across all ports.
+            // Sync decoders above retain the device timestamp for clock fitting.
+            let now = self.now();
             // Losses from a full queue go into the queue first, where they happened: ahead of
             // the first event that fits again. Each mark carries the time its port's events
             // were dropped at (nothing of that port got into the queue since), so the audio
@@ -1086,6 +1091,24 @@ mod tests {
     use super::*;
 
     #[test]
+    fn observed_stop_identifies_current_lock_while_reader_is_busy() {
+        let feed = MidiFeed::default();
+        feed.set_mtc_source(Some(1));
+        for frame in [0, 2] {
+            for (i, v) in [frame, 0, 0, 0, 0, 0, 0, 6].into_iter().enumerate() {
+                feed.receive(1, &[0xf1, ((i as u8) << 4) | v]);
+            }
+        }
+        feed.receive(1, &[0xfc]);
+        let (event, generation) = feed.take_mtc_with_lock().unwrap();
+        assert_eq!(event, crate::mtc_input::ChaseEvent::Stop);
+        assert!(generation > 0);
+        let _busy = feed.mtc.lock().unwrap();
+        assert!(feed.is_mtc_lock(generation));
+        assert!(!feed.is_mtc_lock(generation - 1));
+    }
+
+    #[test]
     fn port_names_lose_addresses_and_repeated_client_names() {
         for (raw, want) in [
             ("Launchkey MK3:Launchkey MK3 MIDI 1 28:0", "Launchkey MK3 MIDI 1"),
@@ -1301,6 +1324,15 @@ mod tests {
         // Written once.
         f.receive(0, &[0x80, 64, 0]);
         assert_eq!(std::iter::from_fn(|| f.next()).map(|(_, e)| e.status).collect::<Vec<_>>(), [0x80]);
+    }
+
+    #[test]
+    fn channel_events_use_admission_time_even_when_the_device_stamp_precedes_stop() {
+        let f = MidiFeed::default();
+        f.set_clock(20_000);
+        f.receive_from(None, 0, &[0x80, 60, 0], 10_000);
+        let (stamp, event) = f.next().unwrap();
+        assert_eq!((stamp, event.status), (20_000, 0x80));
     }
 
     #[test]

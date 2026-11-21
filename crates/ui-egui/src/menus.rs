@@ -900,6 +900,12 @@ pub fn run_ui_command(app: &mut SoundApp, id: &str, p: &Value) -> Option<Result<
                         if let Err(error) = crate::docking::validate(&ns.docking).and_then(|()| crate::docking::validate_mix(&ns.mix_docking)) {
                             return Some(Err(error));
                         }
+                        if let Err(error) = app.validate_sync_routing(&ns.midi_sync, ns.clock_follow_input.as_deref()) {
+                            return Some(Err(error));
+                        }
+                        if app.mtc_online && ns.gen_mtc {
+                            return Some(Err("Take MTC chase offline before enabling the generator".into()));
+                        }
                         let closed_preferences = app.ui.show_preferences && !ns.show_preferences;
                         crate::docking::cancel_replaced_state(app, &ns);
                         app.ui = ns;

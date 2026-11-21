@@ -94,9 +94,20 @@ fn lost_covers(lost: u8, device: u8) -> bool {
 /// that holds for a key still down when the pass stops too ([`MidiPass::Loop`]). In a pass that
 /// did not loop ([`MidiPass::Linear`]) nothing is read as the loop going round.
 fn midi_take_sequence(s: &Session, input: &MidiInput<'_>, range: Range, pass: MidiPass, events: &[MidiTakeEvent], devices: &[String]) -> Sequence {
+    midi_take_on_grid(s, &s.tempo, input, range, pass, events, devices)
+}
+fn midi_take_on_grid(
+    s: &Session,
+    tempo: &soundcraft_time::TempoMap,
+    input: &MidiInput<'_>,
+    range: Range,
+    pass: MidiPass,
+    events: &[MidiTakeEvent],
+    devices: &[String],
+) -> Sequence {
     let sr = s.sample_rate;
-    let base = s.tempo.samples_to_ticks(range.start, sr);
-    let tick = |at: Samples| s.tempo.samples_to_ticks(at, sr).saturating_sub(base).max(0);
+    let base = tempo.samples_to_ticks(range.start, sr);
+    let tick = |at: Samples| tempo.samples_to_ticks(at, sr).saturating_sub(base).max(0);
     let end_tick = tick(range.end).max(1);
     let looped = matches!(pass, MidiPass::Loop { .. });
     // Whether a release earlier on the timeline than its press says that the loop went round.
@@ -254,22 +265,31 @@ pub fn add_midi_recording_from(
     out.gaps =
         events.iter().take(MAX_MIDI_TAKE_EVENTS).filter(|ev| ev.status == MidiTakeEvent::LOST && ev.at >= range.start && ev.at < range.end).count()
             + usize::from(events.len() > MAX_MIDI_TAKE_EVENTS);
-    let takes: Vec<(TrackId, String, Sequence)> = {
-        let doc = e.playback_session();
-        let s = &*doc;
+    let takes: Vec<_> = {
+        let s = e.session();
         s.tracks
             .iter()
             .filter_map(|t| {
                 let (_, route) = inputs.iter().find(|(id, _)| *id == t.id)?;
-                Some((t.id, t.name.clone(), midi_take_sequence(s, &MidiInput::of(route), range, pass, events, devices)))
+                let input = MidiInput::of(route);
+                let score = midi_take_sequence(s, &input, range, pass, events, devices);
+                let live = e
+                    .playback_tempo
+                    .as_ref()
+                    .filter(|grid| *grid != &s.tempo)
+                    .map(|grid| midi_take_on_grid(s, grid, &input, range, pass, events, devices));
+                Some((t.id, t.name.clone(), score, live))
             })
-            .filter(|(_, _, seq)| !seq.notes.is_empty() || !seq.ctrls.is_empty())
+            .filter(|(_, _, seq, _)| !seq.notes.is_empty() || !seq.ctrls.is_empty())
             .collect()
     };
-    for (tid, name, seq) in takes {
-        let s = e.session_mut();
-        let cid = s.new_clip_id();
-        crate::edit::place_clip(s, tid, Clip::midi(cid, name, range.start, range.len(), seq));
+    e.prune_clock_takes();
+    for (tid, name, seq, live) in takes {
+        let cid = e.session_mut().new_clip_id();
+        if let Some(live) = live {
+            e.follow_takes.insert(cid, (seq.clone(), live));
+        }
+        crate::edit::place_clip(e.session_mut(), tid, Clip::midi(cid, name, range.start, range.len(), seq));
         out.clips.push(cid);
     }
     if !out.clips.is_empty() && !same_pass {
@@ -295,8 +315,12 @@ mod tests {
         add_midi_recording(&mut e, range, &[ev(q, 0, 0x90, 65, 127), ev(2 * q, 0, 0x80, 65, 0)], &["keys".into()], false);
         let seq = sequence(&e, t, range);
         assert_eq!(seq.notes.len(), 1);
-        assert_eq!(seq.notes[0].start, soundcraft_time::TICKS_PER_QUARTER);
+        assert_eq!(original.tick_to_samples(seq.notes[0].start, e.session().sample_rate), q);
         assert_eq!(e.session().tempo, original);
+        let playback = e.playback_session();
+        let ClipContent::Midi { sequence } = &playback.track(t).unwrap().clips()[0].content else { panic!("expected a MIDI clip") };
+        assert_eq!(sequence.notes[0].start, soundcraft_time::TICKS_PER_QUARTER);
+        assert_eq!(playback.tempo.tick_to_samples(sequence.notes[0].start, playback.sample_rate), q);
     }
 
     fn armed(e: &mut Engine, name: &str, input: &str) -> TrackId {

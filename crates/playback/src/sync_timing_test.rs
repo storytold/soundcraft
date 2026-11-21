@@ -25,7 +25,9 @@ fn beat_clock_host_timing() {
         let stats = Arc::new(Stats::default());
         let worker_stats = stats.clone();
         let worker = std::thread::spawn(move || {
-            drive(worker_view, Arc::new(session), rx, Arc::default(), worker_stats, move |_| Ok((Sink(samples.clone()), None)))
+            drive(worker_view, Arc::new(session), rx, Arc::default(), worker_stats.clone(), move |_| {
+                Ok((PortIo::new(Sink(samples.clone()), worker_stats.clone())?, None))
+            })
         });
         tx.send(Update::Beats(vec![("in-process".into(), 0)], true)).unwrap();
         let start = Instant::now() + Duration::from_millis(80);
@@ -83,7 +85,8 @@ fn beat_clock_host_timing() {
         std::thread::sleep((end + lead).saturating_duration_since(Instant::now()));
         drop(tx);
         worker.join().unwrap();
-        let rows = record.try_iter().collect::<Vec<_>>();
+        // The final Stop drains on the per-port delivery thread after the scheduler exits.
+        let rows = record.iter().collect::<Vec<_>>();
         let stamps = rows.iter().filter(|(_, _, m)| m == &[CLOCK]).collect::<Vec<_>>();
         let mut late = stamps.iter().map(|(t, a, _)| a.saturating_duration_since(*t).as_secs_f64() * 1000.).collect::<Vec<_>>();
         let mut errors = stamps.windows(2).map(|p| ((p[1].1 - p[0].1).as_secs_f64() * 1000. - 60_000. / (180. * 24.)).abs()).collect::<Vec<_>>();

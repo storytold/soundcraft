@@ -290,12 +290,16 @@ impl AudioState {
                 }
                 #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
                 Cmd::Clock(clock) => self.clock = clock,
-                Cmd::FollowGrid(generation, s, retired) => {
+                Cmd::FollowGrid(generation, boundary, s, retired) => {
+                    if self.playing && self.pos > boundary {
+                        let _ = retired.set((s, Some(self.session.clone())));
+                        continue;
+                    }
                     self.session_generation = generation;
                     // Exactly one writer; the host empties the slot before sending this ticket.
                     // A full/disconnected general-purpose reclamation queue cannot free this
                     // snapshot here. Releasing the ticket allows the host to take it back.
-                    let _ = retired.set(std::mem::replace(&mut self.session, s));
+                    let _ = retired.set((std::mem::replace(&mut self.session, s), None));
                 }
                 Cmd::OldSessions(tx) => self.old_sessions = Some(tx),
                 Cmd::Play { from, end, looped } => self.begin_play(from, end, looped, false),
@@ -1208,6 +1212,7 @@ pub(crate) struct Side {
     pub(crate) clock_document: std::sync::Weak<Session>,
     // Index of the last published tempo-only snapshot, or None for the full base.
     published_grid: Option<usize>,
+    pub(crate) retry_grid: Option<soundcraft_time::TempoMap>,
     // Device and output worker may retain snapshots independently. Reuse only exclusively
     // owned entries. When all are occupied, the host coalesces edits until one returns.
     follow_pool: [Option<Arc<Session>>; FOLLOW_POOL_SLOTS],
@@ -1224,6 +1229,7 @@ impl Side {
             grid_base: None,
             clock_document: Default::default(),
             published_grid: None,
+            retry_grid: None,
             follow_pool: Default::default(),
             grid_return: Default::default(),
             shadow: HashMap::new(),
@@ -1240,6 +1246,7 @@ impl Side {
     pub(crate) fn set_follow_base(&mut self, doc: Arc<Session>) {
         self.grid_base = Some(doc);
         self.published_grid = None;
+        self.retry_grid = None;
         self.follow_pool = Default::default();
     }
 
@@ -1275,8 +1282,11 @@ impl Side {
     /// Drops retired instances (closing their editors first, inside the plugin's drop) and
     /// replaced session snapshots.
     pub(crate) fn collect_garbage(&mut self) {
-        if let Some(retired) = Arc::get_mut(&mut self.grid_return) {
-            retired.take();
+        if let Some((candidate, Some(active))) = Arc::get_mut(&mut self.grid_return).and_then(|returned| returned.take())
+            && self.published_grid.and_then(|i| self.follow_pool[i].as_ref()).is_some_and(|sent| Arc::ptr_eq(sent, &candidate))
+        {
+            self.published_grid = self.follow_pool.iter().position(|slot| slot.as_ref().is_some_and(|s| Arc::ptr_eq(s, &active)));
+            self.retry_grid = Some(active.tempo.clone());
         }
         while let Ok(g) = self.garbage.try_recv() {
             for p in g {

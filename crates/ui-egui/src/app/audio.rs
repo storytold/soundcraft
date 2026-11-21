@@ -122,7 +122,10 @@ impl SoundApp {
 
     /// Reopen the audio devices, keeping a take in progress.
     pub fn reconnect_audio(&mut self) {
-        if self.is_playing() || self.engine.transport.recording {
+        if let Some(p) = &self.player {
+            p.cancel_clock_resume();
+        }
+        if self.is_playing() || self.engine.transport.recording || self.player.as_ref().is_some_and(|p| p.is_playing()) {
             self.stop_play();
         }
         if let Some(p) = &self.player {

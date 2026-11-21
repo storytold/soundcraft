@@ -72,6 +72,22 @@ impl MidiSync {
 }
 
 impl SoundApp {
+    pub(crate) fn validate_sync_routing(&self, next: &MidiSync, input: Option<&str>) -> Result<(), String> {
+        next.validate(self.ui.midi_sync.ports.len())?;
+        if self.clock_follow.enabled && next.enabled && input.is_some_and(|name| next.ports.get(name).is_some_and(|p| p.enabled)) {
+            return Err("Choose separate MIDI ports for Beat Clock output and external clock follow".into());
+        }
+        let limit = soundcraft_playback::max_sync_offset_samples(self.engine.session().sample_rate);
+        if next.ports.iter().any(|(name, port)| {
+            let previous = self.ui.midi_sync.ports.get(name);
+            (port.out_offset_samples.unsigned_abs() > limit as u64 && previous.map(|p| p.out_offset_samples) != Some(port.out_offset_samples))
+                || (port.in_offset_samples.unsigned_abs() > limit as u64 && previous.map(|p| p.in_offset_samples) != Some(port.in_offset_samples))
+        }) {
+            return Err("MIDI port calibration must be within 250 ms at the session sample rate".into());
+        }
+        Ok(())
+    }
+
     pub(crate) fn sync_command(&mut self, id: &str, args: &Value) -> Result<Value, String> {
         self.migrate_midi_sync();
         if id == "setup.midi_sync_status" {
@@ -142,20 +158,7 @@ impl SoundApp {
                 self.ui.mtc_output_port.as_deref(),
             ]);
         }
-        next.validate(self.ui.midi_sync.ports.len())?;
-        if self.clock_follow.enabled
-            && next.enabled
-            && self.ui.clock_follow_input.as_deref().is_some_and(|name| next.ports.get(name).is_some_and(|p| p.enabled))
-        {
-            return Err("Choose separate MIDI ports for Beat Clock output and external clock follow".into());
-        }
-        let limit = soundcraft_playback::max_sync_offset_samples(self.engine.session().sample_rate);
-        if next.ports.iter().any(|(name, port)| {
-            port.out_offset_samples.unsigned_abs() > limit as u64
-                && self.ui.midi_sync.ports.get(name).map(|previous| previous.out_offset_samples) != Some(port.out_offset_samples)
-        }) {
-            return Err("MIDI port calibration must be within 250 ms at the session sample rate".into());
-        }
+        self.validate_sync_routing(&next, self.ui.clock_follow_input.as_deref())?;
         self.ui.midi_sync = next;
         let config = &self.ui.midi_sync;
         let first = config.ports.iter().find(|(_, p)| p.enabled);

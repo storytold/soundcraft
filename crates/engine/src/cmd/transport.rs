@@ -48,11 +48,18 @@ fn cur(e: &Engine) -> i64 {
 }
 
 fn locate(e: &mut Engine, at: i64) -> Result<Value> {
-    let s = e.session_mut();
-    s.edit.playhead = at;
-    if s.edit.selection.is_empty() || !s.edit.selection.contains(at) {
-        s.edit.selection = soundcraft_time::Range::point(at);
-    }
+    e.set_stopped_cursor(at);
     e.transport_requests.push(TransportRequest::Locate(at));
     Ok(json!({"at": at}))
+}
+
+impl Engine {
+    /// Mirror a stopped location into the edit cursor without issuing another device seek.
+    pub fn set_stopped_cursor(&mut self, at: i64) {
+        let s = self.session_mut();
+        s.edit.playhead = at;
+        if s.edit.selection.is_empty() || !s.edit.selection.contains(at) {
+            s.edit.selection = soundcraft_time::Range::point(at);
+        }
+    }
 }

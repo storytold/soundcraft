@@ -48,6 +48,9 @@ impl Position {
     }
 
     pub fn samples(self, sr: SampleRate) -> Samples {
+        if self.quarter % 4 == 0 {
+            return self.rate.samples_at_frame(self.quarter / 4, sr);
+        }
         (self.quarter as f64 * (self.rate.samples_per_frame(sr) / 4.)).round() as Samples
     }
 
@@ -178,6 +181,15 @@ impl Reader {
         self.fit.clear();
         self.jitter_count = 0;
         self.jitter_index = 0;
+    }
+    pub(crate) fn set_options(&mut self, options: Options) {
+        if (options.offset != self.options.offset || options.rate != self.options.rate)
+            && !self.locked
+            && let Some(p) = self.located_start
+        {
+            self.pending = Some(ChaseEvent::Locate(p));
+        }
+        self.options = options;
     }
     pub(crate) fn incoming_status(&self) -> (Option<Position>, Option<RateMismatch>) {
         let mismatch = self.incoming.and_then(|p| {
@@ -480,6 +492,14 @@ mod tests {
         for (i, nibble) in [frame & 15, frame >> 4, 0, 0, 0, 0, 0, 2].into_iter().enumerate() {
             receive(&[0xf1, (i as u8) << 4 | nibble]);
         }
+    }
+
+    #[test]
+    fn full_frame_locate_matches_fractional_rate_session_start() {
+        let rate = FrameRate::Fps29_97;
+        let sr = SampleRate::default();
+        let p = Position::decode(0x60, 0, 0, 2).unwrap();
+        assert_eq!(p.session_sample(rate, sr, rate.samples_at_frame(2, sr), 0), 0);
     }
 
     #[test]

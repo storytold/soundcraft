@@ -102,10 +102,19 @@ fn record_through_loss(policy: &str) {
         };
         assert!((sample - expected).abs() < 0.0001);
     }
-    let clips = s.track(midi).unwrap().clips();
+    let live = app.engine.playback_session();
+    let clips = live.track(midi).unwrap().clips();
     assert_eq!((clips.len(), clips[0].start, clips[0].range().len()), (1, start, expected_len));
     let ClipContent::Midi { sequence } = &clips[0].content else { panic!("expected MIDI") };
     let notes: Vec<_> = sequence.notes.iter().map(|n| (n.pitch, n.start)).collect();
     assert_eq!(notes, if coast { vec![(60, 0), (67, 400), (72, 800)] } else { vec![(60, 0)] });
+    app.run("setup.midi_clock_follow", json!({"enabled":false})).unwrap();
+    let reopened = soundcraft_model::Session::from_json(&app.engine.session().to_json().unwrap()).unwrap();
+    let clip = &reopened.track(midi).unwrap().clips()[0];
+    let ClipContent::Midi { sequence } = &clip.content else {
+        panic!("expected saved MIDI");
+    };
+    let samples: Vec<_> = sequence.notes.iter().map(|n| reopened.tempo.tick_to_samples(n.start, reopened.sample_rate)).collect();
+    assert_eq!(samples, if coast { vec![0, 12_000, 24_000] } else { vec![0] });
     std::fs::remove_dir_all(app.fallback_take_dir.as_ref().unwrap()).unwrap();
 }

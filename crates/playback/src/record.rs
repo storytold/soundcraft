@@ -100,6 +100,7 @@ fn finite(x: f32) -> f32 {
 
 struct Shared {
     armed: AtomicBool,
+    take_generation: AtomicU64,
     ring: CaptureRing,
     /// Samples lost while the ring was full.
     dropped: AtomicUsize,
@@ -114,7 +115,7 @@ struct Shared {
 impl Shared {
     fn new(ring: CaptureRing) -> Shared {
         let (beats, fault, failed) = (AtomicU64::new(0), AtomicU8::new(0), Mutex::new(None));
-        Shared { armed: AtomicBool::new(false), ring, dropped: AtomicUsize::new(0), beats, fault, failed }
+        Shared { armed: AtomicBool::new(false), take_generation: AtomicU64::new(0), ring, dropped: AtomicUsize::new(0), beats, fault, failed }
     }
 
     /// Run the input callback's `work`. After a panic in it, the input is broken and does
@@ -123,6 +124,17 @@ impl Shared {
         self.beats.fetch_add(1, Ordering::Relaxed);
         if self.fault.load(Ordering::Relaxed) != BROKEN && std::panic::catch_unwind(std::panic::AssertUnwindSafe(work)).is_err() {
             self.fault.store(BROKEN, Ordering::Relaxed);
+        }
+    }
+
+    fn capture_if_armed(&self, data: &[f32], generation: &mut u64, owed: &mut usize) {
+        if self.armed.load(Ordering::Acquire) {
+            let current = self.take_generation.load(Ordering::Acquire);
+            if *generation != current {
+                *generation = current;
+                *owed = 0;
+            }
+            self.capture(data, owed);
         }
     }
 
@@ -170,7 +182,7 @@ where
     let mon = Arc::clone(monitor);
     let mut scratch = vec![0.0f32; 8192 * usize::from(config.channels).max(1)];
     let chunk = scratch.len();
-    let mut owed = 0;
+    let (mut generation, mut owed) = (0, 0);
     device.build_input_stream(
         config,
         move |data: &[T], _: &cpal::InputCallbackInfo| {
@@ -182,11 +194,7 @@ where
                         *o = f32::from_sample(*x);
                     }
                     mon.push(s);
-                    if sh.armed.load(Ordering::Acquire) {
-                        sh.capture(s, &mut owed);
-                    } else {
-                        owed = 0;
-                    }
+                    sh.capture_if_armed(s, &mut generation, &mut owed);
                 }
             });
         },
@@ -239,18 +247,14 @@ impl Recorder {
     }
 
     /// A mono 48 kHz input feeding the ordinary take writer without opening a device.
-    #[cfg(feature = "test-input")]
+    #[cfg(any(test, feature = "test-input"))]
     pub fn simulated_input() -> (Self, impl FnMut(&[f32])) {
         let shared = Arc::new(Shared::new(CaptureRing::new(48_000)));
         let recorder = Self::from_test_input(&shared);
-        let mut owed = 0;
+        let (mut generation, mut owed) = (0, 0);
         (recorder, move |samples| {
             shared.guarded(|| {
-                if shared.armed.load(Ordering::Acquire) {
-                    shared.capture(samples, &mut owed);
-                } else {
-                    owed = 0;
-                }
+                shared.capture_if_armed(samples, &mut generation, &mut owed);
             });
         })
     }
@@ -336,6 +340,7 @@ impl Recorder {
         let ring = &self.shared.ring;
         ring.tail.store(ring.head.load(Ordering::Acquire), Ordering::Release);
         *self.shared.failed.lock().unwrap_or_else(PoisonError::into_inner) = None;
+        self.shared.take_generation.fetch_add(1, Ordering::Release);
         self.shared.armed.store(true, Ordering::Release);
         let (shared, channels) = (Arc::clone(&self.shared), self.channels);
         match std::thread::Builder::new().name("take writer".into()).spawn(move || write_takes(&shared, takes, channels)) {
@@ -566,6 +571,30 @@ mod tests {
 
     /// Files no take in these tests fills.
     const ONE_FILE: TakeFiles = TakeFiles { samples: u64::MAX, part };
+
+    #[test]
+    fn overflow_silence_stays_with_the_take_that_overflowed() {
+        let dir = std::env::temp_dir().join(format!("soundcraft-take-debt-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let (mut recorder, mut input) = Recorder::simulated_input();
+        for (i, data) in [vec![0.25; 70_000], vec![0.5; 16]].iter().enumerate() {
+            let path = dir.join(format!("{i}.wav"));
+            let _ = std::fs::remove_file(&path);
+            recorder.arm(vec![(TrackId(1), vec![0], path.clone())], ONE_FILE).unwrap();
+            input(data);
+            let (_, err) = recorder.finish();
+            if i == 0 {
+                assert!(err.as_deref().is_some_and(|e| e.contains("input lost")));
+            } else {
+                assert_eq!(err, None);
+                let samples = decode(&path);
+                assert_eq!(samples[0].len(), data.len());
+                assert_eq!(&samples[0], data);
+            }
+            std::fs::remove_file(path).unwrap();
+        }
+        std::fs::remove_dir(dir).unwrap();
+    }
 
     #[test]
     fn a_full_ring_owes_the_lost_samples_as_silence() {

@@ -986,7 +986,10 @@ fn control_ui(ui: &mut egui::Ui, page: PreferencesPage, section: &str, index: us
                 "MIDI Timecode" => &mut draft.compensation.mtc,
                 _ => &mut draft.compensation.notes,
             };
-            let response = ui.checkbox(value, label(text));
+            let supported = matches!(text, "MIDI Beat Clock" | "MIDI Timecode");
+            let response = ui
+                .add_enabled(supported, egui::Checkbox::new(value, label(text)))
+                .on_disabled_hover_text(crate::localization::text("This preference is not available yet."));
             if text == "MIDI Beat Clock" {
                 response
                     .on_hover_text(crate::localization::text("Include the reported audio output lead and the mixer's compensated plug-in delay."));

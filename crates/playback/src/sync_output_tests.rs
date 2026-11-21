@@ -37,7 +37,7 @@ fn active_port(offset: i64, compensate: bool) -> Port<FakePort> {
         routes: [Some(Route { map: None, offset, compensate, encoder: Box::<Cursor>::default() }), None],
         failure: None,
         future: Vec::new(),
-        stop_pending: false,
+        cleanup: Default::default(),
     }
 }
 
@@ -847,7 +847,7 @@ fn tempo_change_relocates_when_the_new_map_becomes_audible() {
 }
 
 #[test]
-fn unavailable_session_generations_fall_forward_and_report_backlog_drops() {
+fn unavailable_session_generations_cannot_encode_with_a_future_map() {
     use crate::sync_clock::MAX_REVISIONS;
     let (cmd, _rx) = channel();
     let mut out = Output::default();
@@ -858,10 +858,10 @@ fn unavailable_session_generations_fall_forward_and_report_backlog_drops() {
     }
     let latest = out.generation;
     let mut timeline = out.view.lock().unwrap();
-    assert_eq!(timeline.map(1).unwrap().generation, latest);
+    assert!(timeline.map(1).is_none());
     assert_eq!(timeline.map(2).unwrap().generation, 2);
     timeline.retire_before(latest);
-    assert_eq!(timeline.map(2).unwrap().generation, latest);
+    assert!(timeline.map(2).is_none());
     drop(timeline);
     assert_eq!(out.status().session_backlog_drops, 1);
 }
@@ -908,4 +908,199 @@ fn connected_worker_accepts_control_and_shuts_down_while_a_future_message_is_pen
     let shutdown = elapsed.elapsed();
     eprintln!("control={control:?} shutdown={shutdown:?}");
     assert!(shutdown < bound, "Output::drop took {shutdown:?}");
+}
+
+#[test]
+fn native_send_stalled_on_one_port_does_not_hold_other_ports_or_shutdown() {
+    struct Native {
+        gate: Option<Receiver<()>>,
+        entered: Sender<()>,
+        wire: Sender<Vec<u8>>,
+    }
+    impl SyncPort for Native {
+        fn send_at(&mut self, _: Instant, msg: &[u8]) -> Result<Instant, String> {
+            if let Some(gate) = self.gate.take() {
+                self.entered.send(()).unwrap();
+                gate.recv().unwrap();
+            }
+            let _ = self.wire.send(msg.to_vec());
+            Ok(Instant::now())
+        }
+    }
+    let view = View::default();
+    view.lock().unwrap().push(block(Instant::now(), 0., 48_000., Duration::ZERO));
+    let (unblock, gate) = channel();
+    let (entered, blocked) = channel();
+    let (healthy, received) = channel();
+    let (busy, held) = channel();
+    let (tx, rx) = channel();
+    let (closed, drained) = channel();
+    let worker = std::thread::spawn(move || {
+        let mut gate = Some(gate);
+        let stats = Arc::<Stats>::default();
+        drive(view, Arc::new(Session::default()), rx, Default::default(), stats.clone(), move |name| {
+            let port = Native {
+                gate: if name == "busy" { gate.take() } else { None },
+                entered: entered.clone(),
+                wire: if name == "busy" { busy.clone() } else { healthy.clone() },
+            };
+            Ok((PortIo::new(port, stats.clone())?, None))
+        });
+        closed.send(()).unwrap();
+    });
+    tx.send(Update::Beats(vec![("busy".into(), 0)], false)).unwrap();
+    blocked.recv_timeout(Duration::from_secs(2)).unwrap();
+    tx.send(Update::Beats(vec![("busy".into(), 0), ("healthy".into(), 0)], false)).unwrap();
+    // Let the healthy port advance many deadlines while the first native call
+    // is gated. The busy port must not accumulate a burst of obsolete clocks.
+    for _ in 0..8 {
+        while received.recv_timeout(Duration::from_secs(2)).unwrap() != [CLOCK] {}
+    }
+    drop(tx);
+    drained.recv_timeout(Duration::from_secs(2)).unwrap();
+    assert!(received.try_iter().any(|msg| msg == [STOP]), "the healthy final Stop was handed off before shutdown returned");
+    assert!(held.try_recv().is_err());
+    unblock.send(()).unwrap();
+    let wire: Vec<_> = held.iter().collect();
+    assert_eq!(wire, [vec![START], vec![CLOCK], vec![STOP]], "shutdown cleanup must drain after the blocked batch");
+    worker.join().unwrap();
+}
+
+#[test]
+fn active_route_keeps_exact_evicted_map_new_route_waits_and_disconnect_releases_maps() {
+    let now = Instant::now();
+    let view = View::default();
+    let first = Arc::new(Session::default());
+    let mut next = (*first).clone();
+    next.tempo.set_tempo(0, 60.).unwrap();
+    let next = Arc::new(next);
+    view.lock().unwrap().register(SessionRevision { generation: 1, doc: first.clone(), remap: true }, false);
+    view.lock().unwrap().push(Presentation { generation: 1, ..block(now, 0., 48_000., Duration::ZERO) });
+    let stats = Stats::default();
+    let mut old = active_port(0, false);
+    old.poll("old", now, &first, &view, &stats, &mut vec![]);
+    view.lock().unwrap().register(SessionRevision { generation: 2, doc: next.clone(), remap: true }, false);
+    let mut fresh = active_port(0, false);
+    let later = now + Duration::from_millis(21);
+    old.poll("old", later, &next, &view, &stats, &mut vec![]);
+    fresh.poll("new", later, &next, &view, &stats, &mut vec![]);
+    assert_eq!(old.link.as_ref().unwrap().messages.iter().filter(|(_, m)| m == &[CLOCK]).count(), 2);
+    assert!(fresh.link.as_ref().unwrap().messages.is_empty());
+    assert!(Arc::ptr_eq(&old.routes[0].as_ref().unwrap().map.as_ref().unwrap().doc, &first));
+    old.disconnect("old", "gone".into(), later, &stats);
+    assert_eq!(Arc::strong_count(&first), 1);
+    view.lock().unwrap().push(Presentation { generation: 2, ..block(later, 1008., 48_000., Duration::ZERO) });
+    fresh.poll("new", later, &next, &view, &stats, &mut vec![]);
+    assert!(!fresh.link.as_ref().unwrap().messages.is_empty());
+}
+
+#[test]
+fn stop_rejected_during_normal_playback_precedes_the_next_start() {
+    struct Sink {
+        fail_stop: bool,
+        messages: Vec<Vec<u8>>,
+    }
+    impl SyncPort for Sink {
+        fn send_at(&mut self, at: Instant, msg: &[u8]) -> Result<Instant, String> {
+            if self.fail_stop && msg == [STOP] {
+                return Err("stop rejected".into());
+            }
+            self.messages.push(msg.to_vec());
+            Ok(at)
+        }
+    }
+    let now = Instant::now();
+    let view = View::default();
+    let mut routes = BTreeMap::new();
+    let s = Session::default();
+    let stats = Stats::default();
+    set_route(&mut routes, 0, "DIN".into(), Route { offset: 0, compensate: false, encoder: Box::<Cursor>::default(), map: None });
+    let p = routes.get_mut("DIN").unwrap();
+    p.link = Some(Sink { fail_stop: true, messages: vec![] });
+    let b = block(now, 0., 480., Duration::ZERO);
+    view.lock().unwrap().push(b);
+    p.poll("DIN", now, &s, &view, &stats, &mut vec![]);
+    view.lock().unwrap().push(Presentation { playing: false, pass: 2, ..b });
+    p.poll("DIN", now, &s, &view, &stats, &mut vec![]);
+    assert!(p.link.is_none());
+    p.link = Some(Sink { fail_stop: false, messages: vec![] });
+    p.routes[0].as_mut().unwrap().encoder.reset();
+    view.lock().unwrap().push(Presentation { pass: 3, ..b });
+    p.poll("DIN", now, &s, &view, &stats, &mut vec![]);
+    p.poll("DIN", now, &s, &view, &stats, &mut vec![]);
+    assert_eq!(p.link.as_ref().unwrap().messages, [vec![STOP], vec![START], vec![CLOCK]]);
+}
+
+#[test]
+fn short_mtc_block_without_a_quarter_frame_keeps_the_worker_awake() {
+    let now = Instant::now();
+    let view = View::default();
+    let s = Session::default();
+    let mut port = active_port(0, false);
+    port.routes[0] = None;
+    port.routes[1] = Some(Route { offset: 0, compensate: false, map: None, encoder: Box::<crate::mtc::Encoder>::default() });
+    view.lock().unwrap().push(block(now, 0., 64., Duration::ZERO));
+    let wake = port.poll("DIN", now, &s, &view, &Stats::default(), &mut vec![]).unwrap();
+    assert!(wake > now && wake <= now + Duration::from_millis(2));
+    view.lock().unwrap().push(Presentation { playing: false, ..block(now, 64., 64., Duration::ZERO) });
+    assert!(port.poll("DIN", wake, &s, &view, &Stats::default(), &mut vec![]).is_none());
+}
+
+#[test]
+fn fractional_pulse_at_first_wake_is_spaced_after_the_transport_clock() {
+    let now = Instant::now();
+    let mut s = Session::default();
+    s.tempo.set_tempo(0, 60. * 48000. / (24. * 1000.4)).unwrap();
+    let b = block(now, 1000., 4800., Duration::ZERO);
+    let mut cursor = Cursor::default();
+    let mut wire = vec![];
+    let wake = cursor.update(b, now, &s, &mut |at, m| wire.push((at, m.to_vec()))).unwrap();
+    assert_eq!(wire, [(now, vec![START]), (now, vec![CLOCK])]);
+    assert!(wake >= now + crate::sync_clock::CATCH_UP_SPACING);
+    cursor.update(b, wake, &s, &mut |_, m| wire.push((wake, m.to_vec())));
+    assert_eq!(wire.last().unwrap(), &(wake, vec![CLOCK]));
+    assert_eq!(wire.len(), 3);
+}
+
+#[test]
+fn requested_beats_retry_when_another_encoder_started_the_worker() {
+    let mut output = Output::default();
+    let ports = vec![("clock".into(), 0)];
+    assert!(!output.beats(ports.clone(), false));
+    let (tx, rx) = channel();
+    let (quit, wait) = channel::<()>();
+    let thread = std::thread::spawn(move || {
+        let _ = wait.recv();
+    });
+    output.worker = Some((WorkerSender { tx, worker: thread.thread().clone() }, thread));
+    assert!(output.encoder(Some(("mtc".into(), 0)), true, Box::<crate::mtc::Encoder>::default()));
+    assert!(matches!(rx.try_recv(), Ok(Update::Encoder(..))));
+    assert!(output.beats(ports.clone(), false));
+    assert!(matches!(rx.try_recv(), Ok(Update::Beats(names,false)) if names == ports));
+    drop(quit);
+}
+
+#[test]
+fn asynchronous_cleanup_retries_the_original_unsent_messages_in_order() {
+    struct Reject;
+    impl SyncPort for Reject {
+        fn send_at(&mut self, at: Instant, msg: &[u8]) -> Result<Instant, String> {
+            if msg == [STOP] { Ok(at) } else { Err("unplugged".into()) }
+        }
+    }
+    let mut output = PortIo::new(Reject, Default::default()).unwrap();
+    let stats = Stats::default();
+    let now = Instant::now();
+    let sx = [0xf0, 0x7d, 1, 0xf7];
+    for (msg, retry) in [(&[STOP][..], true), (&sx, true), (&[CLOCK], false), (&[STOP], true)] {
+        output.submit(now, msg, retry, &stats).unwrap();
+    }
+    output.flush();
+    let mut cleanup = VecDeque::from([vec![0xf0, 0x7d, 2, 0xf7]]);
+    let deadline = now + Duration::from_secs(2);
+    while output.ready(&mut cleanup).is_ok() {
+        assert!(Instant::now() < deadline);
+        std::thread::yield_now();
+    }
+    assert_eq!(cleanup, [sx.to_vec(), vec![STOP], vec![0xf0, 0x7d, 2, 0xf7]]);
 }

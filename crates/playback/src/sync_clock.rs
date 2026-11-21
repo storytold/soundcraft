@@ -147,8 +147,11 @@ impl Timeline {
         self.maps.push_back(revision);
         full
     }
+    pub(crate) fn unconfigured(&self) -> bool {
+        self.maps.is_empty()
+    }
     pub(crate) fn map(&self, generation: u64) -> Option<&SessionRevision> {
-        self.maps.iter().find(|r| r.generation == generation).or_else(|| self.maps.back())
+        self.maps.iter().find(|r| r.generation == generation)
     }
     pub(crate) fn retire_before(&mut self, generation: u64) {
         while self.maps.len() > 1 && self.maps.front().is_some_and(|r| r.generation < generation) {

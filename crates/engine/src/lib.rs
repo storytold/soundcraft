@@ -189,6 +189,7 @@ const MAX_OFFERED_IMPORTS: usize = 4;
 /// Engine state: the document, history, clipboard and transport plumbing.
 pub struct Engine {
     doc: Arc<Session>,
+    prepared_revision: std::cell::OnceCell<Arc<()>>,
     undo: Vec<HistoryEntry>,
     redo: Vec<HistoryEntry>,
     pub history_limit: usize,
@@ -197,6 +198,9 @@ pub struct Engine {
     pub transport: TransportStatus,
     /// Transient beat grid provided by an external MIDI clock; excluded from save, undo and export.
     pub playback_tempo: Option<soundcraft_time::TempoMap>,
+    // While following the source, replay each new take in the grid it was played on.
+    // The editable document always stores the same performance in its own score grid.
+    follow_takes: std::collections::HashMap<soundcraft_model::ClipId, (soundcraft_midi::Sequence, soundcraft_midi::Sequence)>,
     /// Command journal (id, params) for macro recording / agents. Ring buffer: capped at
     /// [`MAX_JOURNAL_ENTRIES`] entries of up to [`MAX_JOURNAL_ENTRY_BYTES`] params each.
     pub journal: std::collections::VecDeque<(String, Value)>,
@@ -293,6 +297,7 @@ impl Engine {
         Engine {
             saved: Arc::clone(&doc),
             doc,
+            prepared_revision: Default::default(),
             undo: Vec::new(),
             redo: Vec::new(),
             history_limit: 200,
@@ -300,6 +305,7 @@ impl Engine {
             transport_requests: Vec::new(),
             transport: TransportStatus::default(),
             playback_tempo: None,
+            follow_takes: Default::default(),
             journal: std::collections::VecDeque::new(),
             path: None,
             revision: 1,
@@ -354,17 +360,60 @@ impl Engine {
     pub fn playback_session(&self) -> Arc<Session> {
         let mut doc = self.session_arc();
         if let Some(tempo) = &self.playback_tempo {
-            Arc::make_mut(&mut doc).tempo.clone_from(tempo);
+            let session = Arc::make_mut(&mut doc);
+            self.project_clock_takes(session);
+            session.tempo.clone_from(tempo);
         }
         doc
+    }
+
+    /// Restore the live-grid notes of unedited takes in an external-clock playback snapshot.
+    pub fn project_clock_takes(&self, doc: &mut Session) {
+        if self.follow_takes.is_empty() {
+            return;
+        }
+        for clip in doc.tracks.iter_mut().flat_map(|t| &mut t.playlists).flat_map(|p| &mut p.clips) {
+            if let Some((saved, live)) = self.follow_takes.get(&clip.id)
+                && let soundcraft_model::ClipContent::Midi { sequence } = &mut clip.content
+                && sequence == saved
+            {
+                sequence.clone_from(live);
+            }
+        }
+    }
+
+    /// Drop capture projections no longer reachable by playback or Undo/Redo.
+    fn prune_clock_takes(&mut self) {
+        if self.follow_takes.is_empty() {
+            return;
+        }
+        let docs = std::iter::once(&self.doc).chain(self.undo.iter().chain(&self.redo).map(|entry| &entry.doc));
+        let retained: std::collections::HashSet<_> = docs
+            .flat_map(|s| &s.tracks)
+            .flat_map(|t| &t.playlists)
+            .flat_map(|p| &p.clips)
+            .filter_map(|clip| self.follow_takes.contains_key(&clip.id).then_some(clip.id))
+            .collect();
+        self.follow_takes.retain(|id, _| retained.contains(id));
+    }
+
+    pub fn clear_follow_grid(&mut self) {
+        self.follow_takes.clear();
+        self.playback_tempo = None;
     }
 
     pub fn session_arc(&self) -> Arc<Session> {
         Arc::clone(&self.doc)
     }
 
+    /// A prepared external start can use this revision only while its token is live.
+    pub fn prepared_revision(&self) -> std::sync::Weak<()> {
+        Arc::downgrade(self.prepared_revision.get_or_init(|| Arc::new(())))
+    }
+
     /// Mutable access (copy-on-write). Callers outside commands should prefer `execute`.
     pub fn session_mut(&mut self) -> &mut Session {
+        self.prepared_revision.take();
         self.revision = self.revision.wrapping_add(1);
         self.dirty = true;
         Arc::make_mut(&mut self.doc)
@@ -373,6 +422,7 @@ impl Engine {
     /// Mutable access for live state that redraws and reaches playback but is not part of the
     /// saved document. Callers must also keep the fields out of serialization and Undo/Redo.
     pub(crate) fn runtime_session_mut(&mut self) -> &mut Session {
+        self.prepared_revision.take();
         self.revision = self.revision.wrapping_add(1);
         Arc::make_mut(&mut self.doc)
     }
@@ -385,10 +435,11 @@ impl Engine {
 
     /// Replace the whole document (open / new); clears history.
     pub fn replace_session(&mut self, mut s: Session) {
+        self.prepared_revision.take();
         if let Some(note) = migrate_mtc_settings(&mut s) {
             self.message(note);
         }
-        self.playback_tempo = None;
+        self.clear_follow_grid();
         self.transport = TransportStatus { position: s.edit.selection.start.max(0), ..TransportStatus::default() };
         self.transport_requests.clear();
         self.transport_requests.push(TransportRequest::ResetSession);
@@ -449,6 +500,7 @@ impl Engine {
     /// Restore the previous document while retaining current edit mode and live input flags.
     pub fn undo(&mut self) -> bool {
         let Some(h) = self.undo.pop() else { return false };
+        self.prepared_revision.take();
         let cur = std::mem::replace(&mut self.doc, h.doc);
         self.keep_edit_mode(&cur);
         self.keep_runtime_track_states(&cur);
@@ -461,6 +513,7 @@ impl Engine {
     /// Restore the next document while retaining current edit mode and live input flags.
     pub fn redo(&mut self) -> bool {
         let Some(h) = self.redo.pop() else { return false };
+        self.prepared_revision.take();
         let cur = std::mem::replace(&mut self.doc, h.doc);
         self.keep_edit_mode(&cur);
         self.keep_runtime_track_states(&cur);

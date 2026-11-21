@@ -175,3 +175,52 @@ fn midi_clock_wakes_only_on_transport_actions() {
     // audio command pending and must not start an output-worker timeout.
     assert_eq!(worker.load(Ordering::Relaxed), 0);
 }
+
+#[test]
+fn new_transport_survives_expiry_of_an_older_idle_pulse() {
+    for request in [0xfa, 0xfb] {
+        let mut r = Follower::default();
+        feed(&mut r, 0xf8, 0);
+        feed(&mut r, request, 145_000);
+        if request == 0xfa {
+            assert_eq!(r.take(), Some(Action::Locate(0)));
+        }
+        r.expire(151_000);
+        feed(&mut r, 0xf8, 155_000);
+        assert_eq!(r.take(), Some(Action::Play { pulse: 0, at: 155_000 }));
+        let mut cold = Follower::default();
+        feed(&mut cold, request, 0);
+        cold.take();
+        feed(&mut cold, 0xf8, 500_000);
+        assert_eq!(cold.take(), Some(Action::Play { pulse: 0, at: 500_000 }));
+    }
+}
+
+#[test]
+fn failed_prepared_send_leaves_the_start_for_the_host() {
+    use std::sync::{Arc, Mutex, atomic::Ordering};
+    let shared = Arc::new(crate::Shared { position: 16.into(), playing: false.into(), speed: 1000.into(), meters: Mutex::default() });
+    let (sender, receiver) = crate::channel();
+    drop(receiver);
+    let tx = Arc::new(sender);
+    let revision = Arc::new(());
+    #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+    let output: Arc<Mutex<crate::sync_output::Output>> = Arc::default();
+    let cue = PreparedResume {
+        revision: Arc::downgrade(&revision),
+        pulse: 0,
+        origin: 1000,
+        offset: 0,
+        sr: soundcraft_model::Session::default().sample_rate,
+        tx: Arc::downgrade(&tx),
+        shared: Arc::downgrade(&shared),
+        #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+        output: Arc::downgrade(&output),
+    };
+    let mut r = Follower { cue: Some(cue), ..Default::default() };
+    r.push(Action::Play { pulse: 0, at: 20 });
+    r.dispatch_prepared(21);
+    assert_eq!(r.take(), Some(Action::Play { pulse: 0, at: 20 }));
+    assert!(!shared.playing.load(Ordering::Acquire));
+    assert_eq!(shared.position.load(Ordering::Relaxed), 16);
+}

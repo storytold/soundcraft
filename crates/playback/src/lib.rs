@@ -150,7 +150,9 @@ pub type PluginStates = Vec<(TrackId, usize, Vec<u8>)>;
 /// A parameter edit made in a plugin's own editor: `(track, slot, param id, value)`.
 pub type EditorEdit = (TrackId, usize, String, f32);
 
-type GridReturn = Arc<std::sync::OnceLock<Arc<Session>>>;
+/// Always retire the unused snapshot on the host. On a missed update deadline also
+/// return the map that kept rendering so the next correction can start from it.
+type GridReturn = Arc<std::sync::OnceLock<(Arc<Session>, Option<Arc<Session>>)>>;
 
 enum Cmd {
     #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
@@ -158,7 +160,7 @@ enum Cmd {
     /// A new snapshot plus the third-party instances it needs (created on the UI thread).
     Session(u64, Arc<Session>, Vec<PreparedInstance>),
     /// Host-built copy of the last published snapshot with only its live tempo changed.
-    FollowGrid(u64, Arc<Session>, GridReturn),
+    FollowGrid(u64, Samples, Arc<Session>, GridReturn),
     /// Where the callback sends the snapshots it replaces (freeing one takes thousands of frees).
     OldSessions(SyncSender<Arc<Session>>),
     Input(Arc<record::InputRing>),
@@ -466,7 +468,12 @@ impl Player {
     }
 
     /// Prepare the project and transient grid for external-clock playback.
-    pub fn prepare_clock_session(&self, mut score: Arc<Session>, tempo: &soundcraft_time::TempoMap) {
+    pub fn prepare_clock_session(&self, score: Arc<Session>, tempo: &soundcraft_time::TempoMap) {
+        self.prepare_clock_session_with(score, tempo, |_| {});
+    }
+
+    /// Project clock-recorded MIDI takes only when the editable document needs preparing.
+    pub fn prepare_clock_session_with(&self, mut score: Arc<Session>, tempo: &soundcraft_time::TempoMap, project: impl FnOnce(&mut Session)) {
         let source = Arc::downgrade(&score);
         {
             let side = self.side();
@@ -474,7 +481,9 @@ impl Player {
                 return;
             }
         }
-        Arc::make_mut(&mut score).tempo.clone_from(tempo);
+        let session = Arc::make_mut(&mut score);
+        project(session);
+        session.tempo.clone_from(tempo);
         self.publish_session(score, source);
     }
 
@@ -486,17 +495,35 @@ impl Player {
             return false;
         }
         side.collect_garbage();
-        if side.grid_base.is_none() {
-            return true;
+        let Some(rate) = side.grid_base.as_ref().map(|s| s.sample_rate) else { return true };
+        if side.retry_grid.is_some() {
+            return false;
         }
+        // Compute this on the host. The callback needs only an integer comparison.
+        let boundary = side
+            .published_tempo()
+            .and_then(|old| {
+                let prior = old.tempos();
+                let next = tempo.tempos();
+                let common = prior.iter().zip(next).take_while(|(a, b)| a == b).count();
+                prior.get(common).into_iter().chain(next.get(common)).map(|event| event.tick).min().map(|tick| old.tick_to_samples(tick, rate))
+            })
+            .unwrap_or(Samples::MAX);
         let Some(s) = side.follow_snapshot(tempo) else { return false };
         self.cancel_clock_resume();
         #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
         let generation = self.beat_clock.lock().unwrap_or_else(PoisonError::into_inner).configure(&s, &self.tx, false);
         #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
         let generation = 0;
-        let _ = self.tx.send(Cmd::FollowGrid(generation, s, side.grid_return.clone()));
+        let _ = self.tx.send(Cmd::FollowGrid(generation, boundary, s, side.grid_return.clone()));
         true
+    }
+
+    /// A tempo correction missed its render boundary. Continue from the accepted grid.
+    pub fn take_rejected_follow_grid(&self) -> Option<soundcraft_time::TempoMap> {
+        let mut side = self.side();
+        side.collect_garbage();
+        side.retry_grid.take()
     }
 
     /// Reads the state of every live third-party plugin, for saving the session.
@@ -665,21 +692,14 @@ impl Player {
     }
     /// Prepare one already located, stopped position. A later edit or transport command
     /// cancels it under the same input lock used to submit PlayClock.
-    pub fn arm_clock_resume(
-        &self,
-        feed: &Arc<midi::MidiFeed>,
-        port: u8,
-        pulse: i64,
-        origin: Samples,
-        offset: Samples,
-        sr: soundcraft_time::SampleRate,
-    ) {
+    pub fn arm_clock_resume(&self, feed: &Arc<midi::MidiFeed>, port: u8, location: clock_follow::LocatedCue) {
         self.cancel_clock_resume();
         let cue = clock_follow::PreparedResume {
-            pulse,
-            origin,
-            offset,
-            sr,
+            pulse: location.pulse,
+            origin: location.origin,
+            offset: location.offset,
+            sr: location.rate,
+            revision: location.revision,
             shared: Arc::downgrade(&self.shared),
             tx: Arc::downgrade(&self.tx),
             #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]

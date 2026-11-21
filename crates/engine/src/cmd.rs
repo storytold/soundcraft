@@ -288,10 +288,26 @@ pub use soundcraft_time::MAX_POSITION;
 /// Position from `key`: a number of samples, or `{"seconds": x}`, or a string in the main counter format.
 /// Values are clamped to ±[`MAX_POSITION`].
 pub fn position_param(e: &Engine, cmd: &str, p: &Value, key: &str) -> Result<Option<Samples>> {
-    Ok(position_param_raw(e, cmd, p, key)?.map(|v| v.clamp(-MAX_POSITION, MAX_POSITION)))
+    Ok(parse_position_param(e, cmd, p, key, None)?.map(|v| v.clamp(-MAX_POSITION, MAX_POSITION)))
 }
 
-fn position_param_raw(e: &Engine, cmd: &str, p: &Value, key: &str) -> Result<Option<Samples>> {
+/// Parse a time span or absolute SMPTE label measured from midnight, independent
+/// of the session's timeline origin. Other counter formats retain their usual units.
+fn duration_param(e: &Engine, cmd: &str, p: &Value, key: &str) -> Result<Option<Samples>> {
+    zero_based_param(e, cmd, p, key, e.session().frame_rate)
+}
+
+fn zero_based_param(e: &Engine, cmd: &str, p: &Value, key: &str, rate: soundcraft_time::FrameRate) -> Result<Option<Samples>> {
+    Ok(parse_position_param(e, cmd, p, key, Some(rate))?.map(|v| v.clamp(-MAX_POSITION, MAX_POSITION)))
+}
+
+fn parse_position_param(
+    e: &Engine,
+    cmd: &str,
+    p: &Value,
+    key: &str,
+    timecode_from_zero: Option<soundcraft_time::FrameRate>,
+) -> Result<Option<Samples>> {
     let Some(v) = p.get(key) else { return Ok(None) };
     let s = e.session();
     if let Some(n) = v.as_i64() {
@@ -324,8 +340,12 @@ fn position_param_raw(e: &Engine, cmd: &str, p: &Value, key: &str) -> Result<Opt
             }
         };
         for f in fmts {
-            if let Ok(x) = s.parse_position(body, f) {
-                if f == soundcraft_time::TimeFormat::Timecode && x < 0 {
+            let parsed = match timecode_from_zero {
+                Some(rate) => soundcraft_time::parse_position(body, f, s.sample_rate, &s.tempo, rate, 0, 0),
+                None => s.parse_position(body, f),
+            };
+            if let Ok(x) = parsed {
+                if timecode_from_zero.is_none() && f == soundcraft_time::TimeFormat::Timecode && x < 0 {
                     let start = s.format_position(0, f);
                     return Err(bad(cmd, format!("{body} is before the session start ({start})")));
                 }
@@ -342,7 +362,7 @@ fn position_param_raw(e: &Engine, cmd: &str, p: &Value, key: &str) -> Result<Opt
 pub fn range_param(e: &Engine, cmd: &str, p: &Value) -> Result<Range> {
     let mut st = if p.get("start").is_some_and(Value::is_null) { None } else { position_param(e, cmd, p, "start")? };
     let en = position_param(e, cmd, p, "end")?;
-    let len = position_param(e, cmd, p, "length")?;
+    let len = duration_param(e, cmd, p, "length")?;
     if st.is_none() && (en.is_some() || len.is_some()) {
         st = Some(e.session().edit.selection.start);
     }

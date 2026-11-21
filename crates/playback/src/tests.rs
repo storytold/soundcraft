@@ -630,6 +630,32 @@ fn side_creates_each_missing_instance_once() {
 }
 
 #[test]
+fn clock_correction_arriving_after_render_keeps_the_active_grid() {
+    let (_, mut callback, tx, _) = spike_session(0);
+    callback.fill(&mut [0.; 128], 2);
+    let active = callback.session.clone();
+    let mut side = Side::new(48_000., channel().1);
+    side.set_follow_base(active.clone());
+    let mut grid = active.tempo.clone();
+    grid.set_tempo(0, 90.).unwrap();
+    let candidate = side.follow_snapshot(&grid).unwrap();
+    tx.send(Cmd::FollowGrid(1, 0, candidate, side.grid_return.clone())).unwrap();
+    callback.fill(&mut [0.; 128], 2);
+    assert!(Arc::ptr_eq(&callback.session, &active));
+    side.collect_garbage();
+    let mut grid = side.retry_grid.take().unwrap();
+    assert_eq!(grid, active.tempo);
+    grid.set_tempo(960, 90.).unwrap();
+    let future = grid.tick_to_samples(960, active.sample_rate);
+    let candidate = side.follow_snapshot(&grid).unwrap();
+    tx.send(Cmd::FollowGrid(2, future, candidate, side.grid_return.clone())).unwrap();
+    callback.fill(&mut [0.; 128], 2);
+    assert_eq!(callback.session.tempo, grid);
+    side.collect_garbage();
+    assert!(side.retry_grid.is_none());
+}
+
+#[test]
 fn external_clock_returns_prior_snapshot_even_with_unavailable_retirement_queue() {
     for disconnect in [false, true] {
         let shared = Arc::new(Shared {
@@ -654,7 +680,7 @@ fn external_clock_returns_prior_snapshot_even_with_unavailable_retirement_queue(
             tx.send(Cmd::Clock(Some(crate::sync_clock::Publisher::new(view.clone(), Default::default())))).unwrap();
             view
         };
-        tx.send(Cmd::FollowGrid(7, Arc::new(Session::default()), returned.clone())).unwrap();
+        tx.send(Cmd::FollowGrid(7, i64::MAX, Arc::new(Session::default()), returned.clone())).unwrap();
         assert!(Arc::get_mut(&mut returned).is_none());
         state.fill(&mut [0f32; 128], 2);
         #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
@@ -689,7 +715,7 @@ fn replaced_sessions_are_freed_on_the_ui_thread() {
         if index % 2 == 0 {
             tx.send(Cmd::Session(0, s, Vec::new())).unwrap();
         } else {
-            tx.send(Cmd::FollowGrid(0, s, side.grid_return.clone())).unwrap();
+            tx.send(Cmd::FollowGrid(0, i64::MAX, s, side.grid_return.clone())).unwrap();
             assert!(Arc::get_mut(&mut side.grid_return).is_none());
         }
         st.fill(&mut out, 2);

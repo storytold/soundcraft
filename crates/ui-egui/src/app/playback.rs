@@ -56,7 +56,9 @@ impl SoundApp {
         }
         // Playing on from this position drops the end and loop of the earlier selection.
         if let Some(p) = &self.player {
-            if self.mtc_chasing {
+            if let Some(origin) = midi_origin {
+                p.play_from_clock(origin, at);
+            } else if self.mtc_chasing {
                 p.play_chasing_mtc(at);
             } else {
                 p.play(at, None, None);
@@ -90,6 +92,10 @@ impl SoundApp {
             p.set_speed(1.0);
             p.stop();
         }
+        self.note_play_stopped();
+    }
+
+    fn note_play_stopped(&mut self) {
         if self.engine.transport.recording {
             self.finish_recording();
         }
@@ -127,6 +133,10 @@ impl SoundApp {
     }
 
     fn start_recording(&mut self) {
+        if self.mtc_online {
+            self.ui.status = crate::localization::text("Take MTC chase offline before recording").into();
+            return;
+        }
         let armed = self.engine.session().tracks.iter().any(|t| t.mixer.record_arm);
         if !armed {
             let why = if self.engine.session().tracks.is_empty() {
@@ -528,9 +538,6 @@ impl SoundApp {
         if let Some(p) = &self.player {
             let playing = p.is_playing();
             let ended = self.engine.transport.playing && !playing;
-            if ended {
-                p.set_speed(1.0);
-            }
             if self.engine.transport.playing {
                 self.engine.transport.position = p.position();
             }
@@ -554,7 +561,12 @@ impl SoundApp {
             let main = snap.main.peak;
             feed_meter(&mut self.main_meter, main, 0.0, dt);
             if ended {
-                self.stop_play();
+                if self.mtc_online {
+                    // The next input lock can already be rolling by the time a queued Stop reaches the device.
+                    self.note_play_stopped();
+                } else {
+                    self.stop_play();
+                }
             }
         } else if let Some((pos, end, looped)) = &mut self.sim {
             let sr = self.engine.session().sample_rate.as_f64();
