@@ -114,6 +114,7 @@ pub(super) fn translate(source: &str) -> Option<&'static str> {
         "End" => "Fim",
         "Extract" => "Extrair",
         "File" => "Arquivo",
+        "File path" => "Caminho do arquivo",
         "Format" => "Formato",
         "Grab bag" => "Diversos",
         "Grid" => "Grade",
