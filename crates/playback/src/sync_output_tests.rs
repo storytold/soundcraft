@@ -1023,33 +1023,84 @@ fn late_connection_after_rejected_grid_still_emits_the_accepted_clock() {
 
 #[test]
 fn first_future_block_keeps_its_map_when_more_grids_are_accepted() {
-    for publish_each in [false, true] {
+    for (publish_each, replace_idle_session) in [(false, false), (true, false), (true, true)] {
         let mut out = Output::default();
         let (cmd, _rx) = channel();
         let first = Arc::new(Session::default());
         let generation = out.configure(&first, &cmd, None);
         let future = Instant::now() + Duration::from_secs(5);
-        out.view.lock().unwrap().push(Presentation { generation, ..block(future, 0., 1024., Duration::ZERO) });
+        let mut rendered = vec![(generation, Arc::downgrade(&first))];
+        out.view.lock().unwrap().push(Presentation { generation, ..block(future, 0., 4_800., Duration::ZERO) });
         let mut accepted = first.clone();
         for step in 1..=crate::sync_clock::MAX_REVISIONS + 3 {
             let mut next = (*accepted).clone();
-            next.tempo.set_tempo(0, 60. + step as f64).unwrap();
+            let boundary = next.tempo.samples_to_ticks(4_800 * step as i64, next.sample_rate);
+            next.tempo.set_tempo(boundary, 60. + step as f64).unwrap();
             let next = Arc::new(next);
             let generation = out.configure(&next, &cmd, Some(&accepted));
             if publish_each {
-                let at = future + Duration::from_millis(22 * step as u64);
-                out.view.lock().unwrap().push(Presentation { generation, ..block(at, 1024. * step as f64, 1024., Duration::ZERO) });
+                let at = future + Duration::from_millis(100 * step as u64);
+                out.view.lock().unwrap().push(Presentation { generation, ..block(at, 4_800. * step as f64, 4_800., Duration::ZERO) });
+                rendered.push((generation, Arc::downgrade(&next)));
             }
             accepted = next;
         }
         let mut port = active_port(0, false);
+        if replace_idle_session {
+            out.configure(&Arc::new(Session::default()), &cmd, None);
+        }
         port.poll("late connection", future - Duration::from_millis(1), &accepted, &out.view, &out.stats, &mut vec![]);
         assert!(port.link.as_ref().unwrap().messages.is_empty());
         port.poll("late connection", future, &accepted, &out.view, &out.stats, &mut vec![]);
         assert_eq!(port.link.as_ref().unwrap().messages, [(future, vec![START]), (future, vec![CLOCK])]);
         assert!(Arc::ptr_eq(&port.routes[0].as_ref().unwrap().map.as_ref().unwrap().doc, &first));
-        assert_eq!(out.status().session_backlog_drops > 0, publish_each);
+        drop(first);
+        for (step, (generation, expected)) in rendered.iter().enumerate() {
+            let at = future + Duration::from_millis(100 * step as u64);
+            let before = port.link.as_ref().unwrap().messages.len();
+            for ms in 0..100 {
+                port.poll("late connection", at + Duration::from_millis(ms), &accepted, &out.view, &out.stats, &mut vec![]);
+            }
+            let map = port.routes[0].as_ref().unwrap().map.as_ref().unwrap();
+            assert_eq!(map.generation, *generation, "wrong map in audible block {step}");
+            assert!(Arc::ptr_eq(&map.doc, &expected.upgrade().unwrap()));
+            assert!(port.link.as_ref().unwrap().messages[before..].iter().any(|(_, m)| m == &[CLOCK]), "missing Clock in block {step}");
+            // The worker retires maps after all connected destinations have advanced.
+            out.view.lock().unwrap().retire_before(*generation);
+        }
+        assert_eq!(out.status().session_backlog_drops, 0);
+        assert!(rendered[..rendered.len() - 1].iter().all(|(_, map)| map.upgrade().is_none()));
     }
+}
+
+#[test]
+fn slow_destination_keeps_all_rendered_grids_until_the_snapshot_pool_can_resume() {
+    let mut out = Output::default();
+    let (cmd, _rx) = channel();
+    let mut side = crate::callback::Side::new(48_000., channel().1);
+    let mut accepted = Arc::new(Session::default());
+    side.set_follow_base(accepted.clone());
+    let first = out.configure(&accepted, &cmd, None);
+    let start = Instant::now() - Duration::from_secs(2);
+    out.view.lock().unwrap().push(Presentation { generation: first, ..block(start, 0., 1024., Duration::ZERO) });
+    // The route's offset can keep it behind wall time, even though every raw
+    // presentation timestamp below is in the past. Its map must stay available.
+    out.stats.connected().insert("delayed".into());
+    for step in 1..=crate::callback::FOLLOW_POOL_SLOTS {
+        let doc = side.follow_snapshot(&accepted.tempo).unwrap();
+        let generation = out.configure(&doc, &cmd, Some(&accepted));
+        let at = start + Duration::from_millis(22 * step as u64);
+        out.view.lock().unwrap().push(Presentation { generation, ..block(at, 1024. * step as f64, 1024., Duration::ZERO) });
+        accepted = doc;
+    }
+    assert!(side.follow_snapshot(&accepted.tempo).is_none());
+    out.reclaim_grid_snapshots(&accepted);
+    assert!(side.follow_snapshot(&accepted.tempo).is_none());
+    assert!(out.view.lock().unwrap().map(first).is_some());
+    out.stats.connected().remove("delayed");
+    out.reclaim_grid_snapshots(&accepted);
+    assert!(side.follow_snapshot(&accepted.tempo).is_some());
+    assert!(out.view.lock().unwrap().map(first).is_none());
 }
 
 #[test]

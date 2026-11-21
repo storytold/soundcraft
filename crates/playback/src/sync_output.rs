@@ -170,21 +170,30 @@ impl Output {
         }
         self.generation = self.generation.wrapping_add(1);
         let revision = SessionRevision { generation: self.generation, doc: s.clone(), remap: accepted_grid.is_none() };
-        let active = !self.stats.connected().is_empty();
+        let connected = self.stats.connected();
+        let active = !connected.is_empty();
         let mut timeline = self.view.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-        let evicted = match accepted_grid {
-            Some(grid) => timeline.register_grid(revision, grid, active),
-            None => timeline.register(revision, active),
-        };
-        if evicted {
+        if let Some(grid) = accepted_grid {
+            timeline.register_grid(revision, grid, active);
+        } else if timeline.register(revision, active) {
             self.stats.session_backlog_drops.fetch_add(1, Relaxed);
         }
         drop(timeline);
+        drop(connected);
         self.session = Some(s.clone());
         if let Some((tx, _)) = &self.worker {
             let _ = tx.send(Update::Session);
         }
         self.generation
+    }
+
+    /// The fixed audio snapshot pool can fill while every queued buffer has
+    /// its own tempo. A host retry also reclaims maps if no MIDI worker is polling.
+    pub(crate) fn reclaim_grid_snapshots(&self, accepted: &Arc<Session>) {
+        let connected = self.stats.connected();
+        let mut timeline = self.view.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        timeline.reclaim_grid_history(accepted, !connected.is_empty(), Instant::now());
+        timeline.discard_unpresented_maps();
     }
     fn send(&mut self, u: Update) -> bool {
         if self.worker.is_none() {

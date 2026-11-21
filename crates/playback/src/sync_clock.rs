@@ -1,6 +1,6 @@
 //! Presentation timestamps shared by external MIDI synchronization protocols.
 use crate::{Range, Session};
-use std::collections::VecDeque;
+use std::collections::{BTreeMap, VecDeque};
 use std::sync::atomic::{AtomicU64, Ordering::Relaxed};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -126,62 +126,89 @@ pub(crate) const MAX_REVISIONS: usize = 8;
 
 pub(crate) struct Timeline {
     maps: VecDeque<SessionRevision>,
+    // Overflow revisions actually rendered into the device queue. Only host and
+    // worker code owns or releases session references; push() stays allocation-free.
+    rendered_maps: BTreeMap<u64, SessionRevision>,
     blocks: VecDeque<Presentation>,
     pub(crate) late_transport_waiter: Option<std::thread::Thread>,
 }
 impl Default for Timeline {
     fn default() -> Self {
-        Self { blocks: VecDeque::with_capacity(HISTORY), maps: VecDeque::with_capacity(MAX_REVISIONS), late_transport_waiter: None }
+        Self {
+            blocks: VecDeque::with_capacity(HISTORY),
+            maps: VecDeque::with_capacity(MAX_REVISIONS),
+            rendered_maps: BTreeMap::new(),
+            late_transport_waiter: None,
+        }
     }
 }
 impl Timeline {
     /// Called by the control thread, never by the audio callback.
     pub(crate) fn register(&mut self, revision: SessionRevision, active: bool) -> bool {
         if !active {
-            self.maps.clear();
+            // Replacing an idle session invalidates its old map for a new port.
+            // Buffers already queued for future playback still belong to that session.
+            let now = Instant::now();
+            let future: std::collections::HashSet<_> = self.blocks.iter().filter(|b| b.heard_at > now).map(|b| b.generation).collect();
+            self.rendered_maps.retain(|g, _| future.contains(g));
+            self.rendered_maps.extend(self.maps.drain(..).filter(|r| future.contains(&r.generation)).map(|r| (r.generation, r)));
         }
         let full = self.maps.len() == MAX_REVISIONS;
-        if full {
-            self.maps.pop_front();
-        }
+        let dropped = full && !self.retain_rendered_front();
         self.maps.push_back(revision);
-        full
+        dropped
+    }
+
+    fn retain_rendered_front(&mut self) -> bool {
+        let Some(oldest) = self.maps.pop_front() else { return false };
+        if !self.blocks.iter().any(|b| b.generation == oldest.generation) {
+            return false;
+        }
+        // A stalled or disconnected route can only look up generations that
+        // still have a presentation. Bound the overflow to that ring's capacity.
+        if self.rendered_maps.len() == HISTORY {
+            self.discard_unpresented_maps();
+        }
+        self.rendered_maps.insert(oldest.generation, oldest);
+        true
     }
     // A candidate is available to the worker immediately. Before registering the
     // next one, remove revisions the callback declined so they cannot evict the
     // accepted grid, including while all MIDI outputs are disconnected.
-    pub(crate) fn register_grid(&mut self, candidate: SessionRevision, accepted: &Arc<Session>, active: bool) -> bool {
+    pub(crate) fn register_grid(&mut self, candidate: SessionRevision, accepted: &Arc<Session>, active: bool) {
+        self.reclaim_grid_history(accepted, active, Instant::now());
+        // Superseded candidates without a presentation never reached a MIDI
+        // destination. Every displaced revision with a presentation is retained.
+        self.register(candidate, true);
+    }
+
+    pub(crate) fn discard_unpresented_maps(&mut self) {
+        if !self.rendered_maps.is_empty() {
+            let present: std::collections::HashSet<_> = self.blocks.iter().map(|b| b.generation).collect();
+            self.rendered_maps.retain(|generation, _| present.contains(generation));
+        }
+    }
+
+    pub(crate) fn reclaim_grid_history(&mut self, accepted: &Arc<Session>, active: bool, now: Instant) {
         if let Some(index) = self.maps.iter().rposition(|r| Arc::ptr_eq(&r.doc, accepted)) {
             self.maps.truncate(index + 1);
-            if !active || self.maps.len() == MAX_REVISIONS {
+            if !active {
                 let generation = self.maps[index].generation;
-                let now = Instant::now();
                 let first_needed = self.blocks.iter().rfind(|b| b.heard_at <= now).or(self.blocks.front()).map_or(generation, |b| b.generation);
-                if !active {
-                    self.retire_before(generation.min(first_needed));
-                }
-                if self.maps.len() == MAX_REVISIONS && self.maps[0].generation == first_needed {
-                    // The first scheduled block can still be ahead of the device. Keep
-                    // its map and the last accepted grid (the candidate can be rejected).
-                    let spare =
-                        self.maps.range(1..MAX_REVISIONS - 1).position(|revision| !self.blocks.iter().any(|b| b.generation == revision.generation));
-                    // If all maps back real blocks, keep the nearest transitions first
-                    // and report the dropped revision through the existing backlog metric.
-                    self.maps.remove(spare.map_or(MAX_REVISIONS - 2, |i| i + 1));
-                    self.maps.push_back(candidate);
-                    return spare.is_none();
-                }
+                self.retire_before(generation.min(first_needed));
             }
         }
-        self.register(candidate, true)
     }
     pub(crate) fn unconfigured(&self) -> bool {
         self.maps.is_empty()
     }
     pub(crate) fn map(&self, generation: u64) -> Option<&SessionRevision> {
-        self.maps.iter().find(|r| r.generation == generation)
+        self.maps.iter().find(|r| r.generation == generation).or_else(|| self.rendered_maps.get(&generation))
     }
     pub(crate) fn retire_before(&mut self, generation: u64) {
+        while self.rendered_maps.first_key_value().is_some_and(|(&g, _)| g < generation) {
+            self.rendered_maps.pop_first();
+        }
         while self.maps.len() > 1 && self.maps.front().is_some_and(|r| r.generation < generation) {
             self.maps.pop_front();
         }

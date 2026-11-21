@@ -514,7 +514,14 @@ impl Player {
             .map(|event| event.tick)
             .min()
             .map_or(Samples::MAX, |tick| old.tick_to_samples(tick, accepted.sample_rate));
-        let Some(s) = side.follow_snapshot(tempo) else { return false };
+        #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+        let snapshot = side.follow_snapshot(tempo).or_else(|| {
+            self.beat_clock.lock().unwrap_or_else(PoisonError::into_inner).reclaim_grid_snapshots(&accepted);
+            side.follow_snapshot(tempo)
+        });
+        #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
+        let snapshot = side.follow_snapshot(tempo);
+        let Some(s) = snapshot else { return false };
         self.cancel_clock_resume();
         #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
         let generation = self.beat_clock.lock().unwrap_or_else(PoisonError::into_inner).configure(&s, &self.tx, Some(&accepted));
