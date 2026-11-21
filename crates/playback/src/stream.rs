@@ -19,6 +19,8 @@ pub(crate) struct Opened {
     pub(crate) tx: Sender<Cmd>,
     pub(crate) grx: Receiver<Vec<Box<dyn Plugin>>>,
     pub(crate) fault: Arc<Fault>,
+    #[cfg(target_os = "windows")]
+    pub(crate) recovery: Option<crate::stream_recovery::Recovery>,
 }
 
 /// Build and start the attempts in order; the first that builds and starts wins. A build error or
@@ -39,13 +41,40 @@ pub(crate) fn first_started<A: std::fmt::Debug, S, E: std::fmt::Display>(
     None
 }
 
+pub(crate) trait RenderGraph {
+    fn render(&mut self, draw: impl FnOnce(&mut AudioState)) -> bool;
+    #[cfg(target_os = "windows")]
+    fn report(&self, _now: std::time::Instant, _valid: bool) {}
+}
+
+impl RenderGraph for AudioState {
+    fn render(&mut self, draw: impl FnOnce(&mut AudioState)) -> bool {
+        draw(self);
+        true
+    }
+}
+
+pub(crate) fn build_format(
+    device: &cpal::Device,
+    config: cpal::StreamConfig,
+    format: cpal::SampleFormat,
+    graph: impl RenderGraph + Send + 'static,
+    fault: &Arc<Fault>,
+    shared: &Arc<Shared>,
+) -> Result<cpal::Stream, cpal::Error> {
+    match format {
+        cpal::SampleFormat::I32 => build_output::<i32>(device, config, graph, fault, shared),
+        cpal::SampleFormat::I16 => build_output::<i16>(device, config, graph, fault, shared),
+        _ => build_output::<f32>(device, config, graph, fault, shared),
+    }
+}
+
 /// The output stream: the mix renders f32 into a scratch buffer allocated here (so the callback
 /// never allocates), converted to the device's sample type.
 pub(crate) fn build_output<T>(
     device: &cpal::Device,
     config: cpal::StreamConfig,
-    mut state: AudioState,
-    channels: usize,
+    mut graph: impl RenderGraph + Send + 'static,
     fault: &Arc<Fault>,
     shared: &Arc<Shared>,
 ) -> Result<cpal::Stream, cpal::Error>
@@ -53,6 +82,7 @@ where
     T: cpal::SizedSample + cpal::FromSample<f32>,
 {
     use cpal::traits::DeviceTrait;
+    let channels = usize::from(config.channels);
     let frame = channels.max(1);
     let mut scratch = vec![0.0f32; 8192 * frame];
     let chunk = scratch.len();
@@ -71,19 +101,26 @@ where
             let _ = info;
             mark_audio_thread();
             let frames = data.len() / frame;
-            for (index, out) in data.chunks_mut(chunk).enumerate() {
-                #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
-                {
-                    timing.frame_offset = index * (chunk / frame);
-                    state.device_timing = Some(timing);
-                    state.device_buffer_frames = frames;
+            #[cfg(target_os = "windows")]
+            graph.report(now, !timing.clamped);
+            let rendered = graph.render(|state| {
+                for (index, out) in data.chunks_mut(chunk).enumerate() {
+                    #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+                    {
+                        timing.frame_offset = index * (chunk / frame);
+                        state.device_timing = Some(timing);
+                        state.device_buffer_frames = frames;
+                    }
+                    let _ = (frames, index);
+                    let Some(s) = scratch.get_mut(..out.len()) else { return };
+                    guarded_block(&failed, &guard, s, |d| state.fill(d, channels));
+                    for (o, x) in out.iter_mut().zip(s.iter()) {
+                        *o = T::from_sample(*x);
+                    }
                 }
-                let _ = (frames, index);
-                let Some(s) = scratch.get_mut(..out.len()) else { return };
-                guarded_block(&failed, &guard, s, |d| state.fill(d, channels));
-                for (o, x) in out.iter_mut().zip(s.iter()) {
-                    *o = T::from_sample(*x);
-                }
+            });
+            if !rendered {
+                data.fill(T::from_sample(0.0));
             }
         },
         // cpal may call this on the audio thread (on ALSA in a loop while the device stays
