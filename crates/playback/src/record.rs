@@ -223,6 +223,38 @@ fn pick_input_config(configs: &[cpal::SupportedStreamConfigRange], rate: u32) ->
 }
 
 impl Recorder {
+    #[cfg(any(test, feature = "test-input"))]
+    fn from_test_input(shared: &Arc<Shared>) -> Recorder {
+        Recorder {
+            shared: Arc::clone(shared),
+            monitor: InputRing::new(1, 48_000),
+            #[cfg(not(target_os = "freebsd"))]
+            _stream: None,
+            device_name: "Mic In".into(),
+            sample_rate: 48_000,
+            channels: 1,
+            writer: None,
+            seen: (0, Instant::now()),
+        }
+    }
+
+    /// A mono 48 kHz input feeding the ordinary take writer without opening a device.
+    #[cfg(feature = "test-input")]
+    pub fn simulated_input() -> (Self, impl FnMut(&[f32])) {
+        let shared = Arc::new(Shared::new(CaptureRing::new(48_000)));
+        let recorder = Self::from_test_input(&shared);
+        let mut owed = 0;
+        (recorder, move |samples| {
+            shared.guarded(|| {
+                if shared.armed.load(Ordering::Acquire) {
+                    shared.capture(samples, &mut owed);
+                } else {
+                    owed = 0;
+                }
+            });
+        })
+    }
+
     /// Open the default input device. Errors when there is none (the caller shows a message).
     pub fn open() -> Result<Recorder, String> {
         Recorder::open_with(&crate::AudioConfig::default())
@@ -579,26 +611,12 @@ mod tests {
         assert!(pick_input_config(&configs, 192_001).is_none(), "an unsupported rate falls back to the device default");
     }
 
-    fn recorder(shared: &Arc<Shared>) -> Recorder {
-        Recorder {
-            shared: Arc::clone(shared),
-            monitor: InputRing::new(1, 48_000),
-            #[cfg(not(target_os = "freebsd"))]
-            _stream: None,
-            device_name: "Mic In".into(),
-            sample_rate: 48_000,
-            channels: 1,
-            writer: None,
-            seen: (0, Instant::now()),
-        }
-    }
-
     /// A stalled armed input, a panicking callback and a lost device all surface as `Trouble`; a quiet input that is
     /// not recording does not.
     #[test]
     fn a_bug_a_stall_or_a_lost_device_is_trouble() {
         let shared = Arc::new(Shared::new(CaptureRing::new(64)));
-        let mut r = recorder(&shared);
+        let mut r = Recorder::from_test_input(&shared);
         shared.armed.store(true, Ordering::Release);
         assert_eq!(r.trouble(), None);
         r.seen.1 = Instant::now().checked_sub(STALL).unwrap();
@@ -615,7 +633,7 @@ mod tests {
         assert_eq!(r.trouble(), Some(Trouble::Device("the audio input hit an internal error (see the log)".into())));
         let gone = Arc::new(Shared::new(CaptureRing::new(64)));
         gone.fault.store(GONE, Ordering::Relaxed);
-        assert_eq!(recorder(&gone).trouble(), Some(Trouble::Device("“Mic In” is unavailable".into())));
+        assert_eq!(Recorder::from_test_input(&gone).trouble(), Some(Trouble::Device("“Mic In” is unavailable".into())));
     }
 
     #[test]
@@ -626,7 +644,7 @@ mod tests {
         take.file = File::open(&take.path).unwrap();
         let shared = Arc::new(Shared::new(CaptureRing::new(1 << 12)));
         shared.armed.store(true, Ordering::Release);
-        let mut r = recorder(&shared);
+        let mut r = Recorder::from_test_input(&shared);
         let sh = Arc::clone(&shared);
         let writer = std::thread::spawn(move || write_takes(&sh, vec![take], 1));
         shared.capture(&[0.5; 480], &mut 0);

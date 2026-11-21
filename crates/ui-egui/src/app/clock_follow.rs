@@ -385,7 +385,7 @@ mod tests {
     }
 
     #[test]
-    fn follows_only_the_selected_port_retains_project_tempo_and_allows_record() {
+    fn follows_only_the_selected_port_and_retains_project_tempo() {
         let mut app = SoundApp::new(Default::default(), None, crate::Services::default());
         app.engine.session_mut().tempo.set_tempo(TICKS_PER_QUARTER, 60.).unwrap();
         let saved = app.engine.session().tempo.clone();
@@ -423,10 +423,6 @@ mod tests {
         );
         app.handle_transport(0.);
         assert!(app.is_playing());
-        app.engine.transport.recording = true;
-        app.service_clock_follow();
-        assert!(app.engine.transport.recording && app.clock_follow.enabled);
-        app.engine.transport.recording = false;
         feed.receive(src, &[0xfc]);
         app.service_clock_follow();
         app.handle_transport(0.);
@@ -436,6 +432,9 @@ mod tests {
         assert!(app.engine.playback_tempo.is_none());
         assert_eq!(app.engine.session().tempo, saved);
     }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    mod recording;
 
     #[test]
     fn master_and_reader_conflicts_are_rejected_in_both_directions() {

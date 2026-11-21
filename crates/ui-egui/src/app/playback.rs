@@ -49,6 +49,27 @@ impl SoundApp {
         self.note_play_started(from, looped);
     }
 
+    fn play_from_position(&mut self, at: Samples, midi_origin: Option<Samples>) {
+        if !self.is_playing() {
+            self.start_play_with_origin(at, None, None, midi_origin);
+            return;
+        }
+        // Playing on from this position drops the end and loop of the earlier selection.
+        if let Some(p) = &self.player {
+            if self.mtc_chasing {
+                p.play_chasing_mtc(at);
+            } else {
+                p.play(at, None, None);
+            }
+        }
+        if let Some(sim) = &mut self.sim {
+            *sim = (at, None, None);
+        }
+        self.play_loop = None;
+        self.last_write_at = i64::MIN;
+        self.engine.transport.position = at;
+    }
+
     fn note_play_started(&mut self, from: Samples, looped: Option<Range>) {
         // The loop as the audio engine takes it: a range too short to loop is played once.
         self.play_loop = looped.filter(|l| soundcraft_playback::loops(*l));
@@ -452,30 +473,14 @@ impl SoundApp {
                     }
                 }
                 TransportRequest::ClockPlaybackStarted(from) => self.note_play_started(from, None),
-                TransportRequest::PlayFromClock { origin, render_from } if !self.is_playing() => {
-                    self.start_play_with_origin(render_from, None, None, Some(origin));
-                }
-                // A clock re-lock during coast resumes the rolling transport without a second attack.
-                TransportRequest::PlayFrom(at) | TransportRequest::PlayFromClock { render_from: at, .. } => {
-                    if self.is_playing() {
-                        // Playing on from `at` drops the end and loop of the earlier selection.
-                        if let Some(p) = &self.player {
-                            if self.mtc_chasing {
-                                p.play_chasing_mtc(at);
-                            } else {
-                                p.play(at, None, None);
-                            }
-                        }
-                        if let Some(sim) = &mut self.sim {
-                            *sim = (at, None, None);
-                        }
-                        self.play_loop = None;
-                        self.last_write_at = i64::MIN;
-                        self.engine.transport.position = at;
-                    } else {
-                        self.start_play(at, None, None);
+                TransportRequest::PlayFromClock { origin, render_from } => {
+                    // Continue re-locks a coasting take on its live beat grid. Seeking would move
+                    // incoming MIDI timestamps relative to the audio already being written.
+                    if !self.engine.transport.recording {
+                        self.play_from_position(render_from, Some(origin));
                     }
                 }
+                TransportRequest::PlayFrom(at) => self.play_from_position(at, None),
                 TransportRequest::Stop | TransportRequest::Pause => self.stop_play(),
                 TransportRequest::TogglePlay => {
                     if self.is_playing() {

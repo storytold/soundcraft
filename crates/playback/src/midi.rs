@@ -199,7 +199,7 @@ pub struct MidiFeed {
     stop_at: AtomicI64,
     stop_pass: AtomicU64,
     /// A clock set by a test in place of the real one (`i64::MIN`: the real one).
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-input"))]
     test_clock: AtomicI64,
 }
 
@@ -234,7 +234,7 @@ impl Default for MidiFeed {
             overflow_at: (0..64).map(|_| AtomicI64::new(i64::MIN)).collect(),
             stop_at: AtomicI64::new(0),
             stop_pass: AtomicU64::new(0),
-            #[cfg(test)]
+            #[cfg(any(test, feature = "test-input"))]
             test_clock: AtomicI64::new(i64::MIN),
         }
     }
@@ -257,7 +257,7 @@ impl MidiFeed {
 
     /// Microseconds since the feed was made.
     fn now(&self) -> i64 {
-        #[cfg(test)]
+        #[cfg(any(test, feature = "test-input"))]
         {
             let set = self.test_clock.load(Ordering::Relaxed);
             if set != i64::MIN {
@@ -272,8 +272,8 @@ impl MidiFeed {
 
     /// Stop the clock at `micros`, for tests: stamps and ages no longer depend on how fast the
     /// test runs.
-    #[cfg(test)]
-    pub(crate) fn set_clock(&self, micros: i64) {
+    #[cfg(any(test, feature = "test-input"))]
+    pub fn set_clock(&self, micros: i64) {
         self.test_clock.store(micros, Ordering::Relaxed);
     }
 
