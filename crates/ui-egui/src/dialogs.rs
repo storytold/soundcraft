@@ -444,7 +444,9 @@ fn strip_silence_form(
             mode = Some("separate");
         }
         // Enter on a focused Extract or Separate clicks that button, so Enter presses Strip only when neither was clicked.
-        if buttons(ui, "Strip", enter) && mode.is_none() {
+        // The button is its own string ("Strip Silence"), not the Channel Strip plug-in's
+        // short name "Strip", so translations can give them different words (#1610).
+        if buttons(ui, "Strip Silence", enter) && mode.is_none() {
             mode = Some("strip");
         }
         // Enter on a focused Rename… also presses Strip, so Rename… goes first.
