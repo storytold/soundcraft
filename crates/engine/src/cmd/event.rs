@@ -151,7 +151,7 @@ fn insert_time(e: &mut Engine, p: &Value) -> Result<Value> {
     if r.is_empty() {
         return Err(bad("event.insert_time", "give `start` and `length` or `end`"));
     }
-    let s = e.session_mut();
+    let s = &mut e.clip_edit();
     let ids: Vec<_> = s.tracks.iter().map(|t| t.id).collect();
     for t in ids {
         crate::edit::separate_all_at(s, t, r.start);
@@ -183,7 +183,7 @@ fn cut_time(e: &mut Engine, p: &Value) -> Result<Value> {
     if r.is_empty() {
         return Err(bad("event.cut_time", "selection is empty"));
     }
-    let s = e.session_mut();
+    let s = &mut e.clip_edit();
     let ids: Vec<_> = s.tracks.iter().map(|t| t.id).collect();
     for t in ids {
         crate::edit::clear_all_range(s, t, r, false);

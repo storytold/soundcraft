@@ -139,7 +139,7 @@ pub fn import(e: &mut Engine, path: &str, first: Option<TrackId>, at: Samples) -
     let rate = e.session().sample_rate.hz();
     let (decoded, file_of) = decode_group_audio(&file.audio, &dir, rate, id)?;
     let src_rate = f64::from(file.sample_rate.max(1));
-    let s = e.session_mut();
+    let s = &mut e.clip_edit();
     let ratio = f64::from(s.sample_rate.hz()) / src_rate;
     let scale = |v: Samples| -> Samples { (v as f64 * ratio).round() as Samples };
     let sources: Vec<SourceId> = decoded

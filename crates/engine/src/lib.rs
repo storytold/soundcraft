@@ -130,6 +130,8 @@ pub struct Clipboard {
     pub grid_offset: Samples,
     /// Original insertion point when the clipboard was populated by Cut.
     pub cut_from: Option<Samples>,
+    /// Timing provenance of the copied material, independent of subsequent edits and Undo.
+    clock_takes: ClockTakes,
     /// Copy Special › Automation: pasting it leaves the clips alone, in Shuffle mode too.
     pub automation_only: bool,
     /// The Auto Rename schemes of the copied clips, keyed as in their `auto_name`.
@@ -137,6 +139,25 @@ pub struct Clipboard {
 }
 
 impl Clipboard {
+    /// Read provenance from the copy operation. An undone clip's ID may now name different material.
+    fn paste_clips(
+        &self,
+        e: &mut Engine,
+        track: TrackId,
+        at: Samples,
+        clips: &[Clip],
+        length: Samples,
+        shuffle: bool,
+    ) -> std::result::Result<Vec<soundcraft_model::ClipId>, &'static str> {
+        let ids = edit::paste(e, track, at, clips, length, shuffle)?;
+        for (clip, id) in clips.iter().zip(&ids) {
+            if let Some(take) = self.clock_takes.get(&clip.id) {
+                e.follow_takes.insert(*id, take.clone());
+            }
+        }
+        Ok(ids)
+    }
+
     /// An empty clipboard for material copied from `range`.
     pub fn of_range(s: &Session, range: soundcraft_time::Range) -> Clipboard {
         let line = s.grid_line_at_or_before(range.start);
@@ -177,7 +198,20 @@ impl Clipboard {
     }
 }
 
-type ClockTakes = std::collections::BTreeMap<soundcraft_model::ClipId, Arc<io::ClockTakeProjection>>;
+#[derive(Clone, Debug, PartialEq)]
+struct ClockTake {
+    capture: Arc<io::ClockTakeProjection>,
+    /// Distance from the capture start to the material at this clip's local tick zero.
+    offset: Samples,
+}
+
+impl ClockTake {
+    fn after(&self, samples: Samples) -> Self {
+        Self { capture: Arc::clone(&self.capture), offset: self.offset.saturating_add(samples) }
+    }
+}
+
+type ClockTakes = std::collections::BTreeMap<soundcraft_model::ClipId, ClockTake>;
 
 #[derive(Debug, Clone)]
 struct HistoryEntry {
@@ -380,7 +414,7 @@ impl Engine {
         length: Samples,
         shuffle: bool,
     ) -> std::result::Result<Vec<soundcraft_model::ClipId>, &'static str> {
-        let ids = edit::paste(self.session_mut(), track, at, clips, length, shuffle)?;
+        let ids = edit::paste(self, track, at, clips, length, shuffle)?;
         if !self.follow_takes.is_empty() {
             for (src, id) in clips.iter().zip(&ids) {
                 self.copy_clock_take(src.id, *id);
@@ -410,7 +444,7 @@ impl Engine {
             if let Some(grid) = self.follow_takes.get(&clip.id)
                 && let soundcraft_model::ClipContent::Midi { sequence } = &mut clip.content
             {
-                grid.project(sequence);
+                grid.capture.project(sequence, grid.offset);
             }
         }
     }
@@ -425,7 +459,6 @@ impl Engine {
             .flat_map(|s| &s.tracks)
             .flat_map(|t| &t.playlists)
             .flat_map(|p| &p.clips)
-            .chain(self.clipboard.tracks.iter().flatten())
             .filter_map(|clip| self.follow_takes.contains_key(&clip.id).then_some(clip.id))
             .collect();
         self.follow_takes.retain(|id, _| retained.contains(id));
@@ -433,6 +466,7 @@ impl Engine {
 
     pub fn clear_follow_grid(&mut self) {
         self.follow_takes.clear();
+        self.clipboard.clock_takes.clear();
         for entry in &mut self.redo {
             entry.clock_takes.clear();
         }
@@ -450,10 +484,14 @@ impl Engine {
 
     /// Mutable access (copy-on-write). Callers outside commands should prefer `execute`.
     pub fn session_mut(&mut self) -> &mut Session {
+        self.clip_edit().doc
+    }
+
+    pub(crate) fn clip_edit(&mut self) -> edit::ClipEdit<'_> {
         self.prepared_revision.take();
         self.revision = self.revision.wrapping_add(1);
         self.dirty = true;
-        Arc::make_mut(&mut self.doc)
+        edit::ClipEdit { doc: Arc::make_mut(&mut self.doc), takes: Some(&mut self.follow_takes) }
     }
 
     /// Mutable access for live state that redraws and reaches playback but is not part of the

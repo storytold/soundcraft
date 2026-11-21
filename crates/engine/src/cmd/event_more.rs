@@ -322,7 +322,7 @@ fn select_split(e: &mut Engine, p: &Value) -> Result<Value> {
     if clips.is_empty() {
         return Err(bad(id, "select MIDI clips"));
     }
-    let s = e.session_mut();
+    let s = &mut e.clip_edit();
     let mut matched = 0;
     let mut new_tracks: std::collections::BTreeMap<u64, TrackId> = Default::default();
     for (t, cid) in clips {
@@ -414,7 +414,7 @@ fn step_input(e: &mut Engine, p: &Value) -> Result<Value> {
         Some(a) => a.iter().filter_map(Value::as_i64).map(|x| x.clamp(0, 127) as u8).take(16).collect(),
         None => vec![i64_or(p, "pitch", 60).clamp(0, 127) as u8],
     };
-    let s = e.session_mut();
+    let s = &mut e.clip_edit();
     let sr = s.sample_rate;
     let at = s.edit.selection.start.max(0);
     let tick = s.tempo.samples_to_ticks(at, sr);
@@ -709,7 +709,7 @@ fn beat_detective(e: &mut Engine, p: &Value) -> Result<Value> {
     });
     let separate = bool_or(p, "separate", false);
     let set_tempo = bool_or(p, "set_tempo", false);
-    let s = e.session_mut();
+    let s = &mut e.clip_edit();
     let mut separated = 0;
     if separate {
         for t in &tracks {
@@ -792,7 +792,7 @@ fn retro_record(e: &mut Engine, p: &Value) -> Result<Value> {
     let start = s.tempo.tick_to_samples(clip_tick, sr);
     let end = s.tempo.tick_to_samples(end_tick, sr).min(MAX_POSITION);
     let n = seq.notes.len();
-    let s = e.session_mut();
+    let s = &mut e.clip_edit();
     let cid = s.new_clip_id();
     let name = s.track(t).map(|x| x.name.clone()).unwrap_or_default();
     crate::edit::place_clip(s, t, Clip::midi(cid, name, start, (end - start).max(1), seq));

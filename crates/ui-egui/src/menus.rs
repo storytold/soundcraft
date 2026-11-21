@@ -914,6 +914,10 @@ pub fn run_ui_command(app: &mut SoundApp, id: &str, p: &Value) -> Option<Result<
                                 app.clock_follow.enabled && ns.clock_follow_input.is_some(),
                                 ns.clock_follow_input.as_deref(),
                             );
+                        } else if app.ui.clock_follow_input_offset() != ns.clock_follow_input_offset()
+                            && let Some(player) = &app.player
+                        {
+                            player.cancel_clock_resume();
                         }
                         app.ui = ns;
                         if source_changed {

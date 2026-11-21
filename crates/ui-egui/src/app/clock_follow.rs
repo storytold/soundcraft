@@ -19,6 +19,12 @@ pub(crate) struct Host {
     anchor: Option<(i64, i64)>,
 }
 
+impl crate::UiState {
+    pub(crate) fn clock_follow_input_offset(&self) -> i64 {
+        self.clock_follow_input.as_ref().and_then(|name| self.midi_sync.ports.get(name)).map_or(0, |p| p.in_offset_samples)
+    }
+}
+
 impl SoundApp {
     pub(crate) fn clock_follow_state(&self) -> Value {
         let s = self.clock_follow.snapshot;
@@ -30,7 +36,7 @@ impl SoundApp {
         };
         let source = self.ui.clock_follow_input.as_ref();
         json!({"input":source,"enabled":self.clock_follow.enabled, "loss_policy":if self.ui.clock_follow_stop_on_loss {"stop"} else {"coast"},
-            "input_offset_samples":source.and_then(|p|self.ui.midi_sync.ports.get(p)).map_or(0, |p|p.in_offset_samples),
+            "input_offset_samples":self.ui.clock_follow_input_offset(),
             "state":state,"estimated_bpm":s.bpm,"jitter_us":s.jitter_us,"arrival_residual_us":s.phase_error_us,"phase_error_us":self.clock_follow.transport_error_us,"dropouts":s.dropouts})
     }
 
@@ -164,7 +170,7 @@ impl SoundApp {
             return;
         }
         let limit = soundcraft_playback::max_sync_offset_samples(sr);
-        let offset = self.ui.midi_sync.ports.get(name).map_or(0, |p| p.in_offset_samples).clamp(-limit, limit);
+        let offset = self.ui.clock_follow_input_offset().clamp(-limit, limit);
         // A previous grid may still be returning from the callback after rapid locates.
         // Prepare the exact settled grid here, before arming the next start.
         player.prepare_clock_session_with(self.engine.session_arc(), grid, |doc| self.engine.project_clock_takes(doc));
@@ -199,7 +205,7 @@ impl SoundApp {
         let initial_pulse = self.engine.transport_tempo().samples_to_ticks(self.position(), sr) / TICKS_PER_PULSE;
         feed.set_clock_follow(Some(id), !self.ui.clock_follow_stop_on_loss, initial_pulse);
         let limit = soundcraft_playback::max_sync_offset_samples(sr);
-        let offset = self.ui.midi_sync.ports.get(name).map_or(0, |p| p.in_offset_samples).clamp(-limit, limit);
+        let offset = self.ui.clock_follow_input_offset().clamp(-limit, limit);
         let mut events = std::mem::take(&mut self.clock_follow.actions);
         let s = feed.clock_follow_status(&mut events);
         self.clock_follow.snapshot = s;
@@ -412,6 +418,42 @@ mod tests {
         assert!(app.player.as_ref().unwrap().is_playing());
         app.run("setup.midi_clock_follow", json!({"enabled":false})).unwrap();
         assert!(!app.player.as_ref().unwrap().is_playing());
+    }
+
+    #[test]
+    fn ui_calibration_patch_cancels_only_a_cue_with_a_changed_input_offset() {
+        for (before, after) in [(0, -480), (-480, 480), (480, 0), (240, 240)] {
+            let engine = soundcraft_engine::Engine::default();
+            let player = soundcraft_playback::Player::new(engine.session_arc());
+            let mut app = SoundApp::new(engine, Some(player), crate::Services::default());
+            app.midi_inputs = Some(MidiInputs::with_port_names(vec![], vec!["DIN".into()]));
+            let feed = app.midi_inputs.as_ref().unwrap().feed().clone();
+            let port = feed.ports().assign("DIN");
+            app.run("setup.midi_clock_follow", json!({"input":"DIN","enabled":true,"input_offset_samples":before})).unwrap();
+            feed.set_clock(1_000_000);
+            feed.receive(port, &[0xf2, 64, 0]);
+            let ctx = egui::Context::default();
+            ctx.run_ui(Default::default(), |_| app.logic(&ctx)).textures_delta.clear();
+            let mut ports = json!({"other":{"in_offset_samples":120}});
+            if after != 0 {
+                ports["DIN"] = json!({"in_offset_samples":after,"out_offset_samples":60});
+            }
+            app.run("ui.set", json!({"midi_sync":{"ports":ports}})).unwrap();
+            feed.receive(port, &[0xfb, 0xf8]);
+            let player = app.player.as_ref().unwrap();
+            assert_eq!(player.is_playing(), before == after, "prepared dispatch after {before} -> {after}");
+            if before != after {
+                // Check the host's new sample position without variable driver-reported lead.
+                drop(app.player.take());
+                app.service_clock_follow();
+                assert!(
+                    matches!(app.engine.transport_requests.as_slice(), [TransportRequest::PlayFromClock {origin, render_from}]
+                    if *origin == 384_000 && *render_from == *origin - after),
+                    "requests: {:?}",
+                    app.engine.transport_requests
+                );
+            }
+        }
     }
 
     #[test]

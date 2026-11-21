@@ -286,7 +286,7 @@ fn conform(e: &mut Engine, p: &Value) -> Result<Value> {
 fn remove_pitch_shift(e: &mut Engine, p: &Value) -> Result<Value> {
     let id = "clip.remove_pitch_shift";
     let ids = clip_ids_param(e, p);
-    let s = e.session_mut();
+    let s = &mut e.clip_edit();
     let mut n = 0;
     for cid in ids {
         let Some((t, c)) = s.find_clip(cid).map(|(t, c)| (t, c.clone())) else { continue };

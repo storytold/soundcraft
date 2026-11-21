@@ -54,7 +54,7 @@ fn new_clip(e: &mut Engine, p: &Value) -> Result<Value> {
         let start = bar.line_at_or_before(r.start, s.sample_rate, &s.tempo, s.frame_rate);
         r = soundcraft_time::Range::new(start, bar.next_line(start, s.sample_rate, &s.tempo, s.frame_rate));
     }
-    let s = e.session_mut();
+    let s = &mut e.clip_edit();
     let id = s.new_clip_id();
     let name = s.track(t).map(|x| x.name.clone()).unwrap_or_default();
     crate::edit::place_clip(s, t, Clip::midi(id, name, r.start, r.len(), Sequence::default()));

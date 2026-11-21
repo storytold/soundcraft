@@ -453,7 +453,7 @@ fn paste_merge_midi(e: &mut Engine, p: &Value) -> Result<Value> {
     let tracks = tracks_required(e, id, p)?;
     let at = position_param(e, id, p, "at")?.unwrap_or(e.session().edit.selection.start).max(0);
     let cb = super::edit::clipboard_for_paste(e);
-    let s = e.session_mut();
+    let s = &mut e.clip_edit();
     let tempo = s.tempo.clone();
     let sr = s.sample_rate;
     let mut merged = 0;
@@ -643,7 +643,7 @@ fn space_clips(e: &mut Engine, p: &Value) -> Result<Value> {
     if ids.len() < 2 {
         return Err(bad(id, "select two or more clips"));
     }
-    let s = e.session_mut();
+    let s = &mut e.clip_edit();
     let track_ids: Vec<_> = s.tracks.iter().map(|t| t.id).collect();
     let mut moved = 0;
     for t in track_ids {
@@ -670,7 +670,7 @@ fn space_clips(e: &mut Engine, p: &Value) -> Result<Value> {
 
 fn snap(e: &mut Engine, p: &Value, next: bool) -> Result<Value> {
     let ids = clip_ids_param(e, p);
-    let s = e.session_mut();
+    let s = &mut e.clip_edit();
     let mut order: Vec<(ClipId, Samples)> = ids.iter().filter_map(|id| s.find_clip(*id).map(|(_, c)| (*id, c.start))).collect();
     // Snap the clip nearest the destination first so neighbours stay put.
     order.sort_by_key(|x| if next { -x.1 } else { x.1 });
@@ -697,7 +697,7 @@ fn to_playlist(e: &mut Engine, p: &Value, dest: Dest, mv: bool, id: &str) -> Res
     let tracks = tracks_required(e, id, p)?;
     let r = nonempty_range(e, p, id)?;
     let sh = shuffle(e.session());
-    let s = e.session_mut();
+    let s = &mut e.clip_edit();
     let mut out = Vec::new();
     for t in &tracks {
         if s.track(*t).is_none_or(|tr| !tr.kind.has_playlist()) {
@@ -765,7 +765,7 @@ fn tce(e: &mut Engine, p: &Value) -> Result<Value> {
     if c.time_locked || c.edit_locked {
         return Err(bad(id, "the clip is locked"));
     }
-    let s = e.session_mut();
+    let s = &mut e.clip_edit();
     let Some(src) = render_stretched(s, id, &c, target.len())? else { return Err(bad(id, "the clip's audio is not loaded")) };
     let ratio = target.len() as f64 / c.length.max(1) as f64;
     let scale = |x: Samples| soundcraft_time::to_samples(x as f64 * ratio);

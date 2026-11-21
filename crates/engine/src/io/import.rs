@@ -174,7 +174,7 @@ fn place_import(
 ) -> Result<Value> {
     let channels = audio.buffer.channels.len();
     let file_rate = info.sample_rate;
-    let s = e.session_mut();
+    let s = &mut e.clip_edit();
     let session_rate = s.sample_rate.hz();
     let src = add_source_audio(s, name, audio, path, FileFormat::of(info));
     if let (Some(bwf), Some(sx)) = (info.bwf.as_ref(), s.sources.last_mut()) {

@@ -16,6 +16,53 @@ pub const SHUFFLE_LOCK: &str = "edit.shuffle_lock";
 /// Edit-state flag: the Grid mode last used was Relative, so choosing Grid again picks it.
 pub const RELATIVE_GRID: &str = "edit.relative_grid";
 
+/// A timeline edit may be working on a standalone document or on the engine's followed takes.
+pub struct ClipEdit<'a> {
+    pub(crate) doc: &'a mut Session,
+    pub(crate) takes: Option<&'a mut crate::ClockTakes>,
+}
+
+impl std::ops::Deref for ClipEdit<'_> {
+    type Target = Session;
+    fn deref(&self) -> &Session {
+        self.doc
+    }
+}
+impl std::ops::DerefMut for ClipEdit<'_> {
+    fn deref_mut(&mut self) -> &mut Session {
+        self.doc
+    }
+}
+
+/// Supplies both halves of a timeline edit when new clip identities can be allocated.
+pub trait EditTimeline {
+    fn clip_edit(&mut self) -> ClipEdit<'_>;
+}
+impl EditTimeline for Session {
+    fn clip_edit(&mut self) -> ClipEdit<'_> {
+        ClipEdit { doc: self, takes: None }
+    }
+}
+impl EditTimeline for crate::Engine {
+    fn clip_edit(&mut self) -> ClipEdit<'_> {
+        crate::Engine::clip_edit(self)
+    }
+}
+impl EditTimeline for ClipEdit<'_> {
+    fn clip_edit(&mut self) -> ClipEdit<'_> {
+        ClipEdit { doc: self.doc, takes: self.takes.as_deref_mut() }
+    }
+}
+
+fn inherit_split(takes: &mut Option<&mut crate::ClockTakes>, parent: &Clip, right: &Clip) {
+    if let Some(takes) = takes
+        && let Some(take) = takes.get(&parent.id)
+    {
+        let child = take.after(right.start.saturating_sub(parent.start));
+        takes.insert(right.id, child);
+    }
+}
+
 /// Context needed to split MIDI clips in musical time.
 #[derive(Clone, Copy)]
 pub struct TimeCtx<'a> {
@@ -81,23 +128,24 @@ fn rebase_midi_start(clip: &mut Clip, old_start: Samples, t: TimeCtx<'_>) {
 /// Split every clip on a track's active playlist that spans `at`, except time- or edit-locked ones.
 /// The piece before `at` keeps the clip's name. The piece after it is a new clip, and takes the next
 /// name of the clip's Auto Rename scheme when it has one.
-pub fn separate_at(s: &mut Session, track: TrackId, at: Samples) -> usize {
-    separate_at_if(s, track, at, |_| true)
+pub fn separate_at(timeline: &mut impl EditTimeline, track: TrackId, at: Samples) -> usize {
+    separate_at_if(timeline, track, at, |_| true)
 }
 
 /// [`separate_at`], giving the piece after `at` the next Auto Rename name only when `auto_name`
 /// returns true for it. Any other piece keeps the clip's name, and its scheme does not count up.
-pub fn separate_at_if(s: &mut Session, track: TrackId, at: Samples, auto_name: impl Fn(&Clip) -> bool) -> usize {
-    split_at(s, track, at, auto_name, true)
+pub fn separate_at_if(timeline: &mut impl EditTimeline, track: TrackId, at: Samples, auto_name: impl Fn(&Clip) -> bool) -> usize {
+    split_at(timeline, track, at, auto_name, true)
 }
 
 /// [`separate_at`], splitting time- and edit-locked clips too. For the Event time operations, which
 /// move the whole timeline, locked clips included.
-pub fn separate_all_at(s: &mut Session, track: TrackId, at: Samples) -> usize {
-    split_at(s, track, at, |_| true, false)
+pub fn separate_all_at(timeline: &mut impl EditTimeline, track: TrackId, at: Samples) -> usize {
+    split_at(timeline, track, at, |_| true, false)
 }
 
-fn split_at(s: &mut Session, track: TrackId, at: Samples, auto_name: impl Fn(&Clip) -> bool, skip_locked: bool) -> usize {
+fn split_at(timeline: &mut impl EditTimeline, track: TrackId, at: Samples, auto_name: impl Fn(&Clip) -> bool, skip_locked: bool) -> usize {
+    let ClipEdit { doc: s, mut takes } = timeline.clip_edit();
     let tc_tempo = s.tempo.clone();
     let sr = s.sample_rate;
     let t = TimeCtx { tempo: &tc_tempo, sr };
@@ -120,6 +168,7 @@ fn split_at(s: &mut Session, track: TrackId, at: Samples, auto_name: impl Fn(&Cl
             && let Some(id) = ids.pop()
             && let Some((l, mut r)) = split_clip(&c, at, id, t)
         {
+            inherit_split(&mut takes, &c, &r);
             if auto_name(&r) {
                 take_auto_name(&mut schemes, &mut r);
             }
@@ -141,7 +190,8 @@ fn split_at(s: &mut Session, track: TrackId, at: Samples, auto_name: impl Fn(&Cl
 /// name here), without rebuilding the playlist per point. Returns the number of splits.
 /// `points` are sorted and deduplicated first, so the source offsets of stretched audio can differ
 /// from per-point calls given in another order (each trim rounds its own adjustment).
-pub fn separate_at_points(s: &mut Session, track: TrackId, points: &[Samples]) -> usize {
+pub fn separate_at_points(timeline: &mut impl EditTimeline, track: TrackId, points: &[Samples]) -> usize {
+    let ClipEdit { doc: s, mut takes } = timeline.clip_edit();
     let mut pts = points.to_vec();
     pts.sort_unstable();
     pts.dedup();
@@ -162,6 +212,7 @@ pub fn separate_at_points(s: &mut Session, track: TrackId, points: &[Samples]) -
             let Some(id) = ids.pop() else { break };
             match split_clip(&rest, *p, id, t) {
                 Some((l, r)) => {
+                    inherit_split(&mut takes, &rest, &r);
                     out.push(l);
                     rest = r;
                 }
@@ -204,14 +255,14 @@ pub fn auto_name_new_clips(s: &mut Session, track: TrackId, old: &HashSet<ClipId
 /// Shuffle mode later clips move left, up to the first locked clip (see [`ripple`]); a locked clip
 /// left inside the range holds everything after it in place. Returns the removed material as clips
 /// positioned relative to `range.start`.
-pub fn clear_range(s: &mut Session, track: TrackId, range: Range, shuffle: bool) -> Vec<Clip> {
-    remove_range(s, track, range, shuffle, true)
+pub fn clear_range(timeline: &mut impl EditTimeline, track: TrackId, range: Range, shuffle: bool) -> Vec<Clip> {
+    remove_range(timeline, track, range, shuffle, true)
 }
 
 /// [`clear_range`], splitting and removing time- and edit-locked clips too. For the Event time
 /// operations, which cut the whole timeline, locked clips included.
-pub fn clear_all_range(s: &mut Session, track: TrackId, range: Range, shuffle: bool) -> Vec<Clip> {
-    remove_range(s, track, range, shuffle, false)
+pub fn clear_all_range(timeline: &mut impl EditTimeline, track: TrackId, range: Range, shuffle: bool) -> Vec<Clip> {
+    remove_range(timeline, track, range, shuffle, false)
 }
 
 /// Whether a time- or edit-locked clip on `track` covers any of `range`.
@@ -224,13 +275,14 @@ pub fn holds_locked(s: &Session, track: TrackId, range: Range) -> bool {
 pub const LOCKED_IN_RANGE: &str = "the range holds a time- or edit-locked clip; unlock it first";
 
 /// [`clear_range`] (`keep_locked`) or [`clear_all_range`].
-fn remove_range(s: &mut Session, track: TrackId, range: Range, shuffle: bool, keep_locked: bool) -> Vec<Clip> {
+fn remove_range(timeline: &mut impl EditTimeline, track: TrackId, range: Range, shuffle: bool, keep_locked: bool) -> Vec<Clip> {
+    let mut s = timeline.clip_edit();
     if range.is_empty() {
         return Vec::new();
     }
     let separate = if keep_locked { separate_at } else { separate_all_at };
-    separate(s, track, range.start);
-    separate(s, track, range.end);
+    separate(&mut s, track, range.start);
+    separate(&mut s, track, range.end);
     let Some(pl) = s.track_mut(track).and_then(|t| t.playlist_mut()) else { return Vec::new() };
     let mut removed = Vec::new();
     pl.clips.retain(|c| {
@@ -244,9 +296,9 @@ fn remove_range(s: &mut Session, track: TrackId, range: Range, shuffle: bool, ke
         }
     });
     // Like Shuffle's ripple, a locked clip still in the range keeps the clips after it where they are.
-    if shuffle && !holds_locked(s, track, range) {
-        let moved = ripple(s, track, range.end, -range.len());
-        follow_automation(s, track, range.end, moved);
+    if shuffle && !holds_locked(&s, track, range) {
+        let moved = ripple(&mut s, track, range.end, -range.len());
+        follow_automation(&mut s, track, range.end, moved);
     }
     removed
 }
@@ -304,13 +356,14 @@ pub fn take_range(s: &Session, track: TrackId, range: Range) -> Vec<Clip> {
 
 /// Merge the MIDI inside `range` into one clip covering the whole range, gaps included, as it
 /// sounds (muted clips stay silent). Returns false for tracks that aren't MIDI or instrument tracks.
-pub fn consolidate_midi(s: &mut Session, track: TrackId, range: Range) -> bool {
+pub fn consolidate_midi(timeline: &mut impl EditTimeline, track: TrackId, range: Range) -> bool {
+    let mut s = timeline.clip_edit();
     let Some(name) = s.track(track).filter(|t| t.kind.is_midi()).map(|t| t.name.clone()) else { return false };
     let mut merged = soundcraft_midi::Sequence::default();
     {
-        let t = TimeCtx::of(s);
+        let t = TimeCtx::of(&s);
         let base = t.ticks(range.start);
-        for part in copy_range(s, track, range).into_iter().filter(|c| !c.muted) {
+        for part in copy_range(&s, track, range).into_iter().filter(|c| !c.muted) {
             let at = t.ticks(range.start.saturating_add(part.start)).saturating_sub(base);
             let len = t.ticks(range.start.saturating_add(part.end())).saturating_sub(base).saturating_sub(at);
             let ClipContent::Midi { sequence } = part.content else { continue };
@@ -327,16 +380,24 @@ pub fn consolidate_midi(s: &mut Session, track: TrackId, range: Range) -> bool {
     }
     merged.sort();
     let id = s.new_clip_id();
-    place_clip(s, track, Clip::midi(id, name, range.start, range.len(), merged));
+    place_clip(&mut s, track, Clip::midi(id, name, range.start, range.len(), merged));
     true
 }
 
 /// Insert `clips` (positions relative to 0) at `at`. Overwrites what's underneath unless
 /// `shuffle`, which first makes room for `length` (see [`make_room`], whose refusal it returns).
-pub fn paste(s: &mut Session, track: TrackId, at: Samples, clips: &[Clip], length: Samples, shuffle: bool) -> Result<Vec<ClipId>, &'static str> {
+pub fn paste(
+    timeline: &mut impl EditTimeline,
+    track: TrackId,
+    at: Samples,
+    clips: &[Clip],
+    length: Samples,
+    shuffle: bool,
+) -> Result<Vec<ClipId>, &'static str> {
+    let mut s = timeline.clip_edit();
     let length = length.max(clips.iter().map(Clip::end).max().unwrap_or(0));
     if shuffle {
-        make_room(s, track, at, length)?;
+        make_room(&mut s, track, at, length)?;
     }
     let mut ids = Vec::new();
     let mut placed = Vec::new();
@@ -348,14 +409,15 @@ pub fn paste(s: &mut Session, track: TrackId, at: Samples, clips: &[Clip], lengt
         placed.push((track, nc));
     }
     // Clear every destination first, so pasted clips that overlap (crossfades) keep each other.
-    put_clips(s, placed);
+    put_clips(&mut s, placed);
     Ok(ids)
 }
 
 /// Place one clip, overwriting whatever it covers except time- and edit-locked clips, which it
 /// overlaps (see [`clear_range`]).
-pub fn place_clip(s: &mut Session, track: TrackId, clip: Clip) {
-    clear_range(s, track, clip.range(), false);
+pub fn place_clip(timeline: &mut impl EditTimeline, track: TrackId, clip: Clip) {
+    let mut s = timeline.clip_edit();
+    clear_range(&mut s, track, clip.range(), false);
     if let Some(pl) = s.track_mut(track).and_then(|t| t.playlist_mut()) {
         pl.clips.push(clip);
         pl.sort();
@@ -364,12 +426,13 @@ pub fn place_clip(s: &mut Session, track: TrackId, clip: Clip) {
 
 /// Insert silence: shift material at/after `range.start` right by the range length (Insert Time;
 /// Shuffle mode edits use [`make_room`]).
-pub fn insert_silence(s: &mut Session, track: TrackId, range: Range) {
+pub fn insert_silence(timeline: &mut impl EditTimeline, track: TrackId, range: Range) {
+    let mut s = timeline.clip_edit();
     if range.is_empty() {
         return;
     }
-    separate_at(s, track, range.start);
-    shift_from(s, track, range.start, range.len());
+    separate_at(&mut s, track, range.start);
+    shift_from(&mut s, track, range.start, range.len());
 }
 
 /// Move every clip that starts at or after `from` by `by`, locked or not.
@@ -485,7 +548,8 @@ pub const IN_CROSSFADE: &str = "can't make room inside a crossfade";
 /// Shuffle mode's room for `len` at `at`: later clips (and with Automation Follows Edit their
 /// automation) move right. Refused, with nothing changed, when a locked clip is in the way or
 /// `at` is inside a crossfade.
-pub fn make_room(s: &mut Session, track: TrackId, at: Samples, len: Samples) -> Result<(), &'static str> {
+pub fn make_room(timeline: &mut impl EditTimeline, track: TrackId, at: Samples, len: Samples) -> Result<(), &'static str> {
+    let mut s = timeline.clip_edit();
     if len <= 0 {
         return Ok(());
     }
@@ -493,12 +557,12 @@ pub fn make_room(s: &mut Session, track: TrackId, at: Samples, len: Samples) -> 
     if clips.iter().filter(|c| c.start <= at && at < c.end()).count() > 1 {
         return Err(IN_CROSSFADE);
     }
-    if shuffle_room(s, track, at) < len {
+    if shuffle_room(&s, track, at) < len {
         return Err(NO_ROOM);
     }
-    separate_at(s, track, at);
-    let moved = ripple(s, track, at, len);
-    follow_automation(s, track, at, moved);
+    separate_at(&mut s, track, at);
+    let moved = ripple(&mut s, track, at, len);
+    follow_automation(&mut s, track, at, moved);
     Ok(())
 }
 
@@ -622,7 +686,8 @@ fn join_gain_env(l: &mut Clip, r: &Clip) {
 
 /// Move clips by `delta`, overwriting what they land on; `dest` sends whole tracks of them
 /// elsewhere (see [`destinations`]). Same-track moves clamped to zero leave all material intact.
-pub fn move_clips(s: &mut Session, ids: &[ClipId], delta: Samples, dest: &[(TrackId, TrackId)]) -> usize {
+pub fn move_clips(timeline: &mut impl EditTimeline, ids: &[ClipId], delta: Samples, dest: &[(TrackId, TrackId)]) -> usize {
+    let mut s = timeline.clip_edit();
     let ids: HashSet<ClipId> = ids.iter().copied().collect();
     // Limit the shift before removing any clips, so a stationary edit cannot overwrite overlaps.
     let limit = s.tracks.iter().flat_map(|t| t.clips()).filter(|c| ids.contains(&c.id) && !locked(c)).map(|c| c.start.saturating_neg()).max();
@@ -649,15 +714,16 @@ pub fn move_clips(s: &mut Session, ids: &[ClipId], delta: Samples, dest: &[(Trac
         c.start = c.start.saturating_add(delta);
         (lands(dest, tid), c)
     });
-    put_clips(s, placed.collect());
+    put_clips(&mut s, placed.collect());
     n
 }
 
 /// Place moved clips, overwriting what they cover but not each other, so a crossfaded pair
 /// moved together stays a crossfade.
-fn put_clips(s: &mut Session, placed: Vec<(TrackId, Clip)>) {
+fn put_clips(timeline: &mut impl EditTimeline, placed: Vec<(TrackId, Clip)>) {
+    let mut s = timeline.clip_edit();
     for (t, c) in &placed {
-        clear_range(s, *t, c.range(), false);
+        clear_range(&mut s, *t, c.range(), false);
     }
     for (t, c) in placed {
         if let Some(pl) = s.track_mut(t).and_then(|t| t.playlist_mut()) {
@@ -843,24 +909,25 @@ pub fn shuffle_groups(s: &Session, ids: &[ClipId], dest: &[(TrackId, TrackId)]) 
 /// [`shuffle_slot`] nearest `delta` away, pushing later clips right. With Automation Follows Edit
 /// their automation travels with them. Refused, with the reason, when a locked clip or a
 /// crossfade leaves no room.
-pub fn shuffle_clips(s: &mut Session, ids: &[ClipId], delta: Samples, dest: &[(TrackId, TrackId)]) -> Result<usize, &'static str> {
+pub fn shuffle_clips(timeline: &mut impl EditTimeline, ids: &[ClipId], delta: Samples, dest: &[(TrackId, TrackId)]) -> Result<usize, &'static str> {
+    let mut s = timeline.clip_edit();
     let groups: Vec<(TrackId, Samples, Samples)> =
-        shuffle_groups(s, ids, dest).into_iter().map(|(d, first)| (d, first, shuffle_slot(s, d, first.saturating_add(delta), ids))).collect();
+        shuffle_groups(&s, ids, dest).into_iter().map(|(d, first)| (d, first, shuffle_slot(&s, d, first.saturating_add(delta), ids))).collect();
     let moving: HashSet<ClipId> = ids.iter().copied().collect();
     let sources: Vec<TrackId> = s.tracks.iter().filter(|t| t.clips().iter().any(|c| moving.contains(&c.id) && !locked(c))).map(|t| t.id).collect();
     let mut lifted = Vec::new();
     for t in sources {
-        lifted.extend(lift_all(s, t, &moving).into_iter().map(|(c, points)| (lands(dest, t), c, points)));
+        lifted.extend(lift_all(&mut s, t, &moving).into_iter().map(|(c, points)| (lands(dest, t), c, points)));
     }
     for (d, first, at) in groups {
         let block: Vec<&(TrackId, Clip, Vec<(AutoParam, AutomationPoint)>)> = lifted.iter().filter(|l| l.0 == d).collect();
         let len = block.iter().map(|l| l.1.end()).max().unwrap_or(first).saturating_sub(first);
-        make_room(s, d, at, len)?;
+        make_room(&mut s, d, at, len)?;
         let mut placed = Vec::new();
         for (_, c, points) in block {
             let mut c = c.clone();
             c.start = at.saturating_add(c.start.saturating_sub(first));
-            put_automation(s, d, c.start, points);
+            put_automation(&mut s, d, c.start, points);
             placed.push(c);
         }
         if let Some(pl) = s.track_mut(d).and_then(|t| t.playlist_mut()) {
