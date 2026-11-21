@@ -71,7 +71,7 @@ fn beat_clock_host_timing() {
                         heard_at: start + lead + Duration::from_secs_f64(index as f64 / rate),
                         looped: None,
                         end: None,
-                        lead,
+                        lead: Some(lead),
                     });
                     if index == 0 {
                         tx.send(Update::Wake(None)).unwrap();
@@ -154,7 +154,7 @@ fn beat_clock_reaches_a_virtual_midi_receiver() {
         heard_at: ready,
         looped: None,
         end: None,
-        lead: Duration::ZERO,
+        lead: Some(Duration::ZERO),
     });
     let (tx, rx) = channel();
     let worker = std::thread::spawn(move || drive(view, Arc::new(Session::default()), rx, Arc::default(), Arc::default(), open_unique));

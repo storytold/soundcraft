@@ -16,7 +16,7 @@ pub(crate) struct Fault {
     /// Blocks so far, to tell a device that stopped asking for audio.
     pub(crate) beats: std::sync::atomic::AtomicU64,
     /// The UI has been told.
-    reported: AtomicBool,
+    reported: std::sync::atomic::AtomicU8,
 }
 
 impl Fault {
@@ -29,9 +29,12 @@ impl Fault {
         } else if stalled {
             OutputTrouble::Stalled
         } else {
+            self.reported.store(0, Ordering::Relaxed);
             return None;
         };
-        (!self.reported.swap(true, Ordering::Relaxed)).then_some(trouble)
+        // A transient stall can recover or be superseded by stream invalidation.
+        let kind = trouble as u8 + 1;
+        (self.reported.swap(kind, Ordering::Relaxed) != kind).then_some(trouble)
     }
 }
 
@@ -852,9 +855,9 @@ impl AudioState {
             let (heard_at, lead) = match self.device_timing {
                 Some(t) => {
                     clock.observe(t, self.device_buffer_frames as f64 / self.device_rate);
-                    (t.heard_instant(self.device_rate, 0), t.lead)
+                    (t.heard_instant(self.device_rate, 0), t.lead())
                 }
-                None => (std::time::Instant::now(), std::time::Duration::ZERO),
+                None => (std::time::Instant::now(), None),
             };
             super::sync_clock::Presentation {
                 generation: self.session_generation,

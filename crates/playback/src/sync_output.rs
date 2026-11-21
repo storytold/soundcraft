@@ -249,22 +249,36 @@ impl Output {
         let now = Instant::now();
         self.view.lock().unwrap_or_else(std::sync::PoisonError::into_inner).read(now, true, 0).0.map(|b| b.sample_index_at(now))
     }
+    pub(crate) fn timing_issue(&self) -> Option<crate::OutputTimingIssue> {
+        match self.metrics.lead() {
+            (Some(lead_us), crate::OutputLeadSource::Retained) => Some(crate::OutputTimingIssue::Retained { lead_us }),
+            (None, crate::OutputLeadSource::Unknown) => Some(crate::OutputTimingIssue::Unknown),
+            _ => None,
+        }
+    }
+    pub(crate) fn reported_timing_count(&self) -> u64 {
+        self.metrics.fresh_lead_reports.load(Relaxed)
+    }
     pub(crate) fn status(&self) -> MidiSyncStatus {
         let buckets = self.stats.buckets.each_ref().map(|v| v.load(Relaxed));
         let max = self.stats.max.load(Relaxed);
-        let lead = self.metrics.lead_us.load(Relaxed);
+        let (lead, lead_source) = self.metrics.lead();
         let sr = self.session.as_ref().map_or_else(soundcraft_time::SampleRate::default, |s| s.sample_rate);
         let system_delay = self.metrics.system_delay_samples.load(Relaxed);
         let timing = |name: &str, offset, compensate| {
-            let (total, limited) = delivery_offset(Duration::from_micros(lead), system_delay as usize, sr, compensate, offset);
+            let available = if compensate { lead } else { Some(0) };
+            let delay = available.map(|us| delivery_offset(Duration::from_micros(us), system_delay as usize, sr, compensate, offset));
             PortTiming {
                 connected: self.stats.connected().contains(name),
                 requested_offset_samples: offset,
                 offset_samples: effective_offset(offset, sr),
                 system_delay_samples: system_delay,
                 device_lead_us: lead,
-                advance_limited: limited,
-                effective_total_us: (total * 1e6).round() as i64,
+                lead_source,
+                beat_clock_enabled: false,
+                mtc_enabled: false,
+                advance_limited: delay.is_some_and(|(_, limited)| limited),
+                effective_total_us: delay.map(|(total, _)| (total * 1e6).round() as i64),
                 beat_clock_total_us: None,
                 mtc_total_us: None,
             }
@@ -272,7 +286,8 @@ impl Output {
         let mut ports = BTreeMap::new();
         for (name, offset) in &self.beat {
             let mut t = timing(name, *offset, self.compensated);
-            t.beat_clock_total_us = Some(t.effective_total_us);
+            t.beat_clock_enabled = true;
+            t.beat_clock_total_us = t.effective_total_us;
             ports.insert(name.clone(), t);
         }
         if let Some((name, offset, compensate)) = &self.additional {
@@ -280,7 +295,8 @@ impl Output {
             let total = t.effective_total_us;
             let limited = t.advance_limited;
             let entry = ports.entry(name.clone()).or_insert(t);
-            entry.mtc_total_us = Some(total);
+            entry.mtc_enabled = true;
+            entry.mtc_total_us = total;
             entry.advance_limited |= limited;
         }
         MidiSyncStatus {
@@ -297,6 +313,7 @@ impl Output {
             lateness_p95_us: percentile(buckets, 95, max),
             lateness_max_us: max,
             reported_lead_us: lead,
+            lead_source,
             callback_gap_max_us: self.metrics.max_gap_us.load(Relaxed),
             callback_gaps_over_two_buffers: self.metrics.late_buffers.load(Relaxed),
             lead_clamps: self.metrics.clamps.load(Relaxed),
@@ -332,6 +349,7 @@ struct Port<C> {
     routes: [Option<Route>; 2],
     future: Vec<Event>,
     stop_pending: bool,
+    waiting_for_timing: bool,
     failure: Option<String>,
 }
 #[derive(Clone, Copy)]
@@ -358,6 +376,7 @@ impl<C: SyncPort> Port<C> {
     }
 
     fn poll(&mut self, name: &str, now: Instant, session: &Session, view: &View, stats: &Stats, pending: &mut Vec<Event>) -> Option<Instant> {
+        self.waiting_for_timing = false;
         let Some(port) = &mut self.link else { return Some(self.retry) };
         let mut next = None;
         let mut soon = |at: Instant| next = Some(next.map_or(at, |t: Instant| t.min(at)));
@@ -386,8 +405,12 @@ impl<C: SyncPort> Port<C> {
         for (route_index, route) in self.routes.iter_mut().enumerate() {
             let Some(r) = route else { continue };
             let (block, future, revision) = {
-                let timeline = view.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+                let mut timeline = view.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
                 let (block, future) = timeline.read(now, r.compensate, r.offset);
+                if r.compensate && block.is_none() && future.is_none() {
+                    timeline.wait_for_timing();
+                    self.waiting_for_timing = true;
+                }
                 let changed = block
                     .and_then(|b| timeline.map(b.generation))
                     .filter(|revision| r.map.as_ref().is_none_or(|old| old.generation < revision.generation))
@@ -455,6 +478,7 @@ fn set_route<C: SyncPort>(map: &mut BTreeMap<String, Port<C>>, index: usize, nam
         routes: [None, None],
         future: Vec::new(),
         stop_pending: false,
+        waiting_for_timing: false,
         failure: None,
     });
     port.routes[index] = Some(route);
@@ -497,16 +521,19 @@ fn wait_for_update(rx: &Receiver<Update>, next: Option<Instant>, connected: bool
     } else if !wait_for_late_block {
         return rx.recv().map(Some).map_err(|_| ());
     }
-    match rx.try_recv() {
+    let receive = || match rx.try_recv() {
         Ok(update) => Ok(Some(update)),
-        Err(std::sync::mpsc::TryRecvError::Empty) => {
-            if next.is_none() {
-                std::thread::park();
-            }
-            Ok(None)
-        }
+        Err(std::sync::mpsc::TryRecvError::Empty) => Ok(None),
         Err(_) => Err(()),
+    };
+    let update = receive()?;
+    if update.is_none() && next.is_none() {
+        std::thread::park();
+        // A single notification can mean either a published block or a queued
+        // command. Consume the command before polling the timeline again.
+        return receive();
     }
+    Ok(update)
 }
 
 fn drive<C: SyncPort>(
@@ -646,12 +673,13 @@ fn drive<C: SyncPort>(
         if connected && (now < awake || transition.is_some()) {
             soon(now + Duration::from_millis(1));
         }
-        match wait_for_update(&rx, next, connected, wait_for_late_block) {
+        let waiting_for_timing = ports.values().any(|p| p.waiting_for_timing);
+        match wait_for_update(&rx, next, connected, wait_for_late_block || waiting_for_timing) {
             Ok(next_update) => update = next_update,
             Err(()) => break,
         }
     }
-    view.lock().unwrap_or_else(std::sync::PoisonError::into_inner).late_transport_waiter = None;
+    view.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clear_waiters();
     for (name, p) in &mut ports {
         clear_route(name, p, 0, &stats);
         clear_route(name, p, 1, &stats);

@@ -27,7 +27,7 @@ pub(super) fn block(start: Instant, sample: f64, frames: f64, lead: Duration) ->
         samples_per_second: 48_000.,
         looped: None,
         end: None,
-        lead,
+        lead: Some(lead),
     }
 }
 fn active_port(offset: i64, compensate: bool) -> Port<FakePort> {
@@ -38,7 +38,117 @@ fn active_port(offset: i64, compensate: bool) -> Port<FakePort> {
         failure: None,
         future: Vec::new(),
         stop_pending: false,
+        waiting_for_timing: false,
     }
+}
+
+#[test]
+fn output_stream_lead_survives_bad_callbacks_and_updates_on_recovery() {
+    let mut stream = crate::sync_clock::StreamLead::default();
+    let base = Instant::now();
+    for (report, expected) in [(Some(15), 15), (None, 15), (Some(1_001), 15), (Some(9), 9), (Some(0), 0), (None, 0)] {
+        let t = stream.observe(base, report.map(Duration::from_millis));
+        assert_eq!(t.heard_instant(48_000., 48), base + Duration::from_millis(expected + 1));
+    }
+}
+
+#[test]
+fn output_stream_lead_is_unknown_for_a_new_output_until_the_first_valid_report() {
+    let mut out = Output::default();
+    out.compensated = true;
+    out.beat.push(("DIN".into(), 0));
+    let mut publisher = Publisher::new(out.view.clone(), out.metrics.clone());
+    let mut old = crate::sync_clock::StreamLead::default();
+    let base = Instant::now();
+    assert_eq!(out.status().lead_source, crate::OutputLeadSource::Unobserved);
+    assert_eq!(out.timing_issue(), None);
+    publisher.observe(old.observe(base, Some(Duration::from_millis(15))), 0.01);
+    publisher.observe(old.observe(base, Some(Duration::from_secs(2))), 0.01);
+    assert_eq!(out.timing_issue(), Some(crate::OutputTimingIssue::Retained { lead_us: 15_000 }));
+    assert_eq!(out.status().ports["DIN"].beat_clock_total_us, Some(15_000));
+    let mut reopened = crate::sync_clock::StreamLead::default();
+    publisher.observe(reopened.observe(base, None), 0.01);
+    let status = serde_json::to_value(out.status()).unwrap();
+    assert_eq!(status["reported_lead_us"], serde_json::Value::Null);
+    assert_eq!(status["ports"]["DIN"]["beat_clock_total_us"], serde_json::Value::Null);
+    assert_eq!(status["ports"]["DIN"]["lead_source"], "unknown");
+    assert_eq!(status["ports"]["DIN"]["beat_clock_enabled"], true);
+    assert_eq!(status["ports"]["DIN"]["mtc_enabled"], false);
+    assert_eq!(out.timing_issue(), Some(crate::OutputTimingIssue::Unknown));
+    let zero = reopened.observe(base, Some(Duration::ZERO));
+    publisher.observe(zero, 0.01);
+    assert_eq!(out.timing_issue(), None);
+    assert_eq!(out.status().ports["DIN"].beat_clock_total_us, Some(0));
+    assert_eq!(out.status().lead_source, crate::OutputLeadSource::Reported);
+    publisher.observe(reopened.observe(base, None), 0.01);
+    assert_eq!(out.timing_issue(), Some(crate::OutputTimingIssue::Retained { lead_us: 0 }));
+    assert_eq!(out.reported_timing_count(), 2);
+    assert_eq!(out.status().ports["DIN"].lead_source, crate::OutputLeadSource::Retained);
+}
+
+#[test]
+fn output_stream_lead_wakes_a_parked_worker_after_the_first_valid_report() {
+    struct Wire(Sender<Vec<u8>>);
+    impl SyncPort for Wire {
+        fn send_at(&mut self, at: Instant, bytes: &[u8]) -> Result<Instant, String> {
+            self.0.send(bytes.to_vec()).unwrap();
+            Ok(at)
+        }
+    }
+    let view = View::default();
+    view.lock().unwrap().push(Presentation { lead: None, ..block(Instant::now(), 0., 48_000., Duration::ZERO) });
+    let worker_view = view.clone();
+    let (tx, rx) = channel();
+    let (wire, packets) = channel();
+    let (opened, ready) = channel();
+    let worker = std::thread::spawn(move || {
+        drive(worker_view, Arc::new(Session::default()), rx, Default::default(), Arc::default(), |_| {
+            opened.send(()).unwrap();
+            Ok((Wire(wire.clone()), None))
+        })
+    });
+    tx.send(Update::Beats(vec![("DIN".into(), 0)], true)).unwrap();
+    ready.recv_timeout(Duration::from_secs(3)).unwrap();
+    // Longer than the normal control-change wake window; recovery must not
+    // need another transport command or an idle polling loop.
+    assert!(matches!(packets.recv_timeout(Duration::from_millis(400)), Err(std::sync::mpsc::RecvTimeoutError::Timeout)));
+    view.lock().unwrap().push(block(Instant::now(), 0., 48_000., Duration::from_millis(15)));
+    assert_eq!(packets.recv_timeout(Duration::from_secs(2)).unwrap(), [START]);
+    assert_eq!(packets.recv_timeout(Duration::from_secs(2)).unwrap(), [CLOCK]);
+    drop(tx);
+    worker.thread().unpark();
+    worker.join().unwrap();
+}
+
+#[test]
+fn output_stream_lead_gates_only_compensated_midi_until_a_timestamp_is_available() {
+    let base = Instant::now();
+    let view = View::default();
+    let session = Session::default();
+    let stats = Stats::default();
+    let mut compensated = active_port(0, true);
+    let mut direct = active_port(0, false);
+    let mut stream = crate::sync_clock::StreamLead::default();
+    let publish = |timing: DeviceTiming, sample: f64| {
+        view.lock().unwrap().push(Presentation {
+            lead: timing.lead(),
+            heard_at: timing.heard_instant(48_000., 0),
+            ..block(timing.callback, sample, 48_000., Duration::ZERO)
+        });
+    };
+    publish(stream.observe(base, None), 0.);
+    compensated.poll("comp", base, &session, &view, &stats, &mut vec![]);
+    direct.poll("direct", base, &session, &view, &stats, &mut vec![]);
+    assert!(compensated.link.as_ref().unwrap().messages.is_empty());
+    assert_eq!(direct.link.as_ref().unwrap().messages, [(base, vec![START]), (base, vec![CLOCK])]);
+    let next = base + Duration::from_millis(10);
+    let lead = Duration::from_millis(15);
+    publish(stream.observe(next, Some(lead)), 0.);
+    let due = next + lead;
+    assert_eq!(compensated.poll("comp", next, &session, &view, &stats, &mut vec![]), Some(due));
+    assert!(compensated.link.as_ref().unwrap().messages.is_empty());
+    compensated.poll("comp", due, &session, &view, &stats, &mut vec![]);
+    assert_eq!(compensated.link.as_ref().unwrap().messages, [(due, vec![START]), (due, vec![CLOCK])]);
 }
 
 #[test]
@@ -120,7 +230,7 @@ fn reported_lead_is_bounded_and_shared_chunk_offsets_are_monotonic() {
     let now = Instant::now();
     let lead = Duration::from_millis(30);
     assert!(DeviceTiming::new(now, None, 0).clamped);
-    assert_eq!(DeviceTiming::new(now, Some(Duration::from_secs(2)), 0).lead, Duration::ZERO);
+    assert_eq!(DeviceTiming::new(now, Some(Duration::from_secs(2)), 0).lead(), None);
     let a = DeviceTiming::new(now, Some(lead), 0);
     let b = DeviceTiming::new(now, Some(lead), 8192);
     assert_eq!(a.heard_instant(48_000., 8192), b.heard_instant(48_000., 0));
@@ -227,7 +337,7 @@ fn diagnostics_use_fixed_lateness_buckets_and_ignore_callback_subchunks() {
     assert_eq!((status.sent, status.lateness_p50_us, status.lateness_p95_us, status.lateness_max_us), (5, 1000, 25000, 25000));
     assert_eq!(
         (status.reported_lead_us, status.callback_gap_max_us, status.callback_gaps_over_two_buffers, status.lead_clamps),
-        (10_000, 30_000, 1, 1)
+        (Some(10_000), 30_000, 1, 1)
     );
     let port = status.ports.get("DIN").unwrap();
     assert_eq!((port.beat_clock_total_us, port.mtc_total_us), (Some(5000), Some(0)));
@@ -371,6 +481,7 @@ fn input_wakes_reread_an_idle_timeline_without_periodic_polling() {
                 Ok((FakePort::default(), None))
             });
         });
+        let tx = WorkerSender { tx, worker: worker.thread().clone() };
         if has_port {
             tx.send(Update::Beats(vec![("DIN".into(), 0)], true)).unwrap();
             ready.recv_timeout(Duration::from_secs(5)).unwrap();
@@ -387,6 +498,7 @@ fn input_wakes_reread_an_idle_timeline_without_periodic_polling() {
             std::thread::sleep(Duration::from_millis(20));
         }
         drop(tx);
+        worker.thread().unpark();
         worker.join().unwrap();
         let iterations = stats.iterations.load(Relaxed) - before;
         assert!((50..=60).contains(&iterations), "{iterations} iterations for 50 input wakes, configured port: {has_port}");
@@ -573,15 +685,15 @@ fn negative_offset_is_limited_to_the_output_lead_and_reported() {
         let mut out = Output::default();
         out.beat.push(("DIN".into(), offset));
         out.compensated = compensate;
-        out.metrics.lead_us.store(20_000, Relaxed);
+        Publisher::new(out.view.clone(), out.metrics.clone()).observe(DeviceTiming::new(base, Some(lead), 0), 0.01);
         out.metrics.system_delay_samples.store(system_delay_samples as u64, Relaxed);
         let status = out.status();
         let info = &status.ports["DIN"];
         assert!(info.advance_limited);
         assert_eq!(info.requested_offset_samples, offset);
-        assert_eq!(info.device_lead_us, 20_000);
+        assert_eq!(info.device_lead_us, Some(20_000));
         assert_eq!(info.system_delay_samples, system_delay_samples as u64);
-        assert_eq!(info.effective_total_us, expected_us as i64);
+        assert_eq!(info.effective_total_us, Some(expected_us as i64));
         assert!(seen.len() >= 24);
         for (i, &actual) in seen.iter().enumerate() {
             let ideal = expected_us + (i as f64 * 1e6 / 48.).round() as u64;

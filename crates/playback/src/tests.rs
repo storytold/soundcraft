@@ -298,7 +298,13 @@ fn a_lost_or_stalled_device_is_reported_once() {
     assert!(!stalled(&mut seen, 6, true), "it asked again");
     ago(&mut seen);
     assert!(!stalled(&mut seen, 6, false), "stopped, so nothing to ask for");
-    assert_eq!(Fault::default().trouble(true), Some(OutputTrouble::Stalled));
+    let transient = Fault::default();
+    assert_eq!(transient.trouble(true), Some(OutputTrouble::Stalled));
+    assert_eq!(transient.trouble(true), None);
+    assert_eq!(transient.trouble(false), None);
+    assert_eq!(transient.trouble(true), Some(OutputTrouble::Stalled));
+    transient.gone.store(true, Ordering::Relaxed);
+    assert_eq!(transient.trouble(false), Some(OutputTrouble::Gone));
     let fault = Fault::default();
     fault.gone.store(true, Ordering::Relaxed);
     assert_eq!((fault.trouble(false), fault.trouble(true)), (Some(OutputTrouble::Gone), None));
