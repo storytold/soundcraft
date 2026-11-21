@@ -145,4 +145,4 @@ Desktop control clients can query or change `setup.midi_clock_follow` with `inpu
 
 During playback, tempo and phase corrections change the spacing of upcoming beats. Beats that have already played keep their positions. An incoming Song Position Pointer starts a new pass; tempo corrections from the previous pass are discarded.
 
-External clock follow has been exercised with simulated timestamps. Hardware verification of this revision is pending.
+The TASCAM Model 12 and Roland UM-ONE were used to verify external transport, resume on a note boundary and clock loss during playback. See the [hardware acceptance report](model-12-clock-follow-hardware.md) for routing, buffer sizes, measured latency and waveform comparisons.

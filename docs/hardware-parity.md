@@ -52,7 +52,7 @@ Legend: ✅ works · 🟡 partial · ❌ missing.
 | Feature | Pro Tools | SoundCraft |
 |---|---|---|
 | MTC generate/chase | ✅ | 🟡 [Generate timecode or follow an external device](midi-input.md#generate-or-follow-midi-time-code). Locate-and-free-run playback, configurable freewheel and Jam Sync. Take chase offline to record. Hardware check pending. |
-| Follow MIDI Beat Clock | — | 🟡 External Start, Continue, Stop, Song Position Pointer and tempo. [Setup and recording](midi-input.md#follow-midi-beat-clock). Verified in simulation; hardware check pending. |
+| Follow MIDI Beat Clock | — | 🟡 External Start, Continue, Stop, Song Position Pointer and tempo. [Setup and recording](midi-input.md#follow-midi-beat-clock). [Model 12 hardware results](model-12-clock-follow-hardware.md) cover playback and clock loss. Recording under both loss policies is covered by simulated inputs. |
 | LTC chase, 9-pin machine control | ✅ (Ultimate) | ❌ |
 | Word clock / video reference awareness | ✅ via interface | ❌ |
 | Video output to a second display or video card | ✅ | ❌ (video window only) |
