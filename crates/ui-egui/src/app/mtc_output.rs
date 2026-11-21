@@ -30,7 +30,7 @@ impl SoundApp {
                 .as_ref()
                 .and_then(|status| status.ports.get(name))
                 .filter(|p| p.advance_limited && p.requested_offset_samples == offset)
-                .map(|p| p.device_lead_us);
+                .and_then(|p| p.device_lead_us);
             if ui.horizontal(|ui| crate::dialogs::port_offset_field(ui, &mut offset, self.engine.session().sample_rate, limited_lead)).inner
                 && let Err(err) = self.mtc_output_command(&json!({"offset_samples":offset}))
             {
@@ -97,9 +97,11 @@ impl SoundApp {
         self.ui.mtc_output_port = selected;
         self.service_mtc_output();
         let active = enabled
-            && self.player.as_ref().zip(self.ui.mtc_output_port.as_ref()).is_some_and(|(player, name)| {
-                player.midi_sync_status().ports.get(name).is_some_and(|port| port.connected && port.mtc_total_us.is_some())
-            });
+            && self
+                .player
+                .as_ref()
+                .zip(self.ui.mtc_output_port.as_ref())
+                .is_some_and(|(player, name)| player.midi_sync_status().ports.get(name).is_some_and(|port| port.connected && port.mtc_enabled));
         let mut state = json!({"port":self.ui.mtc_output_port,"enabled":enabled,"active":active,"offset_samples":self.ui.mtc_output_port.as_ref().and_then(|n|self.ui.midi_sync.ports.get(n)).map_or(0,|p|p.offset_samples),"frame_rate":self.engine.session().frame_rate.label()});
         if let Some(ports) = ports {
             state["ports"] = json!(ports);

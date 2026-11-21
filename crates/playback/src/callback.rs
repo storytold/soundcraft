@@ -423,29 +423,36 @@ impl AudioState {
             return;
         }
         #[cfg(any(target_os = "windows", target_os = "macos", target_os = "linux"))]
-        let delay = self.device_timing.map_or(0., |t| t.heard_instant(self.device_rate, 0).saturating_duration_since(t.callback).as_secs_f64());
+        let delay = self
+            .device_timing
+            .filter(|t| t.lead().is_some())
+            .map(|t| t.heard_instant(self.device_rate, 0).saturating_duration_since(t.callback).as_secs_f64());
         #[cfg(not(any(target_os = "windows", target_os = "macos", target_os = "linux")))]
-        let delay = 0.;
+        let delay: Option<f64> = None;
         let live = position.saturating_add(sr.samples(now.saturating_sub(stamp) as f64 / 1e6));
-        let desired = live.saturating_add(sr.samples(delay));
+        let presentation = delay.map(|seconds| live.saturating_add(sr.samples(seconds)));
+        let source_seek = seek_generation != self.chase_seek_generation;
         if !self.chasing || !self.playing {
             // A corroborated stopped locate protects its first attack for one start.
-            // Unanchored locks start at the source time the new audio will be heard.
-            let from = anchor.map(|p| p.session_sample(rate, sr, start, offset)).filter(|at| *at >= 0).unwrap_or(desired);
+            // Without a presentation estimate an unanchored start can still follow the incoming transport.
+            let from = anchor.map(|p| p.session_sample(rate, sr, start, offset)).filter(|at| *at >= 0).or(presentation).unwrap_or(live);
             self.begin_play(from, None, None, true);
             self.shared.speed.store(1000, Ordering::Relaxed);
             self.shared.playing.store(true, Ordering::Release);
-        } else {
+        } else if let Some(desired) = presentation.or_else(|| source_seek.then_some(live)) {
             let rendered = self.pos as f64 + self.read - self.pending_len as f64;
             if desired.abs_diff(rendered.round() as i64) > p.in_session_rate(rate).frame_samples(sr) as u64 {
                 let since = *self.drift_since.get_or_insert(stamp);
-                if seek_generation != self.chase_seek_generation || stamp.saturating_sub(since) >= 1_000_000 {
+                if source_seek || stamp.saturating_sub(since) >= 1_000_000 {
                     feed.mtc_relocated();
                     self.begin_play(desired, None, None, true);
                 }
             } else {
                 self.drift_since = None;
             }
+        } else {
+            // Only an observed presentation phase can establish sustained audio drift.
+            self.drift_since = None;
         }
         self.chase_seek_generation = seek_generation;
         self.chase_group = Some(stamp);
