@@ -50,6 +50,23 @@ The deterministic regression drives the actual input and playback grid with a 30
 
 ![Relative timing on the first full beat after the chorus tempo change](images/midi-clock-chorus-tempo-step.png)
 
+## Three-section dance track at 80, 130 and 80 BPM
+
+The leader played four bars at each tempo, switching at 12.000 and 19.385 s during one continuous performance. The follower project had a single 80 BPM tempo. Clock went through Model 12 DIN OUT and UM-ONE. Both instruments used the same 48 kHz digital loopback capture. Three percussion takes per build placed exactly one kick on each of the 48 beats and one hi-hat on each of the 96 eighth notes. We also played a full arrangement with bass, snare and a crash at each tempo change.
+
+Each value below is the follower onset minus its expected time, relative to the median offset on the seven reference beats preceding the change (beats −8 through −2). Offbeats are measured against the midpoint between adjacent leader kicks. Negative values mean the follower played early.
+
+| Transition and onset | Before (`d1545d2`), three takes | After, three takes |
+| --- | --- | --- |
+| 80 → 130, first offbeat | +54.5 to +59.6 ms | +21.4 to +29.3 ms |
+| 80 → 130, next beat (bar 5 beat 2) | +47.7 to +52.7 ms | +5.4 to +6.2 ms |
+| 130 → 80, first offbeat | −133.9 to −122.4 ms | −126.1 to −101.9 ms |
+| 130 → 80, next beat (bar 9 beat 2) | −127.7 to −113.1 ms | −37.2 to −25.8 ms |
+
+The first offbeat after the slowdown remains over 100 ms early in these takes. By the last four beats the median offset was within 6.7 ms of the preceding section's baseline.
+
+![Follower onset timing at eighth-note resolution across both tempo changes](images/midi-clock-edm-tempo.png)
+
 ## From the first Clock to the first mixed block
 
 Four exact starts per build isolated repeated project and instrument preparation on Continue. Probes timestamped MIDI input, host processing, session preparation, command receipt and completion of the first mixed block. Times are in milliseconds.

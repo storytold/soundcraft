@@ -99,6 +99,40 @@ fn locks_and_predicts_pulses_across_tempos_jitter_and_usb_quantization() {
 }
 
 #[test]
+fn rapid_phase_recovery_requires_a_sustained_step_and_expires() {
+    for interrupt in [None, Some(0xfc), Some(0xfa)] {
+        let mut reader = Follower::default();
+        let mut stamp = 0;
+        feed(&mut reader, 0xfa, stamp);
+        // Establish the long-window tempo reference before introducing packet jitter.
+        for _ in 0..192 {
+            stamp += 30_000;
+            feed(&mut reader, 0xf8, stamp);
+        }
+        // A late packet followed by an early one preserves the source tempo.
+        for dt in [45_000, 15_000, 30_000, 30_000] {
+            stamp += dt;
+            feed(&mut reader, 0xf8, stamp);
+            assert!(!reader.snapshot(stamp).recovering_tempo_step);
+        }
+        for _ in 0..4 {
+            stamp += 20_000;
+            feed(&mut reader, 0xf8, stamp);
+        }
+        assert!(reader.snapshot(stamp).recovering_tempo_step);
+        if let Some(byte) = interrupt {
+            feed(&mut reader, byte, stamp);
+        } else {
+            for _ in 0..24 {
+                stamp += 20_000;
+                feed(&mut reader, 0xf8, stamp);
+            }
+        }
+        assert!(!reader.snapshot(stamp).recovering_tempo_step);
+    }
+}
+
+#[test]
 fn responds_to_steps_within_a_beat_and_follows_a_tempo_ramp() {
     let mut r = Follower::default();
     let mut us: f64 = 0.;

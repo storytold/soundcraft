@@ -28,6 +28,8 @@ pub enum Action {
 #[derive(Default, Clone, Copy, Debug)]
 pub struct Snapshot {
     pub bpm: Option<f64>,
+    /// The wire confirmed a tempo step during uninterrupted playback within the past beat.
+    pub recovering_tempo_step: bool,
     pub jitter_us: f64,
     pub phase_error_us: i64,
     pub state: State,
@@ -117,6 +119,7 @@ pub(crate) struct Follower {
     short: PulseFit<12>,
     steady: PulseFit<192>,
     changes: u8,
+    step_pulses_left: u8,
     latest: Option<i64>,
     coast_period_us: Option<f64>,
     played_stamp: i64,
@@ -143,6 +146,7 @@ impl Default for Follower {
             short: Default::default(),
             steady: Default::default(),
             changes: 0,
+            step_pulses_left: 0,
             latest: None,
             played_stamp: 0,
             played_pulse: 0,
@@ -181,6 +185,7 @@ impl Follower {
     fn push(&mut self, action: Action) {
         if !matches!(action, Action::Play { .. }) {
             self.cue = None;
+            self.step_pulses_left = 0;
         }
         self.queued_action = true;
         if self.count == self.events.len() {
@@ -216,6 +221,7 @@ impl Follower {
     pub(crate) fn snapshot(&self, now_us: i64) -> Snapshot {
         Snapshot {
             bpm: self.bpm().or_else(|| self.coast_period_us.map(|p| 2_500_000. / p)),
+            recovering_tempo_step: self.step_pulses_left > 0,
             jitter_us: self.steady.jitter_us(),
             phase_error_us: self.phase_error_us,
             state: self.state,
@@ -245,6 +251,7 @@ impl Follower {
         self.steady.clear();
         self.latest = None;
         self.changes = 0;
+        self.step_pulses_left = 0;
         if self.state == State::Locked {
             self.dropouts = self.dropouts.saturating_add(1);
             if self.coast {
@@ -260,6 +267,7 @@ impl Follower {
         let at = self.latest.map_or(at, |prev| prev.max(at));
         self.latest = Some(at);
         self.fit_index = self.fit_index.saturating_add(1);
+        self.step_pulses_left = self.step_pulses_left.saturating_sub(1);
         self.short.push(self.fit_index, at);
         // Long regression suppresses USB quantisation and timestamp jitter.
         // A sustained slope change outside the short fit's noise band starts a fresh epoch.
@@ -274,6 +282,9 @@ impl Follower {
                 self.steady.clear();
                 self.steady.push(index, stamp);
                 self.changes = 0;
+                if self.state == State::Locked {
+                    self.step_pulses_left = 24;
+                }
             } else if self.changes >= 6 {
                 self.steady.clear();
                 self.changes = 0;

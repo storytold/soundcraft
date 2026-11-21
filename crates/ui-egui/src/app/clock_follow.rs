@@ -370,17 +370,23 @@ fn update_grid(grid: &mut TempoMap, anchor: Option<(i64, i64)>, waiting_tick: i6
         return false;
     };
     let tick = s.pulse.saturating_mul(TICKS_PER_PULSE);
-    if grid.tempos().last().is_some_and(|event| event.tick > tick) {
+    let edit = tick.max(grid.samples_to_ticks(render_until, sr).saturating_add(1));
+    // On a slowdown the audio cursor can be several Clock pulses ahead of the wire.
+    // Compare against the writable position while slewing so an earlier correction
+    // cannot hold up the next one after playback has already crossed it.
+    let check_tick = if s.recovering_tempo_step { edit } else { tick };
+    if grid.tempos().last().is_some_and(|event| event.tick > check_tick) {
         return false;
     }
-    let before = grid.tempos().partition_point(|event| event.tick <= tick);
+    let before = grid.tempos().partition_point(|event| event.tick <= check_tick);
     let last_edit_tick = grid.tempos()[..before].last().map_or(0, |event| event.tick);
-    let since_edit = tick.saturating_sub(last_edit_tick);
-    let slope = grid.tempo_at_tick(tick);
+    let since_edit = check_tick.saturating_sub(last_edit_tick);
+    let slope = grid.tempo_at_tick(check_tick);
     // A confirmed tempo step should reach the next unrendered beat even when a minor
     // correction was just published. Small jitter corrections retain the usual spacing.
     let tempo_step = (slope - bpm).abs() >= slope * 0.08;
-    if s.state != State::Locked || s.pulse <= origin || (!tempo_step && since_edit < 6 * TICKS_PER_PULSE) {
+    let spacing = if s.recovering_tempo_step { 2 } else { 6 };
+    if s.state != State::Locked || s.pulse <= origin || (!tempo_step && since_edit < spacing * TICKS_PER_PULSE) {
         return false;
     }
     let start = grid.tick_to_samples(origin.saturating_mul(TICKS_PER_PULSE), sr);
@@ -389,13 +395,17 @@ fn update_grid(grid: &mut TempoMap, anchor: Option<(i64, i64)>, waiting_tick: i6
     if (slope - bpm).abs() < 0.15 && phase.abs() < 0.003 {
         return false;
     }
-    // Spread small deviations over eight beats to avoid adding redundant events during gradual
-    // drift. Recover larger phase errors in four beats, with at most 5% change in beat length.
-    // An event at this pulse leaves every earlier tick at precisely the same sample.
-    let recovery_beats = if phase.abs() <= 0.006 { 8. } else { 4. };
-    let target = bpm / (1. + (phase * bpm / (60. * recovery_beats)).clamp(-0.05, 0.05));
-    (slope - target).abs() >= 0.15
-        && grid.set_tempo(tick.max(grid.samples_to_ticks(render_until, sr).saturating_add(1)), target.clamp(5., 1000.)).is_ok()
+    // During a confirmed step, the old grid may already have rendered past the incoming
+    // pulse. Correct the phase at the first editable tick, using the new wire period.
+    let (phase, recovery_beats, limit) = if s.recovering_tempo_step {
+        let wire_ahead = (edit - tick) as f64 * 60. / (TICKS_PER_QUARTER as f64 * bpm);
+        let grid_ahead = sr.seconds(grid.tick_to_samples(edit, sr).saturating_sub(grid.tick_to_samples(tick, sr)));
+        (phase + wire_ahead - grid_ahead, 0.35, 0.25)
+    } else {
+        (phase, if phase.abs() <= 0.006 { 8. } else { 4. }, 0.05)
+    };
+    let target = bpm / (1. + (phase * bpm / (60. * recovery_beats)).clamp(-limit, limit));
+    (slope - target).abs() >= 0.15 && grid.set_tempo(edit, target.clamp(5., 1000.)).is_ok()
 }
 
 #[cfg(test)]
@@ -896,9 +906,29 @@ mod tests {
     }
 
     #[test]
+    fn slowdown_can_correct_after_a_rendered_edit_ahead_of_the_wire() {
+        let sr = SampleRate::new(48_000).unwrap();
+        let mut grid = TempoMap::new(130., 4, 4).unwrap();
+        grid.set_tempo(80 * TICKS_PER_PULSE, 130.02).unwrap();
+        let boundary = grid.tick_to_samples(81 * TICKS_PER_PULSE, sr);
+        let elapsed = 72. * 2.5 / 130. + 5. * 2.5 / 80.;
+        let snap = Snapshot {
+            state: State::Locked,
+            bpm: Some(80.),
+            recovering_tempo_step: true,
+            pulse: 77,
+            stamp_us: (elapsed * 1e6_f64).round() as i64,
+            ..Default::default()
+        };
+        assert!(update_grid(&mut grid, Some((0, 0)), 0, snap, sr, boundary));
+        assert_eq!(grid.tick_to_samples(81 * TICKS_PER_PULSE, sr), boundary);
+        assert!(grid.tempo_at_tick(82 * TICKS_PER_PULSE) < 100.);
+    }
+
+    #[test]
     fn chorus_tempo_step_keeps_the_next_backbeat_within_one_clock() {
         let sr = SampleRate::new(48_000).unwrap();
-        for (first, second) in [(120., 100.), (100., 120.)] {
+        for (first, second) in [(120., 100.), (100., 120.), (80., 130.), (130., 80.)] {
             let inputs = MidiInputs::with_port_names(vec![], vec!["drums".into()]);
             let feed = inputs.feed();
             let id = feed.ports().assign("drums");
