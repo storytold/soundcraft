@@ -58,6 +58,8 @@ pub(crate) struct PreparedResume {
     pub(crate) tx: std::sync::Weak<super::Sender<super::Cmd>>,
     #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
     pub(crate) output: std::sync::Weak<super::Mutex<super::sync_output::Output>>,
+    #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+    pub(crate) silent: bool,
 }
 impl PreparedResume {
     fn dispatch(&self, age_us: impl FnOnce() -> i64) -> Option<i64> {
@@ -73,7 +75,7 @@ impl PreparedResume {
         #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
         let output = output.try_lock().ok()?;
         #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
-        let lead = output.reported_lead_us();
+        let lead = if self.silent { 0 } else { output.reported_lead_us()? };
         #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
         let lead = 0;
         let render_from = self
@@ -107,6 +109,7 @@ pub(crate) struct Follower {
     pub(crate) cue: Option<PreparedResume>,
     pub(crate) source: Option<u8>,
     pub(crate) coast: bool,
+    pub(crate) waiting_for_output: bool,
     state: State,
     awaiting_clock: Option<i64>,
     pub(crate) next_pulse: i64,
@@ -132,6 +135,7 @@ impl Default for Follower {
             cue: None,
             source: None,
             coast: true,
+            waiting_for_output: false,
             state: State::Waiting,
             awaiting_clock: None,
             next_pulse: 0,
@@ -169,6 +173,7 @@ impl Follower {
             && cue.pulse == pulse
             && let Some(render_from) = cue.dispatch(|| now().saturating_sub(at))
         {
+            self.waiting_for_output = false;
             self.events[self.head] = Some(Action::Started { pulse, at, render_from });
         }
     }
@@ -315,7 +320,13 @@ impl Follower {
                     Some(None) => self.spp = Some(Some(byte)),
                     Some(Some(low)) => {
                         self.spp = None;
-                        if matches!(self.state, State::Waiting | State::Stopped) && self.awaiting_clock.is_none() {
+                        if self.waiting_for_output || (matches!(self.state, State::Waiting | State::Stopped) && self.awaiting_clock.is_none()) {
+                            // The clock can be locked before a device has ever presented sound.
+                            // A new stopped insertion replaces that unrendered Continue.
+                            if self.waiting_for_output {
+                                self.state = State::Stopped;
+                                self.awaiting_clock = None;
+                            }
                             self.next_pulse = (i64::from(low) | i64::from(byte) << 7) * 6;
                             self.push(Action::Locate(self.next_pulse));
                         }

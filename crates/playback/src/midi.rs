@@ -368,7 +368,7 @@ impl MidiFeed {
         self.mtc_lock_generation.load(Ordering::Acquire) == lock
     }
 
-    pub fn set_clock_follow(&self, port: Option<u8>, coast: bool, initial_pulse: i64) {
+    pub fn set_clock_follow(&self, port: Option<u8>, coast: bool, initial_pulse: i64, waiting_for_output: bool) {
         let mut input = self.clock_follow.lock().unwrap_or_else(PoisonError::into_inner);
         if input.source != port {
             *input = Default::default();
@@ -377,6 +377,7 @@ impl MidiFeed {
             self.clock_source.store(port.map_or(usize::MAX, usize::from), Ordering::Release);
         }
         input.coast = coast;
+        input.waiting_for_output = waiting_for_output;
     }
 
     /// Called on the host, never the device audio thread. At most 32 transport transitions can wait.

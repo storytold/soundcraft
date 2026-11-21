@@ -36,7 +36,7 @@ pub mod sync_clock;
 #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
 mod sync_output;
 mod sync_status;
-pub use sync_status::MidiSyncStatus;
+pub use sync_status::{MidiSyncStatus, OutputLeadSource, OutputTimingIssue};
 
 /// Bound per-device compensation in time when a session changes sample rate.
 pub fn max_sync_offset_samples(sr: soundcraft_time::SampleRate) -> i64 {
@@ -241,7 +241,17 @@ impl Player {
     /// Open the output device `cfg` chooses (system, device, rate, buffer size), falling back to the
     /// defaults for whatever is unavailable. Never fails: without a device it runs a silent clock.
     pub fn with_config(session: Arc<Session>, cfg: &AudioConfig) -> Player {
-        let p = Player::open(Arc::clone(&session), cfg);
+        Self::open_configured(session, cfg, None)
+    }
+
+    /// Reconnect the named physical output. If it is still unavailable, use the silent
+    /// clock. An explicit device change belongs to Setup > Playback Engine.
+    pub fn reconnect_output(session: Arc<Session>, cfg: &AudioConfig, name: &str) -> Player {
+        Self::open_configured(session, cfg, Some(name))
+    }
+
+    fn open_configured(session: Arc<Session>, cfg: &AudioConfig, required_output: Option<&str>) -> Player {
+        let p = Player::open(Arc::clone(&session), cfg, required_output);
         p.side().return_old_sessions(&p.tx);
         // Hand the initial session's third-party plugins over.
         p.update_session(session);
@@ -268,7 +278,7 @@ impl Player {
     /// Open the output device for `session`, trying the requested buffer size before the device default, then build
     /// the shared player state. If no configuration starts or the device cannot open, fall back to a silent clock at
     /// the session rate.
-    fn open(session: Arc<Session>, cfg: &AudioConfig) -> Player {
+    fn open(session: Arc<Session>, cfg: &AudioConfig, required_output: Option<&str>) -> Player {
         let shared = Arc::new(Shared {
             position: AtomicI64::new(0),
             playing: AtomicBool::new(false),
@@ -283,7 +293,7 @@ impl Player {
             side.gone_tracks(&session);
             Mutex::new(side)
         };
-        match open_device(want, want_ch, cfg) {
+        match open_device(want, want_ch, cfg, required_output) {
             Ok((device, config, format, name)) => {
                 // The chosen buffer size first; if the device refuses it, its default.
                 let mut attempts = vec![config];
@@ -665,6 +675,44 @@ impl Player {
             MidiSyncStatus::default()
         }
     }
+    /// Device compensation for a followed start. The silent transport has no device latency.
+    pub fn clock_follow_output_lead_us(&self) -> Option<u64> {
+        if self.silent {
+            return Some(0);
+        }
+        #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+        {
+            self.beat_clock.lock().unwrap_or_else(PoisonError::into_inner).reported_lead_us()
+        }
+        #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
+        {
+            Some(0)
+        }
+    }
+
+    /// Number of fresh hardware lead reports observed on this output stream.
+    pub fn reported_output_timing_count(&self) -> u64 {
+        #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+        {
+            self.beat_clock.lock().unwrap_or_else(PoisonError::into_inner).reported_timing_count()
+        }
+        #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
+        {
+            0
+        }
+    }
+
+    /// The latest unusable hardware timestamp, if the current stream reported one.
+    pub fn output_timing_issue(&self) -> Option<OutputTimingIssue> {
+        #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+        {
+            self.beat_clock.lock().unwrap_or_else(PoisonError::into_inner).timing_issue()
+        }
+        #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
+        {
+            None
+        }
+    }
     pub fn presented_position(&self) -> Samples {
         #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
         if self.is_playing()
@@ -716,6 +764,8 @@ impl Player {
             tx: Arc::downgrade(&self.tx),
             #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
             output: Arc::downgrade(&self.beat_clock),
+            #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+            silent: self.silent,
         };
         if feed.arm_clock_resume(port, cue) {
             *self.prepared_clock_feed.lock().unwrap_or_else(PoisonError::into_inner) = Arc::downgrade(feed);

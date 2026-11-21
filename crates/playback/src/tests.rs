@@ -298,7 +298,13 @@ fn a_lost_or_stalled_device_is_reported_once() {
     assert!(!stalled(&mut seen, 6, true), "it asked again");
     ago(&mut seen);
     assert!(!stalled(&mut seen, 6, false), "stopped, so nothing to ask for");
-    assert_eq!(Fault::default().trouble(true), Some(OutputTrouble::Stalled));
+    let transient = Fault::default();
+    assert_eq!(transient.trouble(true), Some(OutputTrouble::Stalled));
+    assert_eq!(transient.trouble(true), None);
+    assert_eq!(transient.trouble(false), None);
+    assert_eq!(transient.trouble(true), Some(OutputTrouble::Stalled));
+    transient.gone.store(true, Ordering::Relaxed);
+    assert_eq!(transient.trouble(false), Some(OutputTrouble::Gone));
     let fault = Fault::default();
     fault.gone.store(true, Ordering::Relaxed);
     assert_eq!((fault.trouble(false), fault.trouble(true)), (Some(OutputTrouble::Gone), None));
@@ -682,6 +688,10 @@ fn external_clock_returns_prior_snapshot_even_with_unavailable_retirement_queue(
         };
         tx.send(Cmd::FollowGrid(7, i64::MAX, Arc::new(Session::default()), returned.clone())).unwrap();
         assert!(Arc::get_mut(&mut returned).is_none());
+        #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+        {
+            state.device_timing = Some(crate::sync_clock::DeviceTiming::new(std::time::Instant::now(), Some(std::time::Duration::ZERO), 0));
+        }
         state.fill(&mut [0f32; 128], 2);
         #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
         assert_eq!(timeline.lock().unwrap().read(std::time::Instant::now(), true, 0).0.unwrap().generation, 7);

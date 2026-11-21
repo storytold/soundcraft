@@ -9,6 +9,16 @@ pub(super) fn translate(source: &str) -> Option<&'static str> {
         "Negative values make SoundCraft respond earlier." => "Valores negativos fazem o SoundCraft responder mais cedo.",
         "MIDI clock input" => "Entrada de clock MIDI",
         "Stop if MIDI clock is lost" => "Parar ao perder o clock MIDI",
+        "Audio output “{name}” is unavailable. Reconnect it in Playback Engine when stopped." => {
+            "A saída de áudio “{name}” está indisponível. Reconecte-a no mecanismo de reprodução quando o transporte estiver parado."
+        }
+        "The audio driver stopped reporting output timing. Compensated MIDI sync uses the last measured lead ({ms} ms)." => {
+            "O driver de áudio deixou de informar o tempo de saída. A sincronização MIDI com compensação usa o último adiantamento medido ({ms} ms)."
+        }
+        "Audio output timing is unavailable. Compensated MIDI outputs need a valid measurement." => {
+            "O tempo da saída de áudio está indisponível. As saídas MIDI com compensação precisam de uma medição válida."
+        }
+        "Stop playback or recording before reconnecting this output." => "Pare a reprodução ou a gravação antes de reconectar esta saída.",
         "+ Marker" => "+ Marcador",
         "+ Selection" => "+ Seleção",
         "+" => "+",

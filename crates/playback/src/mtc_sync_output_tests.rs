@@ -85,7 +85,7 @@ fn both_encoders_use_one_connection_and_the_same_offset() {
         samples_per_second: 48_000.,
         looped: None,
         end: None,
-        lead,
+        lead: Some(lead),
     });
     let mut s = Session::new("coexisting encoders", soundcraft_time::SampleRate::HZ_48000);
     s.frame_rate = soundcraft_time::FrameRate::Fps30;
@@ -98,6 +98,32 @@ fn both_encoders_use_one_connection_and_the_same_offset() {
     assert!(data.iter().any(|(t, _, b)| *t == due && b == &[0xf8]));
     assert!(data.iter().any(|(t, _, b)| *t == due && b == &[0xf1, 0]));
     assert_eq!(data.iter().filter(|(_, _, m)| m[0] == 0xf1).count(), 12);
+}
+
+#[test]
+fn generator_waits_for_observed_presentation_only_when_compensation_is_enabled() {
+    let now = Instant::now();
+    let mut song = Session::new("MTC output", soundcraft_time::SampleRate::HZ_48000);
+    song.frame_rate = soundcraft_time::FrameRate::Fps25;
+    song.timecode_start = 0;
+    for compensate in [true, false] {
+        let mut routes = BTreeMap::new();
+        set_route(&mut routes, 1, "MTC".into(), Route { map: None, offset: 0, compensate, encoder: Box::<crate::mtc::Encoder>::default() });
+        let port = routes.get_mut("MTC").unwrap();
+        let capture = Arc::default();
+        port.link = Some(Capture(Arc::clone(&capture)));
+        let view = View::default();
+        let block = super::tests::block(now, 0., 4800., Duration::ZERO);
+        view.lock().unwrap().push(Presentation { lead: None, ..block });
+        port.poll("MTC", now, &song, &view, &Stats::default(), &mut Vec::new());
+        assert_eq!(capture.lock().unwrap().is_empty(), compensate);
+
+        // A real zero report allows immediate delivery, even on the compensated route.
+        let next = now + Duration::from_millis(10);
+        view.lock().unwrap().push(Presentation { heard_at: next, sample: 480., ..block });
+        port.poll("MTC", next, &song, &view, &Stats::default(), &mut Vec::new());
+        assert!(capture.lock().unwrap().iter().any(|(_, _, msg)| msg[0] == 0xf1));
+    }
 }
 
 #[test]
@@ -131,7 +157,7 @@ fn mtc_quarters_use_the_mixer_delay_and_report_limited_negative_advances() {
                     sample: ms as f64 * 48.,
                     limit: ms as f64 * 48. + 480.,
                     heard_at: now + lead,
-                    lead,
+                    lead: Some(lead),
                     samples_per_second: 48000.,
                     looped: None,
                     end: None,
@@ -147,7 +173,8 @@ fn mtc_quarters_use_the_mixer_delay_and_report_limited_negative_advances() {
         }
         let mut output = Output::default();
         output.additional = Some(("MTC".into(), offset, true));
-        output.metrics.lead_us.store(20000, Relaxed);
+        crate::sync_clock::Publisher::new(output.view.clone(), output.metrics.clone())
+            .observe(crate::sync_clock::DeviceTiming::new(base, Some(lead), 0), 0.005);
         output.metrics.system_delay_samples.store(delay as u64, Relaxed);
         let status = output.status();
         assert_eq!(status.ports["MTC"].mtc_total_us, Some(expected_us));
@@ -191,7 +218,7 @@ fn mtc_rate_and_start_change_at_the_first_rendered_block_of_the_new_generation()
                 sample: ms as f64 * 48.,
                 limit: ms as f64 * 48. + 480.,
                 heard_at: now,
-                lead: Duration::ZERO,
+                lead: Some(Duration::ZERO),
                 samples_per_second: 48000.,
                 looped: None,
                 end: None,
@@ -266,7 +293,7 @@ fn generator_and_slave_agree_on_heard_time_after_acquisition() {
             samples_per_second: 48_000.,
             looped: None,
             end: None,
-            lead,
+            lead: Some(lead),
         });
         port.poll("cable", clock, &session, &master, &stats, &mut pending);
         input.set_clock(i as i64 * 5000);
@@ -308,7 +335,7 @@ fn measure_native_worker_quarter_frame_spacing() {
             samples_per_second: 48_000.,
             looped: None,
             end: None,
-            lead: Duration::from_millis(30),
+            lead: Some(Duration::from_millis(30)),
         });
         let captured = samples.clone();
         let times = opens.clone();
