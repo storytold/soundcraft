@@ -102,6 +102,30 @@ impl<const N: usize> PulseFit<N> {
         self.intercept = (y - self.slope * x) / n;
         self.jitter = ((yy - y * y / n - self.slope * (xy - x * y / n)) / n).max(0.).sqrt();
     }
+    /// Oldest point in four consecutive intervals that consistently depart from a previous
+    /// period. A delayed packet and the shorter interval that follows it do not qualify.
+    pub fn confirmed_step_start(&self, previous: f64, noise_us: f64) -> Option<(i64, i64)> {
+        const INTERVALS: usize = 4;
+        if self.len <= INTERVALS {
+            return None;
+        }
+        let first = (self.cursor + N - INTERVALS - 1) % N;
+        let start = self.points[first];
+        let (_, end) = self.last?;
+        let period = end.saturating_sub(start.1) as f64 / INTERVALS as f64;
+        let change = period - previous;
+        if change.abs() < (previous * 0.08).max(2. * noise_us) {
+            return None;
+        }
+        for i in 0..INTERVALS {
+            let interval = self.points[(first + i + 1) % N].1.saturating_sub(self.points[(first + i) % N].1) as f64;
+            if (interval - period).abs() > change.abs() * 0.4 {
+                return None;
+            }
+        }
+        Some(start)
+    }
+
     pub fn period_us(&self) -> Option<f64> {
         (self.len >= 2 && self.slope > 0.).then_some(self.slope)
     }

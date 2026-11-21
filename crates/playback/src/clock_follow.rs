@@ -270,7 +270,11 @@ impl Follower {
             } else {
                 self.changes = 0;
             }
-            if self.changes >= 6 {
+            if let Some((index, stamp)) = self.short.confirmed_step_start(slow, self.steady.jitter_us()) {
+                self.steady.clear();
+                self.steady.push(index, stamp);
+                self.changes = 0;
+            } else if self.changes >= 6 {
                 self.steady.clear();
                 self.changes = 0;
             }

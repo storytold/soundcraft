@@ -376,13 +376,16 @@ fn update_grid(grid: &mut TempoMap, anchor: Option<(i64, i64)>, waiting_tick: i6
     let before = grid.tempos().partition_point(|event| event.tick <= tick);
     let last_edit_tick = grid.tempos()[..before].last().map_or(0, |event| event.tick);
     let since_edit = tick.saturating_sub(last_edit_tick);
-    if s.state != State::Locked || s.pulse <= origin || since_edit < 6 * TICKS_PER_PULSE {
+    let slope = grid.tempo_at_tick(tick);
+    // A confirmed tempo step should reach the next unrendered beat even when a minor
+    // correction was just published. Small jitter corrections retain the usual spacing.
+    let tempo_step = (slope - bpm).abs() >= slope * 0.08;
+    if s.state != State::Locked || s.pulse <= origin || (!tempo_step && since_edit < 6 * TICKS_PER_PULSE) {
         return false;
     }
     let start = grid.tick_to_samples(origin.saturating_mul(TICKS_PER_PULSE), sr);
     let elapsed = sr.samples(s.stamp_us.saturating_sub(stamp) as f64 / 1e6);
     let phase = sr.seconds(start.saturating_add(elapsed).saturating_sub(grid.tick_to_samples(tick, sr)));
-    let slope = grid.tempo_at_tick(tick);
     if (slope - bpm).abs() < 0.15 && phase.abs() < 0.003 {
         return false;
     }
@@ -890,6 +893,41 @@ mod tests {
         assert!(update_grid(&mut grid, Some((96, 2_000_000)), 0, s, rate, 121_200));
         assert_eq!(grid.tick_to_samples(at, rate), before);
         assert!(grid.tempo_at_tick(at + 2 * TICKS_PER_PULSE) < 120.);
+    }
+
+    #[test]
+    fn chorus_tempo_step_keeps_the_next_backbeat_within_one_clock() {
+        let sr = SampleRate::new(48_000).unwrap();
+        for (first, second) in [(120., 100.), (100., 120.)] {
+            let inputs = MidiInputs::with_port_names(vec![], vec!["drums".into()]);
+            let feed = inputs.feed();
+            let id = feed.ports().assign("drums");
+            feed.set_clock_follow(Some(id), true, 0, false);
+            let mut grid = TempoMap::new(first, 4, 4).unwrap();
+            let mut actions = Vec::new();
+            let mut us = 0.0_f64;
+            feed.set_clock(0);
+            feed.receive(id, &[0xfa]);
+            let chorus = 16 * 24;
+            for pulse in 0..chorus + 24 {
+                if pulse > 0 {
+                    us += 2_500_000. / if pulse <= chorus { first } else { second };
+                }
+                feed.set_clock(us.round() as i64);
+                feed.receive(id, &[0xf8]);
+                let snap = feed.clock_follow_status(&mut actions);
+                update_grid(&mut grid, Some((0, 0)), 0, snap, sr, sr.samples(us / 1e6 + 0.030));
+            }
+            let tick = (chorus + 24) * TICKS_PER_PULSE;
+            let expected = sr.samples(16. * 60. / first + 60. / second);
+            let actual = grid.tick_to_samples(tick, sr);
+            assert!(
+                actual.abs_diff(expected) <= sr.samples(2.5 / second) as u64,
+                "{first} to {second} BPM: backbeat error {} samples",
+                actual - expected
+            );
+            assert_eq!(grid.tick_to_samples(chorus * TICKS_PER_PULSE, sr), sr.samples(16. * 60. / first));
+        }
     }
 
     #[test]

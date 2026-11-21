@@ -33,6 +33,23 @@ Both corrected takes had one chorus crash on each path and followed Stop. At 100
 
 The external-clock regression renders the eight notes on a temporary playback grid and checks the saved clip still ends on its original grid. Ordinary session tempo edits reproduce the same audible loss on upstream main without MIDI hardware. The main-targeted work is tracked separately in [PR #785](https://github.com/storytold/soundcraft/pull/785) and [issue #1690](https://github.com/storytold/soundcraft/issues/1690).
 
+## Changing tempo at the chorus
+
+Two SoundCraft instances played eight bars in 4/4. The leader sent Beat Clock through Model 12 USB MIDI → DIN OUT → Roland UM-ONE and changed tempo at bar 5. We captured both instruments on separate channels of one 48 kHz Windows digital loopback. The full performance contained all 32 drum beats and 64 S-MU2000 bass attacks in both directions. Starting at the chorus produced 16 beats and 32 bass attacks in each direction.
+
+For timing, we substituted a short hi-hat for the bass and matched each channel against its own percussion sample (normalized correlation above 0.85). The table gives follower minus leader on bar 5 beat 2, relative to the median offset on song beats 5–14. Negative values mean the follower played early.
+
+| Tempo step | Before, one take per direction | After, three takes per direction |
+| --- | ---: | --- |
+| 120 → 100 BPM | −98.68 ms | −28.48, −41.79, −34.46 ms |
+| 100 → 120 BPM | +59.09 ms | +24.54, +26.78, +33.15 ms |
+
+All six post-fix takes contained the expected attacks. Across the six takes, the final four beats' median offset was within 4.05 ms of the verse baseline. The very first attack after Start had a separate 40–50 ms raw offset on this two-instance setup. These captures measure digital output. The physical MAIN measurements below used separate runs.
+
+The deterministic regression drives the actual input and playback grid with a 30 ms render horizon. On the previous head (`5b1418a8`), the next backbeat landed 4,552 samples early at 48 kHz on the slowdown. The revised estimator and grid pass the one-Clock tolerance in both directions and preserve the bar-5 downbeat in this test.
+
+![Relative timing on the first full beat after the chorus tempo change](images/midi-clock-chorus-tempo-step.png)
+
 ## From the first Clock to the first mixed block
 
 Four exact starts per build isolated repeated project and instrument preparation on Continue. Probes timestamped MIDI input, host processing, session preparation, command receipt and completion of the first mixed block. Times are in milliseconds.
