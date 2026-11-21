@@ -106,12 +106,20 @@ fn indices(p: &Value) -> Vec<usize> {
 
 fn note_delete(e: &mut Engine, p: &Value) -> Result<Value> {
     let id = clip_id(p, "midi.note_delete")?;
-    let idx = indices(p);
-    let seq = seq_mut(e, id, "midi.note_delete")?;
+    let deleted: std::collections::HashSet<_> = indices(p).into_iter().collect();
+    let crate::edit::ClipEdit { doc, takes, .. } = e.clip_edit();
+    let clip = doc.find_clip_mut(id).ok_or_else(|| bad("midi.note_delete", "no such clip"))?;
+    let ClipContent::Midi { sequence: seq } = &mut clip.content else { return Err(bad("midi.note_delete", "not a MIDI clip")) };
     let before = seq.notes.len();
+    if !deleted.iter().any(|&i| i < before) {
+        return Ok(json!({"deleted": 0}));
+    }
+    if let Some(take) = takes.and_then(|takes| takes.get_mut(&id)) {
+        take.remove_notes(seq, &deleted);
+    }
     let mut i = 0;
     seq.notes.retain(|_| {
-        let keep = !idx.contains(&i);
+        let keep = !deleted.contains(&i);
         i += 1;
         keep
     });

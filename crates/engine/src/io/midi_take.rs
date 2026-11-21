@@ -70,14 +70,14 @@ impl crate::ClockTake {
     pub(crate) fn slice_events(
         &self,
         sequence: &Sequence,
-        clip_start: Samples,
+        source: Range,
         range: Range,
         time: crate::edit::TimeCtx<'_>,
         grid: &TempoMap,
     ) -> (Sequence, Self) {
         let sr = time.sr;
-        let score_origin = time.tempo.samples_to_ticks(clip_start, sr);
-        let played_origin = grid.samples_to_ticks(clip_start, sr);
+        let score_origin = time.tempo.samples_to_ticks(source.start, sr);
+        let played_origin = grid.samples_to_ticks(source.start, sr);
         let score_base = time.tempo.samples_to_ticks(range.start, sr);
         let played_base = grid.samples_to_ticks(range.start, sr);
         let played_sample = |tick: i64| grid.tick_to_samples(played_origin.saturating_add(tick), sr);
@@ -86,7 +86,10 @@ impl crate::ClockTake {
         let select = |score: i64, played: Option<i64>| {
             let at = time.tempo.tick_to_samples(score_origin.saturating_add(score), sr);
             let heard = played.map(played_sample).unwrap_or(at);
-            range.contains(heard).then(|| {
+            // An attack outside the original clip is silent at this tempo. Keep it in
+            // exactly one score fragment, with its played tick still beyond the clip.
+            let owner = if source.contains(heard) { heard } else { at };
+            range.contains(owner).then(|| {
                 // When a tempo change puts the two representations on opposite sides of
                 // the cut, place the editable event at its new fragment's audible position.
                 if range.contains(at) { (relative(score, score_origin, score_base), false) } else { (score_tick(heard), true) }
@@ -329,6 +332,7 @@ pub fn add_midi_recording_from(
     same_pass: bool,
 ) -> MidiTake {
     let before = e.session_arc();
+    let before_takes = Arc::clone(&e.follow_takes);
     let mut out = MidiTake::default();
     if range.len() <= 0 {
         return out;
@@ -366,7 +370,7 @@ pub fn add_midi_recording_from(
         out.clips.push(cid);
     }
     if !out.clips.is_empty() && !same_pass {
-        e.push_undo("Record", before);
+        e.push_undo_with_takes("Record", before, before_takes);
     }
     out
 }
@@ -437,11 +441,52 @@ mod tests {
         assert_eq!(contents(&e.playback_session()), (vec![(72, 240)], vec![(31, 360)]));
         assert!(e.redo());
         assert_eq!(contents(&e.playback_session()), (vec![(72, 240), (65, 960)], vec![(31, 360), (101, 480)]));
+        // Overwrite through both sides of the host. The left remnant keeps the host ID.
+        // Undo must restore that ID's original per-event timing as well as its score.
+        let overdub = add_midi_recording(
+            &mut e,
+            Range::new(6_000, 36_000),
+            &[ev(12_000, 0, 0x90, 33, 100), ev(24_000, 0, 0x80, 33, 0)],
+            &["piano".into()],
+            false,
+        );
+        assert_eq!(overdub.clips.len(), 1);
+        let after_overdub = e.playback_session();
+        assert!(e.undo());
+        assert_eq!(contents(&e.playback_session()), (vec![(72, 240), (65, 960)], vec![(31, 360), (101, 480)]));
+        assert!(e.redo());
+        assert_eq!(e.playback_session().track(host_track).unwrap().clips(), after_overdub.track(host_track).unwrap().clips());
+        assert!(e.undo());
         let (bytes, _) = crate::io::session_bundle(e.session()).unwrap();
         let mut reopened = Engine::default();
         assert!(crate::io::open_session_bytes(&mut reopened, "Merged", &bytes).unwrap().is_empty());
         assert!(reopened.playback_tempo.is_none());
         assert_eq!(contents(&reopened.playback_session()), contents(e.session()));
+    }
+
+    #[test]
+    fn clock_paste_merge_into_overlapping_hosts_preserves_their_visible_ends() {
+        let (mut e, source, input_id) = captured_clock_note();
+        e.session_mut().find_clip_mut(input_id).unwrap().length = 120_000;
+        let target = armed(&mut e, "Host", "MIDI:*:piano");
+        let ClipContent::Midi { mut sequence } = e.session().find_clip(input_id).unwrap().1.content.clone() else { panic!("expected MIDI") };
+        sequence.notes[0].pitch = 72;
+        sequence.notes[0].start = 1600;
+        sequence.notes[0].length = 120;
+        let host = e.session_mut().new_clip_id();
+        let overlap = e.session_mut().new_clip_id();
+        let mut locked = Clip::midi(overlap, "locked overlap", 72_000, 48_000, Sequence::default());
+        locked.edit_locked = true;
+        let playlist = e.session_mut().track_mut(target).unwrap().playlist_mut().unwrap();
+        playlist.clips = vec![Clip::midi(host, "existing", 0, 96_000, sequence), locked];
+        e.execute("edit.copy", &json!({"tracks":[source.0], "start":0,"end":120_000})).unwrap();
+        e.execute("edit.paste_merge_midi", &json!({"tracks":[target.0],"at":0})).unwrap();
+        let doc = e.playback_session();
+        let c = doc.find_clip(host).unwrap().1;
+        assert_eq!(c.end(), 96_000);
+        let ClipContent::Midi { sequence } = &c.content else { panic!("expected MIDI") };
+        assert!(sequence.notes.iter().any(|n| n.pitch == 72 && n.start == 1600));
+        assert_eq!(doc.find_clip(overlap).unwrap().1.start, 72_000);
     }
 
     #[test]
@@ -487,6 +532,87 @@ mod tests {
         drop(e);
         assert!(prior.iter().all(|p| p.upgrade().is_none()), "the final take retained a previous projection");
         drop(last);
+    }
+
+    #[test]
+    fn raw_anchor_velocity_and_cc_edits_keep_exact_recorded_ticks() {
+        let mut e = Engine::default();
+        let track = armed(&mut e, "Follow", "MIDI:*:keys");
+        e.playback_tempo = Some(TempoMap::new(90., 4, 4).unwrap());
+        let events =
+            [ev(14, 0, 0x90, 65, 100), ev(14, 0, 0xB0, 7, 101), ev(47, 0, 0x80, 65, 20), ev(114, 0, 0x90, 70, 110), ev(147, 0, 0x80, 70, 10)];
+        let take = add_midi_recording(&mut e, Range::new(0, 2_400), &events, &["keys".into()], false);
+        let id = take.clips[0];
+        let events = |s: &Session| {
+            let ClipContent::Midi { sequence } = &s.track(track).unwrap().clips()[0].content else { panic!("MIDI") };
+            (sequence.notes.clone(), sequence.ctrls.clone())
+        };
+        let (mut notes, mut ctrls) = events(&e.playback_session());
+        assert_eq!((notes[0].start, notes[0].end(), ctrls[0].tick), (0, 1, 0));
+        let score = events(e.session());
+        assert_eq!((score.0[0].start, score.0[0].end(), score.1[0].tick), (1, 2, 1));
+        e.execute("midi.note_edit", &json!({"clip": id.0, "index": 0, "velocity": 71})).unwrap();
+        notes[0].velocity = 71;
+        assert_eq!(events(&e.playback_session()), (notes.clone(), ctrls.clone()));
+        let ClipContent::Midi { sequence } = &mut e.session_mut().find_clip_mut(id).unwrap().content else { panic!("MIDI") };
+        sequence.ctrls[0].value = 57;
+        ctrls[0].value = 57;
+        assert_eq!(events(&e.playback_session()), (notes, ctrls));
+    }
+
+    fn identical_clock_events() -> (Engine, TrackId, ClipId) {
+        let (mut e, track, id) = captured_clock_note();
+        let ClipContent::Midi { sequence } = &mut e.session_mut().find_clip_mut(id).unwrap().content else { panic!("MIDI") };
+        sequence.ctrls.push(CtrlEvent { tick: 1920, channel: 0, kind: CtrlKind::Cc(7), value: 90 });
+        let mut sequence = sequence.clone();
+        sequence.notes[0].start = 960;
+        sequence.ctrls[0].tick = 960;
+        let other = e.session_mut().new_clip_id();
+        e.session_mut().track_mut(track).unwrap().playlist_mut().unwrap().clips.push(Clip::midi(other, "overlap", 24_000, 120_000, sequence));
+        e.execute("edit.consolidate", &json!({"tracks":[track.0],"start":0,"end":144_000})).unwrap();
+        let clip = &e.session().track(track).unwrap().clips()[0];
+        let id = clip.id;
+        let ClipContent::Midi { sequence } = &clip.content else { panic!("MIDI") };
+        assert_eq!(sequence.notes.len(), 2);
+        assert_eq!(sequence.notes[0], sequence.notes[1]);
+        assert_eq!(sequence.ctrls[0], sequence.ctrls[1]);
+        (e, track, id)
+    }
+
+    #[test]
+    fn deduplicate_anchor_keeps_first_equal_note_and_last_equal_controller() {
+        let (mut e, track, id) = identical_clock_events();
+        let ticks = |e: &Engine| {
+            let doc = e.playback_session();
+            let ClipContent::Midi { sequence } = &doc.track(track).unwrap().clips()[0].content else { panic!("MIDI") };
+            (sequence.notes.iter().map(|n| n.start).collect::<Vec<_>>(), sequence.ctrls.iter().map(|c| c.tick).collect::<Vec<_>>())
+        };
+        assert_eq!(ticks(&e), (vec![960, 1440], vec![960, 1440]));
+        let result = e.execute("event.remove_duplicate_notes", &json!({"clips":[id.0]})).unwrap();
+        assert_eq!(result["removed"], 2);
+        assert_eq!(ticks(&e), (vec![960], vec![1440]));
+        assert!(e.undo());
+        assert_eq!(ticks(&e), (vec![960, 1440], vec![960, 1440]));
+    }
+
+    #[test]
+    fn indexed_anchor_delete_keeps_the_identical_survivors_attack() {
+        let (mut e, track, id) = identical_clock_events();
+        let attacks = |e: &Engine| {
+            let doc = e.playback_session();
+            let ClipContent::Midi { sequence } = &doc.track(track).unwrap().clips()[0].content else { panic!("MIDI") };
+            sequence.notes.iter().map(|n| n.start).collect::<Vec<_>>()
+        };
+        assert_eq!(attacks(&e), [960, 1440]);
+        for (deleted, survivor) in [(0, 1440), (1, 960)] {
+            e.execute("midi.note_delete", &json!({"clip":id.0,"indices":[deleted,deleted,99]})).unwrap();
+            assert_eq!(attacks(&e), [survivor]);
+            assert!(e.undo());
+            assert_eq!(attacks(&e), [960, 1440]);
+            assert!(e.redo());
+            assert_eq!(attacks(&e), [survivor]);
+            assert!(e.undo());
+        }
     }
 
     #[test]
@@ -831,10 +957,10 @@ mod tests {
                         let ClipContent::Midi { sequence } = &clip.content else { panic!("expected MIDI") };
                         let base = doc.tempo.samples_to_ticks(clip.start, doc.sample_rate);
                         let sample = |tick| doc.tempo.tick_to_samples(base + tick, doc.sample_rate) - subtract;
-                        for n in &sequence.notes {
+                        for n in sequence.notes.iter().filter(|n| clip.range().contains(sample(n.start) + subtract)) {
                             result.push((n.pitch, sample(n.start), sample(n.end())));
                         }
-                        for c in &sequence.ctrls {
+                        for c in sequence.ctrls.iter().filter(|c| clip.range().contains(sample(c.tick) + subtract)) {
                             result.push((c.value as u8, sample(c.tick), sample(c.tick)));
                         }
                     }
@@ -864,6 +990,91 @@ mod tests {
                         assert_eq!(events(&engine, 144_000, 144_001, 144_000 - split), expected(split, 84_000), "copy {bpm}");
                     }
                 }
+            }
+        }
+    }
+
+    #[test]
+    fn clock_split_keeps_score_events_temporarily_outside_the_source() {
+        let mut e = Engine::default();
+        let t = armed(&mut e, "Follow", "MIDI:*:keys");
+        e.playback_tempo = Some(TempoMap::new(60., 4, 4).unwrap());
+        add_midi_recording(
+            &mut e,
+            Range::new(0, 96_000),
+            &[ev(84_000, 0, 0x90, 65, 127), ev(88_000, 0, 0x80, 65, 0), ev(84_000, 0, 0xb0, 7, 88)],
+            &["keys".into()],
+            false,
+        );
+        e.playback_tempo = Some(TempoMap::new(45., 4, 4).unwrap());
+        e.execute("edit.separate", &json!({"tracks":[t.0],"at":36_000})).unwrap();
+        let score = e.session();
+        let clips = score.track(t).unwrap().clips();
+        let ClipContent::Midi { sequence: left } = &clips[0].content else { panic!("MIDI") };
+        let ClipContent::Midi { sequence: right } = &clips[1].content else { panic!("MIDI") };
+        assert!(left.notes.is_empty() && left.ctrls.is_empty());
+        assert_eq!((right.notes.len(), right.ctrls.len()), (1, 1), "keep the editable attack and CC");
+        assert_eq!(attack_and_cc_samples(score, t), [(65, 84_000), (88, 84_000)]);
+        assert!(attack_and_cc_samples(&e.playback_session(), t).is_empty(), "the slow clock still places both events outside the clip");
+        e.playback_tempo = Some(TempoMap::new(60., 4, 4).unwrap());
+        assert_eq!(attack_and_cc_samples(&e.playback_session(), t).len(), 2, "both events sound again on return to capture tempo");
+    }
+
+    /// Count only attacks and CCs that fall inside their own clip, like the audio scheduler.
+    fn attack_and_cc_samples(doc: &Session, t: TrackId) -> Vec<(i32, Samples)> {
+        let mut events = Vec::new();
+        for clip in doc.track(t).unwrap().clips() {
+            let ClipContent::Midi { sequence } = &clip.content else { continue };
+            let origin = doc.tempo.samples_to_ticks(clip.start, doc.sample_rate);
+            for (value, tick) in sequence.notes.iter().map(|n| (i32::from(n.pitch), n.start)).chain(sequence.ctrls.iter().map(|c| (c.value, c.tick)))
+            {
+                let at = doc.tempo.tick_to_samples(origin + tick, doc.sample_rate);
+                if clip.range().contains(at) {
+                    events.push((value, at));
+                }
+            }
+        }
+        events.sort_unstable();
+        events
+    }
+
+    #[test]
+    fn clock_consolidation_checks_half_open_samples_for_notes_and_ccs() {
+        for mixed in [false, true] {
+            for end in [48_000, 48_001] {
+                let mut e = Engine::default();
+                let t = armed(&mut e, "Follow", "MIDI:*:keys");
+                e.playback_tempo = Some(TempoMap::new(60., 4, 4).unwrap());
+                let take = add_midi_recording(
+                    &mut e,
+                    Range::new(0, 96_000),
+                    &[ev(48_000, 0, 0x90, 65, 127), ev(72_000, 0, 0x80, 65, 0), ev(48_000, 0, 0xb0, 7, 88)],
+                    &["keys".into()],
+                    false,
+                );
+                let mut expected = vec![(65, 48_000), (88, 48_000)];
+                if mixed {
+                    let ClipContent::Midi { mut sequence } = e.session().find_clip(take.clips[0]).unwrap().1.content.clone() else { panic!("MIDI") };
+                    sequence.notes[0].pitch = 70;
+                    sequence.notes[0].start = 960;
+                    sequence.ctrls[0].tick = 960;
+                    sequence.ctrls[0].value = 99;
+                    let doc = e.session_mut();
+                    let id = doc.new_clip_id();
+                    doc.track_mut(t).unwrap().playlist_mut().unwrap().clips.push(Clip::midi(id, "ordinary", 0, 96_000, sequence));
+                    expected.extend([(70, 48_000), (99, 48_000)]);
+                    expected.sort_unstable();
+                }
+                assert_eq!(attack_and_cc_samples(&e.playback_session(), t), expected);
+                e.execute("edit.consolidate", &json!({"tracks":[t.0],"start":0,"end":end})).unwrap();
+                let playback = e.playback_session();
+                let clip = playback.track(t).unwrap().clips().iter().find(|c| c.start == 0).unwrap();
+                let ClipContent::Midi { sequence } = &clip.content else { panic!("MIDI") };
+                let pairs = if end == 48_000 { 0 } else { 1 + usize::from(mixed) };
+                assert_eq!((sequence.notes.len(), sequence.ctrls.len()), (pairs, pairs), "end {end}, mixed {mixed}");
+                assert_eq!(attack_and_cc_samples(&playback, t), expected, "exactly once across the consolidated and remaining material");
+                let saved = attack_and_cc_samples(e.session(), t).into_iter().map(|(event, _)| event).collect::<Vec<_>>();
+                assert_eq!(saved, expected.iter().map(|&(event, _)| event).collect::<Vec<_>>(), "one editable copy per source event");
             }
         }
     }

@@ -75,6 +75,7 @@ fn add_recording_in(
     punch: Option<Range>,
 ) -> Vec<soundcraft_model::ClipId> {
     let before = e.session_arc();
+    let before_takes = std::sync::Arc::clone(&e.follow_takes);
     let hz = e.session().sample_rate.hz();
     let mut tracks: Vec<(TrackId, Vec<PathBuf>)> = Vec::new();
     for (tid, path) in takes {
@@ -104,7 +105,7 @@ fn add_recording_in(
         out.extend(clips);
     }
     if !out.is_empty() {
-        e.push_undo("Record", before);
+        e.push_undo_with_takes("Record", before, before_takes);
     }
     out
 }

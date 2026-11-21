@@ -38,6 +38,48 @@ impl ClockTake {
     pub(crate) fn project_events(&self, seq: &Sequence) -> (Vec<Option<Note>>, Vec<Option<CtrlEvent>>) {
         self.capture.project_events(seq)
     }
+
+    /// The editor knows which row the user deleted even if several editable
+    /// notes are identical. Apply those indices before the remaining rows shift.
+    pub(crate) fn remove_notes(&mut self, seq: &Sequence, deleted: &std::collections::HashSet<usize>) {
+        let (notes, ctrls) = self.project_events(seq);
+        let notes = seq.notes.iter().copied().zip(notes).enumerate().filter_map(|(i, row)| (!deleted.contains(&i)).then_some(row)).collect();
+        let ctrls = seq.ctrls.iter().copied().zip(ctrls).collect();
+        self.replace_rows(notes, ctrls);
+    }
+
+    /// Sequence::remove_duplicates keeps the first of equally long notes and
+    /// the final controller at the same tick, channel and kind. Identical
+    /// editable values in these groups may have distinct capture timings.
+    pub(crate) fn remove_duplicates(&mut self, seq: &mut Sequence) -> usize {
+        let (notes, ctrls) = self.project_events(seq);
+        let note_key = |n: &Note| (n.start, n.channel, n.pitch, n.length);
+        let ctrl_key = |c: &CtrlEvent| (c.tick, c.channel, c.kind());
+        let mut first = HashMap::new();
+        for (n, played) in seq.notes.iter().zip(notes) {
+            first.entry(note_key(n)).or_insert(played);
+        }
+        let last: HashMap<_, _> = seq.ctrls.iter().zip(ctrls).map(|(c, played)| (ctrl_key(c), played)).collect();
+        let removed = seq.remove_duplicates();
+        if removed == 0 {
+            return 0;
+        }
+        let notes = seq.notes.iter().map(|n| (*n, first[&note_key(n)])).collect();
+        let ctrls = seq.ctrls.iter().map(|c| (*c, last[&ctrl_key(c)])).collect();
+        self.replace_rows(notes, ctrls);
+        removed
+    }
+
+    fn replace_rows(&mut self, notes: NoteRows, ctrls: ControlRows) {
+        let source = &*self.capture;
+        self.capture = Arc::new(ClockTakeProjection {
+            events: Events::Edited { notes, ctrls },
+            score_grid: source.score_grid.clone(),
+            played_grid: source.played_grid.clone(),
+            sr: source.sr,
+            range: source.range,
+        });
+    }
 }
 
 impl ClockTakeProjection {
@@ -72,15 +114,9 @@ impl ClockTakeProjection {
         match &self.events {
             Events::Edited { notes, ctrls } => (project_edited(&seq.notes, notes, &convert), project_edited(&seq.ctrls, ctrls, &convert)),
             Events::Recorded { score, played } => {
-                let mut notes: Vec<_> = seq.notes.iter().map(|&n| n.retime(convert(n.start, true), convert(n.end(), false))).collect();
-                let mut ctrls: Vec<_> = seq.ctrls.iter().map(|&c| c.retime(convert(c.tick, true), 0)).collect();
-                if seq == score {
-                    // Rounding on the two grids can change the sorted order of two events.
-                    // Match recorded attacks by their MIDI attributes before taking the exact time.
-                    exact_recording_times(&mut notes, &played.notes);
-                    exact_recording_times(&mut ctrls, &played.ctrls);
-                }
-                (notes.into_iter().map(Some).collect(), ctrls.into_iter().map(Some).collect())
+                let notes = recorded_rows(&score.notes, &played.notes);
+                let ctrls = recorded_rows(&score.ctrls, &played.ctrls);
+                (project_edited(&seq.notes, &notes, &convert), project_edited(&seq.ctrls, &ctrls, &convert))
             }
         }
     }
@@ -144,18 +180,22 @@ impl MidiEvent for CtrlEvent {
     }
 }
 
-fn exact_recording_times<T: MidiEvent>(input: &mut [T], played: &[T]) {
+// Rounding on the two grids can reorder events. Pair the unedited capture
+// passes first, so changing a velocity or CC value cannot affect that pairing.
+fn recorded_rows<T: MidiEvent>(score: &[T], played: &[T]) -> Vec<(T, Option<T>)> {
     let mut by_voice = HashMap::<_, Vec<T>>::new();
     for &p in played.iter().rev() {
         let (_, value, release) = p.detail();
         by_voice.entry((p.channel(), p.kind(), value, release)).or_default().push(p);
     }
-    for event in input {
-        let (_, value, release) = event.detail();
-        if let Some(p) = by_voice.get_mut(&(event.channel(), event.kind(), value, release)).and_then(Vec::pop) {
-            *event = event.retime(p.tick(), p.end());
-        }
-    }
+    score
+        .iter()
+        .map(|&event| {
+            let (_, value, release) = event.detail();
+            let played = by_voice.get_mut(&(event.channel(), event.kind(), value, release)).and_then(Vec::pop);
+            (event, played)
+        })
+        .collect()
 }
 
 fn project_edited<T: MidiEvent>(input: &[T], rows: &[(T, Option<T>)], convert: &impl Fn(i64, bool) -> i64) -> Vec<Option<T>> {

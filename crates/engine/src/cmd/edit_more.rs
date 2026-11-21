@@ -479,7 +479,7 @@ fn paste_merge_midi(e: &mut Engine, p: &Value) -> Result<Value> {
                 Some((host, next_start)) => {
                     let (hid, hstart) = (host.id, host.start);
                     let want_end = pos.saturating_add(c.length);
-                    let end = if want_end > host.end() { want_end.min(next_start.unwrap_or(Samples::MAX)) } else { host.end() };
+                    let end = host.end().max(want_end.min(next_start.unwrap_or(Samples::MAX)));
                     let host_take = s.takes.as_deref().and_then(|takes| takes.get(&hid));
                     let incoming_take = cb.clock_takes.get(&c.id);
                     let composed = s.follow_grid.filter(|_| host_take.is_some() || incoming_take.is_some()).map(|grid| {

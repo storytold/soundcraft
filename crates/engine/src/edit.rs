@@ -112,8 +112,8 @@ fn split_clip_with_take(
         && let Some(take) = takes.get(&clip.id)
         && let ClipContent::Midi { sequence } = &clip.content
     {
-        let (ls, lt) = take.slice_events(sequence, clip.start, left.range(), t, grid);
-        let (rs, rt) = take.slice_events(sequence, clip.start, right.range(), t, grid);
+        let (ls, lt) = take.slice_events(sequence, clip.range(), left.range(), t, grid);
+        let (rs, rt) = take.slice_events(sequence, clip.range(), right.range(), t, grid);
         left.content = ClipContent::Midi { sequence: ls };
         right.content = ClipContent::Midi { sequence: rs };
         takes.insert(left.id, lt);
@@ -374,7 +374,7 @@ pub(crate) fn copy_range_with_takes(
             let child = if isect == c.range() {
                 take.clone()
             } else {
-                let (events, child) = take.slice_events(sequence, c.start, isect, t, grid);
+                let (events, child) = take.slice_events(sequence, c.range(), isect, t, grid);
                 part.content = ClipContent::Midi { sequence: events };
                 child
             };
@@ -413,8 +413,19 @@ pub fn consolidate_midi(timeline: &mut impl EditTimeline, track: TrackId, range:
     let name = tr.name.clone();
     let source = tr.clips();
     let inputs = source.iter().filter(|c| !c.muted && c.range().intersect(&range).is_some());
+    let mut partial_sources = Vec::new();
     let (score, take) = match (s.follow_grid, s.takes.as_deref()) {
         (Some(grid), Some(takes)) if inputs.clone().any(|c| takes.contains_key(&c.id)) => {
+            // The remainder of an ordinary clip in this mixed edit must use the
+            // same audible boundary as the portion going into the new clip.
+            for clip in inputs.clone().filter(|c| !takes.contains_key(&c.id) && (c.start < range.start || c.end() > range.end)) {
+                if let ClipContent::Midi { sequence } = &clip.content {
+                    let rows = sequence.notes.iter().map(|&n| (n, Some(n))).collect();
+                    let ctrls = sequence.ctrls.iter().map(|&c| (c, Some(c))).collect();
+                    let (_, take) = crate::ClockTake::from_events(TimeCtx::of(&s), grid, clip.range(), rows, ctrls);
+                    partial_sources.push((clip.id, take));
+                }
+            }
             let (score, take) = compose_clock_midi(&s, grid, range, inputs.map(|c| (c, takes.get(&c.id))));
             (score, Some(take))
         }
@@ -422,6 +433,7 @@ pub fn consolidate_midi(timeline: &mut impl EditTimeline, track: TrackId, range:
     };
     let id = s.new_clip_id();
     if let (Some(take), Some(takes)) = (take, &mut s.takes) {
+        takes.extend(partial_sources);
         takes.insert(id, take);
     }
     place_clip(&mut s, track, Clip::midi(id, name, range.start, range.len(), score));
@@ -463,11 +475,20 @@ pub(crate) fn compose_clock_midi<'a>(
     for (clip, take) in clips {
         let Some(visible) = clip.range().intersect(&range) else { continue };
         let ClipContent::Midi { sequence } = &clip.content else { continue };
-        let score_window = MidiWindow::new(&doc.tempo, sr, visible, clip.start, score_base);
-        let play_window = MidiWindow::new(grid, sr, visible, clip.start, play_base);
+        let score_window = MidiWindow::rendered(&doc.tempo, sr, visible, clip.start, score_base);
+        let play_window = MidiWindow::rendered(grid, sr, visible, clip.start, play_base);
+        let play_origin = grid.samples_to_ticks(clip.start, sr);
+        let heard_outside_selection = |tick| {
+            let at = grid.tick_to_samples(play_origin.saturating_add(tick), sr);
+            clip.range().contains(at) && !visible.contains(at)
+        };
         let projected = take.map(|take| take.project_events(sequence));
         for (i, &note) in sequence.notes.iter().enumerate() {
-            let played = projected.as_ref().map_or(Some(note), |p| p.0[i]).and_then(|n| play_window.note(n));
+            let played = projected.as_ref().map_or(Some(note), |p| p.0[i]);
+            if played.is_some_and(|n| heard_outside_selection(n.start)) {
+                continue;
+            }
+            let played = played.and_then(|n| play_window.note(n));
             let editable = score_window.note(note).or_else(|| {
                 played.map(|n| {
                     let start = edit_tick(n.start);
@@ -479,7 +500,11 @@ pub(crate) fn compose_clock_midi<'a>(
             }
         }
         for (i, &ctrl) in sequence.ctrls.iter().enumerate() {
-            let played = projected.as_ref().map_or(Some(ctrl), |p| p.1[i]).and_then(|c| play_window.ctrl(c));
+            let played = projected.as_ref().map_or(Some(ctrl), |p| p.1[i]);
+            if played.is_some_and(|c| heard_outside_selection(c.tick)) {
+                continue;
+            }
+            let played = played.and_then(|c| play_window.ctrl(c));
             let editable = score_window.ctrl(ctrl).or_else(|| played.map(|c| soundcraft_midi::CtrlEvent { tick: edit_tick(c.tick), ..c }));
             if let Some(editable) = editable {
                 ctrls.push((editable, played))
@@ -489,28 +514,41 @@ pub(crate) fn compose_clock_midi<'a>(
     crate::ClockTake::from_events(TimeCtx::of(doc), grid, range, notes, ctrls)
 }
 
-struct MidiWindow {
+struct MidiWindow<'a> {
     ticks: std::ops::Range<i64>,
     relative: i64,
+    samples: Option<(TimeCtx<'a>, Range, i64)>,
 }
-impl MidiWindow {
-    fn new(grid: &TempoMap, sr: SampleRate, visible: Range, start: Samples, base: i64) -> Self {
+impl<'a> MidiWindow<'a> {
+    fn new(grid: &'a TempoMap, sr: SampleRate, visible: Range, start: Samples, base: i64) -> Self {
         let origin = grid.samples_to_ticks(start, sr);
         Self {
             ticks: grid.samples_to_ticks(visible.start, sr).saturating_sub(origin)..grid.samples_to_ticks(visible.end, sr).saturating_sub(origin),
             relative: origin.saturating_sub(base),
+            samples: None,
+        }
+    }
+    /// For clock composition, compare attacks in the same sample domain as playback
+    /// and the source split. The selected end can fall less than one tick after an attack.
+    fn rendered(grid: &'a TempoMap, sr: SampleRate, visible: Range, start: Samples, base: i64) -> Self {
+        Self { samples: Some((TimeCtx { tempo: grid, sr }, visible, grid.samples_to_ticks(start, sr))), ..Self::new(grid, sr, visible, start, base) }
+    }
+    fn contains(&self, tick: i64) -> bool {
+        match self.samples {
+            Some((t, range, origin)) => range.contains(t.tempo.tick_to_samples(origin.saturating_add(tick), t.sr)),
+            None => self.ticks.contains(&tick),
         }
     }
     fn note(&self, mut n: soundcraft_midi::Note) -> Option<soundcraft_midi::Note> {
-        if !self.ticks.contains(&n.start) {
+        if !self.contains(n.start) {
             return None;
         }
-        n.length = n.length.min(self.ticks.end - n.start);
+        n.length = n.length.min(self.ticks.end.saturating_sub(n.start).max(1));
         n.start = n.start.saturating_add(self.relative);
         Some(n)
     }
     fn ctrl(&self, mut c: soundcraft_midi::CtrlEvent) -> Option<soundcraft_midi::CtrlEvent> {
-        if !self.ticks.contains(&c.tick) {
+        if !self.contains(c.tick) {
             return None;
         }
         c.tick = c.tick.saturating_add(self.relative);
@@ -702,9 +740,9 @@ pub fn make_room(timeline: &mut impl EditTimeline, track: TrackId, at: Samples, 
 
 /// Rebase both score and followed events when a trim keeps the clip ID.
 fn trim_left(clip: &mut Clip, at: Samples, time: TimeCtx<'_>, grid: Option<&TempoMap>, takes: Option<&mut crate::ClockTakes>) {
-    let old = clip.start;
+    let old = clip.range();
     clip.trim_start_to(at);
-    if clip.start == old {
+    if clip.start == old.start {
         return;
     }
     let take = takes.and_then(|takes| takes.get_mut(&clip.id));
@@ -712,7 +750,7 @@ fn trim_left(clip: &mut Clip, at: Samples, time: TimeCtx<'_>, grid: Option<&Temp
     if let (Some(take), Some(grid), ClipContent::Midi { sequence }) = (take, grid, &mut clip.content) {
         (*sequence, *take) = take.slice_events(sequence, old, range, time, grid);
     } else {
-        rebase_midi_start(clip, old, time);
+        rebase_midi_start(clip, old.start, time);
     }
 }
 

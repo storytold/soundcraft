@@ -58,13 +58,16 @@ pub fn specs() -> Vec<CommandSpec> {
         ),
         cmd!("event.remove_duplicate_notes", "Remove Duplicate Notes", ["Event"], None, "{clips?}", has_selection, |e, p| {
             let ids = clip_ids_param(e, p);
-            let s = e.session_mut();
+            let crate::edit::ClipEdit { doc, mut takes, .. } = e.clip_edit();
             let mut n = 0;
             for id in ids {
-                if let Some(c) = s.find_clip_mut(id)
+                if let Some(c) = doc.find_clip_mut(id)
                     && let ClipContent::Midi { sequence } = &mut c.content
                 {
-                    n += sequence.remove_duplicates()
+                    n += match takes.as_deref_mut().and_then(|takes| takes.get_mut(&id)) {
+                        Some(take) => take.remove_duplicates(sequence),
+                        None => sequence.remove_duplicates(),
+                    };
                 }
             }
             Ok(json!({"removed": n}))
