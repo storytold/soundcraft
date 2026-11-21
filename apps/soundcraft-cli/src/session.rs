@@ -73,6 +73,7 @@ pub(crate) fn run_cmds(args: &RunArgs, out: &mut dyn Write, err: &mut dyn Write)
 pub(crate) fn script(args: &ScriptArgs, out: &mut dyn Write, err: &mut dyn Write) -> Result<(), CliError> {
     let path = &args.file;
     let text = std::fs::read_to_string(path).map_err(|source| CliError::File { path: path.clone(), source })?;
+    let text = text.strip_prefix('\u{feff}').unwrap_or(&text);
     let mut e = load_engine(&args.engine, err)?;
     let keep = args.keep_going;
     let mut failed = false;
