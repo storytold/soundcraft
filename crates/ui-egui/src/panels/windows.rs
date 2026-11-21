@@ -696,11 +696,18 @@ pub fn playback_engine(app: &mut SoundApp, ctx: &egui::Context) {
         if crate::widgets::checkbox(ui, &mut dc, crate::localization::text("Delay compensation")).changed() {
             let _ = app.run("options.delay_compensation", json!({"value": dc}));
         }
-        if ui.button(crate::localization::text("Reconnect audio device")).clicked() {
+        if ui
+            .add_enabled(app.timing_reconnect_allowed(), egui::Button::new(crate::localization::text("Reconnect audio device")))
+            .on_disabled_hover_text(crate::localization::text("Stop playback or recording before reconnecting this output."))
+            .clicked()
+        {
             app.reconnect_audio();
         }
         ui.separator();
         midi_inputs(app, ui);
+        if ui.button(crate::localization::text("Synchronization")).clicked() {
+            app.dialogs.open_for_command(&app.engine, "setup.peripherals");
+        }
     });
     if refresh {
         audio_systems(ctx, true);

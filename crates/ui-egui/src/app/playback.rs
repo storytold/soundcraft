@@ -32,7 +32,11 @@ impl SoundApp {
     fn start_play(&mut self, from: Samples, end: Option<Samples>, looped: Option<Range>) {
         if let Some(p) = &self.player {
             p.update_session(self.engine.session_arc());
-            p.play(from, end, looped);
+            if self.mtc_chasing && end.is_none() && looped.is_none() {
+                p.play_chasing_mtc(from);
+            } else {
+                p.play(from, end, looped);
+            }
         } else {
             self.sim = Some((from, end, looped));
         }
@@ -441,7 +445,11 @@ impl SoundApp {
                     if self.is_playing() {
                         // Playing on from `at` drops the end and loop of the earlier selection.
                         if let Some(p) = &self.player {
-                            p.play(at, None, None);
+                            if self.mtc_chasing {
+                                p.play_chasing_mtc(at);
+                            } else {
+                                p.play(at, None, None);
+                            }
                         }
                         if let Some(sim) = &mut self.sim {
                             *sim = (at, None, None);
@@ -469,10 +477,12 @@ impl SoundApp {
                     }
                 }
                 TransportRequest::Locate(at) => {
+                    // A stopped playback device still owns the timecode output. Keep its
+                    // cursor in sync so an external deck can locate without starting playback.
+                    if let Some(p) = &self.player {
+                        p.locate(at);
+                    }
                     if self.is_playing() {
-                        if let Some(p) = &self.player {
-                            p.locate(at);
-                        }
                         if let Some(sim) = &mut self.sim {
                             sim.0 = at;
                         }

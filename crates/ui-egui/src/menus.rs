@@ -71,6 +71,8 @@ pub const UI_COMMANDS: &[(&str, &str, &str, Option<&str>)] = &[
     ("window.import_aaf", "Import Session Data (AAF)", "", None),
     ("window.playback_engine", "Playback Engine", "", None),
     ("ui.audio_device", "Audio Device", "", None),
+    ("setup.mtc", "MTC input", "", None),
+    ("setup.mtc_output", "MTC generator output", "", None),
     ("window.io_setup", "I/O Setup", "", None),
     ("window.shortcuts", "Keyboard Shortcuts", "", None),
     ("view.mix_section", "Mix Window View", "", None),
@@ -171,6 +173,9 @@ const DIALOG_COMMANDS: &[&str] = &[
     "edit.shift",
     "edit.fades_create",
     "setup.session",
+    "setup.external_timecode_offset",
+    "setup.peripherals",
+    "setup.midi_beat_clock",
     "event.quantize",
     "event.transpose",
     "edit.strip_silence",
@@ -448,6 +453,7 @@ fn checked_state(app: &SoundApp, path: &str, id: Option<&str>) -> bool {
         Some("options.tab_to_transient") => e.tab_to_transient,
         Some("options.automation_follows_edit") => e.automation_follows_edit,
         Some("options.markers_follow_edit") => e.markers_follow_edit,
+        Some("options.transport_online") => app.mtc_online,
         Some("options.click") => e.click,
         Some("options.delay_compensation") => e.delay_compensation,
         Some("options.pre_fader_metering") => e.pre_fader_metering,
@@ -581,6 +587,11 @@ pub fn invoke_menu(app: &mut SoundApp, id: &str, path: &str) {
         app.ui.audiosuite = p.get("process").and_then(Value::as_str).map(str::to_string);
         return;
     }
+    if id == "setup.midi_beat_clock" {
+        app.migrate_midi_sync();
+        app.dialogs.open_beat_clock(&app.ui.midi_sync);
+        return;
+    }
     if wants_dialog(id) && app.dialogs.open_for_command(&app.engine, id) {
         return;
     }
@@ -604,6 +615,10 @@ pub fn invoke_shortcut_dialog(app: &mut SoundApp, id: &str) -> bool {
         let _ = crate::aaf_import::command(app, &json!({}));
         return true;
     }
+    if id == "setup.midi_beat_clock" {
+        app.migrate_midi_sync();
+        return app.dialogs.open_beat_clock(&app.ui.midi_sync);
+    }
     (wants_dialog(id) && app.dialogs.open_for_command(&app.engine, id)) || crate::dialogs::ask_to_save(app, id, &json!({}))
 }
 
@@ -614,6 +629,22 @@ fn wants_dialog(id: &str) -> bool {
 
 /// Handle UI-layer commands. Returns None when `id` is not a UI command.
 pub fn run_ui_command(app: &mut SoundApp, id: &str, p: &Value) -> Option<Result<Value, String>> {
+    if id == "options.transport_online" {
+        let value = p.get("value").cloned().unwrap_or_else(|| serde_json::json!(!app.mtc_online));
+        return Some(
+            app.mtc_command(&serde_json::json!({"online":value}))
+                .map(|state| serde_json::json!({"flag":"options.transport_online","value":state["online"]})),
+        );
+    }
+    if id == "setup.mtc" {
+        return Some(app.mtc_command(p));
+    }
+    if id == "setup.mtc_output" {
+        return Some(app.mtc_output_command(p));
+    }
+    if matches!(id, "setup.midi_beat_clock" | "setup.midi_sync_status") {
+        return Some(app.sync_command(id, p));
+    }
     if id == "window.import_aaf" {
         return Some(crate::aaf_import::command(app, p));
     }

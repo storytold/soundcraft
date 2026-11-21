@@ -15,6 +15,25 @@ pub(super) fn transport_window(app: &mut SoundApp, ctx: &egui::Context) {
             let flags = app.engine.session().edit.flags.clone();
             let expanded = flags.contains("view.transport.expanded");
             ui.horizontal(|ui| {
+                if ui.selectable_label(app.ui.gen_mtc, crate::localization::text("Gen MTC")).clicked()
+                    && let Err(e) = app.run("setup.mtc_output", json!({"enabled":!app.ui.gen_mtc}))
+                {
+                    app.ui.status = crate::localization::error_text(&e);
+                }
+                let waiting = app.mtc_online && app.mtc_status == "Waiting for timecode";
+                if waiting {
+                    ctx.request_repaint_after(std::time::Duration::from_millis(500));
+                }
+                let online_lamp = app.mtc_online && (!waiting || ctx.input(|i| i.time.rem_euclid(1.0) < 0.5));
+                if app.ui.mtc_input_port.is_some()
+                    && ui
+                        .selectable_label(online_lamp, crate::localization::text("Online"))
+                        .on_hover_text(crate::localization::text(app.mtc_status))
+                        .clicked()
+                    && let Err(e) = app.run("options.transport_online", json!({}))
+                {
+                    app.ui.status = crate::localization::error_text(&e);
+                }
                 for (icon, cmd) in [
                     ("rtz", "transport.rtz"),
                     ("rewind", "transport.rewind"),

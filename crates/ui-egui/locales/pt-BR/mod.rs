@@ -1,14 +1,69 @@
 /// Returns the Brazilian Portuguese translation for a source-language UI string.
 pub(super) fn translate(source: &str) -> Option<&'static str> {
     Some(match source {
+        "Audio output “{name}” is unavailable. Reconnect it in Playback Engine when stopped." => {
+            "A saída de áudio “{name}” está indisponível. Reconecte-a no mecanismo de reprodução quando o transporte estiver parado."
+        }
+        "The audio driver stopped reporting output timing. Compensated MIDI sync uses the last measured lead ({ms} ms)." => {
+            "O driver de áudio deixou de informar o tempo de saída. A sincronização MIDI com compensação usa o último adiantamento medido ({ms} ms)."
+        }
+        "Audio output timing is unavailable. Compensated MIDI outputs need a valid measurement." => {
+            "O tempo da saída de áudio está indisponível. As saídas MIDI com compensação precisam de uma medição válida."
+        }
+        "Stop playback or recording before reconnecting this output." => "Pare a reprodução ou a gravação antes de reconectar esta saída.",
         "+ Marker" => "+ Marcador",
         "+ Selection" => "+ Seleção",
         "+" => "+",
         "/" => "/",
         "0 dB" => "0 dB",
+        "Before session start" => "Antes do início da sessão",
         "CLAP" => "CLAP",
+        "Input unavailable" => "Entrada indisponível",
+        "Located" => "Posicionado",
+        "Locked" => "Sincronizado",
+        "MTC generator output" => "Saída do gerador de MTC",
+        "MTC Reader Port" => "Porta de leitura de MTC",
+        "MTC Generator Port" => "Porta de geração de MTC",
+        "MIDI Time Code needs a session at 23.976, 24, 25, 29.97 non-drop, 29.97 drop-frame or 30 fps." => {
+            "O MIDI Time Code precisa de uma sessão em 23,976, 24, 25, 29,97 sem drop-frame, 29,97 drop-frame ou 30 fps."
+        }
+        "No timecode received" => "Nenhum timecode recebido",
+        "Received timecode" => "Timecode recebido",
+        "Use received position" => "Usar posição recebida",
+        "When changing the session start" => "Ao alterar o início da sessão",
+        "Keep clips' distance from the session start" => "Manter a distância dos clipes em relação ao início da sessão",
+        "Keep clips at their timecode" => "Manter os clipes no timecode original",
+        "External Timecode Offset" => "Deslocamento de timecode externo",
+        "Frames" => "Quadros",
+        "Freewheel" => "Tolerância de perda",
+        "Unknown MTC freewheel mode" => "Modo de tolerância de perda de MTC desconhecido",
+        "A clip would fall outside the session timeline" => "Um clipe ficaria fora da linha do tempo da sessão",
+        "External timecode offset exceeds one hour of samples" => "O deslocamento de timecode externo excede uma hora de amostras",
+        "Offset must be a signed timecode such as -01:00:00:00." => "O deslocamento deve ser um timecode com sinal, como -01:00:00:00.",
+        "Choose timecode or relative clip positions" => "Escolha posições dos clipes relativas ou por timecode",
+        "The session has conflicting timecode offsets. Chase uses the External Timecode Offset." => {
+            "A sessão tem deslocamentos de timecode conflitantes. O seguimento usa o deslocamento de timecode externo."
+        }
+        "Migrated the MTC reader offset to External Timecode Offset." => {
+            "O deslocamento do leitor MTC foi migrado para o deslocamento de timecode externo."
+        }
+        "Gen MTC" => "Gerar MTC",
+        "Freewheel (frames)" => "Tolerância de perda (quadros)",
+        "Jam Sync" => "Sincronização contínua",
+        "External timecode offset (frames)" => "Deslocamento do timecode externo (quadros)",
+        "Session Start" => "Início da sessão",
+        "Take MTC chase offline before recording" => "Desative o seguimento de MTC antes de gravar",
+        "MTC input" => "Entrada de MTC",
+        "MTC output suspended: check the session frame rate and chase mode" => {
+            "Saída MTC suspensa: verifique a taxa de quadros da sessão e o modo de sincronismo"
+        }
+        "MTC output: {e}" => "Saída MTC: {e}",
+        "Offline" => "Offline",
+        "Online" => "Online",
+        "Online (chase MTC)" => "Online (seguir MTC)",
         "VST3" => "VST3",
         "bpm" => "BPM",
+        "Waiting for timecode" => "Aguardando o código de tempo",
         "·" => "·",
         "−" => "−",
         "−∞" => "−∞",
@@ -591,6 +646,7 @@ fn menu_translate(source: &str) -> Option<&'static str> {
         "MIDI..." => "MIDI...",
         "Machine Track Arming" => "Armar faixa da máquina",
         "Machine Track Arming Profiles..." => "Perfis de armação de faixa da máquina...",
+        "Enter position…" => "Inserir posição…",
         "Main Counter" => "Contador principal",
         "Make Inactive" => "Desativar",
         "Marker Controls" => "Controles de marcadores",
@@ -1830,6 +1886,20 @@ fn menu_translate(source: &str) -> Option<&'static str> {
         "Meter Type" => "Tipo de medidor",
         "Middle C" => "Dó central",
         "MIDI Beat Clock" => "Clock de batida MIDI",
+        "Enable MIDI Beat Clock" => "Ativar clock de batida MIDI",
+        "Choose a MIDI output" => "Escolher uma saída MIDI",
+        "MIDI output" => "Saída MIDI",
+        "No MIDI output devices found" => "Nenhum dispositivo de saída MIDI encontrado",
+        "Copy diagnostics" => "Copiar diagnóstico",
+        "The saved MIDI output is unavailable." => "A saída MIDI salva está indisponível.",
+        "Saved value exceeds ±250 ms at this rate; playback uses {effective} samples." => {
+            "O valor salvo excede ±250 ms nesta taxa; a reprodução usa {effective} amostras."
+        }
+        "Limited by the audio output lead ({lead} ms)" => "Limitado pela antecedência da saída de áudio ({lead} ms)",
+        "Include the reported audio output lead and the mixer's compensated plug-in delay." => {
+            "Incluir a antecedência informada pela saída de áudio e o atraso compensado dos plug-ins do mixer."
+        }
+        "Offset (samples)" => "Deslocamento (amostras)",
         "MIDI Input Monitoring Follows Selected Track" => "O monitoramento de entrada MIDI acompanha a pista selecionada",
         "MIDI Merge Release Mode" => "Modo de liberação da mesclagem MIDI",
         "MIDI Note 60" => "Nota MIDI 60",
@@ -2083,6 +2153,26 @@ macro_rules! error_templates {
 }
 
 error_templates! {
+    "Receiving {incoming} fps; session is {session} fps" => "Recebendo {incoming} fps; a sessão está em {session} fps",
+    "{value} is before the session start ({start})" => "{value} é anterior ao início da sessão ({start})",
+    "Freewheel must be 4 to 40 frames" => "A tolerância deve ser de 4 a 40 quadros",
+    "Jam Sync must be a boolean" => "Jam Sync deve ser um valor booleano",
+    "Invalid timecode label at this frame rate" => "Código de tempo inválido para esta taxa de quadros",
+    "Choose an MTC output port" => "Escolha uma porta de saída MTC",
+    "Disable MTC output before going online" => "Desative a saída MTC antes de ativar o modo online",
+    "MIDI output is unavailable on this platform" => "A saída MIDI está indisponível nesta plataforma",
+    "MIDI output unavailable: {name}" => "Saída MIDI indisponível: {name}",
+    "MTC output needs a playback engine" => "A saída MTC exige um mecanismo de reprodução",
+    "More than one MIDI output is named {name}" => "Há mais de uma saída MIDI chamada {name}",
+    "Select an MTC input before going online" => "Selecione uma entrada MTC antes de ativar o modo online",
+    "Stop recording before enabling MTC chase" => "Pare a gravação antes de seguir o MTC",
+    "Take MTC chase offline before enabling the generator" => "Desative o sincronismo MTC antes de ativar o gerador",
+    "Multiple MIDI outputs named {name}; using the first" => "Várias saídas MIDI com o nome {name}; usando a primeira",
+    "MIDI output {name} unavailable" => "Saída MIDI {name} indisponível",
+    "MIDI sync settings require the desktop host" => "As configurações de sincronização MIDI exigem o aplicativo de desktop",
+    "MIDI port calibration must be within 250 ms at the session sample rate" => "A calibração da porta MIDI deve estar dentro de 250 ms na taxa de amostragem da sessão",
+    "Invalid MIDI sync port name, count or sample offset" => "Nome, quantidade de portas ou deslocamento de amostras MIDI inválido",
+    "Position exceeds the MIDI Song Position Pointer range." => "A posição excede o limite do ponteiro de posição MIDI.",
     "{path} is not valid Unicode" => "{path} não é Unicode válido",
     "unknown command `{c}`" => "comando desconhecido `{c}`",
     "`{c}` is not available: {why}" => "`{c}` não está disponível: {why}",

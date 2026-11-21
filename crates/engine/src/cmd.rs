@@ -29,6 +29,7 @@ mod plugin_state;
 mod query;
 pub(crate) mod sampler;
 mod setup_more;
+pub use setup_more::signed_offset;
 mod strip_silence;
 mod surround;
 mod tab;
@@ -308,6 +309,12 @@ fn position_param_raw(e: &Engine, cmd: &str, p: &Value, key: &str) -> Result<Opt
             Some((f, b)) if soundcraft_time::TimeFormat::from_id(f).is_some() => (soundcraft_time::TimeFormat::from_id(f), b),
             _ => (None, text),
         };
+        // Minutes:seconds with a fractional second identifies an elapsed time even
+        // when the main counter shows absolute timecode with a nonzero session start.
+        let fmt = fmt.or_else(|| {
+            let (_, seconds) = body.trim().split_once(':')?;
+            (seconds.contains('.') && !seconds.contains([':', ';'])).then_some(soundcraft_time::TimeFormat::MinSecs)
+        });
         let fmts: Vec<soundcraft_time::TimeFormat> = match fmt {
             Some(f) => vec![f],
             None => {
@@ -318,6 +325,10 @@ fn position_param_raw(e: &Engine, cmd: &str, p: &Value, key: &str) -> Result<Opt
         };
         for f in fmts {
             if let Ok(x) = s.parse_position(body, f) {
+                if f == soundcraft_time::TimeFormat::Timecode && x < 0 {
+                    let start = s.format_position(0, f);
+                    return Err(bad(cmd, format!("{body} is before the session start ({start})")));
+                }
                 return Ok(Some(x));
             }
         }
