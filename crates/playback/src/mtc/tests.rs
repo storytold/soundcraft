@@ -218,29 +218,25 @@ fn mtc_chase_waits_for_observed_lead_before_testing_presentation_drift() {
 #[test]
 fn external_lock_starts_and_runs_at_unity_without_repaints() {
     for reject_next in [false, true] {
-        external_lock_at_measured_phase(reject_next);
-    }
-}
+        let (mut state, cmd, view) = callback(session(FrameRate::Fps30), 48_000.);
+        let feed = Arc::new(crate::midi::MidiFeed::default());
+        feed.set_mtc_source(Some(0));
+        cmd.send(Cmd::Midi(feed.clone())).unwrap();
+        let now = Instant::now();
+        for piece in 0..16 {
+            let us = piece * 1_000_000 / 120;
+            feed.set_clock(us);
+            feed.receive(0, &quarters(2 * (piece / 8), FrameRate::Fps30)[(piece % 8) as usize]);
+        }
+        let mut stream = crate::sync_clock::StreamLead::default();
+        let first = stream.observe(now, Some(Duration::from_millis(30)));
+        state.device_timing = Some(if reject_next { stream.observe(now, None) } else { first });
+        state.fill(&mut [0.; 480], 2);
+        assert!(state.shared.playing.load(Ordering::Relaxed), "device callback starts on lock");
 
-fn external_lock_at_measured_phase(reject_next: bool) {
-    let (mut state, cmd, view) = callback(session(FrameRate::Fps30), 48_000.);
-    let feed = Arc::new(crate::midi::MidiFeed::default());
-    feed.set_mtc_source(Some(0));
-    cmd.send(Cmd::Midi(feed.clone())).unwrap();
-    let now = Instant::now();
-    for piece in 0..16 {
-        let us = piece * 1_000_000 / 120;
-        feed.set_clock(us);
-        feed.receive(0, &quarters(2 * (piece / 8), FrameRate::Fps30)[(piece % 8) as usize]);
+        assert!((view.lock().unwrap().read(now + Duration::from_millis(30), true, 0).0.unwrap().sample - 7440.).abs() < 1., "piece 15 at 125 ms");
+        assert_eq!(state.shared.speed.load(Ordering::Relaxed), 1000);
     }
-    let mut stream = crate::sync_clock::StreamLead::default();
-    let first = stream.observe(now, Some(Duration::from_millis(30)));
-    state.device_timing = Some(if reject_next { stream.observe(now, None) } else { first });
-    state.fill(&mut [0.; 480], 2);
-    assert!(state.shared.playing.load(Ordering::Relaxed), "device callback starts on lock");
-
-    assert!((view.lock().unwrap().read(now + Duration::from_millis(30), true, 0).0.unwrap().sample - 7440.).abs() < 1., "piece 15 at 125 ms");
-    assert_eq!(state.shared.speed.load(Ordering::Relaxed), 1000);
 }
 
 #[test]
