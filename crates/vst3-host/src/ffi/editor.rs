@@ -278,8 +278,15 @@ impl EditorLink {
         let mut g = self.lock();
         if g.window.as_ref().is_some_and(|w| !w.is_visible()) {
             EditorLink::teardown(&mut g);
-        } else if let Some(f) = &g.frame {
-            f.dispatch();
+        } else {
+            // a timer-driven editor's WM_TIMERs and the paints they invalidate are starved while
+            // the transport keeps the queue busy (#1447)
+            if let Some(w) = &g.window {
+                w.service();
+            }
+            if let Some(f) = &g.frame {
+                f.dispatch();
+            }
         }
     }
 

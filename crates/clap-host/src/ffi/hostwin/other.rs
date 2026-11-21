@@ -16,6 +16,9 @@ impl HostWindow {
         clap_window_handle { ptr: std::ptr::null_mut() }
     }
     pub fn raise(&self) {}
+    /// Per-frame service (#1447): only Windows starves editor timers/paints while repaints run.
+    pub fn service(&self) {}
+
     pub fn is_visible(&self) -> bool {
         false
     }
