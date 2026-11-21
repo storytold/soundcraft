@@ -709,12 +709,16 @@ fn drive<C: Destination>(
         }
     }
     view.lock().unwrap_or_else(std::sync::PoisonError::into_inner).late_transport_waiter = None;
+    stop_and_flush_ports(&mut ports, &stats);
+}
+
+fn stop_and_flush_ports<C: Destination>(ports: &mut BTreeMap<String, Port<C>>, stats: &Stats) {
     for p in ports.values_mut() {
         clear_route(p, 0);
         clear_route(p, 1);
         if let Some(link) = &mut p.link {
             for bytes in p.cleanup.drain(..) {
-                let _ = link.submit(Instant::now(), &bytes, true, &stats);
+                let _ = link.submit(Instant::now(), &bytes, true, stats);
             }
             link.flush();
         }
