@@ -10,7 +10,7 @@ use soundcraft_model::TrackKind;
 #[derive(Default)]
 pub(crate) struct Fault {
     /// A block panicked: output stays silent from then on.
-    failed: AtomicBool,
+    pub(crate) failed: AtomicBool,
     /// The device went away or the stream was invalidated: only a reconnect can restore audio.
     pub(crate) gone: AtomicBool,
     /// Blocks so far, to tell a device that stopped asking for audio.

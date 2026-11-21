@@ -68,7 +68,11 @@ impl SoundApp {
 
     /// Stop the transport, keeping a take in progress, when the audio output fails.
     pub(super) fn watch_output(&mut self) {
-        let Some(p) = &self.player else { return };
+        let safe_to_switch = !self.transport_active_for_reconnect();
+        let Some(p) = &mut self.player else { return };
+        if p.service_output_recovery(safe_to_switch) {
+            self.unavailable_output = None;
+        }
         let Some(trouble) = p.trouble() else {
             if self.unavailable_output.as_ref().is_some_and(|o| o.recovered(p.reported_output_timing_count())) {
                 self.unavailable_output = None;
@@ -153,8 +157,10 @@ impl SoundApp {
     }
 
     fn transport_active_for_reconnect(&self) -> bool {
+        // The UI polls device health before it dispatches transport commands in this frame.
         self.is_playing()
             || self.engine.transport.recording
+            || !self.engine.transport_requests.is_empty()
             || self.player.as_ref().is_some_and(Player::is_playing)
             || (self.mtc_online && self.midi_inputs.as_ref().is_some_and(|inputs| inputs.feed().mtc_transport_active()))
     }
@@ -312,6 +318,21 @@ mod timing_warning_tests {
         assert!(!app.transport_active_for_reconnect());
         assert!(app.mtc_online);
         assert_eq!(app.position(), at);
+    }
+
+    #[test]
+    fn pending_transport_commands_defer_output_recovery_until_the_host_handles_them() {
+        use soundcraft_engine::TransportRequest;
+        let mut app = SoundApp::new(crate::Engine::default(), None, crate::Services::default());
+        app.engine.session_mut().edit.selection = crate::Range::point(240_000);
+        for request in [TransportRequest::Play, TransportRequest::PlayFrom(96_000), TransportRequest::TogglePlay, TransportRequest::Record] {
+            app.engine.transport_requests.push(request);
+            assert!(app.transport_active_for_reconnect(), "a queued transport operation must complete before the stream is replaced");
+            assert_eq!(app.engine.transport_requests.len(), 1);
+            assert_eq!(app.position(), 240_000);
+            app.engine.transport_requests.clear();
+        }
+        assert!(!app.transport_active_for_reconnect());
     }
 
     #[test]
