@@ -85,6 +85,8 @@ pub use soundcraft_mix::{mark_audio_thread, on_audio_thread};
 
 mod callback;
 mod stream;
+#[cfg(target_os = "windows")]
+mod stream_recovery;
 
 use callback::{AudioState, Fault, Side, take_meter_snapshot};
 #[cfg(test)]
@@ -93,7 +95,7 @@ use callback::{STALL, copy_meter_snapshot};
 use callback::{guarded_block, stalled};
 #[cfg(test)]
 use stream::pick_output_config;
-use stream::{Opened, build_output, first_started, open_device, start_stream};
+use stream::{Opened, build_format, first_started, open_device, start_stream};
 
 /// Meter values for the UI: the highest peak (and gain reduction) of every block rendered since
 /// the UI last took them with [`Player::take_meters`]. The audio thread renders blocks faster than
@@ -217,7 +219,9 @@ pub struct Player {
     _stream: Option<cpal::Stream>,
     #[cfg(target_arch = "wasm32")]
     _stream: Option<cpal::Stream>,
-    // The stream must release its snapshot-return ticket before the host reclaims it.
+    #[cfg(target_os = "windows")]
+    recovery: Option<stream_recovery::Recovery>,
+    // Both streams must release their snapshot-return tickets before the host reclaims them.
     side: Mutex<Side>,
     // Hold the publication storage until the native callback has shut down.
     #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
@@ -271,6 +275,17 @@ impl Player {
         self.fault.trouble(stalled)
     }
 
+    /// Service a stopped transport's output timing recovery. The caller includes any
+    /// pending transport starts and active recording in the safety check.
+    pub fn service_output_recovery(&mut self, safe_to_switch: bool) -> bool {
+        #[cfg(target_os = "windows")]
+        if let Some(recovery) = &mut self.recovery {
+            return recovery.service(safe_to_switch, &self.shared, &mut self._stream, &mut self.fault);
+        }
+        let _ = safe_to_switch;
+        false
+    }
+
     fn side(&self) -> std::sync::MutexGuard<'_, Side> {
         self.side.lock().unwrap_or_else(PoisonError::into_inner)
     }
@@ -304,22 +319,37 @@ impl Player {
                     attempts,
                     |config: &cpal::StreamConfig| -> Result<Opened, cpal::Error> {
                         let rate = config.sample_rate;
-                        let channels = usize::from(config.channels);
                         let (tx, rx) = channel();
                         let (gtx, grx) = channel();
                         let state = AudioState::new(rx, Arc::clone(&shared), Arc::clone(&session), f64::from(rate), gtx);
                         let fault = Arc::new(Fault::default());
-                        let stream = match format {
-                            cpal::SampleFormat::I32 => build_output::<i32>(&device, *config, state, channels, &fault, &shared),
-                            cpal::SampleFormat::I16 => build_output::<i16>(&device, *config, state, channels, &fault, &shared),
-                            _ => build_output::<f32>(&device, *config, state, channels, &fault, &shared),
-                        }?;
-                        Ok(Opened { stream, tx, grx, fault })
+                        #[cfg(target_os = "windows")]
+                        let (stream, recovery) = stream_recovery::open(&device, *config, format, state, &fault, &shared)?;
+                        #[cfg(not(target_os = "windows"))]
+                        let stream = build_format(&device, *config, format, state, &fault, &shared)?;
+                        Ok(Opened {
+                            stream,
+                            tx,
+                            grx,
+                            fault,
+                            #[cfg(target_os = "windows")]
+                            recovery,
+                        })
                     },
                     |opened| start_stream(&opened.stream),
                 );
                 match opened {
-                    Some((config, Opened { stream, tx, grx, fault })) => {
+                    Some((
+                        config,
+                        Opened {
+                            stream,
+                            tx,
+                            grx,
+                            fault,
+                            #[cfg(target_os = "windows")]
+                            recovery,
+                        },
+                    )) => {
                         let rate = config.sample_rate;
                         let channels = usize::from(config.channels);
                         let buffer = match config.buffer_size {
@@ -341,6 +371,8 @@ impl Player {
                             prepared_clock_feed: Mutex::default(),
                             side: new_side(grx),
                             _stream: Some(stream),
+                            #[cfg(target_os = "windows")]
+                            recovery,
                             device_name: name,
                             device_rate: rate,
                             device_channels: config.channels,
@@ -421,6 +453,8 @@ impl Player {
             prepared_clock_feed: Mutex::default(),
             side,
             _stream: None,
+            #[cfg(target_os = "windows")]
+            recovery: None,
             device_name: "No audio device (silent)".into(),
             device_rate: rate,
             device_channels: 0,

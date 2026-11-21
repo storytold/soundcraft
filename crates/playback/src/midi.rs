@@ -349,6 +349,11 @@ impl MidiFeed {
     pub(crate) fn mtc_online(&self) -> bool {
         self.mtc_online.load(Ordering::Acquire)
     }
+    /// True while quarter frames are arriving or the reader is rolling/freewheeling.
+    /// A concurrent input transition also defers device recovery until the next UI poll.
+    pub fn mtc_transport_active(&self) -> bool {
+        self.mtc.try_lock().map_or(true, |reader| reader.transport_in_motion(self.now()))
+    }
     // A contended MIDI callback leaves the audio transport untouched for one block.
     pub(crate) fn tracking_mtc(&self) -> Option<(crate::mtc_input::Tracking, i64)> {
         let mut reader = self.mtc.try_lock().ok()?;

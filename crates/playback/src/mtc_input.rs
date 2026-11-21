@@ -430,6 +430,14 @@ impl Reader {
         self.speed_mismatch = candidate.map(|incoming| RateMismatch { incoming, session: rate.label(), speed_deviation_ppm: Some(ppm) });
     }
 
+    /// A full-frame locate is stationary. Recent quarter frames can start rolling the
+    /// callback before the host sees a complete group, or an established transport.
+    pub(crate) fn transport_in_motion(&self, now: i64) -> bool {
+        // Before the first complete group, even its rate bits have not arrived yet.
+        // Eight quarter frames at 24000/1001 fps cover at most 83,417 microseconds.
+        self.rolling.is_some() || self.last_at.is_some_and(|at| now.saturating_sub(at) <= 83_417)
+    }
+
     pub(crate) fn tracking(&mut self, now: i64) -> Tracking {
         self.expire(now);
         if let Some((position, stamp)) = self.rolling {
