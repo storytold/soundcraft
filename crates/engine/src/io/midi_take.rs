@@ -400,6 +400,43 @@ mod tests {
         assert_eq!(playback.tempo.tick_to_samples(sequence.notes[0].start, playback.sample_rate), q);
     }
 
+    #[test]
+    fn clock_follow_plays_all_eight_backbeats_at_the_external_tempo() {
+        use soundcraft_model::{ChannelFormat, Insert};
+        let mut e = Engine::default();
+        let doc = e.session_mut();
+        let track = doc.add_track(TrackKind::Instrument, ChannelFormat::Stereo, None);
+        let id = doc.new_clip_id();
+        let quarter = soundcraft_time::TICKS_PER_QUARTER;
+        let beats: Vec<_> = (17..32).step_by(2).collect();
+        let notes = beats
+            .iter()
+            .map(|beat| Note { start: beat * quarter, length: quarter / 4, channel: 0, pitch: 60, velocity: 100, release_velocity: 64 })
+            .collect();
+        let end = doc.tempo.tick_to_samples(32 * quarter, doc.sample_rate);
+        let track = doc.track_mut(track).unwrap();
+        track.ticks_timebase = true;
+        track.instrument = Some(Insert::new("subtractive_synth"));
+        track.playlist_mut().unwrap().clips.push(Clip::midi(id, "eight bars", 0, end, Sequence { notes, ctrls: vec![] }));
+        for bpm in [120., 100.] {
+            e.playback_tempo = Some(TempoMap::new(bpm, 4, 4).unwrap());
+            let play = e.playback_session();
+            let audible: Vec<_> = beats
+                .iter()
+                .copied()
+                .filter(|beat| {
+                    let mut mix = soundcraft_mix::MixEngine::new(play.sample_rate.as_f64() as f32, 512);
+                    mix.sync(&play);
+                    let mut out = [vec![0.; 512], vec![0.; 512]];
+                    mix.render(&play, play.tempo.tick_to_samples(beat * quarter, play.sample_rate), 512, &mut out);
+                    out[0].iter().any(|x| x.abs() > 0.0001)
+                })
+                .collect();
+            assert_eq!(audible, beats, "rendered backbeats at {bpm} BPM");
+            assert_eq!(play.find_clip(id).unwrap().1.end(), play.tempo.tick_to_samples(32 * quarter, play.sample_rate));
+            assert_eq!(e.session().find_clip(id).unwrap().1.end(), end);
+        }
+    }
     fn captured_clock_note() -> (Engine, TrackId, ClipId) {
         let mut e = Engine::default();
         let track = armed(&mut e, "Follow", "MIDI:*:keys");

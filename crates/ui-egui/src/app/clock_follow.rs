@@ -149,7 +149,7 @@ impl SoundApp {
     pub(super) fn refresh_playback_session(&self) {
         if let Some(player) = &self.player {
             if let Some(grid) = &self.engine.playback_tempo {
-                player.prepare_clock_session_with(self.engine.session_arc(), grid, |doc| self.engine.project_clock_takes(doc));
+                player.prepare_projected_clock_session(self.engine.session_arc(), grid, |doc| self.engine.prepare_clock_clips(doc));
             } else {
                 player.update_session(self.engine.session_arc());
             }
@@ -175,7 +175,7 @@ impl SoundApp {
         let offset = self.ui.clock_follow_input_offset().clamp(-limit, limit);
         // A previous grid may still be returning from the callback after rapid locates.
         // Prepare the exact settled grid here, before arming the next start.
-        player.prepare_clock_session_with(self.engine.session_arc(), grid, |doc| self.engine.project_clock_takes(doc));
+        player.prepare_projected_clock_session(self.engine.session_arc(), grid, |doc| self.engine.prepare_clock_clips(doc));
         self.clock_follow.grid_dirty = false;
         let feed = inputs.feed();
         let location = soundcraft_playback::clock_follow::LocatedCue { pulse, origin, offset, rate: sr, revision: self.engine.prepared_revision() };

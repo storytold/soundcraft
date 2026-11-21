@@ -641,7 +641,7 @@ fn clock_correction_arriving_after_render_keeps_the_active_grid() {
     callback.fill(&mut [0.; 128], 2);
     let active = callback.session.clone();
     let mut side = Side::new(48_000., channel().1);
-    side.set_follow_base(active.clone());
+    side.set_follow_base(active.clone(), Default::default());
     let mut grid = active.tempo.clone();
     grid.set_tempo(0, 90.).unwrap();
     let candidate = side.follow_snapshot(&grid).unwrap();
@@ -2005,7 +2005,7 @@ fn a_pass_started_and_ended_by_the_commands_of_one_callback_keeps_what_was_playe
 fn a_slow_sync_route_can_publish_more_than_eight_live_grid_revisions() {
     let mut side = Side::new(48_000., channel().1);
     let base = Arc::new(Session::default());
-    side.set_follow_base(base.clone());
+    side.set_follow_base(base.clone(), Default::default());
     let mut timeline = crate::sync_clock::Timeline::default();
     for generation in 1..=(3 * crate::sync_clock::MAX_REVISIONS) as u64 {
         let doc = side.follow_snapshot(&base.tempo).expect("worker history must leave a slot for the next revision");
@@ -2060,6 +2060,33 @@ fn clock_resume_reuses_the_prepared_session_and_observes_edits() {
 }
 
 #[test]
+fn clock_grid_pool_projects_both_midi_clip_edges_from_the_original_score() {
+    use soundcraft_model::{ChannelFormat, Clip, TrackKind};
+
+    let mut score = Session::default();
+    let musical = score.add_track(TrackKind::Instrument, ChannelFormat::Stereo, None);
+    let absolute = score.add_track(TrackKind::Midi, ChannelFormat::Stereo, None);
+    for (track, ticks) in [(musical, true), (absolute, false)] {
+        let id = score.new_clip_id();
+        let track = score.track_mut(track).unwrap();
+        track.ticks_timebase = ticks;
+        track.playlist_mut().unwrap().clips.push(Clip::midi(id, "trimmed", 48_001, 48_001, Default::default()));
+    }
+    let (_, garbage) = channel();
+    let mut side = Side::new(48_000., garbage);
+    let bounds = soundcraft_mix::MidiClipBeatBounds::from_score(&score, |_| true);
+    side.set_follow_base(Arc::new(score), bounds);
+    let mut grid = soundcraft_time::TempoMap::default();
+    for (bpm, start, end) in [(60., 96_002, 192_004), (240., 24_001, 48_001), (120., 48_001, 96_002)] {
+        grid.set_tempo(0, bpm).unwrap();
+        let doc = side.follow_snapshot(&grid).unwrap();
+        let clip = &doc.track(musical).unwrap().clips()[0];
+        assert_eq!((clip.start, clip.end()), (start, end));
+        let fixed = &doc.track(absolute).unwrap().clips()[0];
+        assert_eq!((fixed.start, fixed.end()), (48_001, 96_002));
+    }
+}
+#[test]
 fn follow_snapshots_reuse_document_storage_until_an_edit() {
     use soundcraft_model::{ChannelFormat, TrackKind};
     let (_, garbage) = channel();
@@ -2082,7 +2109,7 @@ fn follow_snapshots_reuse_document_storage_until_an_edit() {
     let mut edited = Session::default();
     edited.add_track(TrackKind::Audio, ChannelFormat::Mono, None);
     edited.add_track(TrackKind::Audio, ChannelFormat::Mono, None);
-    side.set_follow_base(Arc::new(edited));
+    side.set_follow_base(Arc::new(edited), Default::default());
     assert_eq!(side.follow_snapshot(&map).unwrap().tracks.len(), 2);
 }
 
@@ -2102,7 +2129,7 @@ fn profile_external_clock_snapshot_updates() {
         }
     }
     let base = Arc::new(base);
-    side.set_follow_base(base.clone());
+    side.set_follow_base(base.clone(), Default::default());
     let mut tempo = soundcraft_time::TempoMap::default();
     let mut retained = None;
     let mut old = Vec::new();

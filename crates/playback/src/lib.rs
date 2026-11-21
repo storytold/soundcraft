@@ -490,10 +490,10 @@ impl Player {
     /// Sends a new session snapshot to the audio thread, with freshly created (state-restored,
     /// prepared) instances of any third-party plugin it newly needs. Call on the UI thread.
     pub fn update_session(&self, s: Arc<Session>) {
-        self.publish_session(s, Default::default());
+        self.publish_session(s, Default::default(), Default::default());
     }
 
-    fn publish_session(&self, s: Arc<Session>, clock_document: std::sync::Weak<Session>) {
+    fn publish_session(&self, s: Arc<Session>, clock_document: std::sync::Weak<Session>, bounds: soundcraft_mix::MidiClipBeatBounds) {
         self.cancel_clock_resume();
         #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
         let generation = self.beat_clock.lock().unwrap_or_else(PoisonError::into_inner).configure(&s, &self.tx, None);
@@ -501,7 +501,7 @@ impl Player {
         let generation = 0;
         let (instances, gone) = {
             let mut side = self.side();
-            side.set_follow_base(s.clone());
+            side.set_follow_base(s.clone(), bounds);
             side.clock_document = clock_document;
             (side.prepare(&s), side.gone_tracks(&s))
         };
@@ -517,7 +517,20 @@ impl Player {
     }
 
     /// Project clock-recorded MIDI takes only when the editable document needs preparing.
-    pub fn prepare_clock_session_with(&self, mut score: Arc<Session>, tempo: &soundcraft_time::TempoMap, project: impl FnOnce(&mut Session)) {
+    pub fn prepare_clock_session_with(&self, score: Arc<Session>, tempo: &soundcraft_time::TempoMap, project: impl FnOnce(&mut Session)) {
+        self.prepare_projected_clock_session(score, tempo, |doc| {
+            project(doc);
+            soundcraft_mix::MidiClipBeatBounds::from_score(doc, |_| true)
+        });
+    }
+
+    /// Prepare the score projection and retain its musical clip bounds for later grid updates.
+    pub fn prepare_projected_clock_session(
+        &self,
+        mut score: Arc<Session>,
+        tempo: &soundcraft_time::TempoMap,
+        project: impl FnOnce(&mut Session) -> soundcraft_mix::MidiClipBeatBounds,
+    ) {
         let source = Arc::downgrade(&score);
         {
             let mut side = self.side();
@@ -529,9 +542,10 @@ impl Player {
             }
         }
         let session = Arc::make_mut(&mut score);
-        project(session);
+        let bounds = project(session);
+        bounds.apply(session, tempo);
         session.tempo.clone_from(tempo);
-        self.publish_session(score, source);
+        self.publish_session(score, source, bounds);
     }
 
     /// Publish a tempo-only revision without rebuilding the mixer. Leave at most one grid

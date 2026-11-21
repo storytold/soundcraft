@@ -382,7 +382,7 @@ impl Engine {
         let mut doc = self.session_arc();
         if let Some(tempo) = &self.playback_tempo {
             let session = Arc::make_mut(&mut doc);
-            self.project_clock_takes(session);
+            self.prepare_clock_clips(session).apply(session, tempo);
             session.tempo.clone_from(tempo);
         }
         doc
@@ -418,6 +418,12 @@ impl Engine {
     }
 
     /// Give followed takes their captured beat timing in the external-clock playback snapshot.
+    pub fn prepare_clock_clips(&self, doc: &mut Session) -> soundcraft_mix::MidiClipBeatBounds {
+        self.project_clock_takes(doc);
+        // Recorded takes already project their events relative to the captured sample range.
+        soundcraft_mix::MidiClipBeatBounds::from_score(doc, |id| !self.follow_takes.contains_key(&id))
+    }
+
     pub fn project_clock_takes(&self, doc: &mut Session) {
         if self.follow_takes.is_empty() {
             return;

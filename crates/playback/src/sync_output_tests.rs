@@ -1191,7 +1191,7 @@ fn slow_destination_keeps_all_rendered_grids_until_the_snapshot_pool_can_resume(
     let (cmd, _rx) = channel();
     let mut side = crate::callback::Side::new(48_000., channel().1);
     let mut accepted = Arc::new(Session::default());
-    side.set_follow_base(accepted.clone());
+    side.set_follow_base(accepted.clone(), Default::default());
     let first = out.configure(&accepted, &cmd, None);
     let start = Instant::now() - Duration::from_secs(2);
     out.view.lock().unwrap().push(Presentation { generation: first, ..block(start, 0., 1024., Duration::ZERO) });

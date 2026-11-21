@@ -20,6 +20,19 @@ At 120 BPM each SPP unit lasts 125 ms. We counted crash attacks against a from-h
 
 ![Crash at the exact boundary and correlation of the later accompaniment](images/midi-clock-resume-boundary.png)
 
+## Eight-bar accompaniment at 120 and 100 BPM
+
+At 48 kHz, the same S-MU2000 project contains five tick-based MIDI clips spanning 32 quarter notes. The Model 12 started each take from the top and supplied Beat Clock over DIN through the UM-ONE. We counted snare onsets independently in the digital accompaniment and the Model 12 MAIN USB return (11/12), matching against the project’s snare sample. The PC1X was idle during the accompaniment.
+
+| Model 12 tempo | Before, digital / MAIN snares | After, digital / MAIN snares | Measured beat on MAIN | Final hi-hat after chorus crash on MAIN | Eight-bar clip end on the grid |
+|---|---|---|---|---|---|
+| 120 BPM | 8 / 8 | 8 / 8 | 499.86 ms | 7.748 s | 16.000 s |
+| 100 BPM | 5 / 5 | 8 / 8 | 600.23 ms | 9.303 s | 19.200 s |
+
+Both corrected takes had one chorus crash on each path and followed Stop. At 100 BPM the final three snares belong at 16.2, 17.4 and 18.6 s, beyond the original 16 s clip boundary. An initial corrected 100 BPM take captured digital audio only. The repeated take supplied both paths in the table. A separate physical MIDI loop replay of the captured 883 and 904 clock pulses at 100 and 120 BPM, respectively, also produced all eight snares in each digital recording.
+
+The external-clock regression renders the eight notes on a temporary playback grid and checks the saved clip still ends on its original grid. Ordinary session tempo edits reproduce the same audible loss on upstream main without MIDI hardware. The main-targeted work is tracked separately in [PR #785](https://github.com/storytold/soundcraft/pull/785) and [issue #1690](https://github.com/storytold/soundcraft/issues/1690).
+
 ## From the first Clock to the first mixed block
 
 Four exact starts per build isolated repeated project and instrument preparation on Continue. Probes timestamped MIDI input, host processing, session preparation, command receipt and completion of the first mixed block. Times are in milliseconds.

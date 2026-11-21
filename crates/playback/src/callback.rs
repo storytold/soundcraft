@@ -1218,6 +1218,7 @@ pub(crate) struct Side {
     /// is opened.
     pub(crate) refused: HashSet<(TrackId, usize)>,
     pub(crate) grid_base: Option<Arc<Session>>,
+    clock_clip_bounds: soundcraft_mix::MidiClipBeatBounds,
     // Identity of the editable document used to prepare the external-clock snapshot.
     pub(crate) clock_document: std::sync::Weak<Session>,
     // Index of the last published tempo-only snapshot, or None for the full base.
@@ -1237,6 +1238,7 @@ impl Side {
     pub(crate) fn new(rate: f32, garbage: Receiver<Vec<Box<dyn Plugin>>>) -> Side {
         Side {
             grid_base: None,
+            clock_clip_bounds: Default::default(),
             clock_document: Default::default(),
             published_grid: None,
             retry_grid: None,
@@ -1253,7 +1255,8 @@ impl Side {
         }
     }
 
-    pub(crate) fn set_follow_base(&mut self, doc: Arc<Session>) {
+    pub(crate) fn set_follow_base(&mut self, doc: Arc<Session>, bounds: soundcraft_mix::MidiClipBeatBounds) {
+        self.clock_clip_bounds = bounds;
         self.grid_base = Some(doc);
         self.published_grid = None;
         self.retry_grid = None;
@@ -1272,6 +1275,7 @@ impl Side {
         for (index, slot) in self.follow_pool.iter_mut().enumerate() {
             let snapshot = slot.get_or_insert_with(|| Arc::new((**base).clone()));
             if let Some(doc) = Arc::get_mut(snapshot) {
+                self.clock_clip_bounds.apply(doc, tempo);
                 doc.tempo.clone_from(tempo);
                 self.published_grid = Some(index);
                 return Some(snapshot.clone());

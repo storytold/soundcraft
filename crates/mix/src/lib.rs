@@ -67,6 +67,7 @@ mod instances;
 mod live_midi;
 mod meter;
 mod midi;
+mod midi_clip_bounds;
 mod offline;
 mod pan;
 mod routing;
@@ -78,6 +79,7 @@ pub use instances::{INSTRUMENT_SLOT, InstanceSpec, NewInstance, PluginFailures, 
 pub use live_midi::{LiveMidi, MAX_MIDI_PORTS, MAX_OWNERS, MidiPorts, midi_port_bit, midi_thru};
 pub use meter::StripMeter;
 use midi::sync_sample;
+pub use midi_clip_bounds::MidiClipBeatBounds;
 pub use offline::{
     MAX_RENDER_SAMPLES, RangeRender, fold_down_stereo, render_bus, render_clips, render_range, render_track_pre_fader, source_channels,
 };
