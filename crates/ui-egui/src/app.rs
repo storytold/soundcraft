@@ -41,6 +41,7 @@ impl SoundApp {
             record_start: 0,
             punch: None,
             recorder_failed: false,
+            unavailable_output: None,
             midi_inputs: None,
             midi_scan_at: 0.0,
             midi_take: Vec::new(),
@@ -341,6 +342,7 @@ impl SoundApp {
         if !self.native_menu_bar {
             menus::menu_bar(self, ui);
         }
+        self.show_output_warning(ui);
         // With the Mix window in its own native window, the main window keeps Edit.
         match if self.ui.mix_separate { MainWindow::Edit } else { self.ui.window } {
             MainWindow::Edit => edit_window::show(self, ui),

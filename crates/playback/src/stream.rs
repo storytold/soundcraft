@@ -111,11 +111,17 @@ pub(crate) fn open_device(
     want_rate: u32,
     want_ch: u16,
     cfg: &AudioConfig,
+    required_output: Option<&str>,
 ) -> Result<(cpal::Device, cpal::StreamConfig, cpal::SampleFormat, String), String> {
     use cpal::traits::DeviceTrait;
     let host = devices::host(cfg);
-    let device = devices::device(&host, cfg.output.as_deref(), true).ok_or_else(|| "no output device".to_string())?;
+    let device = devices::device(&host, required_output.or(cfg.output.as_deref()), true).ok_or_else(|| "no output device".to_string())?;
     let name = devices::device_name(&device).unwrap_or_else(|| "Audio device".into());
+    if let Some(required) = required_output
+        && (name != required || cfg.system.as_ref().is_some_and(|system| !host.id().name().eq_ignore_ascii_case(system)))
+    {
+        return Err(format!("The requested audio output {required} is unavailable"));
+    }
     // Prefer a config at the chosen (else session) rate; else the device default (we resample).
     let want_ch = want_ch.max(2);
     let rates: Vec<u32> = cfg.sample_rate.into_iter().chain(Some(want_rate)).collect();

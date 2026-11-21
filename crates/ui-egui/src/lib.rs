@@ -295,6 +295,7 @@ pub struct SoundApp {
     /// Punch range to trim the take to (pre/post-roll recordings).
     punch: Option<Range>,
     recorder_failed: bool,
+    unavailable_output: Option<String>,
     /// MIDI device input, opened on the first frame of an app that has an audio engine.
     pub midi_inputs: Option<soundcraft_playback::midi::MidiInputs>,
     /// When the MIDI ports were last looked for (app uptime, seconds).

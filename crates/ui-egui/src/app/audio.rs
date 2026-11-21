@@ -28,6 +28,9 @@ impl SoundApp {
         self.recorder = None;
         self.recorder_failed = false;
         let player = soundcraft_playback::Player::with_config(self.engine.session_arc(), &self.ui.audio);
+        if !player.silent {
+            self.unavailable_output = None;
+        }
         self.attach_midi(&player);
         player.locate(at);
         self.player = Some(player);
@@ -60,6 +63,13 @@ impl SoundApp {
         let Some(p) = &self.player else { return };
         let Some(trouble) = p.trouble() else { return };
         let name = p.device_name.clone();
+        self.report_output_trouble(trouble, name);
+    }
+
+    fn report_output_trouble(&mut self, trouble: OutputTrouble, name: String) {
+        if matches!(trouble, OutputTrouble::Gone | OutputTrouble::Stalled) {
+            self.unavailable_output = Some(name.clone());
+        }
         let (cause, then) = match trouble {
             OutputTrouble::Bug => (
                 crate::localization::text("the audio engine hit an internal error (see the log)").to_string(),
@@ -118,22 +128,81 @@ impl SoundApp {
         };
     }
 
+    fn recovery_output(&self) -> Option<String> {
+        self.unavailable_output.clone().or_else(|| {
+            let p = self.player.as_ref()?;
+            p.output_timing_issue().map(|_| p.device_name.clone())
+        })
+    }
+
+    fn transport_active_for_reconnect(&self) -> bool {
+        self.is_playing() || self.engine.transport.recording || self.player.as_ref().is_some_and(Player::is_playing)
+    }
+
+    pub(crate) fn timing_reconnect_allowed(&self) -> bool {
+        !self.transport_active_for_reconnect() || self.recovery_output().is_none()
+    }
+
+    pub(super) fn show_output_warning(&mut self, ui: &mut egui::Ui) {
+        let timing = self.player.as_ref().and_then(Player::output_timing_issue);
+        let Some(message) = output_warning(self.unavailable_output.as_deref(), timing) else { return };
+        egui::Panel::top("output_timing_warning").show(ui, |ui| {
+            ui.horizontal_wrapped(|ui| {
+                ui.colored_label(ui.visuals().warn_fg_color, message);
+                if ui.button(crate::localization::text("Playback Engine")).clicked() {
+                    self.ui.show_playback_engine = true;
+                }
+            });
+        });
+    }
+
     /// Reopen the audio devices, keeping a take in progress.
     pub fn reconnect_audio(&mut self) {
+        let required = self.recovery_output();
+        if required.is_some() && self.transport_active_for_reconnect() {
+            return;
+        }
         if self.is_playing() || self.engine.transport.recording {
             self.stop_play();
         }
-        if let Some(p) = &self.player {
+        let at = self.position();
+        self.capture_plugin_states();
+        if let Some(p) = self.player.take() {
             // Its plugin editors go with it; closed here, on the main thread (see `apply_audio_config`).
             p.close_editors();
         }
         self.recorder = None;
         self.recorder_failed = false;
-        let player = Player::with_config(self.engine.session_arc(), &self.ui.audio);
+        let session = self.engine.session_arc();
+        let player = match required {
+            Some(name) => {
+                let player = Player::reconnect_output(session, &self.ui.audio, &name);
+                self.unavailable_output = player.silent.then_some(name);
+                player
+            }
+            None => Player::with_config(session, &self.ui.audio),
+        };
         self.attach_midi(&player);
+        player.locate(at);
         self.player = Some(player);
         self.applied_midi_sync = None;
         self.service_midi_sync();
+    }
+}
+
+fn output_warning(unavailable: Option<&str>, issue: Option<soundcraft_playback::OutputTimingIssue>) -> Option<String> {
+    use soundcraft_playback::OutputTimingIssue;
+    if let Some(name) = unavailable {
+        return Some(crate::localized_format!("Audio output “{name}” is unavailable. Reconnect it in Playback Engine when stopped.", name = name));
+    }
+    match issue? {
+        OutputTimingIssue::Retained { lead_us } => Some(crate::localized_format!(
+            "The audio driver stopped reporting output timing. Compensated MIDI sync uses the last measured lead ({ms} ms).",
+            ms = format!("{:.2}", lead_us as f64 / 1000.)
+        )),
+        OutputTimingIssue::Unknown => {
+            Some(crate::localization::text("Audio output timing is unavailable. Compensated MIDI outputs need a valid measurement.").into())
+        }
     }
 }
 
@@ -191,5 +260,68 @@ mod audio_input_tests {
         s.track_mut(vox).unwrap().mixer.input_monitor = false;
         s.track_mut(vox).unwrap().mixer.record_arm = true;
         assert!(wants_audio_input(&s));
+    }
+}
+
+#[cfg(test)]
+mod timing_warning_tests {
+    use super::*;
+
+    #[test]
+    fn storage_loss_warning_stays_visible_after_other_status_updates() {
+        let mut app = SoundApp::new(crate::Engine::default(), None, crate::Services::default());
+        app.report_output_trouble(OutputTrouble::Gone, "Previous USB output".into());
+        assert!(app.ui.status.contains("Previous USB output"));
+        app.ui.status = "Saved".into();
+        let ctx = egui::Context::default();
+        let mut found = false;
+        app.set_system_fonts(false);
+        for _ in 0..4 {
+            let raw =
+                egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1300., 800.))), ..Default::default() };
+            let output = ctx.run_ui(raw, |ui| {
+                app.logic(ui.ctx());
+                app.ui(ui);
+            });
+            found |= output.shapes.iter().any(|s| matches!(&s.shape, egui::Shape::Text(t) if t.galley.text().contains("Previous USB output")));
+        }
+        assert!(found, "The visible device warning disappeared after an unrelated status update");
+    }
+
+    #[test]
+    fn cold_and_cached_timing_have_distinct_warnings_and_recovered_timing_clears_them() {
+        use soundcraft_playback::OutputTimingIssue;
+        assert!(output_warning(None, Some(OutputTimingIssue::Unknown)).unwrap().contains("need a valid measurement"));
+        for (lead_us, ms) in [(0, "0.00 ms"), (75_430, "75.43 ms")] {
+            let cached = output_warning(None, Some(OutputTimingIssue::Retained { lead_us })).unwrap();
+            assert!(cached.contains("last measured lead") && cached.contains(ms));
+        }
+        assert!(output_warning(None, None).is_none());
+        assert!(output_warning(Some("Disconnected"), None).unwrap().contains("Disconnected"));
+    }
+
+    #[test]
+    fn timing_recovery_during_record_or_play_leaves_the_take_and_routing_untouched() {
+        let mut app = SoundApp::new(crate::Engine::default(), None, crate::Services::default());
+        app.ui.audio.output = Some("Output A".into());
+        app.ui.audio.input = Some("Input B".into());
+        app.engine.session_mut().edit.selection = crate::Range::point(66_150);
+        app.unavailable_output = Some("Output A".into());
+        let before = app.engine.session_arc();
+        for (playing, recording) in [(true, false), (true, true), (false, true)] {
+            app.engine.transport.playing = playing;
+            app.engine.transport.recording = recording;
+            assert!(!app.timing_reconnect_allowed());
+            app.reconnect_audio();
+            assert_eq!((app.engine.transport.playing, app.engine.transport.recording), (playing, recording));
+            assert!(std::sync::Arc::ptr_eq(&before, &app.engine.session_arc()));
+            assert!(app.player.is_none());
+            assert_eq!(app.ui.audio.input.as_deref(), Some("Input B"));
+            assert_eq!(app.ui.audio.output.as_deref(), Some("Output A"));
+        }
+        app.engine.transport.playing = false;
+        app.engine.transport.recording = false;
+        assert!(app.timing_reconnect_allowed());
+        assert_eq!(app.position(), 66_150);
     }
 }

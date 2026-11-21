@@ -223,7 +223,17 @@ impl Player {
     /// Open the output device `cfg` chooses (system, device, rate, buffer size), falling back to the
     /// defaults for whatever is unavailable. Never fails: without a device it runs a silent clock.
     pub fn with_config(session: Arc<Session>, cfg: &AudioConfig) -> Player {
-        let p = Player::open(Arc::clone(&session), cfg);
+        Self::open_configured(session, cfg, None)
+    }
+
+    /// Reconnect the named physical output. If it is still unavailable, use the silent
+    /// clock. An explicit device change belongs to Setup > Playback Engine.
+    pub fn reconnect_output(session: Arc<Session>, cfg: &AudioConfig, name: &str) -> Player {
+        Self::open_configured(session, cfg, Some(name))
+    }
+
+    fn open_configured(session: Arc<Session>, cfg: &AudioConfig, required_output: Option<&str>) -> Player {
+        let p = Player::open(Arc::clone(&session), cfg, required_output);
         p.side().return_old_sessions(&p.tx);
         // Hand the initial session's third-party plugins over.
         p.update_session(session);
@@ -250,7 +260,7 @@ impl Player {
     /// Open the output device for `session`, trying the requested buffer size before the device default, then build
     /// the shared player state. If no configuration starts or the device cannot open, fall back to a silent clock at
     /// the session rate.
-    fn open(session: Arc<Session>, cfg: &AudioConfig) -> Player {
+    fn open(session: Arc<Session>, cfg: &AudioConfig, required_output: Option<&str>) -> Player {
         let shared = Arc::new(Shared {
             position: AtomicI64::new(0),
             playing: AtomicBool::new(false),
@@ -265,7 +275,7 @@ impl Player {
             side.gone_tracks(&session);
             Mutex::new(side)
         };
-        match open_device(want, want_ch, cfg) {
+        match open_device(want, want_ch, cfg, required_output) {
             Ok((device, config, format, name)) => {
                 // The chosen buffer size first; if the device refuses it, its default.
                 let mut attempts = vec![config];

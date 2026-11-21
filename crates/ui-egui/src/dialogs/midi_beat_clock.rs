@@ -51,13 +51,11 @@ impl MidiBeatClock {
                             ));
                         }
                         if let Some(port_timing) = timing.as_ref().and_then(|status| status.ports.get(&name))
+                            && let Some(lead_us) = port_timing.device_lead_us
                             && port_timing.advance_limited
                             && port_timing.requested_offset_samples == port.offset_samples
                         {
-                            ui.label(crate::localized_format!(
-                                "Limited by the audio output lead ({lead} ms)",
-                                lead = port_timing.device_lead_us as f64 / 1000.
-                            ));
+                            ui.label(crate::localized_format!("Limited by the audio output lead ({lead} ms)", lead = lead_us as f64 / 1000.));
                         }
                         if !available.contains(&name) {
                             ui.label(text("The saved MIDI output is unavailable."));
