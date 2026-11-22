@@ -626,12 +626,13 @@ fn transport(app: &mut SoundApp, ui: &mut Ui) {
                 let enabled = app.clock_follow.enabled;
                 let description = crate::localization::text("Follow external MIDI Clock");
                 if ui
-                    .add_sized([55.0, 28.0], egui::Button::selectable(enabled, "EXT"))
+                    .add_sized([55.0, 28.0], egui::Button::selectable(enabled, crate::localization::text("EXT")))
                     .accessible_name(description)
                     .on_hover_text(description)
                     .clicked()
+                    && let Err(error) = app.run("setup.midi_clock_follow", json!({"enabled": !enabled}))
                 {
-                    let _ = app.run("setup.midi_clock_follow", json!({"enabled": !enabled}));
+                    app.ui.status = crate::localization::error_text(&error);
                 }
             });
             ui.horizontal(|ui| {

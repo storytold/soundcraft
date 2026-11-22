@@ -522,13 +522,18 @@ mod tests {
     #[test]
     fn ext_transport_toggle_dispatches_follow_and_announces_clock_state() {
         use egui_kittest::{Harness, kittest::Queryable};
-        let mut app = SoundApp::new(Default::default(), None, crate::Services::default());
-        app.ui.clock_follow_input = Some("DIN".into());
+        let app = SoundApp::new(Default::default(), None, crate::Services::default());
         let mut window = Harness::builder()
             .with_context_setup(|ctx| crate::fonts::install(ctx, false))
             .with_size(egui::vec2(2000., 200.))
             .build_ui_state(|ui, app| crate::toolbar::show(app, ui), app);
         window.run_steps(2);
+        window.get_by_label("Follow external MIDI Clock").click();
+        window.run_steps(2);
+        assert!(!window.state().clock_follow.enabled);
+        assert_eq!(window.state().ui.status, "Select a MIDI clock input");
+
+        window.state_mut().ui.clock_follow_input = Some("DIN".into());
         window.get_by_label("Follow external MIDI Clock").click();
         window.run_steps(2);
         assert!(window.state().clock_follow.enabled);
