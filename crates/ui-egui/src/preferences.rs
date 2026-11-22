@@ -980,12 +980,12 @@ fn control_ui(ui: &mut egui::Ui, page: PreferencesPage, section: &str, index: us
                 ui.add(egui::DragValue::new(&mut draft.undo_levels).range(1..=64));
             });
         }
+        Control::Check(text @ "MIDI Notes and Controllers") if section == "Delay Compensation for External Devices" => {
+            ui.add_enabled(false, egui::Checkbox::new(&mut draft.compensation.notes, label(text)));
+            ui.label(crate::localization::text("Takes effect once external MIDI track output is available."));
+        }
         Control::Check(text) if section == "Delay Compensation for External Devices" => {
-            let value = match text {
-                "MIDI Beat Clock" => &mut draft.compensation.beat_clock,
-                "MIDI Timecode" => &mut draft.compensation.mtc,
-                _ => &mut draft.compensation.notes,
-            };
+            let value = if text == "MIDI Beat Clock" { &mut draft.compensation.beat_clock } else { &mut draft.compensation.mtc };
             let response = ui.checkbox(value, label(text));
             if text == "MIDI Beat Clock" {
                 response
@@ -1144,6 +1144,20 @@ mod tests {
             },
             app,
         )
+    }
+
+    #[test]
+    fn midi_sync_pref_notes_compensation_explains_why_it_cannot_be_edited() {
+        let app = SoundApp::new(Engine::default(), None, crate::Services::default());
+        let mut draft = PreferencesDraft::from_live(&app);
+        draft.compensation.notes = true;
+        let mut harness =
+            Harness::builder().with_size(egui::vec2(1000., 1200.)).build_ui_state(|ui, draft| page_body(ui, PreferencesPage::Midi, "", draft), draft);
+        harness.run_steps(2);
+        assert!(harness.get_by_label("MIDI Notes and Controllers").accesskit_node().is_disabled());
+        harness.get_by_label("Takes effect once external MIDI track output is available.");
+        assert!(harness.state().compensation.notes);
+        assert!(!harness.get_by_label("MIDI Beat Clock").accesskit_node().is_disabled());
     }
 
     /// Search includes page, section, control, choice and value text.

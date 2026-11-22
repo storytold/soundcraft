@@ -35,7 +35,13 @@ pub struct MidiSync {
     pub compensation: Compensation,
 }
 
-fn valid_port(name: &str) -> bool {
+pub const MAX_SYNC_PORTS: usize = 256;
+
+pub fn valid_saved_offset(samples: i64) -> bool {
+    samples.unsigned_abs() <= 10_000_000
+}
+
+pub fn valid_port(name: &str) -> bool {
     !name.trim().is_empty() && name.len() <= 1024
 }
 impl MidiSync {
@@ -48,7 +54,7 @@ impl MidiSync {
     }
 
     fn validate(&self) -> Result<(), String> {
-        if self.ports.len() > 256 || self.ports.iter().any(|(k, v)| !valid_port(k) || v.offset_samples.unsigned_abs() > 10_000_000) {
+        if self.ports.len() > MAX_SYNC_PORTS || self.ports.iter().any(|(k, v)| !valid_port(k) || !valid_saved_offset(v.offset_samples)) {
             return Err("Invalid MIDI sync port name, count or sample offset".into());
         }
         Ok(())
@@ -146,7 +152,7 @@ impl SoundApp {
         let legacy = soundcraft_model::MidiBeatClock::from_session(self.engine.session());
         if let Some(name) = legacy.destination.filter(|s| valid_port(s))
             && !self.ui.midi_sync.ports.contains_key(name)
-            && self.ui.midi_sync.ports.len() < 256
+            && self.ui.midi_sync.ports.len() < MAX_SYNC_PORTS
         {
             let first = self.ui.midi_sync.ports.is_empty();
             self.ui.midi_sync.ports.insert(name.into(), MidiSyncPort { enabled: first && legacy.enabled, offset_samples: legacy.offset });
