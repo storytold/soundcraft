@@ -21,17 +21,16 @@ fn delivery_times(ideal: &[f64], mode: Delivery) -> Vec<i64> {
             }
             _ => {
                 let n = if let Delivery::Burst(n) = mode { n } else { 3 + group % 3 };
-                // The first clock starts the audio transport. Deliver the initial group
-                // individually so the sampler and clock share the same transport origin.
-                let width = n.min(ideal.len() - p);
                 if p == 0 {
-                    times.extend(ideal.iter().take(width).map(|at| at.round() as i64));
-                } else {
-                    // A coalesced group can only arrive after its last pulse was sent.
-                    let last = ideal[p + width - 1].round() as i64;
-                    for j in 0..width {
-                        times.push(last + j as i64 * 200);
-                    }
+                    // A single F8 starts transport at the same sample on both clocks.
+                    times.push(ideal[0].round() as i64);
+                    continue;
+                }
+                // Every coalesced group reaches the driver after its last source pulse.
+                let width = n.min(ideal.len() - p);
+                let last = ideal[p + width - 1].round() as i64;
+                for j in 0..width {
+                    times.push(last + j as i64 * 200);
                 }
                 group += 1;
             }
