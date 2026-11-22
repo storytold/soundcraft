@@ -456,6 +456,12 @@ impl Follower {
         if growth <= 2_000. || middle <= 1.05 * first || last <= 1.05 * middle {
             return false;
         }
+        // A step in the middle of the window increases both four-interval spans,
+        // but the last six intervals settle onto the new tempo. A continuing brake
+        // must also grow between the two halves of that most recent span.
+        if w[12].saturating_sub(w[9]) <= w[9].saturating_sub(w[6]) {
+            return false;
+        }
         // A single big interval change is a tempo step, even when a four-pulse
         // span straddles the transition. A brake widens over multiple intervals.
         let largest_jump = w.windows(3).map(|t| t[2].saturating_sub(t[1]) as f64 - t[1].saturating_sub(t[0]) as f64).fold(0., f64::max);
