@@ -35,6 +35,7 @@ impl Anchor {
 }
 
 struct ClipBounds {
+    id: ClipId,
     track: usize,
     playlist: usize,
     clip: usize,
@@ -56,6 +57,7 @@ impl MidiClipBeatBounds {
                     // Keep locked clip boundaries at their protected sample positions.
                     if !c.edit_locked && !c.time_locked && matches!(c.content, ClipContent::Midi { .. }) && include(c.id) {
                         bounds.push(ClipBounds {
+                            id: c.id,
                             track,
                             playlist,
                             clip,
@@ -69,10 +71,18 @@ impl MidiClipBeatBounds {
         Self(bounds)
     }
 
-    /// Apply to the same playlist layout used by `from_score`, before changing its structure.
+    /// Apply only to clips still present at the cached location.
     pub fn apply(&self, session: &mut Session, tempo: &TempoMap) {
         for b in &self.0 {
-            let clip = &mut session.tracks[b.track].playlists[b.playlist].clips[b.clip];
+            let Some(clip) = session
+                .tracks
+                .get_mut(b.track)
+                .and_then(|track| track.playlists.get_mut(b.playlist))
+                .and_then(|playlist| playlist.clips.get_mut(b.clip))
+                .filter(|clip| clip.id == b.id)
+            else {
+                continue;
+            };
             clip.start = b.start.sample(tempo, session.sample_rate);
             clip.length = b.end.sample(tempo, session.sample_rate).saturating_sub(clip.start).max(0);
         }
