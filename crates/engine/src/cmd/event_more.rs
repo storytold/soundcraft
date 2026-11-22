@@ -349,7 +349,7 @@ fn select_split(e: &mut Engine, p: &Value) -> Result<Value> {
         };
         let mut nc = c.clone();
         nc.id = s.new_clip_id();
-        nc.content = ClipContent::Midi { sequence: soundcraft_midi::Sequence { notes: hit, ctrls: Vec::new() } };
+        nc.content = ClipContent::Midi { sequence: soundcraft_midi::Sequence { notes: hit, ctrls: Vec::new(), sysex: Vec::new() } };
         crate::edit::place_clip(s, nt, nc);
     }
     Ok(json!({"matched": matched, "split": split, "tracks": new_tracks.values().collect::<Vec<_>>()}))
