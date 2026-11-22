@@ -368,7 +368,9 @@ impl MidiFeed {
     }
 
     fn receive_from(&self, open: Option<&AtomicBool>, port: u8, bytes: &[u8], at_us: i64) {
-        if matches!(bytes.first(), Some(0xf0 | 0xf1 | 0xfc)) {
+        // The selected MTC reader frames messages across callbacks and ignores interleaved
+        // real-time bytes. Channel recording still handles the original port message below.
+        if self.mtc_online() {
             let arrival = self.now();
             let mut reader = self.mtc.lock().unwrap_or_else(PoisonError::into_inner);
             if reader.source == Some(port) && open.is_none_or(|gate| gate.load(Ordering::Acquire)) && reader.receive(bytes, at_us, arrival) {
@@ -376,7 +378,6 @@ impl MidiFeed {
                 drop(reader);
                 self.wake_mtc_host();
             }
-            return;
         }
         let Some(&status) = bytes.first().filter(|s| (0x80..0xF0).contains(*s)) else { return };
         // Program change and channel pressure have one data byte, the rest two.
