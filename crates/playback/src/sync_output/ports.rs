@@ -1,4 +1,4 @@
-use midir::{MidiOutput, MidiOutputConnection};
+use midir::{MidiOutput, MidiOutputConnection, MidiOutputPort};
 use std::collections::{BTreeMap, BTreeSet};
 
 pub(super) type Bindings = BTreeMap<String, String>;
@@ -38,14 +38,48 @@ fn assign(saved: &Bindings, found: impl IntoIterator<Item = (Option<String>, Str
     available
 }
 
-fn scan(midi: &MidiOutput, saved: &Bindings) -> Bindings {
-    assign(saved, midi.ports().iter().map(|port| (midi.port_name(port).ok(), port.id())))
+type PortNames = Vec<(Option<String>, String)>;
+
+// WinMM gives logical ports on the same USB interface the same opaque ID.
+// midir opens an enumerated WinMM object by checking both its name and
+// interface ID again. Keep indistinguishable and partially named groups closed.
+#[cfg(any(windows, test))]
+fn winmm_names(mut ports: PortNames, saved: &Bindings) -> PortNames {
+    let mut groups = BTreeMap::new();
+    for (name, id) in &ports {
+        let group = groups.entry(id.clone()).or_insert((0usize, true));
+        group.0 += 1;
+        group.1 &= name.is_some();
+    }
+    let pinned: BTreeSet<_> = saved.values().collect();
+    for (name, id) in &mut ports {
+        let Some(label) = name else { continue };
+        let (count, fully_named) = groups[id];
+        if !fully_named || id.is_empty() {
+            continue;
+        }
+        let pair = format!("winmm-port:{}:{id}{label}", id.len());
+        if count > 1 || pinned.contains(&pair) {
+            *id = pair;
+        }
+    }
+    ports
+}
+
+fn enumerate(midi: &MidiOutput, saved: &Bindings) -> (Vec<MidiOutputPort>, PortNames) {
+    let ports = midi.ports();
+    let names = ports.iter().map(|p| (midi.port_name(p).ok(), p.id())).collect();
+    #[cfg(windows)]
+    let names = winmm_names(names, saved);
+    #[cfg(not(windows))]
+    let _ = saved;
+    (ports, names)
 }
 
 pub(super) fn available(saved: &Bindings) -> Result<Bindings, String> {
     std::panic::catch_unwind(|| {
         let midi = MidiOutput::new("SoundCraft MIDI sync").map_err(|e| e.to_string())?;
-        Ok(scan(&midi, saved))
+        Ok(assign(saved, enumerate(&midi, saved).1))
     })
     .map_err(|_| "MIDI output enumeration failed".to_owned())?
 }
@@ -56,10 +90,11 @@ fn selected<'a>(available: &'a Bindings, label: &str) -> Result<&'a str, String>
 
 fn open(label: &str, saved: &Bindings) -> Result<(MidiOutputConnection, String), String> {
     let midi = MidiOutput::new("SoundCraft MIDI sync").map_err(|e| e.to_string())?;
-    let ids = scan(&midi, saved);
+    let (ports, names) = enumerate(&midi, saved);
+    let ids = assign(saved, names.iter().cloned());
     let id = selected(&ids, label)?;
-    let port = midi.find_port_by_id(id).ok_or_else(|| format!("MIDI output {label} unavailable"))?;
-    let conn = midi.connect(&port, "SoundCraft MIDI sync").map_err(|e| e.to_string())?;
+    let index = names.iter().position(|(_, key)| key == id).ok_or_else(|| format!("MIDI output {label} unavailable"))?;
+    let conn = midi.connect(&ports[index], "SoundCraft MIDI sync").map_err(|e| e.to_string())?;
     Ok((conn, id.to_owned()))
 }
 
@@ -104,6 +139,32 @@ mod tests {
 
     fn listed(ports: &[(&str, &str)]) -> Vec<(Option<String>, String)> {
         ports.iter().map(|(name, id)| (Some(name.to_string()), id.to_string())).collect()
+    }
+
+    #[test]
+    fn named_winmm_subports_keep_their_exact_connector_across_reorder_and_partial_disconnect() {
+        let raw = listed(&[("DIN", "usb"), ("DAW", "usb"), ("Other", "other")]);
+        let names = winmm_names(raw.clone(), &Bindings::new());
+        let saved = assign(&Bindings::new(), names);
+        assert_ne!(saved["DIN"], saved["DAW"]);
+        assert_eq!(saved["Other"], "other");
+        let mut reversed = raw;
+        reversed.reverse();
+        assert_eq!(assign(&saved, winmm_names(reversed, &saved)), saved);
+        let single = assign(&saved, winmm_names(listed(&[("DAW", "usb")]), &saved));
+        assert_eq!(single.get("DAW"), saved.get("DAW"));
+        assert!(!single.contains_key("DIN"));
+        let legacy = Bindings::from([("DIN".into(), "usb".into())]);
+        let changed = assign(&legacy, winmm_names(listed(&[("DIN", "usb"), ("DAW", "usb")]), &legacy));
+        assert!(!changed.contains_key("DIN")); // a legacy ambiguous ID needs reselection
+    }
+
+    #[test]
+    fn ambiguous_winmm_names_and_unreadable_siblings_remain_unavailable() {
+        let duplicates = winmm_names(listed(&[("DIN", "usb"), ("DIN", "usb")]), &Bindings::new());
+        assert!(assign(&Bindings::new(), duplicates).is_empty());
+        let unreadable = vec![(Some("DIN".into()), "usb".into()), (None, "usb".into())];
+        assert!(assign(&Bindings::new(), winmm_names(unreadable, &Bindings::new())).is_empty());
     }
 
     #[test]
