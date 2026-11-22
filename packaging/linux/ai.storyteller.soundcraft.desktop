@@ -1,8 +1,13 @@
+# Russian translation © 2026 SuperSfera LLC, MIT OR Apache-2.0
+# Russian translation © 2026 SuperSfera LLC, MIT OR Apache-2.0
 [Desktop Entry]
 Type=Application
 Name=SoundCraft
+Name[ru]=SoundCraft
 GenericName=Digital Audio Workstation
+GenericName[ru]=Цифровая звуковая рабочая станция
 Comment=Record, edit and mix audio and MIDI
+Comment[ru]=Запись, редактирование и сведение аудио и MIDI
 Exec=soundcraft %F
 TryExec=soundcraft
 Icon=ai.storyteller.soundcraft
@@ -12,3 +17,4 @@ StartupWMClass=ai.storyteller.soundcraft
 Categories=AudioVideo;Audio;Midi;Mixer;Sequencer;Recorder;
 MimeType=application/x-soundcraft-session;audio/x-wav;audio/wav;audio/vnd.wave;audio/x-aiff;audio/aiff;audio/flac;audio/x-flac;audio/mpeg;audio/midi;audio/x-midi;
 Keywords=daw;audio;mixer;recording;multitrack;midi;editor;music;
+Keywords[ru]=daw;аудио;звук;микшер;запись;многодорожечный;midi;редактор;музыка;
