@@ -41,6 +41,27 @@ fn block(at: Instant, position: i64, frames: i64, playing: bool, pass: u64) -> P
 }
 
 #[test]
+fn slightly_late_first_presentation_never_bunches_quarter_frames() {
+    use crate::sync_clock::SyncEncoder;
+    let song = session(FrameRate::Fps30);
+    let first = Instant::now();
+    let mut b = block(first, 728, 48_000, true, 1);
+    b.origin = 0;
+    let mut mtc = Encoder::default();
+    let mut qfs = Vec::new();
+    for us in (0..=485_000).step_by(100) {
+        let now = first + Duration::from_micros(us);
+        mtc.update(b, now, &song, &mut |_, msg| {
+            if msg.first() == Some(&0xf1) {
+                qfs.push(us)
+            }
+        });
+    }
+    let min_qf = qfs.windows(2).map(|p| p[1] - p[0]).min().unwrap();
+    assert!(min_qf >= 8_100, "minimum QF spacing {min_qf} us");
+}
+
+#[test]
 fn all_six_rates_align_eight_wire_pieces_and_session_offset_to_presentation() {
     for rate in [FrameRate::Fps23_976, FrameRate::Fps24, FrameRate::Fps25, FrameRate::Fps29_97, FrameRate::Fps29_97Drop, FrameRate::Fps30] {
         let mut s = session(rate);
