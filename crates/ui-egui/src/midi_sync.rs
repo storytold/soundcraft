@@ -50,6 +50,8 @@ pub struct MidiSync {
 }
 
 pub const MAX_SYNC_PORTS: usize = 256;
+/// Before input and output calibration shared a table, each list could fill independently.
+pub const MAX_SAVED_SYNC_PORTS: usize = 2 * MAX_SYNC_PORTS;
 
 pub fn valid_saved_offset(samples: i64) -> bool {
     samples.unsigned_abs() <= 10_000_000
@@ -177,7 +179,8 @@ impl SoundApp {
         }
         if let Some(value) = args.get("port_ids") {
             let ids: BTreeMap<String, String> = serde_json::from_value(value.clone()).map_err(|e| e.to_string())?;
-            if ids.len() - usize::from(self.ui.mtc_output_port.as_ref().is_some_and(|port| ids.contains_key(port))) > MAX_SYNC_PORTS
+            if ids.len() - usize::from(self.ui.mtc_output_port.as_ref().is_some_and(|port| ids.contains_key(port)))
+                > next.ports.len().max(MAX_SYNC_PORTS)
                 || ids.iter().any(|(name, id)| !valid_port(name) || !valid_port(id))
             {
                 return Err("Invalid MIDI output binding".into());

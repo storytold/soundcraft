@@ -111,7 +111,7 @@ fn read_ui(path: &std::path::Path, recover_docking: bool) -> Result<Option<sound
 /// field, leaving unrelated preferences and other members of the same port intact.
 fn recover_sync_settings(fields: &mut serde_json::Map<String, serde_json::Value>, resets: &mut Vec<String>) {
     use serde_json::Value;
-    use soundcraft_ui_egui::midi_sync::{Compensation, MAX_SYNC_PORTS, MidiSyncPort, valid_port, valid_saved_offset};
+    use soundcraft_ui_egui::midi_sync::{Compensation, MAX_SAVED_SYNC_PORTS, MAX_SYNC_PORTS, MidiSyncPort, valid_port, valid_saved_offset};
 
     reset_invalid(fields, "gen_mtc", "gen_mtc", Value::is_boolean, resets);
     for port in ["mtc_input_port", "mtc_output_port", "clock_follow_input"] {
@@ -144,25 +144,11 @@ fn recover_sync_settings(fields: &mut serde_json::Map<String, serde_json::Value>
             valid
         });
     }
-    reset_invalid(sync, "port_ids", "midi_sync.port_ids", Value::is_object, resets);
-    if let Some(ids) = sync.get_mut("port_ids").and_then(Value::as_object_mut) {
-        let mut kept = 0;
-        ids.retain(|name, value| {
-            // A zero-offset MTC-only destination has an identity without occupying a calibration slot.
-            let calibration_slot = mtc_output_port.as_deref() != Some(name.as_str());
-            if !valid_port(name) || (calibration_slot && kept == MAX_SYNC_PORTS) || !value.as_str().is_some_and(valid_port) {
-                record_reset(resets, &format!("midi_sync.port_ids.{name}"));
-                return false;
-            }
-            kept += usize::from(calibration_slot);
-            true
-        });
-    }
     reset_invalid(sync, "ports", "midi_sync.ports", Value::is_object, resets);
     if let Some(ports) = sync.get_mut("ports").and_then(Value::as_object_mut) {
         let mut kept = 0;
         ports.retain(|name, value| {
-            if !valid_port(name) || kept == MAX_SYNC_PORTS {
+            if !valid_port(name) || kept == MAX_SAVED_SYNC_PORTS {
                 record_reset(resets, "midi_sync.ports (invalid name or too many ports)");
                 return false;
             }
@@ -183,6 +169,21 @@ fn recover_sync_settings(fields: &mut serde_json::Map<String, serde_json::Value>
             if port.contains_key("out_offset_samples") && port.remove("offset_samples").is_some() {
                 record_reset(resets, &format!("midi_sync.ports.{name}.offset_samples"));
             }
+            true
+        });
+    }
+    reset_invalid(sync, "port_ids", "midi_sync.port_ids", Value::is_object, resets);
+    let binding_limit = sync.get("ports").and_then(Value::as_object).map_or(MAX_SYNC_PORTS, |ports| ports.len().max(MAX_SYNC_PORTS));
+    if let Some(ids) = sync.get_mut("port_ids").and_then(Value::as_object_mut) {
+        let mut kept = 0;
+        ids.retain(|name, value| {
+            // A zero-offset MTC-only destination has an identity without occupying a calibration slot.
+            let calibration_slot = mtc_output_port.as_deref() != Some(name.as_str());
+            if !valid_port(name) || (calibration_slot && kept == binding_limit) || !value.as_str().is_some_and(valid_port) {
+                record_reset(resets, &format!("midi_sync.port_ids.{name}"));
+                return false;
+            }
+            kept += usize::from(calibration_slot);
             true
         });
     }
