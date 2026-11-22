@@ -300,7 +300,7 @@ fn twenty_full_length_dj_tracks_preserve_the_recorded_eighths_through_transition
     };
     let p999 = percentile(&mut individual);
     eprintln!(
-        "20 tracks, {} eighths, {} outside transitions, p99.9 {p999} samples; including burst {} samples; {} batched eighths, wire-relative p99.9 {} samples; {} grid events",
+        "20 tracks, {} eighths, {} outside transitions, p99.9 {p999} samples; including burst {} samples; {} batched eighths, wire-relative p99.9 {} samples; max {} grid events",
         signed.len(),
         individual.len(),
         percentile(&mut all_stable),
@@ -309,4 +309,5 @@ fn twenty_full_length_dj_tracks_preserve_the_recorded_eighths_through_transition
         r.tempo_events
     );
     assert!(p999 <= 192);
+    assert!(r.tempo_events <= 512, "unreferenced grid events during a live mix");
 }

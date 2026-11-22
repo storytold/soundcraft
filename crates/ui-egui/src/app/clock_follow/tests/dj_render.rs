@@ -143,6 +143,7 @@ pub(super) fn render_dj(start_bpm: f64, ideal_us: &[i64], arrivals_us: &[i64], e
     feed.set_clock(ORIGIN);
     feed.receive(port, &[0xfa]);
     let mut song = band_song(start_bpm, expected.len().min(SCORE_WINDOW), sample(end));
+    let mut history = history::History::default();
     let mut mix = soundcraft_mix::MixEngine::new(48_000., 128);
     let mut output = vec![vec![0.; 128]; 2];
     let mut voice = Vec::with_capacity(KICK);
@@ -182,7 +183,10 @@ pub(super) fn render_dj(start_bpm: f64, ideal_us: &[i64], arrivals_us: &[i64], e
         }
         if pulse {
             result.snapshots.push(snap);
-            update_grid(&mut song.tempo, Some((0, ORIGIN + arrivals_us[0])), 0, snap, sr, pos + 1440);
+            if update_grid(&mut song.tempo, Some((0, ORIGIN + arrivals_us[0])), 0, snap, sr, pos + 1440) && history.should_compact(&song.tempo) {
+                history.compact(&mut song.tempo, sr, 0, Vec::new());
+            }
+            result.tempo_events = result.tempo_events.max(song.tempo.tempos().len());
             p += 1;
         }
         if now >= end {
@@ -219,6 +223,5 @@ pub(super) fn render_dj(start_bpm: f64, ideal_us: &[i64], arrivals_us: &[i64], e
         now = next;
     }
     result.tail_open = !voice.is_empty();
-    result.tempo_events = song.tempo.tempos().len();
     result
 }
