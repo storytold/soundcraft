@@ -616,7 +616,7 @@ impl Player {
         }
     }
 
-    /// The latest unusable hardware timestamp, if the current stream reported one.
+    /// An unusable output timestamp affecting a configured, latency-compensated MIDI destination.
     pub fn output_timing_issue(&self) -> Option<OutputTimingIssue> {
         #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
         {

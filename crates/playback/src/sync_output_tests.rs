@@ -109,6 +109,26 @@ fn output_stream_lead_survives_bad_callbacks_and_updates_on_recovery() {
 }
 
 #[test]
+fn timing_warning_follows_the_compensated_destinations() {
+    let mut out = Output::default();
+    let mut publisher = Publisher::new(out.view.clone(), out.metrics.clone());
+    publisher.observe(crate::sync_clock::StreamLead::default().observe(Instant::now(), None), 0.01);
+    let unknown = Some(crate::OutputTimingIssue::Unknown);
+    out.compensated = true;
+    assert_eq!(out.timing_issue(), None, "no destinations require output timing");
+    out.beat.push(("DIN".into(), 0));
+    assert_eq!(out.timing_issue(), unknown);
+    out.compensated = false;
+    assert_eq!(out.timing_issue(), None, "uncompensated Clock uses no device lead");
+    out.additional = Some(("encoder".into(), 0, false));
+    assert_eq!(out.timing_issue(), None);
+    out.additional.as_mut().unwrap().2 = true;
+    assert_eq!(out.timing_issue(), unknown);
+    out.additional = None;
+    assert_eq!(out.timing_issue(), None);
+}
+
+#[test]
 fn output_stream_lead_is_unknown_for_a_new_output_until_the_first_valid_report() {
     let mut out = Output::default();
     out.compensated = true;

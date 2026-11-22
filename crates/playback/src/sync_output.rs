@@ -221,6 +221,11 @@ impl Output {
         self.view.lock().unwrap_or_else(std::sync::PoisonError::into_inner).read(now, true, 0).0.map(|b| b.sample_index_at(now))
     }
     pub(crate) fn timing_issue(&self) -> Option<crate::OutputTimingIssue> {
+        let clock = self.compensated && !self.beat.is_empty();
+        let encoder = self.additional.as_ref().is_some_and(|(_, _, compensated)| *compensated);
+        if !clock && !encoder {
+            return None;
+        }
         match self.metrics.lead() {
             (Some(lead_us), crate::OutputLeadSource::Retained) => Some(crate::OutputTimingIssue::Retained { lead_us }),
             (None, crate::OutputLeadSource::Unknown) => Some(crate::OutputTimingIssue::Unknown),
