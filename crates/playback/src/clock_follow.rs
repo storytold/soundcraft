@@ -119,7 +119,10 @@ impl PreparedResume {
     }
 }
 
+mod wire_step;
+
 pub(crate) struct Follower {
+    edge: wire_step::WireStep,
     pub(crate) cue: Option<PreparedResume>,
     pub(crate) source: Option<u8>,
     pub(crate) coast: bool,
@@ -162,6 +165,7 @@ pub(crate) struct Follower {
 impl Default for Follower {
     fn default() -> Self {
         Self {
+            edge: Default::default(),
             cue: None,
             source: None,
             coast: true,
@@ -368,6 +372,7 @@ impl Follower {
         self.short.clear();
         self.steady.clear();
         self.latest = None;
+        self.edge = Default::default();
         self.wire_points = 0;
         self.packet_head = None;
         self.packed_delivery = false;
@@ -526,7 +531,9 @@ impl Follower {
                 self.previous_batch_noise.rotate_left(1);
                 std::mem::swap(&mut noise, &mut self.previous_batch_noise[3]);
             }
-            if let Some(((index, stamp), intervals)) = self.short.confirmed_step(slow, noise) {
+            let proposed = self.short.confirmed_step(slow, noise);
+            let step = if self.packed_delivery { proposed } else { self.edge.observe(ordinal, at, slow, noise, proposed) };
+            if let Some(((index, stamp), intervals)) = step {
                 self.steady.clear();
                 self.steady.push(index, stamp);
                 self.changes = 0;
