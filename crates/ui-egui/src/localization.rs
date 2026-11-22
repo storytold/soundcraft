@@ -2,6 +2,8 @@
 
 #[path = "../locales/pt-BR/mod.rs"]
 mod pt_br;
+#[path = "../locales/zh-Hans/mod.rs"]
+mod zh_hans;
 
 use std::cell::Cell;
 
@@ -17,17 +19,20 @@ pub enum Language {
     English,
     #[serde(rename = "pt-BR")]
     PortugueseBrazil,
+    #[serde(rename = "zh-Hans")]
+    SimplifiedChinese,
 }
 
 impl Language {
     /// All supported languages, in the order they are shown in the language menu.
-    pub const ALL: [Self; 2] = [Self::English, Self::PortugueseBrazil];
+    pub const ALL: [Self; 3] = [Self::English, Self::PortugueseBrazil, Self::SimplifiedChinese];
 
     /// Stable language tag used in preferences and control commands.
     pub const fn id(self) -> &'static str {
         match self {
             Self::English => "en",
             Self::PortugueseBrazil => "pt-BR",
+            Self::SimplifiedChinese => "zh-Hans",
         }
     }
 
@@ -36,6 +41,7 @@ impl Language {
         match self {
             Self::English => "English",
             Self::PortugueseBrazil => "Portuguese (Brazil)",
+            Self::SimplifiedChinese => "Simplified Chinese",
         }
     }
 
@@ -48,6 +54,7 @@ impl Language {
         match self {
             Self::English => number.to_owned(),
             Self::PortugueseBrazil => number.replace('.', ","),
+            Self::SimplifiedChinese => number.to_owned(),
         }
     }
 
@@ -56,6 +63,7 @@ impl Language {
         match self {
             Self::English => source,
             Self::PortugueseBrazil => pt_br::translate(source).unwrap_or(source),
+            Self::SimplifiedChinese => zh_hans::translate(source).unwrap_or(source),
         }
     }
 }
@@ -89,6 +97,7 @@ fn error_text_in(language: Language, message: &str, depth: usize) -> String {
     let templates: &[(&str, &str)] = match language {
         Language::English => &[],
         Language::PortugueseBrazil => pt_br::ERROR_TEMPLATES,
+        Language::SimplifiedChinese => zh_hans::ERROR_TEMPLATES,
     };
     let mut best: Option<(usize, &str, Vec<(String, String)>)> = None;
     for (template, translation) in templates {
@@ -354,6 +363,7 @@ mod tests {
             assert_eq!(decoded, language);
         }
         assert_eq!(Language::parse(" PT-br "), Some(Language::PortugueseBrazil));
+        assert_eq!(Language::parse(" ZH-hans "), Some(Language::SimplifiedChinese));
         assert_eq!(Language::parse("fr"), None);
     }
 
@@ -361,7 +371,27 @@ mod tests {
     fn language_translations_fall_back_to_the_english_source() {
         assert_ne!(Language::PortugueseBrazil.text("Appearance"), "Appearance");
         assert_eq!(Language::PortugueseBrazil.text("A source string with no catalog entry"), "A source string with no catalog entry");
+        assert_ne!(Language::SimplifiedChinese.text("Appearance"), "Appearance");
         assert_eq!(Language::English.text("Appearance"), "Appearance");
+    }
+
+    #[test]
+    fn simplified_chinese_translates_the_language_menu() {
+        // `Language::native_name` is English source text; the menu draws it through the catalog, so
+        // a Chinese interface must name every language it offers in Chinese.
+        for language in Language::ALL {
+            assert_ne!(Language::SimplifiedChinese.text(language.native_name()), language.native_name(), "{language:?}");
+        }
+        assert_eq!(Language::SimplifiedChinese.text("Simplified Chinese"), "简体中文");
+    }
+
+    #[test]
+    fn simplified_chinese_catalog_covers_every_menu_label() {
+        for path in include_str!("../../engine/catalog/menus.txt").lines() {
+            for label in path.split(" > ").map(str::trim).filter(|label| !label.is_empty()) {
+                assert!(super::zh_hans::translate(label).is_some(), "missing zh-Hans menu label: {label}");
+            }
+        }
     }
 
     #[test]
@@ -512,21 +542,22 @@ mod tests {
         }
     }
 
-    #[test]
-    fn every_localized_source_string_has_a_catalog_entry() {
-        fn visit(dir: &std::path::Path, missing: &mut Vec<String>) {
+    /// Every string passed to `text` / `localized_format!` in this crate must have an entry in
+    /// `catalog`; `locale` names it in the failure.
+    fn assert_catalog_covers_the_source(catalog: fn(&str) -> Option<&'static str>, locale: &str) {
+        fn visit(dir: &std::path::Path, missing: &mut Vec<String>, catalog: fn(&str) -> Option<&'static str>) {
             let Ok(read) = std::fs::read_dir(dir) else { return };
             for entry in read.flatten() {
                 let path = entry.path();
                 if path.is_dir() {
-                    visit(&path, missing);
+                    visit(&path, missing, catalog);
                 } else if path.extension().is_some_and(|e| e == "rs") && !path.ends_with("localization.rs") {
                     let Ok(text) = std::fs::read_to_string(&path) else { continue };
                     for marker in ["localization::text(\"", "localized_format!(\""] {
                         for (at, _) in text.match_indices(marker) {
                             let start = at + marker.len() - 1;
                             if let Some((source, _)) = literal(&text[start..])
-                                && super::pt_br::translate(&source).is_none()
+                                && catalog(&source).is_none()
                             {
                                 missing.push(format!("{}: {source:?}", path.display()));
                             }
@@ -536,7 +567,17 @@ mod tests {
             }
         }
         let mut missing = Vec::new();
-        visit(&std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src"), &mut missing);
-        assert!(missing.is_empty(), "strings without a pt-BR entry:\n{}", missing.join("\n"));
+        visit(&std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src"), &mut missing, catalog);
+        assert!(missing.is_empty(), "strings without a {locale} entry:\n{}", missing.join("\n"));
+    }
+
+    #[test]
+    fn every_localized_source_string_has_a_catalog_entry() {
+        assert_catalog_covers_the_source(super::pt_br::translate, "pt-BR");
+    }
+
+    #[test]
+    fn every_localized_source_string_has_a_zh_hans_entry() {
+        assert_catalog_covers_the_source(super::zh_hans::translate, "zh-Hans");
     }
 }

@@ -1,0 +1,22 @@
+SoundCraft UI translations — license and provenance
+====================================================
+
+`crates/ui-egui/src/i18n/zh-hans.tsv` holds SoundCraft's own Simplified Chinese translation of the
+English source strings in the code. `crates/ui-egui/locales/zh-Hans/mod.rs` is generated from it by
+`docs/i18n/tools/gen_zh_hans_locale.py`; edit the TSV, never the module.
+
+License: MIT OR Apache-2.0, the same terms as the SoundCraft code (see LICENSE-MIT and
+LICENSE-APACHE in the repository root). The translations are bundled only in the SoundCraft UI; the
+English source strings in the code remain the canonical text.
+
+Provenance: the rows are original wording written for SoundCraft. No translated string, glossary or
+translation memory from another product was copied. Wording decisions and their reasoning are
+recorded in `docs/i18n/glossary.md`, so a reviewer can challenge a term without leaving the
+repository.
+
+Review status: AI-authored, not yet read by a native-speaking audio engineer.
+
+Rules when editing: keep the format documented at the top of the TSV, keep every `{name}` and `{}`
+placeholder (and its format spec) exactly, keep a trailing `…` in menu items, and run
+`python3 docs/i18n/tools/gen_zh_hans_locale.py` followed by
+`cargo test -p soundcraft-ui-egui --lib`.
