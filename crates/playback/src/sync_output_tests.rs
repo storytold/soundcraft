@@ -1138,6 +1138,9 @@ fn a_stop_cancels_clock_repayment_and_a_new_pass_starts_normally() {
 #[test]
 fn mtc_sync_route_warns_only_with_an_open_chase_source() {
     let mut output = Output::default();
+    let mut publisher = Publisher::new(output.view.clone(), output.metrics.clone());
+    publisher.observe(crate::sync_clock::StreamLead::default().observe(Instant::now(), None), 0.01);
+    assert_eq!(output.status().lead_source, crate::OutputLeadSource::Unknown);
     let feed = Arc::new(crate::midi::MidiFeed::default());
     feed.set_sync_waker(output.attach_mtc_feed(&feed));
     assert_eq!(output.timing_issue(), None);
