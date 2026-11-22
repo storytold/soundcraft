@@ -685,14 +685,17 @@ fn name_and_readout(app: &mut SoundApp, ui: &mut Ui, cx: &StripCtx<'_>) {
     // Volume readout and name.
     let vr = Rect::from_min_size(pos2(x0 + 4.0, r.max.y - STRIP_FOOT_H + 4.0), vec2(inner_w - 8.0, 15.0));
     inset(ui.painter(), vr, t.counter_bg);
+    let display_db = mixer_display_volume_db(app, track, id);
+    let display = db_text(display_db);
+    let edit_initial = format!("{display_db:.1}");
     let (_, entered) = editable_readout(
         ui,
         vr,
         ui.scope_id().with(("volume-value", id.0)),
         Readout {
             name: &crate::localized_format!("{} volume", track.name),
-            display: &db_text(mixer_display_volume_db(app, track, id)),
-            edit_initial: &format!("{:.1}", track.mixer.volume_db),
+            display: &display,
+            edit_initial: &edit_initial,
             parse: parse_db,
             reset: 0.0,
         },
@@ -795,7 +798,9 @@ mod tests {
         assert_eq!(app.position(), 240);
 
         let track = app.engine.session().track(id).unwrap();
-        assert_eq!(mixer_display_volume_db(&app, track, id), -6.0, "the fader and readout share the stopped-insertion display value");
+        let display_db = mixer_display_volume_db(&app, track, id);
+        assert_eq!(display_db, -6.0, "the fader and readout share the stopped-insertion display value");
+        assert_eq!(format!("{display_db:.1}"), "-6.0", "numeric editing starts from the value shown in the readout");
     }
 
     #[test]
