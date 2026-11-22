@@ -377,13 +377,14 @@ impl AudioState {
 
     // Chase is a locate followed by playback at the device's own sample clock.
     // A single late group (or a missing byte) cannot alter pitch or jump the transport.
-    fn follow_mtc(&mut self) {
+    fn follow_mtc(&mut self, out: &mut [f32], channels: usize) -> usize {
+        let mut prefix = 0;
         use super::mtc_input::Tracking;
-        let Some(feed) = self.midi.as_ref() else { return };
+        let Some(feed) = self.midi.as_ref() else { return 0 };
         if !feed.mtc_online() || self.recording {
-            return;
+            return 0;
         }
-        let Some((tracking, offset)) = feed.tracking_mtc() else { return };
+        let Some((tracking, offset)) = feed.tracking_mtc() else { return 0 };
         let sr = self.session.sample_rate;
         let rate = self.session.frame_rate;
         let start = self.session.timecode_start;
@@ -392,7 +393,7 @@ impl AudioState {
                 if self.chasing {
                     self.halt();
                 }
-                return;
+                return 0;
             }
             Tracking::Located(p) => {
                 let at = p.session_sample(rate, sr, start, offset);
@@ -400,7 +401,7 @@ impl AudioState {
                     if self.chasing {
                         self.halt();
                     }
-                    return;
+                    return 0;
                 }
                 if self.playing {
                     self.halt();
@@ -413,19 +414,19 @@ impl AudioState {
                 }
                 self.pos = at;
                 self.shared.position.store(self.pos, Ordering::Relaxed);
-                return;
+                return 0;
             }
             Tracking::Rolling { position, stamp, now, anchor, seek_generation } => (position, stamp, now, anchor, seek_generation),
         };
         if self.chase_group == Some(stamp) {
-            return;
+            return 0;
         }
         let position = p.session_sample(rate, sr, start, offset);
         if position < 0 {
             if self.chasing {
                 self.halt();
             }
-            return;
+            return 0;
         }
         #[cfg(any(target_os = "windows", target_os = "macos", target_os = "linux"))]
         let delay = self
@@ -440,7 +441,20 @@ impl AudioState {
         if !self.chasing || !self.playing {
             // A corroborated stopped locate protects its first attack for one start.
             // Without a presentation estimate an unanchored start can still follow the incoming transport.
-            let from = anchor.map(|p| p.session_sample(rate, sr, start, offset)).filter(|at| *at >= 0).or(presentation).unwrap_or(live);
+            let anchor = anchor.map(|p| p.session_sample(rate, sr, start, offset)).filter(|at| *at >= 0);
+            if anchor.is_some() && !self.playing {
+                // Present the stopped locate one render block after lock. The callback that
+                // consumes the lock may already be partway through that interval. Render the
+                // remaining prefix as stopped, so the first attack keeps its sample and live
+                // inputs remain audible. A late lock starts immediately.
+                let frames = out.len() / channels;
+                let elapsed = (now.saturating_sub(stamp).max(0) as f64 * self.device_rate / 1e6).round() as usize;
+                prefix = frames.saturating_sub(elapsed);
+                if prefix > 0 {
+                    self.render_output(&mut out[..prefix * channels], channels, self.speed());
+                }
+            }
+            let from = anchor.or(presentation).unwrap_or(live);
             self.begin_play(from, None, None, true);
             self.shared.speed.store(1000, Ordering::Relaxed);
             self.shared.playing.store(true, Ordering::Release);
@@ -461,6 +475,7 @@ impl AudioState {
         }
         self.chase_seek_generation = seek_generation;
         self.chase_group = Some(stamp);
+        prefix
     }
 
     fn send_garbage(&mut self) {
@@ -834,7 +849,7 @@ impl AudioState {
         }
         let was_chasing = self.chasing;
         self.drain();
-        self.follow_mtc();
+        let prefix = self.follow_mtc(out, channels);
         if let Some(ended) = self.midi_ended.take() {
             // A command ended the pass. What arrived after the queue was read above and before
             // that command belongs to the pass too: take it in as well, with the pass as it was,
@@ -857,6 +872,23 @@ impl AudioState {
         self.midi_started = false;
         let speed = if self.chasing || was_chasing { self.speed() } else { speed };
         self.midi_speed = speed;
+        if prefix < callback_frames {
+            #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+            let timing = self.device_timing;
+            #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+            if let Some(t) = &mut self.device_timing {
+                t.frame_offset += prefix;
+            }
+            self.render_output(&mut out[prefix * channels..], channels, speed);
+            #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+            {
+                self.device_timing = timing;
+            }
+        }
+    }
+
+    fn render_output(&mut self, out: &mut [f32], channels: usize, speed: f64) {
+        let callback_frames = out.len() / channels;
         // A command may have installed a session at another sample rate: the audio is rendered
         // at the rate that is there now, at the same speed.
         let step = self.step(speed);
