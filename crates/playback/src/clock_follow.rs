@@ -292,14 +292,17 @@ impl Follower {
         }
         self.phase_error_us = self.steady.predict_us(self.fit_index).map_or(0, |pred| at.saturating_sub(pred));
         self.steady.push(self.fit_index, at);
-        if self.awaiting_clock.is_some() {
-            if self.state == State::Coasting
-                && let Some(period) = self.coast_period_us
-            {
+        let start_requested = self.awaiting_clock.take().is_some();
+        if self.state == State::Coasting && (start_requested || self.bpm().is_some()) {
+            // F8 has no absolute position. Match the returning train to the nearest
+            // pulse on the coasting grid. A lone tick after a timeout has no fitted tempo.
+            if let Some(period) = self.coast_period_us {
                 let coasted = (at.saturating_sub(self.played_stamp).max(0) as f64 / period).round() as i64;
                 self.next_pulse = self.next_pulse.max(self.played_pulse.saturating_add(coasted));
             }
-            self.awaiting_clock = None;
+            self.state = State::Locked;
+        }
+        if start_requested {
             self.state = State::Locked;
             self.push(Action::Play { pulse: self.next_pulse, at });
         }

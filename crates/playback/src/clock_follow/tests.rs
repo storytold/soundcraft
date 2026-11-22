@@ -36,7 +36,7 @@ fn a_fresh_start_after_idle_clock_timeout_arms_the_next_pulse() {
 }
 
 #[test]
-fn coast_or_stop_once_on_loss_and_resume_only_after_transport() {
+fn only_a_stopped_transport_needs_continue_after_clock_loss() {
     for coast in [true, false] {
         let mut r = Follower { coast, ..Follower::default() };
         feed(&mut r, 0xfa, 0);
@@ -51,9 +51,13 @@ fn coast_or_stop_once_on_loss_and_resume_only_after_transport() {
         assert_eq!(r.take(), if coast { None } else { Some(Action::Stop) });
         feed(&mut r, 0xf8, 301_000);
         assert!(r.take().is_none());
-        feed(&mut r, 0xfb, 302_000);
+        assert_eq!(r.state, if coast { State::Coasting } else { State::Stopped });
         feed(&mut r, 0xf8, 321_000);
-        assert!(matches!(r.take(), Some(Action::Play { .. })));
+        assert!(r.take().is_none());
+        assert_eq!(r.state, if coast { State::Locked } else { State::Stopped });
+        feed(&mut r, 0xfb, 322_000);
+        feed(&mut r, 0xf8, 341_000);
+        assert_eq!(matches!(r.take(), Some(Action::Play { .. })), !coast);
     }
 }
 

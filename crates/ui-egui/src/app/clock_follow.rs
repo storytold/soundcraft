@@ -741,6 +741,7 @@ mod tests {
         assert_eq!(app.engine.session().tempo, saved);
     }
 
+    mod coast_relock;
     #[cfg(not(target_arch = "wasm32"))]
     mod recording;
 
