@@ -611,7 +611,11 @@ fn fader_and_meter(app: &mut SoundApp, ui: &mut Ui, cx: &StripCtx<'_>, y: f32, s
     let fh = (r.max.y - STRIP_FOOT_H - y).max(120.0);
     let wide_meter = (if track.kind == TrackKind::Master { app.engine.session().main_format() } else { track.format }).channels() > 2;
     let fr = Rect::from_min_size(pos2(x0, y), vec2(inner_w * if wide_meter { 0.45 } else { 0.6 }, fh));
-    let display_db = displayed_volume_db(track, app.engine.transport.position, fader_is_grabbed(app, id));
+    let display_db = displayed_volume_db(
+        track,
+        app.engine.transport.position,
+        fader_overrides_automation(fader_is_grabbed(app, id), track.mixer.automation_mode, app.touched.contains(&id)),
+    );
     if let Some(db) = fader(ui, fr, display_db, ui.scope_id().with(("fader", id.0)), &format!("{} level", track.name)) {
         app.gesture = Some(crate::Gesture::Fader { track: id, start_db: track.mixer.volume_db });
         let _ = app.engine.execute_merged("mix.volume", &json!({"track": id.0, "db": db}), &format!("fader:{}", id.0));
@@ -645,9 +649,10 @@ fn fader_and_meter(app: &mut SoundApp, ui: &mut Ui, cx: &StripCtx<'_>, y: f32, s
 
 /// The level shown by a Mix fader. Playback reads the volume lane in every automation mode
 /// except Off and Write; mirror that evaluated value here without changing the stored fader.
-/// A grabbed fader keeps showing its manual position so Touch/Latch rides remain controllable.
-fn displayed_volume_db(track: &Track, position: i64, grabbed: bool) -> f32 {
-    if !grabbed
+/// A fader that is actively writing keeps showing its manual position so Touch/Latch rides
+/// remain controllable.
+fn displayed_volume_db(track: &Track, position: i64, overrides_automation: bool) -> f32 {
+    if !overrides_automation
         && track.mixer.automation_mode.reads()
         && track.mixer.automation_mode != soundcraft_model::AutomationMode::Write
         && let Some(lane) = track.lane(&AutoParam::Volume)
@@ -660,6 +665,12 @@ fn displayed_volume_db(track: &Track, position: i64, grabbed: bool) -> f32 {
 
 fn fader_is_grabbed(app: &SoundApp, id: TrackId) -> bool {
     matches!(app.gesture, Some(crate::Gesture::Fader { track, .. }) if track == id)
+}
+
+/// Latch keeps writing after mouse-up, so it must keep the fader on its manual value for the
+/// remainder of the pass. Before a Latch fader has been touched, it still follows playback.
+fn fader_overrides_automation(grabbed: bool, mode: soundcraft_model::AutomationMode, latched: bool) -> bool {
+    grabbed || matches!(mode, soundcraft_model::AutomationMode::Latch | soundcraft_model::AutomationMode::TouchLatch) && latched
 }
 
 /// Volume readout, kind label and name plate.
@@ -675,7 +686,11 @@ fn name_and_readout(app: &mut SoundApp, ui: &mut Ui, cx: &StripCtx<'_>) {
         ui.scope_id().with(("volume-value", id.0)),
         Readout {
             name: &crate::localized_format!("{} volume", track.name),
-            display: &db_text(displayed_volume_db(track, app.engine.transport.position, fader_is_grabbed(app, id))),
+            display: &db_text(displayed_volume_db(
+                track,
+                app.engine.transport.position,
+                fader_overrides_automation(fader_is_grabbed(app, id), track.mixer.automation_mode, app.touched.contains(&id)),
+            )),
             edit_initial: &format!("{:.1}", track.mixer.volume_db),
             parse: parse_db,
             reset: 0.0,
@@ -720,7 +735,7 @@ fn name_and_readout(app: &mut SoundApp, ui: &mut Ui, cx: &StripCtx<'_>) {
 
 #[cfg(test)]
 mod tests {
-    use super::{Readout, displayed_volume_db, dragged_send_db, editable_readout, parse_db, parse_pan};
+    use super::{Readout, displayed_volume_db, dragged_send_db, editable_readout, fader_overrides_automation, parse_db, parse_pan};
     use egui::{Event, Modifiers, PointerButton, Rect, pos2, vec2};
     use soundcraft_model::{AutoParam, AutomationMode, ChannelFormat, Track, TrackId, TrackKind};
 
@@ -745,6 +760,19 @@ mod tests {
 
         track.mixer.automation_mode = AutomationMode::Write;
         assert_eq!(displayed_volume_db(&track, 240, false), -3.0, "Write displays the value being written");
+
+        track.mixer.automation_mode = AutomationMode::Latch;
+        assert_eq!(
+            displayed_volume_db(&track, 240, fader_overrides_automation(false, track.mixer.automation_mode, false)),
+            -6.0,
+            "an untouched Latch fader follows playback"
+        );
+        assert_eq!(
+            displayed_volume_db(&track, 240, fader_overrides_automation(false, track.mixer.automation_mode, true)),
+            -3.0,
+            "an active Latch pass keeps its manual level after release"
+        );
+        assert!(!fader_overrides_automation(false, AutomationMode::Touch, true), "Touch returns to automation after release");
     }
 
     #[test]
