@@ -959,6 +959,9 @@ mod tests {
 
     mod large_steps;
     mod ramp_response;
+    mod dj_render;
+    mod dj_tempos;
+    mod brake;
     mod packet_steps;
     mod sampler_song;
     mod slowdown_sweep;
