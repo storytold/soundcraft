@@ -526,6 +526,7 @@ mod tests {
                 | "External Timecode Offset"
                 | "Gen MTC"
                 | "MTC Reader Port"
+                | "Offset (samples)"
                 | "Online (chase MTC)"
                 | "Online"
                 | "Receiving {incoming} fps; session is {session} fps"
