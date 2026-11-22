@@ -418,10 +418,12 @@ impl Reader {
                         let quarters = (elapsed * 4. / live.in_session_rate(self.options.rate).frame_us()).round() as i64;
                         live.advance(quarters.saturating_sub(7))
                     });
-                    let position = expected.and_then(|anchor| {
-                        let candidate = position.on_reader_day(Some(anchor), false);
-                        (candidate.quarter.abs_diff(anchor.quarter) <= 4).then_some(candidate)
-                    }).unwrap_or_else(|| position.on_reader_day(self.previous.or(self.located_start), false));
+                    let position = expected
+                        .and_then(|anchor| {
+                            let candidate = position.on_reader_day(Some(anchor), false);
+                            (candidate.quarter.abs_diff(anchor.quarter) <= 4).then_some(candidate)
+                        })
+                        .unwrap_or_else(|| position.on_reader_day(self.previous.or(self.located_start), false));
                     self.incoming = Some(position);
                     if let Some(last) = self.previous {
                         // A missing group during lock is a dropout, not a seek.

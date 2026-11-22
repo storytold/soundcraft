@@ -406,7 +406,9 @@ impl MidiFeed {
             if open.is_some_and(|o| !o.load(Ordering::Acquire)) {
                 return;
             }
-            let now = at_us;
+            // Synchronization uses the wire timestamp. Recording is ordered against
+            // take boundaries under this writer lock, including a delayed native callback.
+            let now = self.now();
             // Losses from a full queue go into the queue first, where they happened: ahead of
             // the first event that fits again. Each mark carries the time its port's events
             // were dropped at (nothing of that port got into the queue since), so the audio
@@ -441,22 +443,34 @@ impl MidiFeed {
     /// its device thread delivers from now on is discarded. Dropping the connection afterwards
     /// may or may not wait for that thread (the system decides): it no longer matters.
     pub fn close_port(&self, open: &AtomicBool, port: u8) {
-        let _writers = self.writers.lock().unwrap_or_else(PoisonError::into_inner);
-        open.store(false, Ordering::Release);
-        self.port_lost(port);
+        let notify = {
+            let _writers = self.writers.lock().unwrap_or_else(PoisonError::into_inner);
+            open.store(false, Ordering::Release);
+            self.mark_port_lost(port)
+        };
+        if notify {
+            self.wake_mtc_host();
+        }
     }
 
     /// Events of `port` did not (or will not) reach the audio thread: it releases what the port
     /// holds. Called when the queue is full and when a port closes.
     pub fn port_lost(&self, port: u8) {
+        if self.mark_port_lost(port) {
+            self.wake_mtc_host();
+        }
+    }
+
+    fn mark_port_lost(&self, port: u8) -> bool {
+        self.port_lost_at(port, self.now());
         let mut reader = self.mtc.lock().unwrap_or_else(PoisonError::into_inner);
         if reader.source == Some(port) {
             reader.loss();
             self.wake_mtc_output(&reader);
-            drop(reader);
-            self.wake_mtc_host();
+            true
+        } else {
+            false
         }
-        self.port_lost_at(port, self.now());
     }
 
     /// [`Self::port_lost`] at the time `now`.
@@ -1071,6 +1085,31 @@ mod backend {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn review_channel_event_stamp_follows_the_recording_cutoff() {
+        let feed = MidiFeed::default();
+        feed.set_clock(250);
+        feed.receive_from(None, 0, &[0x90, 64, 100], 90);
+        assert_eq!(feed.next().unwrap().0, 250, "queue publication is after the cutoff even if the driver timestamp is older");
+    }
+
+    #[test]
+    fn review_closing_mtc_port_calls_host_wakeup_outside_the_writer_lock() {
+        let feed = Arc::new(MidiFeed::default());
+        feed.set_mtc_source(Some(2));
+        let weak = Arc::downgrade(&feed);
+        let notified = Arc::new(AtomicBool::new(false));
+        let observed = notified.clone();
+        feed.set_mtc_wakeup(|| {
+            Box::new(move || {
+                assert!(weak.upgrade().unwrap().hold_writers().is_some());
+                observed.store(true, Ordering::Relaxed);
+            })
+        });
+        feed.close_port(&AtomicBool::new(true), 2);
+        assert!(notified.load(Ordering::Relaxed));
+    }
 
     #[test]
     fn port_names_lose_addresses_and_repeated_client_names() {
