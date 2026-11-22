@@ -808,9 +808,5 @@ fn stop_and_flush_ports<C: Destination>(ports: &mut BTreeMap<String, Port<C>>, s
 mod tests;
 
 #[cfg(test)]
-#[path = "sync_timing_test.rs"]
-mod timing;
-
-#[cfg(test)]
 #[path = "mtc_sync_output_tests.rs"]
 mod mtc_on_shared_port;

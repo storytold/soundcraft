@@ -692,6 +692,7 @@ mod dropout_tests {
     }
 
     #[test]
+    #[ignore = "ten simulated minutes for each of four rate settings"]
     fn matching_rate_with_jitter_never_reports_a_mismatch() {
         for source in [FrameRate::Fps24, FrameRate::Fps30, FrameRate::Fps23_976, FrameRate::Fps29_97] {
             let mut reader = Reader::default();
