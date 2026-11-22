@@ -297,7 +297,7 @@ mod config_tests {
         let mut ui = soundcraft_ui_egui::UiState::default();
         for i in 0..MAX_SYNC_PORTS {
             let name = format!("Port {i}");
-            ui.midi_sync.ports.insert(name.clone(), MidiSyncPort { enabled: false, offset_samples: 1 });
+            ui.midi_sync.ports.insert(name.clone(), MidiSyncPort { out_offset_samples: 1, ..Default::default() });
             ui.midi_sync.port_ids.insert(name, format!("physical-{i}"));
         }
         ui.mtc_output_port = Some("Z-last".into());
