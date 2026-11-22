@@ -167,7 +167,7 @@ fn the_callback_publishes_system_delay_only_while_delay_compensation_is_enabled(
         let (block, _) = view.lock().unwrap().read(now, false, 0);
         let expected = if enabled { 4800 } else { 0 };
         assert_eq!(block.unwrap().system_delay_samples, expected);
-        assert_eq!(metrics.system_delay_samples.load(Ordering::Relaxed), expected as u64);
+        assert_eq!(view.lock().unwrap().mixer_delay().unwrap().1, expected);
     }
 }
 

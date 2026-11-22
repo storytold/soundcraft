@@ -764,7 +764,7 @@ fn negative_offset_is_limited_to_the_output_lead_and_reported() {
         out.beat.push(("DIN".into(), offset));
         out.compensated = compensate;
         Publisher::new(out.view.clone(), out.metrics.clone()).observe(DeviceTiming::new(base, Some(lead), 0), 0.01);
-        out.metrics.system_delay_samples.store(system_delay_samples as u64, Relaxed);
+        out.view.lock().unwrap().push(Presentation { system_delay_samples, ..block(base, 0., 480., lead) });
         let status = out.status();
         let info = &status.ports["DIN"];
         assert!(info.advance_limited);
@@ -815,6 +815,102 @@ impl SyncEncoder for Messages {
         }
         None
     }
+}
+
+#[test]
+fn review_superseded_pass_discards_locates_both_before_and_at_their_deadline() {
+    for change_ms in [4, 10] {
+        let t = Instant::now();
+        let delay = Duration::from_millis(10);
+        let view = View::default();
+        let s = Session::default();
+        let stats = Stats::default();
+        let mut port = active_port(0, false);
+        port.routes[0].as_mut().unwrap().encoder = Box::new(Messages(vec![(delay, vec![0xf2, 7, 0])]));
+        view.lock().unwrap().push(block(t, 0., 480., Duration::ZERO));
+        port.poll("DIN", t, &s, &view, &stats, &mut vec![]);
+        let changed = t + Duration::from_millis(change_ms);
+        view.lock().unwrap().push(Presentation { pass: 2, ..block(changed, 4800., 480., Duration::ZERO) });
+        port.poll("DIN", changed, &s, &view, &stats, &mut vec![]);
+        port.poll("DIN", t + delay, &s, &view, &stats, &mut vec![]);
+        assert!(port.link.unwrap().messages.is_empty(), "obsolete SPP at {change_ms} ms");
+    }
+}
+
+#[test]
+fn review_failed_transport_stop_is_retried_before_new_pass_start() {
+    struct FailsOnce(bool, Vec<Vec<u8>>);
+    impl SyncPort for FailsOnce {
+        fn send_at(&mut self, at: Instant, msg: &[u8]) -> Result<Instant, String> {
+            if msg == [STOP] && std::mem::take(&mut self.0) {
+                return Err("port unavailable".into());
+            }
+            self.1.push(msg.to_vec());
+            Ok(at)
+        }
+    }
+    let now = Instant::now();
+    let old = active_port(0, false);
+    let mut port = Port {
+        link: Some(FailsOnce(true, vec![])),
+        retry: now,
+        routes: old.routes,
+        future: vec![],
+        stop_pending: false,
+        timing_epochs: [0; 2],
+        waiting_for_timing: false,
+        failure: None,
+    };
+    let view = View::default();
+    let s = Session::default();
+    let stats = Stats::default();
+    for (ms, play) in [(0, false), (1, true), (2, false), (1002, true)] {
+        let t = now + Duration::from_millis(ms);
+        view.lock().unwrap().push(Presentation { pass: ms, playing: play, ..block(t, 0., 480., Duration::ZERO) });
+        if ms == 1002 {
+            assert!(port.link.is_none());
+            port.link = Some(FailsOnce(false, vec![]));
+            port.routes[0].as_mut().unwrap().encoder.reset();
+        }
+        port.poll("DIN", t, &s, &view, &stats, &mut vec![]);
+    }
+    assert_eq!(port.link.unwrap().1, [vec![STOP], vec![START], vec![CLOCK]]);
+}
+
+#[test]
+fn review_delay_uses_rate_of_the_audible_callback_after_an_edit() {
+    let now = Instant::now();
+    let out = &mut Output::default();
+    out.beat.push(("DIN".into(), 0));
+    out.compensated = true;
+    let mut publisher = Publisher::new(out.view.clone(), out.metrics.clone());
+    publisher.observe(DeviceTiming::new(now, Some(Duration::ZERO), 0), 0.01);
+    publisher.publish(Presentation {
+        sample_rate: soundcraft_time::SampleRate::HZ_48000,
+        system_delay_samples: 4800,
+        ..block(now, 0., 480., Duration::ZERO)
+    });
+    out.session = Some(Arc::new(Session::new("new", soundcraft_time::SampleRate::new(96_000).unwrap())));
+    assert_eq!(out.status().ports["DIN"].effective_total_us, Some(100_000));
+}
+
+#[test]
+fn review_unavailable_generation_never_encodes_another_sessions_tempo() {
+    let now = Instant::now();
+    let mut p = active_port(0, false);
+    let view = View::default();
+    let s = Arc::new(Session::default());
+    for generation in 1..=crate::sync_clock::MAX_REVISIONS as u64 + 1 {
+        view.lock().unwrap().register(SessionRevision { generation, doc: s.clone(), remap: true }, true);
+    }
+    view.lock().unwrap().push(Presentation { generation: 1, ..block(now, 0., 480., Duration::ZERO) });
+    let stats = Stats::default();
+    p.poll("DIN", now, &s, &view, &stats, &mut vec![]);
+    assert!(p.link.as_ref().unwrap().messages.is_empty());
+    let next = now + Duration::from_millis(10);
+    view.lock().unwrap().push(Presentation { generation: 9, pass: 2, ..block(next, 0., 480., Duration::ZERO) });
+    p.poll("DIN", next, &s, &view, &stats, &mut vec![]);
+    assert_eq!(p.link.unwrap().messages.iter().map(|(_, m)| m[0]).collect::<Vec<_>>(), [START, CLOCK]);
 }
 
 #[test]
@@ -958,7 +1054,7 @@ fn tempo_change_relocates_when_the_new_map_becomes_audible() {
 }
 
 #[test]
-fn unavailable_session_generations_fall_forward_and_report_backlog_drops() {
+fn unavailable_session_generations_are_ineligible_and_report_backlog_drops() {
     use crate::sync_clock::MAX_REVISIONS;
     let (cmd, _rx) = channel();
     let mut out = Output::default();
@@ -969,10 +1065,10 @@ fn unavailable_session_generations_fall_forward_and_report_backlog_drops() {
     }
     let latest = out.generation;
     let mut timeline = out.view.lock().unwrap();
-    assert_eq!(timeline.map(1).unwrap().generation, latest);
+    assert!(timeline.map(1).is_none());
     assert_eq!(timeline.map(2).unwrap().generation, 2);
     timeline.retire_before(latest);
-    assert_eq!(timeline.map(2).unwrap().generation, latest);
+    assert!(timeline.map(2).is_none());
     drop(timeline);
     assert_eq!(out.status().session_backlog_drops, 1);
 }
@@ -1019,6 +1115,27 @@ fn connected_worker_accepts_control_and_shuts_down_while_a_future_message_is_pen
     let shutdown = elapsed.elapsed();
     eprintln!("control={control:?} shutdown={shutdown:?}");
     assert!(shutdown < bound, "Output::drop took {shutdown:?}");
+}
+
+#[test]
+fn review_a_stall_beyond_the_repayment_beat_relocates_to_the_current_position() {
+    let t = Instant::now();
+    let view = View::default();
+    let s = Session::default();
+    let mut p = active_port(0, true);
+    let stats = Stats::default();
+    for ms in (0..=240).chain([1200]) {
+        let now = t + Duration::from_millis(ms);
+        if ms % 10 == 0 {
+            view.lock().unwrap().push(Presentation {
+                lead: (!(100..200).contains(&ms)).then_some(Duration::ZERO),
+                ..block(now, ms as f64 * 48., 480., Duration::ZERO)
+            });
+        }
+        p.link.as_mut().unwrap().messages.clear();
+        p.poll("DIN", now, &s, &view, &stats, &mut vec![]);
+    }
+    assert_eq!(p.link.unwrap().messages.iter().map(|(_, m)| m[0]).collect::<Vec<_>>(), [STOP, 0xf2, CONTINUE]);
 }
 
 #[test]
@@ -1085,7 +1202,8 @@ fn a_missed_timing_gap_invalidates_only_the_compensated_route_queue() {
     let mut port = active_port(0, true);
     let delay = Duration::from_millis(20);
     for (index, compensate) in [true, false].into_iter().enumerate() {
-        port.routes[index] = Some(Route { map: None, offset: 0, compensate, encoder: Box::new(Messages(vec![(delay, vec![0xf8])])) });
+        port.routes[index] =
+            Some(Route { map: None, offset: 0, compensate, encoder: Box::new(Messages(vec![(delay, vec![if compensate { 0xf1 } else { 0xf8 }])])) });
     }
     view.lock().unwrap().push(block(base, 0., 480., Duration::ZERO));
     port.poll("desk", base, &song, &view, &stats, &mut vec![]);

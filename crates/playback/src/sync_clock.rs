@@ -154,6 +154,7 @@ pub(crate) struct Timeline {
     pub(crate) timing_epoch: u64,
     pub(crate) late_transport_waiter: Option<std::thread::Thread>,
     timing_waiter: Option<std::thread::Thread>,
+    revision_waiter: Option<std::thread::Thread>,
 }
 impl Default for Timeline {
     fn default() -> Self {
@@ -164,6 +165,7 @@ impl Default for Timeline {
             maps: VecDeque::with_capacity(MAX_REVISIONS),
             late_transport_waiter: None,
             timing_waiter: None,
+            revision_waiter: None,
         }
     }
 }
@@ -180,8 +182,11 @@ impl Timeline {
         self.maps.push_back(revision);
         full
     }
+    pub(crate) fn unversioned(&self) -> bool {
+        self.maps.is_empty()
+    }
     pub(crate) fn map(&self, generation: u64) -> Option<&SessionRevision> {
-        self.maps.iter().find(|r| r.generation == generation).or_else(|| self.maps.back())
+        self.maps.iter().find(|r| r.generation == generation)
     }
     pub(crate) fn retire_before(&mut self, generation: u64) {
         while self.maps.len() > 1 && self.maps.front().is_some_and(|r| r.generation < generation) {
@@ -202,6 +207,12 @@ impl Timeline {
         }
         // The worker arms this once, only after its bounded wait has expired.
         // Ordinary callbacks publish under their existing try_lock without signalling.
+        if self.revision_waiter.is_some()
+            && self.map(block.generation).is_some()
+            && let Some(worker) = self.revision_waiter.take()
+        {
+            worker.unpark();
+        }
         if self.late_transport_waiter.is_some()
             && self.transport_state() != Some((block.pass, block.playing))
             && let Some(waiter) = self.late_transport_waiter.take()
@@ -213,6 +224,9 @@ impl Timeline {
         }
         self.blocks.push_back(block);
     }
+    pub(crate) fn mixer_delay(&self) -> Option<(soundcraft_time::SampleRate, usize)> {
+        self.blocks.back().map(|block| (block.sample_rate, block.system_delay_samples))
+    }
     pub(crate) fn transport_state(&self) -> Option<(u64, bool)> {
         self.blocks.back().map(|block| (block.pass, block.playing))
     }
@@ -221,7 +235,11 @@ impl Timeline {
     pub(crate) fn wait_for_timing(&mut self) {
         self.timing_waiter.get_or_insert_with(std::thread::current);
     }
+    pub(crate) fn wait_for_revision(&mut self) {
+        self.revision_waiter.get_or_insert_with(std::thread::current);
+    }
     pub(crate) fn clear_waiters(&mut self) {
+        self.revision_waiter = None;
         self.timing_waiter = None;
         self.late_transport_waiter = None;
     }
@@ -249,7 +267,6 @@ pub(crate) struct CallbackMetrics {
     // 1 = unknown; otherwise 2 + 2 * microseconds + retained. Valid lead <= 1 s.
     lead_reading: AtomicU64,
     pub(crate) fresh_lead_reports: AtomicU64,
-    pub system_delay_samples: AtomicU64,
     pub max_gap_us: AtomicU64,
     pub late_buffers: AtomicU64,
     pub clamps: AtomicU64,
@@ -297,7 +314,6 @@ impl Publisher {
         }
     }
     pub(crate) fn publish(&self, block: Presentation) {
-        self.metrics.system_delay_samples.store(block.system_delay_samples as u64, Relaxed);
         if let Ok(mut timeline) = self.view.try_lock() {
             timeline.push(block);
         }
