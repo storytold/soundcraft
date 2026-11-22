@@ -214,6 +214,22 @@ pub(crate) struct Reader {
     jitter_count: usize,
     jitter_index: usize,
 }
+// With at most 32 observations, the nearest-rank 95th percentile is either
+// the largest value or the second largest (ties count as separate samples).
+fn percentile95(window: &[u32; 32], count: usize) -> u32 {
+    let samples = &window[..count];
+    if samples.len() < 20 {
+        return samples.iter().copied().max().unwrap_or(0);
+    }
+    let mut largest = 0;
+    let mut second = 0;
+    for &value in samples {
+        second = second.max(largest.min(value));
+        largest = largest.max(value);
+    }
+    second
+}
+
 impl Reader {
     pub(crate) fn reset(&mut self, source: Option<u8>) {
         self.speed_anchor = None;
@@ -283,16 +299,8 @@ impl Reader {
         stats.incoming_timecode = self.incoming;
         stats.incoming_rate = self.incoming.map(|p| if p.rate.is_drop() { "30df" } else { p.rate.label() });
         stats.rate_mismatch = self.incoming_status().1;
-        if self.jitter_count > 0 {
-            let mut samples = self.jitter;
-            samples[..self.jitter_count].sort_unstable();
-            stats.input_jitter_p95_us = samples[(self.jitter_count * 95).div_ceil(100) - 1];
-        }
-        if self.arrival_count > 0 {
-            let mut delays = self.arrival_delays;
-            delays[..self.arrival_count].sort_unstable();
-            stats.arrival_delay_p95_us = delays[(self.arrival_count * 95).div_ceil(100) - 1];
-        }
+        stats.input_jitter_p95_us = percentile95(&self.jitter, self.jitter_count);
+        stats.arrival_delay_p95_us = percentile95(&self.arrival_delays, self.arrival_count);
         stats
     }
     /// The host only needs notification when a transport transition is accepted.
@@ -860,6 +868,22 @@ mod dropout_tests {
             reader.read(&message, 0);
         }
         assert_eq!(reader.diagnostics().rate_mismatch.map(|m| (m.incoming, m.speed_deviation_ppm)), Some(("25", None)));
+    }
+
+    #[test]
+    fn diagnostic_percentiles_match_sorted_prefixes_with_ties_and_outliers() {
+        for seed in 0..64u32 {
+            let values = std::array::from_fn(|i| match (i as u32 + seed) % 5 {
+                0 => u32::MAX,
+                1 | 2 => 0,
+                _ => (i as u32 * 7919 + seed * 613) % 1009,
+            });
+            for count in 0..=values.len() {
+                let mut expected = values[..count].to_vec();
+                expected.sort_unstable();
+                assert_eq!(percentile95(&values, count), expected.get((count * 95).div_ceil(100).wrapping_sub(1)).copied().unwrap_or(0));
+            }
+        }
     }
 
     fn read_with_jitter(reader: &mut Reader, source: FrameRate, group: i64) {
