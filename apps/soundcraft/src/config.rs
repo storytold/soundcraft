@@ -311,6 +311,34 @@ mod config_tests {
     }
 
     #[test]
+    fn midi_sync_pref_reload_preserves_the_full_migrated_input_and_output_union() {
+        use soundcraft_ui_egui::midi_sync::{MAX_SYNC_PORTS, MidiSyncPort};
+        let path = std::env::temp_dir().join(format!("soundcraft-calibration-union-{}.json", std::process::id()));
+        let mut ui = soundcraft_ui_egui::UiState::default();
+        for i in 0..MAX_SYNC_PORTS {
+            // Older versions allowed a full list independently in each direction.
+            let input = format!("A Input {i}");
+            let output = format!("Z Output {i}");
+            ui.midi_sync.ports.insert(input.clone(), MidiSyncPort { in_offset_samples: -20, ..Default::default() });
+            ui.midi_sync.ports.insert(output.clone(), MidiSyncPort { enabled: true, out_offset_samples: 40, ..Default::default() });
+            ui.midi_sync.port_ids.insert(output, format!("physical-out-{i}"));
+            // A former input may subsequently be used for output without growing the union.
+            if i == 0 {
+                ui.midi_sync.ports.get_mut(&input).unwrap().enabled = true;
+                ui.midi_sync.port_ids.insert(input, "another-output".into());
+            }
+        }
+        ui.mtc_output_port = Some("ZZ MTC only".into());
+        ui.midi_sync.port_ids.insert("ZZ MTC only".into(), "generator".into());
+        save_ui(&path, &ui).unwrap();
+        let reopened = load_ui(&path).unwrap().unwrap();
+        assert_eq!(reopened.midi_sync, ui.midi_sync);
+        assert_eq!(reopened.mtc_output_port, ui.mtc_output_port);
+        assert!(reopened.status.is_empty());
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
     fn mtc_bad_workstation_fields_recover_independently_and_report_each_bad_value() {
         let path = std::env::temp_dir().join(format!("soundcraft-mtc-pref-recovery-{}.json", std::process::id()));
         for (field, bad) in
