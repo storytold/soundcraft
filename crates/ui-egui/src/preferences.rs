@@ -982,7 +982,7 @@ fn control_ui(ui: &mut egui::Ui, page: PreferencesPage, section: &str, index: us
         }
         Control::Check(text @ "MIDI Notes and Controllers") if section == "Delay Compensation for External Devices" => {
             ui.add_enabled(false, egui::Checkbox::new(&mut draft.compensation.notes, label(text)));
-            ui.label(crate::localization::text("Takes effect once external MIDI track output is available."));
+            ui.label(label("Takes effect once external MIDI track output is available."));
         }
         Control::Check(text) if section == "Delay Compensation for External Devices" => {
             let value = if text == "MIDI Beat Clock" { &mut draft.compensation.beat_clock } else { &mut draft.compensation.mtc };
