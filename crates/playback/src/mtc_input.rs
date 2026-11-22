@@ -752,7 +752,7 @@ mod tests {
                 }
             }
             assert_eq!((reader.stats.locks, reader.stats.losses, reader.stats.hard_relocates, reader.seek_generation), (1, 0, 0, 0));
-            reader.read(&[0xf0, 0x7f, 127, 1, 1, if rate.is_drop() { 0x40 } else { 0x60 }, 12, 0, 0, 0xf7], 300_000);
+            reader.read(&[0xf0, 0x7f, 127, 1, 1, if rate.is_drop() { 0x40 } else { 0x60 }, 10, 0, 0, 0xf7], 300_000);
             let Some(ChaseEvent::Locate(p)) = reader.take(300_000) else { panic!("explicit locate") };
             assert!(p.samples(sr) < rate.samples_at_frame(day, sr), "unrelated full-frame locate starts a new day");
         }
