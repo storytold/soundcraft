@@ -93,9 +93,10 @@ impl HostWindow {
         let class = class_name().ok_or_else(|| "cannot register the editor window class".to_string())?;
         let title = wide(title);
         let (ow, oh) = outer_size(STYLE, 0, w, h);
-        // #1448: land fully inside the work area of the monitor under the pointer — the slot
-        // that was clicked — rather than wherever Windows happens to cascade the window.
-        let (x, y, ow, oh) = opening_rect(ow, oh);
+        // #1448: land inside the work area of the monitor under the pointer — the slot that was
+        // clicked — rather than wherever Windows happens to cascade the window. The size stays
+        // what the caller negotiated with the view; shrinking here would clip its controls.
+        let (x, y) = opening_pos(ow, oh);
         // SAFETY: main thread; the active window (or null) of this thread's queue.
         let owner = unsafe { GetActiveWindow() };
         // SAFETY: registered class and NUL-terminated strings that outlive the call; the
@@ -155,12 +156,27 @@ impl HostWindow {
     }
 }
 
+/// The largest client area that fits the work area of the monitor under the pointer, so a caller
+/// can negotiate a smaller view size before the window exists (#1448). The window chrome is ours,
+/// so it is subtracted from the work area rather than clamped.
+pub fn fit_client(w: f64, h: f64) -> (f64, f64) {
+    let mut pt = POINT::default();
+    // SAFETY: `pt` is valid, writable memory; a failed read still yields a valid work area.
+    let _ = unsafe { GetCursorPos(&mut pt) };
+    let work = work_area_at(pt);
+    let (cw, ch) = outer_size(STYLE, 0, 0.0, 0.0);
+    let fw = (work.right - work.left - cw).max(1);
+    let fh = (work.bottom - work.top - ch).max(1);
+    (w.min(f64::from(fw)), h.min(f64::from(fh)))
+}
+
 /// Resizes a host window's client area (`window` from [`HostWindow::raw`]); main thread only.
-/// The window stays on its monitor, fitted to the work area (#1448).
-pub fn resize(window: *mut c_void, w: f64, h: f64) {
+/// The window stays on its monitor, fitted to the work area, and the client size it actually
+/// applied comes back so the caller can tell the plugin the agreed size (#1448).
+pub fn resize(window: *mut c_void, w: f64, h: f64) -> (f64, f64) {
     // SAFETY: `IsWindow` accepts any value.
     if !on_main_thread() || window.is_null() || unsafe { IsWindow(window) } == 0 {
-        return;
+        return (w, h);
     }
     // SAFETY: a live window of this thread; style values are read, not changed.
     let (style, ex) = unsafe { (GetWindowLongPtrW(window, GWL_STYLE) as u32, GetWindowLongPtrW(window, GWL_EXSTYLE) as u32) };
@@ -168,11 +184,13 @@ pub fn resize(window: *mut c_void, w: f64, h: f64) {
     let mut rect = RECT::default();
     // SAFETY: a live window of this thread; `rect` is valid, writable memory.
     if unsafe { GetWindowRect(window, &mut rect) } == 0 {
-        return;
+        return (w, h);
     }
-    let (x, y, ow, oh) = fit_window(rect.left, rect.top, ow, oh, work_area_of(window));
+    let (x, y, nw, nh) = fit_window(rect.left, rect.top, ow, oh, work_area_of(window));
     // SAFETY: as above; the window keeps its monitor and stays inside its work area.
-    unsafe { SetWindowPos(window, std::ptr::null_mut(), x, y, ow, oh, SWP_NOZORDER | SWP_NOACTIVATE) };
+    unsafe { SetWindowPos(window, std::ptr::null_mut(), x, y, nw, nh, SWP_NOZORDER | SWP_NOACTIVATE) };
+    // The applied client is the applied outer minus the chrome the style adds.
+    (f64::from((nw - (ow - w as i32)).max(1)), f64::from((nh - (oh - h as i32)).max(1)))
 }
 
 /// The work area (screen minus taskbar and docked bars) of the monitor nearest `pt`.
@@ -199,30 +217,35 @@ fn work_area_of(window: HWND) -> RECT {
     }
 }
 
-/// Where a `w`×`h` window opens: at the pointer, fitted into that monitor's work area; centered
-/// on the primary monitor's work area when the pointer cannot be read (#1448).
-fn opening_rect(w: i32, h: i32) -> (i32, i32, i32, i32) {
+/// Where a `w`×`h` window opens: at the pointer inside that monitor's work area; centered on the
+/// primary monitor's work area when the pointer cannot be read (#1448).
+fn opening_pos(w: i32, h: i32) -> (i32, i32) {
     let mut pt = POINT { x: 0, y: 0 };
     // SAFETY: `pt` is valid, writable memory.
     if unsafe { GetCursorPos(&mut pt) } != 0 {
-        return fit_window(pt.x, pt.y, w, h, work_area_at(pt));
+        return place_inside(pt.x, pt.y, w, h, work_area_at(pt));
     }
     let work = work_area_at(pt);
     let x = work.left + ((work.right - work.left - w) / 2).max(0);
     let y = work.top + ((work.bottom - work.top - h) / 2).max(0);
-    fit_window(x, y, w, h, work)
+    place_inside(x, y, w, h, work)
+}
+
+/// A `w`×`h` window's top-left inside `work` (#1448): fully inside when it fits; at the work
+/// area's own top-left when it is bigger than the monitor — the title bar stays reachable either
+/// way, so an oversized editor's controls can be dragged into view rather than clipped away.
+fn place_inside(x: i32, y: i32, w: i32, h: i32, work: RECT) -> (i32, i32) {
+    let x = x.clamp(work.left, work.left.max(work.right - w));
+    let y = y.clamp(work.top, work.top.max(work.bottom - h));
+    (x, y)
 }
 
 /// The window rect `x`,`y`,`w`,`h` constrained to `work` (#1448): an oversized window shrinks to
-/// the largest size that fits, and the origin moves only as much as needed to land fully inside
-/// (an oversized window keeps its top-left at the work area's — always reachable).
+/// the largest size that fits, and the origin moves only as much as needed to land fully inside.
 fn fit_window(x: i32, y: i32, w: i32, h: i32, work: RECT) -> (i32, i32, i32, i32) {
-    let ww = (work.right - work.left).max(1);
-    let wh = (work.bottom - work.top).max(1);
-    let w = w.clamp(1, ww);
-    let h = h.clamp(1, wh);
-    let x = x.clamp(work.left, work.left + (ww - w).max(0));
-    let y = y.clamp(work.top, work.top + (wh - h).max(0));
+    let w = w.clamp(1, (work.right - work.left).max(1));
+    let h = h.clamp(1, (work.bottom - work.top).max(1));
+    let (x, y) = place_inside(x, y, w, h, work);
     (x, y, w, h)
 }
 
@@ -246,6 +269,15 @@ mod tests {
         // Bigger than the monitor: largest size that fits, top-left at the work area's (#1448).
         let (x, y, w, h) = fit_window(500, 500, 4000, 2000, WORK);
         assert!((x, y, w, h) == (-1920, 0, 1920, 1040));
+    }
+
+    #[test]
+    fn place_inside_keeps_oversized_windows_draggable() {
+        // A window that cannot shrink keeps its size and puts its title bar at the work area's
+        // top-left, so its clipped-side controls are reached by dragging, not lost (#1448).
+        assert_eq!(place_inside(500, 500, 4000, 2000, WORK), (-1920, 0));
+        // A fitting window still lands fully inside near the pointer.
+        assert_eq!(place_inside(-50, 1000, 400, 300, WORK), (-400, 740));
     }
 
     #[test]

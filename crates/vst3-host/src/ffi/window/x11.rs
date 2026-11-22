@@ -156,15 +156,23 @@ impl HostWindow {
     }
 }
 
+/// The largest client area a new window should get: the requested size — X11 hosts do not
+/// constrain editor windows to a work area.
+pub fn fit_client(w: f64, h: f64) -> (f64, f64) {
+    (w, h)
+}
+
 /// Resizes a host window (`window` from [`HostWindow::raw`]); main thread only.
-pub fn resize(window: *mut c_void, w: f64, h: f64) {
-    let Some(x) = x().filter(|_| on_main_thread()) else { return };
-    let Ok(id) = Window::try_from(window as usize) else { return };
+/// Returns the applied size (the requested one — the window manager applies it as asked).
+pub fn resize(window: *mut c_void, w: f64, h: f64) -> (f64, f64) {
+    let Some(x) = x().filter(|_| on_main_thread()) else { return (w, h) };
+    let Ok(id) = Window::try_from(window as usize) else { return (w, h) };
     if id == 0 {
-        return;
+        return (w, h);
     }
     let (width, height) = dims(w, h);
     x.size_hints(id, width.into(), height.into());
     let _ = x.conn.configure_window(id, &ConfigureWindowAux::new().width(u32::from(width)).height(u32::from(height)));
     let _ = x.conn.flush();
+    (w, h)
 }

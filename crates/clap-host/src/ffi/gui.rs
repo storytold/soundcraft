@@ -191,6 +191,23 @@ impl GuiLink {
                 (w, h) = (a.min(16_384), b.min(16_384));
             }
         }
+        // #1448: a GUI too big for the monitor under the pointer gets the plugin's own nearest
+        // supported size; one that cannot resize keeps its size — the window then opens with its
+        // title bar on-screen so every control stays reachable by dragging, never clipped.
+        let (fw, fh) = hostwin::fit_client(f64::from(w), f64::from(h));
+        let mut negotiated = false;
+        if (fw, fh) != (f64::from(w), f64::from(h))
+            && let (Some(can), Some(adjust)) = (vt.can_resize, vt.adjust_size)
+            // SAFETY: live plugin with a created GUI; both out-pointers are valid locals.
+            && unsafe { can(g.plugin) }
+        {
+            let (mut aw, mut ah) = (fw as u32, fh as u32);
+            // SAFETY: as above; `adjust` writes the nearest size the plugin supports.
+            if unsafe { adjust(g.plugin, &mut aw, &mut ah) } && aw > 0 && ah > 0 {
+                (w, h) = (aw.min(16_384), ah.min(16_384));
+                negotiated = true;
+            }
+        }
         let win = match hostwin::HostWindow::new(title, f64::from(w), f64::from(h)) {
             Ok(win) => win,
             Err(e) => {
@@ -205,6 +222,10 @@ impl GuiLink {
             win.close();
             GuiLink::destroy(g);
             return Err("the editor could not attach to its window".into());
+        }
+        if negotiated && let Some(f) = vt.set_size {
+            // SAFETY: live plugin with a parented embedded GUI; it is told the size it agreed to.
+            unsafe { f(g.plugin, w, h) };
         }
         g.window = Some(win);
         let shown = match vt.show {
@@ -292,10 +313,11 @@ impl GuiLink {
                 && let Some(win) = &g.window
             {
                 let (w, h) = ((resize >> 32) as u32, resize as u32);
-                hostwin::resize(win.raw(), f64::from(w), f64::from(h));
+                let (aw, ah) = hostwin::resize(win.raw(), f64::from(w), f64::from(h));
                 if let Some(f) = GuiLink::vt(&g).and_then(|v| v.set_size) {
-                    // SAFETY: live plugin with a created embedded GUI, main thread.
-                    unsafe { f(g.plugin, w, h) };
+                    // SAFETY: live plugin with a created embedded GUI, main thread; the plugin is
+                    // told the size the host applied, which the work-area fit can shrink (#1448).
+                    unsafe { f(g.plugin, aw.max(0.0) as u32, ah.max(0.0) as u32) };
                 }
             }
             if g.window.as_ref().is_some_and(|w| !w.is_visible()) {

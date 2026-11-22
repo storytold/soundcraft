@@ -82,13 +82,21 @@ impl HostWindow {
     }
 }
 
+/// The largest client area a new window should get: the requested size — macOS hosts do not
+/// constrain editor windows to a work area.
+pub fn fit_client(w: f64, h: f64) -> (f64, f64) {
+    (w, h)
+}
+
 /// Resizes a host window's content (`window` from [`HostWindow::raw`]); main thread only.
-pub fn resize(window: *mut c_void, w: f64, h: f64) {
+/// Returns the applied size (the requested one — no constraint is applied here).
+pub fn resize(window: *mut c_void, w: f64, h: f64) -> (f64, f64) {
     if MainThreadMarker::new().is_none() {
-        return;
+        return (w, h);
     }
     // SAFETY: null or a window the editor link keeps retained while the frame is attached.
     if let Some(win) = unsafe { window.cast::<NSWindow>().as_ref() } {
         win.setContentSize(NSSize::new(w, h));
     }
+    (w, h)
 }

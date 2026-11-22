@@ -76,9 +76,13 @@ impl IPlugFrameTrait for PlugFrame {
         // SAFETY: in-pointer from the plugin (or null, handled).
         let Some(r) = (unsafe { new_size.as_mut() }) else { return sb::kInvalidArgument };
         let (w, h) = rect_size(r);
-        window::resize(self.window.load(Ordering::Relaxed), w, h);
+        let (aw, ah) = window::resize(self.window.load(Ordering::Relaxed), w, h);
         // SAFETY: the plugin passes its own live view (or null, handled).
         if let Some(v) = unsafe { vst3::ComRef::from_raw(view) } {
+            // The work-area fit can shrink what the plugin asked for; it is told the size the
+            // host window actually applied so both sides agree (#1448).
+            r.right = r.left + aw as i32;
+            r.bottom = r.top + ah as i32;
             // SAFETY: valid view; `r` is the plugin's own writable rect.
             unsafe { v.onSize(r) };
         }
@@ -174,7 +178,21 @@ impl EditorLink {
         let mut r = sb::ViewRect { left: 0, top: 0, right: 400, bottom: 300 };
         // SAFETY: valid view; `r` is writable. On failure the default size stays.
         unsafe { view.getSize(&mut r) };
-        let (w, h) = rect_size(&r);
+        let (mut w, mut h) = rect_size(&r);
+        // #1448: a view too big for the monitor under the pointer gets the plugin's own nearest
+        // supported size; a view that cannot resize keeps its size — the window then opens with
+        // its title bar on-screen so every control stays reachable by dragging, never clipped.
+        let (fw, fh) = window::fit_client(w, h);
+        let mut negotiated = false;
+        if (fw, fh) != (w, h) && unsafe { view.canResize() } == sb::kResultTrue {
+            let mut fit = sb::ViewRect { left: r.left, top: r.top, right: r.left + fw as i32, bottom: r.top + fh as i32 };
+            // SAFETY: valid view; `fit` is writable and the plugin may adjust it in place.
+            if ok(unsafe { view.checkSizeConstraint(&mut fit) }) {
+                r = fit;
+                (w, h) = rect_size(&r);
+                negotiated = true;
+            }
+        }
         let win = window::HostWindow::new(title, w, h)?;
         let frame = ComWrapper::new(PlugFrame::new(win.raw()));
         if let Some(f) = frame.as_com_ref::<sb::IPlugFrame>() {
@@ -191,6 +209,10 @@ impl EditorLink {
             frame.run_loop.clear();
             win.close();
             return Err("the editor could not attach to its window".into());
+        }
+        if negotiated {
+            // SAFETY: valid, attached view; `r` is the size the plugin agreed to and got.
+            unsafe { view.onSize(&mut r) };
         }
         win.raise();
         g.view = Some(view);

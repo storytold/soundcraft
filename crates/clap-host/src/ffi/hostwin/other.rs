@@ -22,4 +22,11 @@ impl HostWindow {
     pub fn close(self) {}
 }
 
-pub fn resize(_window: *mut c_void, _w: f64, _h: f64) {}
+/// The largest client area a new window should get (no host windows on this platform).
+pub fn fit_client(w: f64, h: f64) -> (f64, f64) {
+    (w, h)
+}
+
+pub fn resize(_window: *mut c_void, w: f64, h: f64) -> (f64, f64) {
+    (w, h)
+}
