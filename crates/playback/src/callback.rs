@@ -315,6 +315,12 @@ impl AudioState {
                 Cmd::Play { from, end, looped } => self.begin_play(from, end, looped, false),
                 Cmd::PlayClock { origin, render_from } => {
                     self.begin_play(render_from, None, None, false);
+                    // Outputs locate at the incoming musical cue. The audio cursor
+                    // already includes the lead needed to present its first block.
+                    #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+                    if let Some(clock) = &mut self.clock {
+                        clock.origin = Some(origin);
+                    }
                     self.mix.start_midi_at(origin);
                     self.following_clock = true;
                 }

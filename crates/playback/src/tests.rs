@@ -2230,6 +2230,25 @@ fn a_stopped_locate_while_monitoring_publishes_the_transport_position() {
     assert_eq!((block.sample, block.origin), (42_000., 42_000));
 }
 
+#[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+#[test]
+fn external_start_publishes_the_wire_cue_separately_from_the_render_head() {
+    use crate::sync_clock::{DeviceTiming, Publisher, View};
+    use std::time::{Duration, Instant};
+    for origin in [0, 390_000] {
+        let (mut state, tx, ..) = keyboard_session();
+        let view = View::default();
+        tx.send(Cmd::Clock(Some(Publisher::new(view.clone(), Arc::default())))).unwrap();
+        let now = Instant::now();
+        state.device_timing = Some(DeviceTiming::new(now, Some(Duration::ZERO), 0));
+        let render_from = origin + 728;
+        tx.send(Cmd::PlayClock { origin, render_from }).unwrap();
+        state.fill(&mut [0.; 512], 2);
+        let block = view.lock().unwrap().read(now, true, 0).0.unwrap();
+        assert_eq!((block.origin, block.sample), (origin, render_from as f64));
+    }
+}
+
 #[test]
 fn rejected_online_recording_cannot_leak_a_tentative_note_into_the_next_take() {
     let (mut state, tx, feed, ..) = keyboard_session();
