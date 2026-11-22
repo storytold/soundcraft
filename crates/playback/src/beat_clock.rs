@@ -30,6 +30,7 @@ pub(crate) struct Cursor {
     last_position: Option<i64>,
     stopped_spp: Option<u16>,
     delayed_start: bool,
+    observed_stop: bool,
     out_of_range: bool,
 }
 
@@ -42,8 +43,13 @@ impl Cursor {
         let origin_changed = self.pass_origin.replace(origin) != Some(origin);
         // A worker attached or reopened well into a pass must start at the
         // current musical position. Replaying the old origin would send two locates.
-        let timely_origin =
-            changed && block.playing && tempo.samples_to_ticks_f(at, rate) - tempo.samples_to_ticks_f(origin, rate) < TICKS_PER_CLOCK as f64;
+        let was_stopped = std::mem::replace(&mut self.observed_stop, !block.playing);
+        // A continuously observed start at zero is unambiguous even if the first
+        // audio buffer arrived a pulse late. Freshly attached workers still locate
+        // to live time, as do workers more than a sixteenth into the new pass.
+        let window = if was_stopped && origin == 0 && !origin_changed { RELAUNCH_PULSES } else { 1 };
+        let timely_origin = changed && block.playing
+            && tempo.samples_to_ticks_f(at, rate) - tempo.samples_to_ticks_f(origin, rate) < (window * TICKS_PER_CLOCK) as f64;
         if timely_origin {
             let mut sent_clock = false;
             self.advance(true, origin, true, tempo, rate, |m| {

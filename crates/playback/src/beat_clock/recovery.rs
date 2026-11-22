@@ -20,7 +20,7 @@ impl Repayment {
         let start = sample(first);
         let next = sample(first.saturating_add(1));
         let delay = at.saturating_sub(start);
-        if delay <= 0 || delay.saturating_mul(4) < next.saturating_sub(start) || at >= next {
+        if delay <= 0 || next <= start || delay.saturating_mul(4) < next.saturating_sub(start) {
             return None;
         }
         let last_pulse = first.saturating_add(i64::from(CLOCKS_PER_QUARTER));
