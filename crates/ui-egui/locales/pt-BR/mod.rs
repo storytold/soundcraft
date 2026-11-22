@@ -1,18 +1,6 @@
 /// Returns the Brazilian Portuguese translation for a source-language UI string.
 pub(super) fn translate(source: &str) -> Option<&'static str> {
     Some(match source {
-        "Follow external MIDI Clock" => "Seguir clock MIDI externo",
-        "Waiting" => "Aguardando",
-        "Coasting" => "Em curso livre",
-        "Stopped" => "Parado",
-        "Follow MIDI clock" => "Seguir clock MIDI",
-        "Sync" => "Sincronização",
-        "External MIDI clock" => "Clock MIDI externo",
-        "Input offset" => "Deslocamento de entrada",
-        "Effective input offset (samples)" => "Deslocamento efetivo de entrada (amostras)",
-        "Negative values make SoundCraft respond earlier." => "Valores negativos fazem o SoundCraft responder mais cedo.",
-        "MIDI clock input" => "Entrada de clock MIDI",
-        "Stop if MIDI clock is lost" => "Parar ao perder o clock MIDI",
         "Audio output “{name}” is unavailable. Reconnect it in Playback Engine when stopped." => {
             "A saída de áudio “{name}” está indisponível. Reconecte-a no mecanismo de reprodução quando o transporte estiver parado."
         }
@@ -2173,12 +2161,6 @@ error_templates! {
     "Freewheel must be 4 to 40 frames" => "A tolerância deve ser de 4 a 40 quadros",
     "Jam Sync must be a boolean" => "Jam Sync deve ser um valor booleano",
     "Invalid timecode label at this frame rate" => "Código de tempo inválido para esta taxa de quadros",
-    "Select a MIDI clock input" => "Selecione uma entrada de clock MIDI",
-    "Take MTC chase offline before following MIDI clock" => "Desative o seguimento de MTC antes de seguir o clock MIDI",
-    "The MIDI clock input is also enabled as a clock output" => "A entrada de clock MIDI também está habilitada como saída de clock",
-    "MIDI input calibration must be within the sync timing horizon" => "A calibração da entrada MIDI deve estar dentro do intervalo de sincronização",
-    "Disable external MIDI clock follow before going online" => "Desative o seguimento de clock MIDI externo antes de ativar a sincronização online",
-    "Choose separate MIDI ports for Beat Clock output and external clock follow" => "Escolha portas MIDI diferentes para enviar o Beat Clock e seguir o clock externo",
     "Choose an MTC output port" => "Escolha uma porta de saída MTC",
     "Disable MTC output before going online" => "Desative a saída MTC antes de ativar o modo online",
     "MIDI output is unavailable on this platform" => "A saída MIDI está indisponível nesta plataforma",
