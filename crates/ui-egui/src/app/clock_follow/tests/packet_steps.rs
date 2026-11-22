@@ -79,7 +79,7 @@ fn render_train(from: f64, to: f64, transition: usize, n: usize, mode: Delivery)
         let until = times.get(p).map_or(end, |at| sr.samples(*at as f64 / 1e6));
         while pos < until {
             let frames = (until - pos).min(512) as usize;
-            mixer.render_with_clock_limit(&song, pos, frames, &mut block, feed.clock_render_tick());
+            mixer.render_clock_block(&song, pos, frames, &mut block, feed.clock_render_tick(), feed.clock_delivery());
             for (i, &v) in block[0][..frames].iter().enumerate() {
                 let high = v.abs() > 0.001;
                 if high {

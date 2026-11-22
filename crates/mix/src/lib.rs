@@ -111,6 +111,15 @@ pub fn main_channels(s: &Session) -> usize {
     s.main_format().channels().clamp(MAIN_CHANNELS, MAX_CHANNELS)
 }
 
+/// Placement of MIDI and click events inside a device block following an external clock.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ClockDelivery {
+    #[default]
+    Wire,
+    Predicted,
+    Coalesced,
+}
+
 /// Renders sessions. Keep one per playback stream; plugin state persists across blocks.
 pub struct MixEngine {
     sample_rate: f32,
@@ -290,6 +299,7 @@ impl MixEngine {
                 i.failed = false;
             }
             s.held.clear();
+            s.late_releases.clear();
             s.chase = true;
             s.live.clear();
             s.align.clear();
@@ -404,16 +414,25 @@ impl MixEngine {
     /// Render audio and live input continuously, but dispatch score events only through
     /// the inclusive wire tick. A later block consumes the retained range exactly once.
     pub fn render_with_clock_limit(&mut self, s: &Session, pos: Samples, frames: usize, out: &mut [Vec<f32>], through_tick: Option<i64>) {
-        self.render_clock_block(s, pos, frames, out, through_tick, false);
+        self.render_clock_block(s, pos, frames, out, through_tick, ClockDelivery::Wire);
     }
 
     /// Schedule the part of this projected block that is still on time at its
     /// actual sample offset, even if earlier wire-limited blocks held a backlog.
     pub fn render_with_clock_prediction(&mut self, s: &Session, pos: Samples, frames: usize, out: &mut [Vec<f32>], through_tick: i64) {
-        self.render_clock_block(s, pos, frames, out, Some(through_tick), true);
+        self.render_clock_block(s, pos, frames, out, Some(through_tick), ClockDelivery::Predicted);
     }
 
-    fn render_clock_block(&mut self, s: &Session, pos: Samples, frames: usize, out: &mut [Vec<f32>], through_tick: Option<i64>, projected: bool) {
+    /// Render audio continuously and place newly admitted score events according to their Clock delivery.
+    pub fn render_clock_block(
+        &mut self,
+        s: &Session,
+        pos: Samples,
+        frames: usize,
+        out: &mut [Vec<f32>],
+        through_tick: Option<i64>,
+        delivery: ClockDelivery,
+    ) {
         let frames = frames.min(self.max_block);
         self.begin_block(s, pos, frames);
         self.clocked_click |= through_tick.is_some();
@@ -430,7 +449,7 @@ impl MixEngine {
         if frames > 0 && !self.monitor_only && score.start < score.end && note_start < score.end {
             self.midi_origin = None;
         }
-        let blk = Block { pos, frames, note_start, score, projected, any_solo: any_solo(s) };
+        let blk = Block { pos, frames, note_start, score, delivery, any_solo: any_solo(s) };
         let order = std::mem::take(&mut self.order);
         // Phase 1: independent strips (audio, instrument, MIDI) in parallel.
         let mut work = std::mem::take(&mut self.work);
@@ -489,6 +508,7 @@ impl MixEngine {
                         i.plugin.all_notes_off();
                     }
                     st.held.clear();
+                    st.late_releases.clear();
                     st.chase = true;
                     st.live.clear();
                 }

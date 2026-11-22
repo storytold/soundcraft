@@ -2,7 +2,7 @@ use super::automation::{Level, apply_gain, transport_at, volume_level};
 use super::clips::{ClipFx, clip_fx_params, render_clip};
 use super::instances::{INSTRUMENT_SLOT, PluginFailures, PreparedInstance, create_instance_for, is_third_party};
 use super::live_midi::{LiveMidi, LiveNotes, MidiPorts, midi_thru};
-use super::midi::{chase_controllers, schedule_notes};
+use super::midi::{LateRelease, chase_controllers, schedule_notes};
 use super::pan::{PanSpec, apply_matrix, build_matrix, identity_matrix};
 use super::routing::solo_muted;
 use super::{
@@ -42,6 +42,7 @@ pub(crate) struct Strip {
     pub(crate) sample: Option<Arc<SourceAudio>>,
     /// MIDI notes currently sounding on the instrument (pitch), for note-offs at stops/seek.
     pub(crate) held: Vec<u8>,
+    pub(crate) late_releases: Vec<LateRelease>,
     /// Notes held by live MIDI input.
     pub(crate) live: LiveNotes,
     /// The instrument's next block starts somewhere new: send it the controllers in effect there.
@@ -145,6 +146,7 @@ impl Strip {
             instrument: None,
             sample: None,
             held: Vec::new(),
+            late_releases: Vec::with_capacity(128),
             live: LiveNotes::default(),
             chase: true,
             clips_played: false,
@@ -224,7 +226,7 @@ pub(crate) struct LiveInput<'a> {
 #[derive(Clone, Copy)]
 pub(crate) struct Block {
     pub(crate) note_start: Samples,
-    pub(crate) projected: bool,
+    pub(crate) delivery: super::ClockDelivery,
     pub(crate) score: soundcraft_time::Range,
     pub(crate) pos: Samples,
     pub(crate) frames: usize,
@@ -235,7 +237,9 @@ impl Block {
     /// A held event range can span more than one device block when Clock returns.
     /// Keep those events ordered within this block; voices still render at the device rate.
     pub(crate) fn score_offset(self, relative: Samples) -> usize {
-        if self.projected && self.score.start < self.pos && self.score.end > self.pos {
+        if self.delivery == super::ClockDelivery::Coalesced
+            || (self.delivery == super::ClockDelivery::Predicted && self.score.start < self.pos && self.score.end > self.pos)
+        {
             // The device can now commit on-time events at their original sample.
             // Only events already overdue are delivered at the start of the block.
             return self.score.start.saturating_add(relative).saturating_sub(self.pos).max(0) as usize;
@@ -358,12 +362,13 @@ fn render_instrument(s: &Session, t: &Track, strip: &mut Strip, live: &LiveInput
             chased = true;
         }
         if !live.monitor_only {
-            schedule_notes(s, t, blk, inst, &mut strip.held, &mut strip.live);
+            schedule_notes(s, t, blk, inst, &mut strip.held, &mut strip.live, &mut strip.late_releases);
             strip.clips_played = true;
         } else {
             // Stopped: the clips are silent, only live MIDI input plays. Playback that ran to its
             // end left the clips' notes without their note-offs: end them here, except a pitch a
             // live key still holds.
+            strip.late_releases.clear();
             for note in strip.held.drain(..) {
                 if !strip.live.holds(note) {
                     inst.plugin.note_off(0, note);

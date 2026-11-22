@@ -18,29 +18,65 @@ fn midi_offset(s: &Session, t: &Track) -> i64 {
         .map_or(0, |v| v as i64)
 }
 
+/// A late Clock packet can put an attack and its release less than a millisecond
+/// apart. Preserve the score duration from the delivered attack, after the release arrives.
+pub(crate) struct LateRelease {
+    pitch: u8,
+    earliest: Samples,
+    released: bool,
+}
+
 /// Send note on/offs and controllers for MIDI clips overlapping the block.
 ///
 /// `live` holds the notes played live on the same instrument. Instruments end notes by pitch, so
 /// a clip note-off is not sent while a live key holds that pitch: the key's own release ends it.
 /// A note-off held back that way is told to `live`: when the key goes up earlier in the same
 /// block, the note still lasts until the clip's note-off.
-pub(crate) fn schedule_notes(s: &Session, t: &Track, mut blk: Block, inst: &mut PluginSlot, held: &mut Vec<u8>, live: &mut LiveNotes) {
-    if blk.frames == 0 || blk.score.start == blk.score.end {
+pub(crate) fn schedule_notes(
+    s: &Session,
+    t: &Track,
+    mut blk: Block,
+    inst: &mut PluginSlot,
+    held: &mut Vec<u8>,
+    live: &mut LiveNotes,
+    late: &mut Vec<LateRelease>,
+) {
+    if blk.frames == 0 {
         return;
     }
-    if blk.projected && blk.score.start < blk.pos && blk.pos < blk.score.end {
+    if blk.delivery == super::ClockDelivery::Predicted && blk.score.start < blk.pos && blk.pos < blk.score.end {
         // Opening the presentation window can release a whole note and its note-off
         // together. Keep their existing ordered offsets for this strip when the held
         // interval contains MIDI. Empty backlog leaves new attacks on their samples.
         let overdue = Block { score: Range { start: blk.score.start, end: blk.pos }, ..blk };
-        blk.projected = !clip_events::<true>(s, t, overdue, inst, held, live);
+        if clip_events::<true>(s, t, overdue, inst, held, live, late) {
+            blk.delivery = super::ClockDelivery::Wire;
+        }
     }
-    clip_events::<false>(s, t, blk, inst, held, live);
+    if blk.score.start < blk.score.end {
+        clip_events::<false>(s, t, blk, inst, held, live, late);
+    }
+    let end = blk.pos.saturating_add(blk.frames as i64);
+    late.retain(|note| {
+        if note.released && note.earliest < end {
+            release_clip_note(inst, held, live, note.pitch, note.earliest.saturating_sub(blk.pos).max(0) as usize);
+            return false;
+        }
+        true
+    });
 }
 
 // Detection uses the exact same clip boundaries, realtime properties and MIDI offsets
 // as dispatch. The probe returns at the first event without changing voices or controls.
-fn clip_events<const DETECT: bool>(s: &Session, t: &Track, blk: Block, inst: &mut PluginSlot, held: &mut Vec<u8>, live: &mut LiveNotes) -> bool {
+fn clip_events<const DETECT: bool>(
+    s: &Session,
+    t: &Track,
+    blk: Block,
+    inst: &mut PluginSlot,
+    held: &mut Vec<u8>,
+    live: &mut LiveNotes,
+    late: &mut Vec<LateRelease>,
+) -> bool {
     let sr = s.sample_rate;
     // MIDI Track Offsets: the track's notes sound `offset` samples later (earlier if negative), so
     // the block looks that far back into the clips.
@@ -107,6 +143,17 @@ fn clip_events<const DETECT: bool>(s: &Session, t: &Track, blk: Block, inst: &mu
                         release_clip_note(inst, held, live, n.pitch, at.min(1));
                         deferred &= !bit;
                     }
+                    if let Some(index) = late.iter().position(|note| note.pitch == n.pitch) {
+                        let previous = late.swap_remove(index);
+                        if previous.released {
+                            let release = previous.earliest.saturating_sub(blk.pos).max(0) as usize;
+                            release_clip_note(inst, held, live, n.pitch, at.min(release));
+                        }
+                    }
+                    if blk.delivery == super::ClockDelivery::Coalesced && on.saturating_add(offset) < blk.pos && off > on {
+                        let earliest = blk.pos.saturating_add(at as i64).saturating_add(off.saturating_sub(on));
+                        late.push(LateRelease { pitch: n.pitch, earliest, released: false });
+                    }
                     inst.plugin.note_on(at, n.pitch, n.velocity);
                     if !held.contains(&n.pitch) && held.len() < 128 {
                         held.push(n.pitch);
@@ -116,7 +163,16 @@ fn clip_events<const DETECT: bool>(s: &Session, t: &Track, blk: Block, inst: &mu
                     if DETECT {
                         return true;
                     }
-                    if attack && on < pos && off <= pos {
+                    if let Some(index) = late.iter().position(|note| note.pitch == n.pitch) {
+                        let earliest = late[index].earliest;
+                        if earliest >= blk.pos.saturating_add(blk.frames as i64) {
+                            late[index].released = true;
+                        } else {
+                            late.swap_remove(index);
+                            let at = blk.score_offset(off.saturating_sub(pos)).max(earliest.saturating_sub(blk.pos).max(0) as usize);
+                            release_clip_note(inst, held, live, n.pitch, at);
+                        }
+                    } else if attack && on < pos && off <= pos {
                         deferred |= 1u128 << n.pitch;
                     } else {
                         release_clip_note(inst, held, live, n.pitch, blk.score_offset(off.saturating_sub(pos)));

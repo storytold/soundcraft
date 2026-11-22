@@ -126,7 +126,7 @@ pub(crate) struct Follower {
     pub(crate) next_pulse: i64,
     fit_index: i64,
     // Three F8s within one millisecond cannot be individual beats in the
-    // supported tempo range. Keep every pulse, but fit only batch heads.
+    // supported tempo range. Keep each pulse and fit completed groups by their final ordinal.
     packet_head: Option<(i64, i64)>,
     packed_delivery: bool,
     singleton_groups: u8,
@@ -250,9 +250,15 @@ impl Follower {
         self.awaiting_clock.is_some() || self.events.iter().flatten().any(|action| matches!(action, Action::Play { .. } | Action::Started { .. }))
     }
 
+    pub(crate) fn coalesced_render(&self) -> bool {
+        self.state == State::Locked && self.packed_delivery
+    }
+
     pub(crate) fn render_through_pulse(&self) -> Option<i64> {
         match self.state {
-            State::Locked if self.brake_pulses_left > 0 => Some(self.played_pulse),
+            // While braking or consuming one USB batch, the wire does not yet
+            // establish the next pulse's time.
+            State::Locked if self.brake_pulses_left > 0 || self.packed_delivery => Some(self.played_pulse),
             State::Locked => Some(self.played_pulse.saturating_add(1)),
             State::Stopped => Some(self.played_pulse),
             State::Waiting | State::Coasting => None,
@@ -286,7 +292,9 @@ impl Follower {
     }
     pub(crate) fn snapshot(&self, now_us: i64) -> Snapshot {
         Snapshot {
-            bpm: self.bpm().or_else(|| self.coast_period_us.map(|p| 2_500_000. / p)),
+            // The gap before the first USB batch can resemble a much slower clock.
+            // Three intervals allow the follower to distinguish that startup burst.
+            bpm: (self.fit_index >= 4).then(|| self.bpm()).flatten().or_else(|| self.coast_period_us.map(|p| 2_500_000. / p)),
             recovering_tempo_step: self.step_pulses_left > 0 || self.brake_pulses_left > 0,
             braking: self.brake_pulses_left > 0,
             tempo_ramp: self.state == State::Locked && !self.packed_delivery && self.step_pulses_left == 0 && self.steady.is_tempo_ramp(),
@@ -420,8 +428,12 @@ impl Follower {
         self.step_pulses_left = self.step_pulses_left.saturating_sub(1);
         if self.packet_head.is_none_or(|(_, stamp)| at.saturating_sub(stamp) > 1000) {
             if self.packed_delivery
-                && let Some((head, _)) = self.packet_head
+                && let Some((head, stamp)) = self.packet_head
             {
+                // A group can only reach the driver once its last pulse exists.
+                // The first arrival timestamp is therefore an observation of the
+                // previous group's last ordinal once the next group starts.
+                self.observe_period(self.fit_index - 1, stamp);
                 let width = self.fit_index - head;
                 self.singleton_groups = if width == 1 { self.singleton_groups.saturating_add(1) } else { 0 };
                 if self.singleton_groups >= 4 {
@@ -431,18 +443,16 @@ impl Follower {
             }
             self.packet_head = Some((self.fit_index, at));
         }
-        let (head, stamp) = self.packet_head.unwrap_or((self.fit_index, at));
+        let (head, _) = self.packet_head.unwrap_or((self.fit_index, at));
         if !self.packed_delivery && self.fit_index - head >= 2 {
             self.packed_delivery = true;
             self.singleton_groups = 0;
             self.short.clear();
             self.steady.clear();
-            self.short.push(head, stamp);
-            self.steady.push(head, stamp);
             self.changes = 0;
         }
-        if !self.packed_delivery || self.fit_index == head {
-            self.observe_period(at);
+        if !self.packed_delivery {
+            self.observe_period(self.fit_index, at);
         }
         let start_requested = self.awaiting_clock.take().is_some();
         if self.state == State::Coasting && (start_requested || self.bpm().is_some()) {
@@ -468,8 +478,8 @@ impl Follower {
             self.next_pulse = self.next_pulse.saturating_add(1);
         }
     }
-    fn observe_period(&mut self, at: i64) {
-        self.short.push(self.fit_index, at);
+    fn observe_period(&mut self, ordinal: i64, at: i64) {
+        self.short.push(ordinal, at);
         // Long regression suppresses USB quantisation and timestamp jitter.
         // A sustained slope change outside the short fit's noise band starts a fresh epoch.
         if let (Some(fast), Some(slow)) = (self.short.period_us(), self.steady.period_us()) {
@@ -499,8 +509,8 @@ impl Follower {
                 self.changes = 0;
             }
         }
-        self.phase_error_us = self.steady.predict_us(self.fit_index).map_or(0, |pred| at.saturating_sub(pred));
-        self.steady.push(self.fit_index, at);
+        self.phase_error_us = self.steady.predict_us(ordinal).map_or(0, |pred| at.saturating_sub(pred));
+        self.steady.push(ordinal, at);
     }
     /// System common bytes may be interrupted by real-time messages, even inside SysEx.
     /// Channel data and incomplete or malformed system messages never trigger a transport action.

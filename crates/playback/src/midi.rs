@@ -154,6 +154,7 @@ pub struct MidiFeed {
     // A single writer (under clock_follow) publishes an optional period and its matching pulse.
     // The callback never waits for a writer; a concurrent change disables prediction for that read.
     clock_render_generation: AtomicU64,
+    clock_render_coalesced: AtomicBool,
     clock_render_pulse: AtomicI64,
     clock_render_stamp: AtomicI64,
     clock_render_period: AtomicU64,
@@ -216,6 +217,7 @@ impl Default for MidiFeed {
             clock_follow: Mutex::default(),
             clock_source: AtomicUsize::new(usize::MAX),
             clock_render_generation: AtomicU64::new(0),
+            clock_render_coalesced: AtomicBool::new(false),
             clock_render_pulse: AtomicI64::new(i64::MAX),
             clock_render_stamp: AtomicI64::new(0),
             clock_render_period: AtomicU64::new(0),
@@ -425,6 +427,7 @@ impl MidiFeed {
         let (stamp, period) = input.render_prediction().unwrap_or((0, 0.));
         self.clock_render_generation.fetch_add(1, Ordering::SeqCst);
         self.clock_render_pulse.store(pulse, Ordering::SeqCst);
+        self.clock_render_coalesced.store(input.coalesced_render(), Ordering::SeqCst);
         self.clock_render_stamp.store(stamp, Ordering::SeqCst);
         self.clock_render_period.store(period.to_bits(), Ordering::SeqCst);
         self.clock_render_generation.fetch_add(1, Ordering::SeqCst);
@@ -437,25 +440,41 @@ impl MidiFeed {
         self.clock_output_window(callback_us, buffer_us, presentation_end_us).0
     }
 
-    pub(crate) fn clock_output_window(&self, callback_us: i64, buffer_us: i64, presentation_end_us: i64) -> (Option<i64>, bool) {
+    pub(crate) fn clock_output_window(
+        &self,
+        callback_us: i64,
+        buffer_us: i64,
+        presentation_end_us: i64,
+    ) -> (Option<i64>, soundcraft_mix::ClockDelivery) {
+        use soundcraft_mix::ClockDelivery;
         let generation = self.clock_render_generation.load(Ordering::SeqCst);
         let Some(hard) = self.clock_render_tick() else {
-            return (None, false);
+            return (None, ClockDelivery::Wire);
         };
+        let wire = self.clock_delivery();
         let stamp = self.clock_render_stamp.load(Ordering::SeqCst);
         let period = f64::from_bits(self.clock_render_period.load(Ordering::SeqCst));
         if !generation.is_multiple_of(2) || self.clock_render_generation.load(Ordering::SeqCst) != generation {
-            return (self.clock_render_tick(), false);
+            return (self.clock_render_tick(), self.clock_delivery());
         }
         let age = callback_us.saturating_sub(stamp);
         if period == 0. || (buffer_us as f64) < period || age < 0 || age > period.ceil() as i64 || presentation_end_us <= callback_us {
-            return (Some(hard), false);
+            return (Some(hard), wire);
         }
         const TICKS: i64 = soundcraft_time::TICKS_PER_QUARTER / 24;
         let elapsed = presentation_end_us.saturating_sub(stamp) as f64;
         let extent = (elapsed * TICKS as f64 / period).ceil() as i64;
         let projected = hard.saturating_add(extent.saturating_sub(TICKS).max(0));
-        (Some(projected), projected > hard)
+        (Some(projected), if projected > hard { ClockDelivery::Predicted } else { wire })
+    }
+
+    /// Event placement for a wire-limited device block, including when latency timing is unavailable.
+    pub fn clock_delivery(&self) -> soundcraft_mix::ClockDelivery {
+        if self.clock_render_coalesced.load(Ordering::Acquire) {
+            soundcraft_mix::ClockDelivery::Coalesced
+        } else {
+            soundcraft_mix::ClockDelivery::Wire
+        }
     }
 
     /// Inclusive clip/click event horizon. Coasting has no external render limit.

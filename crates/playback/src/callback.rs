@@ -728,7 +728,7 @@ impl AudioState {
     }
 
     /// Render the next block at the session rate into `pending`.
-    fn render_next(&mut self, quantum: usize, through: Option<i64>, projected: bool) {
+    fn render_next(&mut self, quantum: usize, through: Option<i64>, delivery: soundcraft_mix::ClockDelivery) {
         let mut n = quantum.clamp(1, BLOCK);
         if let Some(l) = self.looped
             && self.pos >= l.end
@@ -776,11 +776,7 @@ impl AudioState {
         self.due_midi(n);
         self.mix.monitor_only = !self.playing;
         self.mix.recording = self.recording;
-        if let Some(limit) = through.filter(|_| projected) {
-            self.mix.render_with_clock_prediction(&self.session, self.pos, n, &mut self.pending, limit);
-        } else {
-            self.mix.render_with_clock_limit(&self.session, self.pos, n, &mut self.pending, through);
-        }
+        self.mix.render_clock_block(&self.session, self.pos, n, &mut self.pending, through, delivery);
         self.send_garbage();
         self.pending_len = n;
         #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
@@ -951,7 +947,7 @@ impl AudioState {
                 // Do not commit a full internal quantum past the physical callback end.
                 let render_frames =
                     if follow.is_some() { quantum.min((remaining as f64 * step + self.read).ceil() as usize).max(1) } else { quantum };
-                let (through, projected) = follow.as_ref().map_or((None, false), |feed| {
+                let (through, delivery) = follow.as_ref().map_or((None, soundcraft_mix::ClockDelivery::Wire), |feed| {
                     #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
                     if let Some(timing) = self.device_timing.filter(|t| !t.clamped && t.lead().is_some()) {
                         // The device stamp belongs to the original callback, including when
@@ -962,9 +958,9 @@ impl AudioState {
                         let buffer_us = (self.device_buffer_frames as f64 * 1e6 / self.device_rate).round() as i64;
                         return feed.clock_output_window(feed.clock(), buffer_us, feed.timestamp_at(end));
                     }
-                    (feed.clock_render_tick(), false)
+                    (feed.clock_render_tick(), feed.clock_delivery())
                 });
-                self.render_next(if projected { render_frames } else { quantum }, through, projected);
+                self.render_next(if delivery == soundcraft_mix::ClockDelivery::Predicted { render_frames } else { quantum }, through, delivery);
                 #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
                 if let Some(tail) = previous_tail.take()
                     && let Some(block) = &mut presentation
