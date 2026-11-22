@@ -43,8 +43,9 @@ pub(crate) fn silent_pcm_prefix(s: &Session, from: i64, to: i64) -> bool {
             if clip.stretch != 1.0 || audio.buffer.channels.is_empty() || audio.buffer.channels.len() > 8 {
                 return false;
             }
-            let a = offset.saturating_add(begin.saturating_sub(clip.start)).max(0) as usize;
-            let b = offset.saturating_add(end.saturating_sub(clip.start)).max(0) as usize;
+            let source_index = |at: i64| usize::try_from(offset.saturating_add(at.saturating_sub(clip.start)).max(0)).unwrap_or(usize::MAX);
+            let a = source_index(begin);
+            let b = source_index(end);
             for channel in &audio.buffer.channels {
                 let span = &channel[a.min(channel.len())..b.min(channel.len())];
                 if span.len() > samples_left || span.iter().any(|v| *v != 0.0) {
