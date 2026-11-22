@@ -937,6 +937,7 @@ mod tests {
         h.event(Event::PointerMoved(at + vec2(0.0, -20.0)));
         h.run();
         let after_move = *h.state();
+        assert!(after_move > 0.0, "the pointer movement changes the fader before it is held still");
         h.run_steps(3);
         assert_eq!(*h.state(), after_move, "a stationary held fader keeps its last value");
     }
