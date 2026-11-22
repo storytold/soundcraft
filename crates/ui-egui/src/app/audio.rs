@@ -39,6 +39,9 @@ impl SoundApp {
         if self.recorder.is_some() || self.recorder_failed || self.player.is_none() {
             return;
         }
+        if self.player.as_ref().is_some_and(Player::awaiting_asio_output) {
+            return;
+        }
         match soundcraft_playback::record::Recorder::open_with(&self.ui.audio) {
             Ok(r) => {
                 if let Some(p) = &self.player {
@@ -55,6 +58,12 @@ impl SoundApp {
 
     /// Stop the transport, keeping a take in progress, when the audio output fails.
     pub(super) fn watch_output(&mut self) {
+        if let Some(p) = &mut self.player {
+            p.recover_idle_asio(self.engine.transport.playing, self.engine.transport.recording, !self.engine.transport_requests.is_empty(), || {
+                self.recorder = None;
+                self.recorder_failed = false;
+            });
+        }
         let Some(p) = &self.player else { return };
         let Some(trouble) = p.trouble() else { return };
         let name = p.device_name.clone();
