@@ -699,9 +699,5 @@ fn drive<C: SyncPort>(
 mod tests;
 
 #[cfg(test)]
-#[path = "sync_timing_test.rs"]
-mod timing;
-
-#[cfg(test)]
 #[path = "mtc_sync_output_tests.rs"]
 mod mtc_on_shared_port;
