@@ -79,9 +79,13 @@ impl Ring {
     }
 
     pub(crate) fn pop(&self) -> Option<(i64, u32)> {
+        self.pop_until(self.write.load(Ordering::Acquire))
+    }
+
+    fn pop_until(&self, end: usize) -> Option<(i64, u32)> {
         let n = self.events.len();
         let r = self.read.load(Ordering::Relaxed);
-        if r == self.write.load(Ordering::Acquire) {
+        if r == end {
             return None;
         }
         let out = (self.stamps.get(r % n)?.load(Ordering::Relaxed), self.events.get(r % n)?.load(Ordering::Relaxed));
@@ -160,6 +164,11 @@ pub struct MidiFeed {
     /// a full queue is not written into the queue yet.
     writers: Mutex<u64>,
     recorded: Ring,
+    /// Only accepted takes are visible to the UI. The audio writer may stage a punch-in
+    /// in this same ring while its start command is pending.
+    recorded_visible: AtomicUsize,
+    pending_lost: AtomicU32,
+    pending_gap: AtomicBool,
     /// When the feed was made. Not on the web: there is no MIDI input there, and no clock in std.
     #[cfg(not(target_arch = "wasm32"))]
     epoch: Instant,
@@ -213,6 +222,9 @@ impl Default for MidiFeed {
             incoming: Ring::new(INCOMING),
             writers: Mutex::new(0),
             recorded: Ring::new(RECORDED),
+            recorded_visible: AtomicUsize::new(0),
+            pending_lost: AtomicU32::new(0),
+            pending_gap: AtomicBool::new(false),
             #[cfg(not(target_arch = "wasm32"))]
             epoch: Instant::now(),
             connected: AtomicUsize::new(0),
@@ -535,16 +547,21 @@ impl MidiFeed {
     /// Put a recorded entry in the queue to the UI thread. One that does not fit is counted, and
     /// the next that fits is preceded by a [`RecordedMidi::LOST`] for all ports.
     fn record_entry(&self, at: Samples, entry: u32) {
-        if self.record_gap.load(Ordering::Relaxed) {
+        let pending = self.begin_pending();
+        let (gap, losses) = if pending { (&self.pending_gap, &self.pending_lost) } else { (&self.record_gap, &self.recorded_lost) };
+        if gap.load(Ordering::Relaxed) {
             if !self.recorded.push(at, lost_entry(u8::MAX)) {
-                self.recorded_lost.fetch_add(1, Ordering::Relaxed);
+                losses.fetch_add(1, Ordering::Relaxed);
                 return;
             }
-            self.record_gap.store(false, Ordering::Relaxed);
+            gap.store(false, Ordering::Relaxed);
         }
         if !self.recorded.push(at, entry) {
-            self.recorded_lost.fetch_add(1, Ordering::Relaxed);
-            self.record_gap.store(true, Ordering::Relaxed);
+            losses.fetch_add(1, Ordering::Relaxed);
+            gap.store(true, Ordering::Relaxed);
+        }
+        if !pending {
+            self.recorded_visible.store(self.recorded.write.load(Ordering::Relaxed), Ordering::Release);
         }
     }
 
@@ -570,8 +587,22 @@ impl MidiFeed {
     }
 
     /// Audio thread: the command that starts the pass was read.
-    pub(crate) fn pass_begun(&self) {
-        self.begin_pending.store(false, Ordering::Release);
+    pub(crate) fn finish_pending_start(&self, accepted: bool) {
+        if !self.begin_pending.swap(false, Ordering::AcqRel) {
+            return;
+        }
+        let losses = self.pending_lost.swap(0, Ordering::Relaxed);
+        let gap = self.pending_gap.swap(false, Ordering::Relaxed);
+        if accepted {
+            self.recorded_lost.fetch_add(losses, Ordering::Relaxed);
+            if gap {
+                self.record_gap.store(true, Ordering::Relaxed);
+            }
+            self.recorded_visible.store(self.recorded.write.load(Ordering::Relaxed), Ordering::Release);
+        } else {
+            // No consumer has seen the tentative suffix. Rewind only the producer cursor.
+            self.recorded.write.store(self.recorded_visible.load(Ordering::Relaxed), Ordering::Relaxed);
+        }
     }
 
     /// UI thread: a record pass ends. Returns its number, to stop the recording with
@@ -659,7 +690,8 @@ impl MidiFeed {
 
     /// UI thread: move the recorded events so far to the end of `out`.
     pub fn take_recorded(&self, out: &mut Vec<RecordedMidi>) {
-        while let Some((at, e)) = self.recorded.pop() {
+        let end = self.recorded_visible.load(Ordering::Acquire);
+        while let Some((at, e)) = self.recorded.pop_until(end) {
             let e = unpack(e);
             out.push(RecordedMidi { at, port: e.port, status: e.status, data1: e.data1, data2: e.data2 });
         }

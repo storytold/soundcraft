@@ -92,6 +92,7 @@ pub(crate) struct AudioState {
     looped: Option<Range>,
     /// Rendered frames waiting to be consumed (planar, main channels) and the fractional read index.
     pending: Vec<Vec<f32>>,
+    pending_rate: f64,
     /// Stereo fold-down gains per main channel (used when the device has fewer channels).
     fold: [(f32, f32); MAX_CHANNELS],
     pub(crate) pending_len: usize,
@@ -201,6 +202,7 @@ impl AudioState {
             device_buffer_frames: 0,
             looped: None,
             pending: vec![vec![0.0; BLOCK]; nch],
+            pending_rate: device_rate,
             pending_len: 0,
             read: 0.0,
             device_rate,
@@ -252,6 +254,9 @@ impl AudioState {
                 }
                 Cmd::Recording(r, pass) => {
                     if r && (self.chasing || self.midi.as_ref().is_some_and(|f| f.mtc_online())) {
+                        if let Some(feed) = &self.midi {
+                            feed.finish_pending_start(false);
+                        }
                         continue;
                     }
                     self.recording = r;
@@ -260,7 +265,7 @@ impl AudioState {
                     // The pass has begun here: its start is no longer waited for.
                     if r && let Some(feed) = &self.midi {
                         self.midi_started = self.playing && feed.begin_pending();
-                        feed.pass_begun();
+                        feed.finish_pending_start(true);
                     }
                     // The UI thread waits for this pass before it builds the clips. It is told
                     // once the callback has also taken what arrived since it last looked at the
@@ -760,6 +765,7 @@ impl AudioState {
         self.mix.render(&self.session, self.pos, n, &mut self.pending);
         self.send_garbage();
         self.pending_len = n;
+        self.pending_rate = self.session.sample_rate.as_f64();
         #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
         {
             self.pending_revision = Some((self.session_generation, self.session.sample_rate, self.system_delay()));
@@ -856,7 +862,7 @@ impl AudioState {
         let step = self.step(speed);
         #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
         let mut presentation = self.clock.as_mut().map(|clock| {
-            let sample = self.pos as f64 - self.pending_len as f64 + self.read;
+            let sample = if self.playing { self.pos as f64 - self.pending_len as f64 + self.read } else { self.pos as f64 };
             let limit = sample + callback_frames as f64 * step;
             let origin = *clock.origin.get_or_insert(sample.floor() as i64);
             let (heard_at, lead) = match self.device_timing {
@@ -908,6 +914,8 @@ impl AudioState {
             let mut block = presentation?;
             block.generation = generation;
             block.sample_rate = sample_rate;
+            block.samples_per_second = speed * sample_rate.as_f64();
+            block.limit = block.sample + callback_frames as f64 * block.samples_per_second / self.device_rate.max(1.);
             block.system_delay_samples = delay;
             Some(block)
         });
@@ -915,6 +923,7 @@ impl AudioState {
         if !midi_live {
             self.drop_midi();
         }
+        let mut read_step = if self.pending_len == 0 { step } else { speed * self.pending_rate / self.device_rate.max(1.) };
         for (frame_index, frame) in out.chunks_mut(channels).enumerate() {
             #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
             let _ = frame_index;
@@ -922,6 +931,11 @@ impl AudioState {
                 self.read -= self.pending_len as f64;
                 if !self.playing && !monitoring {
                     break;
+                }
+                // The unconsumed fraction is in the outgoing revision's units.
+                if read_step != step {
+                    self.read *= step / read_step;
+                    read_step = step;
                 }
                 self.render_next(quantum);
                 #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
@@ -946,7 +960,7 @@ impl AudioState {
                 a * (1.0 - fr) + b * fr
             };
             write_frame(frame, channels, nch, sounding, &self.fold, sample);
-            self.read += step;
+            self.read += read_step;
         }
         #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
         if let (Some(clock), Some(tail)) = (&self.clock, previous_tail) {
@@ -966,7 +980,7 @@ impl AudioState {
         step: f64,
     ) {
         let Some(clock) = &self.clock else { return };
-        tail.limit = tail.sample + at as f64 * step;
+        tail.limit = tail.sample + at as f64 * tail.samples_per_second / self.device_rate.max(1.);
         if at != 0 {
             clock.publish(tail);
         }
