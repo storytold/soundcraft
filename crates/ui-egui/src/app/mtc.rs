@@ -228,6 +228,27 @@ mod tests {
     }
 
     #[test]
+    fn recovery_reports_the_document_name_and_the_external_offset_conflict() {
+        let mut host = app();
+        let dir = std::env::temp_dir().join(format!("soundcraft-mtc-conflict-recovery-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut s = host.engine.session().clone();
+        s.edit.values.insert("sync.external_offset".into(), 42.);
+        s.edit.values.insert("midi.mtc.external_offset_frames".into(), 100.);
+        std::fs::write(dir.join("session.scraft"), s.to_json().unwrap()).unwrap();
+        let leftover = soundcraft_engine::autosave::Leftover {
+            dir: dir.clone(),
+            name: "Take 12".into(),
+            origin: None,
+            saved: std::time::SystemTime::now(),
+            recording: false,
+        };
+        host.recover(&leftover);
+        std::fs::remove_file(dir.join("session.scraft")).unwrap();
+        std::fs::remove_dir(dir).unwrap();
+        assert!(host.ui.status.contains("Take 12") && host.ui.status.contains("conflicting timecode offsets"), "{}", host.ui.status);
+    }
+    #[test]
     fn offset_edit_repositions_a_stopped_reader_without_another_packet() {
         let mut host = app();
         let feed = host.midi_inputs.as_ref().unwrap().feed().clone();
@@ -255,8 +276,9 @@ mod tests {
         host.mtc_command(&json!({"online":false})).unwrap();
         host.run("transport.record", json!({})).unwrap();
         host.handle_transport(0.);
-        assert!(host.engine.transport.recording);
-        host.stop_play();
+        assert!(host.midi_connected() && host.player.is_none());
+        assert!(!host.engine.transport.recording, "a MIDI-only take needs a running audio callback");
+        assert!(host.ui.status.contains("Playback Engine"));
     }
 
     #[test]

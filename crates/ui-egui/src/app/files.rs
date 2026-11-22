@@ -132,6 +132,7 @@ impl SoundApp {
         match soundcraft_engine::autosave::recover(&mut self.engine, left) {
             Ok(missing) => {
                 self.document_replaced();
+                let offset_warning = self.engine.has_conflicting_timecode_offsets().then(|| self.ui.status.clone());
                 if self.write_autosave() {
                     soundcraft_engine::autosave::discard(left);
                 }
@@ -143,6 +144,10 @@ impl SoundApp {
                         n = n
                     ),
                 };
+                if let Some(warning) = offset_warning {
+                    self.ui.status.push(' ');
+                    self.ui.status.push_str(&warning);
+                }
             }
             Err(e) => self.ui.status = crate::localized_format!("Couldn't recover “{name}”: {e}", name = left.name, e = e),
         }
