@@ -820,6 +820,15 @@ impl Player {
         }
         self.position()
     }
+    /// Last timed normal-speed render block as (transport pass, presentation time, session sample).
+    pub fn clock_follow_sample(&self) -> Option<(u64, std::time::Instant, f64)> {
+        #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+        {
+            self.beat_clock.lock().unwrap_or_else(PoisonError::into_inner).clock_follow_sample()
+        }
+        #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
+        None
+    }
     /// Latest clock destination or synchronization error for the setup dialog.
     pub fn midi_clock_error(&self) -> Option<String> {
         #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]

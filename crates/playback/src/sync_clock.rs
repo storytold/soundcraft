@@ -174,6 +174,14 @@ impl Default for Timeline {
     }
 }
 impl Timeline {
+    pub(crate) fn clock_follow_sample(&self) -> Option<(u64, Instant, f64)> {
+        let b = self.blocks.back()?;
+        (self.timed_blocks > 0 && b.playing && b.lead.is_some() && b.looped.is_none()
+            && b.samples_per_second == b.sample_rate.as_f64()
+            && b.heard_at.elapsed() < Duration::from_millis(250))
+            .then_some((b.pass, b.heard_at, b.sample))
+    }
+
     /// Called by the control thread, never by the audio callback.
     pub(crate) fn register(&mut self, revision: SessionRevision, active: bool) -> bool {
         if !active {

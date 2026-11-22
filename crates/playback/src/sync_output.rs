@@ -316,6 +316,9 @@ impl Output {
         let now = Instant::now();
         self.view.lock().unwrap_or_else(std::sync::PoisonError::into_inner).read(now, true, 0).0.map(|b| b.sample_index_at(now))
     }
+    pub(crate) fn clock_follow_sample(&self) -> Option<(u64, Instant, f64)> {
+        self.view.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clock_follow_sample()
+    }
     pub(crate) fn timing_issue(&self) -> Option<crate::OutputTimingIssue> {
         let clock = self.compensated && !self.beat.is_empty();
         let encoder = self.additional.as_ref().is_some_and(|(_, _, compensated)| *compensated);

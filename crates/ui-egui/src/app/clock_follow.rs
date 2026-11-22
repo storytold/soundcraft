@@ -4,6 +4,7 @@ use soundcraft_playback::clock_follow::{Action, Snapshot, State};
 use soundcraft_time::{SampleRate, TICKS_PER_QUARTER, TempoMap};
 
 mod history;
+mod device_time;
 
 const TICKS_PER_PULSE: i64 = TICKS_PER_QUARTER / 24;
 
@@ -24,6 +25,7 @@ pub(crate) struct Host {
     waiting_start: Option<(i64, i64)>,
     // Fixed pulse and device timestamp at Start/Continue; later edits preserve this origin.
     anchor: Option<(i64, i64)>,
+    device_time: device_time::DeviceTime,
 }
 
 impl crate::UiState {
@@ -310,11 +312,14 @@ impl SoundApp {
         }
         self.clock_follow.actions = events;
         if let Some(grid) = self.engine.playback_tempo.as_mut() {
+            let device_snapshot = self.clock_follow.device_time.project(s, self.clock_follow.anchor, sr, || {
+                self.player.as_ref().and_then(|player| player.clock_follow_sample())
+            });
             self.clock_follow.grid_dirty |= update_grid(
                 grid,
                 self.clock_follow.anchor,
                 self.clock_follow.waiting_tick,
-                s,
+                device_snapshot,
                 sr,
                 self.player.as_ref().filter(|p| p.is_playing()).map_or(0, |p| {
                     // Leave at least one external pulse and one device buffer for delivery.
