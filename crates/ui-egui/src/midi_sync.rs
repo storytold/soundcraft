@@ -45,9 +45,9 @@ pub fn valid_port(name: &str) -> bool {
     !name.trim().is_empty() && name.len() <= 1024
 }
 impl MidiSync {
-    fn bind_configured(&mut self, available: BTreeMap<String, String>) {
+    fn bind_configured(&mut self, available: BTreeMap<String, String>, mtc: Option<&str>) {
         for (label, id) in available {
-            if self.ports.contains_key(&label) && valid_port(&id) {
+            if (self.ports.contains_key(&label) || mtc == Some(label.as_str())) && valid_port(&id) {
                 self.port_ids.entry(label).or_insert(id);
             }
         }
@@ -130,14 +130,17 @@ impl SoundApp {
             if ids.len() > 256 || ids.iter().any(|(name, id)| !valid_port(name) || !valid_port(id)) {
                 return Err("Invalid MIDI output binding".into());
             }
-            next.bind_configured(ids);
+            next.bind_configured(ids, self.ui.mtc_output_port.as_deref());
         } else if (args.contains_key("ports") || args.contains_key("destination"))
             && next.ports.keys().any(|label| !next.port_ids.contains_key(label))
             && let Ok(available) = soundcraft_playback::midi_sync_output_ids(&next.port_ids)
         {
-            next.bind_configured(available);
+            next.bind_configured(available, self.ui.mtc_output_port.as_deref());
         }
-        next.port_ids.retain(|name, _| next.ports.contains_key(name));
+        next.port_ids.retain(|name, _| next.ports.contains_key(name) || self.ui.mtc_output_port.as_ref() == Some(name));
+        if next.ports.len() == MAX_SYNC_PORTS && self.ui.mtc_output_port.as_ref().is_some_and(|name| !next.ports.contains_key(name)) {
+            return Err("Invalid MIDI sync port name, count or sample offset".into());
+        }
         let limit = soundcraft_playback::max_sync_offset_samples(self.engine.session().sample_rate);
         if next.ports.iter().any(|(name, port)| {
             port.offset_samples.unsigned_abs() > limit as u64
@@ -194,7 +197,7 @@ impl SoundApp {
         }
         let Some(player) = &self.player else { return };
         if let Some(ids) = player.take_opened_sync_output_ids() {
-            self.ui.midi_sync.bind_configured(ids);
+            self.ui.midi_sync.bind_configured(ids, self.ui.mtc_output_port.as_deref());
         }
         let ids = &self.ui.midi_sync.port_ids;
         apply_beat_clock_routes(&self.ui.midi_sync, &mut self.applied_midi_sync, |ports, compensate| {
@@ -220,6 +223,18 @@ fn apply_beat_clock_routes(config: &MidiSync, applied: &mut Option<MidiSync>, en
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn mtc_sync_route_keeps_its_device_id_after_beat_clock_is_disabled() {
+        let mut app = SoundApp::new(soundcraft_engine::Engine::default(), None, crate::Services::default());
+        let label = "DIN (2)";
+        app.sync_command("setup.midi_beat_clock", &json!({"ports": {(label): {"enabled":true}}, "port_ids": {(label):"midi-b"}})).unwrap();
+        app.mtc_output_command(&json!({"port":label})).unwrap();
+        app.sync_command("setup.midi_beat_clock", &json!({"ports":{}})).unwrap();
+        assert_eq!(app.ui.midi_sync.port_ids.get(label).map(String::as_str), Some("midi-b"));
+        app.mtc_output_command(&json!({"port":null})).unwrap();
+        assert!(app.ui.midi_sync.port_ids.is_empty());
+    }
 
     #[test]
     fn duplicate_calibrations_roundtrip_as_independent_enabled_routes() {

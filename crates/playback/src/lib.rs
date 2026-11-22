@@ -714,7 +714,7 @@ impl Player {
     /// Play MIDI devices through record-enabled and input-monitored MIDI and instrument tracks.
     pub fn set_midi(&self, feed: Arc<midi::MidiFeed>) {
         #[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
-        feed.set_sync_waker(self.beat_clock.lock().unwrap_or_else(PoisonError::into_inner).transport_waker());
+        feed.set_sync_waker(self.beat_clock.lock().unwrap_or_else(PoisonError::into_inner).attach_mtc_feed(&feed));
         let _ = self.tx.send(Cmd::Midi(feed));
     }
 

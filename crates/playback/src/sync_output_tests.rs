@@ -1134,3 +1134,15 @@ fn a_stop_cancels_clock_repayment_and_a_new_pass_starts_normally() {
     }
     assert_eq!(messages, [(300, vec![STOP]), (400, vec![START]), (400, vec![CLOCK])]);
 }
+
+#[test]
+fn mtc_sync_route_warns_only_with_an_open_chase_source() {
+    let mut output = Output::default();
+    let feed = Arc::new(crate::midi::MidiFeed::default());
+    feed.set_sync_waker(output.attach_mtc_feed(&feed));
+    assert_eq!(output.timing_issue(), None);
+    feed.set_mtc_source(Some(1));
+    assert_eq!(output.timing_issue(), Some(crate::OutputTimingIssue::Unknown));
+    feed.set_mtc_source(None);
+    assert_eq!(output.timing_issue(), None);
+}

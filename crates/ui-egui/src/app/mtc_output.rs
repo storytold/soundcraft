@@ -1,16 +1,22 @@
 use super::{SoundApp, Value, json};
-use crate::localization::text;
+use crate::{
+    localization::text,
+    midi_sync::{MAX_SYNC_PORTS, valid_port},
+};
 use soundcraft_playback::mtc;
 
 impl SoundApp {
     pub(crate) fn mtc_output_settings(&mut self, ui: &mut egui::Ui) {
         let mut chosen = self.ui.mtc_output_port.clone();
+        let mut chosen_id = None;
         craft_ui::ComboBox::from_label(text("MTC Generator Port")).selected_text(chosen.as_deref().unwrap_or(text("None"))).show_ui(ui, |ui| {
             ui.selectable_value(&mut chosen, None, text("None"));
-            match soundcraft_playback::midi_sync_outputs() {
+            match soundcraft_playback::midi_sync_output_ids(&self.ui.midi_sync.port_ids) {
                 Ok(ports) => {
-                    for port in ports {
-                        ui.selectable_value(&mut chosen, Some(port.clone()), port);
+                    for (label, id) in ports {
+                        if ui.selectable_value(&mut chosen, Some(label.clone()), label).changed() {
+                            chosen_id = Some(id);
+                        }
                     }
                 }
                 Err(e) => {
@@ -19,7 +25,7 @@ impl SoundApp {
             }
         });
         if chosen != self.ui.mtc_output_port
-            && let Err(e) = self.mtc_output_command(&json!({"port":chosen}))
+            && let Err(e) = self.mtc_output_command_with_id(&json!({"port":chosen}), chosen_id)
         {
             self.ui.status = crate::localization::error_text(&e);
         }
@@ -45,10 +51,17 @@ impl SoundApp {
             self.ui.mtc_output_port.as_ref().filter(|_| self.ui.gen_mtc && !self.mtc_online && mtc::supported(self.engine.session().frame_rate));
         let desired = port.map(|name| (name.as_str(), self.ui.midi_sync.ports.get(name).map_or(0, |p| p.offset_samples)));
         let compensate = self.ui.midi_sync.compensation.mtc;
-        apply_mtc_route(&mut self.applied_mtc_output, desired, compensate, |route, compensation| player.try_set_mtc_generator(route, compensation));
+        apply_mtc_route(&mut self.applied_mtc_output, desired, compensate, |route, compensation| {
+            player.restore_sync_output_ids(&self.ui.midi_sync.port_ids);
+            player.try_set_mtc_generator(route, compensation)
+        });
     }
 
     pub(crate) fn mtc_output_command(&mut self, p: &Value) -> Result<Value, String> {
+        self.mtc_output_command_with_id(p, None)
+    }
+
+    fn mtc_output_command_with_id(&mut self, p: &Value, chosen_id: Option<String>) -> Result<Value, String> {
         let args = p.as_object().ok_or("Expected MTC generator settings")?;
         if args.keys().any(|k| !matches!(k.as_str(), "port" | "enabled" | "list_ports" | "offset_samples")) {
             return Err("Unknown MTC generator setting".into());
@@ -75,7 +88,17 @@ impl SoundApp {
                 return Err(mtc::UNSUPPORTED_RATE.into());
             }
         }
-        let ports = if list { Some(soundcraft_playback::midi_sync_outputs()?) } else { None };
+        let config = &self.ui.midi_sync;
+        if config.ports.len() == MAX_SYNC_PORTS && selected.as_ref().is_some_and(|name| !config.ports.contains_key(name)) {
+            return Err("Invalid MIDI sync port name, count or sample offset".into());
+        }
+        let available = if list {
+            Some(soundcraft_playback::midi_sync_output_ids(&config.port_ids)?)
+        } else if chosen_id.is_none() && args.contains_key("port") && selected.as_ref().is_some_and(|name| !config.port_ids.contains_key(name)) {
+            soundcraft_playback::midi_sync_output_ids(&config.port_ids).ok()
+        } else {
+            None
+        };
         if let Some(value) = args.get("offset_samples") {
             let name = selected.as_ref().ok_or("Choose an MTC output port")?;
             let limit = soundcraft_playback::max_sync_offset_samples(self.engine.session().sample_rate);
@@ -93,6 +116,13 @@ impl SoundApp {
                 ports.entry(name.clone()).or_default().offset_samples = offset;
             }
         }
+        let config = &mut self.ui.midi_sync;
+        config.port_ids.retain(|name, _| config.ports.contains_key(name) || selected.as_ref() == Some(name));
+        if let Some(name) = &selected
+            && let Some(id) = chosen_id.or_else(|| available.as_ref()?.get(name).cloned()).filter(|id| valid_port(id))
+        {
+            config.port_ids.entry(name.clone()).or_insert(id);
+        }
         self.ui.gen_mtc = enabled;
         self.ui.mtc_output_port = selected;
         self.service_mtc_output();
@@ -103,8 +133,8 @@ impl SoundApp {
                 .zip(self.ui.mtc_output_port.as_ref())
                 .is_some_and(|(player, name)| player.midi_sync_status().ports.get(name).is_some_and(|port| port.connected && port.mtc_enabled));
         let mut state = json!({"port":self.ui.mtc_output_port,"enabled":enabled,"active":active,"offset_samples":self.ui.mtc_output_port.as_ref().and_then(|n|self.ui.midi_sync.ports.get(n)).map_or(0,|p|p.offset_samples),"frame_rate":self.engine.session().frame_rate.label()});
-        if let Some(ports) = ports {
-            state["ports"] = json!(ports);
+        if list && let Some(ports) = available {
+            state["ports"] = json!(ports.into_keys().collect::<Vec<_>>());
         }
         Ok(state)
     }
