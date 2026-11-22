@@ -1,6 +1,6 @@
 # Hardware parity
 
-> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-11-20 · **Change:** minor (G-11 MIDI Beat Clock output; record to disk: done, #84 and #888, previously trivial: bounces of a bus fed by an aux compensate its latency, #246; previously minor: MIDI input devices, live play-through with controllers, and MIDI recording) · **Target:** Avid Pro Tools Ultimate 2026.4.1
+> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-11-18 · **Change:** minor (record to disk: done, #84 and #888, previously trivial: bounces of a bus fed by an aux compensate its latency, #246; previously minor: MIDI input devices, live play-through with controllers, and MIDI recording) · **Target:** Avid Pro Tools Ultimate 2026.4.1
 
 A DAW is judged by how it drives audio interfaces, MIDI gear, control surfaces and sync. This is
 SoundCraft's weakest dimension. Ours is measured from `crates/playback` (cpal) and the absence of
@@ -51,11 +51,10 @@ Legend: ✅ works · 🟡 partial · ❌ missing.
 
 | Feature | Pro Tools | SoundCraft |
 |---|---|---|
-| MTC generate / chase | ✅ | ❌ Tracked in [#1663](https://github.com/storytold/soundcraft/pull/1663). |
-| LTC chase, 9-pin machine control | ✅ (Ultimate) | ❌ |
+| LTC / MTC chase, 9-pin machine control | ✅ (Ultimate) | ❌ |
 | Word clock / video reference awareness | ✅ via interface | ❌ |
 | Video output to a second display or video card | ✅ | ❌ (video window only) |
-| MIDI Beat Clock out | ✅ | 🟡 [Multiple outputs and per-port sample offsets](midi-input.md#send-midi-beat-clock-to-external-hardware). Shared presentation timing, per-port offsets and multiple destinations. Hardware check pending. Windows, macOS and Linux use the same native output worker. |
+| MIDI Beat Clock out | ✅ | 🟡 [Per-port routing and sample offsets](midi-input.md#send-midi-beat-clock-to-external-hardware). USB/DIN output verified on Windows. |
 | Satellite linking of systems | ✅ | ❌ |
 
 ## Performance
@@ -74,7 +73,6 @@ Legend: ✅ works · 🟡 partial · ❌ missing.
 
 | Date | Change | Summary |
 |---|---|---|
-| 2026-11-20 | minor | G-11: native MIDI Beat Clock output; MTC generation and chase remain tracked separately in #1663. |
 | 2026-11-18 | minor | MIDI input devices (`midir`): live play-through to record-enabled MIDI and instrument tracks (notes, pedal, controllers, pitch bend, aftertouch), MIDI recording into clips, per-track device and channel, device switches in Playback Engine; guide in `midi-input.md` |
 | 2026-10-30 | minor | Record to disk: takes are written to disk as they record (#84) and long takes continue in a new file (#888) |
 | 2026-10-13 | trivial | bounces of a bus fed by an aux compensate its latency (#246) |

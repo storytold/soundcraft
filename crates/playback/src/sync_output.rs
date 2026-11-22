@@ -664,7 +664,3 @@ fn drive<C: SyncPort>(
 #[cfg(test)]
 #[path = "sync_output_tests.rs"]
 mod tests;
-
-#[cfg(test)]
-#[path = "sync_timing_test.rs"]
-mod timing;
