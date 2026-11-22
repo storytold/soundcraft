@@ -29,6 +29,15 @@ fn period(bpm: f64) -> f64 {
 }
 
 fn errors(name: &str, r: &Rendered) -> Vec<i64> {
+    let missing = r.attacks.iter().filter(|slot| slot.is_empty()).count();
+    let repeated: usize = r.attacks.iter().map(|slot| slot.len().saturating_sub(1)).sum();
+    eprintln!(
+        "{name}: {} scored eighths, {missing} missing, {repeated} repeated, {} unmatched, {} changed waveforms, open tail {}",
+        r.attacks.len(),
+        r.extra,
+        r.damaged,
+        r.tail_open
+    );
     assert_eq!(r.extra, 0, "{name}: unmatched attack");
     assert!(!r.tail_open, "{name}: sound past the fixture release");
     assert_eq!(r.damaged, 0, "{name}: incomplete or changed waveform");
@@ -75,6 +84,7 @@ fn small_dj_nudges_keep_each_eighth_and_settle_in_two_beats() {
                 assert!(steps(&r).is_empty(), "{name} false steps {:?}", steps(&r));
                 let deadline = ideal.partition_point(|&t| (t as f64) < release) + 48;
                 let settle = r.snapshots[deadline].bpm.unwrap();
+                eprintln!("{name}: readout after two beats {settle:.4} BPM");
                 assert!((settle - 128.).abs() <= 0.1, "{name}: {settle} BPM");
                 assert!(peak(&signed[WARMUP / 12..]) <= 192, "{name}: peak {} samples", peak(&signed[WARMUP / 12..]));
             }
