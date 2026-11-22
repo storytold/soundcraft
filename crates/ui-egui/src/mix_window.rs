@@ -670,11 +670,12 @@ fn fader_overrides_automation(grabbed: bool, mode: soundcraft_model::AutomationM
 }
 
 /// Both Mix displays follow playback while running and the edit insertion while stopped.
-fn mixer_display_volume_db(app: &SoundApp, track: &Track, id: TrackId) -> f32 {
+pub(crate) fn mixer_display_volume_db(app: &SoundApp, track: &Track, id: TrackId) -> f32 {
     displayed_volume_db(
         track,
         app.position(),
-        fader_overrides_automation(fader_is_grabbed(app, id), track.mixer.automation_mode, app.touched.contains(&id)),
+        fader_overrides_automation(fader_is_grabbed(app, id), track.mixer.automation_mode, app.touched.contains(&id))
+            || !app.is_playing() && app.stopped_volume_overrides.contains(&id),
     )
 }
 
@@ -701,6 +702,9 @@ fn name_and_readout(app: &mut SoundApp, ui: &mut Ui, cx: &StripCtx<'_>) {
         },
     );
     if let Some(db) = entered {
+        if !app.is_playing() {
+            app.stopped_volume_overrides.insert(id);
+        }
         let _ = app.engine.execute_merged("mix.volume", &json!({"track": id.0, "db": db}), &format!("fader:{}", id.0));
     }
     let kind = match track.kind {
@@ -801,6 +805,29 @@ mod tests {
         let display_db = mixer_display_volume_db(&app, track, id);
         assert_eq!(display_db, -6.0, "the fader and readout share the stopped-insertion display value");
         assert_eq!(format!("{display_db:.1}"), "-6.0", "numeric editing starts from the value shown in the readout");
+    }
+
+    #[test]
+    fn stopped_manual_volume_remains_visible_until_read_automation_plays() {
+        let mut app = crate::SoundApp::new(soundcraft_engine::Engine::default(), None, Default::default());
+        let id = app.engine.session_mut().add_track(TrackKind::Audio, ChannelFormat::Mono, Some("Vocal"));
+        let track = app.engine.session_mut().track_mut(id).unwrap();
+        track.mixer.volume_db = -3.0;
+        track.mixer.automation_mode = AutomationMode::Read;
+        let lane = track.lane_mut(&AutoParam::Volume);
+        lane.set_point(0, -12.0);
+        lane.set_point(480, 0.0);
+        app.run("edit.select", json!({"tracks": [id.0], "start": 240, "end": 240})).unwrap();
+
+        app.run("mix.volume", json!({"track": id.0, "db": -3.0})).unwrap();
+        app.stopped_volume_overrides.insert(id);
+        let track = app.engine.session().track(id).unwrap();
+        assert_eq!(mixer_display_volume_db(&app, track, id), -3.0, "the typed static value remains visible while stopped");
+
+        app.engine.transport.position = 240;
+        app.engine.transport.playing = true;
+        let track = app.engine.session().track(id).unwrap();
+        assert_eq!(mixer_display_volume_db(&app, track, id), -6.0, "Read automation takes over when playback begins");
     }
 
     #[test]

@@ -1,10 +1,10 @@
 use super::services::Services;
 use super::state::MainWindow;
 use super::{
-    ControlRequest, Engine, Gesture, HashMap, MeterDisplay, OutputTrouble, Player, Range, Receiver, Samples, SoundApp, TrackId, TransportRequest,
-    Trouble, UiState, Value, VecDeque, aaf_import, bounce, dialogs, edit_window, extra_windows, fonts, import, json, menus, midi_editor, mix_window,
-    ops_windows, palette, panels, preferences, recovery, sampler_window, score_editor, shortcuts, theme, updates_ui, video_track, video_window,
-    windows,
+    ControlRequest, Engine, Gesture, HashMap, HashSet, MeterDisplay, OutputTrouble, Player, Range, Receiver, Samples, SoundApp, TrackId,
+    TransportRequest, Trouble, UiState, Value, VecDeque, aaf_import, bounce, dialogs, edit_window, extra_windows, fonts, import, json, menus,
+    midi_editor, mix_window, ops_windows, palette, panels, preferences, recovery, sampler_window, score_editor, shortcuts, theme, updates_ui,
+    video_track, video_window, windows,
 };
 
 mod audio;
@@ -68,6 +68,7 @@ impl SoundApp {
             main_meter: MeterDisplay::default(),
             meter_snapshot: soundcraft_playback::MeterSnapshot::default(),
             gesture: None,
+            stopped_volume_overrides: HashSet::new(),
             edit_layout: edit_window::EditLayout::default(),
             midi: midi_editor::MidiEditorState::default(),
             ops: ops_windows::OpsState::default(),

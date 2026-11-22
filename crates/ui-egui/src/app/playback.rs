@@ -30,6 +30,9 @@ impl SoundApp {
     }
 
     fn start_play(&mut self, from: Samples, end: Option<Samples>, looped: Option<Range>) {
+        // A manual value entered while stopped is the static fader level. Once playback starts,
+        // Read automation takes control again.
+        self.stopped_volume_overrides.clear();
         if let Some(p) = &self.player {
             p.update_session(self.engine.session_arc());
             p.play(from, end, looped);
