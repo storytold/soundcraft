@@ -50,16 +50,18 @@ pub struct PulseFit<const N: usize> {
     slope: f64,
     intercept: f64,
     jitter: f64,
+    tempo_ramp: std::sync::OnceLock<bool>,
 }
 
 impl<const N: usize> Default for PulseFit<N> {
     fn default() -> Self {
-        Self { points: [(0, 0); N], cursor: 0, len: 0, last: None, slope: 0., intercept: 0., jitter: 0. }
+        Self { points: [(0, 0); N], cursor: 0, len: 0, last: None, slope: 0., intercept: 0., jitter: 0., tempo_ramp: Default::default() }
     }
 }
 
 impl<const N: usize> PulseFit<N> {
     pub fn clear(&mut self) {
+        self.tempo_ramp.take();
         self.len = 0;
         self.cursor = 0;
         self.last = None;
@@ -72,6 +74,9 @@ impl<const N: usize> PulseFit<N> {
         }
         if self.last.is_some_and(|(i, t)| pulse <= i || at_us < t) {
             self.clear();
+        }
+        if N >= 24 {
+            self.tempo_ramp.take();
         }
         self.points[self.cursor] = (pulse, at_us);
         self.cursor = (self.cursor + 1) % N;
@@ -167,6 +172,12 @@ impl<const N: usize> PulseFit<N> {
         if self.len < 24 || self.slope <= 0. {
             return false;
         }
+        // UI snapshots and audio render lookahead can read the same fit several
+        // times between wire pulses. Its curvature changes only on push or clear.
+        *self.tempo_ramp.get_or_init(|| self.compute_tempo_ramp())
+    }
+
+    fn compute_tempo_ramp(&self) -> bool {
         let Some((last, stamp)) = self.last else { return false };
         let first = (self.cursor + N - self.len) % N;
         if last.saturating_sub(self.points[first].0) != self.len as i64 - 1 {
@@ -204,6 +215,33 @@ impl<const N: usize> PulseFit<N> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn repeated_ramp_queries_follow_each_new_pulse_and_transport_reset() {
+        let mut fit = PulseFit::<192>::default();
+        let mut t = 0;
+        let mut saw_ramp = false;
+        for pulse in 0..1800 {
+            t += if (300..800).contains(&pulse) { 15000 + (pulse - 300) * 10 } else { 20000 };
+            fit.push(pulse, t + pulse % 3);
+            let value = fit.is_tempo_ramp();
+            saw_ramp |= value;
+            for _ in 0..8 {
+                assert_eq!(value, fit.is_tempo_ramp());
+            }
+            if pulse >= 23 {
+                assert_eq!(value, fit.compute_tempo_ramp());
+            }
+            if pulse > 1100 {
+                assert!(!value);
+            }
+        }
+        assert!(saw_ramp);
+        fit.push(0, 1);
+        assert!(!fit.is_tempo_ramp());
+        fit.clear();
+        assert!(!fit.is_tempo_ramp());
+    }
+
     #[test]
     fn eight_percent_bpm_steps_in_either_direction_qualify() {
         for (bpm, qualifies) in [(108., true), (92., true), (107., false), (93., false)] {
