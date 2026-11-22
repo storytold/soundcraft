@@ -427,8 +427,10 @@ fn update_grid(grid: &mut TempoMap, anchor: Option<(i64, i64)>, waiting_tick: i6
     }
     // With a clean source, reach the next pulse when measured grid phase drifts out
     // of tolerance. Retain the wider jitter deadband for noisy and batched delivery.
-    let precise = !s.packed_delivery && !s.braking && s.jitter_us < 1_400. && phase.abs() > 0.0012;
     let tracking = s.phase_grid_bpm.is_some();
+    // A smoothly drifting, low-noise clock needs fewer published tempo events.
+    let phase_deadband = if tracking || s.jitter_us >= 1. { 0.0012 } else { 0.0026 };
+    let precise = !s.packed_delivery && !s.braking && s.jitter_us < 1_400. && phase.abs() > phase_deadband;
     let correcting = s.recovering_tempo_step || tracking || precise;
     let edit = if render_until > 0 && (precise || tracking || (s.packed_delivery || s.braking) && s.recovering_tempo_step) {
         writable.max(origin.saturating_mul(TICKS_PER_PULSE))

@@ -141,6 +141,9 @@ pub(crate) struct Follower {
     previous_batch_noise: [f64; 4],
     // Two beats and their shared endpoint. Let measured BPM settle after a temporary nudge.
     settling: PulseFit<49>,
+    // Variance of wire jitter independent of the long fit's response to a tempo bend.
+    wire_noise_variance: f64,
+    readout_pulses_left: u8,
     phase_pulses_left: u8,
     short: PulseFit<12>,
     steady: PulseFit<192>,
@@ -184,6 +187,8 @@ impl Default for Follower {
             singleton_groups: 0,
             previous_batch_noise: [0.; 4],
             settling: Default::default(),
+            wire_noise_variance: 0.,
+            readout_pulses_left: 0,
             phase_pulses_left: 0,
             short: Default::default(),
             steady: Default::default(),
@@ -296,9 +301,17 @@ impl Follower {
         Some((self.latest?, period))
     }
 
+    /// At a steady or gently changing rate, independent timestamp noise is better
+    /// rejected by the long fit. An abrupt or sustained rate excursion takes priority.
+    fn prefer_steady_phase(&self) -> bool {
+        self.wire_noise_variance > 850. * 850.
+            && self.readout_pulses_left == 0
+            && self.short.period_us().zip(self.steady.period_us()).is_some_and(|(short, long)| (short - long).abs() < 0.025 * long)
+    }
     fn phase_tracking(&self) -> bool {
         self.state == State::Locked
             && self.phase_pulses_left > 0
+            && !self.prefer_steady_phase()
             && self.step_pulses_left == 0
             && self.brake_pulses_left == 0
             && !self.packed_delivery
@@ -333,7 +346,11 @@ impl Follower {
     }
     fn bpm(&self) -> Option<f64> {
         let fit = self.steady.period_us().or_else(|| self.short.period_us());
-        let fit = if self.phase_tracking() && self.settling.jitter_us() < 950. { self.settling.period_us().or(fit) } else { fit };
+        let fit = if self.state == State::Locked && self.readout_pulses_left > 0 && self.settling.jitter_us() < 950. {
+            self.settling.period_us().or(fit)
+        } else {
+            fit
+        };
         let period = match self.brake_pulses_left {
             0 => fit,
             1..=36 => self.short.period_us().or(fit),
@@ -418,6 +435,8 @@ impl Follower {
         self.short.clear();
         self.steady.clear();
         self.settling.clear();
+        self.readout_pulses_left = 0;
+        self.wire_noise_variance = 0.;
         self.phase_pulses_left = 0;
         self.latest = None;
         self.edge = Default::default();
@@ -504,6 +523,13 @@ impl Follower {
             // and the subsequent acceleration, then settle back over two beats.
             self.brake_pulses_left = 48;
         }
+        if let Some(previous_gap) = self.last_wire_interval {
+            // A second difference cancels constant period and phase. With independent
+            // timestamp errors its variance is (1² + 2² + 1²) times their variance.
+            // Bound isolated transport or driver discontinuities in the running estimate.
+            let change = (gap - previous_gap).clamp(-7_000, 7_000) as f64;
+            self.wire_noise_variance += 0.025 * (change * change / 6. - self.wire_noise_variance);
+        }
         self.previous_wire_interval = self.last_wire_interval;
         self.last_wire_interval = Some(gap);
     }
@@ -570,6 +596,14 @@ impl Follower {
         }
     }
     fn observe_period(&mut self, ordinal: i64, at: i64) {
+        self.readout_pulses_left = self.readout_pulses_left.saturating_sub(1);
+        if let Some((recent, long)) = self.settling.period_us().zip(self.steady.period_us())
+            && (recent - long).abs() > 0.007 * long
+        {
+            // A meaningful rate change can settle in two beats. Give the long fit
+            // its full window to forget the old rate before switching the display back.
+            self.readout_pulses_left = 192;
+        }
         self.settling.push(ordinal, at);
         self.short.push(ordinal, at);
         // Long regression suppresses USB quantisation and timestamp jitter.
