@@ -113,6 +113,10 @@ fn recover_sync_settings(fields: &mut serde_json::Map<String, serde_json::Value>
     use serde_json::Value;
     use soundcraft_ui_egui::midi_sync::{Compensation, MAX_SYNC_PORTS, MidiSyncPort, valid_port, valid_saved_offset};
 
+    reset_invalid(fields, "gen_mtc", "gen_mtc", Value::is_boolean, resets);
+    for port in ["mtc_input_port", "mtc_output_port"] {
+        reset_invalid(fields, port, port, |v| v.is_null() || v.as_str().is_some_and(valid_port), resets);
+    }
     reset_invalid(fields, "midi_sync", "midi_sync", Value::is_object, resets);
     let Some(sync) = fields.get_mut("midi_sync").and_then(Value::as_object_mut) else { return };
     reset_invalid(sync, "enabled", "midi_sync.enabled", Value::is_boolean, resets);
@@ -264,6 +268,25 @@ mod config_tests {
         assert_eq!(saved["midi_sync"]["port_ids"], serde_json::json!({"Good":"driver-id"}));
         assert_eq!(saved["midi_sync"]["ports"]["Keys"], serde_json::json!({"enabled":true}));
         assert_eq!(resets.len(), 4);
+    }
+
+    #[test]
+    fn mtc_bad_workstation_fields_recover_independently_and_report_each_bad_value() {
+        let path = std::env::temp_dir().join(format!("soundcraft-mtc-pref-recovery-{}.json", std::process::id()));
+        for (field, bad) in
+            [("gen_mtc", serde_json::json!("on")), ("mtc_input_port", serde_json::json!("  ")), ("mtc_output_port", serde_json::json!(5))]
+        {
+            let mut saved = serde_json::json!({"gen_mtc":true,"mtc_input_port":"Reader","mtc_output_port":"Generator","midi_sync":{"enabled":true}});
+            saved[field] = bad;
+            std::fs::write(&path, serde_json::to_vec(&saved).unwrap()).unwrap();
+            let restored = load_ui(&path).unwrap().unwrap();
+            assert!(restored.midi_sync.enabled);
+            assert_eq!(restored.gen_mtc, field != "gen_mtc");
+            assert_eq!(restored.mtc_input_port.as_deref(), (field != "mtc_input_port").then_some("Reader"));
+            assert_eq!(restored.mtc_output_port.as_deref(), (field != "mtc_output_port").then_some("Generator"));
+            assert!(restored.status.contains(field), "{}", restored.status);
+        }
+        std::fs::remove_file(path).unwrap();
     }
 
     #[test]

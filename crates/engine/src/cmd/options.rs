@@ -374,6 +374,59 @@ mod sync_session_tests {
     }
 
     #[test]
+    fn mtc_bad_project_fields_load_with_individual_resets_with_a_message() {
+        let mut source = Engine::default();
+        source.execute("track.new", &json!({"count": 2})).unwrap();
+        source.execute("setup.session", &json!({"freewheel":"jam_sync","freewheel_frames":17,"external_offset_frames":-3})).unwrap();
+        let base = source.session();
+        let mode_key = "midi.mtc.freewheel_mode";
+        let frames_key = "midi.mtc.freewheel_frames";
+        let offset_key = "sync.external_offset";
+        for (field, expected_value, expected_mode, expected_frames) in [
+            (frames_key, base.edit.value(offset_key, 0.), "jam_sync", 8),
+            (mode_key, base.edit.value(offset_key, 0.), "frames", 17),
+            (offset_key, 0., "jam_sync", 17),
+        ] {
+            let mut session = base.clone();
+            if field == mode_key {
+                session.edit.flags.remove("midi.mtc.freewheel_mode=jam_sync");
+                session.edit.flags.insert("midi.mtc.freewheel_mode=unknown".into());
+            } else {
+                let bad = if field == offset_key { session.sample_rate.samples(3600.) as f64 + 1. } else { 512. };
+                session.edit.values.insert(field.into(), bad);
+            }
+            let loaded = soundcraft_model::Session::from_json(&session.to_json().unwrap()).unwrap();
+            for engine in [Engine::new(loaded.clone()), {
+                let mut engine = Engine::default();
+                engine.replace_session(loaded.clone());
+                engine
+            }] {
+                assert_eq!(engine.mtc_freewheel_frames(), expected_frames, "{field}");
+                assert_eq!(engine.mtc_freewheel_mode(), expected_mode, "{field}");
+                assert_eq!(engine.session().edit.value(offset_key, 0.), expected_value, "{field}");
+                assert_eq!(serde_json::to_value(&engine.session().tracks).unwrap(), serde_json::to_value(&base.tracks).unwrap());
+                assert_eq!(engine.messages.iter().filter(|m| m.contains(field)).count(), 1, "{field}: {:?}", engine.messages);
+                assert!(Engine::new(engine.session().clone()).messages.is_empty(), "resolved setting should survive reopen");
+            }
+        }
+    }
+
+    #[test]
+    fn mtc_bad_legacy_offset_does_not_replace_valid_sample_offset_or_change_freewheel() {
+        let mut old = Engine::default().session().clone();
+        old.edit.values.insert("sync.external_offset".into(), -24.);
+        old.edit.values.insert("midi.mtc.external_offset_frames".into(), f64::MAX);
+        old.edit.values.insert("midi.mtc.freewheel_frames".into(), 20.);
+        old.edit.flags.insert("midi.mtc.jam_sync".into());
+        let loaded = Engine::new(soundcraft_model::Session::from_json(&old.to_json().unwrap()).unwrap());
+        assert_eq!(loaded.mtc_freewheel_mode(), "jam_sync");
+        assert_eq!(loaded.mtc_freewheel_frames(), 20);
+        assert_eq!(loaded.session().edit.value("sync.external_offset", 0.), -24.);
+        assert!(!loaded.session().edit.values.contains_key("midi.mtc.external_offset_frames"));
+        assert!(loaded.messages.iter().any(|m| m.contains("midi.mtc.external_offset_frames")));
+    }
+
+    #[test]
     fn existing_offset_and_freewheel_preferences_migrate_once_and_conflicts_survive() {
         let base = Engine::default().session().clone();
         for (samples, frames, expected, conflict) in [(160000, None, 160000, false), (0, Some(100), 160000, false), (42, Some(100), 42, true)] {
