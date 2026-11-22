@@ -1,5 +1,5 @@
 //! Options menu toggles and Setup › Session settings.
-use super::{CommandSpec, always, bad, bool_or, position_param, str_param};
+use super::{CommandSpec, always, bad, bool_or, duration_param, str_param, zero_based_param};
 
 use crate::{Engine, Result, cmd};
 use serde_json::{Value, json};
@@ -60,12 +60,12 @@ pub fn specs() -> Vec<CommandSpec> {
             Ok(json!({"focus": f}))
         }),
         cmd!(noundo "options.pre_roll", "Pre-Roll Amount", [], None, "{length: samples|{seconds}}", always, |e, p| {
-            let v = position_param(e, "options.pre_roll", p, "length")?.unwrap_or(0).max(0);
+            let v = duration_param(e, "options.pre_roll", p, "length")?.unwrap_or(0).max(0);
             e.session_mut().edit.pre_roll = v;
             Ok(json!({"pre_roll": v}))
         }),
         cmd!(noundo "options.post_roll", "Post-Roll Amount", [], None, "{length}", always, |e, p| {
-            let v = position_param(e, "options.post_roll", p, "length")?.unwrap_or(0).max(0);
+            let v = duration_param(e, "options.post_roll", p, "length")?.unwrap_or(0).max(0);
             e.session_mut().edit.post_roll = v;
             Ok(json!({"post_roll": v}))
         }),
@@ -111,8 +111,8 @@ fn session_setup(e: &mut Engine, p: &Value) -> Result<Value> {
         Some(_) => return Err(bad("setup.session", "bit_depth must be 16, 24 or 32f")),
         None => None,
     };
-    let mut tc = position_param(e, "setup.session", p, "timecode_start")?;
     let selected_rate = fr.unwrap_or(e.session().frame_rate);
+    let mut tc = zero_based_param(e, "setup.session", p, "timecode_start", selected_rate)?;
     if let Some(value) = p.get("start_timecode") {
         if tc.is_some() {
             return Err(bad("setup.session", "Choose one session start"));
@@ -186,8 +186,24 @@ fn session_setup(e: &mut Engine, p: &Value) -> Result<Value> {
     {
         return Err(bad("setup.session", "A clip would fall outside the session timeline"));
     }
+    if shift != 0
+        && e.session().edit.automation_follows_edit
+        && e.session()
+            .tracks
+            .iter()
+            .flat_map(|t| &t.automation)
+            .flat_map(|lane| &lane.points)
+            .any(|p| p.at.checked_add(shift).is_none_or(|at| at < 0))
+    {
+        return Err(bad("setup.session", "An automation point would fall outside the session timeline"));
+    }
     let s = e.session_mut();
     if shift != 0 {
+        if s.edit.automation_follows_edit {
+            for point in s.tracks.iter_mut().flat_map(|t| &mut t.automation).flat_map(|lane| &mut lane.points) {
+                point.at += shift;
+            }
+        }
         for clip in s.tracks.iter_mut().flat_map(|t| &mut t.playlists).flat_map(|p| &mut p.clips) {
             clip.start += shift;
         }
@@ -226,6 +242,69 @@ fn session_setup(e: &mut Engine, p: &Value) -> Result<Value> {
 #[cfg(test)]
 mod sync_session_tests {
     use super::*;
+    #[test]
+    fn timecode_labels_for_session_start_and_durations_have_no_session_offset() {
+        let mut e = Engine::default();
+        for cmd in ["options.pre_roll", "options.post_roll"] {
+            let result = e.execute(cmd, &json!({"length":"timecode:00:00:05:00"})).unwrap();
+            assert_eq!(result[cmd.split('.').nth(1).unwrap()], e.session().sample_rate.samples(5.));
+        }
+        for label in ["02:00:00:00", "00:30:00:00"] {
+            let start = e.execute("setup.session", &json!({"timecode_start":format!("timecode:{label}")})).unwrap();
+            assert_eq!(start["start_timecode"], label);
+        }
+    }
+
+    #[test]
+    fn timecode_retention_shifts_following_automation_and_refuses_underflow_atomically() {
+        let mut e = crate::demo::demo_engine();
+        e.session_mut().edit.automation_follows_edit = true;
+        e.session_mut().timecode_start = e.session().sample_rate.samples(3600.);
+        let points = |e: &Engine| e.session().tracks.iter().flat_map(|t| &t.automation).flat_map(|l| &l.points).map(|p| p.at).collect::<Vec<_>>();
+        let before = points(&e);
+        assert!(!before.is_empty());
+        let delta = e.session().sample_rate.samples(1800.);
+        e.execute("setup.session", &json!({"start_timecode":"00:30:00:00","keep":"timecode"})).unwrap();
+        assert_eq!(points(&e), before.iter().map(|at| at + delta).collect::<Vec<_>>());
+        for t in &mut e.session_mut().tracks {
+            for pl in &mut t.playlists {
+                pl.clips.clear();
+            }
+        }
+        let original = e.session().clone();
+        assert!(e.execute("setup.session", &json!({"start_timecode":"23:59:59:00","keep":"timecode"})).is_err());
+        assert_eq!(e.session().to_json().unwrap(), original.to_json().unwrap());
+        e.session_mut().edit.automation_follows_edit = false;
+        e.execute("setup.session", &json!({"start_timecode":"23:59:59:00","keep":"timecode"})).unwrap();
+        assert_eq!(points(&e), before.iter().map(|at| at + delta).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn timecode_retention_respects_automation_switch_and_keeps_both_rulers_on_undo() {
+        for follows in [false, true] {
+            let mut e = crate::demo::demo_engine();
+            e.session_mut().edit.automation_follows_edit = follows;
+            e.session_mut().timecode_start = e.session().sample_rate.samples(3600.);
+            let before = e.session().clone();
+            assert!(!before.markers.is_empty());
+            let delta = before.sample_rate.samples(1800.);
+            e.execute("setup.session", &json!({"start_timecode":"00:30:00:00","keep":"timecode"})).unwrap();
+            let after = e.session();
+            assert_eq!(json!(after.markers), json!(before.markers));
+            assert_eq!(json!(after.tempo), json!(before.tempo));
+            for (old, new) in before.tracks.iter().zip(&after.tracks) {
+                for (a, b) in old.automation.iter().flat_map(|l| &l.points).zip(new.automation.iter().flat_map(|l| &l.points)) {
+                    assert_eq!(b.at, a.at + if follows { delta } else { 0 });
+                }
+                for (a, b) in old.playlists.iter().flat_map(|p| &p.clips).zip(new.playlists.iter().flat_map(|p| &p.clips)) {
+                    assert_eq!(b.start, a.start + delta);
+                }
+            }
+            assert!(e.undo());
+            assert_eq!(e.session().to_json().unwrap(), before.to_json().unwrap());
+        }
+    }
+
     #[test]
     fn external_timecode_offset_is_one_value_for_menu_and_session_setup() {
         let mut e = Engine::default();

@@ -101,7 +101,11 @@ impl SyncEncoder for Encoder {
             let frame = rate.frames_at(first.floor() as i64, sr);
             let stamp = if recent_origin { block.instant_for(block.origin as f64) } else { now };
             send(stamp, &locate(frame, rate));
-            let next = ((first / (8. * quarter)).ceil() as i64).saturating_mul(8);
+            // An even frame can begin between samples. Its first representable
+            // sample still belongs to this quarter-frame group's start.
+            let group = frame.div_euclid(2);
+            let first_sample = rate.samples_at_frame(group * 2, sr);
+            let next = (group + i64::from(first > first_sample as f64)).saturating_mul(8);
             if recovering && !relaunch {
                 self.stale = self.stale.saturating_add(next.saturating_sub(self.next).max(0) as u64);
             }

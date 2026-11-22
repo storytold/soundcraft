@@ -97,7 +97,11 @@ impl SoundApp {
         if !self.mtc_online {
             return;
         }
+        let queued = self.engine.transport_requests.len();
         self.engine.transport_requests.retain(|r| !matches!(r, TransportRequest::Record));
+        if self.engine.transport_requests.len() != queued {
+            self.ui.status = crate::localization::text("Take MTC chase offline before recording").into();
+        }
         // A local transport or document change returns control to the host.
         if self.engine.transport.recording || self.engine.transport_requests.iter().any(|r| !matches!(r, TransportRequest::AllNotesOff)) {
             self.leave_chase_audio();
@@ -221,6 +225,50 @@ mod tests {
         app.run("setup.mtc", json!({"input":"Sender","online":true})).unwrap();
         app.service_mtc_chase();
         app
+    }
+
+    #[test]
+    fn offset_edit_repositions_a_stopped_reader_without_another_packet() {
+        let mut host = app();
+        let feed = host.midi_inputs.as_ref().unwrap().feed().clone();
+        let sender = feed.ports().assign("Sender");
+        feed.receive(sender, &[0xf0, 0x7f, 127, 1, 1, 0x61, 0, 10, 0, 0xf7]);
+        host.service_mtc_chase();
+        host.handle_transport(0.);
+        host.run("setup.external_timecode_offset", json!({"timecode":"+00:00:01:00"})).unwrap();
+        host.service_mtc_chase();
+        host.handle_transport(0.);
+        assert_eq!(host.position(), host.engine.session().sample_rate.samples(11.));
+    }
+
+    #[test]
+    fn online_transition_gates_a_record_command_already_in_the_queue() {
+        let mut host = app();
+        host.mtc_command(&json!({"online":false})).unwrap();
+        let id = host.run("track.new", json!({"kind":"midi","format":"mono"})).unwrap()["tracks"][0].as_u64().unwrap();
+        host.run("mix.record_arm", json!({"tracks":[id],"value":true})).unwrap();
+        host.run("transport.record", json!({})).unwrap();
+        host.mtc_command(&json!({"online":true})).unwrap();
+        host.handle_transport(0.);
+        assert_eq!(host.ui.status, crate::localization::text("Take MTC chase offline before recording"));
+        assert!(!host.engine.transport.recording);
+        host.mtc_command(&json!({"online":false})).unwrap();
+        host.run("transport.record", json!({})).unwrap();
+        host.handle_transport(0.);
+        assert!(host.engine.transport.recording);
+        host.stop_play();
+    }
+
+    #[test]
+    fn online_service_reports_why_a_pending_record_was_refused() {
+        let mut host = app();
+        let reason = host.run("transport.record", json!({})).unwrap_err();
+        host.ui.status.clear();
+        host.engine.transport_requests.push(TransportRequest::Record);
+        host.service_mtc_chase();
+        assert_eq!(host.ui.status, reason);
+        assert!(host.engine.transport_requests.is_empty());
+        assert!(!host.engine.transport.recording);
     }
 
     #[test]

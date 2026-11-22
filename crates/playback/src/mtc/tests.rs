@@ -399,3 +399,22 @@ fn jam_sync_audio_free_runs_for_ten_seconds_and_seeks_only_on_the_second_new_gro
         }
     }
 }
+
+#[test]
+fn first_integer_sample_of_an_even_fractional_frame_emits_its_quarter_group() {
+    let mut s = session(FrameRate::Fps29_97);
+    s.timecode_start = s.frame_rate.samples_at_frame(2, s.sample_rate);
+    let now = Instant::now();
+    for at in [0, 1] {
+        let mut enc = Encoder::default();
+        let mut wire = vec![];
+        let wake = enc.update(block(now, at, 48000, true, 1), now, &s, &mut |_, m| wire.push(m.to_vec()));
+        assert_eq!(wire[0], locate(2, s.frame_rate));
+        if at == 0 {
+            assert_eq!(wire[1], quarters(2, s.frame_rate)[0]);
+        } else {
+            assert_eq!(wire.len(), 1);
+            assert!(wake.unwrap() > now + Duration::from_millis(60));
+        }
+    }
+}

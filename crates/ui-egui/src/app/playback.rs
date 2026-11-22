@@ -96,6 +96,10 @@ impl SoundApp {
     }
 
     fn start_recording(&mut self) {
+        if self.mtc_online {
+            self.ui.status = crate::localization::text("Take MTC chase offline before recording").into();
+            return;
+        }
         let armed = self.engine.session().tracks.iter().any(|t| t.mixer.record_arm);
         if !armed {
             let why = if self.engine.session().tracks.is_empty() {
