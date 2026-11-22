@@ -72,6 +72,7 @@ impl Player {
 #[derive(Default)]
 pub(crate) struct Encoder {
     pass: Option<(u64, bool)>,
+    lost_while_rolling: bool,
     next: i64,
     group: [[u8; 2]; 8],
     stale: u64,
@@ -90,11 +91,12 @@ impl SyncEncoder for Encoder {
         let at = block.sample_heard_at(now) + start;
         let quarter = rate.samples_per_frame(sr) / 4.;
         let relaunch = self.pass.replace((block.pass, block.playing)) != Some((block.pass, block.playing));
-        if relaunch {
+        let recovering = std::mem::take(&mut self.lost_while_rolling);
+        if relaunch || recovering {
             // A worker normally wakes just after the requested first sample.
             // A late attachment or remap well into the pass locates to the live frame.
             let origin = block.origin as f64 + start;
-            let recent_origin = block.playing && (0. ..=0.1 * block.samples_per_second).contains(&(at - origin));
+            let recent_origin = !recovering && block.playing && (0. ..=0.1 * block.samples_per_second).contains(&(at - origin));
             let first = if recent_origin { origin } else { at };
             let frame = rate.frames_at(first.floor() as i64, sr);
             let stamp = if recent_origin { block.instant_for(block.origin as f64) } else { now };
@@ -103,7 +105,11 @@ impl SyncEncoder for Encoder {
             // sample still belongs to this quarter-frame group's start.
             let group = frame.div_euclid(2);
             let first_sample = rate.samples_at_frame(group * 2, sr);
-            self.next = (group + i64::from(first > first_sample as f64)).saturating_mul(8);
+            let next = (group + i64::from(first > first_sample as f64)).saturating_mul(8);
+            if recovering && !relaunch {
+                self.stale = self.stale.saturating_add(next.saturating_sub(self.next).max(0) as u64);
+            }
+            self.next = next;
         }
         if !block.playing {
             return None;
@@ -133,7 +139,11 @@ impl SyncEncoder for Encoder {
         let sample = target(self.next);
         (sample < block.limit).then(|| block.instant_for(sample).max(now + Duration::from_millis(1)))
     }
+    fn timing_lost(&mut self) {
+        self.lost_while_rolling |= self.pass.is_some_and(|(_, playing)| playing);
+    }
     fn reset(&mut self) {
+        self.lost_while_rolling = false;
         self.pass = None;
     }
     fn remap(&mut self, old: &Session, new: &Session) {

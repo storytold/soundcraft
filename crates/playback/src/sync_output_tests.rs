@@ -38,6 +38,7 @@ fn active_port(offset: i64, compensate: bool) -> Port<FakePort> {
         failure: None,
         future: Vec::new(),
         cleanup: Default::default(),
+        timing_epochs: [0; 2],
         waiting_for_timing: false,
     }
 }
@@ -1241,6 +1242,7 @@ fn final_stop_survives_failed_clock_and_retries_a_rejected_stop() {
         routes: [None, None],
         future: vec![],
         cleanup: VecDeque::from([vec![STOP]]),
+        timing_epochs: [0; 2],
         waiting_for_timing: false,
         failure: None,
     };
@@ -1357,4 +1359,118 @@ fn asynchronous_cleanup_retries_the_original_unsent_messages_in_order() {
         std::thread::yield_now();
     }
     assert_eq!(cleanup, [sx.to_vec(), vec![STOP], vec![0xf0, 0x7d, 2, 0xf7]]);
+}
+
+#[test]
+fn recovered_clock_repays_missing_ticks_evenly_within_one_beat() {
+    let base = Instant::now();
+    let capture = |gap: std::ops::Range<u64>| {
+        let view = View::default();
+        let song = Session::new("clock recovery", soundcraft_time::SampleRate::HZ_48000);
+        let mut port = active_port(0, true);
+        let stats = Stats::default();
+        let mut pending = Vec::new();
+        let mut ticks = Vec::new();
+        let mut transport = Vec::new();
+        for ms in 0..=1000 {
+            let now = base + Duration::from_millis(ms);
+            if ms % 10 == 0 {
+                let lead = (!gap.contains(&ms)).then_some(Duration::ZERO);
+                view.lock().unwrap().push(Presentation { lead, ..block(now, ms as f64 * 48., 480., Duration::ZERO) });
+            }
+            port.poll("desk", now, &song, &view, &stats, &mut pending);
+            for (due, msg) in port.link.as_mut().unwrap().messages.drain(..) {
+                if msg == [CLOCK] {
+                    ticks.push((ms, due.duration_since(base).as_secs_f64() * 1000.));
+                } else {
+                    transport.push((ms, msg));
+                }
+            }
+        }
+        (ticks, transport)
+    };
+    let (reference, reference_transport) = capture(0..0);
+    for gap in [100..200, 50..250] {
+        let (ticks, transport) = capture(gap.clone());
+        let beat_end = gap.end + 500;
+        let recovered: Vec<_> = ticks.iter().copied().filter(|(ms, _)| (gap.end..beat_end).contains(ms)).collect();
+        let intervals: Vec<_> = recovered.windows(2).map(|p| p[1].0 - p[0].0).collect();
+        eprintln!(
+            "gap={gap:?} first={:?} intervals_ms={intervals:?} count={}/{} recovery_ticks={}",
+            recovered.first(),
+            ticks.len(),
+            reference.len(),
+            recovered.len()
+        );
+        assert_eq!(transport, reference_transport);
+        assert!(ticks.iter().all(|(ms, _)| !gap.contains(ms)));
+        assert_eq!(ticks.len(), reference.len());
+        assert_eq!(ticks.iter().filter(|(ms, _)| *ms < beat_end).count(), reference.iter().filter(|(ms, _)| *ms < beat_end).count());
+        let first_live = reference.iter().find(|(ms, _)| *ms >= gap.end).unwrap();
+        assert_eq!(recovered[0], *first_live);
+        assert!(recovered.iter().all(|(ms, due)| (0.0..=1.001).contains(&(*ms as f64 - due))));
+        assert!(intervals.iter().min().unwrap() > &1);
+        assert!(intervals.iter().max().unwrap() - intervals.iter().min().unwrap() <= 1);
+        let after = |rows: &[(u64, f64)]| rows.iter().copied().filter(|(ms, _)| *ms >= beat_end).collect::<Vec<_>>();
+        assert_eq!(after(&ticks), after(&reference));
+    }
+}
+
+#[test]
+fn a_missed_timing_gap_invalidates_only_the_compensated_route_queue() {
+    let base = Instant::now();
+    let view = View::default();
+    let song = Session::default();
+    let stats = Stats::default();
+    let mut port = active_port(0, true);
+    let delay = Duration::from_millis(20);
+    for (index, compensate) in [true, false].into_iter().enumerate() {
+        port.routes[index] = Some(Route { map: None, offset: 0, compensate, encoder: Box::new(Messages(vec![(delay, vec![0xf8])])) });
+    }
+    view.lock().unwrap().push(block(base, 0., 480., Duration::ZERO));
+    port.poll("desk", base, &song, &view, &stats, &mut vec![]);
+    // Both callback publications land between two worker polls.
+    let now = base + delay;
+    let mut timeline = view.lock().unwrap();
+    timeline.push(Presentation { lead: None, ..block(base + delay / 2, 480., 480., Duration::ZERO) });
+    timeline.push(block(now, 960., 480., Duration::ZERO));
+    // A positively offset destination must wait for the recovered block to become audible.
+    let (audible, wake) = timeline.read(now, true, 480);
+    assert!(audible.is_none());
+    assert_eq!(wake, Some(now + Duration::from_millis(10)));
+    drop(timeline);
+    port.poll("desk", now, &song, &view, &stats, &mut vec![]);
+    assert_eq!(port.link.unwrap().messages, [(now, vec![0xf8])]);
+}
+
+#[test]
+fn a_stop_cancels_clock_repayment_and_a_new_pass_starts_normally() {
+    let base = Instant::now();
+    let view = View::default();
+    let song = Session::new("stop during repayment", soundcraft_time::SampleRate::HZ_48000);
+    let stats = Stats::default();
+    let mut port = active_port(0, true);
+    let mut pending = Vec::new();
+    let mut messages = Vec::new();
+    for ms in 0..=410 {
+        let now = base + Duration::from_millis(ms);
+        if ms % 10 == 0 {
+            let mut b = block(now, ms as f64 * 48., 480., Duration::ZERO);
+            b.lead = (!(100..200).contains(&ms)).then_some(Duration::ZERO);
+            if ms >= 300 {
+                b.playing = ms >= 400;
+                b.pass = if b.playing { 3 } else { 2 };
+                b.sample = if b.playing { (ms - 400) as f64 * 48. } else { 14_400. };
+                b.limit = b.sample + 480.;
+            }
+            view.lock().unwrap().push(b);
+        }
+        port.poll("desk", now, &song, &view, &stats, &mut pending);
+        for (_, msg) in port.link.as_mut().unwrap().messages.drain(..) {
+            if ms >= 300 {
+                messages.push((ms, msg));
+            }
+        }
+    }
+    assert_eq!(messages, [(300, vec![STOP]), (400, vec![START]), (400, vec![CLOCK])]);
 }
