@@ -458,13 +458,14 @@ impl Engine {
         edit::copy_range_with_takes(self.session(), Some(&self.follow_takes), self.playback_tempo.as_ref(), track, range, unlocked_only)
     }
 
-    /// Give followed takes their captured beat timing in the external-clock playback snapshot.
+    /// Project followed takes and cache the other MIDI clip boundaries in musical time.
     pub fn prepare_clock_clips(&self, doc: &mut Session) -> soundcraft_mix::MidiClipBeatBounds {
         self.project_clock_takes(doc);
         // Recorded takes already project their events relative to the captured sample range.
         soundcraft_mix::MidiClipBeatBounds::from_score(doc, |id| !self.follow_takes.contains_key(&id))
     }
 
+    /// Give followed takes their captured beat timing in the external-clock playback snapshot.
     pub fn project_clock_takes(&self, doc: &mut Session) {
         if self.follow_takes.is_empty() {
             return;
