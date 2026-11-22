@@ -147,3 +147,29 @@ fn brake_cable_loss_and_slow_relock_use_clock_and_active_sensing_separately() {
     assert_eq!(status(at + 749_999).state, State::Locked);
     assert_eq!(status(at + 750_101).state, State::Coasting, "a source that enabled Active Sensing stopped sending MIDI for 300 ms");
 }
+
+#[test]
+fn active_sensing_counts_channel_messages_from_its_own_port_as_presence() {
+    let inputs = MidiInputs::with_port_names(vec![], vec!["clock".into(), "other".into()]);
+    let feed = inputs.feed();
+    let master = feed.ports().assign("clock");
+    let other = feed.ports().assign("other");
+    feed.set_clock_follow(Some(master), true, 0, false);
+    feed.set_clock(0);
+    feed.receive(master, &[0xfa, 0xf8]);
+    for p in 1..=24 {
+        feed.set_clock(p * 140_000);
+        feed.receive(master, &[0xf8]);
+    }
+    let last = 24 * 140_000;
+    feed.set_clock(last + 5_000);
+    feed.receive(master, &[0xfe]);
+    feed.set_clock(last + 30_000);
+    feed.receive(master, &[0x90, 60, 100]);
+    feed.set_clock(last + 300_000);
+    feed.receive(other, &[0xfe]);
+    feed.set_clock(last + 330_000);
+    assert_eq!(feed.clock_follow_status(&mut Vec::new()).state, State::Locked);
+    feed.set_clock(last + 330_001);
+    assert_eq!(feed.clock_follow_status(&mut Vec::new()).state, State::Coasting);
+}
