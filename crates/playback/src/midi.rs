@@ -1230,6 +1230,34 @@ mod tests {
     use super::*;
 
     #[test]
+    fn clock_status_polls_publish_only_when_the_render_horizon_expires() {
+        let feed = MidiFeed::default();
+        feed.set_clock(0);
+        feed.set_clock_follow(Some(0), true, 0, false);
+        feed.receive(0, &[0xfa]);
+        for pulse in 0..32 {
+            feed.set_clock(pulse * 20_833);
+            feed.receive(0, &[0xf8]);
+        }
+        assert!(feed.clock_render_tick().is_some());
+        let generation = || feed.clock_render_generation.load(Ordering::Acquire);
+        let before = generation();
+        let mut actions = Vec::new();
+        for delta in 1..=1_000 {
+            feed.set_clock(31 * 20_833 + delta);
+            feed.clock_follow_status(&mut actions);
+        }
+        assert_eq!(generation(), before, "unchanged host polls republished the audio horizon");
+        feed.set_clock(32 * 20_833 + 300_000);
+        feed.clock_follow_status(&mut actions);
+        assert_eq!(feed.clock_render_tick(), None, "coasting releases the render limit");
+        assert!(generation() > before);
+        let after_loss = generation();
+        feed.clock_follow_status(&mut actions);
+        assert_eq!(generation(), after_loss);
+    }
+
+    #[test]
     fn observed_stop_identifies_current_lock_while_reader_is_busy() {
         let feed = MidiFeed::default();
         feed.set_mtc_source(Some(1));
