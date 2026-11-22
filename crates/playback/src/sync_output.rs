@@ -6,7 +6,8 @@ use crate::{
     sync_clock::{CallbackMetrics, Publisher, SyncEncoder, View},
     sync_status::PortTiming,
 };
-use midir::{MidiOutput, MidiOutputConnection};
+mod ports;
+use midir::MidiOutputConnection;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{
     Arc, Mutex,
@@ -15,12 +16,8 @@ use std::sync::{
 };
 use std::time::{Duration, Instant};
 
-pub(crate) fn output_names() -> Result<Vec<String>, String> {
-    std::panic::catch_unwind(|| {
-        let midi = MidiOutput::new("SoundCraft MIDI sync").map_err(|e| e.to_string())?;
-        Ok(midi.ports().into_iter().filter_map(|p| midi.port_name(&p).ok()).collect::<BTreeSet<_>>().into_iter().collect())
-    })
-    .map_err(|_| "MIDI output enumeration failed".to_owned())?
+pub(crate) fn output_ids(saved: &BTreeMap<String, String>) -> Result<BTreeMap<String, String>, String> {
+    ports::available(saved)
 }
 
 /// Extension point for OS-timestamped MIDI backends. The native midir backend
@@ -34,14 +31,6 @@ impl SyncPort for MidiOutputConnection {
         self.send(bytes).map_err(|e| e.to_string())?;
         Ok(handed)
     }
-}
-fn open_unique(name: &str) -> Result<(MidiOutputConnection, Option<String>), String> {
-    let midi = MidiOutput::new("SoundCraft MIDI sync").map_err(|e| e.to_string())?;
-    let mut matches = midi.ports().into_iter().filter(|p| midi.port_name(p).is_ok_and(|n| n == name));
-    let port = matches.next().ok_or_else(|| format!("MIDI output {name} unavailable"))?;
-    let warning = matches.next().map(|_| format!("Multiple MIDI outputs named {name}; using the first"));
-    let connection = midi.connect(&port, "SoundCraft MIDI sync").map_err(|e| e.to_string())?;
-    Ok((connection, warning))
 }
 #[derive(Default)]
 struct Stats {
@@ -105,6 +94,7 @@ impl WorkerSender {
 }
 #[derive(Default)]
 pub(crate) struct Output {
+    port_registry: Arc<ports::Registry>,
     view: View,
     metrics: Arc<CallbackMetrics>,
     session: Option<Arc<Session>>,
@@ -127,6 +117,12 @@ enum Update {
     InputWake(Arc<AtomicBool>),
 }
 impl Output {
+    pub(crate) fn restore_port_ids(&self, ids: &BTreeMap<String, String>) {
+        self.port_registry.restore(ids);
+    }
+    pub(crate) fn opened_port_ids(&self) -> Option<BTreeMap<String, String>> {
+        self.port_registry.opened()
+    }
     pub(crate) fn configure(&mut self, s: &Arc<Session>, audio: &Sender<Cmd>) -> u64 {
         if self.session.is_none() {
             let _ = audio.send(Cmd::Clock(Some(Publisher::new(self.view.clone(), self.metrics.clone()))));
@@ -153,7 +149,11 @@ impl Output {
             let view = self.view.clone();
             let trouble = self.trouble.clone();
             let stats = self.stats.clone();
-            match std::thread::Builder::new().name("MIDI sync output".into()).spawn(move || drive(view, s, rx, trouble, stats, open_unique)) {
+            let registry = self.port_registry.clone();
+            match std::thread::Builder::new()
+                .name("MIDI sync output".into())
+                .spawn(move || drive(view, s, rx, trouble, stats, |name| registry.connect(name)))
+            {
                 Ok(thread) => {
                     let tx = WorkerSender { tx, worker: thread.thread().clone() };
                     *self.wake_tx.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(tx.clone());

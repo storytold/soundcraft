@@ -10,7 +10,17 @@ pub struct MidiBeatClock {
 
 impl MidiBeatClock {
     pub(super) fn new(settings: &MidiSync) -> Self {
-        Self { settings: settings.clone(), outputs: soundcraft_playback::midi_sync_outputs() }
+        let mut dialog = Self { settings: settings.clone(), outputs: Ok(Vec::new()) };
+        dialog.refresh();
+        dialog
+    }
+
+    fn refresh(&mut self) {
+        self.outputs = soundcraft_playback::midi_sync_output_ids(&self.settings.port_ids).map(|found| {
+            let labels = found.keys().cloned().collect();
+            self.settings.port_ids.extend(found);
+            labels
+        });
     }
 
     pub(super) fn show(&mut self, ui: &mut egui::Ui, enter: bool, app: &mut crate::SoundApp) -> Option<Value> {
@@ -19,7 +29,7 @@ impl MidiBeatClock {
         }
         crate::widgets::checkbox(ui, &mut self.settings.enabled, text("Enable MIDI Beat Clock"));
         if ui.button(text("Refresh devices")).clicked() {
-            self.outputs = soundcraft_playback::midi_sync_outputs();
+            self.refresh();
         }
         let available = self.outputs.as_ref().map(Vec::as_slice).unwrap_or_default();
         if let Err(error) = &self.outputs {
@@ -73,7 +83,9 @@ impl MidiBeatClock {
         {
             ui.ctx().copy_text(status.to_string());
         }
-        super::buttons_enabled(ui, "OK", enter, !self.settings.enabled || self.settings.ports.values().any(|p| p.enabled))
-            .then(|| json!({"enabled":self.settings.enabled,"ports":self.settings.ports}))
+        super::buttons_enabled(ui, "OK", enter, !self.settings.enabled || self.settings.ports.values().any(|p| p.enabled)).then(|| {
+            self.settings.port_ids.retain(|label, _| self.settings.ports.contains_key(label));
+            json!({"enabled": self.settings.enabled, "ports": self.settings.ports, "port_ids": self.settings.port_ids})
+        })
     }
 }

@@ -28,7 +28,7 @@ fn beat_clock_reaches_a_virtual_midi_receiver() {
         use midir::os::unix::VirtualInput;
         let unique = format!("SoundCraft G11 probe {}", std::process::id());
         let reader = input.create_virtual(&unique, record, ()).unwrap();
-        let list = output_names().unwrap();
+        let list = crate::midi_sync_outputs().unwrap();
         let name = list.into_iter().find(|n| n.contains(&unique)).expect("OS did not publish the virtual destination");
         (reader, name)
     };
@@ -50,7 +50,9 @@ fn beat_clock_reaches_a_virtual_midi_receiver() {
         lead: Some(Duration::ZERO),
     });
     let (tx, rx) = channel();
-    let worker = std::thread::spawn(move || drive(view, Arc::new(Session::default()), rx, Arc::default(), Arc::default(), open_unique));
+    let registry = ports::Registry::default();
+    let worker =
+        std::thread::spawn(move || drive(view, Arc::new(Session::default()), rx, Arc::default(), Arc::default(), |name| registry.connect(name)));
     tx.send(Update::Beats(vec![(name, 0)], true)).unwrap();
     assert_eq!(observed.recv_timeout(Duration::from_secs(2)).unwrap(), [START]);
     assert_eq!(observed.recv_timeout(Duration::from_secs(2)).unwrap(), [CLOCK]);
