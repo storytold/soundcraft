@@ -67,7 +67,7 @@ mod tests {
         let mut device = DeviceTime::default();
         let start = Instant::now();
         let rate = SampleRate::HZ_48000;
-        let wire = |s| Snapshot { bpm: Some(120.), stamp_us: s * 1_000_000, now_us: s * 1_000_000, ..Snapshot::default() };
+        let wire = |s: i64| Snapshot { bpm: Some(120.), stamp_us: s * 1_000_000, now_us: s * 1_000_000, ..Snapshot::default() };
         let cue = Some((0, 0));
         device.project(wire(0), cue, rate, || Some((1, start, 0.)));
         let projected = device.project(wire(30), cue, rate, || Some((1, start + Duration::from_secs(30), 1_440_144.)));
