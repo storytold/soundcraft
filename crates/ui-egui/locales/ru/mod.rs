@@ -1015,11 +1015,11 @@ fn menu_translate(source: &str) -> Option<&'static str> {
         "unsaved changes" => "несохранённые изменения",
         "recently" => "недавно",
         "less than a minute ago" => "меньше минуты назад",
-        "minute" => "минуту",
-        "hour" => "час",
-        "day" => "день",
+        "minute" => "мин.",
+        "hour" => "ч.",
+        "day" => "дн.",
         "{n} {unit} ago" => "{n} {unit} назад",
-        "{n} {unit}s ago" => "{n} {unit}s назад",
+        "{n} {unit}s ago" => "{n} {unit} назад",
         // Command, menu and dialog labels. The menus, the command palette and the Keyboard
         // Shortcuts window all read these, so one entry serves every surface.
         "Add Automation Breakpoint" => "Добавить точку автоматизации",
@@ -2053,7 +2053,7 @@ fn menu_translate(source: &str) -> Option<&'static str> {
             "Посыл {which} на {name}: {db} дБ\nЩелчок — фейдер посыла · перетащите вертикально для настройки · Shift-перетаскивание — тонкая настройка · Alt-щелчок — 0 дБ · правая кнопка — параметры"
         }
         "1 {what}" => "1 {what}",
-        "{n} {what}s" => "{n} {what}s",
+        "{n} {what}s" => "{n} {what}(ов)",
         "the clip \"{name}\"" => "клип «{name}»",
         "the file \"{name}\"" => "файл «{name}»",
         "{clips} and {files}" => "{clips} и {files}",
@@ -2174,7 +2174,7 @@ error_templates! {
     "`{name}` has no parameter(s): {list}" => "у `{name}` нет параметра(ов): {list}",
     "`{name}` is not a Video track" => "`{name}` не является видеодорожкой",
     "`{name}` is not a built-in instrument" => "`{name}` не является встроенным инструментом",
-    "`{name}` is used by {n} clip{plural} on the timeline; pass `with_clips: true` to remove them too" => "`{name}` используется {n} клип{plural} на таймлайне; передайте `with_clips: true`, чтобы удалить их тоже",
+    "`{name}` is used by {n} clip{plural} on the timeline; pass `with_clips: true` to remove them too" => "`{name}` используется {n} клип(ов) на таймлайне; передайте `with_clips: true`, чтобы удалить их тоже",
     "a bus named `{name}` exists" => "шина с именем `{name}` уже существует",
     "a group named `{name}` already exists" => "группа с именем `{name}` уже существует",
     "a group needs at least one track" => "группе нужна хотя бы одна дорожка",
