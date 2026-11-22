@@ -114,8 +114,21 @@ fn recover_sync_settings(fields: &mut serde_json::Map<String, serde_json::Value>
     use soundcraft_ui_egui::midi_sync::{Compensation, MAX_SYNC_PORTS, MidiSyncPort, valid_port, valid_saved_offset};
 
     reset_invalid(fields, "gen_mtc", "gen_mtc", Value::is_boolean, resets);
-    for port in ["mtc_input_port", "mtc_output_port"] {
+    for port in ["mtc_input_port", "mtc_output_port", "clock_follow_input"] {
         reset_invalid(fields, port, port, |v| v.is_null() || v.as_str().is_some_and(valid_port), resets);
+    }
+    reset_invalid(fields, "clock_follow_stop_on_loss", "clock_follow_stop_on_loss", Value::is_boolean, resets);
+    reset_invalid(fields, "clock_follow_input_offsets", "clock_follow_input_offsets", Value::is_object, resets);
+    if let Some(offsets) = fields.get_mut("clock_follow_input_offsets").and_then(Value::as_object_mut) {
+        let mut kept = 0;
+        offsets.retain(|name, value| {
+            if kept == MAX_SYNC_PORTS || !valid_port(name) || !value.as_i64().is_some_and(valid_saved_offset) {
+                record_reset(resets, &format!("clock_follow_input_offsets.{name}"));
+                return false;
+            }
+            kept += 1;
+            true
+        });
     }
     reset_invalid(fields, "midi_sync", "midi_sync", Value::is_object, resets);
     let mtc_output_port = fields.get("mtc_output_port").and_then(Value::as_str).map(str::to_owned);
@@ -160,12 +173,16 @@ fn recover_sync_settings(fields: &mut serde_json::Map<String, serde_json::Value>
             kept += 1;
             port.retain(|key, value| {
                 let valid = serde_json::from_value::<MidiSyncPort>(serde_json::json!({(key):value}))
-                    .is_ok_and(|port| valid_saved_offset(port.offset_samples));
+                    .is_ok_and(|port| valid_saved_offset(port.out_offset_samples) && valid_saved_offset(port.in_offset_samples));
                 if !valid {
                     record_reset(resets, &format!("midi_sync.ports.{name}.{key}"));
                 }
                 valid
             });
+            // Keep the canonical output calibration if the file also contains its legacy alias.
+            if port.contains_key("out_offset_samples") && port.remove("offset_samples").is_some() {
+                record_reset(resets, &format!("midi_sync.ports.{name}.offset_samples"));
+            }
             true
         });
     }
@@ -249,8 +266,8 @@ mod config_tests {
         assert_eq!(ui.audio.output.as_deref(), Some("Stage mix"));
         assert!(ui.midi_sync.enabled);
         assert!(ui.midi_sync.ports["Keys"].enabled);
-        assert_eq!(ui.midi_sync.ports["Keys"].offset_samples, 0);
-        assert_eq!(ui.midi_sync.ports["Rack"].offset_samples, -42);
+        assert_eq!(ui.midi_sync.ports["Keys"].out_offset_samples, 0);
+        assert_eq!(ui.midi_sync.ports["Rack"].out_offset_samples, -42);
         assert!(!ui.midi_sync.compensation.beat_clock && ui.midi_sync.compensation.mtc && ui.midi_sync.compensation.notes);
         assert!(ui.status.contains("ports.Keys.offset_samples") && ui.status.contains("compensation.mtc"), "{}", ui.status);
         save_ui(&path, &ui).unwrap();
@@ -308,6 +325,28 @@ mod config_tests {
             assert_eq!(restored.mtc_input_port.as_deref(), (field != "mtc_input_port").then_some("Reader"));
             assert_eq!(restored.mtc_output_port.as_deref(), (field != "mtc_output_port").then_some("Generator"));
             assert!(restored.status.contains(field), "{}", restored.status);
+        }
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn bad_clock_follow_prefs_reset_only_the_invalid_leaf_and_keep_workstation_settings() {
+        let path = std::env::temp_dir().join(format!("soundcraft-clock-follow-pref-{}.json", std::process::id()));
+        for (field, invalid) in [
+            ("clock_follow_stop_on_loss", serde_json::json!(7)),
+            ("clock_follow_input", serde_json::json!(" ")),
+            ("clock_follow_input_offsets", serde_json::json!({"DIN":"bad","Keys":120})),
+        ] {
+            let mut stored = serde_json::json!({"gen_mtc":true,"clock_follow_input":"DIN","clock_follow_stop_on_loss":true,"clock_follow_input_offsets":{"DIN":360,"Keys":120}});
+            stored[field] = invalid;
+            std::fs::write(&path, serde_json::to_vec(&stored).unwrap()).unwrap();
+            let ui = load_ui(&path).unwrap().unwrap();
+            assert!(ui.gen_mtc);
+            assert_eq!(ui.clock_follow_input.as_deref(), (field != "clock_follow_input").then_some("DIN"));
+            assert_eq!(ui.clock_follow_stop_on_loss, field != "clock_follow_stop_on_loss");
+            assert_eq!(ui.clock_follow_input_offsets["Keys"], 120);
+            assert_eq!(ui.clock_follow_input_offsets.get("DIN").copied(), (field != "clock_follow_input_offsets").then_some(360));
+            assert!(ui.status.contains(field), "{}", ui.status);
         }
         std::fs::remove_file(path).unwrap();
     }
