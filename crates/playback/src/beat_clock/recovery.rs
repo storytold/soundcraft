@@ -34,6 +34,10 @@ impl Repayment {
         Some(Self { first_owed, last_pulse, start_sample: sample(first_live), end_sample: sample(last_pulse) })
     }
 
+    pub(super) fn expired(self, at: i64) -> bool {
+        at > self.end_sample
+    }
+
     fn sample(self, pulse: i64) -> f64 {
         let fraction = (pulse - self.first_owed) as f64 / (self.last_pulse - self.first_owed) as f64;
         self.start_sample as f64 + (self.end_sample - self.start_sample) as f64 * fraction

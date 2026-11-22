@@ -45,7 +45,15 @@ impl Cursor {
         let timely_origin =
             changed && block.playing && tempo.samples_to_ticks_f(at, rate) - tempo.samples_to_ticks_f(origin, rate) < TICKS_PER_CLOCK as f64;
         if timely_origin {
-            self.advance(true, origin, true, tempo, rate, &mut send);
+            let mut sent_clock = false;
+            self.advance(true, origin, true, tempo, rate, |m| {
+                sent_clock |= m == [CLOCK];
+                send(m);
+            });
+            if sent_clock {
+                // Deliver any other pulse that rounds to this sample on a separate wake.
+                return;
+            }
         }
         // Stopping a pass, including at a loop boundary, can publish a new pass
         // number without seeking. A stopped seek publishes its own origin.
@@ -57,7 +65,9 @@ impl Cursor {
     fn advance(&mut self, playing: bool, at: i64, locate: bool, tempo: &TempoMap, rate: SampleRate, mut send: impl FnMut(&[u8])) {
         if !playing || at < 0 {
             self.delayed_start = playing;
-            self.out_of_range = false;
+            if playing || at < 0 {
+                self.out_of_range = false;
+            }
             if self.last_position.take().is_some() {
                 send(&[STOP]);
             }
@@ -162,7 +172,10 @@ impl SyncEncoder for Cursor {
                 self.repayment = Repayment::new(self.next_pulse, at, s);
             }
             if let Some(window) = self.repayment {
-                return Some(self.repay(window, b, now, s, send));
+                if !window.expired(at) {
+                    return Some(self.repay(window, b, now, s, send));
+                }
+                self.repayment = None;
             }
             if let Some(last) = self.last_sent
                 && now < last + CATCH_UP_SPACING
@@ -262,6 +275,50 @@ mod tests {
         let mut result = Vec::new();
         cursor.advance(true, at, locate, &TempoMap::default(), SampleRate::new(48_000).unwrap(), |m| result.push(m.to_vec()));
         result
+    }
+
+    #[test]
+    fn review_launch_at_a_rounded_pulse_boundary_does_not_send_two_clocks() {
+        let mut song = Session::new("rounded pulse", SampleRate::HZ_48000);
+        song.tempo.set_tempo(0, 126.).unwrap();
+        let now = Instant::now();
+        let block = Presentation {
+            generation: 0,
+            sample_rate: song.sample_rate,
+            system_delay_samples: 0,
+            pass: 1,
+            origin: 0,
+            playing: true,
+            sample: 952.,
+            limit: 1464.,
+            samples_per_second: 48_000.,
+            heard_at: now,
+            looped: None,
+            end: None,
+            lead: Some(Duration::ZERO),
+        };
+        let mut messages = Vec::new();
+        let mut cursor = Cursor::default();
+        let next = cursor.update(block, now, &song, &mut |_, m| messages.push(m.to_vec())).unwrap();
+        assert_eq!(messages, [vec![START], vec![CLOCK]]);
+        assert!(next >= now + CATCH_UP_SPACING);
+        messages.clear();
+        cursor.update(block, next, &song, &mut |_, m| messages.push(m.to_vec()));
+        assert_eq!(messages, [vec![CLOCK]]);
+    }
+
+    #[test]
+    fn review_stopped_range_warning_persists_until_the_next_locate() {
+        let mut cursor = Cursor::default();
+        let tempo = TempoMap::default();
+        let sr = SampleRate::HZ_48000;
+        let far = tempo.tick_to_samples((i64::from(MAX_POSITION) + 1) * 6 * TICKS_PER_CLOCK, sr);
+        for locate in [true, false, false] {
+            cursor.advance(false, far, locate, &tempo, sr, |_| panic!("invalid SPP"));
+            assert!(cursor.error().is_some());
+        }
+        cursor.advance(false, 0, true, &tempo, sr, |_| {});
+        assert!(cursor.error().is_none());
     }
 
     #[test]

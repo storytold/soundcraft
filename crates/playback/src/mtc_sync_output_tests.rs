@@ -174,7 +174,7 @@ fn mtc_quarters_use_the_mixer_delay_and_report_limited_negative_advances() {
         output.additional = Some(("MTC".into(), offset, true));
         crate::sync_clock::Publisher::new(output.view.clone(), output.metrics.clone())
             .observe(crate::sync_clock::DeviceTiming::new(base, Some(lead), 0), 0.005);
-        output.metrics.system_delay_samples.store(delay as u64, Relaxed);
+        output.view = cable.clone();
         let status = output.status();
         assert_eq!(status.ports["MTC"].mtc_total_us, Some(expected_us));
         assert_eq!(status.ports["MTC"].advance_limited, limited);

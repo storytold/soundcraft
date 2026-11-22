@@ -275,16 +275,20 @@ impl Output {
         let buckets = self.stats.buckets.each_ref().map(|v| v.load(Relaxed));
         let max = self.stats.max.load(Relaxed);
         let (lead, lead_source) = self.metrics.lead();
-        let sr = self.session.as_ref().map_or_else(soundcraft_time::SampleRate::default, |s| s.sample_rate);
-        let system_delay = self.metrics.system_delay_samples.load(Relaxed);
+        let (sr, system_delay) = self
+            .view
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .mixer_delay()
+            .unwrap_or_else(|| (self.session.as_ref().map_or_else(soundcraft_time::SampleRate::default, |s| s.sample_rate), 0));
         let timing = |name: &str, offset, compensate| {
             let available = if compensate { lead } else { Some(0) };
-            let delay = available.map(|us| delivery_offset(Duration::from_micros(us), system_delay as usize, sr, compensate, offset));
+            let delay = available.map(|us| delivery_offset(Duration::from_micros(us), system_delay, sr, compensate, offset));
             PortTiming {
                 connected: self.stats.connected().contains(name),
                 requested_offset_samples: offset,
                 offset_samples: effective_offset(offset, sr),
-                system_delay_samples: system_delay,
+                system_delay_samples: system_delay as u64,
                 device_lead_us: lead,
                 lead_source,
                 beat_clock_enabled: false,
@@ -368,15 +372,16 @@ struct Port<C> {
 #[derive(Clone, Copy)]
 struct Event {
     route: usize,
+    transport: (u64, bool),
     at: Instant,
     len: usize,
     bytes: [u8; 16],
 }
 impl Event {
-    fn new(route: usize, at: Instant, msg: &[u8]) -> Option<Self> {
+    fn new(route: usize, transport: (u64, bool), at: Instant, msg: &[u8]) -> Option<Self> {
         let mut bytes = [0; 16];
         bytes.get_mut(..msg.len())?.copy_from_slice(msg);
-        Some(Self { route, at, len: msg.len(), bytes })
+        Some(Self { route, transport, at, len: msg.len(), bytes })
     }
 }
 impl<C: SyncPort> Port<C> {
@@ -417,7 +422,7 @@ impl<C: SyncPort> Port<C> {
         });
         for (route_index, route) in self.routes.iter_mut().enumerate() {
             let Some(r) = route else { continue };
-            let (timing_epoch, block, future, revision) = {
+            let (timing_epoch, block, future, revision, unversioned) = {
                 let mut timeline = view.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
                 let (block, future) = timeline.read(now, r.compensate, r.offset);
                 if r.compensate && block.is_none() && future.is_none() {
@@ -426,9 +431,18 @@ impl<C: SyncPort> Port<C> {
                 }
                 let changed = block
                     .and_then(|b| timeline.map(b.generation))
-                    .filter(|revision| r.map.as_ref().is_none_or(|old| old.generation < revision.generation))
+                    .filter(|revision| r.map.as_ref().is_none_or(|old| old.generation != revision.generation))
                     .cloned();
-                (timeline.timing_epoch, block, future, changed)
+                if future.is_none()
+                    && let Some(b) = block
+                    && !(b.generation == 0 && timeline.unversioned())
+                    && !r.map.as_ref().is_some_and(|old| old.generation == b.generation)
+                    && timeline.map(b.generation).is_none()
+                {
+                    timeline.wait_for_revision();
+                    self.waiting_for_timing = true;
+                }
+                (timeline.timing_epoch, block, future, changed, timeline.unversioned())
             };
             if r.compensate && self.timing_epochs[route_index] != timing_epoch {
                 self.timing_epochs[route_index] = timing_epoch;
@@ -444,13 +458,27 @@ impl<C: SyncPort> Port<C> {
                 }
                 r.map = Some(new);
             }
-            let session = r.map.as_ref().map_or(session, |rev| rev.doc.as_ref());
             if let Some(at) = future {
                 soon(at);
             }
             if let Some(b) = block {
+                let transport = (b.pass, b.playing);
+                let keep = |e: &Event| e.route != route_index || e.transport == transport;
+                self.future.retain(keep);
+                pending.retain(keep);
+                let session = match &r.map {
+                    Some(rev) if rev.generation == b.generation => &*rev.doc,
+                    None if unversioned && b.generation == 0 => session,
+                    _ => {
+                        self.future.retain(|event| event.route != route_index);
+                        pending.retain(|event| event.route != route_index);
+                        // A later callback may carry a retained revision. Wait for it without
+                        // sending old audio positions coded against the latest control document.
+                        continue;
+                    }
+                };
                 if let Some(at) = r.encoder.update(b, now, session, &mut |at, m| {
-                    let Some(event) = Event::new(route_index, at, m) else {
+                    let Some(event) = Event::new(route_index, transport, at, m) else {
                         stats.oversized_dropped.fetch_add(1, Relaxed);
                         self.failure = Some(format!("{name}: MIDI message longer than 16 bytes dropped"));
                         return;
@@ -482,6 +510,7 @@ impl<C: SyncPort> Port<C> {
                     }
                 }
                 Err(err) => {
+                    self.stop_pending |= e.bytes[..e.len] == [craft_midi_sync::sync::STOP];
                     self.disconnect(name, err, now, stats);
                     return Some(self.retry);
                 }
