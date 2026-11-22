@@ -309,6 +309,12 @@ impl SoundApp {
         self.punch = None;
         self.autosaved_rev = 0;
         let ids = soundcraft_engine::io::place_recording(&mut self.engine, &plan, takes);
+        if self.clock_follow.enabled {
+            self.clock_follow.audio_sources.extend(ids.iter().filter_map(|id| self.engine.session().find_clip(*id)?.1.source()));
+            if let Some(grid) = &self.engine.playback_tempo {
+                self.clock_follow.recheck_history(grid);
+            }
+        }
         // The audio engine may have confirmed the pass while the audio takes were finished: the
         // stop position and what the user is told go by one answer.
         let midi_confirmed = midi_confirmed || self.midi_pass_stopped_at(midi_pass).is_some();

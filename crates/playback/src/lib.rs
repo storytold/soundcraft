@@ -168,7 +168,7 @@ enum Cmd {
     /// A new snapshot plus the third-party instances it needs (created on the UI thread).
     Session(u64, Arc<Session>, Vec<PreparedInstance>),
     /// Host-built copy of the last published snapshot with only its live tempo changed.
-    FollowGrid(u64, Samples, Arc<Session>, GridReturn),
+    FollowGrid(u64, Samples, Option<(Samples, Samples)>, Arc<Session>, GridReturn),
     /// Where the callback sends the snapshots it replaces (freeing one takes thousands of frees).
     OldSessions(SyncSender<Arc<Session>>),
     Input(Arc<record::InputRing>),
@@ -240,6 +240,34 @@ pub struct Player {
     pub device_buffer: Option<u32>,
     /// True when no audio device could be opened (silent clock).
     pub silent: bool,
+}
+
+/// Latest safe adoption sample and, after a historical compaction, a later stretch
+/// with an unchanged sample position and slope. The callback may move between submit
+/// and receipt; checking both ends keeps a seek or late edit from entering this window.
+fn follow_grid_window(
+    old: &soundcraft_time::TempoMap,
+    tempo: &soundcraft_time::TempoMap,
+    sr: soundcraft_time::SampleRate,
+    join: Option<i64>,
+) -> (Samples, Option<(Samples, Samples)>) {
+    let prior = old.tempos();
+    let next = tempo.tempos();
+    let first_change = |prior: &[soundcraft_time::TempoEvent], next: &[soundcraft_time::TempoEvent]| {
+        let common = prior.iter().zip(next).take_while(|(a, b)| a == b).count();
+        prior.get(common).into_iter().chain(next.get(common)).map(|event| event.tick).min().map_or(Samples::MAX, |tick| old.tick_to_samples(tick, sr))
+    };
+    let boundary = first_change(prior, next);
+    let compacted = join.and_then(|tick| {
+        let start = old.tick_to_samples(tick, sr);
+        if old.tempo_at_tick(tick) != tempo.tempo_at_tick(tick) || start != tempo.tick_to_samples(tick, sr) {
+            return None;
+        }
+        let prior = prior.get(prior.partition_point(|e| e.tick <= tick)..)?;
+        let next = next.get(next.partition_point(|e| e.tick <= tick)..)?;
+        Some((start, first_change(prior, next)))
+    });
+    (boundary, compacted)
 }
 
 impl Player {
@@ -557,6 +585,12 @@ impl Player {
     /// Publish a tempo-only revision without rebuilding the mixer. Leave at most one grid
     /// update in the device queue; a busy host retries with the newest map.
     pub fn update_follow_grid(&self, tempo: &soundcraft_time::TempoMap) -> bool {
+        self.update_compacted_follow_grid(tempo, None)
+    }
+
+    /// A compacted historical prefix can differ even though timing from its join onward
+    /// is unchanged. Validate that tail here; the device only compares sample positions.
+    pub fn update_compacted_follow_grid(&self, tempo: &soundcraft_time::TempoMap, join: Option<i64>) -> bool {
         let mut side = self.side();
         if Arc::get_mut(&mut side.grid_return).is_none() {
             return false;
@@ -567,17 +601,7 @@ impl Player {
             return false;
         }
         // Compute this on the host. The callback needs only an integer comparison.
-        let old = &accepted.tempo;
-        let prior = old.tempos();
-        let next = tempo.tempos();
-        let common = prior.iter().zip(next).take_while(|(a, b)| a == b).count();
-        let boundary = prior
-            .get(common)
-            .into_iter()
-            .chain(next.get(common))
-            .map(|event| event.tick)
-            .min()
-            .map_or(Samples::MAX, |tick| old.tick_to_samples(tick, accepted.sample_rate));
+        let (boundary, compacted) = follow_grid_window(&accepted.tempo, tempo, accepted.sample_rate, join);
         #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
         let snapshot = side.follow_snapshot(tempo).or_else(|| {
             self.beat_clock.lock().unwrap_or_else(PoisonError::into_inner).reclaim_grid_snapshots(&accepted);
@@ -591,7 +615,7 @@ impl Player {
         let generation = self.beat_clock.lock().unwrap_or_else(PoisonError::into_inner).configure(&s, &self.tx, Some(&accepted));
         #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
         let generation = 0;
-        let _ = self.tx.send(Cmd::FollowGrid(generation, boundary, s, side.grid_return.clone()));
+        let _ = self.tx.send(Cmd::FollowGrid(generation, boundary, compacted, s, side.grid_return.clone()));
         true
     }
 

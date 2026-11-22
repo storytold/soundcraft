@@ -590,7 +590,7 @@ fn transport(app: &mut SoundApp, ui: &mut Ui) {
     let playing = app.is_playing();
     let recording = app.engine.transport.recording;
     let looped = app.engine.session().edit.loop_playback;
-    group(ui, 176.0, 64.0, |ui, g| {
+    group(ui, 251.0, 64.0, |ui, g| {
         ui.vertical(|ui| {
             ui.spacing_mut().item_spacing = vec2(3.0, 4.0);
             ui.horizontal(|ui| {
@@ -623,6 +623,16 @@ fn transport(app: &mut SoundApp, ui: &mut Ui) {
                 if resp.clicked() {
                     let _ = app.run("transport.record", json!({}));
                 }
+                let enabled = app.clock_follow.enabled;
+                let description = crate::localization::text("Follow external MIDI Clock");
+                if ui
+                    .add_sized([55.0, 28.0], egui::Button::selectable(enabled, "EXT"))
+                    .accessible_name(description)
+                    .on_hover_text(description)
+                    .clicked()
+                {
+                    let _ = app.run("setup.midi_clock_follow", json!({"enabled": !enabled}));
+                }
             });
             ui.horizontal(|ui| {
                 ui.spacing_mut().item_spacing.x = 3.0;
@@ -635,6 +645,17 @@ fn transport(app: &mut SoundApp, ui: &mut Ui) {
                     if icon_button(ui, vec2(38.0, 22.0), icon, false, tip).clicked() {
                         let _ = app.run(cmd, json!({}));
                     }
+                }
+                if app.clock_follow.enabled {
+                    let label = app.clock_follow.state_label();
+                    let (lamp, _) = ui.allocate_exact_size(vec2(8., 8.), Sense::hover());
+                    let color = match label {
+                        "Locked" => t.counter_text,
+                        "Coasting" => t.accent,
+                        _ => t.text_dim,
+                    };
+                    ui.painter().circle_filled(lamp.center(), 3., color);
+                    ui.label(crate::localization::text(label));
                 }
             });
         });

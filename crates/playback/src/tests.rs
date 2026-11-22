@@ -645,7 +645,7 @@ fn clock_correction_arriving_after_render_keeps_the_active_grid() {
     let mut grid = active.tempo.clone();
     grid.set_tempo(0, 90.).unwrap();
     let candidate = side.follow_snapshot(&grid).unwrap();
-    tx.send(Cmd::FollowGrid(1, 0, candidate, side.grid_return.clone())).unwrap();
+    tx.send(Cmd::FollowGrid(1, 0, None, candidate, side.grid_return.clone())).unwrap();
     callback.fill(&mut [0.; 128], 2);
     assert!(Arc::ptr_eq(&callback.session, &active));
     side.collect_garbage();
@@ -654,11 +654,43 @@ fn clock_correction_arriving_after_render_keeps_the_active_grid() {
     grid.set_tempo(960, 90.).unwrap();
     let future = grid.tick_to_samples(960, active.sample_rate);
     let candidate = side.follow_snapshot(&grid).unwrap();
-    tx.send(Cmd::FollowGrid(2, future, candidate, side.grid_return.clone())).unwrap();
+    tx.send(Cmd::FollowGrid(2, future, None, candidate, side.grid_return.clone())).unwrap();
     callback.fill(&mut [0.; 128], 2);
     assert_eq!(callback.session.tempo, grid);
     side.collect_garbage();
     assert!(side.retry_grid.is_none());
+}
+
+#[test]
+fn clock_compaction_can_publish_only_in_the_matching_post_join_window() {
+    let sr = soundcraft_time::SampleRate::HZ_48000;
+    let mut old = soundcraft_time::TempoMap::new(120., 4, 4).unwrap();
+    old.set_tempo(480, 60.).unwrap();
+    old.set_tempo(960, 120.).unwrap();
+    let mut compacted = soundcraft_time::TempoMap::new(80., 4, 4).unwrap();
+    compacted.set_tempo(960, 120.).unwrap();
+    compacted.set_tempo(1920, 135.).unwrap();
+    let (boundary, window) = follow_grid_window(&old, &compacted, sr, Some(960));
+    assert_eq!(boundary, 0);
+    let start = old.tick_to_samples(960, sr);
+    let end = old.tick_to_samples(1920, sr);
+    assert_eq!(window, Some((start, end)));
+    for (position, accept) in [(start - 1, false), (start, true), (end, true), (end + 1, false)] {
+        let (_, mut callback, tx, _) = spike_session(0);
+        callback.fill(&mut [0.; 128], 2);
+        tx.send(Cmd::Locate(position)).unwrap();
+        let mut session = (*callback.session).clone();
+        session.tempo.clone_from(&old);
+        callback.session = Arc::new(session);
+        let mut side = Side::new(sr.as_f64() as f32, channel().1);
+        side.set_follow_base(callback.session.clone(), Default::default());
+        let candidate = side.follow_snapshot(&compacted).unwrap();
+        tx.send(Cmd::FollowGrid(1, boundary, window, candidate, side.grid_return.clone())).unwrap();
+        callback.fill(&mut [0.; 128], 2);
+        assert_eq!(callback.session.tempo == compacted, accept, "position {position}");
+    }
+    compacted.set_tempo(0, 82.).unwrap();
+    assert!(follow_grid_window(&old, &compacted, sr, Some(960)).1.is_none(), "misaligned post-compaction origin");
 }
 
 #[test]
@@ -686,7 +718,7 @@ fn external_clock_returns_prior_snapshot_even_with_unavailable_retirement_queue(
             tx.send(Cmd::Clock(Some(crate::sync_clock::Publisher::new(view.clone(), Default::default())))).unwrap();
             view
         };
-        tx.send(Cmd::FollowGrid(7, i64::MAX, Arc::new(Session::default()), returned.clone())).unwrap();
+        tx.send(Cmd::FollowGrid(7, i64::MAX, None, Arc::new(Session::default()), returned.clone())).unwrap();
         assert!(Arc::get_mut(&mut returned).is_none());
         #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
         {
@@ -725,7 +757,7 @@ fn replaced_sessions_are_freed_on_the_ui_thread() {
         if index % 2 == 0 {
             tx.send(Cmd::Session(0, s, Vec::new())).unwrap();
         } else {
-            tx.send(Cmd::FollowGrid(0, i64::MAX, s, side.grid_return.clone())).unwrap();
+            tx.send(Cmd::FollowGrid(0, i64::MAX, None, s, side.grid_return.clone())).unwrap();
             assert!(Arc::get_mut(&mut side.grid_return).is_none());
         }
         st.fill(&mut out, 2);

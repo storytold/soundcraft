@@ -295,8 +295,8 @@ impl AudioState {
                 }
                 #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
                 Cmd::Clock(clock) => self.clock = clock,
-                Cmd::FollowGrid(generation, boundary, s, retired) => {
-                    if self.playing && self.pos > boundary {
+                Cmd::FollowGrid(generation, boundary, compacted, s, retired) => {
+                    if self.playing && self.pos > boundary && !compacted.is_some_and(|(start, end)| start <= self.pos && self.pos <= end) {
                         let _ = retired.set((s, Some(self.session.clone())));
                         continue;
                     }

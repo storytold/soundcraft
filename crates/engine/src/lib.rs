@@ -465,6 +465,21 @@ impl Engine {
         soundcraft_mix::MidiClipBeatBounds::from_score(doc, |id| !self.follow_takes.contains_key(&id))
     }
 
+    /// Keep the beat grid for takes recorded in this pass, including copies using the same audio source.
+    pub fn clock_take_ranges<'a>(
+        &'a self,
+        audio_sources: &'a std::collections::HashSet<soundcraft_model::SourceId>,
+    ) -> impl Iterator<Item = soundcraft_time::Range> + 'a {
+        self.doc
+            .tracks
+            .iter()
+            .flat_map(|t| &t.playlists)
+            .flat_map(|p| &p.clips)
+            .filter(|clip| self.follow_takes.contains_key(&clip.id) || clip.source().is_some_and(|id| audio_sources.contains(&id)))
+            .map(|clip| clip.range())
+            .chain(self.follow_takes.values().map(ClockTake::captured_range))
+    }
+
     /// Give followed takes their captured beat timing in the external-clock playback snapshot.
     pub fn project_clock_takes(&self, doc: &mut Session) {
         if self.follow_takes.is_empty() {

@@ -3,6 +3,8 @@ use crate::{SoundApp, TransportRequest, Value, json};
 use soundcraft_playback::clock_follow::{Action, Snapshot, State};
 use soundcraft_time::{SampleRate, TICKS_PER_QUARTER, TempoMap};
 
+mod history;
+
 const TICKS_PER_PULSE: i64 = TICKS_PER_QUARTER / 24;
 
 #[derive(Default)]
@@ -12,6 +14,9 @@ pub(crate) struct Host {
     transport_error_us: Option<i64>,
     actions: Vec<Action>,
     grid_dirty: bool,
+    history: history::History,
+    history_revision: u64,
+    pub(super) audio_sources: std::collections::HashSet<soundcraft_model::SourceId>,
     /// While stopped, new tempo estimates begin here so earlier score time stays fixed.
     waiting_tick: i64,
     pending_cue: Option<i64>,
@@ -27,15 +32,26 @@ impl crate::UiState {
     }
 }
 
-impl SoundApp {
-    pub(crate) fn clock_follow_state(&self) -> Value {
-        let s = self.clock_follow.snapshot;
-        let state = match s.state {
+impl Host {
+    pub(super) fn recheck_history(&mut self, grid: &TempoMap) {
+        self.history.next_check = 0;
+        self.grid_dirty |= self.history.should_compact(grid);
+    }
+
+    pub(crate) fn state_label(&self) -> &'static str {
+        match self.snapshot.state {
             State::Waiting => "Waiting",
             State::Locked => "Locked",
             State::Coasting => "Coasting",
             State::Stopped => "Stopped",
-        };
+        }
+    }
+}
+
+impl SoundApp {
+    pub(crate) fn clock_follow_state(&self) -> Value {
+        let s = self.clock_follow.snapshot;
+        let state = self.clock_follow.state_label();
         let source = self.ui.clock_follow_input.as_ref();
         json!({"input":source,"enabled":self.clock_follow.enabled, "loss_policy":if self.ui.clock_follow_stop_on_loss {"stop"} else {"coast"},
             "input_offset_samples":self.ui.clock_follow_input_offset(),
@@ -133,6 +149,7 @@ impl SoundApp {
     fn reset_follow_grid(&mut self, pulse: i64, bpm: Option<f64>) {
         let tick = pulse.saturating_mul(TICKS_PER_PULSE);
         self.clock_follow.waiting_tick = tick;
+        self.clock_follow.history = Default::default();
         let score = &self.engine.session().tempo;
         let mut grid = TempoMap::default();
         for event in score.tempos().iter().take_while(|e| e.tick < tick) {
@@ -237,6 +254,7 @@ impl SoundApp {
         }
         if let Some(grid) = self.player.as_ref().and_then(|p| p.take_rejected_follow_grid()) {
             self.engine.playback_tempo = Some(grid);
+            self.clock_follow.history = Default::default();
             self.clock_follow.grid_dirty = false;
         }
         for event in events.drain(..) {
@@ -305,7 +323,37 @@ impl SoundApp {
                     p.position().saturating_add(sr.samples(pulse.max(buffer)))
                 }),
             );
-            if self.clock_follow.grid_dirty && self.player.as_ref().is_none_or(|p| p.update_follow_grid(grid)) {
+        }
+        if self.clock_follow.history_revision != self.engine.revision {
+            self.clock_follow.history_revision = self.engine.revision;
+            // An edit or undo can remove or shorten a take without appending a tempo
+            // event. Reassess only when the previous budget included take intervals.
+            if self.clock_follow.history.has_take_credit()
+                && let Some(grid) = &self.engine.playback_tempo
+            {
+                self.clock_follow.recheck_history(grid);
+            }
+        }
+        if self.clock_follow.grid_dirty
+            && let Some(grid) = self.engine.playback_tempo.as_ref()
+        {
+            if self.clock_follow.history.should_compact(grid) {
+                // An active recording can span many hours. Its input events are projected
+                // when the pass closes, so retain every change since its punch-in point.
+                let open = self.engine.transport.recording.then(|| soundcraft_time::Range::new(self.record_start, i64::MAX));
+                let ranges = self.engine.clock_take_ranges(&self.clock_follow.audio_sources).chain(open).collect();
+                if let Some(grid) = &mut self.engine.playback_tempo {
+                    let origin = self.clock_follow.anchor.map_or(self.clock_follow.waiting_tick, |(pulse, _)| pulse.saturating_mul(TICKS_PER_PULSE));
+                    self.clock_follow.history.compact(grid, sr, origin, ranges);
+                }
+            }
+            if self
+                .engine
+                .playback_tempo
+                .as_ref()
+                .is_some_and(|grid| self.player.as_ref().is_none_or(|p| p.update_compacted_follow_grid(grid, self.clock_follow.history.last_join)))
+            {
+                self.clock_follow.history.last_join = None;
                 self.clock_follow.grid_dirty = false;
             }
         }
@@ -467,6 +515,29 @@ mod tests {
     // of the workstation's audio driver and its timing-report warmup.
     fn simulated_player(engine: &soundcraft_engine::Engine) -> soundcraft_playback::Player {
         soundcraft_playback::Player::reconnect_output(engine.session_arc(), &Default::default(), "SoundCraft absent Clock test device")
+    }
+
+    #[test]
+    fn ext_transport_toggle_dispatches_follow_and_announces_clock_state() {
+        use egui_kittest::{Harness, kittest::Queryable};
+        let mut app = SoundApp::new(Default::default(), None, crate::Services::default());
+        app.ui.clock_follow_input = Some("DIN".into());
+        let mut window = Harness::builder()
+            .with_context_setup(|ctx| crate::fonts::install(ctx, false))
+            .with_size(egui::vec2(2000., 200.))
+            .build_ui_state(|ui, app| crate::toolbar::show(app, ui), app);
+        window.run_steps(2);
+        window.get_by_label("Follow external MIDI Clock").click();
+        window.run_steps(2);
+        assert!(window.state().clock_follow.enabled);
+        for (state, label) in [(State::Waiting, "Waiting"), (State::Locked, "Locked"), (State::Coasting, "Coasting")] {
+            window.state_mut().clock_follow.snapshot.state = state;
+            window.run_steps(2);
+            window.get_by_label(label);
+        }
+        window.get_by_label("Follow external MIDI Clock").click();
+        window.run_steps(2);
+        assert!(!window.state().clock_follow.enabled);
     }
 
     #[test]
@@ -792,6 +863,7 @@ mod tests {
     }
 
     mod coast_relock;
+    mod pass_history;
     #[cfg(not(target_arch = "wasm32"))]
     mod recording;
 

@@ -22,6 +22,10 @@ pub(crate) struct ClockTakeProjection {
 }
 
 impl ClockTake {
+    pub(crate) fn captured_range(&self) -> Range {
+        self.capture.range
+    }
+
     /// Store both timings together before sorting. A composed take owns only its
     /// own events; it never references earlier clips, takes, or undo history.
     pub(crate) fn from_events(t: TimeCtx<'_>, grid: &TempoMap, range: Range, mut notes: NoteRows, mut ctrls: ControlRows) -> (Sequence, Self) {

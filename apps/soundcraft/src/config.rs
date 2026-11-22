@@ -381,6 +381,21 @@ mod config_tests {
     }
 
     #[test]
+    fn input_and_output_port_calibrations_recover_without_erasing_each_other() {
+        let mut fields = serde_json::json!({"midi_sync":{"ports":{
+            "Stage": {"in_offset_samples":64, "out_offset_samples":-128, "offset_samples":99},
+            "Keys": {"in_offset_samples":"bad", "out_offset_samples":-48},
+            "Rack": {"out_offset_samples":true, "offset_samples":-11, "in_offset_samples":24}
+        }}});
+        let mut resets = Vec::new();
+        recover_sync_settings(fields.as_object_mut().unwrap(), &mut resets);
+        let sync: soundcraft_ui_egui::midi_sync::MidiSync = serde_json::from_value(fields["midi_sync"].clone()).unwrap();
+        let offset = |name: &str| (sync.ports[name].in_offset_samples, sync.ports[name].out_offset_samples);
+        assert_eq!((offset("Stage"), offset("Keys"), offset("Rack")), ((64, -128), (0, -48), (24, -11)));
+        assert_eq!(resets.len(), 3);
+    }
+
+    #[test]
     fn native_file_reload_preserves_edit_mix_and_hidden_floating_panels() {
         use soundcraft_ui_egui::{MainWindow, Services, SoundApp, docking::Panel};
         let directory = std::env::temp_dir().join(format!("soundcraft-dock-prefs-{}", std::process::id()));

@@ -1,6 +1,10 @@
 /// Returns the Brazilian Portuguese translation for a source-language UI string.
 pub(super) fn translate(source: &str) -> Option<&'static str> {
     Some(match source {
+        "Follow external MIDI Clock" => "Seguir clock MIDI externo",
+        "Waiting" => "Aguardando",
+        "Coasting" => "Em curso livre",
+        "Stopped" => "Parado",
         "Follow MIDI clock" => "Seguir clock MIDI",
         "Sync" => "Sincronização",
         "External MIDI clock" => "Clock MIDI externo",

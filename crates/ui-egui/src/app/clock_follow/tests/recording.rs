@@ -92,6 +92,7 @@ fn record_through_loss(policy: &str) {
     let clips = s.track(audio).unwrap().clips();
     let expected_len = if coast { 25200 } else { 12000 };
     assert_eq!((clips.len(), clips[0].start, clips[0].range().len()), (1, start, expected_len));
+    assert!(app.clock_follow.audio_sources.contains(&clips[0].source().unwrap()), "retain the grid for this recorded audio source");
     let samples = &craft_audio::decode(&std::fs::read(path).unwrap(), None).unwrap().1.channels[0];
     assert_eq!(samples.len(), expected_len as usize);
     for (i, sample) in samples.iter().enumerate() {
@@ -105,6 +106,7 @@ fn record_through_loss(policy: &str) {
     let live = app.engine.playback_session();
     let clips = live.track(midi).unwrap().clips();
     assert_eq!((clips.len(), clips[0].start, clips[0].range().len()), (1, start, expected_len));
+    assert!(app.clock_follow.audio_sources.contains(&clips[0].source().unwrap()), "retain the grid for this recorded audio source");
     let ClipContent::Midi { sequence } = &clips[0].content else { panic!("expected MIDI") };
     let notes: Vec<_> = sequence.notes.iter().map(|n| (n.pitch, n.start)).collect();
     assert_eq!(notes, if coast { vec![(60, 0), (67, 400), (72, 800)] } else { vec![(60, 0)] });
@@ -117,4 +119,63 @@ fn record_through_loss(policy: &str) {
     let samples: Vec<_> = sequence.notes.iter().map(|n| reopened.tempo.tick_to_samples(n.start, reopened.sample_rate)).collect();
     assert_eq!(samples, if coast { vec![0, 12_000, 24_000] } else { vec![0] });
     std::fs::remove_dir_all(app.fallback_take_dir.as_ref().unwrap()).unwrap();
+}
+
+#[test]
+fn hour_one_clock_take_keeps_its_onsets_after_history_compaction_and_reopen() {
+    use soundcraft_engine::io::{MidiTakeEvent, add_midi_recording};
+    use soundcraft_time::Range;
+    let mut app = SoundApp::new(Default::default(), None, crate::Services::default());
+    let track = armed(&mut app, "midi");
+    app.midi_inputs = Some(MidiInputs::with_port_names(vec![], vec!["DIN".into()]));
+    app.run("setup.midi_clock_follow", json!({"input":"DIN","enabled":true})).unwrap();
+    let sr = app.engine.session().sample_rate;
+    let mut grid = TempoMap::default();
+    let quarter = TICKS_PER_QUARTER;
+    // Alternating observed tempi, one external estimate every 30 s. Capture well
+    // inside the first hour and keep generating changes into hour six.
+    let step = 60 * quarter;
+    for i in 0..100 {
+        grid.set_tempo(i * step, if i % 2 == 0 { 120. } else { 135. }).unwrap();
+    }
+    let first = 34 * step;
+    let last = 37 * step;
+    let range = Range::new(grid.tick_to_samples(first, sr), grid.tick_to_samples(last, sr));
+    let note_at = grid.tick_to_samples(first + step, sr);
+    let off = grid.tick_to_samples(first + 2 * step, sr);
+    let events = [
+        MidiTakeEvent { at: note_at, device: 0, status: 0x90, data1: 64, data2: 100 },
+        MidiTakeEvent { at: off, device: 0, status: 0x80, data1: 64, data2: 0 },
+    ];
+    app.engine.playback_tempo = Some(grid.clone());
+    let take = add_midi_recording(&mut app.engine, range, &events, &["keys".into()], false);
+    assert_eq!(take.clips.len(), 1);
+    let saved_before = app.engine.session().track(track).unwrap().clips()[0].clone();
+    for i in 100..850 {
+        let tempo = if i % 2 == 0 { 120. } else { 135. };
+        grid.set_tempo(i * step, tempo).unwrap();
+        app.engine.playback_tempo.as_mut().unwrap().set_tempo(i * step, tempo).unwrap();
+        app.clock_follow.grid_dirty = true;
+        app.service_clock_follow();
+    }
+    let compacted = app.engine.playback_tempo.as_ref().unwrap();
+    assert!(compacted.tempos().len() < grid.tempos().len() && compacted.tempos().len() <= 512);
+    for tick in (first..=last).step_by(19).chain([850 * step, 900 * step]) {
+        assert_eq!(compacted.tick_to_samples(tick, sr), grid.tick_to_samples(tick, sr), "sample position at tick {tick}");
+    }
+    let play = app.engine.playback_session();
+    let clip = play.find_clip(take.clips[0]).unwrap().1;
+    let ClipContent::Midi { sequence } = &clip.content else { panic!("expected MIDI take") };
+    let origin = play.tempo.samples_to_ticks(clip.start, sr);
+    assert_eq!(play.tempo.tick_to_samples(origin + sequence.notes[0].start, sr), note_at);
+    assert_eq!(play.tempo.tick_to_samples(origin + sequence.notes[0].start + sequence.notes[0].length, sr), off);
+    app.run("setup.midi_clock_follow", json!({"enabled":false})).unwrap();
+    let reopened = soundcraft_model::Session::from_json(&app.engine.session().to_json().unwrap()).unwrap();
+    let clip = reopened.find_clip(take.clips[0]).unwrap().1;
+    assert_eq!(clip, &saved_before);
+    let ClipContent::Midi { sequence } = &clip.content else { panic!("expected saved take") };
+    let origin = reopened.tempo.samples_to_ticks(clip.start, sr);
+    let note = sequence.notes[0];
+    assert_eq!(reopened.tempo.tick_to_samples(origin + note.start, sr), note_at);
+    assert_eq!(reopened.tempo.tick_to_samples(origin + note.start + note.length, sr), off);
 }
