@@ -43,17 +43,12 @@ struct Candidate {
 
 /// A percent threshold is a comparison with the clock *before* the transition.
 /// Near 8%, freeze the old fit while accumulating a new, independent slope.
+#[derive(Default)]
 pub(super) struct WireStep {
     recent: [Point; 32],
     seen: u8,
     next_check: i64,
     candidate: Option<Candidate>,
-}
-
-impl Default for WireStep {
-    fn default() -> Self {
-        Self { recent: [Point::default(); 32], seen: 0, next_check: 0, candidate: None }
-    }
 }
 
 impl WireStep {
@@ -86,7 +81,7 @@ impl WireStep {
         if self.candidate.is_none() && reliable && (0.052..=0.14).contains(&fraction) {
             self.candidate = Some(Candidate { start: (pulse, stamp), prior, fit: Default::default() });
         }
-        let Some(c) = self.candidate.as_mut() else { return None };
+        let c = self.candidate.as_mut()?;
         let n = pulse.saturating_sub(c.start.0);
         c.fit.add(n as f64, stamp.saturating_sub(c.start.1) as f64);
         let Some((new, noise_after)) = c.fit.period_noise() else {

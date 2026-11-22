@@ -24,7 +24,7 @@ impl Rig {
         let audio = AudioState::new(rx, shared, Arc::new(song), 48_000., channel().0);
         let feed = Arc::new(MidiFeed::default());
         feed.set_clock_follow(Some(0), true, 0, false);
-        tx.send(Cmd::Midi(feed.clone())).unwrap();
+        assert!(tx.send(Cmd::Midi(feed.clone())).is_ok());
         Self { feed, tx: Arc::new(tx), audio }
     }
 
@@ -116,11 +116,11 @@ struct Keys {
 
 impl Plugin for Keys {
     fn info(&self) -> &'static PluginInfo {
-        soundcraft_dsp::plugin_info("gain").unwrap()
+        &soundcraft_dsp::plugins::utility::GAIN_INFO
     }
     fn prepare(&mut self, _: f32, _: usize, _: usize) {}
     fn reset(&mut self) {
-        self.events.lock().unwrap().push(Event::Reset);
+        self.events.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push(Event::Reset);
         self.held.fill(false);
     }
     fn process(&mut self, _: &mut [Vec<f32>], _: usize) {}
@@ -132,11 +132,11 @@ impl Plugin for Keys {
     }
     fn note_on(&mut self, _: usize, n: u8, _: u8) {
         self.held[usize::from(n)] = true;
-        self.events.lock().unwrap().push(Event::On(n));
+        self.events.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push(Event::On(n));
     }
     fn note_off(&mut self, _: usize, n: u8) {
         self.held[usize::from(n)] = false;
-        self.events.lock().unwrap().push(Event::Off(n));
+        self.events.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push(Event::Off(n));
     }
     fn all_notes_off(&mut self) {
         // The instrument adapter owns the set of active keys, as in the hosted formats.

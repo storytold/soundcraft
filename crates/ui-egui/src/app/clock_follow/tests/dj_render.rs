@@ -53,10 +53,10 @@ fn band_song(start_bpm: f64, capacity: usize, end: i64) -> Session {
     song
 }
 
-fn score_window(song: &mut Session, first: usize, total: usize) {
+fn score_window(song: &mut Session, first: usize, total: usize) -> Result<(), &'static str> {
     for (track_index, stride) in [1, 2].into_iter().enumerate() {
         let clip = &mut song.tracks[track_index].playlist_mut().unwrap().clips[0];
-        let ClipContent::Midi { sequence } = &mut clip.content else { unreachable!() };
+        let ClipContent::Midi { sequence } = &mut clip.content else { return Err("the DJ score must contain MIDI clips") };
         // first moves forward only. The window starts full and only shrinks for the final section.
         sequence.notes.truncate(total.saturating_sub(first).div_ceil(stride));
         for (i, note) in sequence.notes.iter_mut().enumerate() {
@@ -65,6 +65,7 @@ fn score_window(song: &mut Session, first: usize, total: usize) {
             note.velocity = 32 + (eighth % TAGS) as u8 * 6;
         }
     }
+    Ok(())
 }
 
 /// Each tag has a distinct velocity and an independently rendered native-pitch waveform.
@@ -73,7 +74,7 @@ fn templates() -> &'static [Vec<f32>] {
     static REFERENCE: OnceLock<Vec<Vec<f32>>> = OnceLock::new();
     REFERENCE.get_or_init(|| {
         let mut song = band_song(120., TAGS, 192_000);
-        score_window(&mut song, 0, TAGS);
+        score_window(&mut song, 0, TAGS).unwrap();
         let mut mix = soundcraft_mix::MixEngine::new(48_000., 128);
         let mut output = vec![vec![0.; 128]; 2];
         let mut waves = Vec::<Vec<f32>>::new();
@@ -160,7 +161,7 @@ pub(super) fn render_dj(start_bpm: f64, ideal_us: &[i64], arrivals_us: &[i64], e
             // Keep a bounded window of notes in the score, with overlap in both directions.
             // The mix graph, tempo map and follower run uninterrupted for a multi-hour case.
             if p.is_multiple_of(384) {
-                score_window(&mut song, (p / 12).saturating_sub(16), expected.len());
+                score_window(&mut song, (p / 12).saturating_sub(16), expected.len()).unwrap();
             }
             feed.receive(port, &[0xf8]);
         } else if stop_at == Some(now) {
@@ -206,8 +207,8 @@ pub(super) fn render_dj(start_bpm: f64, ideal_us: &[i64], arrivals_us: &[i64], e
             if running {
                 mix.render_clock_block(&song, pos, count, &mut output, feed.clock_render_tick(), feed.clock_delivery());
             }
-            for i in 0..count {
-                let value = if running { output[0][i] } else { 0. };
+            for (i, &rendered) in output[0][..count].iter().enumerate() {
+                let value = if running { rendered } else { 0. };
                 if value.abs() > 0.000001 {
                     if voice.is_empty() {
                         onset = pos + i as i64;
