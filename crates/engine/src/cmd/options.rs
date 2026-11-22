@@ -473,7 +473,7 @@ mod sync_session_tests {
             ("setup.session", json!({"external_offset_frames":0})),
             ("setup.external_timecode_offset", json!({"samples":0})),
             ("setup.external_timecode_offset", json!({"frames":0})),
-            ("setup.external_timecode_offset", json!({"timecode":"00:00:00:00"})),
+            ("setup.external_timecode_offset", json!({"timecode":"+00:00:00:00"})),
         ] {
             let mut s = Engine::default().session().clone();
             s.edit.values.insert("sync.external_offset".into(), 42.);
