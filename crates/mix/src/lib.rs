@@ -404,6 +404,16 @@ impl MixEngine {
     /// Render audio and live input continuously, but dispatch score events only through
     /// the inclusive wire tick. A later block consumes the retained range exactly once.
     pub fn render_with_clock_limit(&mut self, s: &Session, pos: Samples, frames: usize, out: &mut [Vec<f32>], through_tick: Option<i64>) {
+        self.render_clock_block(s, pos, frames, out, through_tick, false);
+    }
+
+    /// Schedule the part of this projected block that is still on time at its
+    /// actual sample offset, even if earlier wire-limited blocks held a backlog.
+    pub fn render_with_clock_prediction(&mut self, s: &Session, pos: Samples, frames: usize, out: &mut [Vec<f32>], through_tick: i64) {
+        self.render_clock_block(s, pos, frames, out, Some(through_tick), true);
+    }
+
+    fn render_clock_block(&mut self, s: &Session, pos: Samples, frames: usize, out: &mut [Vec<f32>], through_tick: Option<i64>, projected: bool) {
         let frames = frames.min(self.max_block);
         self.begin_block(s, pos, frames);
         self.clocked_click |= through_tick.is_some();
@@ -420,7 +430,7 @@ impl MixEngine {
         if frames > 0 && !self.monitor_only && score.start < score.end && note_start < score.end {
             self.midi_origin = None;
         }
-        let blk = Block { pos, frames, note_start, score, any_solo: any_solo(s) };
+        let blk = Block { pos, frames, note_start, score, projected, any_solo: any_solo(s) };
         let order = std::mem::take(&mut self.order);
         // Phase 1: independent strips (audio, instrument, MIDI) in parallel.
         let mut work = std::mem::take(&mut self.work);

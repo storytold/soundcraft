@@ -24,10 +24,23 @@ fn midi_offset(s: &Session, t: &Track) -> i64 {
 /// a clip note-off is not sent while a live key holds that pitch: the key's own release ends it.
 /// A note-off held back that way is told to `live`: when the key goes up earlier in the same
 /// block, the note still lasts until the clip's note-off.
-pub(crate) fn schedule_notes(s: &Session, t: &Track, blk: Block, inst: &mut PluginSlot, held: &mut Vec<u8>, live: &mut LiveNotes) {
+pub(crate) fn schedule_notes(s: &Session, t: &Track, mut blk: Block, inst: &mut PluginSlot, held: &mut Vec<u8>, live: &mut LiveNotes) {
     if blk.frames == 0 || blk.score.start == blk.score.end {
         return;
     }
+    if blk.projected && blk.score.start < blk.pos && blk.pos < blk.score.end {
+        // Opening the presentation window can release a whole note and its note-off
+        // together. Keep their existing ordered offsets for this strip when the held
+        // interval contains MIDI. Empty backlog leaves new attacks on their samples.
+        let overdue = Block { score: Range { start: blk.score.start, end: blk.pos }, ..blk };
+        blk.projected = !clip_events::<true>(s, t, overdue, inst, held, live);
+    }
+    clip_events::<false>(s, t, blk, inst, held, live);
+}
+
+// Detection uses the exact same clip boundaries, realtime properties and MIDI offsets
+// as dispatch. The probe returns at the first event without changing voices or controls.
+fn clip_events<const DETECT: bool>(s: &Session, t: &Track, blk: Block, inst: &mut PluginSlot, held: &mut Vec<u8>, live: &mut LiveNotes) -> bool {
     let sr = s.sample_rate;
     // MIDI Track Offsets: the track's notes sound `offset` samples later (earlier if negative), so
     // the block looks that far back into the clips.
@@ -85,6 +98,9 @@ pub(crate) fn schedule_notes(s: &Session, t: &Track, blk: Block, inst: &mut Plug
                 // Deliver due attacks at frame zero without chasing notes from before the locate.
                 let attack = on >= note_start && on < end && (on == note_start || off >= pos);
                 if attack {
+                    if DETECT {
+                        return true;
+                    }
                     let at = blk.score_offset(on.saturating_sub(pos));
                     let bit = 1u128 << n.pitch;
                     if deferred & bit != 0 {
@@ -97,6 +113,9 @@ pub(crate) fn schedule_notes(s: &Session, t: &Track, blk: Block, inst: &mut Plug
                     }
                 }
                 if off < end && (off >= pos || attack) {
+                    if DETECT {
+                        return true;
+                    }
                     if attack && on < pos && off <= pos {
                         deferred |= 1u128 << n.pitch;
                     } else {
@@ -115,6 +134,9 @@ pub(crate) fn schedule_notes(s: &Session, t: &Track, blk: Block, inst: &mut Plug
                 }
                 let at = s.tempo.tick_to_samples(base.saturating_add(tick), sr);
                 if at >= pos && at < end && at < clip.end() {
+                    if DETECT {
+                        return true;
+                    }
                     inst.plugin.midi(blk.score_offset(at.saturating_sub(pos)), ctrl_message(c.kind, c.value, dp));
                 }
             }
@@ -125,6 +147,7 @@ pub(crate) fn schedule_notes(s: &Session, t: &Track, blk: Block, inst: &mut Plug
         release_clip_note(inst, held, live, pitch, 1.min(blk.frames - 1));
         deferred &= deferred - 1;
     }
+    false
 }
 
 fn release_clip_note(inst: &mut PluginSlot, held: &mut Vec<u8>, live: &mut LiveNotes, pitch: u8, at: usize) {

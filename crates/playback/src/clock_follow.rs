@@ -30,6 +30,12 @@ pub struct Snapshot {
     pub bpm: Option<f64>,
     /// The wire confirmed a tempo step during uninterrupted playback within the past beat.
     pub recovering_tempo_step: bool,
+    /// The source has a sustained tempo trend above its measured timestamp noise.
+    pub tempo_ramp: bool,
+    /// Number of intervals used if the latest F8 confirmed a new tempo.
+    pub step_intervals: u8,
+    /// The input is delivering groups of F8s with shared timing.
+    pub packed_delivery: bool,
     pub jitter_us: f64,
     pub phase_error_us: i64,
     pub state: State,
@@ -116,10 +122,17 @@ pub(crate) struct Follower {
     awaiting_clock: Option<i64>,
     pub(crate) next_pulse: i64,
     fit_index: i64,
+    // Three F8s within one millisecond cannot be individual beats in the
+    // supported tempo range. Keep every pulse, but fit only batch heads.
+    packet_head: Option<(i64, i64)>,
+    packed_delivery: bool,
+    singleton_groups: u8,
+    previous_batch_noise: [f64; 4],
     short: PulseFit<12>,
     steady: PulseFit<192>,
     changes: u8,
     step_pulses_left: u8,
+    step_intervals: u8,
     latest: Option<i64>,
     coast_period_us: Option<f64>,
     played_stamp: i64,
@@ -143,10 +156,15 @@ impl Default for Follower {
             awaiting_clock: None,
             next_pulse: 0,
             fit_index: 0,
+            packet_head: None,
+            packed_delivery: false,
+            singleton_groups: 0,
+            previous_batch_noise: [0.; 4],
             short: Default::default(),
             steady: Default::default(),
             changes: 0,
             step_pulses_left: 0,
+            step_intervals: 0,
             latest: None,
             played_stamp: 0,
             played_pulse: 0,
@@ -223,6 +241,20 @@ impl Follower {
         }
     }
 
+    pub(crate) fn render_prediction(&self) -> Option<(i64, f64)> {
+        let period = self.steady.period_us()?;
+        if self.state != State::Locked
+            || self.step_pulses_left != 0
+            || self.packed_delivery
+            || !(2500. ..=500_000.).contains(&period)
+            || !self.short.regular_intervals(period)
+            || self.steady.is_tempo_ramp()
+        {
+            return None;
+        }
+        Some((self.latest?, period))
+    }
+
     fn bpm(&self) -> Option<f64> {
         self.steady.period_us().or_else(|| self.short.period_us()).filter(|p| (2500. ..=500_000.).contains(p)).map(|p| 2_500_000. / p)
     }
@@ -230,6 +262,9 @@ impl Follower {
         Snapshot {
             bpm: self.bpm().or_else(|| self.coast_period_us.map(|p| 2_500_000. / p)),
             recovering_tempo_step: self.step_pulses_left > 0,
+            tempo_ramp: self.state == State::Locked && !self.packed_delivery && self.step_pulses_left == 0 && self.steady.is_tempo_ramp(),
+            step_intervals: self.step_intervals,
+            packed_delivery: self.packed_delivery,
             jitter_us: self.steady.jitter_us(),
             phase_error_us: self.phase_error_us,
             state: self.state,
@@ -240,7 +275,14 @@ impl Follower {
         }
     }
     pub(crate) fn expire(&mut self, now: i64) {
-        let timeout = self.bpm().map_or(150_000, |bpm| (7_500_000. / bpm).ceil() as i64).max(150_000);
+        let period = self.bpm().map_or(0., |bpm| 2_500_000. / bpm);
+        let mut timeout = (3. * period).ceil().max(150_000.) as i64;
+        if self.packed_delivery
+            && let Some((head, _)) = self.packet_head
+        {
+            // Some of the upcoming silence was already delivered in this batch.
+            timeout = timeout.saturating_add(((self.fit_index - head) as f64 * period).round().min(150_000.) as i64);
+        }
         if self.latest.is_some_and(|last| now.saturating_sub(last) > timeout) {
             // Idle pulses can predate a fresh transport request by an entire timeout.
             let request = self.awaiting_clock.filter(|at| now.saturating_sub(*at) <= timeout);
@@ -258,6 +300,11 @@ impl Follower {
         self.short.clear();
         self.steady.clear();
         self.latest = None;
+        self.packet_head = None;
+        self.packed_delivery = false;
+        self.singleton_groups = 0;
+        self.previous_batch_noise = [0.; 4];
+        self.step_intervals = 0;
         self.changes = 0;
         self.step_pulses_left = 0;
         if self.state == State::Locked {
@@ -275,31 +322,34 @@ impl Follower {
         let at = self.latest.map_or(at, |prev| prev.max(at));
         self.latest = Some(at);
         self.fit_index = self.fit_index.saturating_add(1);
+        self.step_intervals = 0;
         self.step_pulses_left = self.step_pulses_left.saturating_sub(1);
-        self.short.push(self.fit_index, at);
-        // Long regression suppresses USB quantisation and timestamp jitter.
-        // A sustained slope change outside the short fit's noise band starts a fresh epoch.
-        if let (Some(fast), Some(slow)) = (self.short.period_us(), self.steady.period_us()) {
-            let threshold = (0.013 * slow).max(0.35 * self.short.jitter_us());
-            if (fast - slow).abs() > threshold {
-                self.changes = self.changes.saturating_add(1);
-            } else {
-                self.changes = 0;
-            }
-            if let Some((index, stamp)) = self.short.confirmed_step_start(slow, self.steady.jitter_us()) {
-                self.steady.clear();
-                self.steady.push(index, stamp);
-                self.changes = 0;
-                if self.state == State::Locked {
-                    self.step_pulses_left = 24;
+        if self.packet_head.is_none_or(|(_, stamp)| at.saturating_sub(stamp) > 1000) {
+            if self.packed_delivery
+                && let Some((head, _)) = self.packet_head
+            {
+                let width = self.fit_index - head;
+                self.singleton_groups = if width == 1 { self.singleton_groups.saturating_add(1) } else { 0 };
+                if self.singleton_groups >= 4 {
+                    self.packed_delivery = false;
+                    self.previous_batch_noise = [0.; 4];
                 }
-            } else if self.changes >= 6 {
-                self.steady.clear();
-                self.changes = 0;
             }
+            self.packet_head = Some((self.fit_index, at));
         }
-        self.phase_error_us = self.steady.predict_us(self.fit_index).map_or(0, |pred| at.saturating_sub(pred));
-        self.steady.push(self.fit_index, at);
+        let (head, stamp) = self.packet_head.unwrap_or((self.fit_index, at));
+        if !self.packed_delivery && self.fit_index - head >= 2 {
+            self.packed_delivery = true;
+            self.singleton_groups = 0;
+            self.short.clear();
+            self.steady.clear();
+            self.short.push(head, stamp);
+            self.steady.push(head, stamp);
+            self.changes = 0;
+        }
+        if !self.packed_delivery || self.fit_index == head {
+            self.observe_period(at);
+        }
         let start_requested = self.awaiting_clock.take().is_some();
         if self.state == State::Coasting && (start_requested || self.bpm().is_some()) {
             // F8 has no absolute position. Match the returning train to the nearest
@@ -319,6 +369,40 @@ impl Follower {
             self.played_pulse = self.next_pulse;
             self.next_pulse = self.next_pulse.saturating_add(1);
         }
+    }
+    fn observe_period(&mut self, at: i64) {
+        self.short.push(self.fit_index, at);
+        // Long regression suppresses USB quantisation and timestamp jitter.
+        // A sustained slope change outside the short fit's noise band starts a fresh epoch.
+        if let (Some(fast), Some(slow)) = (self.short.period_us(), self.steady.period_us()) {
+            let threshold = (0.013 * slow).max(0.35 * self.short.jitter_us());
+            if (fast - slow).abs() > threshold {
+                self.changes = self.changes.saturating_add(1);
+            } else {
+                self.changes = 0;
+            }
+            // Four batch heads can span twenty pulses. Use the noise floor from
+            // before that candidate, so the step itself cannot mask the change.
+            let mut noise = self.steady.jitter_us();
+            if self.packed_delivery {
+                self.previous_batch_noise.rotate_left(1);
+                std::mem::swap(&mut noise, &mut self.previous_batch_noise[3]);
+            }
+            if let Some(((index, stamp), intervals)) = self.short.confirmed_step(slow, noise) {
+                self.steady.clear();
+                self.steady.push(index, stamp);
+                self.changes = 0;
+                if self.state == State::Locked {
+                    self.step_intervals = intervals;
+                    self.step_pulses_left = 24;
+                }
+            } else if self.changes >= 6 {
+                self.steady.clear();
+                self.changes = 0;
+            }
+        }
+        self.phase_error_us = self.steady.predict_us(self.fit_index).map_or(0, |pred| at.saturating_sub(pred));
+        self.steady.push(self.fit_index, at);
     }
     /// System common bytes may be interrupted by real-time messages, even inside SysEx.
     /// Channel data and incomplete or malformed system messages never trigger a transport action.
@@ -371,3 +455,6 @@ impl Follower {
 }
 #[cfg(test)]
 mod tests;
+
+#[cfg(all(test, any(target_os = "windows", target_os = "macos", target_os = "linux")))]
+mod render_lead;

@@ -105,10 +105,16 @@ impl<const N: usize> PulseFit<N> {
     /// Oldest point in a train of consistent intervals that depart from a previous
     /// period. A delayed packet and the shorter interval that follows it do not qualify.
     pub fn confirmed_step_start(&self, previous: f64, noise_us: f64) -> Option<(i64, i64)> {
+        self.confirmed_step(previous, noise_us).map(|(start, _)| start)
+    }
+
+    pub(crate) fn confirmed_step(&self, previous: f64, noise_us: f64) -> Option<((i64, i64), u8)> {
         // Two nearly identical intervals can distinguish a large jump from a
         // delayed packet followed by a short one. Keep the four-interval noise
         // test for ordinary changes and for devices with appreciable jitter.
-        self.step_intervals(previous, 2, 0.30, noise_us * 8., 0.03).or_else(|| self.step_intervals(previous, 4, 0.08, noise_us * 2., 0.4))
+        self.step_intervals(previous, 2, 0.30, noise_us * 8., 0.03)
+            .map(|head| (head, 2))
+            .or_else(|| self.step_intervals(previous, 4, 0.08, noise_us * 2., 0.4).map(|head| (head, 4)))
     }
 
     fn step_intervals(&self, previous: f64, count: usize, bpm_fraction: f64, noise_floor: f64, tolerance: f64) -> Option<(i64, i64)> {
@@ -117,20 +123,70 @@ impl<const N: usize> PulseFit<N> {
         }
         let first = (self.cursor + N - count - 1) % N;
         let start = self.points[first];
-        let (_, end) = self.last?;
-        let period = end.saturating_sub(start.1) as f64 / count as f64;
+        let (index, end) = self.last?;
+        let pulses = index.saturating_sub(start.0) as f64;
+        let period = end.saturating_sub(start.1) as f64 / pulses;
         let change = period - previous;
         // BPM is reciprocal period. Allow for the microsecond rounding of the endpoints.
-        if period <= 0. || change.abs() + 1. / (count as f64) < period * bpm_fraction || change.abs() < noise_floor {
+        if !(2500. ..=500_000.).contains(&period) || change.abs() + 1. / pulses < period * bpm_fraction || change.abs() < noise_floor {
             return None;
         }
+        // Timestamp jitter moves neighbouring intervals in opposite directions. Its
+        // observed amplitude can justify a wider agreement band, while every interval
+        // must still depart from the old period in the direction of this change.
+        let jitter_margin = if count == 2 { (0.40 * noise_floor).min(change.abs() * 0.25) } else { (1.7 * noise_floor).min(change.abs() * 0.95) };
+        let band = (change.abs() * tolerance).max(jitter_margin);
         for i in 0..count {
-            let interval = self.points[(first + i + 1) % N].1.saturating_sub(self.points[(first + i) % N].1) as f64;
-            if (interval - period).abs() > change.abs() * tolerance {
+            let (a, start) = self.points[(first + i) % N];
+            let (b, end) = self.points[(first + i + 1) % N];
+            let interval = end.saturating_sub(start) as f64 / b.saturating_sub(a) as f64;
+            if (interval - period).abs() > band {
                 return None;
             }
         }
         Some(start)
+    }
+
+    /// Prediction requires several independently observed intervals at the fitted rate.
+    pub(crate) fn regular_intervals(&self, period: f64) -> bool {
+        const COUNT: usize = 4;
+        if self.len <= COUNT {
+            return false;
+        }
+        let start = (self.cursor + N - COUNT - 1) % N;
+        (0..COUNT).all(|i| {
+            let elapsed = self.points[(start + i + 1) % N].1.saturating_sub(self.points[(start + i) % N].1);
+            (elapsed as f64 - period).abs() <= (0.02 * period).max(2.)
+        })
+    }
+
+    /// Detect sustained tempo motion without changing the stable linear period/phase estimates.
+    /// With evenly spaced pulse indices, the centred quadratic is orthogonal to both a constant
+    /// and a linear slope. A constant-speed clock therefore contributes no curvature.
+    pub(crate) fn is_tempo_ramp(&self) -> bool {
+        if self.len < 24 || self.slope <= 0. {
+            return false;
+        }
+        let Some((last, stamp)) = self.last else { return false };
+        let first = (self.cursor + N - self.len) % N;
+        if last.saturating_sub(self.points[first].0) != self.len as i64 - 1 {
+            return false;
+        }
+        let n = self.len as f64;
+        let center = (n - 1.) / 2.;
+        let variance = (n * n - 1.) / 12.;
+        let norm = n * (n * n - 1.) * (n * n - 4.) / 180.;
+        let projection = self.points[..self.len]
+            .iter()
+            .map(|&(i, t)| {
+                let x = i.saturating_sub(last) as f64 + center;
+                (x * x - variance) * t.saturating_sub(stamp) as f64
+            })
+            .sum::<f64>()
+            .abs();
+        // Reject stationary timestamp noise (three standard errors) and slow clock flutter.
+        // Twice the quadratic coefficient is the change in pulse period per pulse.
+        projection > 3. * self.jitter * norm.sqrt() && 2. * projection / norm > 0.00045 * self.slope * self.slope / 1_000_000.
     }
 
     pub fn period_us(&self) -> Option<f64> {

@@ -224,6 +224,7 @@ pub(crate) struct LiveInput<'a> {
 #[derive(Clone, Copy)]
 pub(crate) struct Block {
     pub(crate) note_start: Samples,
+    pub(crate) projected: bool,
     pub(crate) score: soundcraft_time::Range,
     pub(crate) pos: Samples,
     pub(crate) frames: usize,
@@ -234,6 +235,11 @@ impl Block {
     /// A held event range can span more than one device block when Clock returns.
     /// Keep those events ordered within this block; voices still render at the device rate.
     pub(crate) fn score_offset(self, relative: Samples) -> usize {
+        if self.projected && self.score.start < self.pos && self.score.end > self.pos {
+            // The device can now commit on-time events at their original sample.
+            // Only events already overdue are delivered at the start of the block.
+            return self.score.start.saturating_add(relative).saturating_sub(self.pos).max(0) as usize;
+        }
         let length = self.score.end.saturating_sub(self.score.start);
         let offset = relative.max(0) as usize;
         if length > self.frames as i64 { ((offset as u128 * self.frames as u128) / length as u128) as usize } else { offset }

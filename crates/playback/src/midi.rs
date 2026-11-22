@@ -151,7 +151,12 @@ pub(crate) type TransportWaker = Arc<dyn Fn(crate::mtc_input::ChaseEvent) + Send
 pub struct MidiFeed {
     clock_follow: Mutex<crate::clock_follow::Follower>,
     clock_source: AtomicUsize,
+    // A single writer (under clock_follow) publishes an optional period and its matching pulse.
+    // The callback never waits for a writer; a concurrent change disables prediction for that read.
+    clock_render_generation: AtomicU64,
     clock_render_pulse: AtomicI64,
+    clock_render_stamp: AtomicI64,
+    clock_render_period: AtomicU64,
     mtc: Mutex<crate::mtc_input::Reader>,
     sync_wake: Mutex<Option<TransportWaker>>,
     mtc_online: AtomicBool,
@@ -210,7 +215,10 @@ impl Default for MidiFeed {
         MidiFeed {
             clock_follow: Mutex::default(),
             clock_source: AtomicUsize::new(usize::MAX),
+            clock_render_generation: AtomicU64::new(0),
             clock_render_pulse: AtomicI64::new(i64::MAX),
+            clock_render_stamp: AtomicI64::new(0),
+            clock_render_period: AtomicU64::new(0),
             mtc: Mutex::default(),
             mtc_wake: Default::default(),
             sync_wake: Mutex::default(),
@@ -257,6 +265,13 @@ impl MidiFeed {
 
     pub(crate) fn set_connected(&self, ports: usize) {
         self.connected.store(ports, Ordering::Relaxed);
+    }
+
+    /// Convert a device presentation timestamp (on the host monotonic clock) to
+    /// the epoch used by incoming driver timestamps.
+    #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+    pub(crate) fn timestamp_at(&self, instant: Instant) -> i64 {
+        i64::try_from(instant.saturating_duration_since(self.epoch).as_micros()).unwrap_or(i64::MAX)
     }
 
     /// Microseconds since the feed was made.
@@ -381,7 +396,7 @@ impl MidiFeed {
             *input = Default::default();
             input.source = port;
             input.next_pulse = initial_pulse.max(0);
-            self.clock_render_pulse.store(i64::MAX, Ordering::Release);
+            self.publish_clock_render(&input);
             self.clock_source.store(port.map_or(usize::MAX, usize::from), Ordering::Release);
         }
         input.coast = coast;
@@ -398,11 +413,49 @@ impl MidiFeed {
         let mut input = self.clock_follow.lock().unwrap_or_else(PoisonError::into_inner);
         let now = self.now();
         input.expire(now);
-        self.clock_render_pulse.store(input.render_through_pulse().unwrap_or(i64::MAX), Ordering::Release);
+        self.publish_clock_render(&input);
         while let Some(action) = input.take() {
             actions.push(action);
         }
         input.snapshot(now)
+    }
+
+    fn publish_clock_render(&self, input: &crate::clock_follow::Follower) {
+        let pulse = input.render_through_pulse().unwrap_or(i64::MAX);
+        let (stamp, period) = input.render_prediction().unwrap_or((0, 0.));
+        self.clock_render_generation.fetch_add(1, Ordering::SeqCst);
+        self.clock_render_pulse.store(pulse, Ordering::SeqCst);
+        self.clock_render_stamp.store(stamp, Ordering::SeqCst);
+        self.clock_render_period.store(period.to_bits(), Ordering::SeqCst);
+        self.clock_render_generation.fetch_add(1, Ordering::SeqCst);
+    }
+
+    /// Latest tick that can be scheduled for this immutable device block. Times are
+    /// microseconds in the input feed's epoch. A short buffer, uncertain lock, stale
+    /// pulse or concurrent source change keeps the ordinary one-pulse wire limit.
+    pub fn clock_render_tick_for_output(&self, callback_us: i64, buffer_us: i64, presentation_end_us: i64) -> Option<i64> {
+        self.clock_output_window(callback_us, buffer_us, presentation_end_us).0
+    }
+
+    pub(crate) fn clock_output_window(&self, callback_us: i64, buffer_us: i64, presentation_end_us: i64) -> (Option<i64>, bool) {
+        let generation = self.clock_render_generation.load(Ordering::SeqCst);
+        let Some(hard) = self.clock_render_tick() else {
+            return (None, false);
+        };
+        let stamp = self.clock_render_stamp.load(Ordering::SeqCst);
+        let period = f64::from_bits(self.clock_render_period.load(Ordering::SeqCst));
+        if !generation.is_multiple_of(2) || self.clock_render_generation.load(Ordering::SeqCst) != generation {
+            return (self.clock_render_tick(), false);
+        }
+        let age = callback_us.saturating_sub(stamp);
+        if period == 0. || (buffer_us as f64) < period || age < 0 || age > period.ceil() as i64 || presentation_end_us <= callback_us {
+            return (Some(hard), false);
+        }
+        const TICKS: i64 = soundcraft_time::TICKS_PER_QUARTER / 24;
+        let elapsed = presentation_end_us.saturating_sub(stamp) as f64;
+        let extent = (elapsed * TICKS as f64 / period).ceil() as i64;
+        let projected = hard.saturating_add(extent.saturating_sub(TICKS).max(0));
+        (Some(projected), projected > hard)
     }
 
     /// Inclusive clip/click event horizon. Coasting has no external render limit.
@@ -425,7 +478,7 @@ impl MidiFeed {
         let mut input = self.clock_follow.lock().unwrap_or_else(PoisonError::into_inner);
         if input.source == Some(port) && open.is_none_or(|g| g.load(Ordering::Acquire)) {
             let action = input.receive(bytes, at);
-            self.clock_render_pulse.store(input.render_through_pulse().unwrap_or(i64::MAX), Ordering::Release);
+            self.publish_clock_render(&input);
             if action {
                 input.dispatch_prepared(|| self.now());
             }

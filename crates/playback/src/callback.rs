@@ -728,7 +728,7 @@ impl AudioState {
     }
 
     /// Render the next block at the session rate into `pending`.
-    fn render_next(&mut self, quantum: usize) {
+    fn render_next(&mut self, quantum: usize, through: Option<i64>, projected: bool) {
         let mut n = quantum.clamp(1, BLOCK);
         if let Some(l) = self.looped
             && self.pos >= l.end
@@ -776,8 +776,11 @@ impl AudioState {
         self.due_midi(n);
         self.mix.monitor_only = !self.playing;
         self.mix.recording = self.recording;
-        let through = if self.playing && self.following_clock { self.midi.as_ref().and_then(|feed| feed.clock_render_tick()) } else { None };
-        self.mix.render_with_clock_limit(&self.session, self.pos, n, &mut self.pending, through);
+        if let Some(limit) = through.filter(|_| projected) {
+            self.mix.render_with_clock_prediction(&self.session, self.pos, n, &mut self.pending, limit);
+        } else {
+            self.mix.render_with_clock_limit(&self.session, self.pos, n, &mut self.pending, through);
+        }
         self.send_garbage();
         self.pending_len = n;
         #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
@@ -935,6 +938,7 @@ impl AudioState {
         if !midi_live {
             self.drop_midi();
         }
+        let follow = if self.playing && self.following_clock { self.midi.clone() } else { None };
         for (frame_index, frame) in out.chunks_mut(channels).enumerate() {
             #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
             let _ = frame_index;
@@ -943,7 +947,24 @@ impl AudioState {
                 if !self.playing && !monitoring {
                     break;
                 }
-                self.render_next(quantum);
+                let remaining = callback_frames - frame_index;
+                // Do not commit a full internal quantum past the physical callback end.
+                let render_frames =
+                    if follow.is_some() { quantum.min((remaining as f64 * step + self.read).ceil() as usize).max(1) } else { quantum };
+                let (through, projected) = follow.as_ref().map_or((None, false), |feed| {
+                    #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+                    if let Some(timing) = self.device_timing.filter(|t| !t.clamped && t.lead().is_some()) {
+                        // The device stamp belongs to the original callback, including when
+                        // stream.rs splits it into chunks. Adding lead to the current wall
+                        // time instead would double-count rendering time in later chunks.
+                        let device_frames = ((render_frames as f64 - self.read) / step).ceil() as usize;
+                        let end = timing.heard_instant(self.device_rate, frame_index + device_frames.min(remaining));
+                        let buffer_us = (self.device_buffer_frames as f64 * 1e6 / self.device_rate).round() as i64;
+                        return feed.clock_output_window(feed.clock(), buffer_us, feed.timestamp_at(end));
+                    }
+                    (feed.clock_render_tick(), false)
+                });
+                self.render_next(if projected { render_frames } else { quantum }, through, projected);
                 #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
                 if let Some(tail) = previous_tail.take()
                     && let Some(block) = &mut presentation

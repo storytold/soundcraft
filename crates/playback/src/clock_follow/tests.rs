@@ -5,6 +5,19 @@ fn feed(reader: &mut Follower, byte: u8, at: i64) {
 }
 
 #[test]
+fn coalesced_delivery_expires_after_individually_timed_pulses_resume() {
+    let mut follower = Follower::default();
+    for stamp in [0, 200, 400, 60_000, 60_200, 60_400] {
+        feed(&mut follower, 0xf8, stamp);
+    }
+    assert!(follower.snapshot(60_400).packed_delivery);
+    for stamp in [120_000, 140_000, 160_000, 180_000, 200_000] {
+        feed(&mut follower, 0xf8, stamp);
+    }
+    assert!(!follower.snapshot(200_000).packed_delivery);
+}
+
+#[test]
 fn start_continue_spp_stop_and_realtime_inside_sysex() {
     let mut r = Follower::default();
     r.receive(&[0xf2, 11, 1], 0);
@@ -84,6 +97,9 @@ fn locks_and_predicts_pulses_across_tempos_jitter_and_usb_quantization() {
                 r.receive(&[0xf8], us);
                 if pulse == 23 {
                     assert!((r.bpm().unwrap() - bpm).abs() < 2., "failed to acquire within a beat");
+                }
+                if pulse >= 24 {
+                    assert!(!r.steady.is_tempo_ramp(), "false ramp at {bpm} BPM/{jitter} us, pulse {pulse}");
                 }
                 if pulse >= 240 {
                     errors.push((r.bpm().unwrap() - bpm).abs());
@@ -350,4 +366,31 @@ fn prepared_device_clock_needs_a_report_and_accepts_both_retained_and_true_zero(
         }
         shared.playing.store(false, Ordering::Relaxed);
     }
+}
+
+#[test]
+fn stable_device_prediction_waits_for_a_continuous_tempo_ramp_to_end() {
+    let mut reader = Follower::default();
+    let mut stamp = 0;
+    feed(&mut reader, 0xfa, stamp);
+    for _ in 0..192 {
+        stamp += 20_000;
+        feed(&mut reader, 0xf8, stamp);
+    }
+    assert!(reader.render_prediction().is_some());
+    // Two microseconds per pulse is well inside short-term regularity tolerance,
+    // yet the sustained slowdown is measurable across the long fit.
+    for i in 1..=192 {
+        stamp += 20_000 + 2 * i;
+        feed(&mut reader, 0xf8, stamp);
+    }
+    let snapshot = reader.snapshot(stamp);
+    assert!(snapshot.tempo_ramp && !snapshot.recovering_tempo_step);
+    assert!(reader.short.regular_intervals(reader.steady.period_us().unwrap()));
+    assert!(reader.render_prediction().is_none());
+    for _ in 0..192 {
+        stamp += 20_384;
+        feed(&mut reader, 0xf8, stamp);
+    }
+    assert!(reader.render_prediction().is_some());
 }
