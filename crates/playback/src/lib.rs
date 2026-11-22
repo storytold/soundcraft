@@ -46,13 +46,19 @@ pub fn midi_clock_outputs() -> Result<Vec<String>, String> {
     midi_sync_outputs()
 }
 pub fn midi_sync_outputs() -> Result<Vec<String>, String> {
+    Ok(midi_sync_output_ids(&BTreeMap::new())?.into_keys().collect())
+}
+
+/// Resolve output labels while reserving the identity of saved, offline devices.
+pub fn midi_sync_output_ids(saved: &BTreeMap<String, String>) -> Result<BTreeMap<String, String>, String> {
     #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
     {
-        sync_output::output_names()
+        sync_output::output_ids(saved)
     }
     #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
     {
-        Ok(Vec::new())
+        let _ = saved;
+        Ok(BTreeMap::new())
     }
 }
 pub mod devices;
@@ -563,6 +569,20 @@ impl Player {
         self.side().editors.get_mut(&(track, slot))?.value_text(id, value)
     }
 
+    pub fn restore_sync_output_ids(&self, ids: &BTreeMap<String, String>) {
+        #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+        self.beat_clock.lock().unwrap_or_else(PoisonError::into_inner).restore_port_ids(ids);
+        #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
+        let _ = ids;
+    }
+
+    pub fn take_opened_sync_output_ids(&self) -> Option<BTreeMap<String, String>> {
+        #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+        return self.beat_clock.lock().unwrap_or_else(PoisonError::into_inner).opened_port_ids();
+        #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
+        None
+    }
+
     /// Active machine-configured destinations and their signed external latency offsets in samples.
     pub fn set_beat_clock_outputs(&self, ports: Vec<(String, i64)>, compensate: bool) {
         self.try_set_beat_clock_outputs(ports, compensate);
@@ -627,7 +647,7 @@ impl Player {
         }
     }
 
-    /// The latest unusable hardware timestamp, if the current stream reported one.
+    /// An unusable output timestamp affecting a configured, latency-compensated MIDI destination.
     pub fn output_timing_issue(&self) -> Option<OutputTimingIssue> {
         #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
         {

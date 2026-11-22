@@ -268,8 +268,15 @@ fn main() -> eframe::Result {
                 let rx = control_server::start(port, cc.egui_ctx.clone());
                 app = app.with_control(rx);
             }
+            let settings_notice = std::mem::take(&mut app.ui.status);
             for f in &files {
                 dialogs::open_path(&mut app, f);
+            }
+            if !settings_notice.is_empty() {
+                if !app.ui.status.is_empty() {
+                    app.ui.status.push(' ');
+                }
+                app.ui.status.push_str(&settings_notice);
             }
             // If the system menu bar cannot be built, keep the egui menu bar rather than fail to start.
             #[cfg(target_os = "macos")]
