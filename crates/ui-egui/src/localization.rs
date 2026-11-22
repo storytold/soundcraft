@@ -379,20 +379,30 @@ mod tests {
         assert_eq!(text("Appearance"), "Appearance");
     }
 
-    // Feature PRs supply English UI copy; translated labels are contributed through craft-i18n.
+    // Feature keys fall back to English until the translation catalog is updated.
     fn permits_untranslated_sync_label(source: &str) -> bool {
         matches!(
             source,
-            "EXT"
-                | "Follow external MIDI Clock"
-                | "Sync"
-                | "External MIDI clock"
-                | "MIDI clock input"
-                | "Follow MIDI clock"
-                | "Stop if MIDI clock is lost"
-                | "Input offset"
+            "Cannot record MIDI: open an audio output in Setup > Playback Engine to start the audio engine."
+                | "EXT"
                 | "Effective input offset (samples)"
+                | "Enter position…"
+                | "External MIDI clock"
+                | "External Timecode Offset"
+                | "Follow MIDI clock"
+                | "Follow external MIDI Clock"
+                | "Gen MTC"
+                | "Input offset"
+                | "MIDI clock input"
+                | "MTC Reader Port"
                 | "Negative values make SoundCraft respond earlier."
+                | "Online (chase MTC)"
+                | "Online"
+                | "Receiving {incoming} fps; session is {session} fps"
+                | "Stop if MIDI clock is lost"
+                | "Sync"
+                | "Take MTC chase offline before recording"
+                | "The session has conflicting timecode offsets. Chase uses the External Timecode Offset."
         ) && Language::PortugueseBrazil.text(source) == source
     }
 
@@ -546,7 +556,7 @@ mod tests {
     }
 
     #[test]
-    fn every_localized_source_string_has_a_catalog_entry() {
+    fn localized_source_strings_have_catalog_entries_or_verified_fallbacks() {
         fn visit(dir: &std::path::Path, missing: &mut Vec<String>) {
             let Ok(read) = std::fs::read_dir(dir) else { return };
             for entry in read.flatten() {
