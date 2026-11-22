@@ -149,6 +149,9 @@ pub(crate) const MAX_REVISIONS: usize = 8;
 pub(crate) struct Timeline {
     maps: VecDeque<SessionRevision>,
     blocks: VecDeque<Presentation>,
+    // Only the consecutive timed blocks after the latest loss can drive compensated output.
+    timed_blocks: usize,
+    pub(crate) timing_epoch: u64,
     pub(crate) late_transport_waiter: Option<std::thread::Thread>,
     timing_waiter: Option<std::thread::Thread>,
 }
@@ -156,6 +159,8 @@ impl Default for Timeline {
     fn default() -> Self {
         Self {
             blocks: VecDeque::with_capacity(HISTORY),
+            timed_blocks: 0,
+            timing_epoch: 0,
             maps: VecDeque::with_capacity(MAX_REVISIONS),
             late_transport_waiter: None,
             timing_waiter: None,
@@ -184,6 +189,12 @@ impl Timeline {
         }
     }
     pub(crate) fn push(&mut self, block: Presentation) {
+        if block.lead.is_some() {
+            self.timed_blocks = (self.timed_blocks + 1).min(HISTORY);
+        } else if self.timed_blocks > 0 {
+            self.timed_blocks = 0;
+            self.timing_epoch = self.timing_epoch.wrapping_add(1);
+        }
         if block.lead.is_some()
             && let Some(worker) = self.timing_waiter.take()
         {
@@ -216,17 +227,16 @@ impl Timeline {
     }
     /// Most recent audible block and first future transition for this destination.
     pub(crate) fn read(&self, now: Instant, compensate: bool, offset_samples: i64) -> (Option<Presentation>, Option<Instant>) {
-        if compensate && self.blocks.back().is_none_or(|b| b.lead.is_none()) {
-            return (None, None);
-        }
+        let first = if compensate { self.blocks.len() - self.timed_blocks } else { 0 };
         let adjusted = |block: &Presentation| block.adjusted(compensate, offset_samples);
-        let Some((index, block)) = self.blocks.iter().enumerate().rev().find_map(|(i, b)| adjusted(b).filter(|b| b.heard_at <= now).map(|b| (i, b)))
+        let Some((index, block)) =
+            self.blocks.range(first..).enumerate().rev().find_map(|(i, b)| adjusted(b).filter(|b| b.heard_at <= now).map(|b| (i, b)))
         else {
-            return (None, self.blocks.iter().find_map(adjusted).map(|b| b.heard_at));
+            return (None, self.blocks.range(first..).find_map(adjusted).map(|b| b.heard_at));
         };
         let future = self
             .blocks
-            .range(index + 1..)
+            .range(first + index + 1..)
             .filter_map(adjusted)
             .find(|b| block.playing || b.playing || block.pass != b.pass || block.sample != b.sample || block.generation != b.generation);
         (Some(block.current(now)), future.map(|b| b.heard_at))
@@ -304,6 +314,10 @@ impl Publisher {
 pub trait SyncEncoder: Send {
     fn update(&mut self, block: Presentation, now: Instant, session: &Session, send: &mut dyn FnMut(Instant, &[u8])) -> Option<Instant>;
     fn reset(&mut self);
+    /// Previously queued deadlines on a compensated route are no longer usable.
+    fn timing_lost(&mut self) {
+        self.reset();
+    }
     fn stop(&mut self, _send: &mut dyn FnMut(&[u8])) {}
     fn remap(&mut self, _old: &Session, _new: &Session) {}
     fn error(&self) -> Option<&'static str> {

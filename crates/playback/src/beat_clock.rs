@@ -13,10 +13,15 @@ use {
     std::sync::{Arc, Mutex, mpsc::channel},
 };
 
+mod recovery;
+use recovery::Repayment;
+
 const TICKS_PER_CLOCK: i64 = TICKS_PER_QUARTER / CLOCKS_PER_QUARTER as i64;
 #[derive(Default)]
 pub(crate) struct Cursor {
     remap: bool,
+    timing_interrupted: bool,
+    repayment: Option<Repayment>,
     catchups: u64,
     last_sent: Option<Instant>,
     pass: Option<u64>,
@@ -100,6 +105,9 @@ impl Cursor {
 }
 
 impl SyncEncoder for Cursor {
+    fn timing_lost(&mut self) {
+        self.timing_interrupted = self.last_position.is_some();
+    }
     fn reset(&mut self) {
         *self = Self::default();
     }
@@ -123,13 +131,21 @@ impl SyncEncoder for Cursor {
     fn update(&mut self, b: Presentation, now: Instant, s: &Session, send: &mut dyn FnMut(Instant, &[u8])) -> Option<Instant> {
         let at = b.sample_index_at(now);
         let remap = std::mem::take(&mut self.remap);
-        if self.pass == Some(b.pass)
-            && b.playing
-            && !remap
-            && let Some(last) = self.last_sent
-            && now < last + CATCH_UP_SPACING
-        {
-            return Some(last + CATCH_UP_SPACING);
+        let interrupted = std::mem::take(&mut self.timing_interrupted);
+        if self.pass == Some(b.pass) && b.playing && !remap {
+            if interrupted {
+                self.repayment = Repayment::new(self.next_pulse, at, s);
+            }
+            if let Some(window) = self.repayment {
+                return Some(self.repay(window, b, now, s, send));
+            }
+            if let Some(last) = self.last_sent
+                && now < last + CATCH_UP_SPACING
+            {
+                return Some(last + CATCH_UP_SPACING);
+            }
+        } else {
+            self.repayment = None;
         }
         let mut clock = false;
         let mut pulse = self.next_pulse;
