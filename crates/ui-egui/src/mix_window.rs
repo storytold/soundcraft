@@ -611,11 +611,7 @@ fn fader_and_meter(app: &mut SoundApp, ui: &mut Ui, cx: &StripCtx<'_>, y: f32, s
     let fh = (r.max.y - STRIP_FOOT_H - y).max(120.0);
     let wide_meter = (if track.kind == TrackKind::Master { app.engine.session().main_format() } else { track.format }).channels() > 2;
     let fr = Rect::from_min_size(pos2(x0, y), vec2(inner_w * if wide_meter { 0.45 } else { 0.6 }, fh));
-    let display_db = displayed_volume_db(
-        track,
-        app.engine.transport.position,
-        fader_overrides_automation(fader_is_grabbed(app, id), track.mixer.automation_mode, app.touched.contains(&id)),
-    );
+    let display_db = mixer_display_volume_db(app, track, id);
     if let Some(db) = fader(ui, fr, display_db, ui.scope_id().with(("fader", id.0)), &format!("{} level", track.name)) {
         app.gesture = Some(crate::Gesture::Fader { track: id, start_db: track.mixer.volume_db });
         let _ = app.engine.execute_merged("mix.volume", &json!({"track": id.0, "db": db}), &format!("fader:{}", id.0));
@@ -673,6 +669,15 @@ fn fader_overrides_automation(grabbed: bool, mode: soundcraft_model::AutomationM
     grabbed || matches!(mode, soundcraft_model::AutomationMode::Latch | soundcraft_model::AutomationMode::TouchLatch) && latched
 }
 
+/// Both Mix displays follow playback while running and the edit insertion while stopped.
+fn mixer_display_volume_db(app: &SoundApp, track: &Track, id: TrackId) -> f32 {
+    displayed_volume_db(
+        track,
+        app.position(),
+        fader_overrides_automation(fader_is_grabbed(app, id), track.mixer.automation_mode, app.touched.contains(&id)),
+    )
+}
+
 /// Volume readout, kind label and name plate.
 fn name_and_readout(app: &mut SoundApp, ui: &mut Ui, cx: &StripCtx<'_>) {
     let StripCtx { track, id, x0, inner_w, r, w, selected, .. } = *cx;
@@ -686,11 +691,7 @@ fn name_and_readout(app: &mut SoundApp, ui: &mut Ui, cx: &StripCtx<'_>) {
         ui.scope_id().with(("volume-value", id.0)),
         Readout {
             name: &crate::localized_format!("{} volume", track.name),
-            display: &db_text(displayed_volume_db(
-                track,
-                app.engine.transport.position,
-                fader_overrides_automation(fader_is_grabbed(app, id), track.mixer.automation_mode, app.touched.contains(&id)),
-            )),
+            display: &db_text(mixer_display_volume_db(app, track, id)),
             edit_initial: &format!("{:.1}", track.mixer.volume_db),
             parse: parse_db,
             reset: 0.0,
@@ -735,8 +736,11 @@ fn name_and_readout(app: &mut SoundApp, ui: &mut Ui, cx: &StripCtx<'_>) {
 
 #[cfg(test)]
 mod tests {
-    use super::{Readout, displayed_volume_db, dragged_send_db, editable_readout, fader_overrides_automation, parse_db, parse_pan};
+    use super::{
+        Readout, displayed_volume_db, dragged_send_db, editable_readout, fader_overrides_automation, mixer_display_volume_db, parse_db, parse_pan,
+    };
     use egui::{Event, Modifiers, PointerButton, Rect, pos2, vec2};
+    use serde_json::json;
     use soundcraft_model::{AutoParam, AutomationMode, ChannelFormat, Track, TrackId, TrackKind};
 
     #[test]
@@ -773,6 +777,25 @@ mod tests {
             "an active Latch pass keeps its manual level after release"
         );
         assert!(!fader_overrides_automation(false, AutomationMode::Touch, true), "Touch returns to automation after release");
+    }
+
+    #[test]
+    fn stopped_mixer_displays_follow_the_edit_insertion() {
+        let mut app = crate::SoundApp::new(soundcraft_engine::Engine::default(), None, Default::default());
+        let id = app.engine.session_mut().add_track(TrackKind::Audio, ChannelFormat::Mono, Some("Vocal"));
+        let track = app.engine.session_mut().track_mut(id).unwrap();
+        track.mixer.automation_mode = AutomationMode::Read;
+        let lane = track.lane_mut(&AutoParam::Volume);
+        lane.set_point(0, -12.0);
+        lane.set_point(480, 0.0);
+
+        // Selecting moves the stopped edit insertion but deliberately leaves the playhead alone.
+        app.run("edit.select", json!({"tracks": [id.0], "start": 240, "end": 240})).unwrap();
+        assert_eq!(app.engine.transport.position, 0, "the test did not locate the transport");
+        assert_eq!(app.position(), 240);
+
+        let track = app.engine.session().track(id).unwrap();
+        assert_eq!(mixer_display_volume_db(&app, track, id), -6.0, "the fader and readout share the stopped-insertion display value");
     }
 
     #[test]
