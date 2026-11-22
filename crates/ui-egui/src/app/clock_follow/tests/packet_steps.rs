@@ -7,34 +7,43 @@ enum Delivery {
     Burst(usize),
     VariableBurst,
 }
-fn delivery_times(ideal: &[f64], mode: Delivery) -> Vec<i64> {
-    let mut seed = 42u64;
-    let mut times = Vec::with_capacity(ideal.len());
-    let mut group = 0;
-    while times.len() < ideal.len() {
-        let p = times.len();
-        match mode {
-            Delivery::Jitter(amplitude) => {
-                seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1);
-                let delta = ((seed >> 32) % (2 * amplitude + 1) as u64) as i64 - amplitude;
-                times.push(ideal[p].round() as i64 + if p == 0 { 0 } else { delta });
-            }
-            _ => {
-                let n = if let Delivery::Burst(n) = mode { n } else { 3 + group % 3 };
-                if p == 0 {
-                    // A single F8 starts transport at the same sample on both clocks.
-                    times.push(ideal[0].round() as i64);
-                    continue;
-                }
-                // Every coalesced group reaches the driver after its last source pulse.
-                let width = n.min(ideal.len() - p);
-                let last = ideal[p + width - 1].round() as i64;
-                for j in 0..width {
-                    times.push(last + j as i64 * 200);
-                }
-                group += 1;
-            }
+impl Delivery {
+    fn cycle(self) -> usize {
+        match self {
+            Self::Burst(n) => n,
+            Self::VariableBurst => 3 + 4 + 5,
+            Self::Jitter(_) => 1,
         }
+    }
+}
+
+fn delivery_times(ideal: &[f64], mode: Delivery, first_group: usize, jitter: i64) -> Vec<i64> {
+    let mut seed = 42u64;
+    let mut times: Vec<i64> = ideal
+        .iter()
+        .enumerate()
+        .map(|(pulse, stamp)| {
+            let amplitude = if let Delivery::Jitter(v) = mode { v } else { jitter };
+            seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1);
+            let delta = ((seed >> 32) % (2 * amplitude + 1) as u64) as i64 - amplitude;
+            stamp.round() as i64 + if pulse == 0 { 0 } else { delta }
+        })
+        .collect();
+    if matches!(mode, Delivery::Jitter(_)) {
+        return times;
+    }
+    let mut start = first_group;
+    let mut group = 0;
+    while start < times.len() {
+        let width = if let Delivery::Burst(n) = mode { n } else { 3 + group % 3 };
+        let end = (start + width).min(times.len());
+        // Driver delivery starts only after the group's last pulse exists.
+        let last = times[end - 1];
+        for (j, stamp) in times[start..end].iter_mut().enumerate() {
+            *stamp = last + j as i64 * 200;
+        }
+        start = end;
+        group += 1;
     }
     times
 }
@@ -48,6 +57,9 @@ struct Observation {
     dropouts: u64,
 }
 fn render_train(from: f64, to: f64, transition: usize, n: usize, mode: Delivery) -> Observation {
+    render_delivery(from, to, transition, n, mode, 1, 0)
+}
+fn render_delivery(from: f64, to: f64, transition: usize, n: usize, mode: Delivery, first_group: usize, jitter: i64) -> Observation {
     let sr = SampleRate::HZ_48000;
     let inputs = MidiInputs::with_port_names(vec![], vec!["source".into()]);
     let feed = inputs.feed();
@@ -63,7 +75,7 @@ fn render_train(from: f64, to: f64, transition: usize, n: usize, mode: Delivery)
             t
         })
         .collect();
-    let times = delivery_times(&ideal, mode);
+    let times = delivery_times(&ideal, mode, first_group, jitter);
     let expected: Vec<_> = ideal.iter().step_by(12).map(|at| sr.samples(at / 1e6)).collect();
     let end = sr.samples(now / 1e6) + 48_000;
     let mut song = sampler_song(TempoMap::new(from, 4, 4).unwrap(), sr, expected.len(), end);
@@ -175,30 +187,80 @@ fn trailing_packed_slowdowns_preserve_every_attack_at_its_wire_time() {
     for (from, to) in [(180., 60.), (130., 80.)] {
         for change in [384, 396] {
             for mode in [Delivery::Burst(3), Delivery::Burst(4), Delivery::Burst(5), Delivery::VariableBurst] {
-                let r = render_train(from, to, change, change + 193, mode);
-                let label = format!("{from}-{to}-{change}-{mode:?}");
-                record(&label, &r, change);
-                valid &= r.dropouts == 0 && r.unmatched == 0 && r.malformed == 0 && r.attacks.iter().all(|note| note.len() == 1);
-                let first_offbeat = (change / 12 + 1) | 1;
-                let mut max_wire = 0;
-                let mut max_residual = 0;
-                let mut worst_early = 0;
-                for (k, (notes, &wire)) in r.attacks.iter().zip(&r.wire).enumerate().skip(change / 12 + 1) {
-                    let [measured] = notes.as_slice() else { continue };
-                    let residual = measured - wire;
-                    if verbose {
-                        eprintln!("PACKED_NOTE {label} eighth={k} wire_samples={wire} measured_samples={measured} residual_samples={residual}");
+                let mut waits_in_pulses = Vec::new();
+                for phase in 0..mode.cycle() {
+                    let r = render_delivery(from, to, change, change + 193, mode, 1 + phase, 0);
+                    let label = format!("{from}-{to}-{change}-{mode:?}-phase{phase}");
+                    record(&label, &r, change);
+                    valid &= r.dropouts == 0 && r.unmatched == 0 && r.malformed == 0 && r.attacks.iter().all(|note| note.len() == 1);
+                    let first_offbeat = (change / 12 + 1) | 1;
+                    let pulse_samples = 48_000. * 60. / (24. * to);
+                    waits_in_pulses.push((r.wire[first_offbeat] as f64 / pulse_samples).round() as usize);
+                    let mut max_wire = 0;
+                    let mut max_residual = 0;
+                    let mut worst_early = 0;
+                    for (k, (notes, &wire)) in r.attacks.iter().zip(&r.wire).enumerate().skip(change / 12 + 1) {
+                        let [measured] = notes.as_slice() else { continue };
+                        let residual = measured - wire;
+                        if verbose {
+                            eprintln!("PACKED_NOTE {label} eighth={k} wire_samples={wire} measured_samples={measured} residual_samples={residual}");
+                        }
+                        max_wire = max_wire.max(wire);
+                        max_residual = max_residual.max(residual.abs());
+                        worst_early = worst_early.min(*measured);
+                        valid &= *measured >= -48 && residual.abs() <= if k == first_offbeat { 480 } else { 288 };
                     }
-                    max_wire = max_wire.max(wire);
-                    max_residual = max_residual.max(residual.abs());
-                    worst_early = worst_early.min(*measured);
-                    valid &= *measured >= -48 && residual.abs() <= if k == first_offbeat { 480 } else { 288 };
+                    eprintln!("PACKED {label} max_wire_samples={max_wire} max_residual_samples={max_residual} earliest_samples={worst_early}");
                 }
-                eprintln!("PACKED {label} max_wire_samples={max_wire} max_residual_samples={max_residual} earliest_samples={worst_early}");
+                // The same offbeat must land at every distance from a batch tail.
+                waits_in_pulses.sort_unstable();
+                waits_in_pulses.dedup();
+                let max_width = if let Delivery::Burst(n) = mode { n } else { 5 };
+                assert_eq!(waits_in_pulses, (0..max_width).collect::<Vec<_>>());
             }
         }
     }
     assert!(valid, "a packed slowdown lost or damaged a voice, or exceeded the attack or wire-relative tolerance");
+}
+
+#[test]
+fn first_usb_batches_mid_song_render_at_their_wire_time() {
+    let verbose = std::env::var_os("SOUNDCRAFT_PACKET_TRACE").is_some();
+    let mut valid = true;
+    for bpm in [120., 148.] {
+        for mode in [Delivery::Burst(3), Delivery::Burst(4), Delivery::Burst(5), Delivery::VariableBurst] {
+            for phase in 0..mode.cycle() {
+                let start = 384 + phase;
+                for jitter in [0, 1000] {
+                    let r = render_delivery(bpm, bpm, start, start + 193, mode, start, jitter);
+                    let label = format!("{bpm}-{mode:?}-phase{phase}-jitter{jitter}");
+                    valid &= r.unmatched == 0 && r.malformed == 0 && r.dropouts == 0 && r.attacks.iter().all(|v| v.len() == 1);
+                    let first = start.div_ceil(12);
+                    let mut late = 0;
+                    let mut early = 0;
+                    for k in first..r.attacks.len() {
+                        let [error] = r.attacks[k].as_slice() else { continue };
+                        let wire = r.wire[k];
+                        let residual = error - wire;
+                        late = late.max(residual);
+                        early = early.min(*error);
+                        valid &= *error >= -48 && residual <= if k == first { 480 } else { 288 };
+                        if verbose {
+                            eprintln!("ONSET_NOTE {label} eighth={k} wire_samples={wire} measured_samples={error} residual_samples={residual}");
+                        }
+                    }
+                    eprintln!(
+                        "ONSET {label} worst_late_samples={late} earliest_samples={early} missing={} extra={} damaged={} dropouts={}",
+                        r.attacks.iter().filter(|v| v.is_empty()).count(),
+                        r.unmatched + r.attacks.iter().map(|v| v.len().saturating_sub(1)).sum::<usize>(),
+                        r.malformed,
+                        r.dropouts
+                    );
+                }
+            }
+        }
+    }
+    assert!(valid, "switching from individual Clock to a USB batch exceeded the wire-relative lateness or grid earliness limit");
 }
 
 #[test]

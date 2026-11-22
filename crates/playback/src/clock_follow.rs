@@ -44,6 +44,9 @@ pub struct Snapshot {
     pub step_intervals: u8,
     /// The input is delivering groups of F8s with shared timing.
     pub packed_delivery: bool,
+    /// An isolated late arrival may be the start of a batch. Its timestamp cannot
+    /// position the score until another pulse distinguishes timing from delivery.
+    pub wire_phase_pending: bool,
     pub jitter_us: f64,
     pub phase_error_us: i64,
     pub state: State,
@@ -377,6 +380,19 @@ impl Follower {
         Some((2_500_000. / period).clamp(5., 1000.))
     }
 
+    fn wire_phase_pending(&self) -> bool {
+        if self.packed_delivery {
+            // Only completed batches give both the edge time and its musical ordinal.
+            return self.steady.period_us().is_none();
+        }
+        let stamps = &self.wire_stamps;
+        let previous = stamps[11].saturating_sub(stamps[10]);
+        let interval = stamps[12].saturating_sub(stamps[11]);
+        // At least half a pulse overdue, or two arrivals inside the one-ms batch
+        // window. The next independent interval can confirm a genuine slowdown.
+        self.wire_points >= 3 && (interval <= 1_000 || (previous >= 2_500 && interval > previous.saturating_add(previous / 2)))
+    }
+
     pub(crate) fn snapshot(&self, now_us: i64) -> Snapshot {
         Snapshot {
             // The gap before the first USB batch can resemble a much slower clock.
@@ -389,6 +405,7 @@ impl Follower {
             tempo_ramp: self.state == State::Locked && !self.packed_delivery && self.step_pulses_left == 0 && self.steady.is_tempo_ramp(),
             step_intervals: self.step_intervals,
             packed_delivery: self.packed_delivery,
+            wire_phase_pending: self.wire_phase_pending(),
             jitter_us: self.steady.jitter_us(),
             phase_error_us: self.phase_error_us,
             state: self.state,
@@ -563,6 +580,8 @@ impl Follower {
         if !self.packed_delivery && self.fit_index - head >= 2 {
             self.packed_delivery = true;
             self.singleton_groups = 0;
+            self.settling.clear();
+            self.readout_pulses_left = 0;
             self.short.clear();
             self.steady.clear();
             self.changes = 0;

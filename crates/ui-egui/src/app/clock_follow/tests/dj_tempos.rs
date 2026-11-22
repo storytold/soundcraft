@@ -280,7 +280,11 @@ fn twenty_full_length_dj_tracks_preserve_the_recorded_eighths_through_transition
     // errors and the inclusive percentile visible beside the steady-state result.
     let mut all_stable = Vec::new();
     let mut individual = Vec::new();
-    let mut batched = Vec::new();
+    let mut batched = 0;
+    let mut max_late = 0;
+    let mut earliest = 0;
+    let mut earliest_vs_wire = 0;
+    let mut within_wire = true;
     for (i, (&error, &transition)) in signed.iter().zip(&exclude).enumerate() {
         if transition {
             continue;
@@ -289,7 +293,13 @@ fn twenty_full_length_dj_tracks_preserve_the_recorded_eighths_through_transition
         let pulse = i * 12;
         if burst.contains(&pulse) {
             let wire = ((arrived[pulse] - ideal[pulse]).max(0) as f64 * 0.048).round() as i64;
-            batched.push((error - wire).abs());
+            let residual = error - wire;
+            max_late = max_late.max(residual);
+            earliest = earliest.min(error);
+            earliest_vs_wire = earliest_vs_wire.min(residual);
+            within_wire &= error >= -48 && residual <= if batched == 0 { 480 } else { 288 };
+            eprintln!("DJ8_NOTE eighth={i} wire_samples={wire} measured_samples={error} residual_samples={residual}");
+            batched += 1;
         } else {
             individual.push(error.abs());
         }
@@ -300,14 +310,13 @@ fn twenty_full_length_dj_tracks_preserve_the_recorded_eighths_through_transition
     };
     let p999 = percentile(&mut individual);
     eprintln!(
-        "20 tracks, {} eighths, {} outside transitions, p99.9 {p999} samples; including burst {} samples; {} batched eighths, wire-relative p99.9 {} samples; max {} grid events",
+        "20 tracks, {} eighths, {} outside transitions, p99.9 {p999} samples; including burst {} samples; {batched} batched eighths, max signed late beyond wire {max_late} samples, earliest vs grid {earliest} samples, earliest vs wire {earliest_vs_wire} samples; max {} grid events",
         signed.len(),
         individual.len(),
         percentile(&mut all_stable),
-        batched.len(),
-        percentile(&mut batched),
         r.tempo_events
     );
+    assert!(within_wire, "the transition to grouped F8 crossed the wire-relative lateness or grid earliness limit");
     assert!(p999 <= 192);
     assert!(r.tempo_events <= 512, "unreferenced grid events during a live mix");
 }

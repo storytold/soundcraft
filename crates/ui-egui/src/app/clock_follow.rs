@@ -409,6 +409,9 @@ impl SoundApp {
 // Keep edits beyond the committed audio. Elapsed playback and recorded
 // note positions remain fixed; future beat spacing follows the incoming clock and phase.
 fn update_grid(grid: &mut TempoMap, anchor: Option<(i64, i64)>, waiting_tick: i64, s: Snapshot, sr: SampleRate, render_until: i64) -> bool {
+    if s.wire_phase_pending {
+        return false;
+    }
     let Some(bpm) = s.brake_grid_bpm.or(s.phase_grid_bpm).or(s.bpm) else { return false };
     let Some((origin, stamp)) = anchor else {
         if s.state == State::Waiting && (grid.tempo_at_tick(waiting_tick) - bpm).abs() >= 0.05 {
@@ -430,7 +433,9 @@ fn update_grid(grid: &mut TempoMap, anchor: Option<(i64, i64)>, waiting_tick: i6
     let tracking = s.phase_grid_bpm.is_some();
     // A smoothly drifting, low-noise clock needs fewer published tempo events.
     let phase_deadband = if tracking || s.jitter_us >= 1. { 0.0012 } else { 0.0026 };
-    let precise = !s.packed_delivery && !s.braking && s.jitter_us < 1_400. && phase.abs() > phase_deadband;
+    // A confirmed step already has a bridge to a future wire pulse. Keep that
+    // bridge until its join point instead of rewriting it on each jitter update.
+    let precise = !s.recovering_tempo_step && !s.packed_delivery && !s.braking && s.jitter_us < 1_400. && phase.abs() > phase_deadband;
     let correcting = s.recovering_tempo_step || tracking || precise;
     let edit = if render_until > 0 && (precise || tracking || (s.packed_delivery || s.braking) && s.recovering_tempo_step) {
         writable.max(origin.saturating_mul(TICKS_PER_PULSE))
