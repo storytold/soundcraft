@@ -51,6 +51,9 @@ impl Cursor {
                 send(m);
             });
             if sent_clock {
+                // The first F8 was delivered now. Spread a late start over the
+                // first beat so the next F8 does not immediately follow it.
+                self.repayment = Repayment::after_start(self.next_pulse.saturating_sub(1), at, session);
                 // Deliver any other pulse that rounds to this sample on a separate wake.
                 return;
             }
@@ -231,6 +234,40 @@ fn remapped(old: &Session, new: &Session, at: i64) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn late_first_clock_keeps_all_pulses_without_squeezing_the_next_interval() {
+        let mut song = Session::default();
+        song.sample_rate = SampleRate::HZ_48000;
+        song.tempo.set_tempo(0, 120.).unwrap();
+        let first = Instant::now();
+        let b = Presentation {
+            generation: 0,
+            sample_rate: song.sample_rate,
+            system_delay_samples: 0,
+            pass: 1,
+            origin: 0,
+            playing: true,
+            sample: 728.,
+            heard_at: first,
+            samples_per_second: 48_000.,
+            limit: 48_728.,
+            looped: None,
+            end: None,
+            lead: Some(Duration::ZERO),
+        };
+        let mut beat = Cursor::default();
+        let mut clocks = Vec::new();
+        let mut control = Vec::new();
+        for us in (0..=485_000).step_by(100) {
+            beat.update(b, first + Duration::from_micros(us), &song, &mut |_, msg| {
+                if msg == [CLOCK] { clocks.push(us) } else { control.push(msg.to_vec()) }
+            });
+        }
+        assert_eq!(control, [vec![START]]);
+        assert_eq!(clocks.len(), 25);
+        assert!(clocks.windows(2).all(|p| p[1] - p[0] >= 19_000), "{clocks:?}");
+    }
+
     #[test]
     fn stopped_locates_announce_the_same_position_as_play_without_starting() {
         let mut cursor = Cursor::default();

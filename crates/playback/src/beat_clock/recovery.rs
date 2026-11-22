@@ -14,6 +14,19 @@ pub(super) struct Repayment {
 }
 
 impl Repayment {
+    pub(super) fn after_start(first: i64, at: i64, session: &Session) -> Option<Self> {
+        let rate = session.sample_rate;
+        let sample = |pulse: i64| session.tempo.tick_to_samples(pulse.saturating_mul(TICKS_PER_CLOCK), rate);
+        let start = sample(first);
+        let next = sample(first.saturating_add(1));
+        let delay = at.saturating_sub(start);
+        if delay <= 0 || delay.saturating_mul(4) < next.saturating_sub(start) || at >= next {
+            return None;
+        }
+        let last_pulse = first.saturating_add(i64::from(CLOCKS_PER_QUARTER));
+        Some(Self { first_owed: first, last_pulse, start_sample: at, end_sample: sample(last_pulse) })
+    }
+
     pub(super) fn new(first_owed: i64, at: i64, session: &Session) -> Option<Self> {
         let tempo = &session.tempo;
         let rate = session.sample_rate;
