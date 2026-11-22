@@ -21,8 +21,17 @@ fn delivery_times(ideal: &[f64], mode: Delivery) -> Vec<i64> {
             }
             _ => {
                 let n = if let Delivery::Burst(n) = mode { n } else { 3 + group % 3 };
-                for j in 0..n.min(ideal.len() - p) {
-                    times.push(ideal[p].round() as i64 + j as i64 * 200);
+                // The first clock starts the audio transport. Deliver the initial group
+                // individually so the sampler and clock share the same transport origin.
+                let width = n.min(ideal.len() - p);
+                if p == 0 {
+                    times.extend(ideal.iter().take(width).map(|at| at.round() as i64));
+                } else {
+                    // A coalesced group can only arrive after its last pulse was sent.
+                    let last = ideal[p + width - 1].round() as i64;
+                    for j in 0..width {
+                        times.push(last + j as i64 * 200);
+                    }
                 }
                 group += 1;
             }
@@ -32,6 +41,8 @@ fn delivery_times(ideal: &[f64], mode: Delivery) -> Vec<i64> {
 }
 struct Observation {
     attacks: Vec<Vec<i64>>,
+    // Physical lateness of the event's own F8, independent of SoundCraft.
+    wire: Vec<i64>,
     malformed: usize,
     unmatched: usize,
     steps: Vec<(usize, u8)>,
@@ -113,7 +124,8 @@ fn render_train(from: f64, to: f64, transition: usize, n: usize, mode: Delivery)
             attacks[near].push(late);
         }
     }
-    Observation { attacks, unmatched, malformed, steps, dropouts }
+    let wire = times.iter().step_by(12).zip(&expected).map(|(time, ideal)| (sr.samples(*time as f64 / 1e6) - ideal).max(0)).collect();
+    Observation { attacks, wire, unmatched, malformed, steps, dropouts }
 }
 fn record(label: &str, r: &Observation, change: usize) {
     let pre = r.steps.iter().filter(|(p, _)| *p <= change).count();
@@ -156,13 +168,52 @@ fn tempo_steps_with_timestamp_noise_render_complete_eighth_notes() {
     assert!(valid);
 }
 #[test]
+fn trailing_packed_slowdowns_preserve_every_attack_at_its_wire_time() {
+    // 48 kHz. The source has eight beats after the cut, including attacks falling
+    // at different positions within each USB batch.
+    let verbose = std::env::var_os("SOUNDCRAFT_PACKET_TRACE").is_some();
+    let mut valid = true;
+    for (from, to) in [(180., 60.), (130., 80.)] {
+        for change in [384, 396] {
+            for mode in [Delivery::Burst(3), Delivery::Burst(4), Delivery::Burst(5), Delivery::VariableBurst] {
+                let r = render_train(from, to, change, change + 193, mode);
+                let label = format!("{from}-{to}-{change}-{mode:?}");
+                record(&label, &r, change);
+                valid &= r.dropouts == 0 && r.unmatched == 0 && r.malformed == 0 && r.attacks.iter().all(|note| note.len() == 1);
+                let first_offbeat = (change / 12 + 1) | 1;
+                let mut max_wire = 0;
+                let mut max_residual = 0;
+                let mut worst_early = 0;
+                for (k, (notes, &wire)) in r.attacks.iter().zip(&r.wire).enumerate().skip(change / 12 + 1) {
+                    let [measured] = notes.as_slice() else { continue };
+                    let residual = measured - wire;
+                    if verbose {
+                        eprintln!("PACKED_NOTE {label} eighth={k} wire_samples={wire} measured_samples={measured} residual_samples={residual}");
+                    }
+                    max_wire = max_wire.max(wire);
+                    max_residual = max_residual.max(residual.abs());
+                    worst_early = worst_early.min(*measured);
+                    valid &= *measured >= -48 && residual.abs() <= if k == first_offbeat { 480 } else { 288 };
+                }
+                eprintln!("PACKED {label} max_wire_samples={max_wire} max_residual_samples={max_residual} earliest_samples={worst_early}");
+            }
+        }
+    }
+    assert!(valid, "a packed slowdown lost or damaged a voice, or exceeded the attack or wire-relative tolerance");
+}
+
+#[test]
 #[ignore = "ten simulated minutes for each burst width"]
 fn ten_minutes_of_coalesced_delivery_do_not_confirm_a_tempo_step() {
     let mut valid = true;
     for (name, mode) in [("3", Delivery::Burst(3)), ("4", Delivery::Burst(4)), ("5", Delivery::Burst(5)), ("3to5", Delivery::VariableBurst)] {
         let r = render_train(120., 120., 28_800, 28_800, mode);
         record(&format!("A4-{name}"), &r, 28_800);
-        valid &= r.steps.is_empty() && r.dropouts == 0 && r.malformed == 0 && r.unmatched == 0 && r.attacks.iter().all(|v| matches!(v.as_slice(), [x] if x.abs() <= 1));
+        valid &= r.steps.is_empty()
+            && r.dropouts == 0
+            && r.malformed == 0
+            && r.unmatched == 0
+            && r.attacks.iter().zip(&r.wire).all(|(v, wire)| matches!(v.as_slice(), [x] if (x-wire).abs() <= 1));
     }
     assert!(valid);
 }
