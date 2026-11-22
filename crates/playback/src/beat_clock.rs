@@ -235,6 +235,50 @@ fn remapped(old: &Session, new: &Session, at: i64) -> bool {
 mod tests {
     use super::*;
     #[test]
+    fn a_prearmed_zero_start_one_pulse_late_does_not_jump_to_the_next_sixteenth() {
+        let mut song = Session::default();
+        song.sample_rate = SampleRate::HZ_48000;
+        song.tempo.set_tempo(0, 120.).unwrap();
+        let first = Instant::now();
+        let idle = Presentation {
+            generation: 0,
+            sample_rate: song.sample_rate,
+            system_delay_samples: 0,
+            pass: 1,
+            origin: 0,
+            playing: false,
+            sample: 0.,
+            heard_at: first,
+            samples_per_second: 48_000.,
+            limit: 256.,
+            looped: None,
+            end: None,
+            lead: Some(Duration::ZERO),
+        };
+        for (observed_stop, start_sample, from_zero) in [(true, 1500, true), (false, 1500, false), (true, 6500, false)] {
+            let mut cursor = Cursor::default();
+            if observed_stop {
+                cursor.update(idle, first, &song, &mut |_, _| {});
+            }
+            let roll = Presentation { pass: 2, playing: true, sample: start_sample as f64, limit: 48000., ..idle };
+            let mut controls = Vec::new();
+            let mut clocks = Vec::new();
+            for us in (0..=(24_000 - start_sample) * 1_000_000 / 48_000 + 100).step_by(100) {
+                cursor.update(roll, first + Duration::from_micros(us), &song, &mut |_, msg| {
+                    if msg == [CLOCK] { clocks.push(us) } else { controls.push(msg.to_vec()) }
+                });
+            }
+            if from_zero {
+                assert_eq!(controls, [vec![START]]);
+                assert_eq!(clocks.len(), 25);
+                assert!(clocks.windows(2).all(|p| p[1] - p[0] >= 19_000), "{clocks:?}");
+            } else {
+                let spp = if start_sample == 1500 { 1 } else { 2 };
+                assert_eq!(controls, [song_position(spp).to_vec(), vec![CONTINUE]]);
+            }
+        }
+    }
+    #[test]
     fn late_first_clock_keeps_all_pulses_without_squeezing_the_next_interval() {
         let mut song = Session::default();
         song.sample_rate = SampleRate::HZ_48000;
