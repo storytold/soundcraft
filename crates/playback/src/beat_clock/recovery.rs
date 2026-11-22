@@ -50,7 +50,7 @@ impl Cursor {
         // Preserve wire spacing when the worker wakes late. At fast tempos the
         // planned spacing itself can be shorter than the ordinary catch-up floor.
         let period_samples = (window.end_sample - window.start_sample) as f64 / (window.last_pulse - window.first_owed) as f64;
-        let spacing = Duration::from_secs_f64(period_samples / b.samples_per_second).min(CATCH_UP_SPACING);
+        let spacing = Duration::try_from_secs_f64(period_samples / b.samples_per_second).unwrap_or(CATCH_UP_SPACING).min(CATCH_UP_SPACING);
         let earliest = self.last_sent.map_or(due, |last| due.max(last + spacing));
         if now < earliest {
             return earliest;
