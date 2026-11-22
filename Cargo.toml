@@ -73,6 +73,8 @@ craft-video = { version = "0.1.0", git = "https://github.com/storytold/craft-lib
 craft-midi = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "33be35625e252cc4f06aa375b3b428521faea37d", features = ["serde"] }
 craft-audio = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "33be35625e252cc4f06aa375b3b428521faea37d", features = ["decode", "lossless-encode", "peaks", "serde"] }
 craft-time = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "33be35625e252cc4f06aa375b3b428521faea37d" }
+# AAF property-stream framing, shared with the other craft apps.
+craft-aaf = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "33be35625e252cc4f06aa375b3b428521faea37d" }
 craft-scraft-format = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "33be35625e252cc4f06aa375b3b428521faea37d" }
 # craft-update: app-specific pretend versions apply to startup and manual checks.
 craft-update = { version = "=0.1.0", git = "https://github.com/storytold/craft-libs", rev = "33be35625e252cc4f06aa375b3b428521faea37d", features = ["egui"] }
