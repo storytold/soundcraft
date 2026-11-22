@@ -38,10 +38,8 @@ impl Retry {
             self.attempts = 0;
             return None;
         };
-        if exhausted {
-            return None;
-        }
-        self.attempts += 1;
+        // Once the fast budget is spent, each successful slow lookup may retry opening.
+        self.attempts = (self.attempts + 1).min(MAX_ATTEMPTS);
         Some(device)
     }
 
@@ -123,11 +121,13 @@ impl Route {
     fn new(selected: bool, now: Instant) -> Arc<Self> {
         Arc::new(Self { selected: AtomicBool::new(selected), reports: Reports::new(now) })
     }
-    fn hand_over<T>(&self, next: &Self, graph: &Mutex<T>, playing: &AtomicBool, now: Instant) -> bool {
+    fn hand_over<T>(&self, next: &Self, graph: &Mutex<T>, playing: &AtomicBool, failed: &AtomicBool, now: Instant) -> bool {
         let Some(_guard) = try_graph(graph) else {
             return false;
         };
-        if playing.load(Ordering::Acquire) || next.reports.recent_streak(now).is_none_or(|n| n < 8) {
+        // guarded_block latches a panic under this same graph lock. Recheck it here so
+        // an intervening callback cannot silently discard the error along with the old route.
+        if failed.load(Ordering::Relaxed) || playing.load(Ordering::Acquire) || next.reports.recent_streak(now).is_none_or(|n| n < 8) {
             return false;
         }
         self.selected.store(false, Ordering::Release);
@@ -268,7 +268,9 @@ impl Recovery {
         let Some(probe) = &self.candidate else {
             return false;
         };
-        if probe.fault.gone.load(Ordering::Acquire) || !self.current.hand_over(&probe.route, &self.graph, &shared.playing, Instant::now()) {
+        if probe.fault.gone.load(Ordering::Acquire)
+            || !self.current.hand_over(&probe.route, &self.graph, &shared.playing, &fault.failed, Instant::now())
+        {
             return false;
         }
         let Some(candidate) = self.candidate.take() else {
@@ -342,20 +344,51 @@ mod tests {
         for second in 0..=60 {
             let now = start + Duration::from_secs(second);
             if retry.decide(now, true, true, None) == Decision::Probe {
-                assert!(
-                    retry
-                        .lookup(now, || {
-                            lookups += 1;
-                            Some(())
-                        })
-                        .is_none()
-                );
+                let before = lookups;
+                let device = retry.lookup(now, || {
+                    lookups += 1;
+                    Some(())
+                });
+                assert_eq!(device.is_some(), lookups > before, "a successful lookup after cooldown is a real reopen attempt");
             }
         }
         assert!((1..=2).contains(&lookups), "{lookups} presence checks in 60 s with the reopen budget exhausted");
         let later = start + Duration::from_secs(120);
         assert!(retry.lookup(later, || None::<()>).is_none());
         assert_eq!(retry.lookup(later + Duration::from_secs(1), || Some(())), Some(()));
+    }
+
+    #[test]
+    fn callback_panic_latched_after_service_check_prevents_handoff() {
+        let now = Instant::now();
+        let current = Route::new(true, now);
+        let next = Route::new(false, now);
+        let graph = Mutex::new(());
+        let fault = Fault::default();
+        let running = AtomicBool::new(false);
+        for _ in 0..8 {
+            next.reports.write(now, true);
+        }
+        // Simulate a callback latching a failure after the control thread's safety check.
+        current.render(&graph, |_| fault.failed.store(true, Ordering::Relaxed));
+        assert!(!current.hand_over(&next, &graph, &running, &fault.failed, now));
+        assert!(!next.selected.load(Ordering::Acquire));
+        assert_eq!(fault.trouble(false), Some(crate::OutputTrouble::Bug));
+        assert!(current.hand_over(&next, &graph, &running, &AtomicBool::new(false), now));
+    }
+
+    #[test]
+    fn exhausted_recovery_can_reopen_an_endpoint_that_never_disappears() {
+        let mut retry = Retry::default();
+        let start = Instant::now();
+        for _ in 0..MAX_ATTEMPTS {
+            assert_eq!(retry.lookup(start, || Some(())), Some(()));
+        }
+        for period in 1..=3 {
+            let due = start + PRESENCE_INTERVAL * period;
+            assert!(retry.lookup(due - Duration::from_millis(1), || -> Option<()> { panic!("early enumeration") }).is_none());
+            assert_eq!(retry.lookup(due, || Some(())), Some(()));
+        }
     }
 
     #[test]
@@ -372,7 +405,7 @@ mod tests {
         for _ in 0..8 {
             next.reports.write(now, true);
         }
-        assert!(old.hand_over(&next, &graph, &AtomicBool::new(false), now));
+        assert!(old.hand_over(&next, &graph, &AtomicBool::new(false), &AtomicBool::new(false), now));
         assert!(next.render(&graph, |count| assert_eq!(*count, 1)));
     }
 
@@ -383,27 +416,28 @@ mod tests {
         let next = Route::new(false, now);
         let commands = Mutex::new(vec![1, 2, 3]);
         let running = AtomicBool::new(false);
+        let failed = AtomicBool::new(false);
         assert!(old.render(&commands, |v| assert_eq!(v.pop(), Some(3))));
         assert!(!next.render(&commands, |_| {}));
         for _ in 0..7 {
             next.reports.write(now, true);
         }
-        assert!(!old.hand_over(&next, &commands, &running, now));
+        assert!(!old.hand_over(&next, &commands, &running, &failed, now));
         next.reports.write(now, false);
         next.reports.write(now, true);
-        assert!(!old.hand_over(&next, &commands, &running, now));
+        assert!(!old.hand_over(&next, &commands, &running, &failed, now));
         for _ in 0..7 {
             next.reports.write(now, true);
         }
-        assert!(!old.hand_over(&next, &commands, &running, now + Duration::from_secs(1)));
+        assert!(!old.hand_over(&next, &commands, &running, &failed, now + Duration::from_secs(1)));
         running.store(true, Ordering::Release);
-        assert!(!old.hand_over(&next, &commands, &running, now));
+        assert!(!old.hand_over(&next, &commands, &running, &failed, now));
         running.store(false, Ordering::Release);
         {
             let _rendering = commands.lock();
-            assert!(!old.hand_over(&next, &commands, &running, now));
+            assert!(!old.hand_over(&next, &commands, &running, &failed, now));
         }
-        assert!(old.hand_over(&next, &commands, &running, now));
+        assert!(old.hand_over(&next, &commands, &running, &failed, now));
         assert!(!old.render(&commands, |_| {}));
         assert!(next.render(&commands, |v| assert_eq!(v.as_slice(), &[1, 2])));
     }
