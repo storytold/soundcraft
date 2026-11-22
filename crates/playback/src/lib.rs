@@ -233,6 +233,8 @@ pub struct Player {
     #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
     beat_clock: Arc<Mutex<sync_output::Output>>,
     pub device_name: String,
+    /// Audio system on which this output was actually opened, including a fallback to the default host.
+    pub device_system: Option<&'static str>,
     pub device_rate: u32,
     /// Output channels the device was opened with (0 for the silent clock).
     pub device_channels: u16,
@@ -343,7 +345,7 @@ impl Player {
             Mutex::new(side)
         };
         match open_device(want, want_ch, cfg, required_output) {
-            Ok((device, config, format, name)) => {
+            Ok((device, config, format, name, system)) => {
                 // The chosen buffer size first; if the device refuses it, its default.
                 let mut attempts = vec![config];
                 if config.buffer_size != cpal::BufferSize::Default {
@@ -408,6 +410,7 @@ impl Player {
                             #[cfg(target_os = "windows")]
                             recovery,
                             device_name: name,
+                            device_system: Some(system),
                             device_rate: rate,
                             device_channels: config.channels,
                             device_buffer: buffer,
@@ -489,6 +492,7 @@ impl Player {
             _stream: None,
             #[cfg(target_os = "windows")]
             recovery: None,
+            device_system: None,
             device_name: "No audio device (silent)".into(),
             device_rate: rate,
             device_channels: 0,
@@ -513,6 +517,7 @@ impl Player {
             prepared_clock_feed: Mutex::default(),
             side,
             _stream: None,
+            device_system: None,
             device_name: "No audio device".into(),
             device_rate: session.sample_rate.hz(),
             device_channels: 0,

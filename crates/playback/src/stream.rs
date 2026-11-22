@@ -149,7 +149,7 @@ pub(crate) fn open_device(
     want_ch: u16,
     cfg: &AudioConfig,
     required_output: Option<&str>,
-) -> Result<(cpal::Device, cpal::StreamConfig, cpal::SampleFormat, String), String> {
+) -> Result<(cpal::Device, cpal::StreamConfig, cpal::SampleFormat, String, &'static str), String> {
     use cpal::traits::DeviceTrait;
     let host = devices::host(cfg);
     let device = devices::device(&host, required_output.or(cfg.output.as_deref()), true).ok_or_else(|| "no output device".to_string())?;
@@ -189,7 +189,7 @@ pub(crate) fn open_device(
             (stream_config, c.sample_format())
         }
     };
-    Ok((device, config, format, name))
+    Ok((device, config, format, name, host.id().name()))
 }
 
 /// Pick the output configuration for the first requested rate the device offers (the configured

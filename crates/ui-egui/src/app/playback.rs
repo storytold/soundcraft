@@ -175,6 +175,12 @@ impl SoundApp {
                 }
             }
         } else if midi_ready {
+            if self.player.is_none() {
+                self.ui.status =
+                    crate::localization::text("Cannot record MIDI: open an audio output in Setup > Playback Engine to start the audio engine.")
+                        .into();
+                return;
+            }
             // MIDI alone makes a pass.
             Vec::new()
         } else {

@@ -1595,6 +1595,9 @@ fn menu_translate(source: &str) -> Option<&'static str> {
         "Autosave failed: {e}" => "Falha ao salvar automaticamente: {e}",
         "Bounced {} (peak {:.1} dBFS, {:.1} LUFS)" => "Bounce concluído: {} (pico {:.1} dBFS, {:.1} LUFS)",
         "Cannot record: {err}" => "Não foi possível gravar: {err}",
+        "Cannot record MIDI: open an audio output in Setup > Playback Engine to start the audio engine." => {
+            "Não é possível gravar MIDI: abra uma saída de áudio em Configuração > Mecanismo de reprodução para iniciar o mecanismo de áudio."
+        }
         "Cannot record: no MIDI input device is connected (Setup > Playback Engine lists them)" => {
             "Não foi possível gravar: nenhum dispositivo de entrada MIDI está conectado (Configuração > Mecanismo de reprodução mostra a lista)"
         }
