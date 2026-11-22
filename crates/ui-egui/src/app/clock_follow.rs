@@ -601,7 +601,7 @@ mod tests {
         let port = feed.ports().assign("DIN");
         app.run("setup.midi_clock_follow", json!({"input":"DIN","enabled":true})).unwrap();
         app.service_clock_follow_with_timing(|_| None);
-        app.unavailable_output = Some(crate::UnavailableOutput { name: "offline".into(), stalled_at_report: None, idle_status: None });
+        app.unavailable_output = Some(crate::UnavailableOutput { name: "offline".into(), system: None, stalled_at_report: None, idle_status: None });
         feed.receive(port, &[0xf2, 32, 0]);
         assert!(!app.clock_start_pending(), "a stopped location can wait on a healthy replacement stream");
         app.service_clock_follow_with_timing(|_| None);
@@ -780,7 +780,7 @@ mod tests {
         ctx.run_ui(Default::default(), |_| app.logic(&ctx)).textures_delta.clear();
         feed.receive(port, &[0xfb, 0xf8]);
         assert!(app.player.as_ref().unwrap().is_playing());
-        app.unavailable_output = Some(crate::UnavailableOutput { name: "offline".into(), stalled_at_report: None, idle_status: None });
+        app.unavailable_output = Some(crate::UnavailableOutput { name: "offline".into(), system: None, stalled_at_report: None, idle_status: None });
         app.reconnect_audio();
         assert!(app.player.as_ref().unwrap().is_playing());
         app.player = Some(simulated_player(&app.engine));
