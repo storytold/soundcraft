@@ -87,7 +87,7 @@ fn brake_shapes_keep_the_wire_phase_and_obey_each_ending() {
                     ok &= min_wire_error >= -48. && r.snapshots[base].bpm.is_some_and(|b| (5. - b).abs() < 0.1);
                     if rise {
                         ok &= snap.bpm.is_some_and(|v| (v - 128.).abs() < 0.1)
-                            && r.attacks[(base + 48) / 12..].iter().flatten().all(|e| e.abs() <= 192);
+                            && r.attacks[(base + 24) / 12..].iter().flatten().all(|e| e.abs() <= 192);
                     } else {
                         ok &= r.final_state == if matches!(ending, Ending::Loss { coast: true }) { State::Coasting } else { State::Stopped };
                     }
