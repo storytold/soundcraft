@@ -396,3 +396,33 @@ fn stable_device_prediction_waits_for_a_continuous_tempo_ramp_to_end() {
     }
     assert!(reader.render_prediction().is_some());
 }
+
+#[test]
+fn classifies_the_eight_percent_boundary_against_the_pre_step_period() {
+    for jitter in [0_u64, 1000] {
+        for pct in [-8.1_f64, -8.0, -7.9, 7.9, 8.0, 8.1] {
+            for trial in 0..10 {
+                let cut = 384 + trial;
+                let mut rng = 42 + trial as u64;
+                let mut stamp = 0.0_f64;
+                let mut follower = Follower::default();
+                follower.receive(&[0xfa], 0);
+                let mut confirmations = Vec::new();
+                for pulse in 0..=cut + 192 {
+                    rng = rng.wrapping_mul(6364136223846793005).wrapping_add(1);
+                    let delay = if pulse == 0 { 0 } else { ((rng >> 32) % (2 * jitter + 1)) as i64 - jitter as i64 };
+                    follower.receive(&[0xf8], stamp.round() as i64 + delay);
+                    if follower.step_intervals > 0 {
+                        confirmations.push(pulse);
+                    }
+                    stamp += 2_500_000. / if pulse < cut { 128. } else { 128. * (1. + pct / 100.) };
+                }
+                if pct.abs() < 8. {
+                    assert!(confirmations.is_empty(), "{pct}% {jitter}us trial {trial}: {confirmations:?}");
+                } else {
+                    assert!(matches!(confirmations.as_slice(), [p] if *p > cut), "{pct}% {jitter}us trial {trial}: {confirmations:?}");
+                }
+            }
+        }
+    }
+}
