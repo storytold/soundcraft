@@ -17,9 +17,6 @@ pub(crate) fn silent_pcm_prefix(s: &Session, from: i64, to: i64) -> bool {
             || track.instrument.is_some()
             || track.elastic.is_some()
             || !track.automation.is_empty()
-            || mixer.record_arm
-            || mixer.input_monitor
-            || mixer.input != Route::None
             || mixer.inserts.len() > 16
             || mixer.sends.len() > 16
             || mixer.inserts.iter().any(Option::is_some)
@@ -28,6 +25,14 @@ pub(crate) fn silent_pcm_prefix(s: &Session, from: i64, to: i64) -> bool {
             return false;
         }
         let Some(playlist) = track.playlist() else { return false };
+        // A muted, empty recording strip with no inserts, sends or automation
+        // cannot contribute to a dry guide. Arming it for metering is common.
+        if track.kind == TrackKind::Audio && mixer.mute && playlist.clips.is_empty() {
+            continue;
+        }
+        if mixer.record_arm || mixer.input_monitor || mixer.input != Route::None {
+            return false;
+        }
         if playlist.clips.len() > clips_left {
             return false;
         }

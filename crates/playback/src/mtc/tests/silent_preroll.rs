@@ -50,6 +50,11 @@ fn a_dry_lead_in_starts_the_same_pcm_with_a_locate_or_a_rolling_join() {
         s.pool.insert(SourceId(1), Arc::new(SourceAudio::new(craft_audio::AudioBuffer { sample_rate: 48000, channels: vec![wave] })));
         let id = s.new_clip_id();
         s.track_mut(t).unwrap().playlist_mut().unwrap().clips.push(Clip::audio(id, "guide", SourceId(1), 0, 0, len));
+        // The hardware acceptance routes USB input to an armed, muted meter strip.
+        let meter = s.add_track(TrackKind::Audio, ChannelFormat::Mono, None);
+        let mixer = &mut s.track_mut(meter).unwrap().mixer;
+        mixer.mute = true;
+        mixer.record_arm = true;
         let (mut audio, tx, _) = callback(s, 48000.);
         let feed = Arc::new(MidiFeed::default());
         feed.set_mtc_source(Some(0));
