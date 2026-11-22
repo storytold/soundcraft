@@ -1,33 +1,11 @@
+use super::sampler_song::sampler_song;
 use super::*;
-use soundcraft_midi::{Note, Sequence};
-use soundcraft_model::{ChannelFormat, Clip, Insert, Session, SourceAudio, SourceId, TrackKind};
-use soundcraft_playback::midi::MidiInputs;
-use soundcraft_time::Range;
-use std::sync::Arc;
 
-// Render the same eighth-note pattern across the whole transition. Count physical
-// attacks in PCM, including any beyond the last expected note.
-fn render_hats(grid: TempoMap, sr: SampleRate, count: usize, end: i64) -> Vec<i64> {
-    let mut song = Session { tempo: grid, sample_rate: sr, ..Default::default() };
-    let source = SourceId(200);
-    song.pool.insert(source, Arc::new(SourceAudio::new(craft_audio::AudioBuffer { sample_rate: 48000, channels: vec![vec![0.8; 96]] })));
-    let id = song.add_track(TrackKind::Instrument, ChannelFormat::Stereo, None);
-    let clip = song.new_clip_id();
-    let tr = song.track_mut(id).unwrap();
-    let mut inst = Insert::new("sampler");
-    inst.sample = Some(source);
-    inst.params.insert("root_note".into(), 60.);
-    inst.params.insert("attack".into(), 0.);
-    tr.instrument = Some(inst);
-    let mut seq = Sequence::default();
-    for i in 0..count {
-        seq.notes.push(Note { start: i as i64 * 480, length: 80, pitch: 60, channel: 0, velocity: 110, release_velocity: 64 });
-    }
-    tr.playlist_mut().unwrap().clips.push(Clip::midi(clip, "hats", 0, end + 48000, seq));
-    let pcm = soundcraft_mix::render_range(&song, Range::new(0, end), 512);
+// Count attacks in the PCM captured while the MIDI input was arriving.
+fn attacks(pcm: &[f32]) -> Vec<i64> {
     let mut sounding = false;
     let mut attacks = Vec::new();
-    for (i, sample) in pcm[0].iter().enumerate() {
+    for (i, sample) in pcm.iter().enumerate() {
         let on = sample.abs() > 0.001;
         if on && !sounding {
             attacks.push(i as i64);
@@ -50,7 +28,18 @@ fn returning_clock_without_continue_keeps_the_deck_change_in_phase() {
         let origin = 20_000;
         feed.set_clock(origin);
         feed.receive(port, &[0xfa]);
-        let mut grid = TempoMap::new(120., 4, 4).unwrap();
+        let mut song = sampler_song(TempoMap::new(120., 4, 4).unwrap(), sr, 65, 48_000 * 20);
+        let mut mixer = soundcraft_mix::MixEngine::new(48_000., 128);
+        let mut block = vec![vec![0.; 128]; 2];
+        let mut pcm = Vec::new();
+        let mut render_to = |end: i64, song: &soundcraft_model::Session| {
+            while (pcm.len() as i64) < end {
+                let pos = pcm.len() as i64;
+                let frames = (end - pos).min(128) as usize;
+                mixer.render_with_clock_limit(song, pos, frames, &mut block, feed.clock_render_tick());
+                pcm.extend_from_slice(&block[0][..frames]);
+            }
+        };
         let mut expected = Vec::new();
         let mut stop = None;
         let mut actions = Vec::new();
@@ -71,6 +60,9 @@ fn returning_clock_without_continue_keeps_the_deck_change_in_phase() {
             }
             let stamp = clock_us.round() as i64;
             let arrival_time = (stamp - origin) as f64 / 1e6;
+            if stop.is_none() {
+                render_to(sr.samples(arrival_time), &song);
+            }
             feed.set_clock(stamp);
             if !(384..RETURN_PULSE).contains(&pulse) {
                 feed.receive(port, &[0xf8]);
@@ -87,10 +79,11 @@ fn returning_clock_without_continue_keeps_the_deck_change_in_phase() {
             if pulse + 1 == RETURN_PULSE {
                 assert_eq!(snapshot.state, if coast { State::Coasting } else { State::Stopped });
             }
-            update_grid(&mut grid, Some((0, origin)), 0, snapshot, sr, sr.samples(arrival_time + 0.030));
+            update_grid(&mut song.tempo, Some((0, origin)), 0, snapshot, sr, sr.samples(arrival_time + 0.030));
         }
         let end = stop.unwrap_or_else(|| expected.last().unwrap() + 48000);
-        let hits = render_hats(grid, sr, expected.len(), end);
+        render_to(end, &song);
+        let hits = attacks(&pcm);
         let expected_played = expected.partition_point(|at| *at < end);
         assert_eq!(hits.len(), expected_played);
         let errors: Vec<_> = hits.iter().zip(&expected).map(|(hit, master)| hit - master).collect();

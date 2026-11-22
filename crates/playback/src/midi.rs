@@ -151,6 +151,7 @@ pub(crate) type TransportWaker = Arc<dyn Fn(crate::mtc_input::ChaseEvent) + Send
 pub struct MidiFeed {
     clock_follow: Mutex<crate::clock_follow::Follower>,
     clock_source: AtomicUsize,
+    clock_render_pulse: AtomicI64,
     mtc: Mutex<crate::mtc_input::Reader>,
     sync_wake: Mutex<Option<TransportWaker>>,
     mtc_online: AtomicBool,
@@ -209,6 +210,7 @@ impl Default for MidiFeed {
         MidiFeed {
             clock_follow: Mutex::default(),
             clock_source: AtomicUsize::new(usize::MAX),
+            clock_render_pulse: AtomicI64::new(i64::MAX),
             mtc: Mutex::default(),
             mtc_wake: Default::default(),
             sync_wake: Mutex::default(),
@@ -379,6 +381,7 @@ impl MidiFeed {
             *input = Default::default();
             input.source = port;
             input.next_pulse = initial_pulse.max(0);
+            self.clock_render_pulse.store(i64::MAX, Ordering::Release);
             self.clock_source.store(port.map_or(usize::MAX, usize::from), Ordering::Release);
         }
         input.coast = coast;
@@ -395,10 +398,17 @@ impl MidiFeed {
         let mut input = self.clock_follow.lock().unwrap_or_else(PoisonError::into_inner);
         let now = self.now();
         input.expire(now);
+        self.clock_render_pulse.store(input.render_through_pulse().unwrap_or(i64::MAX), Ordering::Release);
         while let Some(action) = input.take() {
             actions.push(action);
         }
         input.snapshot(now)
+    }
+
+    /// Inclusive clip/click event horizon. Coasting has no external render limit.
+    pub fn clock_render_tick(&self) -> Option<i64> {
+        let pulse = self.clock_render_pulse.load(Ordering::Acquire);
+        (pulse != i64::MAX).then(|| pulse.saturating_mul(soundcraft_time::TICKS_PER_QUARTER / 24))
     }
 
     pub(crate) fn arm_clock_resume(&self, port: u8, cue: crate::clock_follow::PreparedResume) -> bool {
@@ -415,6 +425,7 @@ impl MidiFeed {
         let mut input = self.clock_follow.lock().unwrap_or_else(PoisonError::into_inner);
         if input.source == Some(port) && open.is_none_or(|g| g.load(Ordering::Acquire)) {
             let action = input.receive(bytes, at);
+            self.clock_render_pulse.store(input.render_through_pulse().unwrap_or(i64::MAX), Ordering::Release);
             if action {
                 input.dispatch_prepared(|| self.now());
             }

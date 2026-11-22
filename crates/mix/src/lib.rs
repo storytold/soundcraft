@@ -152,6 +152,9 @@ pub struct MixEngine {
     /// Transport stopped: only monitored inputs sound (no clips).
     pub monitor_only: bool,
     midi_origin: Option<Samples>,
+    held_score_from: Option<Samples>,
+    click_tails: Vec<click::Tail>,
+    clocked_click: bool,
     /// Recording: record-armed tracks hear their input (auto input).
     pub recording: bool,
     /// Mix the metronome (Options > Click) into the output. Playback turns this on; offline renders
@@ -195,6 +198,9 @@ impl MixEngine {
             midi_lost: 0,
             monitor_only: false,
             midi_origin: None,
+            held_score_from: None,
+            click_tails: Vec::with_capacity(32),
+            clocked_click: false,
             recording: false,
             metronome: false,
             external: false,
@@ -269,6 +275,9 @@ impl MixEngine {
 
     /// Reset all plugin state (on stop / seek).
     pub fn reset(&mut self) {
+        self.held_score_from = None;
+        self.clocked_click = false;
+        self.click_tails.clear();
         self.midi_origin = None;
         for s in self.strips.values_mut() {
             for p in s.plugins.iter_mut().flatten() {
@@ -389,13 +398,29 @@ impl MixEngine {
 
     /// Render `frames` (≤ max_block) samples starting at `pos` into `out` (≥ 2 channels).
     pub fn render(&mut self, s: &Session, pos: Samples, frames: usize, out: &mut [Vec<f32>]) {
+        self.render_with_clock_limit(s, pos, frames, out, None);
+    }
+
+    /// Render audio and live input continuously, but dispatch score events only through
+    /// the inclusive wire tick. A later block consumes the retained range exactly once.
+    pub fn render_with_clock_limit(&mut self, s: &Session, pos: Samples, frames: usize, out: &mut [Vec<f32>], through_tick: Option<i64>) {
         let frames = frames.min(self.max_block);
         self.begin_block(s, pos, frames);
-        let note_start = self.midi_origin.unwrap_or(pos);
-        if frames > 0 && !self.monitor_only && note_start < pos.saturating_add(frames as i64) {
+        self.clocked_click |= through_tick.is_some();
+        let physical_end = pos.saturating_add(frames as i64);
+        let limit = through_tick.map_or(physical_end, |t| s.tempo.tick_to_samples(t, s.sample_rate).saturating_add(1));
+        // At a compensated Continue the first callback may already be ahead of
+        // the wire. Preserve the requested boundary attack and its note-off.
+        let start = self.held_score_from.take().unwrap_or_else(|| if self.midi_origin.is_some() { pos.min(limit.saturating_sub(1)) } else { pos });
+        let score = Range { start, end: physical_end.min(limit).max(start) };
+        if !self.monitor_only && score.end < physical_end {
+            self.held_score_from = Some(score.end);
+        }
+        let note_start = self.midi_origin.unwrap_or(start);
+        if frames > 0 && !self.monitor_only && score.start < score.end && note_start < score.end {
             self.midi_origin = None;
         }
-        let blk = Block { pos, frames, note_start, any_solo: any_solo(s) };
+        let blk = Block { pos, frames, note_start, score, any_solo: any_solo(s) };
         let order = std::mem::take(&mut self.order);
         // Phase 1: independent strips (audio, instrument, MIDI) in parallel.
         let mut work = std::mem::take(&mut self.work);
@@ -597,13 +622,15 @@ impl MixEngine {
 
     /// Add the metronome and copy the main mix to `out`.
     fn write_output(&mut self, s: &Session, blk: Block, out: &mut [Vec<f32>]) {
-        let Block { pos, frames, .. } = blk;
+        let frames = blk.frames;
         // Metronome: summed after the master fader, so it reaches the speakers without passing
         // through any track, send or insert. Only the playback engine sets `metronome`.
         // Not while monitoring only (transport stopped): the position does not advance there, so the
         // start of the same beat would repeat every block as a buzz.
         if self.metronome && !self.monitor_only && s.edit.click && (!s.edit.flag("click.only_during_record") || self.recording) {
-            click::render(s, pos, frames, &mut self.main);
+            click::render(s, blk, &mut self.main, &mut self.click_tails, self.clocked_click);
+        } else {
+            self.click_tails.clear();
         }
         // Output: min(out.len(), main channels) channels; any further output channels are silent.
         for (c, o) in out.iter_mut().enumerate() {

@@ -102,24 +102,31 @@ impl<const N: usize> PulseFit<N> {
         self.intercept = (y - self.slope * x) / n;
         self.jitter = ((yy - y * y / n - self.slope * (xy - x * y / n)) / n).max(0.).sqrt();
     }
-    /// Oldest point in four consecutive intervals that consistently depart from a previous
+    /// Oldest point in a train of consistent intervals that depart from a previous
     /// period. A delayed packet and the shorter interval that follows it do not qualify.
     pub fn confirmed_step_start(&self, previous: f64, noise_us: f64) -> Option<(i64, i64)> {
-        const INTERVALS: usize = 4;
-        if self.len <= INTERVALS {
+        // Two nearly identical intervals can distinguish a large jump from a
+        // delayed packet followed by a short one. Keep the four-interval noise
+        // test for ordinary changes and for devices with appreciable jitter.
+        self.step_intervals(previous, 2, 0.30, noise_us * 8., 0.03).or_else(|| self.step_intervals(previous, 4, 0.08, noise_us * 2., 0.4))
+    }
+
+    fn step_intervals(&self, previous: f64, count: usize, bpm_fraction: f64, noise_floor: f64, tolerance: f64) -> Option<(i64, i64)> {
+        if self.len <= count {
             return None;
         }
-        let first = (self.cursor + N - INTERVALS - 1) % N;
+        let first = (self.cursor + N - count - 1) % N;
         let start = self.points[first];
         let (_, end) = self.last?;
-        let period = end.saturating_sub(start.1) as f64 / INTERVALS as f64;
+        let period = end.saturating_sub(start.1) as f64 / count as f64;
         let change = period - previous;
-        if change.abs() < (previous * 0.08).max(2. * noise_us) {
+        // BPM is reciprocal period. Allow for the microsecond rounding of the endpoints.
+        if period <= 0. || change.abs() + 1. / (count as f64) < period * bpm_fraction || change.abs() < noise_floor {
             return None;
         }
-        for i in 0..INTERVALS {
+        for i in 0..count {
             let interval = self.points[(first + i + 1) % N].1.saturating_sub(self.points[(first + i) % N].1) as f64;
-            if (interval - period).abs() > change.abs() * 0.4 {
+            if (interval - period).abs() > change.abs() * tolerance {
                 return None;
             }
         }
@@ -141,6 +148,17 @@ impl<const N: usize> PulseFit<N> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn eight_percent_bpm_steps_in_either_direction_qualify() {
+        for (bpm, qualifies) in [(108., true), (92., true), (107., false), (93., false)] {
+            let mut fit = PulseFit::<12>::default();
+            for pulse in 0..=4 {
+                fit.push(pulse, (pulse as f64 * 2_500_000. / bpm).round() as i64);
+            }
+            assert_eq!(fit.confirmed_step_start(25_000., 0.).is_some(), qualifies, "{bpm}");
+        }
+    }
+
     #[test]
     fn driver_time_retains_spacing_in_a_late_batch_and_recovers_after_reset() {
         let mut clock = DriverTime::default();

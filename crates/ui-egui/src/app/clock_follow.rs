@@ -395,16 +395,27 @@ fn update_grid(grid: &mut TempoMap, anchor: Option<(i64, i64)>, waiting_tick: i6
     if (slope - bpm).abs() < 0.15 && phase.abs() < 0.003 {
         return false;
     }
-    // During a confirmed step, the old grid may already have rendered past the incoming
-    // pulse. Correct the phase at the first editable tick, using the new wire period.
-    let (phase, recovery_beats, limit) = if s.recovering_tempo_step {
-        let wire_ahead = (edit - tick) as f64 * 60. / (TICKS_PER_QUARTER as f64 * bpm);
-        let grid_ahead = sr.seconds(grid.tick_to_samples(edit, sr).saturating_sub(grid.tick_to_samples(tick, sr)));
-        (phase + wire_ahead - grid_ahead, 0.35, 0.25)
-    } else {
-        (phase, if phase.abs() <= 0.006 { 8. } else { 4. }, 0.05)
-    };
-    let target = bpm / (1. + (phase * bpm / (60. * recovery_beats)).clamp(-limit, limit));
+    if s.recovering_tempo_step {
+        // Join the new wire grid at a future pulse. Only the interval after
+        // the committed audio changes; then restore the source's exact tempo.
+        let edit_sample = grid.tick_to_samples(edit, sr);
+        let elapsed_at_edit = sr.seconds(edit_sample.saturating_sub(start).saturating_sub(elapsed));
+        let wire_at_edit = tick as f64 + elapsed_at_edit * bpm * TICKS_PER_QUARTER as f64 / 60.;
+        let ahead = (edit as f64).max(wire_at_edit);
+        let join = ((ahead / TICKS_PER_PULSE as f64).ceil() as i64).saturating_add(1).saturating_mul(TICKS_PER_PULSE);
+        if join <= edit {
+            return false;
+        }
+        let seconds = (join as f64 - wire_at_edit) * 60. / (bpm * TICKS_PER_QUARTER as f64);
+        let bridge = (join - edit) as f64 * 60. / (seconds * TICKS_PER_QUARTER as f64);
+        if grid.set_tempo(edit, bridge.clamp(5., 1000.)).is_ok() {
+            let _ = grid.set_tempo(join, bpm);
+            return true;
+        }
+        return false;
+    }
+    let recovery_beats = if phase.abs() <= 0.006 { 8. } else { 4. };
+    let target = bpm / (1. + (phase * bpm / (60. * recovery_beats)).clamp(-0.05, 0.05));
     (slope - target).abs() >= 0.15 && grid.set_tempo(edit, target.clamp(5., 1000.)).is_ok()
 }
 
@@ -926,40 +937,8 @@ mod tests {
         assert!(grid.tempo_at_tick(82 * TICKS_PER_PULSE) < 100.);
     }
 
-    #[test]
-    fn chorus_tempo_step_keeps_the_next_backbeat_within_one_clock() {
-        let sr = SampleRate::new(48_000).unwrap();
-        for (first, second) in [(120., 100.), (100., 120.), (80., 130.), (130., 80.)] {
-            let inputs = MidiInputs::with_port_names(vec![], vec!["drums".into()]);
-            let feed = inputs.feed();
-            let id = feed.ports().assign("drums");
-            feed.set_clock_follow(Some(id), true, 0, false);
-            let mut grid = TempoMap::new(first, 4, 4).unwrap();
-            let mut actions = Vec::new();
-            let mut us = 0.0_f64;
-            feed.set_clock(0);
-            feed.receive(id, &[0xfa]);
-            let chorus = 16 * 24;
-            for pulse in 0..chorus + 24 {
-                if pulse > 0 {
-                    us += 2_500_000. / if pulse <= chorus { first } else { second };
-                }
-                feed.set_clock(us.round() as i64);
-                feed.receive(id, &[0xf8]);
-                let snap = feed.clock_follow_status(&mut actions);
-                update_grid(&mut grid, Some((0, 0)), 0, snap, sr, sr.samples(us / 1e6 + 0.030));
-            }
-            let tick = (chorus + 24) * TICKS_PER_PULSE;
-            let expected = sr.samples(16. * 60. / first + 60. / second);
-            let actual = grid.tick_to_samples(tick, sr);
-            assert!(
-                actual.abs_diff(expected) <= sr.samples(2.5 / second) as u64,
-                "{first} to {second} BPM: backbeat error {} samples",
-                actual - expected
-            );
-            assert_eq!(grid.tick_to_samples(chorus * TICKS_PER_PULSE, sr), sr.samples(16. * 60. / first));
-        }
-    }
+    mod large_steps;
+    mod sampler_song;
 
     #[test]
     fn tempo_step_updates_future_beat_spacing_and_preserves_elapsed_bars() {

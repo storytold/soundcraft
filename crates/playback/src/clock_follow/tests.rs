@@ -93,6 +93,7 @@ fn locks_and_predicts_pulses_across_tempos_jitter_and_usb_quantization() {
             errors.sort_by(f64::total_cmp);
             phase_errors.sort_by(f64::total_cmp);
             let p95 = errors[errors.len() * 95 / 100];
+            eprintln!("steady {bpm} {jitter} BPMp95={p95:.8} phasep95_us={:.4}", phase_errors[phase_errors.len() * 95 / 100]);
             if bpm == 120. && jitter == 2000. {
                 assert!(errors.iter().all(|err| *err < 0.05), "steady-state BPM crossed the display tolerance");
             }

@@ -224,9 +224,20 @@ pub(crate) struct LiveInput<'a> {
 #[derive(Clone, Copy)]
 pub(crate) struct Block {
     pub(crate) note_start: Samples,
+    pub(crate) score: soundcraft_time::Range,
     pub(crate) pos: Samples,
     pub(crate) frames: usize,
     pub(crate) any_solo: bool,
+}
+
+impl Block {
+    /// A held event range can span more than one device block when Clock returns.
+    /// Keep those events ordered within this block; voices still render at the device rate.
+    pub(crate) fn score_offset(self, relative: Samples) -> usize {
+        let length = self.score.end.saturating_sub(self.score.start);
+        let offset = relative.max(0) as usize;
+        if length > self.frames as i64 { ((offset as u128 * self.frames as u128) / length as u128) as usize } else { offset }
+    }
 }
 
 fn zero_buf(buf: &mut [Vec<f32>], frames: usize) {
@@ -322,7 +333,7 @@ fn render_instrument(s: &Session, t: &Track, strip: &mut Strip, live: &LiveInput
         // Whether the clips' controller values were sent to the instrument for this block.
         let mut chased = std::mem::take(&mut strip.chase);
         if chased {
-            let from_clips = chase_controllers(s, t, pos, inst);
+            let from_clips = chase_controllers(s, t, blk.score.start, inst);
             strip.live.restore_defaults(from_clips, inst.plugin.as_mut());
         }
         // Live sources that went away (a port that lost input, an input the track no longer
@@ -335,7 +346,7 @@ fn render_instrument(s: &Session, t: &Track, strip: &mut Strip, live: &LiveInput
         // start of the block keeps its new value.
         strip.live.begin_block();
         if midi_thru(t) && strip.live.reconcile(t, live.midi_lost, live.ports, inst.plugin.as_mut()) {
-            let from_clips = chase_controllers(s, t, pos, inst);
+            let from_clips = chase_controllers(s, t, blk.score.start, inst);
             strip.live.restore_defaults(from_clips, inst.plugin.as_mut());
             strip.live.resend_controllers(inst.plugin.as_mut());
             chased = true;

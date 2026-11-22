@@ -215,6 +215,14 @@ impl Follower {
         self.awaiting_clock.is_some() || self.events.iter().flatten().any(|action| matches!(action, Action::Play { .. } | Action::Started { .. }))
     }
 
+    pub(crate) fn render_through_pulse(&self) -> Option<i64> {
+        match self.state {
+            State::Locked => Some(self.played_pulse.saturating_add(1)),
+            State::Stopped => Some(self.played_pulse),
+            State::Waiting | State::Coasting => None,
+        }
+    }
+
     fn bpm(&self) -> Option<f64> {
         self.steady.period_us().or_else(|| self.short.period_us()).filter(|p| (2500. ..=500_000.).contains(p)).map(|p| 2_500_000. / p)
     }

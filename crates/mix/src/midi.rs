@@ -25,15 +25,15 @@ fn midi_offset(s: &Session, t: &Track) -> i64 {
 /// A note-off held back that way is told to `live`: when the key goes up earlier in the same
 /// block, the note still lasts until the clip's note-off.
 pub(crate) fn schedule_notes(s: &Session, t: &Track, blk: Block, inst: &mut PluginSlot, held: &mut Vec<u8>, live: &mut LiveNotes) {
-    if blk.frames == 0 {
+    if blk.frames == 0 || blk.score.start == blk.score.end {
         return;
     }
     let sr = s.sample_rate;
     // MIDI Track Offsets: the track's notes sound `offset` samples later (earlier if negative), so
     // the block looks that far back into the clips.
     let offset = midi_offset(s, t);
-    let pos = blk.pos.saturating_sub(offset);
-    let end = pos.saturating_add(blk.frames as i64);
+    let pos = blk.score.start.saturating_sub(offset);
+    let end = blk.score.end.saturating_sub(offset);
     let note_start = blk.note_start.saturating_sub(offset);
     let scan_start = note_start.min(pos);
     // Process the requested boundary first even when a replacement note is stored
@@ -85,7 +85,7 @@ pub(crate) fn schedule_notes(s: &Session, t: &Track, blk: Block, inst: &mut Plug
                 // Deliver due attacks at frame zero without chasing notes from before the locate.
                 let attack = on >= note_start && on < end && (on == note_start || off >= pos);
                 if attack {
-                    let at = usize::try_from(on.saturating_sub(pos)).unwrap_or(0);
+                    let at = blk.score_offset(on.saturating_sub(pos));
                     let bit = 1u128 << n.pitch;
                     if deferred & bit != 0 {
                         release_clip_note(inst, held, live, n.pitch, at.min(1));
@@ -100,7 +100,7 @@ pub(crate) fn schedule_notes(s: &Session, t: &Track, blk: Block, inst: &mut Plug
                     if attack && on < pos && off <= pos {
                         deferred |= 1u128 << n.pitch;
                     } else {
-                        release_clip_note(inst, held, live, n.pitch, usize::try_from(off - pos).unwrap_or(0));
+                        release_clip_note(inst, held, live, n.pitch, blk.score_offset(off.saturating_sub(pos)));
                     }
                 }
             }
@@ -115,7 +115,7 @@ pub(crate) fn schedule_notes(s: &Session, t: &Track, blk: Block, inst: &mut Plug
                 }
                 let at = s.tempo.tick_to_samples(base.saturating_add(tick), sr);
                 if at >= pos && at < end && at < clip.end() {
-                    inst.plugin.midi(usize::try_from(at - pos).unwrap_or(0), ctrl_message(c.kind, c.value, dp));
+                    inst.plugin.midi(blk.score_offset(at.saturating_sub(pos)), ctrl_message(c.kind, c.value, dp));
                 }
             }
         }

@@ -85,6 +85,7 @@ pub(crate) struct AudioState {
     pos: Samples,
     playing: bool,
     chasing: bool,
+    following_clock: bool,
     drift_since: Option<i64>,
     chase_group: Option<i64>,
     chase_seek_generation: u64,
@@ -189,6 +190,7 @@ impl AudioState {
             pos: 0,
             playing: false,
             chasing: false,
+            following_clock: false,
             drift_since: None,
             chase_group: None,
             chase_seek_generation: 0,
@@ -309,6 +311,7 @@ impl AudioState {
                 Cmd::PlayClock { origin, render_from } => {
                     self.begin_play(render_from, None, None, false);
                     self.mix.start_midi_at(origin);
+                    self.following_clock = true;
                 }
                 Cmd::PlayMtc(from) => self.begin_play(from, None, None, true),
                 Cmd::Stop => self.halt(),
@@ -343,6 +346,7 @@ impl AudioState {
 
     fn begin_play(&mut self, from: Samples, end: Option<Samples>, looped: Option<Range>, chasing: bool) {
         self.chasing = chasing;
+        self.following_clock = false;
         self.chase_group = None;
         self.drift_since = None;
         #[cfg(any(target_os = "windows", target_os = "macos", target_os = "linux"))]
@@ -772,7 +776,8 @@ impl AudioState {
         self.due_midi(n);
         self.mix.monitor_only = !self.playing;
         self.mix.recording = self.recording;
-        self.mix.render(&self.session, self.pos, n, &mut self.pending);
+        let through = if self.playing && self.following_clock { self.midi.as_ref().and_then(|feed| feed.clock_render_tick()) } else { None };
+        self.mix.render_with_clock_limit(&self.session, self.pos, n, &mut self.pending, through);
         self.send_garbage();
         self.pending_len = n;
         #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
