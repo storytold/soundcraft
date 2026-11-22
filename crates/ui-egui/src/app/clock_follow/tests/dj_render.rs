@@ -200,7 +200,7 @@ pub(super) fn render_dj(start_bpm: f64, ideal_us: &[i64], arrivals_us: &[i64], e
         while pos < until {
             let count = (until - pos).min(128) as usize;
             if running {
-                mix.render_with_clock_limit(&song, pos, count, &mut output, feed.clock_render_tick());
+                mix.render_clock_block(&song, pos, count, &mut output, feed.clock_render_tick(), feed.clock_delivery());
             }
             for i in 0..count {
                 let value = if running { output[0][i] } else { 0. };
