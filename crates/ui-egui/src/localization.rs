@@ -516,7 +516,12 @@ mod tests {
     fn permits_untranslated_sync_label(source: &str) -> bool {
         matches!(
             source,
-            "Cannot record MIDI: open an audio output in Setup > Playback Engine to start the audio engine."
+            "Audio output “{name}” is unavailable. Reconnect it in Playback Engine when stopped."
+                | "Audio output timing is unavailable. Compensated MIDI outputs need a valid measurement."
+                | "Include the reported audio output lead and the mixer's compensated plug-in delay."
+                | "Limited by the audio output lead ({lead} ms)"
+                | "Stop playback or recording before reconnecting this output."
+                | "Cannot record MIDI: open an audio output in Setup > Playback Engine to start the audio engine."
                 | "Enter position…"
                 | "External Timecode Offset"
                 | "Gen MTC"
@@ -527,6 +532,21 @@ mod tests {
                 | "Take MTC chase offline before recording"
                 | "The session has conflicting timecode offsets. Chase uses the External Timecode Offset."
         ) && Language::PortugueseBrazil.text(source) == source
+    }
+
+    #[test]
+    fn beat_clock_uses_the_catalog_or_english_with_the_device_name_and_offset() {
+        let _scope = enter(Language::PortugueseBrazil);
+        let label = "Enable MIDI Beat Clock";
+        assert_eq!(text(label), super::pt_br::translate(label).unwrap_or(label));
+
+        let template = "Limited by the audio output lead ({lead} ms)";
+        let expected = super::pt_br::translate(template).unwrap_or(template).replace("{lead}", "12");
+        assert_eq!(format_named(template, &[("lead", Arg::new(&12))]), expected);
+
+        let template = "MIDI output {name} unavailable";
+        let expected = super::pt_br::ERROR_TEMPLATES.iter().find(|(source, _)| *source == template).map_or(template, |(_, target)| *target);
+        assert_eq!(error_text("MIDI output Stage USB unavailable"), expected.replace("{name}", "Stage USB"));
     }
 
     #[test]

@@ -1,16 +1,6 @@
 /// Returns the Brazilian Portuguese translation for a source-language UI string.
 pub(super) fn translate(source: &str) -> Option<&'static str> {
     Some(match source {
-        "Audio output “{name}” is unavailable. Reconnect it in Playback Engine when stopped." => {
-            "A saída de áudio “{name}” está indisponível. Reconecte-a no mecanismo de reprodução quando o transporte estiver parado."
-        }
-        "The audio driver stopped reporting output timing. Compensated MIDI sync uses the last measured lead ({ms} ms)." => {
-            "O driver de áudio deixou de informar o tempo de saída. A sincronização MIDI com compensação usa o último adiantamento medido ({ms} ms)."
-        }
-        "Audio output timing is unavailable. Compensated MIDI outputs need a valid measurement." => {
-            "O tempo da saída de áudio está indisponível. As saídas MIDI com compensação precisam de uma medição válida."
-        }
-        "Stop playback or recording before reconnecting this output." => "Pare a reprodução ou a gravação antes de reconectar esta saída.",
         "+ Marker" => "+ Marcador",
         "+ Selection" => "+ Seleção",
         "+" => "+",
@@ -1840,20 +1830,6 @@ fn menu_translate(source: &str) -> Option<&'static str> {
         "Meter Type" => "Tipo de medidor",
         "Middle C" => "Dó central",
         "MIDI Beat Clock" => "Clock de batida MIDI",
-        "Enable MIDI Beat Clock" => "Ativar clock de batida MIDI",
-        "Choose a MIDI output" => "Escolher uma saída MIDI",
-        "MIDI output" => "Saída MIDI",
-        "No MIDI output devices found" => "Nenhum dispositivo de saída MIDI encontrado",
-        "Copy diagnostics" => "Copiar diagnóstico",
-        "The saved MIDI output is unavailable." => "A saída MIDI salva está indisponível.",
-        "Saved value exceeds ±250 ms at this rate; playback uses {effective} samples." => {
-            "O valor salvo excede ±250 ms nesta taxa; a reprodução usa {effective} amostras."
-        }
-        "Limited by the audio output lead ({lead} ms)" => "Limitado pela antecedência da saída de áudio ({lead} ms)",
-        "Include the reported audio output lead and the mixer's compensated plug-in delay." => {
-            "Incluir a antecedência informada pela saída de áudio e o atraso compensado dos plug-ins do mixer."
-        }
-        "Offset (samples)" => "Deslocamento (amostras)",
         "MIDI Input Monitoring Follows Selected Track" => "O monitoramento de entrada MIDI acompanha a pista selecionada",
         "MIDI Merge Release Mode" => "Modo de liberação da mesclagem MIDI",
         "MIDI Note 60" => "Nota MIDI 60",
@@ -2107,12 +2083,6 @@ macro_rules! error_templates {
 }
 
 error_templates! {
-    "Multiple MIDI outputs named {name}; using the first" => "Várias saídas MIDI com o nome {name}; usando a primeira",
-    "MIDI output {name} unavailable" => "Saída MIDI {name} indisponível",
-    "MIDI sync settings require the desktop host" => "As configurações de sincronização MIDI exigem o aplicativo de desktop",
-    "MIDI port calibration must be within 250 ms at the session sample rate" => "A calibração da porta MIDI deve estar dentro de 250 ms na taxa de amostragem da sessão",
-    "Invalid MIDI sync port name, count or sample offset" => "Nome, quantidade de portas ou deslocamento de amostras MIDI inválido",
-    "Position exceeds the MIDI Song Position Pointer range." => "A posição excede o limite do ponteiro de posição MIDI.",
     "{path} is not valid Unicode" => "{path} não é Unicode válido",
     "unknown command `{c}`" => "comando desconhecido `{c}`",
     "`{c}` is not available: {why}" => "`{c}` não está disponível: {why}",
