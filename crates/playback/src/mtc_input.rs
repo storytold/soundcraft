@@ -411,7 +411,17 @@ impl Reader {
                         self.discontinuity();
                         return;
                     };
-                    let position = position.on_reader_day(self.previous.or(self.located_start), false);
+                    // A still-locked reader can miss a whole group at midnight. Use elapsed
+                    // quarter frames to recognize that forward wrap while the reader coasts.
+                    let expected = self.rolling.filter(|(live, _)| self.coasting && live.rate == position.rate).map(|(live, stamp)| {
+                        let elapsed = now.saturating_sub(stamp) as f64;
+                        let quarters = (elapsed * 4. / live.in_session_rate(self.options.rate).frame_us()).round() as i64;
+                        live.advance(quarters.saturating_sub(7))
+                    });
+                    let position = expected.and_then(|anchor| {
+                        let candidate = position.on_reader_day(Some(anchor), false);
+                        (candidate.quarter.abs_diff(anchor.quarter) <= 4).then_some(candidate)
+                    }).unwrap_or_else(|| position.on_reader_day(self.previous.or(self.located_start), false));
                     self.incoming = Some(position);
                     if let Some(last) = self.previous {
                         // A missing group during lock is a dropout, not a seek.
@@ -756,6 +766,26 @@ mod tests {
             let Some(ChaseEvent::Locate(p)) = reader.take(300_000) else { panic!("explicit locate") };
             assert!(p.samples(sr) < rate.samples_at_frame(day, sr), "unrelated full-frame locate starts a new day");
         }
+    }
+
+    #[cfg(any(target_os = "windows", target_os = "macos", target_os = "linux"))]
+    #[test]
+    fn short_dropout_across_midnight_keeps_the_locked_reader_day() {
+        let rate = FrameRate::Fps25;
+        let day = 24 * 3600 * 25;
+        let mut reader = Reader::default();
+        reader.options.rate = rate;
+        for group in [0, 1, 3, 4] {
+            let frame = day - 6 + group * 2;
+            for (piece, bytes) in crate::mtc::quarters(frame, rate).into_iter().enumerate() {
+                reader.read(&bytes, (group * 8 + piece as i64) * 10_000);
+            }
+            if group > 0 {
+                let (pos, _) = reader.rolling.unwrap();
+                assert_eq!(pos.quarter, frame * 4 + 7, "group {group} after the missing 23:59:59:23 block");
+            }
+        }
+        assert_eq!((reader.stats.locks, reader.stats.losses, reader.seek_generation), (1, 0, 0));
     }
 
     #[test]
