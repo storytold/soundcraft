@@ -426,8 +426,9 @@ impl MidiFeed {
     pub fn clock_follow_status(&self, actions: &mut Vec<crate::clock_follow::Action>) -> crate::clock_follow::Snapshot {
         let mut input = self.clock_follow.lock().unwrap_or_else(PoisonError::into_inner);
         let now = self.now();
-        input.expire(now);
-        self.publish_clock_render(&input);
+        if input.expire(now) {
+            self.publish_clock_render(&input);
+        }
         while let Some(action) = input.take() {
             actions.push(action);
         }

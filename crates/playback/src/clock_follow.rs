@@ -415,7 +415,8 @@ impl Follower {
             now_us,
         }
     }
-    pub(crate) fn expire(&mut self, now: i64) {
+    /// Returns true when losing the clock invalidates the published render horizon.
+    pub(crate) fn expire(&mut self, now: i64) -> bool {
         let period = self.bpm().map(|bpm| 2_500_000. / bpm);
         // The first pulse of an acquisition has no interval yet. Give even a
         // 5 BPM source time to provide a second pulse, also when returning from Coast.
@@ -444,7 +445,9 @@ impl Follower {
                 self.awaiting_clock = request;
                 self.cue = cue;
             }
+            return true;
         }
+        false
     }
     pub(crate) fn lost(&mut self) {
         self.cue = None;
