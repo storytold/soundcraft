@@ -28,8 +28,11 @@ pub enum Action {
 #[derive(Default, Clone, Copy, Debug)]
 pub struct Snapshot {
     pub bpm: Option<f64>,
-    /// The wire confirmed a tempo step during uninterrupted playback within the past beat.
+    /// A confirmed tempo step or brake needs a fast grid correction during playback.
     pub recovering_tempo_step: bool,
+    /// A fast brake has reached long pulse intervals. Follow the arriving pulses
+    /// themselves while the new tempo and phase settle.
+    pub braking: bool,
     /// The source has a sustained tempo trend above its measured timestamp noise.
     pub tempo_ramp: bool,
     /// Number of intervals used if the latest F8 confirmed a new tempo.
@@ -134,6 +137,14 @@ pub(crate) struct Follower {
     step_pulses_left: u8,
     step_intervals: u8,
     latest: Option<i64>,
+    // Wire history survives Coast. A fresh pair in the new acquisition epoch
+    // replaces the old period; the silence between epochs is never a beat.
+    wire_stamps: [i64; 13],
+    wire_points: usize,
+    last_wire_interval: Option<i64>,
+    previous_wire_interval: Option<i64>,
+    brake_pulses_left: u8,
+    last_sensing_byte: Option<i64>,
     coast_period_us: Option<f64>,
     played_stamp: i64,
     played_pulse: i64,
@@ -166,6 +177,12 @@ impl Default for Follower {
             step_pulses_left: 0,
             step_intervals: 0,
             latest: None,
+            wire_stamps: [0; 13],
+            wire_points: 0,
+            last_wire_interval: None,
+            previous_wire_interval: None,
+            brake_pulses_left: 0,
+            last_sensing_byte: None,
             played_stamp: 0,
             played_pulse: 0,
             coast_period_us: None,
@@ -235,6 +252,7 @@ impl Follower {
 
     pub(crate) fn render_through_pulse(&self) -> Option<i64> {
         match self.state {
+            State::Locked if self.brake_pulses_left > 0 => Some(self.played_pulse),
             State::Locked => Some(self.played_pulse.saturating_add(1)),
             State::Stopped => Some(self.played_pulse),
             State::Waiting | State::Coasting => None,
@@ -245,6 +263,7 @@ impl Follower {
         let period = self.steady.period_us()?;
         if self.state != State::Locked
             || self.step_pulses_left != 0
+            || self.brake_pulses_left != 0
             || self.packed_delivery
             || !(2500. ..=500_000.).contains(&period)
             || !self.short.regular_intervals(period)
@@ -256,12 +275,20 @@ impl Follower {
     }
 
     fn bpm(&self) -> Option<f64> {
-        self.steady.period_us().or_else(|| self.short.period_us()).filter(|p| (2500. ..=500_000.).contains(p)).map(|p| 2_500_000. / p)
+        let fit = self.steady.period_us().or_else(|| self.short.period_us());
+        let period = match self.brake_pulses_left {
+            0 => fit,
+            1..=36 => self.short.period_us().or(fit),
+            _ => self.last_wire_interval.map(|p| p as f64).or(fit),
+        }?;
+        // At 5 BPM, two timestamps with ±1 ms jitter can enclose a 502 ms interval.
+        (2_500. ..=502_000.).contains(&period).then(|| 2_500_000. / period.clamp(2_500., 500_000.))
     }
     pub(crate) fn snapshot(&self, now_us: i64) -> Snapshot {
         Snapshot {
             bpm: self.bpm().or_else(|| self.coast_period_us.map(|p| 2_500_000. / p)),
-            recovering_tempo_step: self.step_pulses_left > 0,
+            recovering_tempo_step: self.step_pulses_left > 0 || self.brake_pulses_left > 0,
+            braking: self.brake_pulses_left > 0,
             tempo_ramp: self.state == State::Locked && !self.packed_delivery && self.step_pulses_left == 0 && self.steady.is_tempo_ramp(),
             step_intervals: self.step_intervals,
             packed_delivery: self.packed_delivery,
@@ -275,15 +302,26 @@ impl Follower {
         }
     }
     pub(crate) fn expire(&mut self, now: i64) {
-        let period = self.bpm().map_or(0., |bpm| 2_500_000. / bpm);
-        let mut timeout = (3. * period).ceil().max(150_000.) as i64;
-        if self.packed_delivery
-            && let Some((head, _)) = self.packet_head
-        {
-            // Some of the upcoming silence was already delivered in this batch.
-            timeout = timeout.saturating_add(((self.fit_index - head) as f64 * period).round().min(150_000.) as i64);
+        let period = self.bpm().map(|bpm| 2_500_000. / bpm);
+        // The first pulse of an acquisition has no interval yet. Give even a
+        // 5 BPM source time to provide a second pulse, also when returning from Coast.
+        let timeout = match (period, self.last_wire_interval) {
+            (None, _) if self.short.period_us().is_none() && self.steady.period_us().is_none() => 1_500_000,
+            (fitted, interval) => {
+                let last = interval.unwrap_or(0);
+                let growth = if self.brake_pulses_left > 0 { last.saturating_sub(self.previous_wire_interval.unwrap_or(last)).max(0) } else { 0 };
+                let expected = fitted.unwrap_or(0.).max(last.saturating_add(growth) as f64);
+                // Timestamped groups of up to five pulses can be followed by
+                // a whole group's silence even when the preceding group was short.
+                let group_gap = if self.packed_delivery { 3. * 5. * fitted.unwrap_or(0.) + 1_000. } else { 0. };
+                (3. * expected).max(group_gap).ceil().clamp(150_000., 1_500_000.) as i64
+            }
+        };
+        let cable_lost = self.last_sensing_byte.is_some_and(|last| now.saturating_sub(last) > 300_000);
+        if cable_lost {
+            self.last_sensing_byte = None;
         }
-        if self.latest.is_some_and(|last| now.saturating_sub(last) > timeout) {
+        if self.latest.is_some_and(|last| cable_lost || now.saturating_sub(last) > timeout) {
             // Idle pulses can predate a fresh transport request by an entire timeout.
             let request = self.awaiting_clock.filter(|at| now.saturating_sub(*at) <= timeout);
             let cue = self.cue.take();
@@ -296,15 +334,17 @@ impl Follower {
     }
     pub(crate) fn lost(&mut self) {
         self.cue = None;
-        self.coast_period_us = self.steady.period_us().or(self.coast_period_us);
+        self.coast_period_us = self.bpm().map(|bpm| 2_500_000. / bpm).or(self.coast_period_us);
         self.short.clear();
         self.steady.clear();
         self.latest = None;
+        self.wire_points = 0;
         self.packet_head = None;
         self.packed_delivery = false;
         self.singleton_groups = 0;
         self.previous_batch_noise = [0.; 4];
         self.step_intervals = 0;
+        self.brake_pulses_left = 0;
         self.changes = 0;
         self.step_pulses_left = 0;
         if self.state == State::Locked {
@@ -318,8 +358,62 @@ impl Follower {
         }
         self.awaiting_clock = None;
     }
+    /// Three consecutive four-pulse spans isolate a sustained brake from a single
+    /// tempo step. A smooth period increase produces a quadratic time curve; compare
+    /// the growth with residual timing noise before leaving the long jitter filter.
+    fn braking_trend(&self) -> bool {
+        let w = &self.wire_stamps;
+        if self.wire_points < w.len() {
+            return false;
+        }
+        let first = w[4].saturating_sub(w[0]) as f64;
+        let middle = w[8].saturating_sub(w[4]) as f64;
+        let last = w[12].saturating_sub(w[8]) as f64;
+        let growth = (middle - first).min(last - middle);
+        if growth <= 2_000. || middle <= 1.05 * first || last <= 1.05 * middle {
+            return false;
+        }
+        let slope = w[12].saturating_sub(w[0]) as f64 / 12.;
+        let curvature = (w[12].saturating_sub(w[6]) as f64 - w[6].saturating_sub(w[0]) as f64) / 72.;
+        w.iter().enumerate().all(|(index, stamp)| {
+            let x = index as f64 - 6.;
+            let residual = stamp.saturating_sub(w[6]) as f64 - x * (slope + x * curvature);
+            2. * residual.abs() < growth
+        })
+    }
+
+    fn observe_wire_interval(&mut self, at: i64) {
+        if self.brake_pulses_left == 1 && self.wire_points == self.wire_stamps.len() {
+            // Seed the normal fit with the settled end of the ramp; its older
+            // history describes a different speed and phase.
+            self.steady.clear();
+            for (index, stamp) in self.wire_stamps.iter().enumerate() {
+                self.steady.push(self.fit_index - 12 + index as i64, *stamp);
+            }
+        }
+        self.brake_pulses_left = self.brake_pulses_left.saturating_sub(1);
+        self.wire_stamps.rotate_left(1);
+        self.wire_stamps[12] = at;
+        self.wire_points = (self.wire_points + 1).min(self.wire_stamps.len());
+        let Some(previous) = self.latest else { return };
+        let gap = at.saturating_sub(previous).min(1_500_000);
+        if self.packed_delivery || gap <= 1_000 {
+            self.brake_pulses_left = 0;
+            return;
+        }
+        let changing = self.last_wire_interval.is_some_and(|last| gap.abs_diff(last) > (last / 16).max(4_000) as u64);
+        if self.braking_trend() || (self.brake_pulses_left > 0 && changing) {
+            // Hold the score at the last confirmed wire pulse through the brake
+            // and the subsequent acceleration, then settle back over two beats.
+            self.brake_pulses_left = 48;
+        }
+        self.previous_wire_interval = self.last_wire_interval;
+        self.last_wire_interval = Some(gap);
+    }
+
     fn clock(&mut self, at: i64) {
         let at = self.latest.map_or(at, |prev| prev.max(at));
+        self.observe_wire_interval(at);
         self.latest = Some(at);
         self.fit_index = self.fit_index.saturating_add(1);
         self.step_intervals = 0;
@@ -365,7 +459,11 @@ impl Follower {
             self.push(Action::Play { pulse: self.next_pulse, at });
         }
         if self.state == State::Locked {
-            self.played_stamp = self.steady.predict_us(self.fit_index).unwrap_or(at);
+            self.played_stamp = match self.brake_pulses_left {
+                0 => self.steady.predict_us(self.fit_index).unwrap_or(at),
+                1..=36 => self.short.predict_us(self.fit_index).unwrap_or(at),
+                _ => at,
+            };
             self.played_pulse = self.next_pulse;
             self.next_pulse = self.next_pulse.saturating_add(1);
         }
@@ -409,6 +507,9 @@ impl Follower {
     pub(crate) fn receive(&mut self, bytes: &[u8], at: i64) -> bool {
         self.queued_action = false;
         self.expire(at);
+        if !bytes.is_empty() && (self.last_sensing_byte.is_some() || bytes.contains(&0xfe)) {
+            self.last_sensing_byte = Some(self.last_sensing_byte.map_or(at, |last| last.max(at)));
+        }
         for &byte in bytes {
             match byte {
                 0xf8 => self.clock(at),

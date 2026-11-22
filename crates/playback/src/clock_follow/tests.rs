@@ -52,6 +52,8 @@ fn a_fresh_start_after_idle_clock_timeout_arms_the_next_pulse() {
 fn only_a_stopped_transport_needs_continue_after_clock_loss() {
     for coast in [true, false] {
         let mut r = Follower { coast, ..Follower::default() };
+        feed(&mut r, 0xf8, -40_000);
+        feed(&mut r, 0xf8, -20_000);
         feed(&mut r, 0xfa, 0);
         feed(&mut r, 0xf8, 1);
         while r.take().is_some() {}

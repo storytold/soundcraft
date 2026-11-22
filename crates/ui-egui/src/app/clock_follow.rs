@@ -373,7 +373,7 @@ fn update_grid(grid: &mut TempoMap, anchor: Option<(i64, i64)>, waiting_tick: i6
     let writable = grid.samples_to_ticks(render_until, sr).saturating_add(1);
     // A batched acceleration can report a pulse far beyond the committed audio.
     // Start the confirmed correction at the first writable tick in that case.
-    let edit = if render_until > 0 && s.packed_delivery && s.recovering_tempo_step {
+    let edit = if render_until > 0 && (s.packed_delivery || s.braking) && s.recovering_tempo_step {
         writable.max(origin.saturating_mul(TICKS_PER_PULSE))
     } else {
         tick.max(writable)
