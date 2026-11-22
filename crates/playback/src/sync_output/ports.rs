@@ -4,16 +4,17 @@ use std::collections::{BTreeMap, BTreeSet};
 pub(super) type Bindings = BTreeMap<String, String>;
 
 /// Return the selection labels and the opaque native IDs to open for each.
-fn assign(saved: &Bindings, found: impl IntoIterator<Item = (String, String)>) -> Bindings {
+fn assign(saved: &Bindings, found: impl IntoIterator<Item = (Option<String>, String)>) -> Bindings {
     let found: Vec<_> = found.into_iter().collect();
     // Some drivers report the same opaque ID for multiple logical ports. Opening one
     // by that ID could address its sibling, so keep such destinations unavailable.
     let mut seen_ids = BTreeSet::new();
     let ambiguous_ids: BTreeSet<_> = found.iter().filter_map(|(_, id)| (!seen_ids.insert(id)).then_some(id)).collect();
-    let raw_names: BTreeSet<_> = found.iter().map(|(name, _)| name.as_str()).collect();
+    let raw_names: BTreeSet<_> = found.iter().filter_map(|(name, _)| name.as_deref()).collect();
     let known: BTreeMap<_, _> = saved.iter().map(|(label, id)| (id, label)).collect();
     let mut available = Bindings::new();
     for (name, id) in &found {
+        let Some(name) = name else { continue };
         if ambiguous_ids.contains(id) {
             continue;
         }
@@ -38,7 +39,7 @@ fn assign(saved: &Bindings, found: impl IntoIterator<Item = (String, String)>) -
 }
 
 fn scan(midi: &MidiOutput, saved: &Bindings) -> Bindings {
-    assign(saved, midi.ports().iter().filter_map(|port| Some((midi.port_name(port).ok()?, port.id()))))
+    assign(saved, midi.ports().iter().map(|port| (midi.port_name(port).ok(), port.id())))
 }
 
 pub(super) fn available(saved: &Bindings) -> Result<Bindings, String> {
@@ -101,8 +102,14 @@ impl Registry {
 mod tests {
     use super::*;
 
-    fn listed(ports: &[(&str, &str)]) -> Vec<(String, String)> {
-        ports.iter().map(|(name, id)| (name.to_string(), id.to_string())).collect()
+    fn listed(ports: &[(&str, &str)]) -> Vec<(Option<String>, String)> {
+        ports.iter().map(|(name, id)| (Some(name.to_string()), id.to_string())).collect()
+    }
+
+    #[test]
+    fn review_unnameable_output_with_the_same_id_never_opens_its_named_sibling() {
+        let found = [(None, "shared".into()), (Some("DIN".into()), "shared".into()), (Some("Other".into()), "distinct".into())];
+        assert_eq!(assign(&Bindings::new(), found), Bindings::from([("Other".into(), "distinct".into())]));
     }
 
     #[test]
