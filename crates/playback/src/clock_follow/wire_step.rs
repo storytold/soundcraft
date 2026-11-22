@@ -44,7 +44,7 @@ struct Candidate {
 /// A percent threshold is a comparison with the clock *before* the transition.
 /// Near 8%, freeze the old fit while accumulating a new, independent slope.
 pub(super) struct WireStep {
-    recent: [Point; 16],
+    recent: [Point; 32],
     seen: u8,
     next_check: i64,
     candidate: Option<Candidate>,
@@ -52,37 +52,41 @@ pub(super) struct WireStep {
 
 impl Default for WireStep {
     fn default() -> Self {
-        Self { recent: [Point::default(); 16], seen: 0, next_check: 0, candidate: None }
+        Self { recent: [Point::default(); 32], seen: 0, next_check: 0, candidate: None }
     }
 }
 
 impl WireStep {
     pub(super) fn observe(&mut self, pulse: i64, stamp: i64, old: f64, noise: f64, proposed: Proposal) -> Proposal {
-        let slot = |p: i64| p.rem_euclid(16) as usize;
+        let slot = |p: i64| p.rem_euclid(32) as usize;
         self.recent[slot(pulse)] = Point { stamp, prior_period: old, prior_noise: noise };
         self.seen = self.seen.saturating_add(1);
-        if self.seen < 16 || pulse < self.next_check {
+        if self.seen < 32 || pulse < self.next_check {
             return proposed;
         }
         // Take the old estimate before the four-interval candidate and before its onset
         // could have contaminated the long fit. Recent observations still drive phase.
         let prior = self.recent[slot(pulse.saturating_sub(12))];
         let recent = stamp.saturating_sub(self.recent[slot(pulse.saturating_sub(4))].stamp) as f64 / 4.;
-        let fraction = (prior.prior_period / recent - 1.).abs();
+        // A just-restarted long fit can have only two noisy points. Verify the
+        // pre-transition plateau independently before treating it as a reference.
+        let before = self.recent[slot(pulse.saturating_sub(8))].stamp.saturating_sub(self.recent[slot(pulse.saturating_sub(28))].stamp) as f64 / 20.;
+        let reliable = (prior.prior_period / before - 1.).abs() < 0.025;
+        let fraction = (before / recent - 1.).abs();
         // Near 8%, four intervals at this precision cannot resolve a tenth of a percent.
         // Keep the ordinary short path for clear jumps outside that uncertainty band.
         if let Some(((_, start), intervals)) = proposed {
             let period = stamp.saturating_sub(start) as f64 / f64::from(intervals);
-            if (prior.prior_period / period - 1.).abs() > 0.14 {
+            if (before / period - 1.).abs() > 0.14 {
                 self.candidate = None;
-                self.next_check = pulse.saturating_add(self.recent.len() as i64 + 1);
+                self.next_check = pulse.saturating_add(17);
                 return proposed;
             }
         }
-        if self.candidate.is_none() && (0.052..=0.14).contains(&fraction) {
+        if self.candidate.is_none() && reliable && (0.052..=0.14).contains(&fraction) {
             self.candidate = Some(Candidate { start: (pulse, stamp), prior, fit: Default::default() });
         }
-        let Some(c) = self.candidate.as_mut() else { return proposed };
+        let Some(c) = self.candidate.as_mut() else { return None };
         let n = pulse.saturating_sub(c.start.0);
         c.fit.add(n as f64, stamp.saturating_sub(c.start.1) as f64);
         let Some((new, noise_after)) = c.fit.period_noise() else {
@@ -114,7 +118,7 @@ impl WireStep {
         if let Some(step) = resolved {
             let start = c.start;
             self.candidate = None;
-            self.next_check = pulse.saturating_add(self.recent.len() as i64 + 1);
+            self.next_check = pulse.saturating_add(17);
             return step.then_some((start, n.min(159) as u8));
         }
         None
