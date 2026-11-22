@@ -36,6 +36,8 @@ pub struct Snapshot {
     /// Grid speed estimated for the next confirmed pulse during acceleration out of a brake.
     /// Status and loss detection continue to use the measured source tempo.
     pub brake_grid_bpm: Option<f64>,
+    /// Short-term slope for upcoming score events while tracking a measured phase excursion.
+    pub phase_grid_bpm: Option<f64>,
     /// The source has a sustained tempo trend above its measured timestamp noise.
     pub tempo_ramp: bool,
     /// Number of intervals used if the latest F8 confirmed a new tempo.
@@ -137,6 +139,9 @@ pub(crate) struct Follower {
     packed_delivery: bool,
     singleton_groups: u8,
     previous_batch_noise: [f64; 4],
+    // Two beats and their shared endpoint. Let measured BPM settle after a temporary nudge.
+    settling: PulseFit<49>,
+    phase_pulses_left: u8,
     short: PulseFit<12>,
     steady: PulseFit<192>,
     changes: u8,
@@ -178,6 +183,8 @@ impl Default for Follower {
             packed_delivery: false,
             singleton_groups: 0,
             previous_batch_noise: [0.; 4],
+            settling: Default::default(),
+            phase_pulses_left: 0,
             short: Default::default(),
             steady: Default::default(),
             changes: 0,
@@ -228,6 +235,7 @@ impl Follower {
         if !matches!(action, Action::Play { .. }) {
             self.cue = None;
             self.step_pulses_left = 0;
+            self.phase_pulses_left = 0;
         }
         self.queued_action = true;
         if self.count == self.events.len() {
@@ -265,7 +273,7 @@ impl Follower {
         match self.state {
             // While braking or consuming one USB batch, the wire does not yet
             // establish the next pulse's time.
-            State::Locked if self.brake_pulses_left > 0 || self.packed_delivery => Some(self.played_pulse),
+            State::Locked if self.brake_pulses_left > 0 || self.phase_tracking() || self.packed_delivery => Some(self.played_pulse),
             State::Locked => Some(self.played_pulse.saturating_add(1)),
             State::Stopped => Some(self.played_pulse),
             State::Waiting | State::Coasting => None,
@@ -277,6 +285,7 @@ impl Follower {
         if self.state != State::Locked
             || self.step_pulses_left != 0
             || self.brake_pulses_left != 0
+            || self.phase_tracking()
             || self.packed_delivery
             || !(2500. ..=500_000.).contains(&period)
             || !self.short.regular_intervals(period)
@@ -287,8 +296,44 @@ impl Follower {
         Some((self.latest?, period))
     }
 
+    fn phase_tracking(&self) -> bool {
+        self.state == State::Locked
+            && self.phase_pulses_left > 0
+            && self.step_pulses_left == 0
+            && self.brake_pulses_left == 0
+            && !self.packed_delivery
+    }
+    fn phase_period(&self) -> Option<f64> {
+        let last = self.last_wire_interval?;
+        let prior = self.previous_wire_interval?;
+        if last.abs_diff(prior) <= 2 && last >= 2_500 {
+            // An ideal source may round two successive intervals in opposite directions.
+            return Some((last + prior) as f64 / 2.);
+        }
+        let recent = self.wire_stamps[12].saturating_sub(self.wire_stamps[8]) as f64 / 4.;
+        if self.steady.period_us().is_some_and(|period| (recent - period).abs() > 0.05 * period) { Some(recent) } else { self.short.period_us() }
+    }
+
+    fn observe_phase_arrival(&mut self, at: i64) {
+        self.phase_pulses_left = self.phase_pulses_left.saturating_sub(1);
+        if self.packed_delivery || self.wire_points != self.wire_stamps.len() || self.step_pulses_left != 0 {
+            return;
+        }
+        let (Some(last), Some(period)) = (self.latest, self.steady.period_us()) else { return };
+        let noise = self.steady.jitter_us();
+        let interval_error = (at.saturating_sub(last) as f64 - period).abs();
+        let interval_changed = interval_error > (5. * noise).max(0.012 * period).max(30.);
+        let phase_changed = noise < 1_000.
+            && self.steady.predict_us(self.fit_index.saturating_add(1)).is_some_and(|expected| at.abs_diff(expected) as f64 > (3. * noise).max(350.));
+        if interval_changed || phase_changed {
+            // A deck can bend its speed below the eight-percent step threshold.
+            // Stop committing ahead of the wire while the latest phase is moving.
+            self.phase_pulses_left = 48;
+        }
+    }
     fn bpm(&self) -> Option<f64> {
         let fit = self.steady.period_us().or_else(|| self.short.period_us());
+        let fit = if self.phase_tracking() && self.settling.jitter_us() < 950. { self.settling.period_us().or(fit) } else { fit };
         let period = match self.brake_pulses_left {
             0 => fit,
             1..=36 => self.short.period_us().or(fit),
@@ -323,6 +368,7 @@ impl Follower {
             recovering_tempo_step: self.step_pulses_left > 0 || self.brake_pulses_left > 0,
             braking: self.brake_pulses_left > 0,
             brake_grid_bpm: self.brake_grid_bpm(),
+            phase_grid_bpm: self.phase_tracking().then(|| self.phase_period()).flatten().map(|p| 2_500_000. / p),
             tempo_ramp: self.state == State::Locked && !self.packed_delivery && self.step_pulses_left == 0 && self.steady.is_tempo_ramp(),
             step_intervals: self.step_intervals,
             packed_delivery: self.packed_delivery,
@@ -371,6 +417,8 @@ impl Follower {
         self.coast_period_us = self.bpm().map(|bpm| 2_500_000. / bpm).or(self.coast_period_us);
         self.short.clear();
         self.steady.clear();
+        self.settling.clear();
+        self.phase_pulses_left = 0;
         self.latest = None;
         self.edge = Default::default();
         self.wire_points = 0;
@@ -456,6 +504,7 @@ impl Follower {
 
     fn clock(&mut self, at: i64) {
         let at = self.latest.map_or(at, |prev| prev.max(at));
+        self.observe_phase_arrival(at);
         self.observe_wire_interval(at);
         self.latest = Some(at);
         self.fit_index = self.fit_index.saturating_add(1);
@@ -505,6 +554,7 @@ impl Follower {
         }
         if self.state == State::Locked {
             self.played_stamp = match self.brake_pulses_left {
+                0 if self.phase_tracking() => at,
                 0 => self.steady.predict_us(self.fit_index).unwrap_or(at),
                 1..=36 => self.short.predict_us(self.fit_index).unwrap_or(at),
                 _ => at,
@@ -514,6 +564,7 @@ impl Follower {
         }
     }
     fn observe_period(&mut self, ordinal: i64, at: i64) {
+        self.settling.push(ordinal, at);
         self.short.push(ordinal, at);
         // Long regression suppresses USB quantisation and timestamp jitter.
         // A sustained slope change outside the short fit's noise band starts a fresh epoch.
@@ -533,12 +584,21 @@ impl Follower {
             }
             let proposed = self.short.confirmed_step(slow, noise);
             let step = if self.packed_delivery { proposed } else { self.edge.observe(ordinal, at, slow, noise, proposed) };
+            if !self.packed_delivery
+                && self.step_pulses_left == 0
+                && let (Some(short_phase), Some(steady_phase)) = (self.short.predict_us(ordinal), self.steady.predict_us(ordinal))
+                && (short_phase.abs_diff(steady_phase) as f64 > (3. * self.short.jitter_us()).max(950.)
+                    || self.short.jitter_us() < 5. && (fast - slow).abs() > 0.01 * slow)
+            {
+                self.phase_pulses_left = 48;
+            }
             if let Some(((index, stamp), intervals)) = step {
                 self.steady.clear();
                 self.steady.push(index, stamp);
                 self.changes = 0;
                 if self.state == State::Locked {
                     self.step_intervals = intervals;
+                    self.phase_pulses_left = 0;
                     self.step_pulses_left = 24;
                 }
             } else if self.changes >= 6 {

@@ -361,7 +361,7 @@ impl SoundApp {
 // Keep edits beyond the committed audio. Elapsed playback and recorded
 // note positions remain fixed; future beat spacing follows the incoming clock and phase.
 fn update_grid(grid: &mut TempoMap, anchor: Option<(i64, i64)>, waiting_tick: i64, s: Snapshot, sr: SampleRate, render_until: i64) -> bool {
-    let Some(bpm) = s.brake_grid_bpm.or(s.bpm) else { return false };
+    let Some(bpm) = s.brake_grid_bpm.or(s.phase_grid_bpm).or(s.bpm) else { return false };
     let Some((origin, stamp)) = anchor else {
         if s.state == State::Waiting && (grid.tempo_at_tick(waiting_tick) - bpm).abs() >= 0.05 {
             let _ = grid.set_tempo(waiting_tick, bpm);
@@ -371,18 +371,24 @@ fn update_grid(grid: &mut TempoMap, anchor: Option<(i64, i64)>, waiting_tick: i6
     };
     let tick = s.pulse.saturating_mul(TICKS_PER_PULSE);
     let writable = grid.samples_to_ticks(render_until, sr).saturating_add(1);
-    // A batched acceleration can report a pulse far beyond the committed audio.
-    // Start the confirmed correction at the first writable tick in that case.
-    let edit = if render_until > 0 && (s.packed_delivery || s.braking) && s.recovering_tempo_step {
+    let start = grid.tick_to_samples(origin.saturating_mul(TICKS_PER_PULSE), sr);
+    let elapsed = sr.samples(s.stamp_us.saturating_sub(stamp) as f64 / 1e6);
+    let phase = sr.seconds(start.saturating_add(elapsed).saturating_sub(grid.tick_to_samples(tick, sr)));
+    if s.state != State::Locked || s.pulse <= origin {
+        return false;
+    }
+    // With a clean source, reach the next pulse when measured grid phase drifts out
+    // of tolerance. Retain the wider jitter deadband for noisy and batched delivery.
+    let precise = !s.packed_delivery && !s.braking && s.jitter_us < 1_400. && phase.abs() > 0.0012;
+    let tracking = s.phase_grid_bpm.is_some();
+    let correcting = s.recovering_tempo_step || tracking || precise;
+    let edit = if render_until > 0 && (precise || tracking || (s.packed_delivery || s.braking) && s.recovering_tempo_step) {
         writable.max(origin.saturating_mul(TICKS_PER_PULSE))
     } else {
         tick.max(writable)
     };
-    // On a slowdown the audio cursor can be several Clock pulses ahead of the wire.
-    // Compare against the writable position while slewing so an earlier correction
-    // cannot hold up the next one after playback has already crossed it.
-    let check_tick = if s.recovering_tempo_step { edit } else { tick };
-    if grid.tempos().last().is_some_and(|event| event.tick > check_tick) {
+    let check_tick = if correcting { edit } else { tick };
+    if !tracking && !precise && grid.tempos().last().is_some_and(|event| event.tick > check_tick) {
         return false;
     }
     let before = grid.tempos().partition_point(|event| event.tick <= check_tick);
@@ -392,36 +398,49 @@ fn update_grid(grid: &mut TempoMap, anchor: Option<(i64, i64)>, waiting_tick: i6
     // A confirmed tempo step should reach the next unrendered beat even when a minor
     // correction was just published. Small jitter corrections retain the usual spacing.
     let tempo_step = (slope - bpm).abs() >= slope * 0.08;
-    let spacing = if s.recovering_tempo_step || s.tempo_ramp { 2 } else { 6 };
-    if s.state != State::Locked || s.pulse <= origin || (!tempo_step && since_edit < spacing * TICKS_PER_PULSE) {
+    let spacing = if precise || tracking {
+        0
+    } else if s.recovering_tempo_step || s.tempo_ramp {
+        2
+    } else {
+        6
+    };
+    if !tempo_step && since_edit < spacing * TICKS_PER_PULSE {
         return false;
     }
-    let start = grid.tick_to_samples(origin.saturating_mul(TICKS_PER_PULSE), sr);
-    let elapsed = sr.samples(s.stamp_us.saturating_sub(stamp) as f64 / 1e6);
-    let phase = sr.seconds(start.saturating_add(elapsed).saturating_sub(grid.tick_to_samples(tick, sr)));
-    let (bpm_deadband, phase_deadband) = if s.recovering_tempo_step && s.jitter_us > 50. {
+    let (bpm_deadband, phase_deadband) = if correcting && s.jitter_us > 50. {
         (0.03, 0.001)
     } else if s.tempo_ramp {
         (0.035, 0.0005)
     } else {
         (0.15, 0.003)
     };
-    if (slope - bpm).abs() < bpm_deadband && phase.abs() < phase_deadband {
+    if (slope - bpm).abs() < bpm_deadband && phase.abs() < phase_deadband && !precise {
         return false;
     }
-    if s.recovering_tempo_step {
+    if correcting {
         // Join the new wire grid at a future pulse. Only the interval after
         // the committed audio changes; then restore the source's exact tempo.
         let edit_sample = grid.tick_to_samples(edit, sr);
         let elapsed_at_edit = sr.seconds(edit_sample.saturating_sub(start).saturating_sub(elapsed));
         let wire_at_edit = tick as f64 + elapsed_at_edit * bpm * TICKS_PER_QUARTER as f64 / 60.;
         let ahead = (edit as f64).max(wire_at_edit);
-        let join = ((ahead / TICKS_PER_PULSE as f64).ceil() as i64).saturating_add(1).saturating_mul(TICKS_PER_PULSE);
+        // On a low-noise nudge, retain at least 30% of an interval for the bridge.
+        // A larger correction has a full pulse of headroom.
+        let headroom = if tracking { 0.30 } else { 1. };
+        let join = ((ahead / TICKS_PER_PULSE as f64 + headroom).ceil() as i64).saturating_mul(TICKS_PER_PULSE);
         if join <= edit {
             return false;
         }
         let seconds = (join as f64 - wire_at_edit) * 60. / (bpm * TICKS_PER_QUARTER as f64);
         let bridge = (join - edit) as f64 * 60. / (seconds * TICKS_PER_QUARTER as f64);
+        if tracking || precise {
+            // A replacement bridge starts after committed audio. Only its old future
+            // join can overlap the revised slope.
+            while let Some(tick) = grid.tempos().last().map(|event| event.tick).filter(|t| *t > edit) {
+                grid.remove_tempo(tick);
+            }
+        }
         if grid.set_tempo(edit, bridge.clamp(5., 1000.)).is_ok() {
             let _ = grid.set_tempo(join, bpm);
             return true;
