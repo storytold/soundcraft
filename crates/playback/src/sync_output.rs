@@ -349,6 +349,7 @@ struct Port<C> {
     routes: [Option<Route>; 2],
     future: Vec<Event>,
     stop_pending: bool,
+    timing_epochs: [u64; 2],
     waiting_for_timing: bool,
     failure: Option<String>,
 }
@@ -404,7 +405,7 @@ impl<C: SyncPort> Port<C> {
         });
         for (route_index, route) in self.routes.iter_mut().enumerate() {
             let Some(r) = route else { continue };
-            let (block, future, revision) = {
+            let (timing_epoch, block, future, revision) = {
                 let mut timeline = view.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
                 let (block, future) = timeline.read(now, r.compensate, r.offset);
                 if r.compensate && block.is_none() && future.is_none() {
@@ -415,8 +416,14 @@ impl<C: SyncPort> Port<C> {
                     .and_then(|b| timeline.map(b.generation))
                     .filter(|revision| r.map.as_ref().is_none_or(|old| old.generation < revision.generation))
                     .cloned();
-                (block, future, changed)
+                (timeline.timing_epoch, block, future, changed)
             };
+            if r.compensate && self.timing_epochs[route_index] != timing_epoch {
+                self.timing_epochs[route_index] = timing_epoch;
+                self.future.retain(|event| event.route != route_index);
+                pending.retain(|event| event.route != route_index);
+                r.encoder.timing_lost();
+            }
             if let Some(new) = revision {
                 if new.remap
                     && let Some(old) = &r.map
@@ -478,6 +485,7 @@ fn set_route<C: SyncPort>(map: &mut BTreeMap<String, Port<C>>, index: usize, nam
         routes: [None, None],
         future: Vec::new(),
         stop_pending: false,
+        timing_epochs: [0; 2],
         waiting_for_timing: false,
         failure: None,
     });
