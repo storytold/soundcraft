@@ -92,9 +92,18 @@ fonts. Han is ordered before the Hangul fallback for every language except Korea
 never draws Korean-styled shapes on Linux where fontconfig resolves Noto Sans CJK's Korean face
 first.
 
-The web subset is 1.1 MiB and must stay under 2 MiB (test-enforced). After a catalog change run
-`python3 docs/i18n/tools/subset_web_font.py`; the test that draws the whole catalog in every family
-fails until you do.
+The web subset is 1.1 MiB and must stay under 2 MiB (test-enforced). After a catalog change,
+rebuild it from a Noto Sans SC variable font (a `noto-cjk` release, Sans/Variable/OTF) and check the
+result:
+
+```sh
+# <font>: a Noto Sans SC variable font (family "Noto Sans SC", wght axis) from a noto-cjk release
+python3 docs/i18n/tools/subset_web_font.py <font>   # writes assets/fonts/…
+python3 docs/i18n/tools/subset_web_font.py --check  # fails on drift
+```
+
+The test that draws the whole catalog in every family fails until the subset covers the new
+characters.
 
 ## Validation
 

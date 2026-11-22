@@ -74,8 +74,16 @@ egui's bundled faces carry no Han glyphs, so the interface needs a CJK fallback
   fontconfig (`lang=zh-cn`) with a list of per-platform candidates; nothing is redistributed.
 - The web build cannot reach system fonts, so it embeds `assets/fonts/NotoSansSC-SoundCraftSubset.ttf`,
   a Noto Sans SC (OFL-1.1) subset at weight 400 covering the UI glyph set. Regenerate it after a
-  catalog change with `python3 docs/i18n/tools/subset_web_font.py`, and keep
-  [`ATTRIBUTION.md`](../ATTRIBUTION.md) in step; `cargo xtask assets` enforces that.
+  catalog change with
+
+  ```sh
+  # <font>: a Noto Sans SC variable font from a noto-cjk release — any file whose family is
+  # "Noto Sans SC" and that carries a wght axis
+  python3 docs/i18n/tools/subset_web_font.py <font>
+  python3 docs/i18n/tools/subset_web_font.py --check
+  ```
+
+  and keep [`ATTRIBUTION.md`](../ATTRIBUTION.md) in step; `cargo xtask assets` enforces that.
 - Han comes before the Hangul fallback for every interface language except Korean, so a Chinese
   interface and Chinese names draw Chinese shapes even where fontconfig would resolve the Korean
   face of Noto Sans CJK first.

@@ -87,7 +87,7 @@ post-production, tracking) can switch. "Ready" is depth, correctness and fidelit
 | Performance | 5 % | **~35 %** | estimated (unmeasured) | 40–70 | [hardware-parity.md](hardware-parity.md) | Parallel strip rendering and PDC exist; whole files decoded into RAM, recording to disk (#84; long takes #888), no track-count or latency benchmarks |
 | Ecosystem / plugins | 4 % | **~30 %** | estimated | in Features + Hardware | [plugin-parity.md](plugin-parity.md) | CLAP/VST3/AU hosting; no AAX (Pro Tools' only format), no ARA, no sidechain, no control-surface ecosystem, no content library |
 | Platforms | 3 % | **~65 %** | estimated | 20–40 | [ROADMAP.md](../ROADMAP.md) | Builds for macOS, Windows x64/x86/arm64, Linux, FreeBSD, Web (Pro Tools: macOS, Windows), but only macOS is exercised at runtime; Web lacks file pickers (#63, #64) |
-| Localization | 2 % | **~12 %** | measured (catalog count) | 70–110 | [localization-parity.md](localization-parity.md) | English plus a pt-BR catalog (not native-reviewed); Pro Tools ships 8 UI languages; FR/ES PR #143 open |
+| Localization | 2 % | **~19 %** | measured (catalog count) | 55–90 | [localization-parity.md](localization-parity.md) | English, pt-BR and zh-Hans catalogs (neither translation native-reviewed); Han fallback on the desktop and an OFL subset on the web; Pro Tools ships 8 UI languages; FR/ES PR #143 open |
 | AI features | 1 % | **~5 %** | estimated | 30–50 | [gaps.md](gaps.md) | Pro Tools has speech-to-text transcription (upgraded in 2026.4); we have only an audio-to-MIDI pitch tracker |
 | **Weighted** | 100 % | **~40 %** | | **~950–1,450** (overlaps removed) | | |
 

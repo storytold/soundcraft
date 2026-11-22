@@ -50,11 +50,14 @@ Japanese would need their own Han faces, since the fallback list is Simplified-f
   current language. Example: `soundcraft-cli run --demo --cmd 'ui.language={"language":"zh-Hans"}'`.
 - The choice is a global preference saved with the UI state (like the theme); recalling a saved
   window configuration does not change it.
-- Strings missing from the catalog fall back to English. Add one with a `"English text" => "translated text"`
-  arm in a `crates/ui-egui/locales/<tag>/mod.rs`; tests check placeholder parity, duplicates and that
-  every string passed to `text` / `localized_format!` has an entry in every shipped catalog.
-- The zh-Hans module is generated: edit `crates/ui-egui/src/i18n/zh-hans.tsv`, then run
-  `python3 docs/i18n/tools/gen_zh_hans_locale.py`. See [localization.md](localization.md).
+- Strings missing from the catalog fall back to English, and the tests check placeholder parity,
+  duplicate keys and that every string passed to `text` / `localized_format!` has an entry in every
+  shipped catalog.
+- How a catalog is edited depends on how it is kept. pt-BR is hand-written: add a
+  `"English text" => "translated text"` arm to `crates/ui-egui/locales/pt-BR/mod.rs`. zh-Hans is
+  generated: add the row to `crates/ui-egui/src/i18n/zh-hans.tsv` and run
+  `python3 docs/i18n/tools/gen_zh_hans_locale.py` — never edit the generated module by hand. See
+  [localization.md](localization.md).
 
 ## Revision history
 
