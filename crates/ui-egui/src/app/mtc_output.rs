@@ -89,9 +89,6 @@ impl SoundApp {
             }
         }
         let config = &self.ui.midi_sync;
-        if config.ports.len() == MAX_SYNC_PORTS && selected.as_ref().is_some_and(|name| !config.ports.contains_key(name)) {
-            return Err("Invalid MIDI sync port name, count or sample offset".into());
-        }
         let available = if list {
             Some(soundcraft_playback::midi_sync_output_ids(&config.port_ids)?)
         } else if chosen_id.is_none() && args.contains_key("port") && selected.as_ref().is_some_and(|name| !config.port_ids.contains_key(name)) {
@@ -110,7 +107,7 @@ impl SoundApp {
             if offset == 0 && ports.get(name).is_none_or(|port| !port.enabled) {
                 ports.remove(name);
             } else {
-                if !ports.contains_key(name) && ports.len() >= 256 {
+                if !ports.contains_key(name) && ports.len() >= MAX_SYNC_PORTS {
                     return Err("Invalid MIDI sync port name, count or sample offset".into());
                 }
                 ports.entry(name.clone()).or_default().offset_samples = offset;
@@ -179,10 +176,18 @@ mod tests {
     #[test]
     fn clearing_unused_mtc_calibration_frees_the_shared_port_slot() {
         let mut host = SoundApp::new(crate::Engine::default(), None, crate::Services::default());
-        for i in 0..256 {
-            host.run("setup.mtc_output", json!({"port":format!("Port {i}"),"offset_samples":1})).unwrap();
+        for i in 0..MAX_SYNC_PORTS {
+            host.mtc_output_command_with_id(&json!({"port":format!("Port {i}"),"offset_samples":1}), Some(format!("physical-{i}"))).unwrap();
         }
-        host.run("setup.mtc_output", json!({"port":"Extra","offset_samples":0})).unwrap();
+        host.mtc_output_command_with_id(&json!({"port":"Extra","offset_samples":0}), Some("extra-id".into())).unwrap();
+        let saved = serde_json::to_value(&host.ui).unwrap();
+        host.ui = serde_json::from_value(saved).unwrap();
+        let ids = host.ui.midi_sync.port_ids.clone();
+        assert_eq!(ids.len(), MAX_SYNC_PORTS + 1);
+        assert_eq!(ids["Extra"], "extra-id");
+        host.run("setup.midi_beat_clock", json!({"port_ids":ids})).unwrap();
+        assert_eq!(host.ui.midi_sync.port_ids, ids);
+        assert!(host.run("setup.mtc_output", json!({"offset_samples":1})).is_err());
         host.run("setup.mtc_output", json!({"port":"Port 0","offset_samples":0})).unwrap();
         host.run("setup.mtc_output", json!({"port":"Extra","offset_samples":1})).unwrap();
         assert_eq!(host.ui.midi_sync.ports.len(), 256);

@@ -118,6 +118,7 @@ fn recover_sync_settings(fields: &mut serde_json::Map<String, serde_json::Value>
         reset_invalid(fields, port, port, |v| v.is_null() || v.as_str().is_some_and(valid_port), resets);
     }
     reset_invalid(fields, "midi_sync", "midi_sync", Value::is_object, resets);
+    let mtc_output_port = fields.get("mtc_output_port").and_then(Value::as_str).map(str::to_owned);
     let Some(sync) = fields.get_mut("midi_sync").and_then(Value::as_object_mut) else { return };
     reset_invalid(sync, "enabled", "midi_sync.enabled", Value::is_boolean, resets);
     reset_invalid(sync, "compensation", "midi_sync.compensation", Value::is_object, resets);
@@ -134,11 +135,13 @@ fn recover_sync_settings(fields: &mut serde_json::Map<String, serde_json::Value>
     if let Some(ids) = sync.get_mut("port_ids").and_then(Value::as_object_mut) {
         let mut kept = 0;
         ids.retain(|name, value| {
-            if !valid_port(name) || kept == MAX_SYNC_PORTS || !value.as_str().is_some_and(valid_port) {
+            // A zero-offset MTC-only destination has an identity without occupying a calibration slot.
+            let calibration_slot = mtc_output_port.as_deref() != Some(name.as_str());
+            if !valid_port(name) || (calibration_slot && kept == MAX_SYNC_PORTS) || !value.as_str().is_some_and(valid_port) {
                 record_reset(resets, &format!("midi_sync.port_ids.{name}"));
                 return false;
             }
-            kept += 1;
+            kept += usize::from(calibration_slot);
             true
         });
     }
@@ -268,6 +271,26 @@ mod config_tests {
         assert_eq!(saved["midi_sync"]["port_ids"], serde_json::json!({"Good":"driver-id"}));
         assert_eq!(saved["midi_sync"]["ports"]["Keys"], serde_json::json!({"enabled":true}));
         assert_eq!(resets.len(), 4);
+    }
+
+    #[test]
+    fn midi_sync_pref_reload_keeps_the_uncalibrated_mtc_only_identity_beyond_256_calibrations() {
+        use soundcraft_ui_egui::midi_sync::{MAX_SYNC_PORTS, MidiSyncPort};
+        let path = std::env::temp_dir().join(format!("soundcraft-mtc-only-id-{}.json", std::process::id()));
+        let mut ui = soundcraft_ui_egui::UiState::default();
+        for i in 0..MAX_SYNC_PORTS {
+            let name = format!("Port {i}");
+            ui.midi_sync.ports.insert(name.clone(), MidiSyncPort { enabled: false, offset_samples: 1 });
+            ui.midi_sync.port_ids.insert(name, format!("physical-{i}"));
+        }
+        ui.mtc_output_port = Some("Z-last".into());
+        ui.midi_sync.port_ids.insert("Z-last".into(), "mtc-only-id".into());
+        save_ui(&path, &ui).unwrap();
+        let reopened = load_ui(&path).unwrap().unwrap();
+        assert_eq!(reopened.mtc_output_port, ui.mtc_output_port);
+        assert_eq!(reopened.midi_sync, ui.midi_sync);
+        assert!(reopened.status.is_empty());
+        std::fs::remove_file(path).unwrap();
     }
 
     #[test]
