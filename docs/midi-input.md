@@ -131,7 +131,7 @@ The reader accepts wire code 24 for 24/23.976, 25 for 25, 30 drop for 29.97 drop
 
 ## Follow MIDI Beat Clock
 
-In **Setup › Peripherals › Synchronization**, under **External MIDI clock**, choose the enabled input connected to the sequencer or MPC and switch on **Follow MIDI clock**. **Setup › MIDI › Sync** opens the same section. Set that device to send MIDI Beat Clock and transport. A separate Link-to-MIDI-clock bridge can be used as the master: join the Link session in the bridge and route its MIDI output to the selected SoundCraft input.
+In **Setup › Peripherals › Synchronization**, under **External MIDI clock**, choose the enabled input connected to the external sequencer and switch on **Follow MIDI clock**. **Setup › MIDI › Sync** opens the same section. Set that device to send MIDI Beat Clock and transport. A separate Link-to-MIDI-clock bridge can be used as the master: join the Link session in the bridge and route its MIDI output to the selected SoundCraft input.
 
 Start selects song zero and the next clock starts playback. Continue resumes at the current clock position. A stopped Song Position Pointer selects six clocks per unit (one sixteenth note, in every meter). Stop ends playback and any recording pass. SoundCraft estimates quarter-note tempo from the 24 pulses per quarter note. Live playback and incoming MIDI takes use a transient beat grid. Disabling follow restores the session tempo map; audio continues at the device sample rate during follow.
 
@@ -145,4 +145,4 @@ Desktop control clients can query or change `setup.midi_clock_follow` with `inpu
 
 During playback, tempo and phase corrections change the spacing of upcoming beats. Beats that have already played keep their positions. An incoming Song Position Pointer starts a new pass; tempo corrections from the previous pass are discarded.
 
-The TASCAM Model 12 and Roland UM-ONE were used to verify external transport, resume on a note boundary and clock loss during playback. See the [hardware acceptance report](model-12-clock-follow-hardware.md) for routing, buffer sizes, measured latency and waveform comparisons.
+Verified with a standard MIDI Clock source (TASCAM Model 12 via Roland UM-ONE); Akai MPC hardware has not been tested.

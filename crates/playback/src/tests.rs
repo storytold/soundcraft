@@ -2113,45 +2113,6 @@ fn follow_snapshots_reuse_document_storage_until_an_edit() {
     assert_eq!(side.follow_snapshot(&map).unwrap().tracks.len(), 2);
 }
 
-/// Repeat the two-hour drift workload's snapshot publication cost on a populated session.
-#[test]
-#[ignore = "host performance measurement; run alone with --nocapture"]
-fn profile_external_clock_snapshot_updates() {
-    use soundcraft_model::{ChannelFormat, Clip, SourceId, TrackKind};
-    let (_, garbage) = channel();
-    let mut side = Side::new(48_000., garbage);
-    let mut base = Session::default();
-    for _ in 0..128 {
-        let track = base.add_track(TrackKind::Audio, ChannelFormat::Mono, None);
-        for clip in 0..32 {
-            let id = base.new_clip_id();
-            base.track_mut(track).unwrap().playlist_mut().unwrap().clips.push(Clip::audio(id, "loop", SourceId(1), clip * 48_000, 0, 48_000));
-        }
-    }
-    let base = Arc::new(base);
-    side.set_follow_base(base.clone(), Default::default());
-    let mut tempo = soundcraft_time::TempoMap::default();
-    let mut retained = None;
-    let mut old = Vec::new();
-    let mut new = Vec::new();
-    for i in 0..1024 {
-        tempo.set_tempo(i * 12_000, 110. + (i % 70) as f64).unwrap();
-        let when = std::time::Instant::now();
-        let mut doc = base.clone();
-        Arc::make_mut(&mut doc).tempo.clone_from(&tempo);
-        drop(std::hint::black_box(doc));
-        old.push(when.elapsed().as_micros());
-        let when = std::time::Instant::now();
-        retained = std::hint::black_box(Some(side.follow_snapshot(&tempo).unwrap()));
-        new.push(when.elapsed().as_micros());
-        std::hint::black_box(&retained);
-    }
-    drop(retained);
-    old.sort_unstable();
-    new.sort_unstable();
-    eprintln!("128 tracks, 4096 clips, 1024 grid revisions. Old p50/p95: {}/{} us; pooled p50/p95: {}/{} us", old[512], old[972], new[512], new[972]);
-}
-
 #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
 #[test]
 fn retained_audio_keeps_its_session_generation_until_the_first_new_rendered_frame() {
