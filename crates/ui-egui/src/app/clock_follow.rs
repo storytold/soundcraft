@@ -957,12 +957,12 @@ mod tests {
         assert!(grid.tempo_at_tick(82 * TICKS_PER_PULSE) < 100.);
     }
 
-    mod large_steps;
-    mod ramp_response;
+    mod brake;
     mod dj_render;
     mod dj_tempos;
-    mod brake;
+    mod large_steps;
     mod packet_steps;
+    mod ramp_response;
     mod sampler_song;
     mod slowdown_sweep;
 
