@@ -23,10 +23,14 @@ fn assign(saved: &Bindings, found: impl IntoIterator<Item = (String, String)>) -
             name.clone()
         } else {
             // A real device can itself be named "DIN (2)". Reserve its literal name.
-            (2..)
+            let last = saved.len().saturating_add(available.len()).saturating_add(raw_names.len()).saturating_add(2);
+            let Some(label) = (2..=last)
                 .map(|n| format!("{name} ({n})"))
                 .find(|label| !saved.contains_key(label) && !available.contains_key(label) && !raw_names.contains(label.as_str()))
-                .expect("a finite port list leaves an available suffix")
+            else {
+                continue;
+            };
+            label
         };
         available.insert(label, id.clone());
     }
