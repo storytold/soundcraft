@@ -33,6 +33,9 @@ pub struct Snapshot {
     /// A fast brake has reached long pulse intervals. Follow the arriving pulses
     /// themselves while the new tempo and phase settle.
     pub braking: bool,
+    /// Grid speed estimated for the next confirmed pulse during acceleration out of a brake.
+    /// Status and loss detection continue to use the measured source tempo.
+    pub brake_grid_bpm: Option<f64>,
     /// The source has a sustained tempo trend above its measured timestamp noise.
     pub tempo_ramp: bool,
     /// Number of intervals used if the latest F8 confirmed a new tempo.
@@ -290,6 +293,24 @@ impl Follower {
         // At 5 BPM, two timestamps with ±1 ms jitter can enclose a 502 ms interval.
         (2_500. ..=502_000.).contains(&period).then(|| 2_500_000. / period.clamp(2_500., 500_000.))
     }
+    fn brake_grid_bpm(&self) -> Option<f64> {
+        if self.brake_pulses_left <= 36 || self.wire_points != self.wire_stamps.len() {
+            return None;
+        }
+        let last = self.last_wire_interval? as f64;
+        let w = &self.wire_stamps;
+        let older = w[8].saturating_sub(w[4]) as f64 / 4.;
+        let recent = w[12].saturating_sub(w[8]) as f64 / 4.;
+        let shortening = (older - recent) / 4.;
+        if recent <= 0. || shortening <= 0.012 * recent {
+            return None;
+        }
+        // Match the advancing wire while the render cursor can already be several
+        // pulses ahead. The confirmed-pulse horizon still gates every note.
+        let period = (recent - 4. * shortening).clamp(last / 2., last);
+        Some((2_500_000. / period).clamp(5., 1000.))
+    }
+
     pub(crate) fn snapshot(&self, now_us: i64) -> Snapshot {
         Snapshot {
             // The gap before the first USB batch can resemble a much slower clock.
@@ -297,6 +318,7 @@ impl Follower {
             bpm: (self.fit_index >= 4).then(|| self.bpm()).flatten().or_else(|| self.coast_period_us.map(|p| 2_500_000. / p)),
             recovering_tempo_step: self.step_pulses_left > 0 || self.brake_pulses_left > 0,
             braking: self.brake_pulses_left > 0,
+            brake_grid_bpm: self.brake_grid_bpm(),
             tempo_ramp: self.state == State::Locked && !self.packed_delivery && self.step_pulses_left == 0 && self.steady.is_tempo_ramp(),
             step_intervals: self.step_intervals,
             packed_delivery: self.packed_delivery,
@@ -379,6 +401,14 @@ impl Follower {
         let last = w[12].saturating_sub(w[8]) as f64;
         let growth = (middle - first).min(last - middle);
         if growth <= 2_000. || middle <= 1.05 * first || last <= 1.05 * middle {
+            return false;
+        }
+        // A single big interval change is a tempo step, even when a four-pulse
+        // span straddles the transition. A brake widens over multiple intervals.
+        let largest_jump = w.windows(3).map(|t| t[2].saturating_sub(t[1]) as f64 - t[1].saturating_sub(t[0]) as f64).fold(0., f64::max);
+        // The outer spans each contain four intervals. A single jump accounting
+        // for 80% of their mean-period difference signifies a step.
+        if largest_jump >= 0.8 * ((last - first) / 4.) {
             return false;
         }
         let slope = w[12].saturating_sub(w[0]) as f64 / 12.;

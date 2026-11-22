@@ -361,7 +361,7 @@ impl SoundApp {
 // Keep edits beyond the committed audio. Elapsed playback and recorded
 // note positions remain fixed; future beat spacing follows the incoming clock and phase.
 fn update_grid(grid: &mut TempoMap, anchor: Option<(i64, i64)>, waiting_tick: i64, s: Snapshot, sr: SampleRate, render_until: i64) -> bool {
-    let Some(bpm) = s.bpm else { return false };
+    let Some(bpm) = s.brake_grid_bpm.or(s.bpm) else { return false };
     let Some((origin, stamp)) = anchor else {
         if s.state == State::Waiting && (grid.tempo_at_tick(waiting_tick) - bpm).abs() >= 0.05 {
             let _ = grid.set_tempo(waiting_tick, bpm);

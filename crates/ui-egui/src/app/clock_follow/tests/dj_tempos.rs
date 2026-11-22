@@ -91,6 +91,7 @@ fn half_and_double_time_keep_the_first_offbeat_and_following_eighths() {
                 let r = render_dj(from, &ideal, &jitter(&ideal, amplitude, 42), Ending::Release);
                 let name = format!("ratio {from}->{to} at {cut} jitter {amplitude}us");
                 let signed = errors(&name, &r);
+                assert!(r.snapshots.iter().all(|s| !s.braking), "{name}: an abrupt tempo ratio triggered the continuous brake response");
                 let x = &signed[cut / 12..];
                 assert!(x[0].abs() <= 192 && x[1].abs() <= 480 && peak(&x[2..]) <= 192, "{name}");
             }
