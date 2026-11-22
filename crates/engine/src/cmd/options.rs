@@ -221,6 +221,7 @@ fn session_setup(e: &mut Engine, p: &Value) -> Result<Value> {
         super::more_util::set_text(&mut s.edit, "midi.mtc.freewheel_mode", Some(mode));
     }
     if let Some(samples) = external {
+        s.edit.values.remove("midi.mtc.external_offset_frames");
         s.edit.values.insert("sync.external_offset".into(), samples as f64);
     }
     if let Some(t) = tc {
@@ -463,6 +464,24 @@ mod sync_session_tests {
         e.execute("setup.session", &json!({"start_timecode":"01:00:00:00"})).unwrap();
         for (id, old) in before {
             assert_eq!(e.session().find_clip(id).unwrap().1.start, old + delta);
+        }
+    }
+
+    #[test]
+    fn explicitly_resetting_a_conflicting_external_offset_survives_reopen() {
+        for (cmd, args) in [
+            ("setup.session", json!({"external_offset_frames":0})),
+            ("setup.external_timecode_offset", json!({"samples":0})),
+            ("setup.external_timecode_offset", json!({"frames":0})),
+            ("setup.external_timecode_offset", json!({"timecode":"00:00:00:00"})),
+        ] {
+            let mut s = Engine::default().session().clone();
+            s.edit.values.insert("sync.external_offset".into(), 42.);
+            s.edit.values.insert("midi.mtc.external_offset_frames".into(), 100.);
+            let mut e = Engine::new(s);
+            e.execute(cmd, &args).unwrap();
+            let reopened = Engine::new(e.session().clone());
+            assert_eq!(reopened.session().edit.value("sync.external_offset", 0.), 0., "{cmd} {args}");
         }
     }
 

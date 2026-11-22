@@ -407,17 +407,25 @@ fn offset_setting(e: &mut Engine, p: &Value, key: &str) -> Result<Value> {
     let s = e.session_mut();
     let sr = s.sample_rate;
     let per_frame = s.frame_rate.samples_per_frame(sr);
-    if key == "sync.external_offset"
+    let edit = if key == "sync.external_offset"
         && let Some(v) = p.get("timecode")
     {
         let label = v.as_str().ok_or_else(|| bad("setup.external_timecode_offset", "Expected a timecode label"))?;
         let samples = parse_offset(label, s.frame_rate, sr).map_err(|m| bad("setup.external_timecode_offset", m))?;
-        s.edit.values.insert(key.into(), samples as f64);
+        Some(samples as f64)
     } else if let Some(f) = p.get("frames").and_then(Value::as_f64).filter(|v| v.is_finite()) {
-        s.edit.values.insert(key.to_string(), (f.clamp(-10_000.0, 10_000.0) * per_frame).round());
+        Some((f.clamp(-10_000.0, 10_000.0) * per_frame).round())
     } else if let Some(n) = p.get("samples").and_then(Value::as_f64).filter(|v| v.is_finite()) {
         let lim = sr.as_f64() * 3600.0;
-        s.edit.values.insert(key.to_string(), n.clamp(-lim, lim).round());
+        Some(n.clamp(-lim, lim).round())
+    } else {
+        None
+    };
+    if let Some(value) = edit {
+        s.edit.values.insert(key.into(), value);
+        if key == "sync.external_offset" {
+            s.edit.values.remove("midi.mtc.external_offset_frames");
+        }
     }
     let samples = s.edit.value(key, 0.0);
     let mut result = json!({"samples":samples,"frames":samples/per_frame.max(1e-9)});
