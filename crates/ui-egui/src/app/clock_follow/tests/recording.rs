@@ -106,7 +106,7 @@ fn record_through_loss(policy: &str) {
     let live = app.engine.playback_session();
     let clips = live.track(midi).unwrap().clips();
     assert_eq!((clips.len(), clips[0].start, clips[0].range().len()), (1, start, expected_len));
-    assert!(app.clock_follow.audio_sources.contains(&clips[0].source().unwrap()), "retain the grid for this recorded audio source");
+    assert!(app.engine.clock_take_ranges(&Default::default()).any(|range| range == clips[0].range()), "retain the captured MIDI interval");
     let ClipContent::Midi { sequence } = &clips[0].content else { panic!("expected MIDI") };
     let notes: Vec<_> = sequence.notes.iter().map(|n| (n.pitch, n.start)).collect();
     assert_eq!(notes, if coast { vec![(60, 0), (67, 400), (72, 800)] } else { vec![(60, 0)] });
