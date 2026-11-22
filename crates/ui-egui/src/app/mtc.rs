@@ -100,7 +100,11 @@ impl SoundApp {
         if !self.mtc_online {
             return;
         }
+        let queued = self.engine.transport_requests.len();
         self.engine.transport_requests.retain(|r| !matches!(r, TransportRequest::Record));
+        if self.engine.transport_requests.len() != queued {
+            self.ui.status = crate::localization::text("Take MTC chase offline before recording").into();
+        }
         // A local transport or document change returns control to the host.
         if self.engine.transport.recording || self.engine.transport_requests.iter().any(|r| !matches!(r, TransportRequest::AllNotesOff)) {
             self.leave_chase_audio();
@@ -279,6 +283,18 @@ mod tests {
         host.service_mtc_chase();
         assert!(host.engine.transport_requests.is_empty());
         assert_eq!(host.position(), host.engine.session().sample_rate.samples(10.));
+    }
+
+    #[test]
+    fn online_service_reports_why_a_pending_record_was_refused() {
+        let mut host = app();
+        let reason = host.run("transport.record", json!({})).unwrap_err();
+        host.ui.status.clear();
+        host.engine.transport_requests.push(TransportRequest::Record);
+        host.service_mtc_chase();
+        assert_eq!(host.ui.status, reason);
+        assert!(host.engine.transport_requests.is_empty());
+        assert!(!host.engine.transport.recording);
     }
 
     #[test]

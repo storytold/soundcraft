@@ -3,12 +3,13 @@ use crate::stream::{RenderGraph, start_stream};
 use crate::{AudioState, Fault, Shared, build_format};
 use cpal::traits::{DeviceTrait, HostTrait};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, MutexGuard, TryLockError};
 use std::time::{Duration, Instant};
 
 const CHECK_DELAY: Duration = Duration::from_millis(500);
 const PROBE_TIMEOUT: Duration = Duration::from_secs(3);
 const MAX_ATTEMPTS: u8 = 3;
+const PRESENCE_INTERVAL: Duration = Duration::from_secs(30);
 
 #[derive(PartialEq, Eq, Debug)]
 enum Decision {
@@ -23,19 +24,25 @@ struct Retry {
     next: Option<Instant>,
     attempts: u8,
     healthy_since: Option<Instant>,
+    last_lookup: Option<Instant>,
 }
 
 impl Retry {
-    fn can_open(&mut self, present: bool) -> bool {
-        if !present {
-            self.attempts = 0;
-            return false;
+    fn lookup<T>(&mut self, now: Instant, find: impl FnOnce() -> Option<T>) -> Option<T> {
+        let exhausted = self.attempts >= MAX_ATTEMPTS;
+        if exhausted && self.last_lookup.is_some_and(|last| now.saturating_duration_since(last) < PRESENCE_INTERVAL) {
+            return None;
         }
-        if self.attempts == MAX_ATTEMPTS {
-            return false;
+        self.last_lookup = Some(now);
+        let Some(device) = find() else {
+            self.attempts = 0;
+            return None;
+        };
+        if exhausted {
+            return None;
         }
         self.attempts += 1;
-        true
+        Some(device)
     }
 
     fn decide(&mut self, now: Instant, safe: bool, unhealthy: bool, probe: Option<ProbeState>) -> Decision {
@@ -117,7 +124,7 @@ impl Route {
         Arc::new(Self { selected: AtomicBool::new(selected), reports: Reports::new(now) })
     }
     fn hand_over<T>(&self, next: &Self, graph: &Mutex<T>, playing: &AtomicBool, now: Instant) -> bool {
-        let Ok(_guard) = graph.try_lock() else {
+        let Some(_guard) = try_graph(graph) else {
             return false;
         };
         if playing.load(Ordering::Acquire) || next.reports.recent_streak(now).is_none_or(|n| n < 8) {
@@ -132,12 +139,22 @@ impl Route {
         if !self.selected.load(Ordering::Acquire) {
             return false;
         }
-        let Ok(mut graph) = graph.try_lock() else { return false };
+        let Some(mut graph) = try_graph(graph) else { return false };
         if !self.selected.load(Ordering::Acquire) {
             return false;
         }
         draw(&mut graph);
         true
+    }
+}
+
+// Audio and control threads must never wait for each other. Poisoning signals a previous
+// unwind, not contention; an available graph still permits rendering or a stopped handoff.
+fn try_graph<T>(graph: &Mutex<T>) -> Option<MutexGuard<'_, T>> {
+    match graph.try_lock() {
+        Ok(guard) => Some(guard),
+        Err(TryLockError::Poisoned(error)) => Some(error.into_inner()),
+        Err(TryLockError::WouldBlock) => None,
     }
 }
 
@@ -219,7 +236,7 @@ impl Recovery {
             || (now.saturating_duration_since(current.start) > CHECK_DELAY && current.recent_streak(now).unwrap_or_default() == 0);
         let safe = safe && !shared.playing.load(Ordering::Acquire) && !fault.failed.load(Ordering::Relaxed);
         match self.retry.decide(now, safe, unhealthy, self.candidate.as_ref().map(|c| c.state(now))) {
-            Decision::Probe => self.probe(shared),
+            Decision::Probe => self.probe(now, shared),
             Decision::Adopt => return self.adopt(shared, stream, fault),
             Decision::Discard => {
                 self.candidate.take();
@@ -229,14 +246,12 @@ impl Recovery {
         false
     }
 
-    fn probe(&mut self, shared: &Arc<Shared>) {
+    fn probe(&mut self, now: Instant, shared: &Arc<Shared>) {
         // Enumerate the original endpoint by its opaque host ID. Absence is a lookup,
         // not an open attempt. Reappearance starts a fresh bounded retry budget.
-        let device = cpal::host_from_id(self.endpoint.host()).ok().and_then(|host| host.device_by_id(&self.endpoint));
-        if !self.retry.can_open(device.is_some()) {
-            return;
-        }
-        let Some(device) = device else {
+        let Some(device) =
+            self.retry.lookup(now, || cpal::host_from_id(self.endpoint.host()).ok().and_then(|host| host.device_by_id(&self.endpoint)))
+        else {
             return;
         };
         let route = Route::new(false, Instant::now());
@@ -303,16 +318,62 @@ mod tests {
         let mut retry = Retry::default();
         let now = Instant::now();
         for _ in 0..120 {
-            assert!(!retry.can_open(false));
+            assert!(retry.lookup(now, || None::<()>).is_none());
         }
         for _ in 0..3 {
-            assert!(retry.can_open(true));
+            assert!(retry.lookup(now, || Some(())).is_some());
             retry.decide(now, true, false, None);
             retry.decide(now + Duration::from_secs(1), true, true, None);
         }
-        assert!(!retry.can_open(true));
-        assert!(!retry.can_open(false));
-        assert!(retry.can_open(true));
+        assert!(retry.lookup(now, || Some(())).is_none());
+        let later = now + PRESENCE_INTERVAL;
+        assert!(retry.lookup(later, || None::<()>).is_none());
+        assert!(retry.lookup(later, || Some(())).is_some());
+    }
+
+    #[test]
+    fn timing_recovery_bounds_device_enumeration_after_exhaustion() {
+        let mut retry = Retry::default();
+        let start = Instant::now();
+        for _ in 0..MAX_ATTEMPTS {
+            assert_eq!(retry.lookup(start, || Some(())), Some(()));
+        }
+        let mut lookups = 0;
+        for second in 0..=60 {
+            let now = start + Duration::from_secs(second);
+            if retry.decide(now, true, true, None) == Decision::Probe {
+                assert!(
+                    retry
+                        .lookup(now, || {
+                            lookups += 1;
+                            Some(())
+                        })
+                        .is_none()
+                );
+            }
+        }
+        assert!((1..=2).contains(&lookups), "{lookups} presence checks in 60 s with the reopen budget exhausted");
+        let later = start + Duration::from_secs(120);
+        assert!(retry.lookup(later, || None::<()>).is_none());
+        assert_eq!(retry.lookup(later + Duration::from_secs(1), || Some(())), Some(()));
+    }
+
+    #[test]
+    fn timing_recovery_keeps_the_graph_available_after_poisoning() {
+        let graph = Mutex::new(0);
+        let _ = std::panic::catch_unwind(|| {
+            let _guard = graph.lock().unwrap();
+            panic!("simulate a poisoned graph");
+        });
+        let now = Instant::now();
+        let old = Route::new(true, now);
+        assert!(old.render(&graph, |count| *count += 1), "poisoned graph stayed silent");
+        let next = Route::new(false, now);
+        for _ in 0..8 {
+            next.reports.write(now, true);
+        }
+        assert!(old.hand_over(&next, &graph, &AtomicBool::new(false), now));
+        assert!(next.render(&graph, |count| assert_eq!(*count, 1)));
     }
 
     #[test]

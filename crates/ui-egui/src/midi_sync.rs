@@ -43,13 +43,30 @@ impl Default for Compensation {
 pub struct MidiSync {
     pub enabled: bool,
     pub ports: BTreeMap<String, MidiSyncPort>,
+    /// Saved device IDs keep same-name occurrence labels stable across restart and unplug.
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub port_ids: BTreeMap<String, String>,
     pub compensation: Compensation,
 }
 
-fn valid_port(name: &str) -> bool {
+pub const MAX_SYNC_PORTS: usize = 256;
+
+pub fn valid_saved_offset(samples: i64) -> bool {
+    samples.unsigned_abs() <= 10_000_000
+}
+
+pub fn valid_port(name: &str) -> bool {
     !name.trim().is_empty() && name.len() <= 1024
 }
 impl MidiSync {
+    fn bind_configured(&mut self, available: BTreeMap<String, String>, mtc: Option<&str>) {
+        for (label, id) in available {
+            if (self.ports.contains_key(&label) || mtc == Some(label.as_str())) && valid_port(&id) {
+                self.port_ids.entry(label).or_insert(id);
+            }
+        }
+    }
+
     pub(crate) fn retain_calibrated_ports(&mut self, selected: [Option<&str>; 3]) {
         self.ports.retain(|name, port| {
             port.enabled || port.out_offset_samples != 0 || port.in_offset_samples != 0 || selected.contains(&Some(name.as_str()))
@@ -59,11 +76,8 @@ impl MidiSync {
     // A legitimate older workstation could have 256 input and 256 output entries.
     // It may edit or shrink the migrated union while the normal limit still caps new ports.
     fn validate(&self, previous_count: usize) -> Result<(), String> {
-        if self.ports.len() > previous_count.max(256)
-            || self
-                .ports
-                .iter()
-                .any(|(k, v)| !valid_port(k) || v.out_offset_samples.unsigned_abs() > 10_000_000 || v.in_offset_samples.unsigned_abs() > 10_000_000)
+        if self.ports.len() > previous_count.max(MAX_SYNC_PORTS)
+            || self.ports.iter().any(|(k, v)| !valid_port(k) || !valid_saved_offset(v.out_offset_samples) || !valid_saved_offset(v.in_offset_samples))
         {
             return Err("Invalid MIDI sync port name, count or sample offset".into());
         }
@@ -107,7 +121,7 @@ impl SoundApp {
         }
         let mut next = self.ui.midi_sync.clone();
         let args = args.as_object().ok_or("Expected MIDI sync settings")?;
-        if args.keys().any(|k| !matches!(k.as_str(), "enabled" | "ports" | "destination" | "offset" | "compensation")) {
+        if args.keys().any(|k| !matches!(k.as_str(), "enabled" | "ports" | "destination" | "offset" | "compensation" | "port_ids")) {
             return Err("Unknown MIDI sync setting".into());
         }
         if let Some(v) = args.get("enabled") {
@@ -161,6 +175,22 @@ impl SoundApp {
                 self.ui.mtc_output_port.as_deref(),
             ]);
         }
+        if let Some(value) = args.get("port_ids") {
+            let ids: BTreeMap<String, String> = serde_json::from_value(value.clone()).map_err(|e| e.to_string())?;
+            if ids.len() > 256 || ids.iter().any(|(name, id)| !valid_port(name) || !valid_port(id)) {
+                return Err("Invalid MIDI output binding".into());
+            }
+            next.bind_configured(ids, self.ui.mtc_output_port.as_deref());
+        } else if (args.contains_key("ports") || args.contains_key("destination"))
+            && next.ports.keys().any(|label| !next.port_ids.contains_key(label))
+            && let Ok(available) = soundcraft_playback::midi_sync_output_ids(&next.port_ids)
+        {
+            next.bind_configured(available, self.ui.mtc_output_port.as_deref());
+        }
+        next.port_ids.retain(|name, _| next.ports.contains_key(name) || self.ui.mtc_output_port.as_ref() == Some(name));
+        if next.ports.len() == MAX_SYNC_PORTS && self.ui.mtc_output_port.as_ref().is_some_and(|name| !next.ports.contains_key(name)) {
+            return Err("Invalid MIDI sync port name, count or sample offset".into());
+        }
         self.validate_sync_routing(&next, self.ui.clock_follow_input.as_deref())?;
         self.ui.midi_sync = next;
         let config = &self.ui.midi_sync;
@@ -174,7 +204,7 @@ impl SoundApp {
             let legacy = soundcraft_model::MidiBeatClock::from_session(self.engine.session());
             if let Some(name) = legacy.destination.filter(|s| valid_port(s))
                 && !self.ui.midi_sync.ports.contains_key(name)
-                && self.ui.midi_sync.ports.len() < 256
+                && self.ui.midi_sync.ports.len() < MAX_SYNC_PORTS
             {
                 let first = self.ui.midi_sync.ports.is_empty();
                 self.ui
@@ -188,8 +218,8 @@ impl SoundApp {
         }
         // Early Clock Follow builds persisted a separate advance (positive = earlier).
         // Drain it once; output calibration on a same-named port remains independent.
-        for (name, advance) in std::mem::take(&mut self.ui.clock_follow_input_offsets).into_iter().take(256) {
-            if valid_port(&name) && advance.unsigned_abs() <= 10_000_000 {
+        for (name, advance) in std::mem::take(&mut self.ui.clock_follow_input_offsets).into_iter().take(MAX_SYNC_PORTS) {
+            if valid_port(&name) && valid_saved_offset(advance) {
                 self.ui.midi_sync.ports.entry(name).or_default().in_offset_samples = -advance;
             }
         }
@@ -219,7 +249,12 @@ impl SoundApp {
             self.update_midi_sync_error(error);
         }
         let Some(player) = &self.player else { return };
+        if let Some(ids) = player.take_opened_sync_output_ids() {
+            self.ui.midi_sync.bind_configured(ids, self.ui.mtc_output_port.as_deref());
+        }
+        let ids = &self.ui.midi_sync.port_ids;
         apply_beat_clock_routes(&self.ui.midi_sync, &mut self.applied_midi_sync, |ports, compensate| {
+            player.restore_sync_output_ids(ids);
             player.try_set_beat_clock_outputs(ports, compensate)
         });
     }
@@ -241,6 +276,35 @@ fn apply_beat_clock_routes(config: &MidiSync, applied: &mut Option<MidiSync>, en
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn mtc_sync_route_keeps_its_device_id_after_beat_clock_is_disabled() {
+        let mut app = SoundApp::new(soundcraft_engine::Engine::default(), None, crate::Services::default());
+        let label = "DIN (2)";
+        app.sync_command("setup.midi_beat_clock", &json!({"ports": {(label): {"enabled":true}}, "port_ids": {(label):"midi-b"}})).unwrap();
+        app.mtc_output_command(&json!({"port":label})).unwrap();
+        app.sync_command("setup.midi_beat_clock", &json!({"ports":{}})).unwrap();
+        assert_eq!(app.ui.midi_sync.port_ids.get(label).map(String::as_str), Some("midi-b"));
+        app.mtc_output_command(&json!({"port":null})).unwrap();
+        assert!(app.ui.midi_sync.port_ids.is_empty());
+    }
+
+    #[test]
+    fn duplicate_calibrations_roundtrip_as_independent_enabled_routes() {
+        let mut app = SoundApp::new(soundcraft_engine::Engine::default(), None, crate::Services::default());
+        let settings = json!({"enabled": true, "ports": {
+            "DIN": {"enabled":true,"offset_samples":701}, "DIN (2)": {"enabled":true,"offset_samples":302}
+        }, "port_ids": {"DIN": "device-a", "DIN (2)": "device-b"}});
+        app.sync_command("setup.midi_beat_clock", &settings).unwrap();
+        let saved: MidiSync = serde_json::from_str(&serde_json::to_string(&app.ui.midi_sync).unwrap()).unwrap();
+        apply_beat_clock_routes(&saved, &mut None, |routes, _| {
+            let by_id: BTreeMap<_, _> = routes.into_iter().map(|(label, offset)| (saved.port_ids[&label].as_str(), offset)).collect();
+            assert_eq!(by_id, BTreeMap::from([("device-a", 701), ("device-b", 302)]));
+            true
+        });
+        app.sync_command("setup.midi_beat_clock", &json!({"ports":{"DIN":null}})).unwrap();
+        assert_eq!(app.ui.midi_sync.port_ids, BTreeMap::from([("DIN (2)".into(), "device-b".into())]));
+    }
 
     #[test]
     fn recurring_sync_retries_unchanged_routes_until_the_worker_accepts_them() {

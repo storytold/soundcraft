@@ -28,7 +28,7 @@ fn beat_clock_reaches_a_virtual_midi_receiver() {
         use midir::os::unix::VirtualInput;
         let unique = format!("SoundCraft G11 probe {}", std::process::id());
         let reader = input.create_virtual(&unique, record, ()).unwrap();
-        let list = output_names().unwrap();
+        let list = crate::midi_sync_outputs().unwrap();
         let name = list.into_iter().find(|n| n.contains(&unique)).expect("OS did not publish the virtual destination");
         (reader, name)
     };
@@ -50,7 +50,9 @@ fn beat_clock_reaches_a_virtual_midi_receiver() {
         lead: Some(Duration::ZERO),
     });
     let (tx, rx) = channel();
-    let worker = std::thread::spawn(move || drive(view, Arc::new(Session::default()), rx, Arc::default(), Arc::default(), open_unique));
+    let registry = ports::Registry::default();
+    let worker =
+        std::thread::spawn(move || drive(view, Arc::new(Session::default()), rx, Arc::default(), Arc::default(), |name| registry.connect(name)));
     tx.send(Update::Beats(vec![(name, 0)], true)).unwrap();
     assert_eq!(observed.recv_timeout(Duration::from_secs(2)).unwrap(), [START]);
     assert_eq!(observed.recv_timeout(Duration::from_secs(2)).unwrap(), [CLOCK]);
@@ -106,6 +108,26 @@ fn output_stream_lead_survives_bad_callbacks_and_updates_on_recovery() {
         let t = stream.observe(base, report.map(Duration::from_millis));
         assert_eq!(t.heard_instant(48_000., 48), base + Duration::from_millis(expected + 1));
     }
+}
+
+#[test]
+fn timing_warning_follows_the_compensated_destinations() {
+    let mut out = Output::default();
+    let mut publisher = Publisher::new(out.view.clone(), out.metrics.clone());
+    publisher.observe(crate::sync_clock::StreamLead::default().observe(Instant::now(), None), 0.01);
+    let unknown = Some(crate::OutputTimingIssue::Unknown);
+    out.compensated = true;
+    assert_eq!(out.timing_issue(), None, "no destinations require output timing");
+    out.beat.push(("DIN".into(), 0));
+    assert_eq!(out.timing_issue(), unknown);
+    out.compensated = false;
+    assert_eq!(out.timing_issue(), None, "uncompensated Clock uses no device lead");
+    out.additional = Some(("encoder".into(), 0, false));
+    assert_eq!(out.timing_issue(), None);
+    out.additional.as_mut().unwrap().2 = true;
+    assert_eq!(out.timing_issue(), unknown);
+    out.additional = None;
+    assert_eq!(out.timing_issue(), None);
 }
 
 #[test]
@@ -1528,4 +1550,19 @@ fn a_stop_cancels_clock_repayment_and_a_new_pass_starts_normally() {
         }
     }
     assert_eq!(messages, [(300, vec![STOP]), (400, vec![START]), (400, vec![CLOCK])]);
+}
+
+#[test]
+fn mtc_sync_route_warns_only_with_an_open_chase_source() {
+    let mut output = Output::default();
+    let mut publisher = Publisher::new(output.view.clone(), output.metrics.clone());
+    publisher.observe(crate::sync_clock::StreamLead::default().observe(Instant::now(), None), 0.01);
+    assert_eq!(output.status().lead_source, crate::OutputLeadSource::Unknown);
+    let feed = Arc::new(crate::midi::MidiFeed::default());
+    feed.set_sync_waker(output.attach_mtc_feed(&feed));
+    assert_eq!(output.timing_issue(), None);
+    feed.set_mtc_source(Some(1));
+    assert_eq!(output.timing_issue(), Some(crate::OutputTimingIssue::Unknown));
+    feed.set_mtc_source(None);
+    assert_eq!(output.timing_issue(), None);
 }

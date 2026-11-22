@@ -280,6 +280,32 @@ mod sync_session_tests {
     }
 
     #[test]
+    fn timecode_retention_respects_automation_switch_and_keeps_both_rulers_on_undo() {
+        for follows in [false, true] {
+            let mut e = crate::demo::demo_engine();
+            e.session_mut().edit.automation_follows_edit = follows;
+            e.session_mut().timecode_start = e.session().sample_rate.samples(3600.);
+            let before = e.session().clone();
+            assert!(!before.markers.is_empty());
+            let delta = before.sample_rate.samples(1800.);
+            e.execute("setup.session", &json!({"start_timecode":"00:30:00:00","keep":"timecode"})).unwrap();
+            let after = e.session();
+            assert_eq!(json!(after.markers), json!(before.markers));
+            assert_eq!(json!(after.tempo), json!(before.tempo));
+            for (old, new) in before.tracks.iter().zip(&after.tracks) {
+                for (a, b) in old.automation.iter().flat_map(|l| &l.points).zip(new.automation.iter().flat_map(|l| &l.points)) {
+                    assert_eq!(b.at, a.at + if follows { delta } else { 0 });
+                }
+                for (a, b) in old.playlists.iter().flat_map(|p| &p.clips).zip(new.playlists.iter().flat_map(|p| &p.clips)) {
+                    assert_eq!(b.start, a.start + delta);
+                }
+            }
+            assert!(e.undo());
+            assert_eq!(e.session().to_json().unwrap(), before.to_json().unwrap());
+        }
+    }
+
+    #[test]
     fn external_timecode_offset_is_one_value_for_menu_and_session_setup() {
         let mut e = Engine::default();
         let set = e.execute("setup.external_timecode_offset", &json!({"timecode":"+01:00:00:00"})).unwrap();
@@ -345,6 +371,59 @@ mod sync_session_tests {
             assert_eq!(engine.mtc_freewheel_frames(), expected_frames);
             assert!(!engine.session().edit.flags.contains("midi.mtc.jam_sync"));
         }
+    }
+
+    #[test]
+    fn mtc_bad_project_fields_load_with_individual_resets_with_a_message() {
+        let mut source = Engine::default();
+        source.execute("track.new", &json!({"count": 2})).unwrap();
+        source.execute("setup.session", &json!({"freewheel":"jam_sync","freewheel_frames":17,"external_offset_frames":-3})).unwrap();
+        let base = source.session();
+        let mode_key = "midi.mtc.freewheel_mode";
+        let frames_key = "midi.mtc.freewheel_frames";
+        let offset_key = "sync.external_offset";
+        for (field, expected_value, expected_mode, expected_frames) in [
+            (frames_key, base.edit.value(offset_key, 0.), "jam_sync", 8),
+            (mode_key, base.edit.value(offset_key, 0.), "frames", 17),
+            (offset_key, 0., "jam_sync", 17),
+        ] {
+            let mut session = base.clone();
+            if field == mode_key {
+                session.edit.flags.remove("midi.mtc.freewheel_mode=jam_sync");
+                session.edit.flags.insert("midi.mtc.freewheel_mode=unknown".into());
+            } else {
+                let bad = if field == offset_key { session.sample_rate.samples(3600.) as f64 + 1. } else { 512. };
+                session.edit.values.insert(field.into(), bad);
+            }
+            let loaded = soundcraft_model::Session::from_json(&session.to_json().unwrap()).unwrap();
+            for engine in [Engine::new(loaded.clone()), {
+                let mut engine = Engine::default();
+                engine.replace_session(loaded.clone());
+                engine
+            }] {
+                assert_eq!(engine.mtc_freewheel_frames(), expected_frames, "{field}");
+                assert_eq!(engine.mtc_freewheel_mode(), expected_mode, "{field}");
+                assert_eq!(engine.session().edit.value(offset_key, 0.), expected_value, "{field}");
+                assert_eq!(serde_json::to_value(&engine.session().tracks).unwrap(), serde_json::to_value(&base.tracks).unwrap());
+                assert_eq!(engine.messages.iter().filter(|m| m.contains(field)).count(), 1, "{field}: {:?}", engine.messages);
+                assert!(Engine::new(engine.session().clone()).messages.is_empty(), "resolved setting should survive reopen");
+            }
+        }
+    }
+
+    #[test]
+    fn mtc_bad_legacy_offset_does_not_replace_valid_sample_offset_or_change_freewheel() {
+        let mut old = Engine::default().session().clone();
+        old.edit.values.insert("sync.external_offset".into(), -24.);
+        old.edit.values.insert("midi.mtc.external_offset_frames".into(), f64::MAX);
+        old.edit.values.insert("midi.mtc.freewheel_frames".into(), 20.);
+        old.edit.flags.insert("midi.mtc.jam_sync".into());
+        let loaded = Engine::new(soundcraft_model::Session::from_json(&old.to_json().unwrap()).unwrap());
+        assert_eq!(loaded.mtc_freewheel_mode(), "jam_sync");
+        assert_eq!(loaded.mtc_freewheel_frames(), 20);
+        assert_eq!(loaded.session().edit.value("sync.external_offset", 0.), -24.);
+        assert!(!loaded.session().edit.values.contains_key("midi.mtc.external_offset_frames"));
+        assert!(loaded.messages.iter().any(|m| m.contains("midi.mtc.external_offset_frames")));
     }
 
     #[test]

@@ -6,7 +6,8 @@ use crate::{
     sync_clock::{CallbackMetrics, Publisher, SyncEncoder, View},
     sync_status::PortTiming,
 };
-use midir::{MidiOutput, MidiOutputConnection};
+mod ports;
+use midir::MidiOutputConnection;
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::sync::{
     Arc, Mutex,
@@ -15,12 +16,8 @@ use std::sync::{
 };
 use std::time::{Duration, Instant};
 
-pub(crate) fn output_names() -> Result<Vec<String>, String> {
-    std::panic::catch_unwind(|| {
-        let midi = MidiOutput::new("SoundCraft MIDI sync").map_err(|e| e.to_string())?;
-        Ok(midi.ports().into_iter().filter_map(|p| midi.port_name(&p).ok()).collect::<BTreeSet<_>>().into_iter().collect())
-    })
-    .map_err(|_| "MIDI output enumeration failed".to_owned())?
+pub(crate) fn output_ids(saved: &BTreeMap<String, String>) -> Result<BTreeMap<String, String>, String> {
+    ports::available(saved)
 }
 
 /// Extension point for OS-timestamped MIDI backends. The native midir backend
@@ -59,14 +56,6 @@ impl<C: SyncPort> Destination for C {
 mod port_io;
 use port_io::PortIo;
 
-fn open_unique(name: &str) -> Result<(MidiOutputConnection, Option<String>), String> {
-    let midi = MidiOutput::new("SoundCraft MIDI sync").map_err(|e| e.to_string())?;
-    let mut matches = midi.ports().into_iter().filter(|p| midi.port_name(p).is_ok_and(|n| n == name));
-    let port = matches.next().ok_or_else(|| format!("MIDI output {name} unavailable"))?;
-    let warning = matches.next().map(|_| format!("Multiple MIDI outputs named {name}; using the first"));
-    let connection = midi.connect(&port, "SoundCraft MIDI sync").map_err(|e| e.to_string())?;
-    Ok((connection, warning))
-}
 #[derive(Default)]
 struct Stats {
     #[cfg(test)]
@@ -140,6 +129,8 @@ impl WorkerSender {
 }
 #[derive(Default)]
 pub(crate) struct Output {
+    port_registry: Arc<ports::Registry>,
+    chase_feed: std::sync::Weak<crate::midi::MidiFeed>,
     view: View,
     metrics: Arc<CallbackMetrics>,
     session: Option<Arc<Session>>,
@@ -164,6 +155,12 @@ enum Update {
     TransportWake(Arc<AtomicBool>, Option<(u64, bool)>),
 }
 impl Output {
+    pub(crate) fn restore_port_ids(&self, ids: &BTreeMap<String, String>) {
+        self.port_registry.restore(ids);
+    }
+    pub(crate) fn opened_port_ids(&self) -> Option<BTreeMap<String, String>> {
+        self.port_registry.opened()
+    }
     pub(crate) fn configure(&mut self, s: &Arc<Session>, audio: &Sender<Cmd>, accepted_grid: Option<&Arc<Session>>) -> u64 {
         if self.session.is_none() {
             let _ = audio.send(Cmd::Clock(Some(Publisher::new(self.view.clone(), self.metrics.clone()))));
@@ -206,10 +203,11 @@ impl Output {
             let view = self.view.clone();
             let trouble = self.trouble.clone();
             let stats = self.stats.clone();
+            let registry = self.port_registry.clone();
             match std::thread::Builder::new().name("MIDI sync output".into()).spawn(move || {
                 let port_stats = stats.clone();
                 drive(view, s, rx, trouble, stats, move |name| {
-                    let (connection, warning) = open_unique(name)?;
+                    let (connection, warning) = registry.connect(name)?;
                     Ok((PortIo::new(connection, port_stats.clone())?, warning))
                 })
             }) {
@@ -266,6 +264,11 @@ impl Output {
             }
         })
     }
+    pub(crate) fn attach_mtc_feed(&mut self, feed: &Arc<crate::midi::MidiFeed>) -> crate::midi::TransportWaker {
+        self.chase_feed = Arc::downgrade(feed);
+        self.transport_waker()
+    }
+
     /// MidiFeed invokes this while it still holds the reader, before the callback
     /// can consume the new roll, stop or locate and publish its transport state.
     pub(crate) fn transport_waker(&self) -> crate::midi::TransportWaker {
@@ -312,6 +315,12 @@ impl Output {
         self.view.lock().unwrap_or_else(std::sync::PoisonError::into_inner).read(now, true, 0).0.map(|b| b.sample_index_at(now))
     }
     pub(crate) fn timing_issue(&self) -> Option<crate::OutputTimingIssue> {
+        let clock = self.compensated && !self.beat.is_empty();
+        let encoder = self.additional.as_ref().is_some_and(|(_, _, compensated)| *compensated);
+        let chasing = self.chase_feed.upgrade().is_some_and(|feed| feed.mtc_online());
+        if !clock && !encoder && !chasing {
+            return None;
+        }
         match self.metrics.lead() {
             (Some(lead_us), crate::OutputLeadSource::Retained) => Some(crate::OutputTimingIssue::Retained { lead_us }),
             (None, crate::OutputLeadSource::Unknown) => Some(crate::OutputTimingIssue::Unknown),

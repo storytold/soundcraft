@@ -281,7 +281,7 @@ impl Timeline {
     }
     /// Most recent audible block and first future transition for this destination.
     pub(crate) fn read(&self, now: Instant, compensate: bool, offset_samples: i64) -> (Option<Presentation>, Option<Instant>) {
-        let first = if compensate { self.blocks.len() - self.timed_blocks } else { 0 };
+        let first = if compensate { self.blocks.len().saturating_sub(self.timed_blocks) } else { 0 };
         let adjusted = |block: &Presentation| block.adjusted(compensate, offset_samples);
         let Some((index, block)) =
             self.blocks.range(first..).enumerate().rev().find_map(|(i, b)| adjusted(b).filter(|b| b.heard_at <= now).map(|b| (i, b)))

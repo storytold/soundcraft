@@ -241,9 +241,11 @@ fn output_warning(unavailable: Option<&str>, issue: Option<soundcraft_playback::
             "The audio driver stopped reporting output timing. Compensated MIDI sync uses the last measured lead ({ms} ms).",
             ms = format!("{:.2}", lead_us as f64 / 1000.)
         )),
-        OutputTimingIssue::Unknown => {
-            Some(crate::localization::text("Audio output timing is unavailable. Compensated MIDI outputs need a valid measurement.").into())
-        }
+        OutputTimingIssue::Unknown => Some(format!(
+            "{} {}",
+            crate::localization::text("Audio output timing is unavailable. Compensated MIDI outputs need a valid measurement."),
+            crate::localization::text("Check the audio device, then use Reconnect audio device in Setup › Playback Engine.")
+        )),
     }
 }
 
@@ -401,7 +403,9 @@ mod timing_warning_tests {
     #[test]
     fn cold_and_cached_timing_have_distinct_warnings_and_recovered_timing_clears_them() {
         use soundcraft_playback::OutputTimingIssue;
-        assert!(output_warning(None, Some(OutputTimingIssue::Unknown)).unwrap().contains("need a valid measurement"));
+        let unknown = output_warning(None, Some(OutputTimingIssue::Unknown)).unwrap();
+        assert!(unknown.contains("need a valid measurement"));
+        assert!(unknown.contains("Reconnect audio device in Setup › Playback Engine"), "{unknown}");
         for (lead_us, ms) in [(0, "0.00 ms"), (75_430, "75.43 ms")] {
             let cached = output_warning(None, Some(OutputTimingIssue::Retained { lead_us })).unwrap();
             assert!(cached.contains("last measured lead") && cached.contains(ms));

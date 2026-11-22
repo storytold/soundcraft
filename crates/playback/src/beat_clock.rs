@@ -25,17 +25,21 @@ pub(crate) struct Cursor {
     catchups: u64,
     last_sent: Option<Instant>,
     pass: Option<u64>,
+    pass_origin: Option<i64>,
     next_pulse: i64,
     last_position: Option<i64>,
+    stopped_spp: Option<u16>,
     delayed_start: bool,
     out_of_range: bool,
 }
 
 impl Cursor {
     fn follow(&mut self, block: Presentation, at: i64, offset: i64, remap: bool, session: &Session, mut send: impl FnMut(&[u8])) {
-        let changed = self.pass.replace(block.pass) != Some(block.pass);
+        let previous_pass = self.pass.replace(block.pass);
+        let changed = previous_pass != Some(block.pass);
         let (tempo, rate) = (&session.tempo, session.sample_rate);
         let origin = block.origin.saturating_sub(offset);
+        let origin_changed = self.pass_origin.replace(origin) != Some(origin);
         // A worker attached or reopened well into a pass must start at the
         // current musical position. Replaying the old origin would send two locates.
         let timely_origin =
@@ -50,7 +54,11 @@ impl Cursor {
                 return;
             }
         }
-        self.advance(block.playing, at, (remap || changed) && !timely_origin, tempo, rate, send);
+        // Stopping a pass, including at a loop boundary, can publish a new pass
+        // number without seeking. A stopped seek publishes its own origin.
+        let stopped_seek = at == origin && (self.last_position.is_none() || origin_changed) && (previous_pass.is_some() || at != 0);
+        let located = changed && (block.playing || stopped_seek);
+        self.advance(block.playing, at, (remap || located) && !timely_origin, tempo, rate, send);
     }
 
     fn advance(&mut self, playing: bool, at: i64, locate: bool, tempo: &TempoMap, rate: SampleRate, mut send: impl FnMut(&[u8])) {
@@ -60,7 +68,9 @@ impl Cursor {
             if self.last_position.take().is_some() {
                 send(&[STOP]);
             }
-            return;
+            if playing || at < 0 || !locate {
+                return;
+            }
         }
         let estimated = (tempo.samples_to_ticks_f(at, rate) / TICKS_PER_CLOCK as f64).floor() as i64;
         let deadline = |pulse: i64| tempo.tick_to_samples(pulse.saturating_mul(TICKS_PER_CLOCK), rate);
@@ -73,6 +83,23 @@ impl Cursor {
         } else {
             estimated
         };
+        let position = || {
+            let base = pulse / 6;
+            let sixteenth = base + i64::from(at > deadline(base * 6));
+            u16::try_from(sixteenth).ok().filter(|&n| n <= MAX_POSITION)
+        };
+        if !playing {
+            let spp = position();
+            self.out_of_range = spp.is_none();
+            if spp != self.stopped_spp {
+                self.stopped_spp = spp;
+                if let Some(n) = spp {
+                    send(&song_position(n));
+                }
+            }
+            return;
+        }
+        self.stopped_spp = None;
         let from_zero = std::mem::take(&mut self.delayed_start) && !locate && pulse == 0;
         // Recover short worker stalls one pulse per wake; a full SPP unit of lag requires a new position.
         if self.last_position.is_none()
@@ -90,15 +117,13 @@ impl Cursor {
                 send(&[START]);
                 self.next_pulse = 0;
             } else {
-                let base = pulse / 6;
-                let sixteenth = base + i64::from(at > deadline(base * 6));
-                if sixteenth > i64::from(MAX_POSITION) {
+                let Some(sixteenth) = position() else {
                     self.out_of_range = true;
                     return;
-                }
-                send(&song_position(sixteenth as u16));
+                };
+                send(&song_position(sixteenth));
                 send(&[CONTINUE]);
-                self.next_pulse = sixteenth * 6;
+                self.next_pulse = i64::from(sixteenth) * 6;
             }
         }
         self.out_of_range = false;
@@ -200,6 +225,46 @@ fn remapped(old: &Session, new: &Session, at: i64) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn stopped_locates_announce_the_same_position_as_play_without_starting() {
+        let mut cursor = Cursor::default();
+        let song = Session::default();
+        let now = Instant::now();
+        let r = song.sample_rate;
+        let mut block = Presentation {
+            generation: 0,
+            sample_rate: r,
+            system_delay_samples: 0,
+            pass: 1,
+            origin: 0,
+            playing: true,
+            sample: 0.,
+            heard_at: now,
+            samples_per_second: r.as_f64(),
+            limit: 0.,
+            looped: None,
+            end: None,
+            lead: Some(Duration::ZERO),
+        };
+        cursor.update(block, now, &song, &mut |_, _| {});
+        block.playing = false;
+        for (sixteenth, adjustment) in [(7, 0), (12, -1), (0, 0)] {
+            block.pass += 1;
+            block.origin = song.tempo.tick_to_samples(sixteenth * TICKS_PER_QUARTER / 4, r) + adjustment;
+            block.sample = block.origin as f64;
+            block.limit = block.sample;
+            let mut batch = Vec::new();
+            cursor.update(block, now, &song, &mut |_, m| batch.push(m.to_vec()));
+            let mut expected = vec![song_position(sixteenth as u16).to_vec()];
+            if sixteenth == 7 {
+                expected.insert(0, vec![STOP]);
+            }
+            assert_eq!(batch, expected);
+            block.pass += 1;
+            cursor.update(block, now, &song, &mut |_, m| panic!("duplicate stopped locate {m:?}"));
+        }
+    }
+
     fn messages(cursor: &mut Cursor, at: i64, locate: bool) -> Vec<Vec<u8>> {
         let mut result = Vec::new();
         cursor.advance(true, at, locate, &TempoMap::default(), SampleRate::new(48_000).unwrap(), |m| result.push(m.to_vec()));
