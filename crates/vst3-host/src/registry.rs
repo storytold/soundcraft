@@ -1,6 +1,6 @@
 //! The process-wide VST3 registry: scan cache, leaked `PluginInfo`s, instantiation.
 
-use crate::ffi::{Bundle, Instance, PARAM_BYPASS, PARAM_HIDDEN, PARAM_READ_ONLY, RawParam};
+use crate::ffi::{Bundle, Instance, PARAM_AUTOMATABLE, PARAM_BYPASS, PARAM_HIDDEN, PARAM_READ_ONLY, RawParam};
 use crate::plugin::Vst3Plugin;
 use crate::scan as paths;
 use crate::{AUDIO_MODULE_CLASS, Vst3Descriptor, Vst3Error, parse_id};
@@ -143,6 +143,7 @@ fn param_info(inst: &Instance, p: &RawParam) -> ParamInfo {
         unit: Unit::None,
         taper: Taper::Linear,
         choices: &[],
+        automatable: p.flags & PARAM_AUTOMATABLE != 0,
     };
     if p.step_count == 1 {
         return ParamInfo { unit: Unit::Toggle, default: p.default_normalized.round() as f32, ..base };

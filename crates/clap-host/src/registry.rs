@@ -4,7 +4,7 @@ use crate::ffi::{Bundle, Instance, RawParam};
 use crate::plugin::ClapPlugin;
 use crate::scan as paths;
 use crate::{ClapDescriptor, ClapError, parse_id};
-use clap_sys::ext::params::{CLAP_PARAM_IS_ENUM, CLAP_PARAM_IS_HIDDEN, CLAP_PARAM_IS_READONLY, CLAP_PARAM_IS_STEPPED};
+use clap_sys::ext::params::{CLAP_PARAM_IS_AUTOMATABLE, CLAP_PARAM_IS_ENUM, CLAP_PARAM_IS_HIDDEN, CLAP_PARAM_IS_READONLY, CLAP_PARAM_IS_STEPPED};
 use soundcraft_dsp::{ParamInfo, Plugin, PluginInfo, Taper, Unit};
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -140,6 +140,7 @@ fn param_info(inst: &Instance, p: &RawParam) -> ParamInfo {
         unit,
         taper: Taper::Linear,
         choices,
+        automatable: p.flags & CLAP_PARAM_IS_AUTOMATABLE != 0,
     }
 }
 

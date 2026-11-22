@@ -36,8 +36,10 @@ fn info_exposes_visible_params_with_names() {
     assert_eq!(ids, vec!["7", "3"], "hidden param 9 is skipped");
     let gain = info.param("7").unwrap();
     assert_eq!((gain.name, gain.min, gain.max, gain.default), ("Gain", 0.0, 2.0, 1.0));
+    assert!(gain.automatable);
     let mode = info.param("3").unwrap();
     assert_eq!(mode.unit, Unit::Choice);
+    assert!(!mode.automatable, "IS_STEPPED|IS_ENUM do not imply IS_AUTOMATABLE");
     assert_eq!(mode.choices, &["A", "B", "C"]);
     // Cached: the same leaked info every time.
     assert!(std::ptr::eq(info, soundcraft_clap_host::plugin_info(GAIN).unwrap()));

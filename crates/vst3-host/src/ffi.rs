@@ -45,7 +45,7 @@ mod run_loop;
 
 pub(crate) use editor::EditorLink;
 pub(crate) use host::HostContext;
-pub(crate) use instance::{Instance, PARAM_BYPASS, PARAM_HIDDEN, PARAM_READ_ONLY, ProcessInput, RawParam};
+pub(crate) use instance::{Instance, PARAM_AUTOMATABLE, PARAM_BYPASS, PARAM_HIDDEN, PARAM_READ_ONLY, ProcessInput, RawParam};
 #[cfg(test)]
 use instance::{apply_transport, split_state};
 pub(crate) use module::{Bundle, exit_modules, hex};

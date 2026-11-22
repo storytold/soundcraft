@@ -80,6 +80,8 @@ pub struct ParamInfo {
     pub taper: Taper,
     /// Labels for `Unit::Choice` parameters (value is the index).
     pub choices: &'static [&'static str],
+    /// Selectable as an automation lane (hosted plugins can opt a writable param out).
+    pub automatable: bool,
 }
 
 impl ParamInfo {
