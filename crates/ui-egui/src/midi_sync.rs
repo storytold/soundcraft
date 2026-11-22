@@ -177,7 +177,9 @@ impl SoundApp {
         }
         if let Some(value) = args.get("port_ids") {
             let ids: BTreeMap<String, String> = serde_json::from_value(value.clone()).map_err(|e| e.to_string())?;
-            if ids.len() > 256 || ids.iter().any(|(name, id)| !valid_port(name) || !valid_port(id)) {
+            if ids.len() - usize::from(self.ui.mtc_output_port.as_ref().is_some_and(|port| ids.contains_key(port))) > MAX_SYNC_PORTS
+                || ids.iter().any(|(name, id)| !valid_port(name) || !valid_port(id))
+            {
                 return Err("Invalid MIDI output binding".into());
             }
             next.bind_configured(ids, self.ui.mtc_output_port.as_deref());
@@ -188,9 +190,6 @@ impl SoundApp {
             next.bind_configured(available, self.ui.mtc_output_port.as_deref());
         }
         next.port_ids.retain(|name, _| next.ports.contains_key(name) || self.ui.mtc_output_port.as_ref() == Some(name));
-        if next.ports.len() == MAX_SYNC_PORTS && self.ui.mtc_output_port.as_ref().is_some_and(|name| !next.ports.contains_key(name)) {
-            return Err("Invalid MIDI sync port name, count or sample offset".into());
-        }
         self.validate_sync_routing(&next, self.ui.clock_follow_input.as_deref())?;
         self.ui.midi_sync = next;
         let config = &self.ui.midi_sync;
@@ -230,13 +229,13 @@ impl SoundApp {
             let previous = crate::localization::error_text(&previous);
             if self.ui.status == previous {
                 self.ui.status.clear();
-            } else if let Some(other) = self.ui.status.strip_suffix(&format!(" · {previous}")) {
+            } else if let Some(other) = self.ui.status.strip_suffix(&format!(" 繚 {previous}")) {
                 self.ui.status.truncate(other.len());
             }
         }
         if let Some(message) = &error {
             if !self.ui.status.is_empty() {
-                self.ui.status.push_str(" · ");
+                self.ui.status.push_str(" 繚 ");
             }
             self.ui.status.push_str(&crate::localization::error_text(message));
         }
