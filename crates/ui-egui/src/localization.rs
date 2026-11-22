@@ -400,6 +400,7 @@ mod tests {
                 | "Input offset"
                 | "MIDI clock input"
                 | "MTC Reader Port"
+                | "Offset (samples)"
                 | "Negative values make SoundCraft respond earlier."
                 | "Online (chase MTC)"
                 | "Online"
