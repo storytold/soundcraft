@@ -355,3 +355,61 @@ fn menu_row(ui: &mut Ui, shape: FadeShape, out: bool) -> Response {
     ui.painter().galley(pos2(thumb.max.x + 8.0, rect.center().y - name.size().y * 0.5), name, t.text);
     resp
 }
+
+#[cfg(test)]
+mod tests {
+    use super::column_peaks;
+    use craft_audio::AudioBuffer;
+    use soundcraft_model::{ChannelFormat, Clip, Session, SourceAudio, SourceId, TrackKind};
+    use soundcraft_time::Range;
+    use std::sync::Arc;
+
+    const COLS: usize = 20;
+    const BURST: usize = 32;
+
+    /// One stretched clip holding a burst at source frame `burst`; the span is the crossfade zone.
+    /// The burst must show in the column where the mixer actually plays it.
+    fn burst_lands_where_playback_plays_it(stretch: f64, offset: i64, start: i64, length: i64, span: Range, burst: usize) {
+        let mut s = Session::default();
+        let t = s.add_track(TrackKind::Audio, ChannelFormat::Mono, None);
+        let mut ch = vec![0.0_f32; 12_000];
+        for x in ch.iter_mut().skip(burst).take(BURST) {
+            *x = 1.0;
+        }
+        s.pool.insert(SourceId(900), Arc::new(SourceAudio::new(AudioBuffer { sample_rate: 48_000, channels: vec![ch] })));
+        let id = s.new_clip_id();
+        let mut clip = Clip::audio(id, "c", SourceId(900), offset, start, length);
+        clip.stretch = stretch;
+        if let Some(pl) = s.track_mut(t).and_then(|t| t.playlist_mut()) {
+            pl.clips.push(clip);
+        }
+        let out = soundcraft_mix::render_range(&s, span, 512);
+        let played = out.first().and_then(|c| c.iter().position(|v| v.abs() > 0.05));
+        let played = played.expect("the burst is audible in the span");
+        let want = played * COLS / span.len() as usize;
+        let peaks = column_peaks(&s, Some(id), span, COLS).expect("audio clip");
+        let got = (0..COLS).max_by(|&a, &b| peaks[a].total_cmp(&peaks[b])).expect("columns");
+        assert!(peaks[got] > 0.5, "the burst shows up in the preview (stretch {stretch})");
+        assert!(got.abs_diff(want) <= 1, "stretch {stretch}: playback plays it in column {want}, the preview draws it in column {got}");
+    }
+
+    #[test]
+    fn preview_follows_a_2x_clip_on_the_outgoing_side() {
+        burst_lands_where_playback_plays_it(2.0, 1000, 0, 6000, Range::new(4000, 6000), 3400);
+    }
+
+    #[test]
+    fn preview_follows_a_2x_clip_on_the_incoming_side() {
+        burst_lands_where_playback_plays_it(2.0, 700, 4000, 6000, Range::new(4000, 6000), 1200);
+    }
+
+    #[test]
+    fn preview_follows_a_half_speed_clip_on_the_outgoing_side() {
+        burst_lands_where_playback_plays_it(0.5, 500, 0, 3000, Range::new(2000, 3000), 5500);
+    }
+
+    #[test]
+    fn preview_follows_a_half_speed_clip_on_the_incoming_side() {
+        burst_lands_where_playback_plays_it(0.5, 300, 2000, 3000, Range::new(2000, 3000), 1300);
+    }
+}
