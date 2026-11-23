@@ -663,6 +663,34 @@ fn a_replaced_crossfade_keeps_the_gain_and_sync_points_of_the_audio_it_keeps() {
 }
 
 #[test]
+fn a_replaced_crossfade_keeps_the_far_side_fades_clamped_only_to_the_final_clips() {
+    // A=[0,1100), B=[900,2000), cut 1000. A's fade-in (1050) and B's fade-out (1050) are far from the
+    // crossfade and longer than the half each clip keeps while the pair is cut back to its cut: replacing
+    // the crossfade must not shorten them, only the final clip can (950..1030 ends A at 1030).
+    let make = || {
+        let (mut e, t, ids) = long("slip", &[(0, 1100, 10_000), (900, 1100, 19_100)]);
+        let s = e.session_mut();
+        let a = s.find_clip_mut(ids[0]).unwrap();
+        (a.fade_out.len, a.fade_in.len) = (200, 1050);
+        let b = s.find_clip_mut(ids[1]).unwrap();
+        (b.fade_in.len, b.fade_out.len) = (200, 1050);
+        (e, t, ids)
+    };
+    for (start, end, a_in, b_out) in [(800, 1200, 1050, 1050), (950, 1030, 1030, 1050), (970, 1250, 1050, 1050)] {
+        let (mut e, t, ids) = make();
+        let before = e.session().clone();
+        run(&mut e, "edit.fades_create", json!({"tracks": [t.0], "start": start, "end": end}));
+        let (a, b) = (e.session().find_clip(ids[0]).unwrap().1.clone(), e.session().find_clip(ids[1]).unwrap().1.clone());
+        assert_eq!((b.start, a.end(), cuts(&e, t)), (start, end, vec![1000]), "{start}..{end}");
+        assert_eq!(a.fade_in.len, a_in.min(a.length), "{start}..{end}: A's fade-in");
+        assert_eq!(b.fade_out.len, b_out.min(b.length), "{start}..{end}: B's fade-out");
+        assert_eq!(crossfades(&e, t), [(end - start, start, end, end - start)], "{start}..{end}");
+        assert!(e.undo());
+        assert_eq!(e.session(), &before, "{start}..{end} undone");
+    }
+}
+
+#[test]
 fn a_crossfade_short_of_audio_is_clamped_around_its_cut() {
     // A has no audio past its end: the range asks for 200 more of it after the cut, and gets none.
     let (mut e, t, _) = long("slip", &[(0, 1000, 999_000), (1000, 1000, 20_000)]);
