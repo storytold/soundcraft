@@ -123,13 +123,15 @@ where things are.
   Trim passes recorded live from the faders; thin, glide, coalesce and convert to clip gain.
 - **Plugins:** 7-band and 1-band EQ, compressor/limiter, expander/gate, de-esser, maximizer,
   channel strip, room and plate reverbs, mod delay, auto pan, chorus, flanger, phaser, ring
-  modulator, saturator, lo-fi, rectifier, subharmonic, pitch shifter, time shift, gain, trim,
-  invert, DC removal, signal generator, dither, a subtractive synth, a drum synth and a sampler
-  (plays any WAV, AIFF, FLAC, MP3 or OGG across the keyboard), all original. **CLAP plugins**
-  load too. Any processor runs offline as AudioSuite, and user presets save per plugin.
+  modulator, frequency shifter, saturator, lo-fi, rectifier, subharmonic, pitch shifter, time
+  shift, gain, trim, invert, DC removal, signal generator, dither, a subtractive synth, a drum
+  synth and a sampler (plays any WAV, AIFF, FLAC, MP3 or OGG across the keyboard), all original.
+  **CLAP plugins** load too. Any processor runs offline as AudioSuite, and user presets save
+  per plugin.
 - **MIDI:** instrument and MIDI tracks, a piano-roll MIDI editor with a velocity lane, an event
   list, a score view, step input, quantize, transpose, real-time properties, Standard MIDI Files,
-  and Audio-to-MIDI from a sung or played melody.
+  and Audio-to-MIDI from a sung or played melody. MIDI keyboards play the instruments live and
+  are recorded into MIDI clips ([how](docs/midi-input.md)).
 - **Recording:** punch in on a selection or on the fly, pre/post-roll, loop recording with a
   playlist per take, input monitoring through the full channel strip, and autosave with recovery.
 - **Time and tempo:** Bars|Beats, Min:Secs, Timecode (every rate, drop-frame included),
@@ -176,6 +178,16 @@ On macOS, **⌘←/→** changes the active row's format, **⌘↑/↓** its typ
 and **⌥⌘↑/↓** its timebase. **⇧⌃⌘↓/↑** adds/removes the active row, also with **⌥**;
 **⇧⌘↓/↑** works too. Windows/Linux use **Ctrl** for **⌘**. The active row follows the
 field you click. A new row starts with its count focused and selected; Enter creates and Escape cancels.
+
+### MIDI keyboards
+
+Plug a keyboard in, record-enable an instrument track (its **R** button) and play: the keyboard
+is heard through the track's instrument, and a record pass turns what you play into a MIDI clip.
+**Setup › Playback Engine…** lists the MIDI devices with a switch each (**Setup › MIDI › MIDI
+Input Devices…** opens the same window), and a track's input selector chooses a device and a
+channel. Tried on Linux so far; on macOS and Windows it builds but has not been tried with a
+device, and there is no MIDI input on FreeBSD or the web. The guide is
+[docs/midi-input.md](docs/midi-input.md).
 
 ### Logs
 
@@ -249,7 +261,7 @@ about egui, so the interface could be swapped for another one.
 | `soundcraft-model` | Compatibility re-export of `craft-scraft-format`'s schema, validation and JSON API |
 | `soundcraft-mix` | The mix engine (realtime and offline share it) |
 | `soundcraft-engine` | Commands, undo, editing, import/export, bounce |
-| `soundcraft-playback` | Audio devices (CoreAudio, WASAPI, ALSA, WebAudio) and recording |
+| `soundcraft-playback` | Audio devices (CoreAudio, WASAPI, ALSA, WebAudio), MIDI input devices and recording |
 | `soundcraft-automation` | MCP server and control-channel client |
 | `soundcraft-ui-egui` | The user interface |
 
@@ -263,8 +275,18 @@ SoundCraft is **pre-alpha**: it covers 94 % of the incumbent's menu items (measu
 its features by presence, and is roughly 40 % of the way to replacing it for real work: record,
 edit, mix and bounce work end to end, but choosing an audio interface and buffer size,
 recording MIDI from a controller and session interchange (AAF/OMF) are still missing, and those
-are the alpha checklist. Translations are missing too. The status, the stage and our effort
-estimates are in [`ROADMAP.md`](ROADMAP.md); the full assessment is in
+are the alpha checklist.
+
+**Translations:** the Brazilian Portuguese (`pt-BR`) catalog is **100 % complete** for every fixed
+UI string found in the current source — menus, dialogs and buttons, tooltips (including those
+localized inside buttons and toggles), accessibility names, the Edit-window status bar, the
+remove-session question, formatted messages, engine error templates and engine error text at display
+time. All these entries are covered by a test, placeholders match, keys are unique, and the
+`pt-BR` catalog is chosen automatically when `ui.language` is `pt-BR` (or "Portuguese (Brazil)")
+under `Setup › Appearance`. Engine errors keep their run-time values and a decimal comma in
+`pt-BR`. The remaining localization work is a native-speaker (human) review of wording plus CJK /
+Devanagari / Arabic font fallbacks and RTL layout — not new UI translation. The status, the stage
+and our effort estimates are in [`ROADMAP.md`](ROADMAP.md); the full assessment is in
 [`docs/target-app-parity.md`](docs/target-app-parity.md), the ranked list of what's missing in
 [`docs/gaps.md`](docs/gaps.md), and the menu-by-menu comparison in
 [`docs/parity-checklist.md`](docs/parity-checklist.md). Bug reports and wish lists are
