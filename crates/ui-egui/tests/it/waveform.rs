@@ -1,9 +1,9 @@
 use craft_audio::AudioBuffer;
-use egui::{Color32, Pos2, RawInput, Rect, Shape, vec2};
+use egui::{Color32, Event, Modifiers, PointerButton, Pos2, RawInput, Rect, Shape, vec2};
 use serde_json::json;
 use soundcraft_model::{Clip, ClipId, Session, SourceAudio, SourceId};
 use soundcraft_time::SampleRate;
-use soundcraft_ui_egui::{Services, SoundApp, waveform};
+use soundcraft_ui_egui::{Gesture, Services, SoundApp, waveform};
 
 const WAVE: Color32 = Color32::from_rgb(12, 12, 14);
 
@@ -102,4 +102,46 @@ fn overlapped_crossfades_show_the_outgoing_clip_too() {
     let plain = waveforms(&ctx, &mut app, "Bass", 0.0);
     app.engine.execute("view.waveform_overlapped_crossfades", &json!({"value": true})).unwrap();
     assert_eq!(waveforms(&ctx, &mut app, "Bass", 0.0), plain + 1);
+}
+
+/// One app frame with `events` as its input.
+fn input(ctx: &egui::Context, app: &mut SoundApp, events: Vec<Event>) {
+    let raw = RawInput { screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(1600.0, 1000.0))), events, ..Default::default() };
+    let mut out = ctx.run_ui(raw, |ui| {
+        app.logic(ui.ctx());
+        app.ui(ui);
+    });
+    out.textures_delta.clear();
+}
+
+/// The middle of the visible part of the first clip on `name`, and the middle of `to`'s row.
+fn drag_points(app: &SoundApp, name: &str, to: &str) -> (Pos2, Pos2) {
+    let s = app.engine.session();
+    let [x0, _, x1, _] = app.edit_layout.timeline;
+    let x_of = |at: i64| x0 + ((at - s.edit.zoom.scroll) as f64 / s.edit.zoom.samples_per_px) as f32;
+    let mid = |n: &str| {
+        let id = s.track_by_name(n).unwrap().id.0;
+        let r = app.edit_layout.rows.iter().find(|(i, _)| *i == id).unwrap().1;
+        (r[1] + r[3]) / 2.0
+    };
+    let clip = s.track_by_name(name).unwrap().clips().iter().min_by_key(|c| c.start).unwrap();
+    let x = (x_of(clip.start).max(x0) + x_of(clip.end()).min(x1)) / 2.0;
+    (egui::pos2(x, mid(name)), egui::pos2(x, mid(to)))
+}
+
+#[test]
+fn a_dragged_clip_shows_its_waveform_on_the_target_track_and_stays_where_it_was() {
+    let mut app = SoundApp::new(soundcraft_engine::demo::demo_engine(), None, Services::default());
+    let ctx = egui::Context::default();
+    let (kick, snare) = (waveforms(&ctx, &mut app, "Kick", 0.0), waveforms(&ctx, &mut app, "Snare", 0.0));
+    app.engine.execute("edit.tool", &json!({"tool": "grabber"})).unwrap();
+    let (from, to) = drag_points(&app, "Kick", "Snare");
+    let press = Event::PointerButton { pos: from, button: PointerButton::Primary, pressed: true, modifiers: Modifiers::NONE };
+    input(&ctx, &mut app, vec![Event::PointerMoved(from), press]);
+    input(&ctx, &mut app, vec![Event::PointerMoved(from + vec2(20.0, 0.0))]);
+    input(&ctx, &mut app, vec![Event::PointerMoved(to)]);
+    let held = waveforms(&ctx, &mut app, "Kick", 0.0);
+    assert!(matches!(app.gesture, Some(Gesture::MoveClips { .. })), "{:?}", app.gesture);
+    assert_eq!(held, kick, "the clip still shows where it was");
+    assert!(waveforms(&ctx, &mut app, "Snare", 0.0) > snare, "the ghost on the target track shows the clip's waveform");
 }
