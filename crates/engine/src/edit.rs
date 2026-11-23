@@ -1311,13 +1311,14 @@ pub fn crossfaded(a: &Clip, b: &Clip) -> bool {
 /// each pair cut back, as it was, for [`restore_cut_back`] once the crossfade is rebuilt.
 fn replace_crossfades(s: &mut Session, track: TrackId, range: Range, shape: FadeShape) -> (usize, Vec<(Clip, Clip)>) {
     let Some(pl) = s.track_mut(track).and_then(|t| t.playlist_mut()) else { return (0, Vec::new()) };
-    // ponytail: the cut drops a fade on either clip's far side longer than what is left of that clip
-    // (as `delete_fades` does), and the rebuilt crossfade does not bring it back. Only a range inside the
-    // pair's outer edges and clear of the clips around it is a replacement; any other (a whole clip,
-    // Select All) leaves the crossfade as it is. A pair with MIDI (a start trim must re-anchor the notes,
+    // ponytail: Only a range inside the pair's outer edges and clear of the clips around it is a
+    // replacement; any other (a whole clip, Select All) leaves the crossfade as it is. A pair with MIDI (a start trim must re-anchor the notes,
     // which takes the tempo map), a locked clip or a stretched one (`trim_start_to` ignores the stretch)
     // is left alone too.
     // Upgrade: build the new crossfade from the pair without cutting it back first.
+    // The far-side fades (the earlier clip's fade-in, the later one's fade-out) are set aside while the
+    // pair is cut back, so that they neither shrink nor hold the new crossfade short; `restore_cut_back`
+    // gives them back.
     let plain = |c: &Clip| !locked(c) && (c.stretch - 1.0).abs() < 1e-9 && !matches!(c.content, ClipContent::Midi { .. });
     pl.sort();
     let mut reshaped = 0;
@@ -1350,10 +1351,12 @@ fn replace_crossfades(s: &mut Session, track: TrackId, range: Range, shape: Fade
         if let Some(ca) = pl.clips.get_mut(i) {
             ca.trim_end_to(cut);
             ca.fade_out = Fade::default();
+            ca.fade_in = Fade::default();
         }
         if let Some(cb) = pl.clips.get_mut(i + 1) {
             cb.trim_start_to(cut);
             cb.fade_in = Fade::default();
+            cb.fade_out = Fade::default();
             cb.cut = None;
         }
     }
@@ -1361,7 +1364,8 @@ fn replace_crossfades(s: &mut Session, track: TrackId, range: Range, shape: Fade
 }
 
 /// Give each pair `replace_crossfades` cut back what the cut dropped and the new crossfade still plays:
-/// the later clip's gain envelope and both sync points, worked out from the pair as it was, trimmed once
+/// the later clip's gain envelope and both sync points, and the far-side fades (clamped only to the
+/// final clips), worked out from the pair as it was, trimmed once
 /// to where its clips now start and end (lossless where a clip grew, as a trim is).
 fn restore_cut_back(s: &mut Session, track: TrackId, cut_back: &[(Clip, Clip)]) {
     let Some(pl) = s.track_mut(track).and_then(|t| t.playlist_mut()) else { return };
@@ -1370,12 +1374,16 @@ fn restore_cut_back(s: &mut Session, track: TrackId, cut_back: &[(Clip, Clip)]) 
             let mut was = a.clone();
             was.trim_end_to(now.end());
             now.sync_point = was.sync_point;
+            now.fade_in = a.fade_in;
+            now.clamp_fades();
         }
         if let Some(now) = pl.clips.iter_mut().find(|c| c.id == b.id) {
             let mut was = b.clone();
             was.trim_start_to(now.start);
             now.gain_env = was.gain_env;
             now.sync_point = was.sync_point;
+            now.fade_out = b.fade_out;
+            now.clamp_fades();
         }
     }
 }
