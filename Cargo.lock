@@ -1202,6 +1202,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "craft-aaf"
+version = "0.1.0"
+source = "git+https://github.com/storytold/craft-libs?rev=33be35625e252cc4f06aa375b3b428521faea37d#33be35625e252cc4f06aa375b3b428521faea37d"
+dependencies = [
+ "craft-audio",
+ "craft-cfb",
+ "craft-timeline",
+ "thiserror 2.0.21",
+]
+
+[[package]]
 name = "craft-audio"
 version = "0.1.0"
 source = "git+https://github.com/storytold/craft-libs?rev=33be35625e252cc4f06aa375b3b428521faea37d#33be35625e252cc4f06aa375b3b428521faea37d"
@@ -1213,6 +1224,11 @@ dependencies = [
  "symphonia",
  "thiserror 2.0.21",
 ]
+
+[[package]]
+name = "craft-cfb"
+version = "0.1.0"
+source = "git+https://github.com/storytold/craft-libs?rev=33be35625e252cc4f06aa375b3b428521faea37d#33be35625e252cc4f06aa375b3b428521faea37d"
 
 [[package]]
 name = "craft-codepage"
@@ -1325,6 +1341,14 @@ source = "git+https://github.com/storytold/craft-libs?rev=33be35625e252cc4f06aa3
 dependencies = [
  "serde",
  "thiserror 2.0.21",
+]
+
+[[package]]
+name = "craft-timeline"
+version = "0.1.0"
+source = "git+https://github.com/storytold/craft-libs?rev=33be35625e252cc4f06aa375b3b428521faea37d#33be35625e252cc4f06aa375b3b428521faea37d"
+dependencies = [
+ "craft-time",
 ]
 
 [[package]]
@@ -3745,7 +3769,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7d8fae84b431384b68627d0f9b3b1245fcf9f46f6c0e3dc902e9dce64edd1967"
 dependencies = [
  "libc",
- "windows-sys 0.61.2",
+ "windows-sys 0.45.0",
 ]
 
 [[package]]
@@ -5031,6 +5055,7 @@ name = "soundcraft-interchange"
 version = "0.20.1"
 dependencies = [
  "cfb",
+ "craft-aaf",
  "serde",
  "serde_json",
  "soundcraft-model",
