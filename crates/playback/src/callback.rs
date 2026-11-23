@@ -73,9 +73,10 @@ pub(crate) struct AudioState {
     playing: bool,
     end: Option<Samples>,
     looped: Option<Range>,
+    mono_listen: bool,
     /// Rendered frames waiting to be consumed (planar, main channels) and the fractional read index.
     pending: Vec<Vec<f32>>,
-    /// Stereo fold-down gains per main channel (used when the device has fewer channels).
+    /// Stereo fold-down gains per main channel for smaller devices and Mono Listen.
     fold: [(f32, f32); MAX_CHANNELS],
     pub(crate) pending_len: usize,
     read: f64,
@@ -162,6 +163,7 @@ impl AudioState {
             garbage,
             old_sessions: None,
             fold: fold_gains(&session),
+            mono_listen: false,
             rx,
             shared,
             mix: new_engine(sr),
@@ -201,6 +203,7 @@ impl AudioState {
         while let Ok(c) = self.rx.try_recv() {
             match c {
                 Cmd::Input(r) => self.input = Some(r),
+                Cmd::MonoListen(enabled) => self.mono_listen = enabled,
                 Cmd::Midi(f) => {
                     self.mix.midi_ports = Some(Arc::clone(f.ports()));
                     self.midi = Some(f);
@@ -718,7 +721,7 @@ impl AudioState {
                 let b = if i0 + 1 < self.pending_len { ch.and_then(|v| v.get(i0 + 1)).copied().unwrap_or(a) } else { a };
                 a * (1.0 - fr) + b * fr
             };
-            write_frame(frame, channels, nch, sounding, &self.fold, sample);
+            write_frame(frame, channels, nch, sounding, self.mono_listen, &self.fold, sample);
             self.read += step;
         }
     }
@@ -873,26 +876,42 @@ impl TakeWriter<'_> {
     }
 }
 
-/// Write one device frame from `nch` rendered channels: fold surround to stereo (a mono device
-/// averages the two sides), or copy the channels straight through. `sample(c)` is channel `c`.
-fn write_frame(frame: &mut [f32], channels: usize, nch: usize, sounding: bool, fold: &[(f32, f32)], sample: impl Fn(usize) -> f32) {
-    if channels < nch {
-        // Fold surround to stereo first; a mono device averages the two sides.
+/// Write one device frame from `nch` rendered channels. A mono device or Mono Listen averages
+/// the two sides after the stereo fold-down and plays that signal through the monitor pair.
+/// `sample(c)` is channel `c`.
+fn write_frame(
+    frame: &mut [f32],
+    channels: usize,
+    nch: usize,
+    sounding: bool,
+    mono_listen: bool,
+    fold: &[(f32, f32)],
+    sample: impl Fn(usize) -> f32,
+) {
+    if channels < nch || mono_listen {
         let (mut l, mut r) = (0.0f32, 0.0f32);
         if sounding {
-            if nch == 2 {
-                (l, r) = (sample(0), sample(1));
-            } else {
-                for (c, (gl, gr)) in fold.iter().enumerate().take(nch) {
-                    let v = sample(c);
-                    l += v * gl;
-                    r += v * gr;
+            match nch {
+                1 => {
+                    l = sample(0);
+                    r = l;
+                }
+                2 => (l, r) = (sample(0), sample(1)),
+                _ => {
+                    for (c, (gl, gr)) in fold.iter().enumerate().take(nch) {
+                        let v = sample(c);
+                        l += v * gl;
+                        r += v * gr;
+                    }
                 }
             }
         }
+        if channels == 1 || mono_listen {
+            l = 0.5 * l + 0.5 * r;
+            r = l;
+        }
         for (c, o) in frame.iter_mut().enumerate() {
             *o = match c {
-                0 if channels == 1 => out_sample(0.5 * l + 0.5 * r),
                 0 => out_sample(l),
                 1 => out_sample(r),
                 _ => 0.0,

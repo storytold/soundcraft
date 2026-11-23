@@ -28,6 +28,7 @@ impl SoundApp {
         self.recorder = None;
         self.recorder_failed = false;
         let player = soundcraft_playback::Player::with_config(self.engine.session_arc(), &self.ui.audio);
+        player.set_mono_listen(self.mono_listen);
         self.attach_midi(&player);
         player.locate(at);
         self.player = Some(player);
@@ -128,6 +129,7 @@ impl SoundApp {
         self.recorder = None;
         self.recorder_failed = false;
         let player = Player::with_config(self.engine.session_arc(), &self.ui.audio);
+        player.set_mono_listen(self.mono_listen);
         self.attach_midi(&player);
         self.player = Some(player);
     }

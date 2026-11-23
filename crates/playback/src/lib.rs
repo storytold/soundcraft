@@ -136,6 +136,7 @@ enum Cmd {
     },
     Stop,
     Locate(Samples),
+    MonoListen(bool),
     /// Tracks the latest session no longer has (worked out on the UI thread): their meters go.
     Forget(Vec<TrackId>),
 }
@@ -489,6 +490,11 @@ impl Player {
     /// Play MIDI devices through record-enabled and input-monitored MIDI and instrument tracks.
     pub fn set_midi(&self, feed: Arc<midi::MidiFeed>) {
         let _ = self.tx.send(Cmd::Midi(feed));
+    }
+
+    /// Listen to the live main output in mono.
+    pub fn set_mono_listen(&self, enabled: bool) {
+        let _ = self.tx.send(Cmd::MonoListen(enabled));
     }
 
     pub fn set_recording(&self, on: bool) {

@@ -709,8 +709,12 @@ fn tempo_value(app: &mut SoundApp, ui: &mut Ui, right: f32, y: f32, bpm: f64) {
     resp.on_hover_text(crate::localization::text("Drag to change the tempo (Shift: fine steps), or click to type it"));
 }
 
-/// Draws the compact stereo main-output meter.
+/// Draws the main-output meter and its monitoring switch.
 fn output_meter(app: &mut SoundApp, ui: &mut Ui) {
+    let mut mono_listen = app.mono_listen;
+    if ui.checkbox(&mut mono_listen, crate::localization::text("Mono")).changed() {
+        let _ = app.run("ui.mono_listen", json!({"value": mono_listen}));
+    }
     let (r, _) = ui.allocate_exact_size(vec2(26.0, 64.0), Sense::hover());
     let m = app.main_meter;
     let w = (r.width() - 6.0) / 2.0;
