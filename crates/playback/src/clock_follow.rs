@@ -81,20 +81,22 @@ pub(crate) struct PreparedResume {
     pub(crate) silent: bool,
 }
 impl PreparedResume {
-    fn dispatch(&self, at: i64, age_us: impl FnOnce() -> i64) -> Option<i64> {
+    /// Queue the start, or say why the host has to start it instead.
+    fn dispatch(&self, at: i64, age_us: impl FnOnce() -> i64) -> Result<i64, &'static str> {
         use super::{Cmd, Ordering};
-        let revision = self.revision.upgrade()?;
-        let shared = self.shared.upgrade()?;
-        let tx = self.tx.upgrade()?;
+        const CLOSED: &str = "the player was closed";
+        let revision = self.revision.upgrade().ok_or("the prepared session was replaced")?;
+        let shared = self.shared.upgrade().ok_or(CLOSED)?;
+        let tx = self.tx.upgrade().ok_or(CLOSED)?;
         if shared.playing.load(Ordering::Acquire) {
-            return None;
+            return Err("playback is already running");
         }
         #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
-        let output = self.output.upgrade()?;
+        let output = self.output.upgrade().ok_or(CLOSED)?;
         #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
-        let output = output.try_lock().ok()?;
+        let output = output.try_lock().map_err(|_| "the Clock output was busy")?;
         #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
-        let lead = if self.silent { 0 } else { output.reported_lead_us()? };
+        let lead = if self.silent { 0 } else { output.reported_lead_us().ok_or("the audio device has not reported its output latency yet")? };
         #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
         let lead = 0;
         let render_from = self
@@ -106,9 +108,9 @@ impl PreparedResume {
         // The host revokes this gate before an edit can mutate the prepared document.
         // Hold it through queueing and publishing the start. An edit that won this race
         // leaves the original Play action for the host to prepare against its fresh session.
-        let current = revision.try_lock().ok()?;
+        let current = revision.try_lock().map_err(|_| "an edit is changing the session")?;
         if !*current {
-            return None;
+            return Err("an edit changed the session");
         }
         // The renderer starts at its next callback, up to one device buffer later. Without
         // the arrival it would present `render_from` that much behind the source.
@@ -118,11 +120,11 @@ impl PreparedResume {
         #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
         let queued = tx.send(cmd).is_ok();
         if !queued {
-            return None;
+            return Err("the playback command could not be queued");
         }
         shared.position.store(render_from, Ordering::Relaxed);
         shared.playing.store(true, Ordering::Release);
-        Some(render_from)
+        Ok(render_from)
     }
 }
 
@@ -234,14 +236,24 @@ impl Follower {
     }
 
     pub(crate) fn dispatch_prepared(&mut self, now: impl FnOnce() -> i64) {
-        if self.count == 1
-            && let Some(Action::Play { pulse, at }) = self.events[self.head]
-            && let Some(cue) = self.cue.take()
-            && cue.pulse == pulse
-            && let Some(render_from) = cue.dispatch(at, || now().saturating_sub(at))
-        {
-            self.waiting_for_output = false;
-            self.events[self.head] = Some(Action::Started { pulse, at, render_from });
+        let newest = self.count.checked_sub(1).and_then(|i| self.events[(self.head + i) % self.events.len()]);
+        let Some(Action::Play { pulse, at }) = newest else { return };
+        let started = if self.count != 1 {
+            Err("an earlier transport action is still waiting for the host")
+        } else {
+            match self.cue.take() {
+                None => Err("no stopped position was prepared"),
+                Some(cue) if cue.pulse != pulse => Err("a different position was prepared"),
+                Some(cue) => cue.dispatch(at, || now().saturating_sub(at)),
+            }
+        };
+        match started {
+            Ok(render_from) => {
+                self.waiting_for_output = false;
+                self.events[self.head] = Some(Action::Started { pulse, at, render_from });
+            }
+            // The host starts it at its next frame, which can be a whole UI frame later.
+            Err(reason) => log::warn!("external Clock start at pulse {pulse} is left to the host: {reason}"),
         }
     }
 
