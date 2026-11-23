@@ -108,6 +108,10 @@ files it was given rather than guarding against other software on the computer.
 
 Resources: `soundcraft://session` (full session JSON), `soundcraft://commands`.
 
+Use `execute` with `{"command":"event.add_key_change","params":{"key":"A minor","at":48000}}`
+to set or replace a key signature at a position. Both detail levels of `inspect_session` return
+`key_signatures`, with each entry's `at` position in samples and its `key` name.
+
 ## Conventions
 
 - Programmatic calls never open dialogs; empty params act on the current selection.
