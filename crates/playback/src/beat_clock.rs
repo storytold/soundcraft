@@ -49,7 +49,8 @@ impl Cursor {
         // to live time, as do workers more than a sixteenth into the new pass.
         let prearmed_zero = was_stopped && origin == 0 && !origin_changed;
         let window = if prearmed_zero { RELAUNCH_PULSES } else { 1 };
-        let timely_origin = changed && block.playing
+        let timely_origin = changed
+            && block.playing
             && tempo.samples_to_ticks_f(at, rate) - tempo.samples_to_ticks_f(origin, rate) < (window * TICKS_PER_CLOCK) as f64;
         if timely_origin {
             let mut sent_clock = false;
@@ -243,8 +244,7 @@ mod tests {
     use super::*;
     #[test]
     fn a_prearmed_zero_start_one_pulse_late_does_not_jump_to_the_next_sixteenth() {
-        let mut song = Session::default();
-        song.sample_rate = SampleRate::HZ_48000;
+        let mut song = Session { sample_rate: SampleRate::HZ_48000, ..Session::default() };
         song.tempo.set_tempo(0, 120.).unwrap();
         let first = Instant::now();
         let idle = Presentation {
@@ -287,8 +287,7 @@ mod tests {
     }
     #[test]
     fn late_first_clock_keeps_all_pulses_without_squeezing_the_next_interval() {
-        let mut song = Session::default();
-        song.sample_rate = SampleRate::HZ_48000;
+        let mut song = Session { sample_rate: SampleRate::HZ_48000, ..Session::default() };
         song.tempo.set_tempo(0, 120.).unwrap();
         let first = Instant::now();
         let b = Presentation {
