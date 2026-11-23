@@ -1962,3 +1962,17 @@ fn retained_audio_keeps_its_session_generation_until_the_first_new_rendered_fram
         }
     }
 }
+
+#[test]
+fn a_stopped_locate_keeps_a_held_keyboard_note_sounding() {
+    // Stopped, a record-enabled instrument plays the keyboard. Moving the stopped
+    // transport (which also announces the new Beat Clock position) must not cut it.
+    let (mut st, tx, feed, ..) = keyboard_session();
+    feed.set_clock(1);
+    feed.receive(0, &[0x90, 60, 100]);
+    assert!(heard(&mut st, 4));
+    tx.send(Cmd::Locate(96_000)).unwrap();
+    assert!(heard(&mut st, 1), "a stopped locate cut the held note");
+    feed.receive(0, &[0x80, 60, 0]);
+    assert!(!heard(&mut st, 60));
+}

@@ -306,15 +306,19 @@ impl AudioState {
                     self.mix.reset();
                 }
                 Cmd::Locate(at) => {
-                    self.midi_stopped = None;
                     self.pos = at;
                     #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
                     if let Some(clock) = &mut self.clock {
                         clock.locate(at);
                     }
-                    self.pending_len = 0;
-                    self.read = 0.0;
-                    self.mix.reset();
+                    // Stopped, a locate only moves the cursor (and the Beat Clock position it
+                    // announces). Live monitoring and an ending record pass continue.
+                    if self.playing {
+                        self.midi_stopped = None;
+                        self.pending_len = 0;
+                        self.read = 0.0;
+                        self.mix.reset();
+                    }
                 }
             }
         }
