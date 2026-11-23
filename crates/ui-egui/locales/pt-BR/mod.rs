@@ -1230,8 +1230,8 @@ fn menu_translate(source: &str) -> Option<&'static str> {
         "59.94 Drop" => "59,94 Drop",
         "A bounce is already running" => "Já há um bounce em execução",
         "Audio files" => "Arquivos de áudio",
-        "Audio input: {what} {then}" => "Entrada de áudio: {what} {then}",
-        "Audio output: {cause} {then}" => "Saída de áudio: {cause} {then}",
+        "Audio input: {what}. {then}" => "Entrada de áudio: {what}. {then}",
+        "Audio output: {cause}. {then}" => "Saída de áudio: {cause}. {then}",
         "Automation mode" => "Modo de automação",
         "Bit depth" => "Profundidade de bits",
         "Bounce cancelled" => "Bounce cancelado",
@@ -1283,7 +1283,7 @@ fn menu_translate(source: &str) -> Option<&'static str> {
         "Number of Places" => "Número de casas",
         "On" => "Ativado",
         "PREAMP" => "PRÉ-AMP",
-        "Playback stopped: {cause} {then}" => "Reprodução interrompida: {cause} {then}",
+        "Playback stopped: {cause}. {then}" => "Reprodução interrompida: {cause}. {then}",
         "Preset name" => "Nome do preset",
         "Processes the selected clips and replaces them with rendered audio." => {
             "Processa os clipes selecionados e os substitui por áudio renderizado."
@@ -1292,8 +1292,10 @@ fn menu_translate(source: &str) -> Option<&'static str> {
         "Reconnect it, then use Reconnect audio device in Setup › Playback Engine." => {
             "Reconecte-o e use Reconectar dispositivo de áudio em Configurar › Mecanismo de reprodução."
         }
-        "Recording stopped: {cause} The take is kept up to there. {then}" => "Gravação interrompida: {cause} A gravação foi mantida até aqui. {then}",
-        "Recording stopped: {what} The take is kept up to there. {then}" => "Gravação interrompida: {what} A gravação foi mantida até aqui. {then}",
+        "Recording stopped: {cause}. The take is kept up to there. {then}" => {
+            "Gravação interrompida: {cause}. A gravação foi mantida até aqui. {then}"
+        }
+        "Recording stopped: {what}. The take is kept up to there. {then}" => "Gravação interrompida: {what}. A gravação foi mantida até aqui. {then}",
         "Remove configuration" => "Remover configuração",
         "Render Clip Gain" => "Renderizar ganho do clipe",
         "SENDS A-E" => "ENVIOS A-E",
@@ -1324,6 +1326,9 @@ fn menu_translate(source: &str) -> Option<&'static str> {
         "Without a name, the clips keep their names." => "Sem nome, os clipes mantêm seus nomes.",
         "audio on" => "áudio ativado",
         "is unavailable" => "está indisponível",
+        "asked to be reopened" => "pediu para ser reaberto",
+        "SoundCraft reopened it." => "O SoundCraft o reabriu.",
+        "SoundCraft reopens it in a moment." => "O SoundCraft o reabrirá em instantes.",
         "marker" => "marcador",
         "modified" => "modificado",
         "movie offline" => "filme indisponível",

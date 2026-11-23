@@ -45,12 +45,17 @@ const RING_SECONDS: usize = 4;
 const STALL: Duration = Duration::from_secs(2);
 const GONE: u8 = 1;
 const BROKEN: u8 = 2;
+/// The stream was invalidated on a device that is still present (see `devices::stream_reset`).
+const RESET: u8 = 3;
 
 /// Why the input can't go on.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Trouble {
     /// The device went away or stopped sending audio, or its callback hit a bug.
     Device(String),
+    /// The device is still present but asked for the stream to be rebuilt (an ASIO driver's reset
+    /// request). Reopening the device restores input.
+    Reset(String),
     /// Writing a take failed (a full disk, say).
     Disk(String),
 }
@@ -197,7 +202,8 @@ where
             // or a stream that must be rebuilt (`StreamInvalidated`) stops capture.
             // `DeviceChanged` (a rerouted default device) and an xrun are not faults.
             if crate::devices::stream_lost(&e) {
-                let _ = errors.fault.compare_exchange(0, GONE, Ordering::Relaxed, Ordering::Relaxed);
+                let code = if crate::devices::stream_reset(&e) { RESET } else { GONE };
+                let _ = errors.fault.compare_exchange(0, code, Ordering::Relaxed, Ordering::Relaxed);
             }
             log::warn!("input stream error: {e}");
         },
@@ -331,6 +337,7 @@ impl Recorder {
         let name = &self.device_name;
         match self.shared.fault.load(Ordering::Relaxed) {
             GONE => return Some(Trouble::Device(format!("“{name}” is unavailable"))),
+            RESET => return Some(Trouble::Reset(format!("“{name}” asked to be reopened"))),
             BROKEN => return Some(Trouble::Device("the audio input hit an internal error (see the log)".into())),
             _ => {}
         }
@@ -616,6 +623,9 @@ mod tests {
         let gone = Arc::new(Shared::new(CaptureRing::new(64)));
         gone.fault.store(GONE, Ordering::Relaxed);
         assert_eq!(recorder(&gone).trouble(), Some(Trouble::Device("“Mic In” is unavailable".into())));
+        let reset = Arc::new(Shared::new(CaptureRing::new(64)));
+        reset.fault.store(RESET, Ordering::Relaxed);
+        assert_eq!(recorder(&reset).trouble(), Some(Trouble::Reset("“Mic In” asked to be reopened".into())));
     }
 
     #[test]

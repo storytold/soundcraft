@@ -280,6 +280,15 @@ fn a_lost_or_stalled_device_is_reported_once() {
 }
 
 #[test]
+fn an_invalidated_stream_on_a_present_device_is_reported_once_as_a_reset() {
+    let fault = Fault::default();
+    fault.reset.store(true, Ordering::Relaxed);
+    assert_eq!(fault.trouble(false), None, "a reset flag alone does not stop the output");
+    fault.gone.store(true, Ordering::Release);
+    assert_eq!((fault.trouble(false), fault.trouble(true)), (Some(OutputTrouble::Reset), None));
+}
+
+#[test]
 fn audio_state_plays_and_stops_at_end() {
     let s = Arc::new(soundcraft_model::Session::default());
     let shared = Arc::new(Shared {

@@ -123,6 +123,14 @@ pub(crate) fn stream_lost(e: &cpal::Error) -> bool {
     kind == cpal::ErrorKind::DeviceNotAvailable || kind == cpal::ErrorKind::StreamInvalidated
 }
 
+/// True when a lost stream (see [`stream_lost`]) is still on a present device that asked for the
+/// stream to be rebuilt (`StreamInvalidated`). cpal reports an ASIO driver's reset request this
+/// way, for example after the buffer size changed in the driver's own settings. The device can be
+/// reopened at once; `DeviceNotAvailable` means it went away.
+pub(crate) fn stream_reset(e: &cpal::Error) -> bool {
+    e.kind() == cpal::ErrorKind::StreamInvalidated
+}
+
 /// The device's configuration at `sample_rate` in the best sample format these streams convert.
 /// cpal 0.18 ranks `I24` (and `F64`) above `I16` when it picks a default configuration, so a
 /// default alone can name a format the callbacks do not decode; this looks for the same rate in a
@@ -259,6 +267,24 @@ mod tests {
             cpal::ErrorKind::BackendError,
         ] {
             assert!(!stream_lost(&error(kind)), "{kind:?} must not stop the stream");
+        }
+    }
+
+    /// Only an invalidated stream counts as a reset that can be reopened at once; a device that
+    /// went away, and errors that do not stop the stream, do not.
+    #[test]
+    fn only_an_invalidated_stream_is_a_reset() {
+        let error = |kind| cpal::Error::with_message(kind, "test");
+        assert!(stream_reset(&error(cpal::ErrorKind::StreamInvalidated)));
+        for kind in [
+            cpal::ErrorKind::DeviceNotAvailable,
+            cpal::ErrorKind::DeviceChanged,
+            cpal::ErrorKind::DeviceBusy,
+            cpal::ErrorKind::HostUnavailable,
+            cpal::ErrorKind::Xrun,
+            cpal::ErrorKind::BackendError,
+        ] {
+            assert!(!stream_reset(&error(kind)), "{kind:?} is not a reset");
         }
     }
 

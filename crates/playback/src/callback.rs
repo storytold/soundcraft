@@ -13,6 +13,9 @@ pub(crate) struct Fault {
     failed: AtomicBool,
     /// The device went away or the stream was invalidated: only a reconnect can restore audio.
     pub(crate) gone: AtomicBool,
+    /// Set with `gone` when the stream was invalidated on a device that is still present (an
+    /// ASIO driver's reset request), so the UI can reopen it without asking the user.
+    pub(crate) reset: AtomicBool,
     /// Blocks so far, to tell a device that stopped asking for audio.
     pub(crate) beats: std::sync::atomic::AtomicU64,
     /// The UI has been told.
@@ -24,8 +27,8 @@ impl Fault {
     pub(crate) fn trouble(&self, stalled: bool) -> Option<OutputTrouble> {
         let trouble = if self.failed.load(Ordering::Relaxed) {
             OutputTrouble::Bug
-        } else if self.gone.load(Ordering::Relaxed) {
-            OutputTrouble::Gone
+        } else if self.gone.load(Ordering::Acquire) {
+            if self.reset.load(Ordering::Relaxed) { OutputTrouble::Reset } else { OutputTrouble::Gone }
         } else if stalled {
             OutputTrouble::Stalled
         } else {
