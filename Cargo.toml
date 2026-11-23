@@ -11,9 +11,9 @@ rust-version = "1.95"
 repository = "https://github.com/storytold/soundcraft"
 
 [workspace.dependencies]
-craft-score = { git = "https://github.com/storytold/craft-libs", rev = "33be35625e252cc4f06aa375b3b428521faea37d" }
-craft-xml = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "33be35625e252cc4f06aa375b3b428521faea37d" }
-craft-mime = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "33be35625e252cc4f06aa375b3b428521faea37d" }
+craft-score = { git = "https://github.com/storytold/craft-libs", rev = "a3fca1707941bce4768586661ccbb94c44ee46eb" }
+craft-xml = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "a3fca1707941bce4768586661ccbb94c44ee46eb" }
+craft-mime = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "a3fca1707941bce4768586661ccbb94c44ee46eb" }
 # internal
 soundcraft-interchange = { path = "crates/interchange" }
 soundcraft-time = { path = "crates/time" }
@@ -61,27 +61,27 @@ cpal = "0.18"
 midir = "=0.11.1"
 
 # Which file paths stored in a session may be opened.
-craft-docpath = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "33be35625e252cc4f06aa375b3b428521faea37d" }
+craft-docpath = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "a3fca1707941bce4768586661ccbb94c44ee46eb" }
 
 # Video containers and bitstreams, shared with the other craft apps.
-craft-media = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "33be35625e252cc4f06aa375b3b428521faea37d" }
+craft-media = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "a3fca1707941bce4768586661ccbb94c44ee46eb" }
 # H.264 and ProRes codecs shared with the other Craft apps.
-craft-video = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "33be35625e252cc4f06aa375b3b428521faea37d", default-features = false, features = ["h264-decode", "prores", "mjpeg"] }
+craft-video = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "a3fca1707941bce4768586661ccbb94c44ee46eb", default-features = false, features = ["h264-decode", "prores", "mjpeg"] }
 # Audio file formats, codecs and waveform overviews, shared with the other craft apps. It shares
 # types with craft-media, so both stay on one rev.
 # Standard MIDI Files and the note/controller model, shared with the other craft apps.
-craft-midi = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "33be35625e252cc4f06aa375b3b428521faea37d", features = ["serde"] }
-craft-audio = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "33be35625e252cc4f06aa375b3b428521faea37d", features = ["decode", "lossless-encode", "peaks", "serde"] }
-craft-time = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "33be35625e252cc4f06aa375b3b428521faea37d" }
+craft-midi = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "a3fca1707941bce4768586661ccbb94c44ee46eb", features = ["serde"] }
+craft-audio = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "a3fca1707941bce4768586661ccbb94c44ee46eb", features = ["decode", "lossless-encode", "peaks", "serde"] }
+craft-time = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "a3fca1707941bce4768586661ccbb94c44ee46eb" }
 # AAF property-stream framing, shared with the other craft apps.
-craft-aaf = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "33be35625e252cc4f06aa375b3b428521faea37d" }
-craft-scraft-format = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "33be35625e252cc4f06aa375b3b428521faea37d" }
+craft-aaf = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "a3fca1707941bce4768586661ccbb94c44ee46eb" }
+craft-scraft-format = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "a3fca1707941bce4768586661ccbb94c44ee46eb" }
 # craft-update: app-specific pretend versions apply to startup and manual checks.
-craft-update = { version = "=0.1.0", git = "https://github.com/storytold/craft-libs", rev = "33be35625e252cc4f06aa375b3b428521faea37d", features = ["egui"] }
-craft-mcp-server = { version = "=0.1.0", git = "https://github.com/storytold/craft-libs", rev = "33be35625e252cc4f06aa375b3b428521faea37d" }
+craft-update = { version = "=0.1.0", git = "https://github.com/storytold/craft-libs", rev = "a3fca1707941bce4768586661ccbb94c44ee46eb", features = ["egui"] }
+craft-mcp-server = { version = "=0.1.0", git = "https://github.com/storytold/craft-libs", rev = "a3fca1707941bce4768586661ccbb94c44ee46eb" }
 
 # ui
-craft-ui = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "33be35625e252cc4f06aa375b3b428521faea37d", features = ["serde"] }
+craft-ui = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "a3fca1707941bce4768586661ccbb94c44ee46eb", features = ["serde"] }
 egui = { version = "0.37" }
 # Resizable table columns (About ▸ Contributors / Models); no image loaders.
 egui_extras = { version = "0.37", default-features = false }
