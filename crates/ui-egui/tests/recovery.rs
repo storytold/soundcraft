@@ -60,7 +60,7 @@ fn an_exit_without_quit_offers_unsaved_changes_at_the_next_launch() {
     first.close_autosave();
     drop(first);
 
-    let mut h = Harness::builder().with_size(vec2(1600.0, 1000.0)).build_ui_state(
+    let mut h = Harness::builder().with_context_setup(soundcraft_ui_egui::framework::install_headless).with_size(vec2(1600.0, 1000.0)).build_ui_state(
         |ui, app: &mut SoundApp| {
             app.logic(&ui.ctx().clone());
             app.ui(ui);
@@ -85,7 +85,7 @@ fn every_change_is_autosaved_within_a_second() {
     let _one = one_at_a_time();
     let dir = folder("recovery-changes");
     let root = dir.join("Autosave");
-    let mut h = Harness::builder().with_size(vec2(1600.0, 1000.0)).build_ui_state(
+    let mut h = Harness::builder().with_context_setup(soundcraft_ui_egui::framework::install_headless).with_size(vec2(1600.0, 1000.0)).build_ui_state(
         |ui, app: &mut SoundApp| {
             app.logic(&ui.ctx().clone());
             app.ui(ui);

@@ -360,7 +360,7 @@ mod tests {
     fn harness() -> Harness<'static, SoundApp> {
         let mut app = SoundApp::new(soundcraft_engine::Engine::default(), None, Services::default());
         assert!(app.dialogs.open_for_command(&app.engine, "track.new"));
-        let mut h = Harness::builder().with_size(vec2(1600.0, 1000.0)).build_ui_state(
+        let mut h = Harness::builder().with_context_setup(crate::framework::install_headless).with_size(vec2(1600.0, 1000.0)).build_ui_state(
             |ui, app: &mut SoundApp| {
                 app.logic(ui.ctx());
                 app.ui(ui);

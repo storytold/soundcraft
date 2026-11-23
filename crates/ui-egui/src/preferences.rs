@@ -1107,7 +1107,7 @@ mod tests {
     fn preferences_harness(size: egui::Vec2) -> Harness<'static, SoundApp> {
         let mut app = SoundApp::new(Engine::default(), None, crate::Services::default());
         app.ui.show_preferences = true;
-        Harness::builder().with_size(size).build_ui_state(
+        Harness::builder().with_context_setup(crate::framework::install_headless).with_size(size).build_ui_state(
             |ui, app: &mut SoundApp| {
                 app.logic(&ui.ctx().clone());
                 app.ui(ui);
@@ -1395,7 +1395,7 @@ mod tests {
     #[test]
     fn soundcraft_menu_opens_preferences_through_the_same_command() {
         let app = SoundApp::new(Engine::default(), None, crate::Services::default());
-        let mut harness = Harness::builder().with_size(egui::vec2(1600.0, 1000.0)).build_ui_state(
+        let mut harness = Harness::builder().with_context_setup(crate::framework::install_headless).with_size(egui::vec2(1600.0, 1000.0)).build_ui_state(
             |ui, app: &mut SoundApp| {
                 app.logic(&ui.ctx().clone());
                 app.ui(ui);
@@ -1415,7 +1415,7 @@ mod tests {
     fn soundcraft_menu_disables_preferences_during_playback() {
         let mut app = SoundApp::new(Engine::default(), None, crate::Services::default());
         app.engine.transport.playing = true;
-        let mut harness = Harness::builder().with_size(egui::vec2(1600.0, 1000.0)).build_ui_state(
+        let mut harness = Harness::builder().with_context_setup(crate::framework::install_headless).with_size(egui::vec2(1600.0, 1000.0)).build_ui_state(
             |ui, app: &mut SoundApp| {
                 app.logic(&ui.ctx().clone());
                 app.ui(ui);

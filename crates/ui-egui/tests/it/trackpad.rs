@@ -18,6 +18,7 @@ impl Rig {
         let (tx, rx) = channel();
         let app = SoundApp::new(soundcraft_engine::demo::demo_engine(), None, Services::default()).with_control(rx);
         let mut r = Rig { ctx: egui::Context::default(), app, tx, width };
+        soundcraft_ui_egui::framework::install_headless(&r.ctx);
         // egui 0.37 scroll areas treat point wheel events as a trackpad: they rubber-band at an
         // edge and can coast after the gesture. These tests assert exact offsets, so the rig uses
         // deterministic scrolling (production keeps the kinetic feel).

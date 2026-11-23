@@ -49,7 +49,7 @@ fn harness() -> (Harness<'static, SoundApp>, TrackId) {
     let keys = engine.session().tracks.iter().find(|t| t.name == "Keys").unwrap().id;
     let mut app = SoundApp::new(engine, None, Services::default());
     app.ui.plugin_windows.push((keys, soundcraft_mix::INSTRUMENT_SLOT));
-    let mut h = Harness::builder().with_size(vec2(1600.0, 1000.0)).build_ui_state(
+    let mut h = Harness::builder().with_context_setup(soundcraft_ui_egui::framework::install_headless).with_size(vec2(1600.0, 1000.0)).build_ui_state(
         |ui, app: &mut SoundApp| {
             let ctx = ui.ctx().clone();
             app.logic(&ctx);

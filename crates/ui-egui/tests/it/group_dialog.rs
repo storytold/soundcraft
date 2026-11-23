@@ -18,7 +18,7 @@ fn dragging_down_the_group_dialogs_track_list_adds_each_track() {
     assert!(tracks.len() >= 4);
     app.run("edit.select", json!({"tracks": [tracks[0].0], "exact": true})).unwrap();
     menus::invoke_menu(&mut app, "track.group", "Track > Group...");
-    let mut h = Harness::builder().with_size(vec2(1600.0, 1000.0)).build_ui_state(
+    let mut h = Harness::builder().with_context_setup(soundcraft_ui_egui::framework::install_headless).with_size(vec2(1600.0, 1000.0)).build_ui_state(
         |ui, app: &mut SoundApp| {
             let ctx = ui.ctx().clone();
             app.logic(&ctx);
@@ -61,7 +61,7 @@ fn modify_group_dialog_edits_the_existing_group() {
     assert_eq!((id.map(|i| i.0), name.as_str(), *edit, *mix), (Some(g), "Drums", true, true));
     assert_eq!(members.iter().filter(|m| m.2).map(|m| m.0).collect::<Vec<_>>(), vec![tracks[0].0]);
 
-    let mut h = Harness::builder().with_size(vec2(1600.0, 1000.0)).build_ui_state(
+    let mut h = Harness::builder().with_context_setup(soundcraft_ui_egui::framework::install_headless).with_size(vec2(1600.0, 1000.0)).build_ui_state(
         |ui, app: &mut SoundApp| {
             let ctx = ui.ctx().clone();
             app.logic(&ctx);

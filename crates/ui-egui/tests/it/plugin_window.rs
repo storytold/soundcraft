@@ -7,7 +7,7 @@ fn a_long_plugin_window_stays_on_a_short_screen() {
     let mut app = SoundApp::new(soundcraft_engine::demo::demo_engine(), None, Services::default());
     let kick = app.engine.session().track_by_name("Kick").unwrap().id;
     app.ui.plugin_windows = vec![(kick, 0)];
-    let mut h = Harness::builder().with_size(egui::vec2(1200.0, 500.0)).build_ui_state(
+    let mut h = Harness::builder().with_context_setup(soundcraft_ui_egui::framework::install_headless).with_size(egui::vec2(1200.0, 500.0)).build_ui_state(
         |ui, app: &mut SoundApp| {
             app.logic(&ui.ctx().clone());
             app.ui(ui);

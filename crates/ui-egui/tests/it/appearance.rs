@@ -21,7 +21,7 @@ fn frame(h: &mut Harness<'_, SoundApp>, px: Pos2, pressed: Option<bool>) {
 fn interface_scale_slider_follows_the_pointer() {
     let mut app = SoundApp::new(soundcraft_engine::demo::demo_engine(), None, Services::default());
     app.extra.show_ui_customization = true;
-    let mut h = Harness::builder().with_size(WINDOW_PX).with_pixels_per_point(1.0).build_ui_state(
+    let mut h = Harness::builder().with_context_setup(soundcraft_ui_egui::framework::install_headless).with_size(WINDOW_PX).with_pixels_per_point(1.0).build_ui_state(
         |ui, app: &mut SoundApp| {
             let ctx = ui.ctx().clone();
             app.logic(&ctx);

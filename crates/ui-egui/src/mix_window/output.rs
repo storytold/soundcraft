@@ -147,7 +147,7 @@ mod tests {
         app.run("view.edit_io", json!({})).unwrap();
         app.run("track.height", json!({"tracks": ["Kick"], "height": "medium"})).unwrap();
         let kick = app.engine.session().track_by_name("Kick").unwrap().id;
-        let mut h = Harness::builder().with_size(egui::vec2(1600.0, 1000.0)).build_ui_state(
+        let mut h = Harness::builder().with_context_setup(crate::framework::install_headless).with_size(egui::vec2(1600.0, 1000.0)).build_ui_state(
             |ui, app: &mut SoundApp| {
                 app.logic(ui.ctx());
                 app.ui(ui);
