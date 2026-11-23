@@ -150,7 +150,10 @@ fn clip_events<const DETECT: bool>(
                             release_clip_note(inst, held, live, n.pitch, at.min(release));
                         }
                     }
-                    if blk.delivery == super::ClockDelivery::Coalesced && on.saturating_add(offset) < blk.pos && off > on {
+                    // An attack delivered after its time, from a coalesced packet or from the
+                    // backlog a wire-held block catches up on, keeps its score duration.
+                    let backlog = blk.delivery == super::ClockDelivery::Coalesced || blk.score.start < blk.pos;
+                    if backlog && on.saturating_add(offset) < blk.pos && off > on {
                         let earliest = blk.pos.saturating_add(at as i64).saturating_add(off.saturating_sub(on));
                         late.push(LateRelease { pitch: n.pitch, earliest, released: false });
                     }

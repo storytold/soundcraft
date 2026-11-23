@@ -2245,3 +2245,82 @@ fn stale_clock_clip_bounds_from_a_removed_track_do_not_panic() {
     bounds.apply(&mut original, &tempo);
     assert!(original.tracks.is_empty());
 }
+
+/// Records every note-on and note-off with its absolute sample (block position plus offset).
+struct NoteLog {
+    inner: Box<dyn Plugin>,
+    block: Arc<std::sync::atomic::AtomicI64>,
+    events: Arc<std::sync::Mutex<Vec<(bool, u8, i64)>>>,
+}
+
+impl Plugin for NoteLog {
+    fn info(&self) -> &'static soundcraft_dsp::PluginInfo {
+        self.inner.info()
+    }
+    fn prepare(&mut self, sr: f32, max: usize, ch: usize) {
+        self.inner.prepare(sr, max, ch);
+    }
+    fn reset(&mut self) {}
+    fn process(&mut self, io: &mut [Vec<f32>], frames: usize) {
+        self.inner.process(io, frames);
+    }
+    fn set_param(&mut self, id: &str, v: f32) -> bool {
+        self.inner.set_param(id, v)
+    }
+    fn param(&self, id: &str) -> Option<f32> {
+        self.inner.param(id)
+    }
+    fn note_on(&mut self, offset: usize, n: u8, _: u8) {
+        let at = self.block.load(std::sync::atomic::Ordering::Relaxed) + offset as i64;
+        self.events.lock().unwrap().push((true, n, at));
+    }
+    fn note_off(&mut self, offset: usize, n: u8) {
+        let at = self.block.load(std::sync::atomic::Ordering::Relaxed) + offset as i64;
+        self.events.lock().unwrap().push((false, n, at));
+    }
+}
+
+#[test]
+fn an_attack_released_late_by_a_wire_held_backlog_keeps_its_length() {
+    use soundcraft_midi::{Note, Sequence};
+    use soundcraft_model::{ChannelFormat, Clip, TrackKind};
+    // At 120 BPM and 960 ticks per quarter one tick is 25 samples: the note sounds 24 000..36 000.
+    let mut s = Session { sample_rate: soundcraft_time::SampleRate::HZ_48000, ..Session::default() };
+    let t = s.add_track(TrackKind::Instrument, ChannelFormat::Stereo, None);
+    let clip = s.new_clip_id();
+    let tr = s.track_mut(t).unwrap();
+    tr.instrument = Some(Insert::new("clap:test.notes"));
+    let mut seq = Sequence::default();
+    seq.notes.push(Note { start: 960, length: 480, pitch: 60, channel: 0, velocity: 100, release_velocity: 64 });
+    tr.playlist_mut().unwrap().clips.push(Clip::midi(clip, "note", 0, 96_000, seq));
+    let block = Arc::new(std::sync::atomic::AtomicI64::new(0));
+    let events = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let mut eng = MixEngine::new(48_000.0, 512);
+    eng.set_external_instances(true);
+    eng.adopt(vec![PreparedInstance {
+        track: t,
+        slot: INSTRUMENT_SLOT,
+        id: "clap:test.notes".into(),
+        ch: 2,
+        plugin: Box::new(NoteLog { inner: soundcraft_dsp::create("gain").unwrap(), block: Arc::clone(&block), events: Arc::clone(&events) }),
+    }]);
+    let mut out = vec![vec![0.0; 512]; 2];
+    // The wire holds the score before the attack while the device runs past it.
+    let mut pos = 0;
+    while pos < 28_160 {
+        block.store(pos, std::sync::atomic::Ordering::Relaxed);
+        eng.render_with_clock_limit(&s, pos, 512, &mut out, Some(900));
+        pos += 512;
+    }
+    // Prediction resumes; the held attack is now overdue.
+    while pos < 48_000 {
+        block.store(pos, std::sync::atomic::Ordering::Relaxed);
+        eng.render_with_clock_prediction(&s, pos, 512, &mut out, 2_000);
+        pos += 512;
+    }
+    let events = events.lock().unwrap().clone();
+    let on = events.iter().find(|e| e.0 && e.1 == 60).map(|e| e.2).expect("attack");
+    let off = events.iter().find(|e| !e.0 && e.1 == 60).map(|e| e.2).expect("release");
+    assert!(on > 24_000, "the attack was held: {events:?}");
+    assert!(off - on >= 12_000, "a late attack lost {} samples of its length: {events:?}", 12_000 - (off - on));
+}
