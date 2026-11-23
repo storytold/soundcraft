@@ -126,7 +126,10 @@ impl PreparedResume {
 
 mod wire_step;
 
+pub(crate) type BoundaryListener = std::sync::Arc<dyn Fn(Option<i64>) + Send + Sync>;
+
 pub(crate) struct Follower {
+    pub(crate) boundary_listener: Option<BoundaryListener>,
     edge: wire_step::WireStep,
     pub(crate) cue: Option<PreparedResume>,
     pub(crate) source: Option<u8>,
@@ -176,6 +179,7 @@ pub(crate) struct Follower {
 impl Default for Follower {
     fn default() -> Self {
         Self {
+            boundary_listener: None,
             edge: Default::default(),
             cue: None,
             source: None,
@@ -450,6 +454,9 @@ impl Follower {
         false
     }
     pub(crate) fn lost(&mut self) {
+        if let Some(listener) = &self.boundary_listener {
+            listener(None);
+        }
         self.cue = None;
         self.coast_period_us = self.bpm().map(|bpm| 2_500_000. / bpm).or(self.coast_period_us);
         self.short.clear();
@@ -683,6 +690,9 @@ impl Follower {
             match byte {
                 0xf8 => self.clock(at),
                 0xfa => {
+                    if let Some(listener) = &self.boundary_listener {
+                        listener(None);
+                    }
                     self.state = State::Waiting;
                     self.next_pulse = 0;
                     self.awaiting_clock = Some(at);
@@ -690,10 +700,16 @@ impl Follower {
                 }
                 0xfb => {
                     if self.state != State::Locked {
+                        if let Some(listener) = &self.boundary_listener {
+                            listener(None);
+                        }
                         self.awaiting_clock = Some(at);
                     }
                 }
                 0xfc => {
+                    if self.state == State::Locked && let Some(listener) = &self.boundary_listener {
+                        listener(Some(self.played_pulse));
+                    }
                     self.awaiting_clock = None;
                     self.state = State::Stopped;
                     self.push(Action::Stop);

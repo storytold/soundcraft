@@ -29,6 +29,7 @@ struct Packet {
     at: Instant,
     bytes: Bytes,
     retry: bool,
+    clock_pass: Option<u64>,
 }
 struct Completion {
     packets: Vec<Packet>,
@@ -54,9 +55,35 @@ impl PortIo {
             .name("MIDI port delivery".into())
             .spawn(move || {
                 super::raise_delivery_priority();
+                let mut next_pulse: Option<i64> = None;
+                let mut rolling = false;
                 for packets in rx {
                     let failure = packets.iter().enumerate().find_map(|(index, p)| {
                         let msg = p.bytes.as_slice();
+                        // Decode this destination's musical position in wire order, including
+                        // a nonzero SPP before Continue. A reconnection starts with no position.
+                        match msg {
+                            [0xfa] => {
+                                next_pulse = Some(0);
+                                rolling = true;
+                            }
+                            [0xfb] => rolling = true,
+                            [0xfc] => rolling = false,
+                            [0xf2, lo, hi] => next_pulse = Some(6 * (i64::from(*lo) | (i64::from(*hi) << 7))),
+                            [0xf8] if rolling => {
+                                if let (Some(pass), Some(pulse)) = (p.clock_pass, next_pulse)
+                                    && pass != 0
+                                    && stats.stopped_pass.load(std::sync::atomic::Ordering::Acquire) == pass
+                                {
+                                    let (stopped, last) = *stats.stopped_boundary.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+                                    if stopped == pass && pulse > last {
+                                        return None;
+                                    }
+                                }
+                                next_pulse = next_pulse.map(|n| n.saturating_add(1));
+                            }
+                            _ => {}
+                        }
                         match connection.send_at(p.at, msg) {
                             Ok(handed) => {
                                 stats.delivered(p.at, handed, msg, p.retry);
@@ -76,7 +103,11 @@ impl PortIo {
 }
 impl Destination for PortIo {
     fn submit(&mut self, at: Instant, bytes: &[u8], retry: bool, _stats: &Stats) -> Result<(), String> {
-        self.staged.push(Packet { at, bytes: Bytes::new(bytes), retry });
+        self.staged.push(Packet { at, bytes: Bytes::new(bytes), retry, clock_pass: None });
+        Ok(())
+    }
+    fn submit_beat(&mut self, at: Instant, pass: u64, _stats: &Stats) -> Result<(), String> {
+        self.staged.push(Packet { at, bytes: Bytes::new(&[0xf8]), retry: false, clock_pass: Some(pass) });
         Ok(())
     }
     fn flush(&mut self) {
@@ -138,5 +169,74 @@ mod tests {
         let mut cleanup = VecDeque::from([vec![0xfc]]);
         assert_eq!(port.ready(&mut cleanup), Err("delivery failed".into()));
         assert_eq!(cleanup, VecDeque::from([vec![0xfc]]));
+    }
+}
+#[cfg(test)]
+mod stop_boundary_tests {
+    use super::super::{Output, SyncPort};
+    use super::*;
+    use crate::midi::MidiFeed;
+    use std::sync::{Arc, Mutex};
+    use std::time::{Duration, Instant};
+
+    struct Wire(Arc<Mutex<Vec<Vec<u8>>>>);
+    impl SyncPort for Wire {
+        fn send_at(&mut self, _: Instant, bytes: &[u8]) -> Result<Instant, String> {
+            self.0.lock().unwrap().push(bytes.to_vec());
+            Ok(Instant::now())
+        }
+    }
+
+    fn check(start: i64, coast: bool, outgoing_pass: u64, final_clocks: usize, expect: usize) {
+        let mut output = Output::default();
+        let feed = Arc::new(MidiFeed::default());
+        output.attach_mtc_feed(&feed);
+        feed.set_clock_follow(Some(0), true, 0, false);
+        let spp = [0xf2, (start / 6) as u8, 0];
+        let launch = if start == 0 { 0xfa } else { 0xfb };
+        feed.set_clock(0);
+        feed.receive(0, &spp);
+        feed.set_clock(0);
+        feed.receive(0, &[launch]);
+        feed.set_clock(0);
+        feed.receive(0, &[0xf8]);
+        feed.clock_audio_pass.store(42, std::sync::atomic::Ordering::Release);
+        feed.set_clock(20_833);
+        feed.receive(0, &[0xf8]);
+        feed.set_clock(if coast { 900_000 } else { 22_000 });
+        feed.receive(0, &[0xfc]);
+
+        let sent = Arc::new(Mutex::new(Vec::new()));
+        let mut port = PortIo::new(Wire(sent.clone()), output.stats.clone()).unwrap();
+        let now = Instant::now();
+        port.submit(now, &spp, false, &output.stats).unwrap();
+        port.submit(now, &[launch], false, &output.stats).unwrap();
+        for _ in 0..final_clocks {
+            port.submit_beat(now, outgoing_pass, &output.stats).unwrap();
+        }
+        port.submit(now, &[0xfc], true, &output.stats).unwrap();
+        port.flush();
+        let mut cleanup = VecDeque::new();
+        let end = Instant::now() + Duration::from_secs(2);
+        while !port.ready(&mut cleanup).unwrap() {
+            assert!(Instant::now() < end);
+            std::thread::yield_now();
+        }
+        let sent = sent.lock().unwrap();
+        assert_eq!(sent.iter().filter(|msg| msg.as_slice() == [0xf8]).count(), expect);
+        assert_eq!(sent.last().unwrap().as_slice(), [0xfc]);
+    }
+    #[test]
+    fn explicit_external_stop_keeps_the_owed_clock_and_rejects_only_surplus() {
+        check(0, false, 42, 3, 2);
+    }
+    #[test]
+    fn nonzero_continue_stop_uses_absolute_pulses_and_only_its_audio_pass() {
+        check(96, false, 42, 3, 2);
+        check(96, false, 43, 3, 3);
+    }
+    #[test]
+    fn stop_after_loss_does_not_bound_coasting_by_the_old_wire_count() {
+        check(0, true, 42, 3, 3);
     }
 }

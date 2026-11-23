@@ -154,6 +154,7 @@ pub(crate) type TransportWaker = Arc<dyn Fn(crate::mtc_input::ChaseEvent) + Send
 /// from the audio thread to the UI.
 pub struct MidiFeed {
     clock_follow: Mutex<crate::clock_follow::Follower>,
+    pub(crate) clock_audio_pass: AtomicU64,
     clock_source: AtomicUsize,
     // A single writer (under clock_follow) publishes an optional period and its matching pulse.
     // The callback never waits for a writer; a concurrent change disables prediction for that read.
@@ -224,6 +225,7 @@ impl Default for MidiFeed {
     fn default() -> Self {
         MidiFeed {
             clock_follow: Mutex::default(),
+            clock_audio_pass: AtomicU64::new(0),
             clock_source: AtomicUsize::new(usize::MAX),
             clock_render_generation: AtomicU64::new(0),
             clock_render_coalesced: AtomicBool::new(false),
@@ -404,10 +406,20 @@ impl MidiFeed {
         self.mtc_lock_generation.load(Ordering::Acquire) == lock
     }
 
+    #[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
+    pub(crate) fn set_clock_boundary_listener(&self, listener: Option<crate::clock_follow::BoundaryListener>) {
+        let mut input = self.clock_follow.lock().unwrap_or_else(PoisonError::into_inner);
+        self.clock_audio_pass.store(0, Ordering::Release);
+        input.boundary_listener = listener;
+    }
+
     pub fn set_clock_follow(&self, port: Option<u8>, coast: bool, initial_pulse: i64, waiting_for_output: bool) {
         let mut input = self.clock_follow.lock().unwrap_or_else(PoisonError::into_inner);
         if input.source != port {
+            let listener = input.boundary_listener.take();
+            self.clock_audio_pass.store(0, Ordering::Release);
             *input = Default::default();
+            input.boundary_listener = listener;
             input.source = port;
             input.next_pulse = initial_pulse.max(0);
             self.publish_clock_render(&input);

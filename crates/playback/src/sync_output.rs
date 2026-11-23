@@ -37,6 +37,9 @@ impl SyncPort for MidiOutputConnection {
 /// only that destination pauses; reconnection retries unacknowledged cleanup.
 trait Destination: Send {
     fn submit(&mut self, at: Instant, bytes: &[u8], retry: bool, stats: &Stats) -> Result<(), String>;
+    fn submit_beat(&mut self, at: Instant, _pass: u64, stats: &Stats) -> Result<(), String> {
+        self.submit(at, &[0xf8], false, stats)
+    }
     fn ready(&mut self, _cleanup: &mut VecDeque<Vec<u8>>) -> Result<bool, String> {
         Ok(true)
     }
@@ -58,6 +61,10 @@ use port_io::PortIo;
 
 #[derive(Default)]
 struct Stats {
+    // Published once on a selected source's explicit Stop. Normal F8 delivery
+    // needs only the pass comparison; separate destinations retain their own ordinals.
+    stopped_pass: AtomicU64,
+    stopped_boundary: Mutex<(u64, i64)>,
     #[cfg(test)]
     iterations: AtomicU64,
     connected: Mutex<BTreeSet<String>>,
@@ -267,6 +274,19 @@ impl Output {
         })
     }
     pub(crate) fn attach_mtc_feed(&mut self, feed: &Arc<crate::midi::MidiFeed>) -> crate::midi::TransportWaker {
+        if let Some(old) = self.chase_feed.upgrade() {
+            old.set_clock_boundary_listener(None);
+        }
+        let source = Arc::downgrade(feed);
+        let stats = Arc::downgrade(&self.stats);
+        feed.set_clock_boundary_listener(Some(Arc::new(move |last| {
+            let Some(source) = source.upgrade() else { return };
+            let pass = source.clock_audio_pass.swap(0, std::sync::atomic::Ordering::AcqRel);
+            if let (Some(last), Some(stats)) = (last, stats.upgrade()) && pass != 0 {
+                *stats.stopped_boundary.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = (pass, last);
+                stats.stopped_pass.store(pass, std::sync::atomic::Ordering::Release);
+            }
+        })));
         self.chase_feed = Arc::downgrade(feed);
         self.transport_waker()
     }
@@ -597,7 +617,12 @@ impl<C: Destination> Port<C> {
         for e in pending.iter() {
             let bytes = &e.bytes[..e.len];
             let retry = e.route == 0 && bytes == [craft_midi_sync::sync::STOP];
-            if let Err(err) = port.submit(e.at, bytes, retry, stats) {
+            let result = if e.route == 0 && bytes == [0xf8] && self.routes[0].as_ref().is_some_and(|r| r.offset == 0) {
+                port.submit_beat(e.at, e.transport.0, stats)
+            } else {
+                port.submit(e.at, bytes, retry, stats)
+            };
+            if let Err(err) = result {
                 if retry {
                     self.cleanup.push_back(bytes.to_vec());
                 }

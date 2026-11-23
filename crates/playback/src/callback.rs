@@ -320,6 +320,9 @@ impl AudioState {
                     #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
                     if let Some(clock) = &mut self.clock {
                         clock.origin = Some(origin);
+                        if let Some(feed) = &self.midi {
+                            feed.clock_audio_pass.store(clock.pass, Ordering::Release);
+                        }
                     }
                     self.mix.start_midi_at(origin);
                     self.following_clock = true;
