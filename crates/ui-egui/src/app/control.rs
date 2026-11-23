@@ -76,16 +76,14 @@ impl SoundApp {
 
     /// Whether `received` is the event `wanted` after egui's input pass. egui rewrites the `repeat`
     /// flag of `egui::Event::Key` from the keys held in the previous pass, so a scripted press can
-    /// arrive marked as a repeat; the other fields still identify the event. Off macOS the UI
-    /// runtime's input hook turns a smooth Ctrl+wheel event into a pinch step (craft-ui's legacy
-    /// pinch rule), as it does for the host's own touchpad. All other events must match exactly.
+    /// arrive marked as a repeat; the other fields still identify the event. All other events must
+    /// match exactly.
     pub(crate) fn synthetic_event_received(wanted: &egui::Event, received: &egui::Event) -> bool {
         match (wanted, received) {
             (
                 egui::Event::Key { key, physical_key, pressed, modifiers, .. },
                 egui::Event::Key { key: got_key, physical_key: got_physical, pressed: got_pressed, modifiers: got_modifiers, .. },
             ) => key == got_key && physical_key == got_physical && pressed == got_pressed && modifiers == got_modifiers,
-            (egui::Event::MouseWheel { modifiers, .. }, egui::Event::Zoom(_)) => modifiers.ctrl && !modifiers.alt && !modifiers.shift,
             _ => wanted == received,
         }
     }

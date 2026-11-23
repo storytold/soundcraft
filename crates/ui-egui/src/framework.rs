@@ -12,7 +12,7 @@ use std::sync::{Arc, OnceLock};
 
 use craft_host::target::ShellInfo;
 use craft_host::{AppInfo, Host};
-use craft_keymap::Overrides;
+use craft_keymap::{Chord, Key, Mods, Overrides};
 use craft_ui::fonts::{I18nScripts, SystemFonts, UiFonts};
 use craft_ui::runtime::commands::CommandInput;
 use craft_ui::runtime::env::{RootEnv, Scale};
@@ -93,7 +93,8 @@ impl SoundApp {
     /// (`extra_windows`), so the runtime's zoom and SoundCraft's agree.
     fn frame_input(&mut self, _output: FrameOutput) -> FrameInput {
         let mode = if crate::theme::is_light() { craft_theme::Mode::Light } else { craft_theme::Mode::Dark };
-        let root = RootEnv::new().mode(mode).scale(Scale::new(self.extra.applied_scale()));
+        // SoundCraft zooms with Cmd/Ctrl+scroll itself, so a smooth Ctrl+wheel stays a wheel event.
+        let root = RootEnv::new().mode(mode).scale(Scale::new(self.extra.applied_scale())).ctrl_wheel_pinch(false);
         FrameInput::new(root).commands(CommandInput::new().overrides(command_overrides())).host(Arc::clone(&self.framework_host))
     }
 
@@ -116,11 +117,16 @@ impl SoundApp {
     }
 }
 
+/// The edit-mode keys (Alt+1 to Alt+4, Pro Tools' Shuffle, Slip, Spot and Grid) the session view claims, so Alt-code
+/// entry leaves them to SoundCraft's shortcuts.
+const EDIT_MODE_KEYS: [Chord; 4] =
+    [Chord::new(Mods::ALT, Key::Num1), Chord::new(Mods::ALT, Key::Num2), Chord::new(Mods::ALT, Key::Num3), Chord::new(Mods::ALT, Key::Num4)];
+
 /// Declares the session view `id`, drawn in this pass, as the window's document canvas. With nothing focused it is
-/// the window's key target: Tab, the edit chords and the clipboard events stay in egui's input for SoundCraft's
-/// shortcuts, as do the arrows, Enter and the page keys.
+/// the window's key target: Tab, the edit chords, the clipboard events and the edit-mode keys stay in egui's input for
+/// SoundCraft's shortcuts, as do the arrows, Enter and the page keys.
 pub(crate) fn host_canvas(ctx: &egui::Context, id: egui::Id) {
-    const KEYS: KeyUse = KeyUse::CANVAS.with_keep(KeepKeys::Tab).with_edits(EditSet::ALL);
+    const KEYS: KeyUse = KeyUse::CANVAS.with_keep(KeepKeys::Tab).with_edits(EditSet::ALL).with_claims(&EDIT_MODE_KEYS);
     craft_ui::runtime::focus::host_canvas(ctx, id, KEYS);
 }
 

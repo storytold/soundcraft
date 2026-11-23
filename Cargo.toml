@@ -11,9 +11,9 @@ rust-version = "1.95"
 repository = "https://github.com/storytold/soundcraft"
 
 [workspace.dependencies]
-craft-score = { git = "https://github.com/storytold/craft-libs", rev = "b436ae992591173ce53fdb1314421ba2d8897e49" }
-craft-xml = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "b436ae992591173ce53fdb1314421ba2d8897e49" }
-craft-mime = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "b436ae992591173ce53fdb1314421ba2d8897e49" }
+craft-score = { git = "https://github.com/aiongg/craft-libs", rev = "55fef13aaf67a61c6393b5a4339bef712b9aa2fe" }
+craft-xml = { version = "0.1.0", git = "https://github.com/aiongg/craft-libs", rev = "55fef13aaf67a61c6393b5a4339bef712b9aa2fe" }
+craft-mime = { version = "0.1.0", git = "https://github.com/aiongg/craft-libs", rev = "55fef13aaf67a61c6393b5a4339bef712b9aa2fe" }
 # internal
 soundcraft-interchange = { path = "crates/interchange" }
 soundcraft-time = { path = "crates/time" }
@@ -61,34 +61,34 @@ cpal = "0.18"
 midir = "=0.11.1"
 
 # Which file paths stored in a session may be opened.
-craft-docpath = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "b436ae992591173ce53fdb1314421ba2d8897e49" }
+craft-docpath = { version = "0.1.0", git = "https://github.com/aiongg/craft-libs", rev = "55fef13aaf67a61c6393b5a4339bef712b9aa2fe" }
 
 # Video containers and bitstreams, shared with the other craft apps.
-craft-media = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "b436ae992591173ce53fdb1314421ba2d8897e49" }
+craft-media = { version = "0.1.0", git = "https://github.com/aiongg/craft-libs", rev = "55fef13aaf67a61c6393b5a4339bef712b9aa2fe" }
 # H.264 and ProRes codecs shared with the other Craft apps.
-craft-video = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "b436ae992591173ce53fdb1314421ba2d8897e49", default-features = false, features = ["h264-decode", "prores", "mjpeg"] }
+craft-video = { version = "0.1.0", git = "https://github.com/aiongg/craft-libs", rev = "55fef13aaf67a61c6393b5a4339bef712b9aa2fe", default-features = false, features = ["h264-decode", "prores", "mjpeg"] }
 # Audio file formats, codecs and waveform overviews, shared with the other craft apps. It shares
 # types with craft-media, so both stay on one rev.
 # Standard MIDI Files and the note/controller model, shared with the other craft apps.
-craft-midi = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "b436ae992591173ce53fdb1314421ba2d8897e49", features = ["serde"] }
-craft-audio = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "b436ae992591173ce53fdb1314421ba2d8897e49", features = ["decode", "lossless-encode", "peaks", "serde"] }
-craft-time = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "b436ae992591173ce53fdb1314421ba2d8897e49" }
+craft-midi = { version = "0.1.0", git = "https://github.com/aiongg/craft-libs", rev = "55fef13aaf67a61c6393b5a4339bef712b9aa2fe", features = ["serde"] }
+craft-audio = { version = "0.1.0", git = "https://github.com/aiongg/craft-libs", rev = "55fef13aaf67a61c6393b5a4339bef712b9aa2fe", features = ["decode", "lossless-encode", "peaks", "serde"] }
+craft-time = { version = "0.1.0", git = "https://github.com/aiongg/craft-libs", rev = "55fef13aaf67a61c6393b5a4339bef712b9aa2fe" }
 # AAF property-stream framing, shared with the other craft apps.
-craft-aaf = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "b436ae992591173ce53fdb1314421ba2d8897e49" }
-craft-scraft-format = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "b436ae992591173ce53fdb1314421ba2d8897e49" }
+craft-aaf = { version = "0.1.0", git = "https://github.com/aiongg/craft-libs", rev = "55fef13aaf67a61c6393b5a4339bef712b9aa2fe" }
+craft-scraft-format = { version = "0.1.0", git = "https://github.com/aiongg/craft-libs", rev = "55fef13aaf67a61c6393b5a4339bef712b9aa2fe" }
 # craft-update: app-specific pretend versions apply to startup and manual checks.
-craft-update = { version = "=0.1.0", git = "https://github.com/storytold/craft-libs", rev = "b436ae992591173ce53fdb1314421ba2d8897e49", features = ["ui"] }
-craft-mcp-server = { version = "=0.1.0", git = "https://github.com/storytold/craft-libs", rev = "b436ae992591173ce53fdb1314421ba2d8897e49" }
+craft-update = { version = "=0.1.0", git = "https://github.com/aiongg/craft-libs", rev = "55fef13aaf67a61c6393b5a4339bef712b9aa2fe", features = ["ui"] }
+craft-mcp-server = { version = "=0.1.0", git = "https://github.com/aiongg/craft-libs", rev = "55fef13aaf67a61c6393b5a4339bef712b9aa2fe" }
 
 # ui
-craft-ui = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "b436ae992591173ce53fdb1314421ba2d8897e49" }
-craft-behavior = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "b436ae992591173ce53fdb1314421ba2d8897e49" }
+craft-ui = { version = "0.1.0", git = "https://github.com/aiongg/craft-libs", rev = "55fef13aaf67a61c6393b5a4339bef712b9aa2fe" }
+craft-behavior = { version = "0.1.0", git = "https://github.com/aiongg/craft-libs", rev = "55fef13aaf67a61c6393b5a4339bef712b9aa2fe" }
 # The framework runtime's host: the app's identity, its window services, its key overrides and the theme mode
 # the framework's components draw in (craft-libs).
-craft-host = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "b436ae992591173ce53fdb1314421ba2d8897e49" }
-craft-keymap = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "b436ae992591173ce53fdb1314421ba2d8897e49" }
-craft-theme = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "b436ae992591173ce53fdb1314421ba2d8897e49" }
-craft-window = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "b436ae992591173ce53fdb1314421ba2d8897e49" }
+craft-host = { version = "0.1.0", git = "https://github.com/aiongg/craft-libs", rev = "55fef13aaf67a61c6393b5a4339bef712b9aa2fe" }
+craft-keymap = { version = "0.1.0", git = "https://github.com/aiongg/craft-libs", rev = "55fef13aaf67a61c6393b5a4339bef712b9aa2fe" }
+craft-theme = { version = "0.1.0", git = "https://github.com/aiongg/craft-libs", rev = "55fef13aaf67a61c6393b5a4339bef712b9aa2fe" }
+craft-window = { version = "0.1.0", git = "https://github.com/aiongg/craft-libs", rev = "55fef13aaf67a61c6393b5a4339bef712b9aa2fe" }
 egui = { version = "0.37" }
 # Resizable table columns (About ▸ Contributors / Models); no image loaders.
 egui_extras = { version = "0.37", default-features = false }

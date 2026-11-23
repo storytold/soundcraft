@@ -606,7 +606,8 @@ struct DockSpecs {
 impl PanelSpecs<Panel> for DockSpecs {
     fn spec(&self, panel: &Panel) -> PanelSpec {
         let label = Panel::ALL.iter().position(|p| p == panel).and_then(|index| self.labels.get(index)).cloned().unwrap_or_default();
-        let spec = PanelSpec::new(label).limits(panel_limits(panel));
+        // Every panel is SoundCraft's own egui code: the dock runs it with the window's style.
+        let spec = PanelSpec::new(label).limits(panel_limits(panel)).host_body();
         if *panel == Panel::Canvas { spec.canvas() } else { spec }
     }
 
@@ -628,12 +629,6 @@ fn session_id(edit: bool) -> egui::Id {
     egui::Id::unique(("soundcraft-session-view", edit))
 }
 
-/// Gives SoundCraft's own views in the dock the app's egui style, as the window's root `Ui` has it: the dock lays
-/// its parts out with the framework's spacing, and the views measure and scroll with SoundCraft's.
-fn app_style(ui: &mut egui::Ui) {
-    ui.set_style(ui.ctx().global_style());
-}
-
 /// The dock's panels over the app in one pass.
 struct Panels<'a> {
     app: &'a mut crate::SoundApp,
@@ -643,7 +638,6 @@ struct Panels<'a> {
 impl DockPanels<Panel> for Panels<'_> {
     fn body(&mut self, panel: &Panel, ui: &mut egui::Ui, _: &mut BodyCx<'_>) {
         let app = &mut *self.app;
-        app_style(ui);
         match panel {
             // The session view is its group's `group_view`.
             Panel::Canvas => {}
@@ -665,7 +659,6 @@ impl DockPanels<Panel> for Panels<'_> {
             return None;
         }
         crate::framework::host_canvas(ui.ctx(), session_id(self.edit));
-        app_style(ui);
         ui.painter().rect_filled(rect, 0.0, crate::theme::Tokens::current().window_bg);
         if self.edit {
             crate::edit_window::main_area(self.app, ui);
