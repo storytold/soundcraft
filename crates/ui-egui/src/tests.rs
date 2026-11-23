@@ -1486,7 +1486,9 @@ fn a_font_gated_pass_does_not_ack_the_pending_synthetic_batch() {
         app.ui(ui);
     });
     out.textures_delta.clear();
-    assert!(!app.fonts_ready, "the first pass installs fonts but does not lay out");
+    // The fonts load in the gated first pass, which asks for a discard pass (`craft_ui::fonts::load`); that pass
+    // lays out with them but gets no input events, so neither pass acknowledges the batch.
+    assert!(app.fonts_installed, "the first pass installs fonts");
     assert!(app.synthetic_batch.is_some(), "the font gate returns before the acknowledgement");
     assert_eq!(app.synthetic_applied_batches, 0);
     // The next hook offers the same batch to the first laid-out pass, which applies it once.

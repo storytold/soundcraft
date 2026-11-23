@@ -6140,9 +6140,13 @@ version = "0.20.1"
 dependencies = [
  "craft-audio",
  "craft-behavior",
+ "craft-host",
+ "craft-keymap",
  "craft-mime",
+ "craft-theme",
  "craft-ui",
  "craft-update",
+ "craft-window",
  "egui",
  "egui_extras",
  "egui_kittest",

@@ -625,7 +625,13 @@ fn refresh_specs(app: &mut crate::SoundApp) {
 
 /// The session view's id as the window's document canvas.
 fn session_id(edit: bool) -> egui::Id {
-    egui::Id::new(("soundcraft-session-view", edit))
+    egui::Id::unique(("soundcraft-session-view", edit))
+}
+
+/// Gives SoundCraft's own views in the dock the app's egui style, as the window's root `Ui` has it: the dock lays
+/// its parts out with the framework's spacing, and the views measure and scroll with SoundCraft's.
+fn app_style(ui: &mut egui::Ui) {
+    ui.set_style(ui.ctx().global_style());
 }
 
 /// The dock's panels over the app in one pass.
@@ -637,6 +643,7 @@ struct Panels<'a> {
 impl DockPanels<Panel> for Panels<'_> {
     fn body(&mut self, panel: &Panel, ui: &mut egui::Ui, _: &mut BodyCx<'_>) {
         let app = &mut *self.app;
+        app_style(ui);
         match panel {
             // The session view is its group's `group_view`.
             Panel::Canvas => {}
@@ -658,6 +665,7 @@ impl DockPanels<Panel> for Panels<'_> {
             return None;
         }
         crate::framework::host_canvas(ui.ctx(), session_id(self.edit));
+        app_style(ui);
         ui.painter().rect_filled(rect, 0.0, crate::theme::Tokens::current().window_bg);
         if self.edit {
             crate::edit_window::main_area(self.app, ui);
