@@ -47,7 +47,8 @@ impl Cursor {
         // A continuously observed start at zero is unambiguous even if the first
         // audio buffer arrived a pulse late. Freshly attached workers still locate
         // to live time, as do workers more than a sixteenth into the new pass.
-        let window = if was_stopped && origin == 0 && !origin_changed { RELAUNCH_PULSES } else { 1 };
+        let prearmed_zero = was_stopped && origin == 0 && !origin_changed;
+        let window = if prearmed_zero { RELAUNCH_PULSES } else { 1 };
         let timely_origin = changed && block.playing
             && tempo.samples_to_ticks_f(at, rate) - tempo.samples_to_ticks_f(origin, rate) < (window * TICKS_PER_CLOCK) as f64;
         if timely_origin {
@@ -59,7 +60,7 @@ impl Cursor {
             if sent_clock {
                 // The first F8 was delivered now. Spread a late start over the
                 // first beat so the next F8 does not immediately follow it.
-                self.repayment = Repayment::after_start(self.next_pulse.saturating_sub(1), at, session);
+                self.repayment = Repayment::after_start(self.next_pulse.saturating_sub(1), at, session, prearmed_zero);
                 // Deliver any other pulse that rounds to this sample on a separate wake.
                 return;
             }

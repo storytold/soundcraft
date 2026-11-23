@@ -14,13 +14,13 @@ pub(super) struct Repayment {
 }
 
 impl Repayment {
-    pub(super) fn after_start(first: i64, at: i64, session: &Session) -> Option<Self> {
+    pub(super) fn after_start(first: i64, at: i64, session: &Session, prearmed_zero: bool) -> Option<Self> {
         let rate = session.sample_rate;
         let sample = |pulse: i64| session.tempo.tick_to_samples(pulse.saturating_mul(TICKS_PER_CLOCK), rate);
         let start = sample(first);
         let next = sample(first.saturating_add(1));
         let delay = at.saturating_sub(start);
-        if delay <= 0 || next <= start || delay.saturating_mul(4) < next.saturating_sub(start) {
+        if delay <= 0 || next <= start || (!prearmed_zero && at >= next) || delay.saturating_mul(4) < next.saturating_sub(start) {
             return None;
         }
         let last_pulse = first.saturating_add(i64::from(CLOCKS_PER_QUARTER));
