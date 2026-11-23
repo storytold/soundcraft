@@ -239,4 +239,67 @@ mod stop_boundary_tests {
     fn stop_after_loss_does_not_bound_coasting_by_the_old_wire_count() {
         check(0, true, 42, 3, 3);
     }
+
+    #[test]
+    fn stop_between_two_native_sends_preserves_an_owed_tick_in_the_outstanding_batch() {
+        use crate::{Cmd, Shared, callback::AudioState};
+        use std::sync::mpsc::{Receiver, SyncSender, channel, sync_channel};
+
+        struct PausedPort {
+            first_clock: Option<(SyncSender<()>, Receiver<()>)>,
+            sent: std::sync::mpsc::Sender<u8>,
+        }
+        impl SyncPort for PausedPort {
+            fn send_at(&mut self, _: Instant, bytes: &[u8]) -> Result<Instant, String> {
+                let at = Instant::now();
+                self.sent.send(bytes[0]).unwrap();
+                if bytes == [0xf8]
+                    && let Some((entered, resume)) = self.first_clock.take()
+                {
+                    entered.send(()).unwrap();
+                    resume.recv_timeout(Duration::from_secs(2)).unwrap();
+                }
+                Ok(at)
+            }
+        }
+
+        let mut output = Output::default();
+        let feed = Arc::new(MidiFeed::default());
+        output.attach_mtc_feed(&feed);
+        feed.set_clock_follow(Some(0), false, 0, false);
+        feed.set_clock(1);
+        feed.receive(0, &[0xfa, 0xf8]);
+        let (tx, rx) = channel();
+        let shared = Arc::new(Shared { position: 0.into(), playing: false.into(), speed: 1000.into(), meters: Mutex::default() });
+        let mut audio = AudioState::new(rx, shared, Arc::default(), 48_000., channel().0);
+        tx.send(Cmd::Midi(feed.clone())).unwrap();
+        tx.send(Cmd::Clock(Some(crate::sync_clock::Publisher::new(output.view.clone(), output.metrics.clone())))).unwrap();
+        tx.send(Cmd::PlayClock { origin: 0, render_from: 0 }).unwrap();
+        audio.fill(&mut [0.; 256], 2);
+        let (pass, playing) = output.view.lock().unwrap().transport_state().unwrap();
+        assert!(playing);
+        feed.set_clock(20_834);
+        feed.receive(0, &[0xf8]);
+
+        let (notify, entered) = sync_channel(1);
+        let (resume, wait) = channel();
+        let (sent, received) = channel();
+        let mut port = PortIo::new(PausedPort { first_clock: Some((notify, wait)), sent }, output.stats.clone()).unwrap();
+        let now = Instant::now();
+        port.submit(now, &[0xfa], false, &output.stats).unwrap();
+        for _ in 0..3 {
+            port.submit_beat(now, pass, &output.stats).unwrap();
+        }
+        port.submit(now, &[0xfc], true, &output.stats).unwrap();
+        port.flush();
+        entered.recv_timeout(Duration::from_secs(2)).unwrap();
+        feed.set_clock(22_000);
+        feed.receive(0, &[0xfc]);
+        resume.send(()).unwrap();
+        let mut bytes = vec![];
+        while bytes.last() != Some(&0xfc) {
+            bytes.push(received.recv_timeout(Duration::from_secs(2)).unwrap());
+        }
+        assert_eq!(bytes, [0xfa, 0xf8, 0xf8, 0xfc]);
+    }
 }
