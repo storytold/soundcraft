@@ -3,8 +3,8 @@ use crate::{SoundApp, TransportRequest, Value, json};
 use soundcraft_playback::clock_follow::{Action, Snapshot, State};
 use soundcraft_time::{SampleRate, TICKS_PER_QUARTER, TempoMap};
 
-mod history;
 mod device_time;
+mod history;
 
 const TICKS_PER_PULSE: i64 = TICKS_PER_QUARTER / 24;
 
@@ -312,9 +312,10 @@ impl SoundApp {
         }
         self.clock_follow.actions = events;
         if let Some(grid) = self.engine.playback_tempo.as_mut() {
-            let device_snapshot = self.clock_follow.device_time.project(s, self.clock_follow.anchor, sr, || {
-                self.player.as_ref().and_then(|player| player.clock_follow_sample())
-            });
+            let device_snapshot = self
+                .clock_follow
+                .device_time
+                .project(s, self.clock_follow.anchor, sr, || self.player.as_ref().and_then(|player| player.clock_follow_sample()));
             self.clock_follow.grid_dirty |= update_grid(
                 grid,
                 self.clock_follow.anchor,

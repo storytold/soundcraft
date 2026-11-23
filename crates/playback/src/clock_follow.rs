@@ -1,4 +1,4 @@
-﻿//! Incoming MIDI Beat Clock. The input thread timestamps and interprets the wire;
+//! Incoming MIDI Beat Clock. The input thread timestamps and interprets the wire;
 //! the host drains only transport transitions. Ordinary clock ticks take no queue space.
 use crate::sync_input::PulseFit;
 
@@ -737,7 +737,9 @@ impl Follower {
                     }
                 }
                 0xfc => {
-                    if self.state == State::Locked && let Some(listener) = &self.boundary_listener {
+                    if self.state == State::Locked
+                        && let Some(listener) = &self.boundary_listener
+                    {
                         listener(Some(self.played_pulse));
                     }
                     self.awaiting_clock = None;

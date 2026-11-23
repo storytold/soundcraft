@@ -282,7 +282,9 @@ impl Output {
         feed.set_clock_boundary_listener(Some(Arc::new(move |last| {
             let Some(source) = source.upgrade() else { return };
             let pass = source.clock_audio_pass.swap(0, std::sync::atomic::Ordering::AcqRel);
-            if let (Some(last), Some(stats)) = (last, stats.upgrade()) && pass != 0 {
+            if let (Some(last), Some(stats)) = (last, stats.upgrade())
+                && pass != 0
+            {
                 *stats.stopped_boundary.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = (pass, last);
                 stats.stopped_pass.store(pass, std::sync::atomic::Ordering::Release);
             }
