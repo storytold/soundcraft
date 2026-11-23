@@ -183,7 +183,7 @@ impl NewTracks {
                     ui.label(crate::localization::text("new"));
                     let format = if has_format(&row.kind) {
                         Some(
-                            craft_ui::ComboBox::from_id_salt("nt_fmt")
+                            egui::ComboBox::from_id_salt("nt_fmt")
                                 .width(widths.format)
                                 .selected_text(crate::localization::text(&row.format))
                                 .show_ui(ui, |ui| {
@@ -198,7 +198,7 @@ impl NewTracks {
                         ui.allocate_space(vec2(widths.format, ui.spacing().interact_size.y));
                         None
                     };
-                    let kind = craft_ui::ComboBox::from_id_salt("nt_kind")
+                    let kind = egui::ComboBox::from_id_salt("nt_kind")
                         .width(widths.kind)
                         .selected_text(crate::localization::text(TrackKind::from_id(&row.kind).map_or("Audio Track", |k| k.label())))
                         .show_ui(ui, |ui| {
@@ -213,7 +213,7 @@ impl NewTracks {
                     let timebase = if has_timebase(&row.kind) {
                         ui.label(crate::localization::text("in"));
                         Some(
-                            craft_ui::ComboBox::from_id_salt("nt_tb")
+                            egui::ComboBox::from_id_salt("nt_tb")
                                 .width(widths.timebase)
                                 .selected_text(crate::localization::text(if row.timebase == "ticks" { "Ticks" } else { "Samples" }))
                                 .show_ui(ui, |ui| {

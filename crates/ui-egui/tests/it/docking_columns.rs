@@ -1,7 +1,9 @@
 //! The side lists in dock columns: the default shapes, saved layouts, drops into a column and
 //! panels reopening in their dock.
-use craft_ui::docking::{Column, Divider, DockArea, Group, Hit, Node, Side};
-use craft_ui::layout::{SplitAxis, SplitSize};
+use craft_behavior::dock::{Column, DockSide, Group, Node};
+use craft_ui::docking::{Divider, DockArea, Hit};
+use craft_behavior::dock::SplitSize;
+use craft_behavior::flow::Axis;
 use egui::{Rect, accesskit::Role};
 use egui_kittest::kittest::Queryable;
 use serde_json::json;
@@ -14,16 +16,16 @@ fn tabs(panel: Panel) -> Node<Panel> {
     Node::Tabs { panels: vec![panel], active: 0 }
 }
 
-fn dock(side: Side, panel: Panel, width: f32) -> Node<Panel> {
+fn dock(side: DockSide, panel: Panel, width: f32) -> Node<Panel> {
     Node::Dock { side, columns: vec![Column::new(vec![Group::new(vec![panel], 0)], width)] }
 }
 
-fn split(axis: SplitAxis, size: SplitSize, first: Node<Panel>, second: Node<Panel>) -> Node<Panel> {
+fn split(axis: Axis, size: SplitSize, first: Node<Panel>, second: Node<Panel>) -> Node<Panel> {
     Node::Split { axis, size, first: Box::new(first), second: Box::new(second) }
 }
 
 /// The columns of the dock on `side`.
-fn columns(node: &Node<Panel>, side: Side) -> Option<&Vec<Column<Panel>>> {
+fn columns(node: &Node<Panel>, side: DockSide) -> Option<&Vec<Column<Panel>>> {
     match node {
         Node::Split { first, second, .. } => columns(first, side).or_else(|| columns(second, side)),
         Node::Dock { side: found, columns } if *found == side => Some(columns),
@@ -31,26 +33,26 @@ fn columns(node: &Node<Panel>, side: Side) -> Option<&Vec<Column<Panel>>> {
     }
 }
 
-fn dock_columns(h: &egui_kittest::Harness<'_, SoundApp>, side: Side) -> Vec<Column<Panel>> {
+fn dock_columns(h: &egui_kittest::Harness<'_, SoundApp>, side: DockSide) -> Vec<Column<Panel>> {
     h.state().ui.docking.layout.root.as_ref().and_then(|root| columns(root, side)).cloned().unwrap_or_default()
 }
 
 #[test]
 fn default_layouts_put_the_side_lists_in_full_height_dock_columns() {
     let edit = docking::edit_default();
-    let session = split(SplitAxis::Vertical, SplitSize::FixedSecond(MIDI_HEIGHT + 26.0), tabs(Panel::Canvas), tabs(Panel::Midi));
+    let session = split(Axis::Y, SplitSize::FixedSecond(MIDI_HEIGHT + 26.0), tabs(Panel::Canvas), tabs(Panel::Midi));
     let expected = split(
-        SplitAxis::Horizontal,
+        Axis::X,
         SplitSize::FixedFirst(TRACKS_WIDTH),
-        dock(Side::Start, Panel::Tracks, TRACKS_WIDTH),
-        split(SplitAxis::Horizontal, SplitSize::FixedSecond(CLIPS_WIDTH), session, dock(Side::End, Panel::Clips, CLIPS_WIDTH)),
+        dock(DockSide::Start, Panel::Tracks, TRACKS_WIDTH),
+        split(Axis::X, SplitSize::FixedSecond(CLIPS_WIDTH), session, dock(DockSide::End, Panel::Clips, CLIPS_WIDTH)),
     );
     assert_eq!(edit.layout.root, Some(expected));
     assert_eq!((TRACKS_WIDTH, CLIPS_WIDTH, MIDI_HEIGHT), (168.0, 230.0, 320.0));
     let mix = docking::mix_default();
     assert_eq!(
         mix.layout.root,
-        Some(split(SplitAxis::Horizontal, SplitSize::FixedFirst(TRACKS_WIDTH), dock(Side::Start, Panel::Tracks, TRACKS_WIDTH), tabs(Panel::Canvas)))
+        Some(split(Axis::X, SplitSize::FixedFirst(TRACKS_WIDTH), dock(DockSide::Start, Panel::Tracks, TRACKS_WIDTH), tabs(Panel::Canvas)))
     );
     for workspace in [&edit, &mix] {
         let floating: Vec<_> = workspace.layout.floating.iter().map(|window| (window.panels().copied().collect::<Vec<_>>(), window.rect)).collect();
@@ -94,16 +96,16 @@ fn a_tab_dropped_on_a_dock_group_joins_it_in_the_middle_and_stacks_below_in_the_
     let clips = h.get_by_role_and_label(Role::Tab, "Clips").rect().center();
     drag(&mut h, clips, body.center());
     assert_eq!(
-        dock_columns(&h, Side::Start),
+        dock_columns(&h, DockSide::Start),
         [Column::new(vec![Group { active: 1, ..Group::new(vec![Panel::Tracks, Panel::Clips], 0) }], TRACKS_WIDTH)]
     );
-    assert!(dock_columns(&h, Side::End).is_empty(), "the emptied end dock goes");
+    assert!(dock_columns(&h, DockSide::End).is_empty(), "the emptied end dock goes");
 
     let mut h = harness(None, 1400.0, 1.0);
     let body = tracks_body(&h);
     let clips = h.get_by_role_and_label(Role::Tab, "Clips").rect().center();
     drag(&mut h, clips, egui::pos2(body.center().x, body.bottom() - body.height() / 6.0));
-    let column = dock_columns(&h, Side::Start);
+    let column = dock_columns(&h, DockSide::Start);
     let groups: Vec<_> = column.iter().flat_map(|column| column.groups.iter().map(|group| group.panels.clone())).collect();
     assert_eq!(groups, [vec![Panel::Tracks], vec![Panel::Clips]], "Clips stacks below Tracks in its column");
     assert_eq!(column.len(), 1);
@@ -113,7 +115,8 @@ fn a_tab_dropped_on_a_dock_group_joins_it_in_the_middle_and_stacks_below_in_the_
 
 #[test]
 fn a_panel_without_a_recorded_place_reopens_at_its_default_place() {
-    use craft_ui::docking::{Action, Permissions, Placement, Zone};
+    use craft_behavior::dock::{Action, DockPlacement, Permissions};
+use craft_ui::docking::{Zone};
     let close = |state: &mut UiState, panel: Panel| {
         state.docking.apply(Action::Close { panel }, |_| Permissions::default()).unwrap();
         state.docking.hidden.clear();
@@ -134,11 +137,11 @@ fn a_panel_without_a_recorded_place_reopens_at_its_default_place() {
         h.state_mut().run("ui.dock", json!({"operation":"open","panel":panel})).unwrap();
     }
     h.run_steps(4);
-    assert_eq!(dock_columns(&h, Side::Start), [Column::new(vec![Group::new(vec![Panel::Tracks], 0)], TRACKS_WIDTH)]);
-    assert_eq!(dock_columns(&h, Side::End), [Column::new(vec![Group::new(vec![Panel::Clips], 0)], CLIPS_WIDTH)]);
+    assert_eq!(dock_columns(&h, DockSide::Start), [Column::new(vec![Group::new(vec![Panel::Tracks], 0)], TRACKS_WIDTH)]);
+    assert_eq!(dock_columns(&h, DockSide::End), [Column::new(vec![Group::new(vec![Panel::Clips], 0)], CLIPS_WIDTH)]);
     let layout = &h.state().ui.docking.layout;
     let midi = layout.location(&Panel::Midi).unwrap();
-    assert_eq!((midi.anchor, midi.placement), (Some(Panel::Canvas), Placement::Split(Zone::Bottom)));
+    assert_eq!((midi.anchor, midi.placement), (Some(Panel::Canvas), DockPlacement::Split(Zone::Bottom)));
     let rect = |panel: Panel| layout.floating.iter().find(|window| window.contains(&panel)).map(|window| window.rect);
     assert_eq!((rect(Panel::Memory), rect(Panel::History)), (Some([160.0, 120.0, 480.0, 280.0]), Some([680.0, 120.0, 260.0, 300.0])));
     let ui = &h.state().ui;
@@ -153,7 +156,7 @@ fn a_panel_without_a_recorded_place_reopens_at_its_default_place() {
             Action::Move {
                 panel: Panel::History,
                 anchor: Panel::Tracks,
-                placement: craft_ui::docking::Placement::Group { below: true, height: None },
+                placement: craft_behavior::dock::DockPlacement::Group { below: true, height: None },
             },
             |_| Permissions::default(),
         )
@@ -164,16 +167,17 @@ fn a_panel_without_a_recorded_place_reopens_at_its_default_place() {
     let mut h = harness(Some(state), 1400.0, 1.0);
     h.state_mut().run("window.track_list", json!({})).unwrap();
     h.run_steps(4);
-    let groups: Vec<_> = dock_columns(&h, Side::Start).iter().flat_map(|column| column.groups.iter().map(|group| group.panels.clone())).collect();
+    let groups: Vec<_> = dock_columns(&h, DockSide::Start).iter().flat_map(|column| column.groups.iter().map(|group| group.panels.clone())).collect();
     assert_eq!(groups, [vec![Panel::History, Panel::Tracks]]);
-    assert_eq!(h.state().ui.docking.layout.panel_state(&Panel::Tracks), craft_ui::docking::PanelState::Front);
+    assert_eq!(h.state().ui.docking.layout.panel_state(&Panel::Tracks), craft_behavior::dock::PanelState::Front);
 }
 
 /// A hidden list or editor whose recorded anchor has disappeared reopens at its default place
 /// instead of where craft-ui opens a panel it cannot restore.
 #[test]
 fn a_recorded_place_whose_anchor_is_gone_reopens_at_its_default_place() {
-    use craft_ui::docking::{Action, Permissions, Placement, Zone};
+    use craft_behavior::dock::{Action, DockPlacement, Permissions};
+use craft_ui::docking::{Zone};
     let allow = |_: &Panel| Permissions::default();
     let mut state = UiState::default();
     // Stale saved locations: their recorded anchor closed without leaving a place to follow.
@@ -183,7 +187,7 @@ fn a_recorded_place_whose_anchor_is_gone_reopens_at_its_default_place() {
     state.docking.hidden.retain(|(panel, _)| *panel != Panel::Tracks);
     for (_, location) in state.docking.hidden.iter_mut().filter(|(panel, _)| matches!(panel, Panel::Clips | Panel::Midi)) {
         location.anchor = Some(Panel::Tracks);
-        location.placement = Placement::Split(Zone::Left);
+        location.placement = DockPlacement::Split(Zone::Left);
         location.sibling.clear();
         location.floating = None;
     }
@@ -196,9 +200,9 @@ fn a_recorded_place_whose_anchor_is_gone_reopens_at_its_default_place() {
     h.state_mut().run("ui.dock", json!({"operation":"open","panel":"clips"})).unwrap();
     h.state_mut().run("ui.dock", json!({"operation":"open","panel":"midi"})).unwrap();
     h.run_steps(4);
-    assert_eq!(dock_columns(&h, Side::End), [Column::new(vec![Group::new(vec![Panel::Clips], 0)], CLIPS_WIDTH)]);
+    assert_eq!(dock_columns(&h, DockSide::End), [Column::new(vec![Group::new(vec![Panel::Clips], 0)], CLIPS_WIDTH)]);
     let midi = h.state().ui.docking.layout.location(&Panel::Midi).unwrap();
-    assert_eq!((midi.anchor, midi.placement), (Some(Panel::Canvas), Placement::Split(Zone::Bottom)));
+    assert_eq!((midi.anchor, midi.placement), (Some(Panel::Canvas), DockPlacement::Split(Zone::Bottom)));
     assert!(h.state().ui.show_clip_list && h.state().ui.show_midi_editor);
     docking::validate(&h.state().ui.docking).unwrap();
 }
@@ -270,7 +274,7 @@ fn split_frame_settings_load_as_the_dock_defaults_and_dock_layouts_round_trip() 
     let loaded: UiState = serde_json::from_value(value).unwrap();
     assert_eq!(loaded.docking, saved.docking);
     assert_eq!(loaded.mix_docking, saved.mix_docking);
-    let groups: Vec<_> = columns(loaded.docking.layout.root.as_ref().unwrap(), Side::Start)
+    let groups: Vec<_> = columns(loaded.docking.layout.root.as_ref().unwrap(), DockSide::Start)
         .unwrap()
         .iter()
         .flat_map(|column| column.groups.iter().map(|group| group.panels.clone()))
@@ -288,7 +292,7 @@ fn a_floating_list_closed_beside_its_shown_dock_reopens_floating() {
     h.state_mut().run("ui.dock", json!({"operation":"float","panel":"clips","rect":[300,200,260,320]})).unwrap();
     h.run_steps(4);
     let rect = h.state().ui.docking.layout.floating.iter().find(|w| w.contains(&Panel::Clips)).unwrap().rect;
-    assert!(dock_columns(&h, Side::End).iter().any(|c| c.groups.iter().any(|g| g.panels.contains(&Panel::Tracks))));
+    assert!(dock_columns(&h, DockSide::End).iter().any(|c| c.groups.iter().any(|g| g.panels.contains(&Panel::Tracks))));
     h.state_mut().run("ui.dock", json!({"operation":"close","panel":"clips"})).unwrap();
     h.run_steps(4);
     h.state_mut().run("ui.dock", json!({"operation":"open","panel":"clips"})).unwrap();

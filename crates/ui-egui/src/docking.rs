@@ -1,11 +1,10 @@
 //! Application panel identities and persistence around the shared docking renderer.
 //! Document contents remain owned by their existing view implementations.
 
-use craft_ui::docking::{
-    Action, Column, DockArea, DockCommand, DockError, DockOperation, DockStyle, FloatSpace, Floating, Group, Layout, Location, Node, PanelLimits,
-    Permissions, Placement, Side, Target, UiDock, Zone, ZoneName,
-};
-use craft_ui::layout::{SplitAxis, SplitSize};
+use craft_behavior::dock::{Action, Column, DockError, DockPlacement, DockSide, Floating, Group, Layout, Location, Node, Permissions, Target};
+use craft_ui::docking::{DockArea, DockCommand, DockOperation, DockStyle, FloatSpace, PanelLimits, UiDock, Zone, ZoneName};
+use craft_behavior::dock::SplitSize;
+use craft_behavior::flow::Axis;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
@@ -42,7 +41,7 @@ pub const CLIPS_WIDTH: f32 = 230.0;
 pub const MIDI_HEIGHT: f32 = 320.0;
 
 /// An Edit or Mix panel arrangement, saved with the UI preferences.
-pub type Workspace = craft_ui::docking::Workspace<Panel>;
+pub type Workspace = craft_behavior::dock::Workspace<Panel>;
 
 const MIDI_TAB_HEIGHT: f32 = 26.0;
 
@@ -55,7 +54,7 @@ fn tabs(panel: Panel) -> Node<Panel> {
     Node::Tabs { panels: vec![panel], active: 0 }
 }
 
-fn split(axis: SplitAxis, size: SplitSize, first: Node<Panel>, second: Node<Panel>) -> Node<Panel> {
+fn split(axis: Axis, size: SplitSize, first: Node<Panel>, second: Node<Panel>) -> Node<Panel> {
     Node::Split { axis, size, first: Box::new(first), second: Box::new(second) }
 }
 
@@ -69,7 +68,7 @@ fn area(edit: bool) -> egui::Id {
 }
 
 /// A dock on `side` with one column holding `panel`.
-fn dock(side: Side, panel: Panel, width: f32) -> Node<Panel> {
+fn dock(side: DockSide, panel: Panel, width: f32) -> Node<Panel> {
     Node::Dock { side, columns: vec![Column::new(vec![Group::new(vec![panel], 0)], width)] }
 }
 
@@ -92,10 +91,10 @@ fn default_float(panel: Panel) -> Option<[f32; 4]> {
 }
 
 /// The dock side and column width a panel opens in when it has no recorded place.
-fn default_dock(panel: Panel) -> Option<(Side, f32)> {
+fn default_dock(panel: Panel) -> Option<(DockSide, f32)> {
     match panel {
-        Panel::Tracks => Some((Side::Start, TRACKS_WIDTH)),
-        Panel::Clips => Some((Side::End, CLIPS_WIDTH)),
+        Panel::Tracks => Some((DockSide::Start, TRACKS_WIDTH)),
+        Panel::Clips => Some((DockSide::End, CLIPS_WIDTH)),
         _ => None,
     }
 }
@@ -103,13 +102,13 @@ fn default_dock(panel: Panel) -> Option<(Side, f32)> {
 /// The Edit window's built-in arrangement: Tracks and Groups in a full-height start dock,
 /// Clips in a full-height end dock, and the MIDI editor under the session view between them.
 pub fn edit_default() -> Workspace {
-    let session = split(SplitAxis::Vertical, SplitSize::FixedSecond(MIDI_HEIGHT + MIDI_TAB_HEIGHT), tabs(Panel::Canvas), tabs(Panel::Midi));
+    let session = split(Axis::Y, SplitSize::FixedSecond(MIDI_HEIGHT + MIDI_TAB_HEIGHT), tabs(Panel::Canvas), tabs(Panel::Midi));
     Workspace::new(Layout {
         root: Some(split(
-            SplitAxis::Horizontal,
+            Axis::X,
             SplitSize::FixedFirst(TRACKS_WIDTH),
-            dock(Side::Start, Panel::Tracks, TRACKS_WIDTH),
-            split(SplitAxis::Horizontal, SplitSize::FixedSecond(CLIPS_WIDTH), session, dock(Side::End, Panel::Clips, CLIPS_WIDTH)),
+            dock(DockSide::Start, Panel::Tracks, TRACKS_WIDTH),
+            split(Axis::X, SplitSize::FixedSecond(CLIPS_WIDTH), session, dock(DockSide::End, Panel::Clips, CLIPS_WIDTH)),
         )),
         floating: default_floating(),
     })
@@ -120,9 +119,9 @@ pub fn edit_default() -> Workspace {
 pub fn mix_default() -> Workspace {
     Workspace::new(Layout {
         root: Some(split(
-            SplitAxis::Horizontal,
+            Axis::X,
             SplitSize::FixedFirst(TRACKS_WIDTH),
-            dock(Side::Start, Panel::Tracks, TRACKS_WIDTH),
+            dock(DockSide::Start, Panel::Tracks, TRACKS_WIDTH),
             tabs(Panel::Canvas),
         )),
         floating: default_floating(),
@@ -178,7 +177,7 @@ pub fn validate(workspace: &Workspace) -> Result<(), String> {
         if *panel == Panel::Canvas {
             return Err("A hidden panel has an invalid or duplicate identity".into());
         }
-        if location.anchor == Some(Panel::Canvas) && matches!(location.placement, Placement::Tab { .. } | Placement::Split(Zone::Center)) {
+        if location.anchor == Some(Panel::Canvas) && matches!(location.placement, DockPlacement::Tab { .. } | DockPlacement::Split(Zone::Center)) {
             return Err("A hidden panel cannot restore over the document view".into());
         }
         let mut probe = layout.clone();
@@ -250,7 +249,7 @@ fn restores(workspace: &Workspace, panel: Panel) -> bool {
 }
 
 /// The first panel of the dock on `side`, when that dock is shown.
-fn dock_panel(node: &Node<Panel>, side: Side) -> Option<Panel> {
+fn dock_panel(node: &Node<Panel>, side: DockSide) -> Option<Panel> {
     match node {
         Node::Split { first, second, .. } => dock_panel(first, side).or_else(|| dock_panel(second, side)),
         Node::Dock { side: found, columns } if *found == side => {
@@ -287,7 +286,7 @@ fn set_visible(workspace: &mut Workspace, panel: Panel, visible: bool) -> Result
         let actions = match (dock, default_float(panel)) {
             (Some((side, width)), _) => vec![open, Action::MovePanel { panel, to: Target::NewDock { side } }, Action::ResizeColumn { panel, width }],
             (None, Some(rect)) => vec![open, Action::Float { panel, rect }],
-            (None, None) => vec![Action::OpenAt { panel, anchor: Panel::Canvas, placement: Placement::Split(Zone::Bottom) }],
+            (None, None) => vec![Action::OpenAt { panel, anchor: Panel::Canvas, placement: DockPlacement::Split(Zone::Bottom) }],
         };
         next.apply_all(actions, permissions)?;
         next.apply(Action::Activate { panel }, permissions).map(drop)

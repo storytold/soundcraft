@@ -72,7 +72,7 @@ fn real_drag_float_close_reopen_reload_retains_transport_and_mixer_commands() {
         reloaded.get_by_role_and_label(egui::accesskit::Role::Tab, "Tracks and Groups").click();
     }
     reloaded.run_steps(3);
-    assert_eq!(reloaded.state().ui.docking.layout.panel_state(&Panel::Tracks), craft_ui::docking::PanelState::Front);
+    assert_eq!(reloaded.state().ui.docking.layout.panel_state(&Panel::Tracks), craft_behavior::dock::PanelState::Front);
     reloaded.get_by_label("Trim (F6)").click();
     reloaded.run_steps(3);
     assert_eq!(reloaded.state().engine.session().edit.tool, soundcraft_model::Tool::Trim);
@@ -102,7 +102,7 @@ fn activating_a_hidden_panel_shows_it_and_its_window_flag() {
     h.state_mut().run("ui.dock", json!({"operation":"activate","panel":"tracks"})).unwrap();
     h.run_steps(4);
     assert!(h.state().ui.show_tracks_list);
-    assert_eq!(h.state().ui.docking.layout.panel_state(&Panel::Tracks), craft_ui::docking::PanelState::Front);
+    assert_eq!(h.state().ui.docking.layout.panel_state(&Panel::Tracks), craft_behavior::dock::PanelState::Front);
 }
 
 #[test]
@@ -182,8 +182,8 @@ fn legacy_preferences_restore_the_theme_and_validate_default_docking() {
 }
 
 /// The tab group holding `panel` in the docked frames or a dock column.
-fn docked_group(node: &craft_ui::docking::Node<Panel>, panel: Panel) -> Option<Vec<Panel>> {
-    use craft_ui::docking::Node;
+fn docked_group(node: &craft_behavior::dock::Node<Panel>, panel: Panel) -> Option<Vec<Panel>> {
+    use craft_behavior::dock::Node;
     match node {
         Node::Split { first, second, .. } => docked_group(first, panel).or_else(|| docked_group(second, panel)),
         Node::Tabs { panels, .. } if panels.contains(&panel) => Some(panels.clone()),
@@ -196,7 +196,7 @@ fn docked_group(node: &craft_ui::docking::Node<Panel>, panel: Panel) -> Option<V
 
 #[test]
 fn a_floating_window_saved_in_the_one_group_shape_keeps_it_when_written_back() {
-    use craft_ui::docking::Node;
+    use craft_behavior::dock::Node;
     // A floating window as one `{panels, active, rect}` group, as releases before the shared
     // docking model wrote it, beside the dock layout.
     let mut settings = serde_json::to_value(UiState { show_midi_editor: true, ..Default::default() }).unwrap();
@@ -257,7 +257,7 @@ fn malformed_dock_operations_name_the_field() {
 /// process.
 #[test]
 fn panels_hidden_one_by_one_reopen_into_their_recorded_window() {
-    use craft_ui::docking::{Action, Node, Permissions};
+    use craft_behavior::dock::{Action, Node, Permissions};
     let allow = |_: &Panel| Permissions::default();
     let mut state = UiState::default();
     state.docking.layout.floating.retain(|window| !window.contains(&Panel::History));
@@ -271,7 +271,7 @@ fn panels_hidden_one_by_one_reopen_into_their_recorded_window() {
     // Only the outer hidden anchor retains a floating fallback, so the chain walk is required.
     own.floating = None;
     let own = own.clone();
-    assert_eq!(state.docking.layout.clone().restore(Panel::Memory, &own), Err(craft_ui::docking::DockError::MissingTarget));
+    assert_eq!(state.docking.layout.clone().restore(Panel::Memory, &own), Err(craft_behavior::dock::DockError::MissingTarget));
     state.show_memory_locations = false;
     state.show_undo_history = false;
     let mut h = harness(Some(state), 1400.0, 1.0);

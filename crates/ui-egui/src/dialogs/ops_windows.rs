@@ -162,7 +162,7 @@ fn tempo_ops(app: &mut SoundApp, ctx: &egui::Context) {
         .open(&mut open)
         .default_size(vec2(360.0, 200.0))
         .show(ctx, |ui| {
-            craft_ui::ComboBox::from_label(crate::localization::text("Curve"))
+            egui::ComboBox::from_label(crate::localization::text("Curve"))
                 .selected_text(crate::localization::text(&app.ops.tempo_curve))
                 .show_ui(ui, |ui| {
                     for c in ["constant", "linear", "parabolic", "s-curve", "scale", "stretch"] {
@@ -200,7 +200,7 @@ fn time_ops(app: &mut SoundApp, ctx: &egui::Context) {
         .open(&mut open)
         .default_size(vec2(360.0, 200.0))
         .show(ctx, |ui| {
-            craft_ui::ComboBox::from_label(crate::localization::text("Operation"))
+            egui::ComboBox::from_label(crate::localization::text("Operation"))
                 .selected_text(crate::localization::text(&app.ops.time_op))
                 .show_ui(ui, |ui| {
                     for c in ["insert", "cut", "change meter", "move song start"] {
@@ -213,7 +213,7 @@ fn time_ops(app: &mut SoundApp, ctx: &egui::Context) {
                         ui.add(egui::DragValue::new(&mut app.ops.meter_num).range(1..=64))
                             .accessible_name(crate::localization::text("Meter numerator"));
                         ui.label(crate::localization::text("/"));
-                        let den = craft_ui::ComboBox::from_id_salt("den").selected_text(app.ops.meter_den.to_string()).show_ui(ui, |ui| {
+                        let den = egui::ComboBox::from_id_salt("den").selected_text(app.ops.meter_den.to_string()).show_ui(ui, |ui| {
                             for d in [2u32, 4, 8, 16] {
                                 ui.selectable_value(&mut app.ops.meter_den, d, d.to_string());
                             }
@@ -253,7 +253,7 @@ fn midi_ops(app: &mut SoundApp, ctx: &egui::Context) {
         .open(&mut open)
         .default_size(vec2(360.0, 220.0))
         .show(ctx, |ui| {
-            craft_ui::ComboBox::from_label(crate::localization::text("Operation"))
+            egui::ComboBox::from_label(crate::localization::text("Operation"))
                 .selected_text(crate::localization::text(&app.ops.midi_op))
                 .show_ui(ui, |ui| {
                     for c in ["quantize", "transpose", "change velocity", "flatten performance", "restore performance"] {
@@ -262,7 +262,7 @@ fn midi_ops(app: &mut SoundApp, ctx: &egui::Context) {
                 });
             match app.ops.midi_op.as_str() {
                 "quantize" => {
-                    craft_ui::ComboBox::from_label(crate::localization::text("Grid")).selected_text(app.ops.quant_grid.clone()).show_ui(ui, |ui| {
+                    egui::ComboBox::from_label(crate::localization::text("Grid")).selected_text(app.ops.quant_grid.clone()).show_ui(ui, |ui| {
                         for g in ["1/4", "1/8", "1/8t", "1/16", "1/16t", "1/32"] {
                             ui.selectable_value(&mut app.ops.quant_grid, g.to_string(), g);
                         }

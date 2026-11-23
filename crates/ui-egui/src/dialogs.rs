@@ -536,7 +536,7 @@ pub fn show(app: &mut SoundApp, ctx: &egui::Context) {
                         ui.label(crate::localization::text("Name"));
                         crate::widgets::named_text_field(ui.text_edit_singleline(name), crate::localization::text("Name"));
                     });
-                    craft_ui::ComboBox::from_label(crate::localization::text("Sample Rate")).selected_text(format!("{sample_rate} Hz")).show_ui(ui, |ui| {
+                    egui::ComboBox::from_label(crate::localization::text("Sample Rate")).selected_text(format!("{sample_rate} Hz")).show_ui(ui, |ui| {
                         for r in soundcraft_time::SampleRate::COMMON {
                             ui.selectable_value(sample_rate, r, format!("{r} Hz"));
                         }
@@ -552,12 +552,12 @@ pub fn show(app: &mut SoundApp, ctx: &egui::Context) {
                 Dialog::Bounce { path, format, bit_depth, normalize, dither } => {
                     bounce_file_row(app, ui, path, format);
                     ui.horizontal(|ui| {
-                        craft_ui::ComboBox::from_label(crate::localization::text("Format")).selected_text(format.container().name()).show_ui(ui, |ui| {
+                        egui::ComboBox::from_label(crate::localization::text("Format")).selected_text(format.container().name()).show_ui(ui, |ui| {
                             for &f in EncodeFormat::ALL {
                                 ui.selectable_value(format, f, f.container().name());
                             }
                         });
-                        craft_ui::ComboBox::from_label(crate::localization::text("Bit Depth")).selected_text(format!("{bit_depth}-bit")).show_ui(ui, |ui| {
+                        egui::ComboBox::from_label(crate::localization::text("Bit Depth")).selected_text(format!("{bit_depth}-bit")).show_ui(ui, |ui| {
                             for b in ["16", "24", "32f"] {
                                 ui.selectable_value(bit_depth, b.to_string(), crate::localized_format!("{b}-bit", b = b));
                             }
@@ -701,12 +701,12 @@ pub fn show(app: &mut SoundApp, ctx: &egui::Context) {
                     }
                 }
                 Dialog::Session { frame_rate, bit_depth } => {
-                    craft_ui::ComboBox::from_label(crate::localization::text("Timecode Rate")).selected_text(crate::localization::text(frame_rate.as_str())).show_ui(ui, |ui| {
+                    egui::ComboBox::from_label(crate::localization::text("Timecode Rate")).selected_text(crate::localization::text(frame_rate.as_str())).show_ui(ui, |ui| {
                         for r in soundcraft_time::FrameRate::ALL {
                             ui.selectable_value(frame_rate, r.label().to_string(), crate::localization::text(r.label()));
                         }
                     });
-                    craft_ui::ComboBox::from_label(crate::localization::text("Bit Depth")).selected_text(crate::localization::text(bit_depth.as_str())).show_ui(ui, |ui| {
+                    egui::ComboBox::from_label(crate::localization::text("Bit Depth")).selected_text(crate::localization::text(bit_depth.as_str())).show_ui(ui, |ui| {
                         for b in ["16", "24", "32f"] {
                             ui.selectable_value(bit_depth, b.to_string(), crate::localization::text(b));
                         }

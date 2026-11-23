@@ -211,7 +211,7 @@ fn a_midi_editor_behind_another_tab_leaves_the_arrows_to_the_edit_window() {
         app_frame(&ctx, &mut app, vec![]);
     }
     assert!(app.ui.show_midi_editor, "the MIDI editor is still open");
-    assert_ne!(app.ui.docking.layout.panel_state(&soundcraft_ui_egui::docking::Panel::Midi), craft_ui::docking::PanelState::Front);
+    assert_ne!(app.ui.docking.layout.panel_state(&soundcraft_ui_egui::docking::Panel::Midi), craft_behavior::dock::PanelState::Front);
     app_frame(&ctx, &mut app, vec![egui::Event::PointerMoved(body.center())]);
     app.run("edit.select", json!({"clips": [clip_id.0]})).unwrap();
 

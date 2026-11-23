@@ -941,14 +941,14 @@ fn control_ui(ui: &mut egui::Ui, page: PreferencesPage, section: &str, index: us
     let id = ("preference", page, section, index);
     match control {
         Control::Theme => {
-            craft_ui::ComboBox::new(id, label("UI Theme")).selected_text(crate::localization::text(draft.theme.label())).show_ui(ui, |ui| {
+            egui::ComboBox::new(id, label("UI Theme")).selected_text(crate::localization::text(draft.theme.label())).show_ui(ui, |ui| {
                 for mode in ThemeMode::ALL {
                     ui.selectable_value(&mut draft.theme, mode, crate::localization::text(mode.label()));
                 }
             });
         }
         Control::ReduceVisualEffects => {
-            craft_ui::ComboBox::new(id, label("Reduce Visual Effects"))
+            egui::ComboBox::new(id, label("Reduce Visual Effects"))
                 .selected_text(crate::localization::text(draft.reduce_visual_effects.label()))
                 .show_ui(ui, |ui| {
                     for mode in ReduceVisualEffects::ALL {
@@ -969,7 +969,7 @@ fn control_ui(ui: &mut egui::Ui, page: PreferencesPage, section: &str, index: us
         }
         Control::Choice(text, value) | Control::ChoiceOptions(text, value, _) => {
             ui.add_enabled_ui(false, |ui| {
-                craft_ui::ComboBox::new(id, label(text)).selected_text(crate::localization::text(value)).show_ui(ui, |_| {});
+                egui::ComboBox::new(id, label(text)).selected_text(crate::localization::text(value)).show_ui(ui, |_| {});
             })
             .response
             .on_disabled_hover_text(crate::localization::text("This preference is not available yet."));
