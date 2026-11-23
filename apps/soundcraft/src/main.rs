@@ -99,7 +99,7 @@ impl eframe::App for App {
         self.0.before_input(ctx);
     }
     fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
-        soundcraft_ui_egui::framework::before_ui(ui.ctx(), frame);
+        soundcraft_ui_egui::framework::before_ui(ui.ctx(), &*frame);
         self.0.guarded(|app| app.ui(ui));
     }
     fn on_exit(&mut self) {
