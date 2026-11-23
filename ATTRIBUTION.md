@@ -21,9 +21,16 @@ are bundled.
 
 ## Fonts
 
-SoundCraft bundles no font files. It uses the default fonts shipped inside the `egui` crate
-(Ubuntu-Light: Ubuntu Font Licence 1.0; Hack: MIT; Noto Emoji: OFL-1.1; emoji-icon-font: MIT)
-and, at runtime, the operating system's own UI fonts when available (never redistributed).
+SoundCraft keeps no font file in this repository: font files live in
+[`storytold/craft-fonts`](https://github.com/storytold/craft-fonts). It uses the default fonts shipped
+inside the `egui` crate (Ubuntu-Light: Ubuntu Font Licence 1.0; Hack: MIT; Noto Emoji: OFL-1.1;
+emoji-icon-font: MIT) and, at runtime, the operating system's own UI fonts when available
+(never redistributed).
+
+A build made with `CRAFT_FONTS_DIR` set to a craft-fonts checkout that has it also embeds Droid Sans Mono (Apache-2.0)
+as the first face of the monospace family (counters, readouts, values), because its zero is plain: no
+slash, no dot. Hack stays behind it as the fallback for the glyphs Droid Sans Mono lacks. Its author,
+pinned source and licence text are in craft-fonts' `ATTRIBUTION.md`.
 
 ## Bundled egui font icons
 

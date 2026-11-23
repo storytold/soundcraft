@@ -6,12 +6,32 @@
 //!   JSON says the entry was verified (`people_entry`).
 //!
 //! A missing or malformed file gives empty tables (or no names) and a warning.
+//!
+//! It also embeds Droid Sans Mono, the monospace face with a plain zero, from craft-fonts' opt-in
+//! `fonts/monospace-manifest.txt` (see craft-fonts' `docs/integration.md`) into `OUT_DIR/craft_fonts.rs`,
+//! which `fonts.rs` includes. `CRAFT_FONTS_DIR` unset (the default) embeds nothing and the monospace
+//! family stays egui's Hack. Set to the absolute path of a craft-fonts checkout, it embeds the face; a
+//! checkout without the opt-in manifest (a craft-fonts older than the face) is a warning and embeds
+//! nothing. With `CRAFT_FONTS_REQUIRED=1` (exactly `1`, as in craft-fonts-build) an unset, empty or
+//! non-directory `CRAFT_FONTS_DIR`, or a manifest that is present but whose face is unreadable or
+//! malformed (a broken checkout), is a build error instead. The build script is the only place that
+//! enforces this; the tests just skip when no face is embedded.
 
 use std::fmt::Write as _;
+use std::path::{Path, PathBuf};
 
 use serde_json::Value;
 
+const FACE_FAMILY: &str = "Droid Sans Mono";
+const FACE_MANIFEST: &str = "fonts/monospace-manifest.txt";
+
 fn main() {
+    println!("cargo::rerun-if-env-changed=CRAFT_FONTS_DIR");
+    println!("cargo::rerun-if-env-changed=CRAFT_FONTS_REQUIRED");
+    let out_dir = PathBuf::from(std::env::var_os("OUT_DIR").unwrap_or_default());
+    if let Err(e) = std::fs::write(out_dir.join("craft_fonts.rs"), craft_fonts_table()) {
+        println!("cargo::error=writing craft_fonts.rs: {e}");
+    }
     let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../contributors");
     let json = read(&dir.join("contributors.json"), "the About window shows no contributors", |t| {
         serde_json::from_str::<Value>(t).map_err(|e| e.to_string())
@@ -23,6 +43,84 @@ fn main() {
     if let Err(e) = std::fs::write(&out, generate(&json, &people)) {
         println!("cargo::warning=writing {}: {e}", out.display());
     }
+}
+
+/// The `&[EmbeddedFace]` expression `fonts.rs` includes: the plain-zero face, or `&[]`.
+/// ponytail: craft-fonts-build's `Embed` reads only craft-fonts' default manifest, so this reads the
+/// opt-in monospace one itself with the shared `parse_manifest`. Upgrade: an `Embed` option for
+/// another manifest in craft-libs, then call that here. It also trusts the checkout `CRAFT_FONTS_DIR`
+/// names (the builder's own): `Embed`'s checks of hostile manifest paths are not repeated. And the
+/// whole 108 KB face is embedded when it is found, on the web build too; subsetting it to the glyphs
+/// the UI draws would shrink that if size ever matters.
+fn craft_fonts_table() -> String {
+    let required = std::env::var_os("CRAFT_FONTS_REQUIRED").is_some_and(|v| v == "1");
+    let dir = std::env::var_os("CRAFT_FONTS_DIR").filter(|d| !d.is_empty()).map(PathBuf::from);
+    let face = match &dir {
+        Some(dir) => {
+            // Watched before the directory test, so a checkout cloned there later still rebuilds.
+            println!("cargo::rerun-if-changed={}", dir.join(FACE_MANIFEST).display());
+            if dir.is_dir() { read_face(dir) } else { Err(Missing::Dir(format!("{} is not a directory", dir.display()))) }
+        }
+        None => Err(Missing::Dir("CRAFT_FONTS_DIR is not set".to_owned())),
+    };
+    match face {
+        Ok(table) => table,
+        // A craft-fonts older than the face has no opt-in manifest: the face is not there yet, which
+        // is not a broken checkout, so even a required build goes on with Hack.
+        Err(Missing::Manifest(e)) => {
+            println!("cargo::warning=building without {FACE_FAMILY}: this craft-fonts checkout predates it (the monospace zero stays slashed): {e}");
+            "&[]".to_owned()
+        }
+        Err(Missing::Dir(e) | Missing::Broken(e)) if required => {
+            println!("cargo::error=CRAFT_FONTS_REQUIRED=1, but {FACE_FAMILY} from craft-fonts is not available: {e}");
+            "&[]".to_owned()
+        }
+        Err(Missing::Dir(e) | Missing::Broken(e)) => {
+            if dir.is_some() {
+                println!("cargo::warning=building without {FACE_FAMILY} from craft-fonts (the monospace zero stays slashed): {e}");
+            }
+            "&[]".to_owned()
+        }
+    }
+}
+
+/// Why no face: no usable checkout, a checkout without the opt-in manifest, or a broken one.
+enum Missing {
+    Dir(String),
+    Manifest(String),
+    Broken(String),
+}
+
+/// The one-face table for the craft-fonts checkout at `dir`.
+fn read_face(dir: &Path) -> Result<String, Missing> {
+    let manifest = dir.join(FACE_MANIFEST);
+    let text = match std::fs::read_to_string(&manifest) {
+        Ok(t) => t,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Err(Missing::Manifest(format!("{}: {e}", manifest.display()))),
+        Err(e) => return Err(Missing::Broken(format!("{}: {e}", manifest.display()))),
+    };
+    read_entry(dir, &manifest, &text).map_err(Missing::Broken)
+}
+
+fn read_entry(dir: &Path, manifest: &Path, text: &str) -> Result<String, String> {
+    let entries = craft_fonts_build::parse_manifest(text).map_err(|e| format!("{}: {e}", manifest.display()))?;
+    let face = entries
+        .iter()
+        .find(|f| f.family == FACE_FAMILY && f.style == "Regular")
+        .ok_or_else(|| format!("{} lists no {FACE_FAMILY} Regular", manifest.display()))?;
+    // Before canonicalize, so a font file that is missing now and added later rebuilds.
+    println!("cargo::rerun-if-changed={}", dir.join(&face.file).display());
+    let file = dir.join(&face.file).canonicalize().map_err(|e| format!("{}: {e}", face.file))?;
+    let file = file.to_str().ok_or_else(|| format!("{}: the path is not UTF-8", face.file))?;
+    let scripts: Vec<String> = face.scripts.iter().map(|s| format!("{s:?}")).collect();
+    Ok(format!(
+        "&[EmbeddedFace {{ family: {:?}, style: {:?}, scripts: &[{}], index: {}, bytes: include_bytes!({:?}) }}]",
+        face.family,
+        face.style,
+        scripts.join(", "),
+        face.index,
+        file,
+    ))
 }
 
 fn read<T>(path: &std::path::Path, fallback: &str, parse: impl Fn(&str) -> Result<T, String>) -> Option<T> {
