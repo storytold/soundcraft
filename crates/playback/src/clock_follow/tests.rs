@@ -373,7 +373,7 @@ fn prepared_device_clock_needs_a_report_and_accepts_both_retained_and_true_zero(
 }
 
 #[test]
-fn stable_device_prediction_waits_for_a_continuous_tempo_ramp_to_end() {
+fn device_prediction_follows_a_continuous_tempo_ramp() {
     let mut reader = Follower::default();
     let mut stamp = 0;
     feed(&mut reader, 0xfa, stamp);
@@ -382,21 +382,25 @@ fn stable_device_prediction_waits_for_a_continuous_tempo_ramp_to_end() {
         feed(&mut reader, 0xf8, stamp);
     }
     assert!(reader.render_prediction().is_some());
-    // Two microseconds per pulse is well inside short-term regularity tolerance,
-    // yet the sustained slowdown is measurable across the long fit.
+    // Two microseconds per pulse: the long fit sees the sustained slowdown for the grid,
+    // while the projection keeps placing the next pulse where it actually arrives.
     for i in 1..=192 {
         stamp += 20_000 + 2 * i;
         feed(&mut reader, 0xf8, stamp);
+        if i >= 48 {
+            let (at, period) = reader.render_prediction().expect("prediction through the ramp");
+            let next = stamp + 20_000 + 2 * (i + 1);
+            assert!((at as f64 + period - next as f64).abs() < 200., "pulse {i}: next pulse projected {} µs off", at as f64 + period - next as f64);
+        }
     }
     let snapshot = reader.snapshot(stamp);
     assert!(snapshot.tempo_ramp && !snapshot.recovering_tempo_step);
-    assert!(reader.short.regular_intervals(reader.steady.period_us().unwrap()));
-    assert!(reader.render_prediction().is_none());
     for _ in 0..192 {
         stamp += 20_384;
         feed(&mut reader, 0xf8, stamp);
     }
-    assert!(reader.render_prediction().is_some());
+    let (_, period) = reader.render_prediction().expect("prediction after the ramp");
+    assert!((period - 20_384.).abs() < 2., "{period}");
 }
 
 #[test]

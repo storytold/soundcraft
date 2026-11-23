@@ -1031,8 +1031,7 @@ impl AudioState {
                         // time instead would double-count rendering time in later chunks.
                         let device_frames = ((render_frames as f64 - self.read) / step).ceil() as usize;
                         let end = timing.heard_instant(self.device_rate, frame_index + device_frames.min(remaining));
-                        let buffer_us = (self.device_buffer_frames as f64 * 1e6 / self.device_rate).round() as i64;
-                        return feed.clock_output_window(feed.clock(), buffer_us, feed.timestamp_at(end));
+                        return feed.clock_output_window(feed.clock(), feed.timestamp_at(end));
                     }
                     (feed.clock_render_tick(), feed.clock_delivery())
                 });

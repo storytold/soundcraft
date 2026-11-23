@@ -94,7 +94,7 @@ fn nudge_errors(case: Case) -> Vec<(usize, i64)> {
             let n = (case.buffer - offset).min(CHUNK);
             let at = pos + offset as i64;
             let hard = feed.clock_render_tick();
-            let limit = feed.clock_render_tick_for_output(micros(callback), micros(case.buffer as i64), micros(at + n as i64));
+            let limit = feed.clock_render_tick_for_output(micros(callback), micros(at + n as i64));
             if let Some(tick) = limit.filter(|_| limit > hard) {
                 mix.render_with_clock_prediction(&song, at, n, &mut audio, tick);
             } else {

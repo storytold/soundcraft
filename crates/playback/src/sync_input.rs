@@ -152,19 +152,6 @@ impl<const N: usize> PulseFit<N> {
         Some(start)
     }
 
-    /// Prediction requires several independently observed intervals at the fitted rate.
-    pub(crate) fn regular_intervals(&self, period: f64) -> bool {
-        const COUNT: usize = 4;
-        if self.len <= COUNT {
-            return false;
-        }
-        let start = (self.cursor + N - COUNT - 1) % N;
-        (0..COUNT).all(|i| {
-            let elapsed = self.points[(start + i + 1) % N].1.saturating_sub(self.points[(start + i) % N].1);
-            (elapsed as f64 - period).abs() <= (0.02 * period).max(2.)
-        })
-    }
-
     /// Detect sustained tempo motion without changing the stable linear period/phase estimates.
     /// With evenly spaced pulse indices, the centred quadratic is orthogonal to both a constant
     /// and a linear slope. A constant-speed clock therefore contributes no curvature.

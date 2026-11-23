@@ -1069,6 +1069,7 @@ mod tests {
     mod brake;
     mod dj_render;
     mod dj_tempos;
+    mod follow_bench;
     mod large_steps;
     mod nudge_lead;
     mod packet_steps;

@@ -128,7 +128,6 @@ fn fast_clock_notes_and_clicks_reach_the_device_on_the_reference_samples() -> Re
                     let reference = render(bpm, buf, lead, clicks, Policy::Reference)?;
                     let hard = render(bpm, buf, lead, clicks, Policy::Hard)?;
                     let predict = render(bpm, buf, lead, clicks, Policy::Predict)?;
-                    let small = (buf as i64) * bpm * 24 < RATE * 60;
                     let expected = bursts(&reference);
                     assert_eq!(expected.len(), (if clicks { EIGHTHS / 2 } else { EIGHTHS }) as usize);
                     let starts: Vec<_> = expected.iter().map(|(start, _)| *start).collect();
@@ -144,12 +143,11 @@ fn fast_clock_notes_and_clicks_reach_the_device_on_the_reference_samples() -> Re
                             expected.len()
                         );
                         all &= actual.len() == expected.len() && intact == expected.len();
-                        if !small && policy == Policy::Predict {
-                            all &= errors.iter().all(|e| *e == 0);
+                        // Once the pulse loop has settled (two eighths), every projected attack is
+                        // on its reference sample, also with callbacks shorter than one pulse.
+                        if policy == Policy::Predict {
+                            all &= errors.iter().skip(2).all(|e| *e == 0);
                         }
-                    }
-                    if small {
-                        assert_eq!(predict, hard, "short callbacks must retain the strict horizon");
                     }
                 }
             }
@@ -170,13 +168,13 @@ fn prediction_stops_at_the_first_overdue_or_slow_pulse() {
         feed.receive(1, &[0xf8]);
     }
     let hard = feed.clock_render_tick().unwrap();
-    assert!(feed.clock_render_tick_for_output(489_999, 42_667, 550_000).unwrap() > hard);
-    assert_eq!(feed.clock_render_tick_for_output(490_001, 42_667, 550_000), Some(hard));
+    assert!(feed.clock_render_tick_for_output(489_999, 550_000).unwrap() > hard);
+    assert_eq!(feed.clock_render_tick_for_output(490_001, 550_000), Some(hard));
     feed.set_clock(493_000);
     feed.receive(1, &[0xf8]);
-    assert_eq!(feed.clock_render_tick_for_output(493_000, 42_667, 550_000), feed.clock_render_tick());
+    assert_eq!(feed.clock_render_tick_for_output(493_000, 550_000), feed.clock_render_tick());
     feed.receive(1, &[0xfc]);
-    assert_eq!(feed.clock_render_tick_for_output(493_000, 42_667, 550_000), feed.clock_render_tick());
+    assert_eq!(feed.clock_render_tick_for_output(493_000, 550_000), feed.clock_render_tick());
 }
 
 #[test]

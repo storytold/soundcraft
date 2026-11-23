@@ -459,18 +459,13 @@ impl MidiFeed {
     }
 
     /// Latest tick that can be scheduled for this immutable device block. Times are
-    /// microseconds in the input feed's epoch. A short buffer, uncertain lock, stale
-    /// pulse or concurrent source change keeps the ordinary one-pulse wire limit.
-    pub fn clock_render_tick_for_output(&self, callback_us: i64, buffer_us: i64, presentation_end_us: i64) -> Option<i64> {
-        self.clock_output_window(callback_us, buffer_us, presentation_end_us).0
+    /// microseconds in the input feed's epoch. An uncertain lock, stale pulse or
+    /// concurrent source change keeps the ordinary one-pulse wire limit.
+    pub fn clock_render_tick_for_output(&self, callback_us: i64, presentation_end_us: i64) -> Option<i64> {
+        self.clock_output_window(callback_us, presentation_end_us).0
     }
 
-    pub(crate) fn clock_output_window(
-        &self,
-        callback_us: i64,
-        buffer_us: i64,
-        presentation_end_us: i64,
-    ) -> (Option<i64>, soundcraft_mix::ClockDelivery) {
+    pub(crate) fn clock_output_window(&self, callback_us: i64, presentation_end_us: i64) -> (Option<i64>, soundcraft_mix::ClockDelivery) {
         use soundcraft_mix::ClockDelivery;
         let generation = self.clock_render_generation.load(Ordering::SeqCst);
         let Some(hard) = self.clock_render_tick() else {
@@ -483,7 +478,9 @@ impl MidiFeed {
             return (self.clock_render_tick(), self.clock_delivery());
         }
         let age = callback_us.saturating_sub(stamp);
-        if period == 0. || (buffer_us as f64) < period || age < 0 || age > period.ceil() as i64 || presentation_end_us <= callback_us {
+        // A buffer shorter than one pulse still projects: with the output lead, the one-pulse
+        // wire limit alone can fall short of the audio the device is about to present.
+        if period == 0. || age < 0 || age > period.ceil() as i64 || presentation_end_us <= callback_us {
             return (Some(hard), wire);
         }
         const TICKS: i64 = soundcraft_time::TICKS_PER_QUARTER / 24;

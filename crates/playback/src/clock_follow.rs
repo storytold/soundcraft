@@ -130,6 +130,8 @@ impl PreparedResume {
 
 mod wire_step;
 
+mod dll;
+
 /// Pulses a phase excursion holds the score at the wire before the usual one-pulse lookahead returns.
 const PHASE_HOLD_PULSES: u16 = 12;
 
@@ -160,6 +162,8 @@ pub(crate) struct Follower {
     phase_pulses_left: u8,
     /// Consecutive pulses received while phase tracking.
     phase_tracked_pulses: u16,
+    /// Filtered pulse time and period for projecting the score past the wire.
+    dll: dll::PulseDll,
     short: PulseFit<12>,
     steady: PulseFit<192>,
     changes: u8,
@@ -207,6 +211,7 @@ impl Default for Follower {
             readout_pulses_left: 0,
             phase_pulses_left: 0,
             phase_tracked_pulses: 0,
+            dll: Default::default(),
             short: Default::default(),
             steady: Default::default(),
             changes: 0,
@@ -319,20 +324,13 @@ impl Follower {
         }
     }
 
+    /// Filtered latest pulse time and period for projecting the score past the wire.
+    /// Abrupt steps, brakes and packed delivery keep the wire limit until the loop settles.
     pub(crate) fn render_prediction(&self) -> Option<(i64, f64)> {
-        let period = self.steady.period_us()?;
-        if self.state != State::Locked
-            || self.step_pulses_left != 0
-            || self.brake_pulses_left != 0
-            || self.phase_tracking()
-            || self.packed_delivery
-            || !(2500. ..=500_000.).contains(&period)
-            || !self.short.regular_intervals(period)
-            || self.steady.is_tempo_ramp()
-        {
+        if self.state != State::Locked || self.step_pulses_left != 0 || self.brake_pulses_left != 0 || self.packed_delivery {
             return None;
         }
-        Some((self.latest?, period))
+        self.dll.prediction()
     }
 
     /// At a steady or gently changing rate, independent timestamp noise is better
@@ -489,6 +487,7 @@ impl Follower {
         self.short.clear();
         self.steady.clear();
         self.settling.clear();
+        self.dll.clear();
         self.readout_pulses_left = 0;
         self.wire_noise_variance = 0.;
         self.phase_pulses_left = 0;
@@ -621,6 +620,7 @@ impl Follower {
             self.readout_pulses_left = 0;
             self.short.clear();
             self.steady.clear();
+            self.dll.clear();
             self.changes = 0;
         }
         if !self.packed_delivery {
@@ -690,6 +690,7 @@ impl Follower {
                 self.phase_pulses_left = 48;
             }
             if let Some(((index, stamp), intervals)) = step {
+                self.dll.step(ordinal, at, Some(fast));
                 self.steady.clear();
                 self.steady.push(index, stamp);
                 self.changes = 0;
@@ -705,6 +706,7 @@ impl Follower {
         }
         self.phase_error_us = self.steady.predict_us(ordinal).map_or(0, |pred| at.saturating_sub(pred));
         self.steady.push(ordinal, at);
+        self.dll.observe(ordinal, at, self.short.period_us());
     }
     /// System common bytes may be interrupted by real-time messages, even inside SysEx.
     /// Channel data and incomplete or malformed system messages never trigger a transport action.
