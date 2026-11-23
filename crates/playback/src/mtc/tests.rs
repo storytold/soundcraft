@@ -41,6 +41,56 @@ fn block(at: Instant, position: i64, frames: i64, playing: bool, pass: u64) -> P
 }
 
 #[test]
+fn generated_timecode_counts_audio_samples_when_device_and_host_clocks_differ() {
+    let song = session(FrameRate::Fps30);
+    let first = Instant::now();
+    // In 600 host seconds these rates yield 28,798,848 / 28,800,000 / 28,801,152 samples.
+    // At 30 fps each QF spans exactly 400 session samples. The upper limit is exclusive.
+    for (actual_hz, expected) in [(47_998.08, 71_998), (48_000.0, 72_000), (48_001.92, 72_003)] {
+        let mut encoder = Encoder::default();
+        let mut b = block(first, 0, (600.0_f64 * actual_hz).round() as i64, true, 1);
+        b.samples_per_second = actual_hz;
+        let mut ordinal = 0_u32;
+        let mut locates = 0;
+        for ms in (0..=600_002).step_by(2) {
+            encoder.update(b, first + Duration::from_millis(ms), &song, &mut |at, bytes| {
+                if bytes[0] == 0xf0 {
+                    locates += 1;
+                } else {
+                    assert_eq!(bytes[0], 0xf1);
+                    assert_eq!(u32::from(bytes[1] >> 4), ordinal % 8);
+                    let sample = (at.duration_since(first).as_secs_f64() * actual_hz).round() as u64;
+                    assert_eq!(sample, u64::from(ordinal) * 400);
+                    ordinal += 1;
+                }
+            });
+        }
+        assert_eq!((locates, ordinal), (1, expected));
+    }
+}
+
+#[test]
+fn slightly_late_first_presentation_never_bunches_quarter_frames() {
+    use crate::sync_clock::SyncEncoder;
+    let song = session(FrameRate::Fps30);
+    let first = Instant::now();
+    let mut b = block(first, 728, 48_000, true, 1);
+    b.origin = 0;
+    let mut mtc = Encoder::default();
+    let mut qfs = Vec::new();
+    for us in (0..=485_000).step_by(100) {
+        let now = first + Duration::from_micros(us);
+        mtc.update(b, now, &song, &mut |_, msg| {
+            if msg.first() == Some(&0xf1) {
+                qfs.push(us)
+            }
+        });
+    }
+    let min_qf = qfs.windows(2).map(|p| p[1] - p[0]).min().unwrap();
+    assert!(min_qf >= 8_100, "minimum QF spacing {min_qf} us");
+}
+
+#[test]
 fn all_six_rates_align_eight_wire_pieces_and_session_offset_to_presentation() {
     for rate in [FrameRate::Fps23_976, FrameRate::Fps24, FrameRate::Fps25, FrameRate::Fps29_97, FrameRate::Fps29_97Drop, FrameRate::Fps30] {
         let mut s = session(rate);
@@ -418,3 +468,6 @@ fn first_integer_sample_of_an_even_fractional_frame_emits_its_quarter_group() {
         }
     }
 }
+
+mod anchored_start;
+mod silent_preroll;

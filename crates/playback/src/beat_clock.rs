@@ -30,6 +30,7 @@ pub(crate) struct Cursor {
     last_position: Option<i64>,
     stopped_spp: Option<u16>,
     delayed_start: bool,
+    observed_stop: bool,
     out_of_range: bool,
 }
 
@@ -42,8 +43,14 @@ impl Cursor {
         let origin_changed = self.pass_origin.replace(origin) != Some(origin);
         // A worker attached or reopened well into a pass must start at the
         // current musical position. Replaying the old origin would send two locates.
-        let timely_origin =
-            changed && block.playing && tempo.samples_to_ticks_f(at, rate) - tempo.samples_to_ticks_f(origin, rate) < TICKS_PER_CLOCK as f64;
+        let was_stopped = std::mem::replace(&mut self.observed_stop, !block.playing);
+        // A continuously observed start at zero is unambiguous even if the first
+        // audio buffer arrived a pulse late. Freshly attached workers still locate
+        // to live time, as do workers more than a sixteenth into the new pass.
+        let prearmed_zero = was_stopped && origin == 0 && !origin_changed;
+        let window = if prearmed_zero { RELAUNCH_PULSES } else { 1 };
+        let timely_origin = changed && block.playing
+            && tempo.samples_to_ticks_f(at, rate) - tempo.samples_to_ticks_f(origin, rate) < (window * TICKS_PER_CLOCK) as f64;
         if timely_origin {
             let mut sent_clock = false;
             self.advance(true, origin, true, tempo, rate, |m| {
@@ -51,6 +58,9 @@ impl Cursor {
                 send(m);
             });
             if sent_clock {
+                // The first F8 was delivered now. Spread a late start over the
+                // first beat so the next F8 does not immediately follow it.
+                self.repayment = Repayment::after_start(self.next_pulse.saturating_sub(1), at, session, prearmed_zero);
                 // Deliver any other pulse that rounds to this sample on a separate wake.
                 return;
             }
@@ -231,6 +241,84 @@ fn remapped(old: &Session, new: &Session, at: i64) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn a_prearmed_zero_start_one_pulse_late_does_not_jump_to_the_next_sixteenth() {
+        let mut song = Session::default();
+        song.sample_rate = SampleRate::HZ_48000;
+        song.tempo.set_tempo(0, 120.).unwrap();
+        let first = Instant::now();
+        let idle = Presentation {
+            generation: 0,
+            sample_rate: song.sample_rate,
+            system_delay_samples: 0,
+            pass: 1,
+            origin: 0,
+            playing: false,
+            sample: 0.,
+            heard_at: first,
+            samples_per_second: 48_000.,
+            limit: 256.,
+            looped: None,
+            end: None,
+            lead: Some(Duration::ZERO),
+        };
+        for (observed_stop, start_sample, from_zero) in [(true, 1500, true), (false, 1500, false), (true, 6500, false)] {
+            let mut cursor = Cursor::default();
+            if observed_stop {
+                cursor.update(idle, first, &song, &mut |_, _| {});
+            }
+            let roll = Presentation { pass: 2, playing: true, sample: start_sample as f64, limit: 48000., ..idle };
+            let mut controls = Vec::new();
+            let mut clocks = Vec::new();
+            for us in (0..=(24_000 - start_sample) * 1_000_000 / 48_000 + 100).step_by(100) {
+                cursor.update(roll, first + Duration::from_micros(us), &song, &mut |_, msg| {
+                    if msg == [CLOCK] { clocks.push(us) } else { controls.push(msg.to_vec()) }
+                });
+            }
+            if from_zero {
+                assert_eq!(controls, [vec![START]]);
+                assert_eq!(clocks.len(), 25);
+                assert!(clocks.windows(2).all(|p| p[1] - p[0] >= 19_000), "{clocks:?}");
+            } else {
+                let spp = if start_sample == 1500 { 1 } else { 2 };
+                assert_eq!(controls, [song_position(spp).to_vec(), vec![CONTINUE]]);
+            }
+        }
+    }
+    #[test]
+    fn late_first_clock_keeps_all_pulses_without_squeezing_the_next_interval() {
+        let mut song = Session::default();
+        song.sample_rate = SampleRate::HZ_48000;
+        song.tempo.set_tempo(0, 120.).unwrap();
+        let first = Instant::now();
+        let b = Presentation {
+            generation: 0,
+            sample_rate: song.sample_rate,
+            system_delay_samples: 0,
+            pass: 1,
+            origin: 0,
+            playing: true,
+            sample: 728.,
+            heard_at: first,
+            samples_per_second: 48_000.,
+            limit: 48_728.,
+            looped: None,
+            end: None,
+            lead: Some(Duration::ZERO),
+        };
+        let mut beat = Cursor::default();
+        let mut clocks = Vec::new();
+        let mut control = Vec::new();
+        for us in (0..=485_000).step_by(100) {
+            beat.update(b, first + Duration::from_micros(us), &song, &mut |_, msg| {
+                if msg == [CLOCK] { clocks.push(us) } else { control.push(msg.to_vec()) }
+            });
+        }
+        assert_eq!(control, [vec![START]]);
+        assert_eq!(clocks.len(), 25);
+        assert!(clocks.windows(2).all(|p| p[1] - p[0] >= 19_000), "{clocks:?}");
+    }
+
     #[test]
     fn stopped_locates_announce_the_same_position_as_play_without_starting() {
         let mut cursor = Cursor::default();

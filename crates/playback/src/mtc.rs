@@ -96,7 +96,9 @@ impl SyncEncoder for Encoder {
             // A worker normally wakes just after the requested first sample.
             // A late attachment or remap well into the pass locates to the live frame.
             let origin = block.origin as f64 + start;
-            let recent_origin = !recovering && block.playing && (0. ..=0.1 * block.samples_per_second).contains(&(at - origin));
+            // When a worker first sees the roll several pieces late, locate to the
+            // live time and join the next complete quarter-frame group.
+            let recent_origin = !recovering && block.playing && (0. ..=quarter).contains(&(at - origin));
             let first = if recent_origin { origin } else { at };
             let frame = rate.frames_at(first.floor() as i64, sr);
             let stamp = if recent_origin { block.instant_for(block.origin as f64) } else { now };

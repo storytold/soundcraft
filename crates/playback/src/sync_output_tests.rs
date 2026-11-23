@@ -1684,3 +1684,22 @@ fn mtc_sync_route_warns_only_with_an_open_chase_source() {
     feed.set_mtc_source(None);
     assert_eq!(output.timing_issue(), None);
 }
+
+#[test]
+fn concurrent_delivery_stats_keep_every_event_and_the_largest_delay() {
+    let stats = Stats::default();
+    let at = Instant::now();
+    std::thread::scope(|threads| {
+        for writer in 0..4 {
+            let stats = &stats;
+            threads.spawn(move || {
+                for i in 0..1000 {
+                    stats.record(at, at + Duration::from_micros((999 - i) * 4 + writer));
+                }
+            });
+        }
+    });
+    assert_eq!(stats.sent.load(Relaxed), 4000);
+    assert_eq!(stats.max.load(Relaxed), 3999);
+    assert_eq!(stats.buckets.iter().map(|value| value.load(Relaxed)).sum::<u64>(), 4000);
+}
