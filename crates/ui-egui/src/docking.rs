@@ -1,7 +1,7 @@
 //! Application panel identities and persistence around the shared docking renderer.
 //! Document contents remain owned by their existing view implementations.
 
-use craft_behavior::dock::{Action, Column, DockError, DockPlacement, DockSide, Floating, Group, Layout, Location, Node, Permissions, Target};
+use craft_behavior::dock::{Action, Column, DockError, DockPlacement, DockEdge, Floating, Group, Layout, Location, Node, Permissions, Target};
 use craft_ui::docking::{DockArea, DockCommand, DockOperation, DockStyle, FloatSpace, PanelLimits, UiDock, Zone, ZoneName};
 use craft_behavior::dock::SplitSize;
 use craft_behavior::flow::Axis;
@@ -68,7 +68,7 @@ fn area(edit: bool) -> egui::Id {
 }
 
 /// A dock on `side` with one column holding `panel`.
-fn dock(side: DockSide, panel: Panel, width: f32) -> Node<Panel> {
+fn dock(side: DockEdge, panel: Panel, width: f32) -> Node<Panel> {
     Node::Dock { side, columns: vec![Column::new(vec![Group::new(vec![panel], 0)], width)] }
 }
 
@@ -91,10 +91,10 @@ fn default_float(panel: Panel) -> Option<[f32; 4]> {
 }
 
 /// The dock side and column width a panel opens in when it has no recorded place.
-fn default_dock(panel: Panel) -> Option<(DockSide, f32)> {
+fn default_dock(panel: Panel) -> Option<(DockEdge, f32)> {
     match panel {
-        Panel::Tracks => Some((DockSide::Start, TRACKS_WIDTH)),
-        Panel::Clips => Some((DockSide::End, CLIPS_WIDTH)),
+        Panel::Tracks => Some((DockEdge::Start, TRACKS_WIDTH)),
+        Panel::Clips => Some((DockEdge::End, CLIPS_WIDTH)),
         _ => None,
     }
 }
@@ -107,8 +107,8 @@ pub fn edit_default() -> Workspace {
         root: Some(split(
             Axis::X,
             SplitSize::FixedFirst(TRACKS_WIDTH),
-            dock(DockSide::Start, Panel::Tracks, TRACKS_WIDTH),
-            split(Axis::X, SplitSize::FixedSecond(CLIPS_WIDTH), session, dock(DockSide::End, Panel::Clips, CLIPS_WIDTH)),
+            dock(DockEdge::Start, Panel::Tracks, TRACKS_WIDTH),
+            split(Axis::X, SplitSize::FixedSecond(CLIPS_WIDTH), session, dock(DockEdge::End, Panel::Clips, CLIPS_WIDTH)),
         )),
         floating: default_floating(),
     })
@@ -121,7 +121,7 @@ pub fn mix_default() -> Workspace {
         root: Some(split(
             Axis::X,
             SplitSize::FixedFirst(TRACKS_WIDTH),
-            dock(DockSide::Start, Panel::Tracks, TRACKS_WIDTH),
+            dock(DockEdge::Start, Panel::Tracks, TRACKS_WIDTH),
             tabs(Panel::Canvas),
         )),
         floating: default_floating(),
@@ -249,7 +249,7 @@ fn restores(workspace: &Workspace, panel: Panel) -> bool {
 }
 
 /// The first panel of the dock on `side`, when that dock is shown.
-fn dock_panel(node: &Node<Panel>, side: DockSide) -> Option<Panel> {
+fn dock_panel(node: &Node<Panel>, side: DockEdge) -> Option<Panel> {
     match node {
         Node::Split { first, second, .. } => dock_panel(first, side).or_else(|| dock_panel(second, side)),
         Node::Dock { side: found, columns } if *found == side => {
