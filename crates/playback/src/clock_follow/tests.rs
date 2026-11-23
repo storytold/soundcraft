@@ -360,9 +360,11 @@ fn prepared_device_clock_needs_a_report_and_accepts_both_retained_and_true_zero(
     for (report, expected_lead) in [(None, None), (Some(75), Some(75)), (None, Some(75)), (Some(0), Some(0))] {
         publisher.observe(timing.observe(Instant::now(), report.map(Duration::from_millis)), 0.01);
         let start = expected_lead.map(|ms| 1000 + doc.sample_rate.samples(ms as f64 / 1000.));
-        assert_eq!(cue.dispatch(|| 0), start);
+        assert_eq!(cue.dispatch(0, || 0), start);
         if let Some(expected) = start {
-            assert!(matches!(receiver.try_recv(), Ok(crate::Cmd::PlayClock { origin: 1000, render_from }) if render_from == expected));
+            assert!(
+                matches!(receiver.try_recv(), Ok(crate::Cmd::PlayClock { origin: 1000, render_from, arrival: Some((0, 0)) }) if render_from == expected)
+            );
         } else {
             assert!(receiver.try_recv().is_err());
         }

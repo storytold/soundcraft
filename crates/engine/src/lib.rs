@@ -92,6 +92,9 @@ pub enum TransportRequest {
     PlayFromClock {
         origin: Samples,
         render_from: Samples,
+        /// Arrival of the starting pulse (MIDI feed microseconds) and the manual input offset,
+        /// so the audio callback that begins playback can place its first frame itself.
+        arrival: Option<(i64, Samples)>,
     },
     /// A prepared external-clock start already reached the device. Adopt it without sending Play again.
     ClockPlaybackStarted(Samples),

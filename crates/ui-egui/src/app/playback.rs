@@ -2,6 +2,9 @@ use super::audio::feed_meter;
 use super::plugins::failed_plugin_status;
 use super::{Gesture, MainWindow, MeterDisplay, Range, Samples, SoundApp, TrackId, TransportRequest, json};
 
+/// Musical origin of an external Clock start, with its pulse arrival (MIDI feed microseconds) and input offset.
+type ClockOrigin = (Samples, Option<(i64, Samples)>);
+
 /// Whether another automation-write pass is due: the transport moved at least
 /// `step` since `last` in either direction. `last == i64::MIN` marks "never
 /// written", so the first pass after (re)start is always due. Saturating
@@ -33,11 +36,12 @@ impl SoundApp {
         self.start_play_with_origin(from, end, looped, None);
     }
 
-    fn start_play_with_origin(&mut self, from: Samples, end: Option<Samples>, looped: Option<Range>, midi_origin: Option<Samples>) {
+    /// `midi_origin`: an external Clock start's musical origin, with its pulse arrival and input offset.
+    fn start_play_with_origin(&mut self, from: Samples, end: Option<Samples>, looped: Option<Range>, midi_origin: Option<ClockOrigin>) {
         if let Some(p) = &self.player {
             self.refresh_playback_session();
-            if let Some(origin) = midi_origin {
-                p.play_from_clock(origin, from);
+            if let Some((origin, arrival)) = midi_origin {
+                p.play_from_clock_at(origin, from, arrival);
             } else if self.mtc_chasing && end.is_none() && looped.is_none() {
                 p.play_chasing_mtc(from);
             } else {
@@ -49,15 +53,15 @@ impl SoundApp {
         self.note_play_started(from, looped);
     }
 
-    fn play_from_position(&mut self, at: Samples, midi_origin: Option<Samples>) {
+    fn play_from_position(&mut self, at: Samples, midi_origin: Option<ClockOrigin>) {
         if !self.is_playing() {
             self.start_play_with_origin(at, None, None, midi_origin);
             return;
         }
         // Playing on from this position drops the end and loop of the earlier selection.
         if let Some(p) = &self.player {
-            if let Some(origin) = midi_origin {
-                p.play_from_clock(origin, at);
+            if let Some((origin, arrival)) = midi_origin {
+                p.play_from_clock_at(origin, at, arrival);
             } else if self.mtc_chasing {
                 p.play_chasing_mtc(at);
             } else {
@@ -495,11 +499,11 @@ impl SoundApp {
                     }
                 }
                 TransportRequest::ClockPlaybackStarted(from) => self.note_play_started(from, None),
-                TransportRequest::PlayFromClock { origin, render_from } => {
+                TransportRequest::PlayFromClock { origin, render_from, arrival } => {
                     // Continue re-locks a coasting take on its live beat grid. Seeking would move
                     // incoming MIDI timestamps relative to the audio already being written.
                     if !self.engine.transport.recording {
-                        self.play_from_position(render_from, Some(origin));
+                        self.play_from_position(render_from, Some((origin, arrival)));
                     }
                 }
                 TransportRequest::PlayFrom(at) => self.play_from_position(at, None),

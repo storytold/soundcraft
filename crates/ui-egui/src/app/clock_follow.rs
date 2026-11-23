@@ -301,7 +301,7 @@ impl SoundApp {
                     };
                     let lead = sr.samples(lead as f64 / 1e6);
                     let render_from = origin.saturating_add(age).saturating_add(lead).saturating_sub(offset).max(0);
-                    self.engine.transport_requests.push(TransportRequest::PlayFromClock { origin, render_from });
+                    self.engine.transport_requests.push(TransportRequest::PlayFromClock { origin, render_from, arrival: Some((at, offset)) });
                 }
                 Action::Stop => {
                     self.clock_follow.anchor = None;
@@ -589,7 +589,7 @@ mod tests {
             if interrupt == "none" {
                 let lead = app.engine.session().sample_rate.samples(0.075);
                 assert!(
-                    matches!(app.engine.transport_requests.as_slice(), [TransportRequest::PlayFromClock {origin: 384_000, render_from}] if *render_from>=384_000+lead)
+                    matches!(app.engine.transport_requests.as_slice(), [TransportRequest::PlayFromClock {origin: 384_000, render_from, ..}] if *render_from>=384_000+lead)
                 );
             } else {
                 assert!(
@@ -737,7 +737,7 @@ mod tests {
                 drop(app.player.take());
                 app.service_clock_follow();
                 assert!(
-                    matches!(app.engine.transport_requests.as_slice(), [TransportRequest::PlayFromClock {origin, render_from}]
+                    matches!(app.engine.transport_requests.as_slice(), [TransportRequest::PlayFromClock {origin, render_from, ..}]
                     if *origin == 384_000 && *render_from == *origin - after),
                     "requests: {:?}",
                     app.engine.transport_requests
@@ -850,7 +850,7 @@ mod tests {
         feed.receive(src, &[0xf8]);
         app.service_clock_follow();
         assert!(
-            matches!(app.engine.transport_requests.as_slice(), [TransportRequest::PlayFromClock { origin: 72_000, render_from }] if *render_from>=72_120)
+            matches!(app.engine.transport_requests.as_slice(), [TransportRequest::PlayFromClock { origin: 72_000, render_from, .. }] if *render_from>=72_120)
         );
         app.handle_transport(0.);
         feed.receive(src, &[0xfc]);
@@ -865,7 +865,7 @@ mod tests {
         feed.receive(src, &[0xf8]);
         app.service_clock_follow();
         assert!(
-            matches!(app.engine.transport_requests.as_slice(),[TransportRequest::PlayFromClock { origin, render_from }] if *origin==at && *render_from>=at+120)
+            matches!(app.engine.transport_requests.as_slice(),[TransportRequest::PlayFromClock { origin, render_from, .. }] if *origin==at && *render_from>=at+120)
         );
         app.handle_transport(0.);
         assert!(app.is_playing());
@@ -987,7 +987,8 @@ mod tests {
             let age = sr.samples((app.clock_follow.snapshot.now_us - stamp).max(0) as f64 / 1e6);
             let anchor = app.engine.transport_tempo().tick_to_samples(pulse * TICKS_PER_PULSE, sr);
             assert!(
-                matches!(app.engine.transport_requests.as_slice(), [TransportRequest::PlayFromClock { origin, render_from }] if *origin == anchor && *render_from == anchor + age - offset),
+                matches!(app.engine.transport_requests.as_slice(), [TransportRequest::PlayFromClock { origin, render_from, arrival }]
+                    if *origin == anchor && *render_from == anchor + age - offset && *arrival == Some((stamp, offset))),
                 "offset {offset}, reference {}, requests {:?}",
                 anchor + age,
                 app.engine.transport_requests

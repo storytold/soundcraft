@@ -186,6 +186,10 @@ enum Cmd {
     PlayClock {
         origin: Samples,
         render_from: Samples,
+        /// Arrival of the starting pulse (MIDI feed microseconds) and the manual input offset.
+        /// The callback that begins playback places its first frame from them; `render_from`
+        /// is the fallback when that callback has no device presentation time.
+        arrival: Option<(i64, Samples)>,
     },
     EndChase(Option<u64>),
     Stop,
@@ -855,7 +859,13 @@ impl Player {
     }
     /// Preserve the musical onset even when the first audible buffer is already due.
     pub fn play_from_clock(&self, origin: Samples, render_from: Samples) {
-        self.begin_play(render_from, Cmd::PlayClock { origin, render_from });
+        self.play_from_clock_at(origin, render_from, None);
+    }
+    /// As [`Player::play_from_clock`], with the starting pulse's arrival (MIDI feed microseconds)
+    /// and the manual input offset, so the first callback can place the start from its own
+    /// presentation time.
+    pub fn play_from_clock_at(&self, origin: Samples, render_from: Samples, arrival: Option<(i64, Samples)>) {
+        self.begin_play(render_from, Cmd::PlayClock { origin, render_from, arrival });
     }
     /// Prepare one already located, stopped position. A later edit or transport command
     /// cancels it under the same input lock used to submit PlayClock.

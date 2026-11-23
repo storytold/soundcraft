@@ -2242,7 +2242,7 @@ fn external_start_publishes_the_wire_cue_separately_from_the_render_head() {
         let now = Instant::now();
         state.device_timing = Some(DeviceTiming::new(now, Some(Duration::ZERO), 0));
         let render_from = origin + 728;
-        tx.send(Cmd::PlayClock { origin, render_from }).unwrap();
+        tx.send(Cmd::PlayClock { origin, render_from, arrival: None }).unwrap();
         state.fill(&mut [0.; 512], 2);
         let block = view.lock().unwrap().read(now, true, 0).0.unwrap();
         assert_eq!((block.origin, block.sample), (origin, render_from as f64));

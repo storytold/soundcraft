@@ -81,7 +81,7 @@ pub(crate) struct PreparedResume {
     pub(crate) silent: bool,
 }
 impl PreparedResume {
-    fn dispatch(&self, age_us: impl FnOnce() -> i64) -> Option<i64> {
+    fn dispatch(&self, at: i64, age_us: impl FnOnce() -> i64) -> Option<i64> {
         use super::{Cmd, Ordering};
         let revision = self.revision.upgrade()?;
         let shared = self.shared.upgrade()?;
@@ -110,7 +110,9 @@ impl PreparedResume {
         if !*current {
             return None;
         }
-        let cmd = Cmd::PlayClock { origin: self.origin, render_from };
+        // The renderer starts at its next callback, up to one device buffer later. Without
+        // the arrival it would present `render_from` that much behind the source.
+        let cmd = Cmd::PlayClock { origin: self.origin, render_from, arrival: Some((at, self.offset)) };
         #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
         let queued = output.send_transport(&tx, cmd);
         #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
@@ -236,7 +238,7 @@ impl Follower {
             && let Some(Action::Play { pulse, at }) = self.events[self.head]
             && let Some(cue) = self.cue.take()
             && cue.pulse == pulse
-            && let Some(render_from) = cue.dispatch(|| now().saturating_sub(at))
+            && let Some(render_from) = cue.dispatch(at, || now().saturating_sub(at))
         {
             self.waiting_for_output = false;
             self.events[self.head] = Some(Action::Started { pulse, at, render_from });
@@ -747,3 +749,6 @@ mod render_lead;
 
 #[cfg(all(test, any(target_os = "windows", target_os = "macos", target_os = "linux")))]
 mod transport_tests;
+
+#[cfg(all(test, any(target_os = "windows", target_os = "macos", target_os = "linux")))]
+mod start_phase;

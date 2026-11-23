@@ -58,7 +58,7 @@ fn render(bpm: i64, buf: usize, lead_ms: i64, clicks: bool, policy: Policy) -> R
     feed.set_clock_follow(Some(1), true, 0, false);
     tx.send(Cmd::Midi(feed.clone())).map_err(|_| "audio command queue closed")?;
     tx.send(if policy != Policy::Reference {
-        Cmd::PlayClock { origin: 0, render_from: lead }
+        Cmd::PlayClock { origin: 0, render_from: lead, arrival: None }
     } else {
         Cmd::Play { from: lead, end: None, looped: None }
     })

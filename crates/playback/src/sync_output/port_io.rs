@@ -274,7 +274,7 @@ mod stop_boundary_tests {
         let mut audio = AudioState::new(rx, shared, Arc::default(), 48_000., channel().0);
         tx.send(Cmd::Midi(feed.clone())).unwrap();
         tx.send(Cmd::Clock(Some(crate::sync_clock::Publisher::new(output.view.clone(), output.metrics.clone())))).unwrap();
-        tx.send(Cmd::PlayClock { origin: 0, render_from: 0 }).unwrap();
+        tx.send(Cmd::PlayClock { origin: 0, render_from: 0, arrival: None }).unwrap();
         audio.fill(&mut [0.; 256], 2);
         let (pass, playing) = output.view.lock().unwrap().transport_state().unwrap();
         assert!(playing);

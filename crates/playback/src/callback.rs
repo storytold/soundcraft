@@ -313,7 +313,8 @@ impl AudioState {
                 }
                 Cmd::OldSessions(tx) => self.old_sessions = Some(tx),
                 Cmd::Play { from, end, looped } => self.begin_play(from, end, looped, false),
-                Cmd::PlayClock { origin, render_from } => {
+                Cmd::PlayClock { origin, render_from, arrival } => {
+                    let render_from = arrival.and_then(|(at, offset)| self.clock_start(origin, at, offset)).unwrap_or(render_from);
                     self.begin_play(render_from, None, None, false);
                     // Outputs locate at the incoming musical cue. The audio cursor
                     // already includes the lead needed to present its first block.
@@ -358,6 +359,21 @@ impl AudioState {
         }
         self.send_garbage();
         self.shared.playing.store(self.playing, Ordering::Relaxed);
+    }
+
+    /// First rendered sample of an external Clock start, placed from this callback's own
+    /// presentation time: the source has advanced from `origin` since its pulse arrived at `at`.
+    /// `None` without a device presentation time (the caller's estimate is used then).
+    #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+    fn clock_start(&self, origin: Samples, at: i64, offset: Samples) -> Option<Samples> {
+        let timing = self.device_timing.filter(|t| t.lead().is_some())?;
+        let heard = self.midi.as_ref()?.timestamp_at(timing.heard_instant(self.device_rate, 0));
+        let age = self.session.sample_rate.samples(heard.saturating_sub(at).max(0) as f64 / 1e6);
+        Some(origin.saturating_add(age).saturating_sub(offset).max(0))
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
+    fn clock_start(&self, _: Samples, _: i64, _: Samples) -> Option<Samples> {
+        None
     }
 
     fn begin_play(&mut self, from: Samples, end: Option<Samples>, looped: Option<Range>, chasing: bool) {
