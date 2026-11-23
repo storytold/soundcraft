@@ -28,7 +28,7 @@ pub use midi::{export_midi, import_midi_bytes};
 pub use midi_take::{
     MAX_MIDI_TAKE_EVENTS, MidiPass, MidiTake, MidiTakeEvent, add_midi_recording, add_midi_recording_from, midi_record_inputs, records_midi,
 };
-pub use record::{Recording, Take, add_recording, live_span, place_recording};
+pub use record::{Recording, Take, add_recording, live_span, place_recording, take_file_samples, take_part};
 pub use render::{commit_track, consolidate, refuse_longer, render_clip_gain, render_limit, sanitize_name};
 pub(crate) use session::{DecodedFiles, decode_file, open_session_linked};
 pub use session::{open_session, save_copy, save_session, save_session_copy};
