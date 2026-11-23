@@ -1070,6 +1070,7 @@ mod tests {
     mod dj_render;
     mod dj_tempos;
     mod large_steps;
+    mod nudge_lead;
     mod packet_steps;
     mod ramp_response;
     mod sampler_song;

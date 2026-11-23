@@ -1,4 +1,4 @@
-//! Incoming MIDI Beat Clock. The input thread timestamps and interprets the wire;
+﻿//! Incoming MIDI Beat Clock. The input thread timestamps and interprets the wire;
 //! the host drains only transport transitions. Ordinary clock ticks take no queue space.
 use crate::sync_input::PulseFit;
 
@@ -130,6 +130,9 @@ impl PreparedResume {
 
 mod wire_step;
 
+/// Pulses a phase excursion holds the score at the wire before the usual one-pulse lookahead returns.
+const PHASE_HOLD_PULSES: u16 = 12;
+
 pub(crate) type BoundaryListener = std::sync::Arc<dyn Fn(Option<i64>) + Send + Sync>;
 
 pub(crate) struct Follower {
@@ -155,6 +158,8 @@ pub(crate) struct Follower {
     wire_noise_variance: f64,
     readout_pulses_left: u8,
     phase_pulses_left: u8,
+    /// Consecutive pulses received while phase tracking.
+    phase_tracked_pulses: u16,
     short: PulseFit<12>,
     steady: PulseFit<192>,
     changes: u8,
@@ -201,6 +206,7 @@ impl Default for Follower {
             wire_noise_variance: 0.,
             readout_pulses_left: 0,
             phase_pulses_left: 0,
+            phase_tracked_pulses: 0,
             short: Default::default(),
             steady: Default::default(),
             changes: 0,
@@ -299,7 +305,14 @@ impl Follower {
         match self.state {
             // While braking or consuming one USB batch, the wire does not yet
             // establish the next pulse's time.
-            State::Locked if self.brake_pulses_left > 0 || self.phase_tracking() || self.packed_delivery => Some(self.played_pulse),
+            // A phase excursion first holds the score at the wire, since the source may be
+            // slowing. One beat later the excursion is the long fit catching up with a held
+            // nudge, and holding the wire would only delay every note by up to a buffer.
+            State::Locked
+                if self.brake_pulses_left > 0 || self.packed_delivery || (self.phase_tracking() && self.phase_tracked_pulses < PHASE_HOLD_PULSES) =>
+            {
+                Some(self.played_pulse)
+            }
             State::Locked => Some(self.played_pulse.saturating_add(1)),
             State::Stopped => Some(self.played_pulse),
             State::Waiting | State::Coasting => None,
@@ -637,6 +650,7 @@ impl Follower {
             self.played_pulse = self.next_pulse;
             self.next_pulse = self.next_pulse.saturating_add(1);
         }
+        self.phase_tracked_pulses = if self.phase_tracking() { self.phase_tracked_pulses.saturating_add(1) } else { 0 };
     }
     fn observe_period(&mut self, ordinal: i64, at: i64) {
         self.readout_pulses_left = self.readout_pulses_left.saturating_sub(1);
