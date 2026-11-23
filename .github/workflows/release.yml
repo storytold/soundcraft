@@ -34,7 +34,7 @@ jobs:
     # Intentionally tracked at @main (not SHA-pinned) so org-wide CI improvements, security fixes, and build optimizations propagate without PR churn across all craftapp repos.
     uses: storytold/craft-common-actions/.github/workflows/release.yml@main
     with:
-      dry-run: ${{ github.event_name == 'schedule' }}
+      nightly: ${{ github.event_name == 'schedule' }}
       app-name: soundcraft
       app-title: SoundCraft
       version: ${{ inputs.version }}
@@ -55,3 +55,4 @@ jobs:
       AZURE_SIGNING_ACCOUNT: ${{ secrets.AZURE_SIGNING_ACCOUNT }}
       AZURE_CERT_PROFILE: ${{ secrets.AZURE_CERT_PROFILE }}
       LINUX_SIGNING_KEY: ${{ secrets.LINUX_SIGNING_KEY }}
+      ARTCRAFT_SERVICES_DISPATCH_TOKEN: ${{ secrets.ARTCRAFT_SERVICES_DISPATCH_TOKEN }}

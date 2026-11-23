@@ -1,6 +1,6 @@
 //! Movie tests on fixtures generated in process (no binary fixtures): H.264 made of I_PCM
-//! macroblocks (exact, known colours), ProRes from the bundled encoder and Motion JPEG from the
-//! `image` encoder, muxed with the bundled MP4/MOV writer. When `ffmpeg` with libx264 is on PATH,
+//! macroblocks (exact, known colours), ProRes from the bundled encoder and Motion JPEG from craft-video's
+//! `mjpeg` encoder, muxed with the bundled MP4/MOV writer. When `ffmpeg` with libx264 is on PATH,
 //! real High-profile streams with B-frames are checked too (skipped otherwise).
 
 use crate::isobmff::{Brand, ByteSource, Mp4Writer, SampleEntry, TrackConfig, WriteSample, WriterOptions};
@@ -344,4 +344,64 @@ fn test_pattern_moves() {
     assert_eq!(white_x(&f3), Some(3));
     let f17 = m.frame_at(17.5 / 24.0).unwrap();
     assert_eq!(white_x(&f17), Some(17));
+}
+
+#[test]
+fn mjpeg_grey_twelve_bit_and_odd_channel_pictures_map_to_rgba() {
+    use craft_video::mjpeg::{Frame as Jpeg, Samples};
+    let grey = Jpeg { width: 2, height: 1, channels: 1, samples: Samples::U8(vec![7, 200]), damaged: false };
+    assert_eq!(crate::movie::mjpeg_rgba(&grey).unwrap(), [7, 7, 7, 255, 200, 200, 200, 255]);
+    // 12-bit samples arrive scaled to 16 bits; the top 8 bits are kept.
+    let deep = Jpeg { width: 1, height: 1, channels: 3, samples: Samples::U16(vec![0xFFFF, 0x8000, 0x00FF]), damaged: false };
+    assert_eq!(crate::movie::mjpeg_rgba(&deep).unwrap(), [255, 128, 0, 255]);
+    let odd = Jpeg { width: 1, height: 1, channels: 2, samples: Samples::U8(vec![1, 2]), damaged: false };
+    assert!(matches!(crate::movie::mjpeg_rgba(&odd), Err(VideoError::Decode(e)) if e.contains("2-channel")));
+}
+
+#[test]
+fn grey_mjpeg_packets_decode_through_the_shared_decoder() {
+    // A one-channel packet, as some cameras write, decodes to equal R, G and B.
+    let enc = craft_video::mjpeg::Encoder::new(craft_video::mjpeg::EncoderConfig { quality: 95, ..Default::default() }).unwrap();
+    let packet = enc.encode(16, 8, 1, &[90; 16 * 8]).unwrap();
+    let frame = craft_video::mjpeg::Decoder::new().decode(&packet).unwrap();
+    let rgba = crate::movie::mjpeg_rgba(&frame).unwrap();
+    assert_eq!(rgba.len(), 16 * 8 * 4);
+    assert!(rgba.as_chunks::<4>().0.iter().all(|p| p[0] == p[1] && p[1] == p[2] && p[0].abs_diff(90) <= 2 && p[3] == 255));
+}
+
+#[test]
+fn shared_codec_playback_and_seek_parity() {
+    for (label, bytes, expected_codec, seek_order) in [
+        ("h264", h264_mp4(24, 8).unwrap(), "h264", vec![23, 0, 15, 7, 8, 2, 19, 1]),
+        ("prores", prores_mov(8).unwrap(), "prores", vec![7, 0, 4, 2, 6, 1, 5, 3]),
+        ("mjpeg", mjpeg_mov(8).unwrap(), "mjpeg", vec![7, 0, 4, 2, 6, 1, 5, 3]),
+    ] {
+        let mut seq_movie = Movie::open(bytes.clone()).unwrap();
+        let info = seq_movie.info().clone();
+        assert_eq!(info.codec, expected_codec, "{label}: unexpected codec");
+        let count = info.frame_count;
+        let mut sequential = Vec::with_capacity(count);
+        for i in 0..count {
+            let t = seq_movie.frame_time(i).unwrap() + 0.001;
+            let frame = seq_movie.frame_at(t).unwrap();
+            assert_eq!(frame.index, i, "{label}: sequential index mismatch");
+            sequential.push(frame);
+        }
+
+        let mut seek_movie = Movie::open(bytes).unwrap();
+        seek_movie.set_cache_frames(1);
+        for i in seek_order {
+            let sought = seek_movie.frame(i).unwrap();
+            assert_eq!(sought.index, sequential[i].index, "{label}: seek index mismatch at {i}");
+            assert_eq!(sought.width, sequential[i].width, "{label}: seek width mismatch at {i}");
+            assert_eq!(sought.height, sequential[i].height, "{label}: seek height mismatch at {i}");
+            assert_eq!(sought.rgba, sequential[i].rgba, "{label}: seek RGBA differs from sequential at {i}");
+        }
+
+        let thumb = seek_movie.thumbnail_at(info.duration * 0.5, 16).unwrap();
+        assert_eq!(thumb.height, 16, "{label}: thumbnail height mismatch");
+        assert!(matches!(seek_movie.frame_at(info.duration), Err(VideoError::OutOfRange)));
+        assert!(matches!(seek_movie.frame_at(-0.1), Err(VideoError::OutOfRange)));
+        assert!(matches!(seek_movie.frame_at(f64::NAN), Err(VideoError::OutOfRange)));
+    }
 }
