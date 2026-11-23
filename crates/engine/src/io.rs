@@ -14,6 +14,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 mod bundle;
 mod import;
 mod midi;
+mod midi_take;
 mod record;
 mod render;
 mod session;
@@ -24,7 +25,10 @@ pub use bundle::{BUNDLE_EXTENSION, open_session_bytes, session_bundle};
 pub use import::{DecodedImport, add_source, decode_import, import_audio_bytes, load_sampler_bytes, relink_videos};
 pub(crate) use import::{MAX_IMPORT_SAMPLES, at_rate, place_decoded};
 pub use midi::{export_midi, import_midi_bytes};
-pub use record::{Recording, Take, add_recording, live_span, place_recording};
+pub use midi_take::{
+    MAX_MIDI_TAKE_EVENTS, MidiPass, MidiTake, MidiTakeEvent, add_midi_recording, add_midi_recording_from, midi_record_inputs, records_midi,
+};
+pub use record::{Recording, Take, add_recording, live_span, place_recording, take_file_samples, take_part};
 pub use render::{commit_track, consolidate, refuse_longer, render_clip_gain, render_limit, sanitize_name};
 pub(crate) use session::{DecodedFiles, decode_file, open_session_linked};
 pub use session::{open_session, save_copy, save_session, save_session_copy};
@@ -182,46 +186,20 @@ impl Drop for SessionLimit {
 /// Refuses the session `name` of `len` bytes when it is larger than [`session_limit`]: too large
 /// to open, or, when `saving`, to save.
 pub(crate) fn session_size(name: impl std::fmt::Display, len: u64, saving: bool) -> Result<()> {
-    let limit = session_limit();
-    if len <= limit {
-        return Ok(());
-    }
-    let most = if limit >= 1 << 20 { format!("{} MiB", limit >> 20) } else { format!("{limit} bytes") };
-    Err(EngineError::Io(if saving {
-        format!("{name} is too large to save: over {most}, more than SoundCraft opens")
-    } else {
-        format!("{name} is too large to open (over {most})")
-    }))
+    craft_scraft_format::check_session_size(&name.to_string(), len, session_limit(), saving).map_err(|error| EngineError::Io(error.to_string()))
 }
 
 /// [`read_text`] for a session file: refused, unread, past [`session_limit`].
 pub(crate) fn read_session_text(path: impl AsRef<Path>) -> Result<String> {
     let path = path.as_ref();
-    utf8(path, read_file_within(path, true)?)
+    craft_scraft_format::read_session_data(&path.display().to_string(), read_file_within(path, true)?, session_limit())
+        .map_err(|error| EngineError::Io(error.to_string()))
 }
 
 /// A bare `.scraft` handed over as bytes (the browser) as text: refused, uncopied, past
 /// [`session_limit`].
 pub(crate) fn session_bytes_text(name: &str, bytes: &[u8]) -> Result<String> {
-    session_size(name, bytes.len() as u64, false)?;
-    String::from_utf8(bytes.to_vec()).map_err(|_| EngineError::Io(format!("{name}: not a SoundCraft session")))
-}
-
-/// How many bytes [`Session::to_json`] makes of `s`, counted without keeping them.
-fn json_len(s: &Session) -> u64 {
-    struct Count(u64);
-    impl std::io::Write for Count {
-        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-            self.0 = self.0.saturating_add(buf.len() as u64);
-            Ok(buf.len())
-        }
-        fn flush(&mut self) -> std::io::Result<()> {
-            Ok(())
-        }
-    }
-    let mut n = Count(0);
-    // A session that cannot be written counts as nothing here: `to_json` reports that error.
-    serde_json::to_writer_pretty(&mut n, s).map_or(0, |()| n.0)
+    craft_scraft_format::read_session_bytes(name, bytes, session_limit()).map_err(|error| EngineError::Io(error.to_string()))
 }
 
 /// Is there a file at `path` the automation read root lets us see? A path outside the root is
@@ -795,11 +773,12 @@ fn write_session(session: &Session, path: &str, overwrite: bool) -> Result<(Sess
     // Before any audio is written: a session too large to open again is not saved (#892). With no
     // audio to write, the text checked is the text saved.
     let checked = if pending.is_empty() {
-        let text = s.to_json().map_err(|err| EngineError::Io(err.to_string()))?;
-        session_size(p.display(), text.len() as u64, true)?;
+        let label = p.display().to_string();
+        let text = craft_scraft_format::write_session_named(&s, &label, session_limit()).map_err(|error| EngineError::Io(error.to_string()))?;
         Some(text)
     } else {
-        session_size(p.display(), json_len(&s), true)?;
+        let size = craft_scraft_format::session_json_len(&s).map_err(|error| EngineError::Io(error.to_string()))?;
+        session_size(p.display(), size, true)?;
         None
     };
     let mut written = 0;
@@ -820,7 +799,10 @@ fn write_session(session: &Session, path: &str, overwrite: bool) -> Result<(Sess
     }
     let text = match checked {
         Some(text) => text,
-        None => s.to_json().map_err(|err| EngineError::Io(err.to_string()))?,
+        None => {
+            let label = p.display().to_string();
+            craft_scraft_format::write_session_named(&s, &label, session_limit()).map_err(|error| EngineError::Io(error.to_string()))?
+        }
     };
     make_dir(&dir)?;
     // Atomic-ish write: temp file then rename.
@@ -1107,45 +1089,11 @@ fn write_export_checked(path: &Path, mut bytes: &[u8]) -> std::io::Result<()> {
 
 /// Unpack a bundle: the one `.scraft` at its top level and the files beside it, by relative path.
 fn read_bundle(bytes: &[u8], limits: BundleLimits) -> Result<(String, std::collections::HashMap<String, Vec<u8>>)> {
-    use std::io::Read as _;
-    let zerr = |err: zip::result::ZipError| EngineError::Io(format!("bundle: {err}"));
-    let mut z = zip::ZipArchive::new(std::io::Cursor::new(bytes)).map_err(zerr)?;
-    if z.len() > limits.entries {
-        return Err(EngineError::Io("bundle: too many files".into()));
-    }
-    // Entries are stored, so the files we keep can only outgrow the bundle when several entries
-    // point at the same bytes: a small bundle naming one payload thousands of times would be
-    // copied out once per name.
-    if z.has_overlapping_files().map_err(zerr)? {
-        return Err(EngineError::Io("bundle: files share data".into()));
-    }
-    let (mut text, mut files, mut total) = (None, std::collections::HashMap::new(), 0u64);
-    for i in 0..z.len() {
-        let mut f = z.by_index(i).map_err(zerr)?;
-        if f.is_dir() {
-            continue;
-        }
-        let rel = f.name().map_err(zerr)?.to_string();
-        let size = f.size();
-        total = total.saturating_add(size);
-        if total > limits.bytes {
-            return Err(EngineError::Io("bundle: too large".into()));
-        }
-        let is_session = !rel.contains('/') && Path::new(&rel).extension().and_then(OsStr::to_str) == Some(soundcraft_model::SESSION_EXTENSION);
-        if is_session && text.is_none() {
-            session_size(format_args!("bundle: {rel}"), size, false)?;
-        }
-        let mut data = Vec::new();
-        // The declared size is hostile too: never read past it.
-        f.by_ref().take(size).read_to_end(&mut data).map_err(|err| EngineError::Io(format!("bundle: {rel}: {err}")))?;
-        if is_session && text.is_none() {
-            text = Some(String::from_utf8(data).map_err(|_| EngineError::Io(format!("bundle: {rel} is not text")))?);
-        } else {
-            files.insert(rel, data);
-        }
-    }
-    let text = text.ok_or_else(|| EngineError::Io("bundle: no .scraft session inside".into()))?;
-    Ok((text, files))
+    craft_scraft_format::read_bundle(
+        bytes,
+        craft_scraft_format::BundleLimits { entries: limits.entries, bytes: limits.bytes, session_bytes: session_limit() },
+    )
+    .map_err(|error| EngineError::Io(error.to_string()))
 }
 
 /// The record-enabled audio tracks, each with the input channels it records (those its input
@@ -1171,6 +1119,126 @@ pub fn plan_takes(e: &Engine, unsaved_dir: &Path, input_channels: usize) -> Vec<
             (t.id, inputs, path)
         })
         .collect()
+}
+
+/// Checks that `path` is a file directly inside the media folder `media_dir` once both are
+/// canonical (symlinks resolved), so a plan handed to an import cannot name media elsewhere.
+pub(crate) fn check_in_media_dir(path: &Path, media_dir: &Path) -> Result<()> {
+    let dir = std::fs::canonicalize(media_dir).map_err(|e| EngineError::Io(format!("media folder {}: {e}", media_dir.display())))?;
+    let file = std::fs::canonicalize(path).map_err(|e| EngineError::Io(format!("{}: {e}", path.display())))?;
+    if file.parent() != Some(dir.as_path()) {
+        return Err(EngineError::Io(format!("{} is outside the media folder {}", path.display(), dir.display())));
+    }
+    Ok(())
+}
+
+/// Bounded, root-checked media read for interchange imports.
+pub(crate) fn read_interchange_file(path: &Path, limit: u64) -> Result<Vec<u8>> {
+    use std::io::Read;
+    crate::file_access::check_read(path).map_err(EngineError::Io)?;
+    let meta = std::fs::metadata(path).map_err(|e| EngineError::Io(e.to_string()))?;
+    if !meta.is_file() || meta.len() > limit {
+        return Err(EngineError::Io(format!("{}: not a regular file or exceeds import byte limit", path.display())));
+    }
+    let mut bytes = Vec::new();
+    std::fs::File::open(path).and_then(|f| f.take(limit.saturating_add(1)).read_to_end(&mut bytes)).map_err(|e| EngineError::Io(e.to_string()))?;
+    if bytes.len() as u64 > limit {
+        return Err(EngineError::Io("media exceeds import byte limit".into()));
+    }
+    Ok(bytes)
+}
+
+/// Reads an AAF with the pure-Rust interchange reader. Only the user-chosen AAF and media folder
+/// are opened; every referenced WAV must be named in that folder (exact name, no search).
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn read_aaf_plan(path: &str, media_dir: &str, composition: Option<&str>) -> Result<Value> {
+    use soundcraft_interchange::aaf::{AafOptions, read_aaf};
+    crate::file_access::check_read(path).map_err(EngineError::Io)?;
+    crate::file_access::check_read(media_dir).map_err(EngineError::Io)?;
+    let meta = std::fs::metadata(path).map_err(|e| EngineError::Io(e.to_string()))?;
+    if !meta.is_file() || meta.len() > 512 * 1024 * 1024 || !Path::new(media_dir).is_dir() {
+        return Err(EngineError::Io("choose an AAF file (at most 512 MiB) and its media folder".into()));
+    }
+    let aaf = std::fs::canonicalize(path).map_err(|e| EngineError::Io(e.to_string()))?;
+    let media_dir = std::fs::canonicalize(media_dir).map_err(|e| EngineError::Io(e.to_string()))?;
+    let base = aaf.parent().map(Path::to_path_buf).unwrap_or_default();
+    let stem = aaf.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
+    let file = std::fs::File::open(&aaf).map_err(|e| EngineError::Io(e.to_string()))?;
+    let options = AafOptions { composition, base_dir: &base, default_name: &stem };
+    let plan = read_aaf(std::io::BufReader::new(file), &options, &mut LocalMedia { media_dir: Some(media_dir) })
+        .map_err(|e| EngineError::Io(e.to_string()))?;
+    serde_json::to_value(plan).map_err(|e| EngineError::Io(e.to_string()))
+}
+
+/// Resolves AAF locators to local WAV files, optionally relinking by exact file name.
+#[cfg(not(target_arch = "wasm32"))]
+pub struct LocalMedia {
+    /// Canonical relink folder. `None` keeps the locator's own path.
+    pub media_dir: Option<PathBuf>,
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl soundcraft_interchange::aaf::MediaResolver for LocalMedia {
+    fn resolve(&mut self, locator: &Path) -> std::result::Result<soundcraft_interchange::aaf::MediaInfo, soundcraft_interchange::aaf::MediaError> {
+        use soundcraft_interchange::aaf::{MediaError, MediaInfo, wav_info};
+        let source = lenient_canonical(locator);
+        let (path, relinked_from) = match &self.media_dir {
+            None => (source, None),
+            Some(dir) => {
+                let name = source.file_name().ok_or_else(|| MediaError::Invalid(format!("Locator has no file name: {}", source.display())))?;
+                let chosen = dir.join(name);
+                let resolved = lenient_canonical(&chosen);
+                if resolved.parent() != Some(dir.as_path()) {
+                    return Err(MediaError::Invalid(format!("Relink escapes media directory: {}", chosen.display())));
+                }
+                let from = (chosen != source).then(|| source.display().to_string());
+                (resolved, from)
+            }
+        };
+        if !path.is_file() {
+            return Err(MediaError::Missing(path.display().to_string()));
+        }
+        crate::file_access::check_read(&path).map_err(MediaError::Invalid)?;
+        let file = std::fs::File::open(&path).map_err(|e| MediaError::Invalid(format!("{}: {e}", path.display())))?;
+        let info = wav_info(std::io::BufReader::new(file)).map_err(|e| MediaError::Invalid(format!("{}: {e}", path.display())))?;
+        Ok(MediaInfo { path: path.display().to_string(), relinked_from, channels: info.channels, frames: info.frames, sample_rate: info.sample_rate })
+    }
+}
+
+/// `realpath` without requiring the path to exist: the longest existing prefix is canonical
+/// (symlinks resolved) and the remaining components are appended after lexical `.`/`..` handling.
+#[cfg(not(target_arch = "wasm32"))]
+fn lenient_canonical(path: &Path) -> PathBuf {
+    use std::path::Component;
+    let mut lexical = PathBuf::new();
+    for c in path.components() {
+        match c {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                lexical.pop();
+            }
+            other => lexical.push(other),
+        }
+    }
+    let mut tail = Vec::new();
+    let mut prefix = lexical.as_path();
+    loop {
+        if let Ok(real) = std::fs::canonicalize(prefix) {
+            return tail.iter().rev().fold(real, |acc: PathBuf, part| acc.join(part));
+        }
+        match (prefix.parent(), prefix.file_name()) {
+            (Some(parent), Some(name)) => {
+                tail.push(name.to_os_string());
+                prefix = parent;
+            }
+            _ => return lexical,
+        }
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+pub(crate) fn read_aaf_plan(_: &str, _: &str, _: Option<&str>) -> Result<Value> {
+    Err(EngineError::Io("AAF import needs the desktop app: its media files are read from a local folder".into()))
 }
 
 #[cfg(test)]
