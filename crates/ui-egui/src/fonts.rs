@@ -135,8 +135,13 @@ pub fn definitions(system_fonts: bool) -> FontDefinitions {
     fonts
 }
 
+/// Gives the context [`definitions`] through the framework runtime, which keeps its font providers and layout memory in
+/// step with them. The framework's signature family, which its font stack always has, follows the proportional one.
 pub fn install(ctx: &egui::Context, system_fonts: bool) {
-    ctx.set_fonts(definitions(system_fonts));
+    let mut fonts = definitions(system_fonts);
+    let proportional = fonts.families.get(&FontFamily::Proportional).cloned().unwrap_or_default();
+    fonts.families.entry(craft_ui::fonts::FontRef::signature().family()).or_insert(proportional);
+    craft_ui::fonts::load(ctx, fonts);
 }
 
 #[cfg(test)]

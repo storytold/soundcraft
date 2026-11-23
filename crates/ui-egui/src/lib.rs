@@ -22,6 +22,7 @@ pub mod dialogs;
 pub mod docking;
 pub mod edit_window;
 pub mod fonts;
+pub mod framework;
 pub mod icons;
 pub mod import;
 pub mod localization;
@@ -60,6 +61,7 @@ pub use panels::video_window;
 pub use panels::windows;
 
 mod app;
+mod capture;
 mod services;
 mod state;
 
@@ -427,6 +429,12 @@ pub struct SoundApp {
     theme_applied: Option<bool>,
     /// Last panel host context, used to cancel renderer-owned gestures on explicit replacement.
     pub(crate) docking_context: Option<egui::Context>,
+    /// The workspaces and panel specs the Edit and Mix docks show.
+    pub(crate) docks: docking::LiveDocks,
+    /// The framework dialogs (update check and prompt); they run once per pass after the app's own UI.
+    pub framework_dialogs: craft_ui::dialog::DialogHost,
+    /// Who SoundCraft is to the framework's components.
+    pub(crate) framework_host: std::sync::Arc<craft_host::Host>,
     /// Transport simulation when there is no player (tests, offscreen renders).
     sim: Option<(Samples, Option<Samples>, Option<Range>)>,
     /// When Record last found nothing to record on, and why: the Record buttons show it for a moment.

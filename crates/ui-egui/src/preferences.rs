@@ -800,7 +800,7 @@ pub fn show(app: &mut SoundApp, ctx: &egui::Context) {
     draft.remember_user_edits(draft_before_ui);
     app.preferences.popup_open = ctx.any_popup_open();
 
-    if ctx.input(|i| i.key_pressed(Key::Escape)) && !popup_was_open {
+    if crate::framework::escape_pressed(ctx) && !popup_was_open {
         action = Some(Action::Cancel);
     } else if action.is_none() && ctx.input(|i| i.key_pressed(Key::Enter)) && !typing {
         action = Some(Action::Apply);

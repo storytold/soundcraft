@@ -35,6 +35,13 @@ impl Default for ExtraState {
     }
 }
 
+impl ExtraState {
+    /// The interface scale applied to the context last; 1 until one is applied.
+    pub(crate) fn applied_scale(&self) -> f32 {
+        self.applied.map_or(1.0, |(scale, _)| scale)
+    }
+}
+
 /// UI commands handled here (`window.renderer`, `window.ui_customization`, `window.config_auto_update`).
 pub fn run(app: &mut SoundApp, id: &str, p: &Value) -> Option<Value> {
     let flag = |v: &mut bool| {

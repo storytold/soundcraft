@@ -1,0 +1,141 @@
+//! The craft-ui runtime, hosted from SoundCraft's own eframe `App` (craft-libs docs/craft-framework.md, section 2.2).
+//! The desktop app calls [`install`] once, [`SoundApp::before_input`] in `raw_input_hook`, [`SoundApp::close_path`]
+//! last in `logic`, and [`before_ui`] first in `ui`; the browser build and tests install with [`install_headless`].
+//! [`SoundApp::run_framework_dialogs`] runs the framework dialogs after SoundCraft's own UI.
+//!
+//! The runtime takes Escape, Tab, F6 and the clipboard events for the whole window unless one of SoundCraft's own
+//! egui widgets has the keyboard. The window's Escape is read with [`escape_pressed`]; the session view is declared
+//! to the runtime with [`host_canvas`], which keeps Tab, the edit chords and the clipboard events in egui's input for
+//! SoundCraft's shortcuts.
+
+use std::sync::{Arc, OnceLock};
+
+use craft_host::target::ShellInfo;
+use craft_host::{AppInfo, Host};
+use craft_keymap::Overrides;
+use craft_ui::fonts::{I18nScripts, SystemFonts, UiFonts};
+use craft_ui::runtime::commands::CommandInput;
+use craft_ui::runtime::env::{RootEnv, Scale};
+use craft_ui::runtime::focus::{EditSet, KeepKeys, KeyUse};
+use craft_ui::runtime::frame::{FrameInput, FrameOutput};
+use craft_ui::runtime::keys::{Intent, with_window_intents};
+use craft_ui::shell::embed::{self, CloseDecision};
+use craft_window::system::WindowSystem;
+
+use crate::SoundApp;
+
+/// Each pass of the root window, first in `App::ui`: hands the runtime the native window it answers the hit test of
+/// (Windows) and fits the window to its monitor once.
+#[cfg(not(target_arch = "wasm32"))]
+pub use craft_ui::shell::embed::before_ui;
+
+/// The scripts of the interface languages, for the font stack.
+static SCRIPTS: I18nScripts = I18nScripts;
+
+/// The runtime's first font stack: egui's bundled faces and no installed system fonts. SoundCraft's own definitions
+/// ([`crate::fonts::install`]) replace it on the first frame, before anything is drawn.
+fn ui_fonts() -> UiFonts<'static> {
+    UiFonts::new(&SCRIPTS).system_fonts(SystemFonts::Off)
+}
+
+fn install_with(ctx: &egui::Context, shell: ShellInfo, windows: Arc<dyn WindowSystem>) -> Result<(), String> {
+    let spec = craft_ui::InstallSpec::new(shell, windows).app_id(APP_ID);
+    embed::install(ctx, spec, &ui_fonts()).map(drop).map_err(|error| format!("the UI runtime could not be installed: {error}"))
+}
+
+/// The id every OS window of the app carries, as the main window's builder sets it.
+const APP_ID: &str = "ai.storyteller.soundcraft";
+
+/// Installs the runtime on the desktop window's context, once, before the first pass. `forced_x11` when the app
+/// opens its window through XWayland. SoundCraft keeps the system's title bar on every platform.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn install(ctx: &egui::Context, forced_x11: bool) -> Result<(), String> {
+    use craft_host::target::Backend;
+    let backend = if forced_x11 { Backend::X11 } else { Backend::from_env() };
+    install_with(ctx, ShellInfo::default().backend(backend), Arc::new(craft_window::system::SystemWindows))
+}
+
+/// Installs the runtime on a context with no native window of its own: the browser build's canvas and test windows.
+pub fn install_headless(ctx: &egui::Context) {
+    if let Err(error) = install_with(ctx, ShellInfo::default(), Arc::new(craft_window::system::NoWindows)) {
+        log::warn!("{error}");
+    }
+}
+
+/// Who SoundCraft is to the framework's dialogs (the update dialogs show its name).
+pub(crate) fn host() -> Arc<Host> {
+    Arc::new(Host::builder(AppInfo { id: "soundcraft", name: "SoundCraft", version: env!("CARGO_PKG_VERSION") }).build())
+}
+
+/// The runtime's default keys SoundCraft's own shortcuts use: F6 and Shift+F6 move between panes by default, and F6
+/// is the Trim tool in SoundCraft.
+fn command_overrides() -> Arc<Overrides> {
+    static OVERRIDES: OnceLock<Arc<Overrides>> = OnceLock::new();
+    OVERRIDES
+        .get_or_init(|| {
+            let mut overrides = Overrides::new();
+            overrides.insert("window.nextPane", Vec::new());
+            overrides.insert("window.previousPane", Vec::new());
+            Arc::new(overrides)
+        })
+        .clone()
+}
+
+impl SoundApp {
+    /// The framework's part of `App::raw_input_hook`, once per frame before the first pass: takes what the runtime
+    /// gathered since the last frame and gives the coming passes the root values (theme mode, interface scale).
+    pub fn before_input(&mut self, ctx: &egui::Context) {
+        embed::before_input(ctx, |output| self.frame_input(output));
+    }
+
+    /// The root values of this frame. SoundCraft registers no commands with the runtime and lets it toggle no
+    /// chrome, so the output carries nothing it acts on. The interface scale is the one SoundCraft applied last
+    /// (`extra_windows`), so the runtime's zoom and SoundCraft's agree.
+    fn frame_input(&mut self, _output: FrameOutput) -> FrameInput {
+        let mode = if crate::theme::is_light() { craft_theme::Mode::Light } else { craft_theme::Mode::Dark };
+        let root = RootEnv::new().mode(mode).scale(Scale::new(self.extra.applied_scale()));
+        FrameInput::new(root).commands(CommandInput::new().overrides(command_overrides())).host(Arc::clone(&self.framework_host))
+    }
+
+    /// The framework's part of `App::logic`, after SoundCraft's own: the root window's close path. A close the app
+    /// asked for itself goes through; otherwise unsaved changes hold the window open while Save Changes asks, and
+    /// its answer quits the app.
+    pub fn close_path(&mut self, ctx: &egui::Context) {
+        embed::logic(ctx, || {
+            if self.quit_requested || !crate::dialogs::ask_to_save(self, "app.quit", &serde_json::json!({})) {
+                CloseDecision::Close
+            } else {
+                CloseDecision::Hold
+            }
+        });
+    }
+
+    /// The framework dialogs open on [`SoundApp::framework_dialogs`], once per pass after SoundCraft's own UI.
+    pub(crate) fn run_framework_dialogs(&mut self, ui: &mut egui::Ui) {
+        self.framework_dialogs.run(ui);
+    }
+}
+
+/// Declares the session view `id`, drawn in this pass, as the window's document canvas. With nothing focused it is
+/// the window's key target: Tab, the edit chords and the clipboard events stay in egui's input for SoundCraft's
+/// shortcuts, as do the arrows, Enter and the page keys.
+pub(crate) fn host_canvas(ctx: &egui::Context, id: egui::Id) {
+    const KEYS: KeyUse = KeyUse::CANVAS.with_keep(KeepKeys::Tab).with_edits(EditSet::ALL);
+    craft_ui::runtime::focus::host_canvas(ctx, id, KEYS);
+}
+
+/// Whether Escape was pressed in this pass: from egui while one of SoundCraft's own widgets or popups has the
+/// keyboard, otherwise the window's cancel, which the runtime routes to no component. Leaves it for later readers.
+pub(crate) fn escape_pressed(ctx: &egui::Context) -> bool {
+    ctx.input(|i| i.key_pressed(egui::Key::Escape)) || window_cancel_pending(ctx)
+}
+
+/// Whether the window's cancel (an Escape while nothing has framework focus) is there and untaken.
+fn window_cancel_pending(ctx: &egui::Context) -> bool {
+    let mut pending = false;
+    with_window_intents(ctx, false, |intents| {
+        pending = intents.untaken(&Intent::Cancel);
+        false
+    });
+    pending
+}

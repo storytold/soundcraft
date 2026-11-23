@@ -17,7 +17,7 @@
 //! inspect, command or screenshot after the gesture it follows.
 
 use crate::SoundApp;
-use craft_ui::capture::CaptureSlot;
+use crate::capture::CaptureSlot;
 use serde_json::{Value, json};
 use std::sync::mpsc::{Receiver, Sender, channel};
 use web_time::Instant;
@@ -36,7 +36,7 @@ impl ControlRequest {
 }
 
 /// One admitted `ui.screenshot` request. The app owns the strong completion slot; the callback the
-/// renderer receives holds only a weak reference to it (see `craft_ui::capture`).
+/// renderer receives holds only a weak reference to it (see `crate::capture`).
 pub(crate) struct PendingShot {
     token: u64,
     /// Taken once the single reply (success, timeout, cancellation or failure) was sent.

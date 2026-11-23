@@ -16,7 +16,7 @@ pub(crate) fn output_window(app: &mut SoundApp, ctx: &egui::Context) {
     // last frame, because egui closes them before this runs.
     let busy_id = egui::Id::unique("output_window_escape");
     let busy = ctx.data(|d| d.get_temp(busy_id)).unwrap_or(false) || app.dialogs.open.is_some() || app.ui.show_search;
-    if !busy && ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+    if !busy && crate::framework::escape_pressed(ctx) {
         app.ui.output_window = None;
     }
     output_window_contents(app, ctx);

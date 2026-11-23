@@ -111,6 +111,9 @@ impl SoundApp {
             system_fonts: true,
             theme_applied: None,
             docking_context: None,
+            docks: crate::docking::LiveDocks::default(),
+            framework_dialogs: craft_ui::dialog::DialogHost::new(),
+            framework_host: crate::framework::host(),
             sim: None,
             record_hint: None,
             quit_requested: false,
@@ -356,6 +359,7 @@ impl SoundApp {
         dialogs::show(self, &ctx);
         aaf_import::show(self, &ctx);
         updates_ui::show(self, &ctx);
+        self.run_framework_dialogs(ui);
         // The sampler's drop rects are current now, so route any captured drop in this pass.
         self.route_dropped_files();
         // The pass that actually received the injected events has already dispatched their widget

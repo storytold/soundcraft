@@ -513,7 +513,7 @@ pub fn show(app: &mut SoundApp, ctx: &egui::Context) {
     let fresh_enter =
         |i: &egui::InputState| i.events.iter().any(|e| matches!(e, egui::Event::Key { key: egui::Key::Enter, pressed: true, repeat: false, .. }));
     let enter = !first_frame && ctx.input(fresh_enter) && (ctx.memory(|m| m.focused().is_none()) || ctx.text_edit_focused());
-    let esc = ctx.input(|i| i.key_pressed(egui::Key::Escape));
+    let esc = crate::framework::escape_pressed(ctx);
     egui::Window::new(egui::RichText::new(crate::localization::text(&title)).font(bold(13.0)))
         .id(egui::Id::unique(&title))
         .collapsible(false)
