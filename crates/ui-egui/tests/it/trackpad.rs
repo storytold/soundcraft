@@ -30,11 +30,13 @@ impl Rig {
         r
     }
 
-    /// Run `n` frames through the raw-input hook and the app's logic and UI.
+    /// Run `n` frames as the desktop shell does: the raw-input hook with the runtime's frame input, then the app's
+    /// logic and UI.
     fn frames(&mut self, n: usize) {
         for _ in 0..n {
             let mut raw = RawInput { screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(self.width, 900.0))), ..Default::default() };
             self.app.raw_input_hook(&self.ctx, &mut raw);
+            self.app.before_input(&self.ctx);
             self.ctx
                 .run_ui(raw, |ui| {
                     self.app.logic(ui.ctx());
