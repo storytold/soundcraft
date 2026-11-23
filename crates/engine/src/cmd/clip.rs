@@ -423,7 +423,7 @@ fn loop_clips(e: &mut Engine, p: &Value) -> Result<Value> {
             let start_tick = s.tempo.samples_to_ticks(c.start, sr);
             let span_ticks = s.tempo.samples_to_ticks_f(c.start + c.length, sr) - start_tick as f64;
             let beats = (span_ticks / TICKS_PER_QUARTER as f64).round().max(1.0) as i64;
-            (start_tick, beats * TICKS_PER_QUARTER as i64)
+            (start_tick, beats * TICKS_PER_QUARTER)
         });
         // Whole iterations, then one cut short to reach `end` exactly.
         let (reps, last) = match end {
