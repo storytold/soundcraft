@@ -113,8 +113,9 @@ fn column_peaks(s: &Session, clip: Option<ClipId>, span: Range, cols: usize) -> 
     let ClipContent::Audio { source, .. } = c.content else { return None };
     let audio = s.pool.get(source)?;
     let (start, len) = (span.start as f64, span.len().max(1) as f64);
-    let origin = c.source_offset() as f64 - c.start as f64;
-    let at = |i: usize| (start + len * i as f64 / cols as f64 + origin).max(0.0) as usize;
+    // The mixer plays a stretched clip from `offset + rel / stretch` (mix/src/clips.rs, render_clip).
+    let stretch = if c.stretch.is_finite() && c.stretch > 0.0 { c.stretch } else { 1.0 };
+    let at = |i: usize| (c.source_offset() as f64 + (start + len * i as f64 / cols as f64 - c.start as f64) / stretch).max(0.0) as usize;
     Some(
         (0..cols)
             .map(|i| {
