@@ -716,6 +716,10 @@ fn menu_translate(source: &str) -> Option<&'static str> {
         "No Track Presets" => "Nenhuma predefinição de faixa",
         "Saved in {folder}" => "Salvo em {folder}",
         "Couldn't create {folder}: {error}" => "Não foi possível criar {folder}: {error}",
+        "Created bus {bus}" => "Bus {bus} criado",
+        "Send {slot} left out: the preset doesn't say which bus it sends to" => {
+            "Envio {slot} omitido: a predefinição não diz para qual bus ele envia"
+        }
         "Couldn't read {folder}: {error}" => "Não foi possível ler {folder}: {error}",
         "Scale..." => "Escala...",
         "Scene And Take" => "Cena e tomada",

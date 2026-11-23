@@ -21,4 +21,5 @@ mod session_transport;
 mod split_into_mono;
 mod time_key_signatures;
 mod track_name_collisions;
+mod track_preset_buses;
 mod trim_to_selection;

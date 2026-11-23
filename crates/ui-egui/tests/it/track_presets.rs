@@ -354,6 +354,32 @@ fn a_plugin_preset_folder_that_cannot_be_read_is_named_in_its_menu() {
     let _ = std::fs::remove_dir_all(&presets);
 }
 
+/// As in Pro Tools, recalling a send whose bus isn't in the session makes the bus, and the status
+/// line says so.
+#[test]
+fn a_bus_made_on_recall_is_named_in_the_status_line() {
+    let (mut app, presets) = app("bus-made");
+    let file = presets.join("Track Presets").join("Pad Room.json");
+    app.run("track.save_preset", json!({"path": file.to_string_lossy(), "tracks": ["Pad"]})).unwrap();
+    // As if saved in a session whose bus was called Room, which this one doesn't have.
+    let mut v: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&file).unwrap()).unwrap();
+    assert_eq!(v["send_buses"][0]["name"], "Verb", "the demo's Pad sends A to Verb");
+    v["send_buses"][0]["name"] = json!("Room");
+    std::fs::write(&file, v.to_string()).unwrap();
+    app.run("edit.select", json!({"tracks": ["Hats"]})).unwrap();
+    let mut h = harness(app);
+    right_click_name(&mut h, "Hats");
+    h.get_by_label("Recall Track Preset").hover();
+    h.run_steps(3);
+    h.get_by_label("Pad Room").click();
+    h.run_steps(3);
+    assert_eq!(h.state().ui.status, "Created bus Room");
+    let s = h.state().engine.session();
+    let room = s.bus_by_name("Room").map(|b| b.id).expect("the bus is made");
+    assert_eq!(s.track_by_name("Hats").unwrap().mixer.sends[0].as_ref().map(|x| x.target.clone()), Some(soundcraft_model::Route::Bus(room)));
+    let _ = std::fs::remove_dir_all(&presets);
+}
+
 #[test]
 fn choosing_save_track_preset_in_the_palette_with_enter_opens_the_dialog() {
     let (mut app, presets) = app("palette-save");

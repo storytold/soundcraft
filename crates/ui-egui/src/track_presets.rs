@@ -126,3 +126,35 @@ fn recall_menu(app: &mut SoundApp, ui: &mut egui::Ui, tracks: &[u64]) {
         }
     });
 }
+
+/// The status line after a recall that made buses for its sends (`created_buses`) or left sends
+/// out (`skipped_sends`). None when every send found its bus.
+pub(crate) fn recall_note(result: &serde_json::Value) -> Option<String> {
+    let list = |key: &str| -> Vec<String> {
+        result.get(key).and_then(serde_json::Value::as_array).into_iter().flatten().filter_map(|x| x.as_str().map(str::to_string)).collect()
+    };
+    let mut notes: Vec<String> = list("created_buses").iter().map(|bus| crate::localized_format!("Created bus {bus}", bus = bus)).collect();
+    notes.extend(
+        list("skipped_sends")
+            .iter()
+            .map(|slot| crate::localized_format!("Send {slot} left out: the preset doesn't say which bus it sends to", slot = slot.to_uppercase())),
+    );
+    (!notes.is_empty()).then(|| notes.join(" · "))
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    #[test]
+    fn the_recall_note_names_made_buses_then_left_out_sends() {
+        let note = super::recall_note(&json!({"created_buses": ["Room"], "skipped_sends": ["a", "c"]}));
+        assert_eq!(
+            note.as_deref(),
+            Some(
+                "Created bus Room · Send A left out: the preset doesn't say which bus it sends to · Send C left out: the preset doesn't say which bus it sends to"
+            )
+        );
+        assert_eq!(super::recall_note(&json!({"created_buses": [], "skipped_sends": []})), None);
+    }
+}
