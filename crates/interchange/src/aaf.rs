@@ -32,6 +32,7 @@
 //!   locator resolves under the AAF's folder (see `locator_path`). A file that cannot be found
 //!   is reported and its edits skipped; it does not abort the import.
 use crate::{ImportClip, ImportError, ImportTrack, Media, Plan, Rational, TimecodeRate};
+use craft_aaf::aaf::properties::{Properties, Property, PropertyError};
 use std::{
     collections::{HashMap, HashSet},
     io::{Read, Seek, SeekFrom},
@@ -286,6 +287,14 @@ fn read_u32(d: &[u8], at: usize) -> Result<u32> {
     d.get(at..at + 4).and_then(|b| b.try_into().ok()).map(u32::from_le_bytes).ok_or_else(|| fail("truncated AAF structure"))
 }
 
+fn property_error(path: &str, e: PropertyError) -> ImportError {
+    match e {
+        PropertyError::UnsupportedByteOrder => fail("unsupported AAF byte order"),
+        PropertyError::ShortHeader | PropertyError::TruncatedIndex => fail("truncated AAF structure"),
+        PropertyError::TruncatedValue => fail(format!("{path}: truncated properties")),
+    }
+}
+
 fn property_total(current: usize, additional: usize) -> Result<usize> {
     current.checked_add(additional).filter(|total| *total <= MAX_PROPERTY_BYTES).ok_or_else(|| fail("AAF retained property data exceeds 128 MiB"))
 }
@@ -387,27 +396,20 @@ impl<F: Read + Seek> Store<F> {
         if d.first() != Some(&0x4c) {
             return Err(fail("unsupported AAF byte order"));
         }
-        let count = usize::from(read_u16(&d, 2)?);
-        let headers_end = 4 + 6 * count;
-        let mut at = headers_end;
+        // Shared wire framing (craft-libs#3068); duplicates, budgets and messages stay ours.
+        let records = Properties::new(&d).map_err(|e| property_error(path, e))?;
         // Validate and charge the complete object before copying any property values.
-        for i in 0..count {
-            let size = usize::from(read_u16(&d, 8 + 6 * i)?);
-            at = at.checked_add(size).filter(|end| *end <= d.len()).ok_or_else(|| fail(format!("{path}: truncated properties")))?;
+        for record in records.clone() {
+            record.map_err(|e| property_error(path, e))?;
         }
         let additional =
             d.len().checked_add(path.len()).and_then(|n| n.checked_add(class.len())).ok_or_else(|| fail("AAF property size overflow"))?;
         self.charge_properties(additional)?;
 
         let mut props = HashMap::new();
-        at = headers_end;
-        for i in 0..count {
-            let pid = read_u16(&d, 4 + 6 * i)?;
-            let form = read_u16(&d, 6 + 6 * i)?;
-            let size = usize::from(read_u16(&d, 8 + 6 * i)?);
-            let value = d.get(at..at + size).ok_or_else(|| fail(format!("{path}: truncated properties")))?.to_vec();
-            at += size;
-            props.insert(pid, (form, value));
+        for record in records {
+            let Property { id, form, payload } = record.map_err(|e| property_error(path, e))?;
+            props.insert(id, (form, payload.to_vec()));
         }
         let object = Obj { path: path.to_string(), class, props: Rc::new(props) };
         self.objects.insert(path.to_string(), object.clone());
