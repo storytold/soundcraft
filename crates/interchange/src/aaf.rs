@@ -568,7 +568,10 @@ fn locator_path(url: &str, base: &Path) -> Result<PathBuf> {
     if !matches!(p.components().next_back(), Some(Component::Normal(_))) {
         return Err(fail(format!("Locator does not name a file: {url}")));
     }
-    if p.is_absolute() {
+    // A rooted locator is a full path on the exporting machine. On Windows `/Users/me/a.wav` and
+    // `/C:/me/a.wav` have a root but no drive prefix, so `is_absolute` is false there; they are still
+    // full paths and must not be read as relative ones. On Unix `has_root` equals `is_absolute`.
+    if p.has_root() {
         return Ok(p);
     }
     // A relative locator may only hold plain names (no drive prefix or root on Windows).
@@ -1005,6 +1008,17 @@ mod tests {
         assert!(locator_path("file://server/x.wav", base).is_err());
         assert!(locator_path("file:///x.wav?y", base).is_err());
         assert!(locator_path("file:///x.wav#y", base).is_err());
+    }
+
+    #[test]
+    fn a_rooted_locator_from_another_machine_keeps_its_path() {
+        // Exporters write the path on their own machine: a Mac volume, or a Windows drive after the
+        // `file:///` root. On Windows neither has a drive prefix of the local kind, yet both name a file
+        // by its full path, so they are taken as given and never joined to the AAF folder.
+        let base = Path::new("/base");
+        assert_eq!(locator_path("file:///Users/me/a.wav", base).unwrap(), PathBuf::from("/Users/me/a.wav"));
+        assert_eq!(locator_path("file:///C:/Users/me/a.wav", base).unwrap(), PathBuf::from("/C:/Users/me/a.wav"));
+        assert_eq!(locator_path("/Volumes/Media/a.wav", base).unwrap(), PathBuf::from("/Volumes/Media/a.wav"));
     }
 
     #[test]
