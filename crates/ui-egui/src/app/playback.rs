@@ -29,12 +29,44 @@ impl SoundApp {
         if self.engine.transport.playing { self.engine.transport.position } else { self.engine.session().edit.selection.start }
     }
 
-    fn start_play(&mut self, from: Samples, end: Option<Samples>, looped: Option<Range>) {
-        if let Some(p) = &self.player {
-            p.update_session(self.engine.session_arc());
-            p.play(from, end, looped);
+    /// When the output stream is lost (see [`Player::lost`]), say so and return true: Play and
+    /// Record are refused until the device is reopened, instead of starting a transport whose
+    /// playhead nothing advances.
+    fn refuse_on_lost_output(&mut self, recording: bool) -> bool {
+        let Some(p) = &self.player else { return false };
+        if !p.lost() {
+            return false;
+        }
+        let name = p.device_name.clone();
+        self.ui.status = if recording {
+            crate::localized_format!("Cannot record: “{name}” is not running. Use Reconnect audio device in Setup › Playback Engine.", name = name)
         } else {
-            self.sim = Some((from, end, looped));
+            crate::localized_format!("Cannot play: “{name}” is not running. Use Reconnect audio device in Setup › Playback Engine.", name = name)
+        };
+        true
+    }
+
+    fn start_play(&mut self, from: Samples, end: Option<Samples>, looped: Option<Range>) {
+        let recording = self.engine.transport.recording;
+        let started = match &self.player {
+            Some(p) if !p.lost() => {
+                p.update_session(self.engine.session_arc());
+                // False when the output was lost since the check.
+                p.play(from, end, looped)
+            }
+            Some(_) => false,
+            None => {
+                self.sim = Some((from, end, looped));
+                true
+            }
+        };
+        if !started {
+            let _ = self.refuse_on_lost_output(recording);
+            if recording {
+                // End the record pass `start_recording` armed, which would otherwise stay armed.
+                self.stop_play();
+            }
+            return;
         }
         // The loop as the audio engine takes it: a range too short to loop is played once.
         self.play_loop = looped.filter(|l| soundcraft_playback::loops(*l));
@@ -101,6 +133,10 @@ impl SoundApp {
             };
             self.ui.status = why.into();
             self.record_hint = Some((self.last_frame.unwrap_or_default(), why));
+            return;
+        }
+        // Before arming anything: a pass on a lost output would never advance.
+        if self.refuse_on_lost_output(true) {
             return;
         }
         // A pass records audio, MIDI or both: it needs one of them ready. The audio input is
@@ -439,9 +475,13 @@ impl SoundApp {
                 }
                 TransportRequest::PlayFrom(at) => {
                     if self.is_playing() {
+                        if self.refuse_on_lost_output(self.engine.transport.recording) {
+                            self.stop_play();
+                            continue;
+                        }
                         // Playing on from `at` drops the end and loop of the earlier selection.
                         if let Some(p) = &self.player {
-                            p.play(at, None, None);
+                            let _ = p.play(at, None, None);
                         }
                         if let Some(sim) = &mut self.sim {
                             *sim = (at, None, None);

@@ -1526,6 +1526,12 @@ fn menu_translate(source: &str) -> Option<&'static str> {
         "{sr} Hz{note}" => "{sr} Hz{note}",
         "Autosave failed: {e}" => "Falha ao salvar automaticamente: {e}",
         "Bounced {} (peak {:.1} dBFS, {:.1} LUFS)" => "Bounce concluído: {} (pico {:.1} dBFS, {:.1} LUFS)",
+        "Cannot play: “{name}” is not running. Use Reconnect audio device in Setup › Playback Engine." => {
+            "Não foi possível reproduzir: “{name}” não está em execução. Use Reconectar dispositivo de áudio em Configurar › Mecanismo de reprodução."
+        }
+        "Cannot record: “{name}” is not running. Use Reconnect audio device in Setup › Playback Engine." => {
+            "Não foi possível gravar: “{name}” não está em execução. Use Reconectar dispositivo de áudio em Configurar › Mecanismo de reprodução."
+        }
         "Cannot record: {err}" => "Não foi possível gravar: {err}",
         "Cannot record: no MIDI input device is connected (Setup > Playback Engine lists them)" => {
             "Não foi possível gravar: nenhum dispositivo de entrada MIDI está conectado (Configuração > Mecanismo de reprodução mostra a lista)"

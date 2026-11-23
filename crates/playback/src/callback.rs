@@ -20,6 +20,12 @@ pub(crate) struct Fault {
 }
 
 impl Fault {
+    /// True while the output cannot play: a block panicked or the stream was lost. Unlike
+    /// [`Fault::trouble`], it keeps answering after the UI has been told.
+    pub(crate) fn lost(&self) -> bool {
+        self.failed.load(Ordering::Relaxed) || self.gone.load(Ordering::Relaxed)
+    }
+
     /// What stopped the output, once.
     pub(crate) fn trouble(&self, stalled: bool) -> Option<OutputTrouble> {
         let trouble = if self.failed.load(Ordering::Relaxed) {

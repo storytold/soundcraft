@@ -474,11 +474,23 @@ impl Player {
         self.side().editors.get_mut(&(track, slot))?.value_text(id, value)
     }
 
-    /// Start playback at `from`, stopping at `end`, or looping `looped`.
-    pub fn play(&self, from: Samples, end: Option<Samples>, looped: Option<Range>) {
+    /// Start playback at `from`, stopping at `end`, or looping `looped`. Returns false, and does
+    /// not start, while the output is [lost](Player::lost): nothing would advance the playhead.
+    pub fn play(&self, from: Samples, end: Option<Samples>, looped: Option<Range>) -> bool {
+        if self.lost() {
+            return false;
+        }
         self.shared.position.store(from, Ordering::Relaxed);
         self.shared.playing.store(true, Ordering::Relaxed);
         let _ = self.tx.send(Cmd::Play { from, end, looped });
+        true
+    }
+
+    /// True while the output cannot play until the device is reopened: its stream was lost or
+    /// the engine hit an internal error. Unlike [`Player::trouble`], it keeps answering after the
+    /// problem has been reported.
+    pub fn lost(&self) -> bool {
+        self.fault.lost()
     }
 
     /// Feed live input (from a `record::Recorder`) into the mix for input monitoring.
