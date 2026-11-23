@@ -57,7 +57,9 @@ impl Stats {
         let bucket = BOUNDS.partition_point(|&v| v < us);
         self.buckets[bucket].fetch_add(1, Relaxed);
         self.sent.fetch_add(1, Relaxed);
-        self.max.fetch_max(us, Relaxed);
+        if us > self.max.load(Relaxed) {
+            self.max.fetch_max(us, Relaxed);
+        }
     }
 }
 fn effective_offset(offset: i64, sr: soundcraft_time::SampleRate) -> i64 {
@@ -496,8 +498,14 @@ impl<C: SyncPort> Port<C> {
                 }) {
                     soon(at);
                 }
-                stats.catch_up_sends.fetch_add(r.encoder.take_catchups(), Relaxed);
-                stats.stale_dropped.fetch_add(r.encoder.take_stale_dropped(), Relaxed);
+                let catchups = r.encoder.take_catchups();
+                if catchups != 0 {
+                    stats.catch_up_sends.fetch_add(catchups, Relaxed);
+                }
+                let stale = r.encoder.take_stale_dropped();
+                if stale != 0 {
+                    stats.stale_dropped.fetch_add(stale, Relaxed);
+                }
             }
         }
         pending.sort_by_key(|m| m.at);

@@ -313,10 +313,12 @@ impl AudioState {
                     if let Some(clock) = &mut self.clock {
                         clock.locate(at);
                     }
+                    // Stopped, a locate only moves the cursor (and the Beat Clock position it
+                    // announces). Live monitoring and an ending record pass continue.
                     if self.playing {
                         self.midi_stopped = None;
                         self.pending_len = 0;
-                        self.read = 0.;
+                        self.read = 0.0;
                         self.mix.reset();
                     }
                 }

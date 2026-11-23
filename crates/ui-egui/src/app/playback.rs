@@ -487,8 +487,9 @@ impl SoundApp {
                     }
                 }
                 TransportRequest::Locate(at) => {
-                    // A stopped playback device still owns the timecode output. Keep its
-                    // cursor in sync so an external deck can locate without starting playback.
+                    // A stopped player still owns the Beat Clock and timecode outputs. Move its
+                    // cursor too, so a stopped locate announces the new position (one SPP, one
+                    // MTC full frame) without starting playback.
                     if let Some(p) = &self.player {
                         p.locate(at);
                     }
@@ -581,5 +582,19 @@ mod tests {
         assert!(a.is_dir());
         assert_eq!(app.fallback_take_dir().unwrap(), a, "the same folder for the rest of the run");
         let _ = std::fs::remove_dir_all(&a);
+    }
+
+    #[test]
+    fn stopped_locate_reaches_the_playback_cursor_that_drives_beat_clock() {
+        // Beat Clock announces a stopped locate with one SPP from the player's cursor.
+        let engine = soundcraft_engine::Engine::default();
+        let player = soundcraft_playback::Player::new(engine.session_arc());
+        let mut app = SoundApp::new(engine, Some(player), crate::Services::default());
+        app.run("transport.locate", serde_json::json!({"at": 240_000})).unwrap();
+        app.handle_transport(0.);
+        let player = app.player.as_ref().unwrap();
+        assert!(!player.is_playing());
+        assert_eq!(player.position(), 240_000);
+        assert_eq!(app.position(), 240_000);
     }
 }

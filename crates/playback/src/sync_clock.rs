@@ -307,7 +307,10 @@ impl Publisher {
         }
         if let Some((last, size)) = self.last_callback.replace((timing.callback, buffer_seconds)) {
             let gap = timing.callback.saturating_duration_since(last);
-            self.metrics.max_gap_us.fetch_max(gap.as_micros() as u64, Relaxed);
+            let gap_us = gap.as_micros() as u64;
+            if gap_us > self.metrics.max_gap_us.load(Relaxed) {
+                self.metrics.max_gap_us.fetch_max(gap_us, Relaxed);
+            }
             if gap.as_secs_f64() > 2. * size {
                 self.metrics.late_buffers.fetch_add(1, Relaxed);
             }
