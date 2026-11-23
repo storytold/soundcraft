@@ -444,9 +444,8 @@ impl AudioState {
             // A corroborated stopped locate protects its first attack for one start.
             // Without a presentation estimate an unanchored start can still follow the incoming transport.
             let anchor = anchor.map(|p| p.session_sample(rate, sr, start, offset)).filter(|at| *at >= 0);
-            let anchor = anchor.filter(|&at| {
-                self.playing || presentation.is_none_or(|target| !crate::mtc_preroll::silent_pcm_prefix(&self.session, at, target))
-            });
+            let anchor = anchor
+                .filter(|&at| self.playing || presentation.is_none_or(|target| !crate::mtc_preroll::silent_pcm_prefix(&self.session, at, target)));
             if anchor.is_some() && !self.playing {
                 // Present the stopped locate one render block after lock. The callback that
                 // consumes the lock may already be partway through that interval. Render the

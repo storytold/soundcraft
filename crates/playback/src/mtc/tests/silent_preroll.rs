@@ -79,7 +79,7 @@ fn a_dry_lead_in_starts_the_same_pcm_with_a_locate_or_a_rolling_join() {
             audio.device_timing = Some(DeviceTiming::new(start + Duration::from_micros(now as u64), Some(Duration::from_micros(15166)), 0));
             let mut pcm = [0.; 512];
             audio.fill(&mut pcm, 2);
-            for (offset, pair) in pcm.chunks_exact(2).enumerate() {
+            for (offset, pair) in pcm.as_chunks::<2>().0.iter().enumerate() {
                 let high = pair[0].abs() > 0.03;
                 if high && !last {
                     hits.push(sample + offset);

@@ -38,7 +38,7 @@ fn replay(rate: FrameRate, locate_frame: i64, at: usize, score: usize, events: &
         audio.device_timing = Some(DeviceTiming::new(base + Duration::from_micros(us as u64), Some(Duration::from_micros(15166)), 0));
         let mut pcm = vec![0.; buffer * 2];
         audio.fill(&mut pcm, 2);
-        for (k, pair) in pcm.chunks_exact(2).enumerate() {
+        for (k, pair) in pcm.as_chunks::<2>().0.iter().enumerate() {
             let high = pair[0].abs() > 0.03;
             if high && !loud {
                 hits.push((us + (k as i64 * 1000000 + 24000) / 48000, (index * buffer + k) as i64));
