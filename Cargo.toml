@@ -11,9 +11,11 @@ rust-version = "1.95"
 repository = "https://github.com/storytold/soundcraft"
 
 [workspace.dependencies]
-craft-xml = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "ea24422ae9859dc5da398d0462bc87f8e02e0d10" }
-craft-mime = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "ea24422ae9859dc5da398d0462bc87f8e02e0d10" }
+craft-score = { git = "https://github.com/storytold/craft-libs", rev = "33be35625e252cc4f06aa375b3b428521faea37d" }
+craft-xml = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "33be35625e252cc4f06aa375b3b428521faea37d" }
+craft-mime = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "33be35625e252cc4f06aa375b3b428521faea37d" }
 # internal
+soundcraft-interchange = { path = "crates/interchange" }
 soundcraft-time = { path = "crates/time" }
 soundcraft-midi = { path = "crates/midi" }
 soundcraft-video = { path = "crates/video" }
@@ -45,29 +47,41 @@ proptest = "1"
 
 # audio
 rustfft = "6"
+# AAF interchange: Compound File Binary (structured storage) container reader.
+cfb = "0.15"
 # Session bundles (one file holding a session and its audio, for the browser): stored entries only.
 zip = { version = "9", default-features = false }
 cpal = "0.18"
+# MIDI input devices. Pinned: it talks to the system's MIDI service and runs on its threads.
+# Only soundcraft-playback depends on it, and only on Linux, macOS and Windows; there it builds
+# alsa (already used by cpal), coremidi + coremidi-sys, or the `windows` crate (already in the
+# tree). Its Android and web dependencies (jni, android-build, java-locator, dlopen2,
+# process_path, wasm-bindgen) are in Cargo.lock because the lock file covers every target, and
+# are never compiled for SoundCraft.
+midir = "=0.11.1"
 
 # Which file paths stored in a session may be opened.
-craft-docpath = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "ea24422ae9859dc5da398d0462bc87f8e02e0d10" }
+craft-docpath = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "33be35625e252cc4f06aa375b3b428521faea37d" }
 
 # Video containers and bitstreams, shared with the other craft apps.
-craft-media = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "45a8e16669e70dadb780dfbc759c882dd5b7ea1c" }
+craft-media = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "33be35625e252cc4f06aa375b3b428521faea37d" }
 # H.264 and ProRes codecs shared with the other Craft apps.
-craft-video = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "45a8e16669e70dadb780dfbc759c882dd5b7ea1c", default-features = false, features = ["h264-decode", "prores"] }
+craft-video = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "33be35625e252cc4f06aa375b3b428521faea37d", default-features = false, features = ["h264-decode", "prores", "mjpeg"] }
 # Audio file formats, codecs and waveform overviews, shared with the other craft apps. It shares
 # types with craft-media, so both stay on one rev.
 # Standard MIDI Files and the note/controller model, shared with the other craft apps.
-craft-midi = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "45a8e16669e70dadb780dfbc759c882dd5b7ea1c", features = ["serde"] }
-craft-audio = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "45a8e16669e70dadb780dfbc759c882dd5b7ea1c", features = ["decode", "lossless-encode", "peaks", "serde"] }
-craft-time = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "45a8e16669e70dadb780dfbc759c882dd5b7ea1c" }
-craft-scraft-format = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "45a8e16669e70dadb780dfbc759c882dd5b7ea1c" }
+craft-midi = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "33be35625e252cc4f06aa375b3b428521faea37d", features = ["serde"] }
+craft-audio = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "33be35625e252cc4f06aa375b3b428521faea37d", features = ["decode", "lossless-encode", "peaks", "serde"] }
+craft-time = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "33be35625e252cc4f06aa375b3b428521faea37d" }
+# AAF property-stream framing, shared with the other craft apps.
+craft-aaf = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "33be35625e252cc4f06aa375b3b428521faea37d" }
+craft-scraft-format = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "33be35625e252cc4f06aa375b3b428521faea37d" }
 # craft-update: app-specific pretend versions apply to startup and manual checks.
-craft-update = { version = "=0.1.0", git = "https://github.com/storytold/craft-libs", rev = "ea24422ae9859dc5da398d0462bc87f8e02e0d10", features = ["egui"] }
+craft-update = { version = "=0.1.0", git = "https://github.com/storytold/craft-libs", rev = "33be35625e252cc4f06aa375b3b428521faea37d", features = ["egui"] }
+craft-mcp-server = { version = "=0.1.0", git = "https://github.com/storytold/craft-libs", rev = "33be35625e252cc4f06aa375b3b428521faea37d" }
 
 # ui
-craft-ui = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "ea24422ae9859dc5da398d0462bc87f8e02e0d10", features = ["serde"] }
+craft-ui = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "33be35625e252cc4f06aa375b3b428521faea37d", features = ["serde"] }
 egui = { version = "0.37" }
 # Resizable table columns (About ▸ Contributors / Models); no image loaders.
 egui_extras = { version = "0.37", default-features = false }
