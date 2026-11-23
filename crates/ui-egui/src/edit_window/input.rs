@@ -195,13 +195,30 @@ fn hit_test<'a>(inp: &LaneInput<'a>, command: bool) -> LaneHits<'a> {
 fn near_edge(inp: &LaneInput<'_>, c: &Clip) -> Option<bool> {
     let xs = x_of(inp.s, inp.tl, c.start);
     let xe = x_of(inp.s, inp.tl, c.end());
-    if (inp.origin.x - xs).abs() < 6.0 {
-        Some(true)
-    } else if (inp.origin.x - xe).abs() < 6.0 {
-        Some(false)
-    } else {
-        None
+    let from_start = (inp.origin.x - xs).abs();
+    let from_end = (inp.origin.x - xe).abs();
+    (from_start.min(from_end) < 6.0).then_some(from_start < from_end)
+}
+
+fn trim_at_start(inp: &LaneInput<'_>, clip: &Clip) -> bool {
+    near_edge(inp, clip).unwrap_or_else(|| inp.at_origin - clip.start < clip.end() - inp.at_origin)
+}
+
+fn trim_cursor(inp: &LaneInput<'_>, hits: &LaneHits<'_>) -> egui::CursorIcon {
+    use egui::CursorIcon;
+
+    if let Some(clip) = hits.hit.as_ref().filter(|clip| !clip.edit_locked)
+        && let Some(at_start) = near_edge(inp, clip)
+        && let Some((start, end)) = ops::trim_source_bounds(inp.s, clip)
+    {
+        // At a source boundary only an inward trim is possible.
+        match at_start {
+            true if clip.start == start => return CursorIcon::ResizeEast,
+            false if clip.end() == end => return CursorIcon::ResizeWest,
+            _ => {}
+        }
     }
+    CursorIcon::ResizeHorizontal
 }
 
 /// Effective tool under the Smart tool; on a breakpoint every tool that edits one grabs it.
@@ -298,10 +315,12 @@ fn start_gesture(app: &mut SoundApp, ui: &mut Ui, c: &LaneCtx<'_>, resp: &egui::
                 let clips = if s.edit.selected_clips.contains(&c.id) { s.edit.selected_clips.clone() } else { vec![c.id] };
                 Gesture::MoveClips { clips, grab_at: at_origin, delta: 0, from_track: track.id, to_track: track.id }
             }),
-            Tool::Trim => hit.as_ref().map(|c| match near_edge(inp, c) {
-                Some(false) => Gesture::TrimEnd { clip: c.id, track: track.id, to: c.end() },
-                _ if at_origin - c.start < c.end() - at_origin => Gesture::TrimStart { clip: c.id, track: track.id, to: c.start },
-                _ => Gesture::TrimEnd { clip: c.id, track: track.id, to: c.end() },
+            Tool::Trim => hit.as_ref().map(|c| {
+                if trim_at_start(inp, c) {
+                    Gesture::TrimStart { clip: c.id, track: track.id, to: c.start }
+                } else {
+                    Gesture::TrimEnd { clip: c.id, track: track.id, to: c.end() }
+                }
             }),
             Tool::Scrubber => Some(Gesture::Scrub { last: at }),
             Tool::Pencil if auto_view.is_none() && track.kind.is_midi() => {
@@ -369,9 +388,9 @@ fn lane_click(app: &mut SoundApp, ui: &mut Ui, c: &LaneCtx<'_>, resp: &egui::Res
                 }
             }
             Tool::Trim if s.edit.edit_mode == EditMode::Spot && hit.is_some() => {
-                if let Some(c) = &hit {
-                    let start = at - c.start < c.end() - at;
-                    match Spot::trim(s, c.id, start, if start { c.start } else { c.end() }) {
+                if let Some(clip) = &hit {
+                    let start = trim_at_start(&c.inp, clip);
+                    match Spot::trim(s, clip.id, start, if start { clip.start } else { clip.end() }) {
                         Some(spot) => app.dialogs.set(Dialog::Spot(spot)),
                         None => app.dialogs.open = None,
                     }
@@ -440,7 +459,7 @@ pub(super) fn lane_interaction(app: &mut SoundApp, ui: &mut Ui, track: &Track, l
     let eff = effective_tool(&inp, &hits);
     if resp.hovered() {
         let icon = match eff {
-            Tool::Trim => egui::CursorIcon::ResizeHorizontal,
+            Tool::Trim => trim_cursor(&inp, &hits),
             Tool::Grabber => egui::CursorIcon::Grab,
             Tool::Selector => egui::CursorIcon::Text,
             Tool::Zoom => egui::CursorIcon::ZoomIn,

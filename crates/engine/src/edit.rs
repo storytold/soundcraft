@@ -881,6 +881,15 @@ pub fn grid_delta(s: &Session, clip: &Clip, raw: Samples, relative: bool, moving
     s.snap_to_grid_excluding(from.saturating_add(raw), moving).saturating_sub(from)
 }
 
+/// Timeline bounds used by the Trim tool for the clip's source, including the current clip extent.
+pub fn trim_source_bounds(s: &Session, clip: &Clip) -> Option<(Samples, Samples)> {
+    // The mixer reads from offset + rel / stretch, so the source spans stretch times as many timeline samples.
+    let stretch = if clip.stretch.is_finite() && clip.stretch > 0.0 { clip.stretch } else { 1.0 };
+    let scale = |n: Samples| if (stretch - 1.0).abs() >= 1e-9 { (n as f64 * stretch).round() as Samples } else { n };
+    let start = clip.start.saturating_sub(scale(clip.source_offset()));
+    material_len(s, clip).map(|n| (start.min(clip.start), start.saturating_add(scale(n)).max(clip.end())))
+}
+
 /// Trim a clip's edges to `start` and/or `end` like the Trim tool, never past its file. In
 /// Shuffle mode the start stays put (the material slides under it) and later clips follow the
 /// change, up to a locked clip; otherwise a trim stops at the neighbouring clips.
@@ -901,24 +910,17 @@ pub fn trim_clip(s: &mut Session, id: ClipId, start: Option<Samples>, end: Optio
         }
         lo = lo.max(0);
     }
-    let file = |c: &Clip| {
-        // The mixer plays from `offset + rel / stretch`, so file samples span `stretch` times as many timeline samples.
-        let stretch = if c.stretch.is_finite() && c.stretch > 0.0 { c.stretch } else { 1.0 };
-        let scale = |n: Samples| if (stretch - 1.0).abs() >= 1e-9 { (n as f64 * stretch).round() as Samples } else { n };
-        let start = c.start.saturating_sub(scale(c.source_offset()));
-        material_len(s, c).map(|n| (start.min(c.start), start.saturating_add(scale(n)).max(c.end())))
-    };
     let t = TimeCtx::of(s);
     let mut c = old.clone();
     if let Some(at) = start {
-        c.trim_start_to(at.max(file(&c).map_or(lo, |(f, _)| lo.max(f))));
+        c.trim_start_to(at.max(trim_source_bounds(s, &c).map_or(lo, |(f, _)| lo.max(f))));
         rebase_midi_start(&mut c, old.start, t);
         if shuffle {
             c.start = old.start;
         }
     }
     if let Some(at) = end {
-        c.trim_end_to(at.min(file(&c).map_or(hi, |(_, f)| hi.min(f))));
+        c.trim_end_to(at.min(trim_source_bounds(s, &c).map_or(hi, |(_, f)| hi.min(f))));
     }
     let pl = s.track_mut(track).and_then(|t| t.playlist_mut())?;
     *pl.clip_mut(id)? = c.clone();
