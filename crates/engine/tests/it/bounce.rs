@@ -1,7 +1,9 @@
 //! Bounces stream the main mix or a bus to their file, exactly as rendered in memory.
 
-use soundcraft_audio_io::{BitDepth, EncodeOptions, FileFormat};
+use craft_audio::{BitDepth, EncodeOptions};
+
 use soundcraft_engine::io::{Bounce, bounce_stems};
+use soundcraft_model::FileFormat;
 use soundcraft_time::Range;
 use std::path::PathBuf;
 
@@ -11,7 +13,7 @@ fn float_bounce_preserves_headroom_and_reports_the_written_levels() {
     let sr = e.session().sample_rate.hz();
     let frames = sr as usize + 17;
     let samples: Vec<f32> = (0..frames).map(|i| 1.5 * (std::f32::consts::TAU * 440.0 * i as f32 / sr as f32).sin()).collect();
-    let audio = soundcraft_audio_io::AudioBuffer { sample_rate: sr, channels: vec![samples.clone(), samples] };
+    let audio = craft_audio::AudioBuffer { sample_rate: sr, channels: vec![samples.clone(), samples] };
     let s = e.session_mut();
     // A new track has no inserts, so no limiter can mask encoder clipping.
     let track = s.add_track(soundcraft_model::TrackKind::Audio, soundcraft_model::ChannelFormat::Stereo, Some("Headroom"));
@@ -34,7 +36,7 @@ fn float_bounce_preserves_headroom_and_reports_the_written_levels() {
                 )
                 .unwrap();
             let bytes = std::fs::read(&path).unwrap();
-            let (_, file) = soundcraft_audio_io::decode(&bytes, None).unwrap();
+            let (_, file) = craft_audio::decode(&bytes, None).unwrap();
             let mut expected = mix.clone();
             if normalize {
                 soundcraft_dsp::offline::normalize(&mut expected, -0.1, false);
@@ -43,7 +45,7 @@ fn float_bounce_preserves_headroom_and_reports_the_written_levels() {
                 assert!(file.peak() > 1.0, "{extension}: headroom was clipped");
             }
             assert_eq!(file.channels, expected, "{extension}, normalize={normalize}");
-            let mut meter = soundcraft_dsp::meter::LoudnessMeter::new(sr as f32, file.num_channels());
+            let mut meter = soundcraft_dsp::meter::LoudnessMeter::new(sr as f32, file.channels.len());
             meter.process(&file.channels, file.frames());
             for (key, value) in [
                 ("peak_db", soundcraft_dsp::offline::peak_db(&file.channels)),
@@ -71,7 +73,7 @@ fn bounces_write_exactly_the_mix_and_report_its_levels() {
     let dir = scratch("bounce-exact");
     let path = dir.join("Mix.wav");
     let r = Range::new(s.sample_rate.samples(10.0) + 7, s.sample_rate.samples(13.0));
-    let opts = EncodeOptions { format: FileFormat::Wav, bit_depth: BitDepth::Float32, dither: false, bwf: None };
+    let opts = EncodeOptions::new(craft_audio::EncodeFormat::Wav).with_bit_depth(BitDepth::Float32);
     let verb = s.bus_by_name("Verb").unwrap().id;
     for bus in [None, Some(verb)] {
         let mut mix = match bus {
@@ -94,7 +96,7 @@ fn bounces_write_exactly_the_mix_and_report_its_levels() {
                 soundcraft_dsp::offline::normalize(&mut mix, -0.1, false);
             }
             let bytes = std::fs::read(&path).unwrap();
-            let (_, file) = soundcraft_audio_io::decode(&bytes, None).unwrap();
+            let (_, file) = craft_audio::decode(&bytes, None).unwrap();
             assert_eq!(file.channels, mix, "{bus:?} normalize: {normalize}");
             let mut lm = soundcraft_dsp::meter::LoudnessMeter::new(s.sample_rate.as_f64() as f32, mix.len());
             lm.process(&mix, mix[0].len());
@@ -113,13 +115,45 @@ fn a_bounce_too_big_for_its_format_fails_and_keeps_the_old_file() {
     let dir = scratch("bounce-too-big");
     let path = dir.join("Mix.aif");
     std::fs::write(&path, b"old").unwrap();
-    let opts = EncodeOptions { format: FileFormat::Aiff, bit_depth: BitDepth::Float32, dither: false, bwf: None };
+    let opts = EncodeOptions::new(craft_audio::EncodeFormat::Aiff).with_bit_depth(BitDepth::Float32);
     let err = Bounce::new(e.session_arc(), &path, Range::new(0, s.sample_rate.samples(3.9 * 3600.0)), &opts, None, false, false).err().unwrap();
     assert!(err.to_string().contains("4 GiB"), "{err}");
     assert_eq!(std::fs::read(&path).unwrap(), b"old");
     assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 1);
     let err = bounce_stems(&e, &dir.to_string_lossy(), Range::new(0, s.sample_rate.samples(4.1 * 3600.0)), &opts).unwrap_err();
     assert!(err.to_string().contains("4 hours"), "{err}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A WAV bounce is a Broadcast Wave stamped with where it starts on the session's timecode (`bext`
+/// TimeReference, samples since midnight), as other DAWs write it, so post tools can place it.
+#[test]
+fn wav_bounces_carry_their_timecode_position_as_a_bwf_time_reference() {
+    let mut e = soundcraft_engine::demo::demo_engine();
+    let sr = u64::from(e.session().sample_rate.hz());
+    // The session starts at 01:00:00:00; the bounce at 2 s into it.
+    e.session_mut().timecode_start = (3600 * sr) as i64;
+    let (start, end) = (2 * sr, 3 * sr);
+    let dir = scratch("bounce-bext");
+    let stamp = |path: &std::path::Path| {
+        let ext = path.extension().and_then(|x| x.to_str());
+        craft_audio::probe(&std::fs::read(path).unwrap(), ext).unwrap().bwf.map(|b| b.time_reference)
+    };
+    let mix = dir.join("Mix.wav");
+    e.execute("file.bounce_mix", &serde_json::json!({"path": mix, "start": start, "end": end})).unwrap();
+    assert_eq!(stamp(&mix), Some(3600 * sr + start), "mix");
+    let stems = dir.join("stems");
+    let files = e.execute("file.bounce_stems", &serde_json::json!({"dir": stems, "start": start, "end": end})).unwrap();
+    let files = files["files"].as_array().unwrap();
+    assert!(!files.is_empty());
+    for f in files {
+        let f = std::path::PathBuf::from(f.as_str().unwrap());
+        assert_eq!(stamp(&f), Some(3600 * sr + start), "{}", f.display());
+    }
+    // A session that starts at zero still says where the bounce starts.
+    e.session_mut().timecode_start = 0;
+    e.execute("file.bounce_mix", &serde_json::json!({"path": mix, "start": start, "end": end})).unwrap();
+    assert_eq!(stamp(&mix), Some(start));
     let _ = std::fs::remove_dir_all(&dir);
 }
 

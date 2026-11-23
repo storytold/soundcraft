@@ -3,6 +3,7 @@ use egui::{Event, Key, Modifiers, vec2};
 use egui_kittest::{Harness, kittest::Queryable};
 use serde_json::json;
 use soundcraft_model::TrackId;
+use soundcraft_ui_egui::dialogs::Dialog;
 use soundcraft_ui_egui::{Services, SoundApp, menus};
 
 /// Selects the whole Kick track and opens Edit > Strip Silence from the menu.
@@ -80,6 +81,45 @@ fn enter_on_a_focused_separate_separates_and_does_not_strip() {
 }
 
 #[test]
+fn enter_on_a_focused_cancel_closes_the_dialog_and_strips_nothing() {
+    let (mut h, track, before) = strip_silence_dialog();
+    h.get_by_role_and_label(Role::Button, "Cancel").focus();
+    h.run_steps(2);
+    h.event(Event::Key { key: Key::Enter, physical_key: None, pressed: true, repeat: false, modifiers: Modifiers::NONE });
+    h.run_steps(2);
+    assert_eq!(h.state().dialogs.open_name(), None);
+    assert_eq!(clips(&h, track), before, "Cancel leaves the clips as they were");
+}
+
+#[test]
+fn enter_right_after_switching_between_strip_silence_and_rename_presses_the_new_default_button() {
+    let (mut h, _, _) = strip_silence_dialog();
+    let enter = |h: &mut Harness<'static, SoundApp>| {
+        for pressed in [true, false] {
+            h.event(Event::Key { key: Key::Enter, physical_key: None, pressed, repeat: false, modifiers: Modifiers::NONE });
+        }
+    };
+    h.get_by_role_and_label(Role::Button, "Rename…").focus();
+    h.run_steps(2);
+    enter(&mut h);
+    h.run_steps(1);
+    assert_eq!(h.state().dialogs.open_name(), Some("strip_silence_rename"));
+    enter(&mut h);
+    h.run_steps(2);
+    assert_eq!(h.state().dialogs.open_name(), Some("strip_silence"), "the next Enter presses OK in Rename Selected Clips");
+    h.get_by_role_and_label(Role::Button, "Rename…").click();
+    h.run_steps(2);
+    h.get_by_role_and_label(Role::Button, "OK").focus();
+    h.run_steps(2);
+    enter(&mut h);
+    h.run_steps(1);
+    assert_eq!(h.state().dialogs.open_name(), Some("strip_silence"));
+    enter(&mut h);
+    h.run_steps(2);
+    assert_eq!(h.state().dialogs.open_name(), None, "the next Enter presses Strip in Strip Silence");
+}
+
+#[test]
 fn strip_silence_strip_removes_the_silence() {
     let (mut h, track, before) = strip_silence_dialog();
     h.get_by_role_and_label(Role::Button, "Strip").click();
@@ -88,4 +128,59 @@ fn strip_silence_strip_removes_the_silence() {
     let strip = clips(&h, track);
     assert_eq!(strip, stripped(track));
     assert!(covered(&strip) < covered(&before));
+}
+
+/// Values other than the ones Strip Silence first opens with.
+const CHANGED: [f64; 4] = [-30.0, 120.0, 12.0, 40.0];
+
+/// Sets the open Strip Silence window's values, as dragging its sliders would.
+fn set_values(h: &mut Harness<'_, SoundApp>, values: [f64; 4]) {
+    let Some(Dialog::StripSilence { threshold, min_ms, pre_ms, post_ms }) = &mut h.state_mut().dialogs.open else {
+        panic!("Strip Silence is not open")
+    };
+    [*threshold, *min_ms, *pre_ms, *post_ms] = values;
+    h.run_steps(2);
+}
+
+/// Opens Edit > Strip Silence again from the menu and returns the values it shows.
+fn reopen(h: &mut Harness<'_, SoundApp>) -> [f64; 4] {
+    assert_eq!(h.state().dialogs.open_name(), None, "Strip Silence is closed before it opens again");
+    menus::invoke_menu(h.state_mut(), "edit.strip_silence", "Edit > Strip Silence");
+    h.run_steps(2);
+    let Some(Dialog::StripSilence { threshold, min_ms, pre_ms, post_ms }) = h.state().dialogs.open.clone() else {
+        panic!("Strip Silence did not open again")
+    };
+    [threshold, min_ms, pre_ms, post_ms]
+}
+
+#[test]
+fn strip_silence_opens_with_the_values_escape_closed_it_with() {
+    let (mut h, _, _) = strip_silence_dialog();
+    set_values(&mut h, CHANGED);
+    h.event(Event::Key { key: Key::Escape, physical_key: None, pressed: true, repeat: false, modifiers: Modifiers::NONE });
+    h.run_steps(2);
+    assert_eq!(reopen(&mut h), CHANGED);
+}
+
+#[test]
+fn strip_silence_opens_with_the_values_strip_used() {
+    let (mut h, _, _) = strip_silence_dialog();
+    set_values(&mut h, CHANGED);
+    h.get_by_role_and_label(Role::Button, "Strip").click();
+    h.run_steps(2);
+    assert_eq!(reopen(&mut h), CHANGED);
+}
+
+#[test]
+fn strip_silence_keeps_its_values_through_rename_and_cancel() {
+    let (mut h, _, _) = strip_silence_dialog();
+    set_values(&mut h, CHANGED);
+    h.get_by_role_and_label(Role::Button, "Rename…").click();
+    h.run_steps(3);
+    h.get_by_role_and_label(Role::Button, "Cancel").click();
+    h.run_steps(3);
+    assert_eq!(h.state().dialogs.open_name(), Some("strip_silence"), "Cancel in Rename goes back to Strip Silence");
+    h.get_by_role_and_label(Role::Button, "Cancel").click();
+    h.run_steps(2);
+    assert_eq!(reopen(&mut h), CHANGED);
 }

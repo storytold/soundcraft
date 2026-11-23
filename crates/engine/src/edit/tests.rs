@@ -11,7 +11,7 @@ fn session_with_clip() -> (Session, TrackId) {
         channels: 1,
         frames: 10_000,
         sample_rate: 48_000,
-        format: soundcraft_audio_io::FileFormat::Wav,
+        format: soundcraft_model::FileFormat::Wav,
         time_reference: 0,
         unsaved: false,
     });
@@ -330,9 +330,9 @@ fn grid_moves_snap_the_clip_start_or_keep_its_offset() {
     let (s, t) = session_with_clip();
     let step = s.edit.grid.step_samples(0, s.sample_rate, &s.tempo, s.frame_rate);
     let c = s.track(t).unwrap().clips()[0].clone();
-    assert_eq!(c.start + grid_delta(&s, &c, step + 200, false), step);
-    assert_eq!(c.start + grid_delta(&s, &c, step + 200, true), step + 1000);
-    assert_eq!(grid_delta(&s, &c, step / 3, true), 0);
+    assert_eq!(c.start + grid_delta(&s, &c, step + 200, false, &[c.id]), step);
+    assert_eq!(c.start + grid_delta(&s, &c, step + 200, true, &[c.id]), step + 1000);
+    assert_eq!(grid_delta(&s, &c, step / 3, true, &[c.id]), 0);
 }
 
 #[test]

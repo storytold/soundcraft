@@ -51,7 +51,7 @@ fn tracks(mode: &str, tool: &str, lanes: &[&[(i64, i64)]]) -> (SoundApp, egui::C
         channels: 1,
         frames: 20 * SEC as u64,
         sample_rate: 48_000,
-        format: soundcraft_audio_io::FileFormat::Wav,
+        format: soundcraft_model::FileFormat::Wav,
         time_reference: 0,
         unsaved: false,
     });
@@ -144,6 +144,40 @@ fn spot_drags_ask_where_before_moving() {
     assert_eq!(app.dialogs.open_name(), Some("spot"));
     frame(&ctx, &mut app, key(Key::Enter));
     assert!((starts(&app, &ids)[0] - 2 * SEC).abs() < 4000);
+}
+
+#[test]
+fn a_spot_dialog_that_replaces_an_open_dialog_ignores_the_enter_of_its_first_frame() {
+    let (mut app, ctx, t, ids) = app("spot", "grabber", &[(SEC, SEC)]);
+    assert!(app.dialogs.open_for_command(&app.engine, "setup.session"));
+    frame(&ctx, &mut app, vec![]);
+    frame(&ctx, &mut app, vec![]);
+    let (from, to) = (point(&app, t, SEC * 3 / 2), point(&app, t, SEC * 5 / 2));
+    frame(&ctx, &mut app, vec![Event::PointerMoved(from)]);
+    frame(&ctx, &mut app, vec![button(from, true)]);
+    let started = from + vec2(7.0, 0.0);
+    for k in 0..=5 {
+        frame(&ctx, &mut app, vec![Event::PointerMoved(started + (to - started) * (k as f32 / 5.0))]);
+    }
+    frame(&ctx, &mut app, vec![button(to, false), key_event(Key::Enter, true, Modifiers::NONE)]);
+    assert_eq!(app.dialogs.open_name(), Some("spot"), "the Enter of the Spot dialog's first frame leaves it open");
+    assert_eq!(starts(&app, &ids), vec![SEC]);
+}
+
+#[test]
+fn a_spot_dialog_that_a_click_opens_over_an_open_dialog_ignores_the_enter_of_its_first_frame() {
+    for (tool, at) in [("grabber", SEC * 3 / 2), ("trim", SEC + SEC / 8)] {
+        let (mut app, ctx, t, ids) = app("spot", tool, &[(SEC, SEC)]);
+        assert!(app.dialogs.open_for_command(&app.engine, "setup.session"));
+        frame(&ctx, &mut app, vec![]);
+        frame(&ctx, &mut app, vec![]);
+        let at = point(&app, t, at);
+        frame(&ctx, &mut app, vec![Event::PointerMoved(at)]);
+        frame(&ctx, &mut app, vec![button(at, true)]);
+        frame(&ctx, &mut app, vec![button(at, false), key_event(Key::Enter, true, Modifiers::NONE)]);
+        assert_eq!(app.dialogs.open_name(), Some("spot"), "{tool}: the Enter of the Spot dialog's first frame leaves it open");
+        assert_eq!(starts(&app, &ids), vec![SEC], "{tool}");
+    }
 }
 
 #[test]
@@ -279,6 +313,24 @@ fn shuffle_drags_leave_locked_clips_in_the_selection_out_of_it() {
     app.engine.execute("edit.select", &json!({"clips": [ids[0].0, ids[1].0]})).unwrap();
     drag(&ctx, &mut app, t, 7 * SEC / 2, 2 * SEC);
     assert_eq!(starts(&app, &ids), vec![0, SEC]);
+}
+
+#[test]
+fn f6_f7_and_f7_f8_in_either_order_choose_the_smart_tool() {
+    let (mut app, ctx, _, _) = app("slip", "grabber", &[]);
+    let tool = |app: &SoundApp| app.engine.session().edit.tool.id();
+    for (first, second) in [(Key::F6, Key::F7), (Key::F7, Key::F6), (Key::F7, Key::F8), (Key::F8, Key::F7)] {
+        frame(&ctx, &mut app, key(Key::F5));
+        frame(&ctx, &mut app, vec![key_event(first, true, Modifiers::NONE)]);
+        frame(&ctx, &mut app, key(second));
+        frame(&ctx, &mut app, vec![key_event(first, false, Modifiers::NONE)]);
+        assert_eq!(tool(&app), "smart", "{first:?}+{second:?}");
+    }
+    let alone = [(Key::F5, "zoom"), (Key::F6, "trim"), (Key::F7, "selector"), (Key::F8, "grabber"), (Key::F9, "scrubber"), (Key::F10, "pencil")];
+    for (k, want) in alone {
+        frame(&ctx, &mut app, key(k));
+        assert_eq!(tool(&app), want, "{k:?} alone");
+    }
 }
 
 #[test]

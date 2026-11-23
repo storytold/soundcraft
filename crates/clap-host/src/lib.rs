@@ -21,9 +21,11 @@
 //! [`Plugin::load_state`] as an opaque blob. Plugin editors (`clap.gui`) open as the plugin's own
 //! floating window ([`Plugin::open_editor`], or [`Plugin::editor`] for a handle usable on the main
 //! thread while the instance processes on the audio thread). Plugins that offer only an embedded
-//! editor get a host window of SoundCraft's on Windows (resized on `request_resize`, closed by
-//! its title bar); elsewhere they are not hosted yet, and SoundCraft's generic parameter editor
-//! still works for them.
+//! editor get a host window of SoundCraft's on Windows and on X11 (Linux, BSDs; resized on
+//! `request_resize`, closed by its title bar); on macOS they are not hosted yet, and SoundCraft's
+//! generic parameter editor still works for them. On X11 the host also offers
+//! `clap.timer-support` and `clap.posix-fd-support`, serviced by the editor's `idle`, since X11
+//! editors have no event loop of their own.
 //! Parameter changes made in the plugin's GUI arrive as output events while the plugin processes
 //! and are reported by the editor's `idle`.
 
@@ -222,10 +224,33 @@ mod tests {
         assert!(plugin_info("reverb").is_none());
     }
 
+    /// A new directory that this test alone created, readable only by its user on Unix. Creation
+    /// fails if the path already exists: the test then loads native libraries from it, so it must
+    /// never reuse a directory someone else could have put a library in. It lives next to the test
+    /// binary (in the build directory), not under the temp dir: `TMPDIR`/`TEMP` can name a shared
+    /// directory without a sticky bit or with inheritable write access, where another user could
+    /// rename or populate it. Anyone who can write to the build directory can already replace the
+    /// test binary itself, so this parent adds no new trust.
+    fn fresh_private_dir(prefix: &str) -> std::path::PathBuf {
+        let exe = std::env::current_exe().expect("test binary path");
+        let parent = exe.parent().expect("test binary has a parent directory");
+        let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |t| t.as_nanos());
+        let d = parent.join(format!("{prefix}-{}-{nanos}", std::process::id()));
+        #[cfg(unix)]
+        let builder = {
+            let mut b = std::fs::DirBuilder::new();
+            std::os::unix::fs::DirBuilderExt::mode(&mut b, 0o700);
+            b
+        };
+        #[cfg(not(unix))]
+        let builder = std::fs::DirBuilder::new();
+        builder.create(&d).unwrap_or_else(|e| panic!("cannot create a fresh test directory {}: {e}", d.display()));
+        d
+    }
+
     #[test]
     fn garbage_files_are_errors_not_crashes() {
-        let d = std::env::temp_dir().join(format!("soundcraft-clap-garbage-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&d);
+        let d = fresh_private_dir("soundcraft-clap-garbage");
         std::fs::create_dir_all(d.join("Bundle.clap/Contents/MacOS")).unwrap();
         std::fs::write(d.join("garbage.clap"), b"\x7fELF this is not a plugin \x00\x01\x02").unwrap();
         std::fs::write(d.join("empty.clap"), b"").unwrap();
@@ -237,6 +262,19 @@ mod tests {
         assert!(create("clap:does.not.exist").is_none());
         assert!(plugin_info("clap:does.not.exist").is_none());
         assert!(instantiate("clap:does.not.exist").is_err());
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// A binary the system refuses to load reports the system's reason (missing library, wrong
+    /// glibc, not an ELF file), not just "dlopen failed".
+    #[test]
+    fn a_binary_that_does_not_load_says_why() {
+        let d = fresh_private_dir("soundcraft-clap-reason");
+        let f = d.join("garbage.clap");
+        std::fs::write(&f, b"\x7fELF this is not a plugin \x00\x01\x02").unwrap();
+        let msg = load_bundle(&f).err().map(|e| e.to_string()).unwrap_or_default();
+        let reason = msg.split_once("failed: ").map_or("", |(_, r)| r.trim());
+        assert!(!reason.is_empty(), "no reason in: {msg}");
         let _ = std::fs::remove_dir_all(&d);
     }
 }

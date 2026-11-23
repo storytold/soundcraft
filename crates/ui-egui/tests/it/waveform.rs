@@ -1,6 +1,6 @@
+use craft_audio::AudioBuffer;
 use egui::{Color32, Pos2, RawInput, Rect, Shape, vec2};
 use serde_json::json;
-use soundcraft_audio_io::AudioBuffer;
 use soundcraft_model::{Clip, ClipId, Session, SourceAudio, SourceId};
 use soundcraft_time::SampleRate;
 use soundcraft_ui_egui::{Services, SoundApp, waveform};

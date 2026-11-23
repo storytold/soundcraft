@@ -15,7 +15,7 @@ fn id_of(name: &str) -> String {
 fn scan_lists_both_audio_modules_but_not_the_controller_class() {
     let dir = fixture_dir();
     let found = soundcraft_vst3_host::scan_paths(&[dir.to_path_buf()]);
-    assert_eq!(found.len(), 5, "{found:?}");
+    assert_eq!(found.len(), 6, "{found:?}");
     let g = found.iter().find(|d| d.name == "Fixture Gain").unwrap();
     // `uid()` lays out the first 8 bytes differently on Windows (COM GUID order).
     let want = if cfg!(windows) { "vst3:001D0A5C111122223333444455556666" } else { "vst3:5C0A1D00111122223333444455556666" };
@@ -64,7 +64,7 @@ fn identity_mapped_param_text_is_read_on_the_main_thread_only() {
     assert_eq!((level.min, level.max, level.unit), (0.0, 1.0, Unit::Db));
     let mut p = soundcraft_vst3_host::instantiate_plugin(&id).unwrap();
     let mut ed = soundcraft_dsp::Plugin::editor(&mut p).expect("editor handle");
-    if cfg!(any(target_os = "macos", windows)) {
+    if cfg!(any(target_os = "macos", windows, unix)) {
         assert_eq!(ed.value_text("13", 0.375), None, "test threads are not the main thread");
     } else {
         assert_eq!(ed.value_text("13", 0.375).as_deref(), Some("\u{2212}6.0 dB"));
@@ -320,8 +320,8 @@ fn layouts_beyond_the_host_limits_are_rejected_not_truncated() {
     let mut io = vec![vec![0.5f32; 64]; 2];
     p.process(&mut io, 64);
     assert!(io.iter().flatten().all(|&x| x == 1.0), "16x64 layout delivered as advertised: {:?}", &io[0][..4]);
-    // 17 buses, or a 65-channel bus: never activated, never processed with a cut-down layout.
-    for name in ["Fixture Wide 17 buses", "Fixture Wide 65 channels"] {
+    // 65 buses, or a 65-channel bus: never activated, never processed with a cut-down layout.
+    for name in ["Fixture Wide 65 buses", "Fixture Wide 65 channels"] {
         let mut p = soundcraft_vst3_host::create(&id_of(name)).unwrap();
         p.prepare(44_100.0, 64, 2);
         assert_eq!(p.latency(), 0, "{name}: not activated");
@@ -332,11 +332,35 @@ fn layouts_beyond_the_host_limits_are_rejected_not_truncated() {
 }
 
 #[test]
+fn offline_renders_set_up_and_process_in_offline_mode() {
+    for (offline, want) in [(false, 1.0), (true, 2.0)] {
+        let mut p = soundcraft_vst3_host::create(&id_of("Fixture Wide 16x64")).unwrap();
+        p.set_offline(offline);
+        p.prepare(44_100.0, 64, 2);
+        let mut io = vec![vec![0.5f32; 64]; 2];
+        p.process(&mut io, 64);
+        assert!(io.iter().flatten().all(|&x| x == want), "offline {offline}: {:?}", &io[0][..4]);
+    }
+}
+
+#[test]
+fn many_buses_like_multi_out_instruments_are_activated() {
+    // Multi-out instruments declare dozens of buses (SSD Sampler 5: 32); only the main one is
+    // active, but the plugin must still load, get buffers for every bus and play (#1247).
+    let mut p = soundcraft_vst3_host::create(&id_of("Fixture Wide 32 buses")).unwrap();
+    p.prepare(44_100.0, 64, 2);
+    assert_eq!(p.latency(), 3, "32-bus plugin activated");
+    let mut io = vec![vec![0.5f32; 64]; 2];
+    p.process(&mut io, 64);
+    assert!(io.iter().flatten().all(|&x| x == 1.0), "32-bus layout delivered as advertised: {:?}", &io[0][..4]);
+}
+
+#[test]
 fn editor_view_is_probed_and_edits_come_back_as_plain_values() {
     let id = id_of("Fixture Gain");
     let mut p = soundcraft_vst3_host::instantiate_plugin(&id).unwrap();
-    // Editor windows are hosted on macOS and Windows; elsewhere the probe reports "unsupported".
-    if cfg!(any(target_os = "macos", windows)) {
+    // Editor windows are hosted on macOS, Windows and X11 (Linux, BSDs); elsewhere the probe reports "unsupported".
+    if cfg!(any(target_os = "macos", windows, unix)) {
         assert_eq!(p.editor_size(), Ok((320, 240)));
     } else {
         assert!(p.editor_size().is_err());
@@ -345,7 +369,7 @@ fn editor_view_is_probed_and_edits_come_back_as_plain_values() {
     // The fixture "edits" Gain to 0.9 (normalized) when it gets the component handler.
     assert_eq!(ed.idle(), vec![("7".to_string(), 1.8)]);
     assert!(ed.idle().is_empty());
-    if cfg!(any(target_os = "macos", windows)) {
+    if cfg!(any(target_os = "macos", windows, unix)) {
         assert!(ed.open().unwrap_err().contains("main thread"), "test threads are not the main thread");
     } else {
         assert!(ed.open().is_err(), "unsupported elsewhere");
