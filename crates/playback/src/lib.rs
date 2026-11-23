@@ -65,8 +65,8 @@ pub fn midi_sync_output_ids(saved: &BTreeMap<String, String>) -> Result<BTreeMap
 pub mod devices;
 pub mod midi;
 pub mod mtc;
-mod mtc_preroll;
 pub mod mtc_input;
+mod mtc_preroll;
 pub mod record;
 pub mod sync_input;
 

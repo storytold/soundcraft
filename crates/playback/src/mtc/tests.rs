@@ -469,5 +469,7 @@ fn first_integer_sample_of_an_even_fractional_frame_emits_its_quarter_group() {
     }
 }
 
+#[cfg(test)]
 mod anchored_start;
+#[cfg(test)]
 mod silent_preroll;
