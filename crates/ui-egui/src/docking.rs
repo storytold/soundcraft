@@ -8,7 +8,9 @@
 use std::sync::Arc;
 
 use craft_behavior::DockSide;
-use craft_behavior::dock::{Action, Column, DockEdge, DockError, DockPlacement, Floating, Group, Layout, Location, Node, Permissions, SplitSize, Target};
+use craft_behavior::dock::{
+    Action, Column, DockEdge, DockError, DockPlacement, Floating, Group, Layout, Location, Node, Permissions, SplitSize, Target,
+};
 use craft_behavior::flow::Axis;
 use craft_ui::contract::{Bind, BodyCx, PlainData, SizeLimits, Tracked};
 use craft_ui::docking::{DockConfig, DockPanels, GroupAt, PanelSpec, PanelSpecs};
@@ -170,7 +172,8 @@ pub fn validate(workspace: &Workspace) -> Result<(), String> {
         if *panel == Panel::Canvas {
             return Err("A hidden panel has an invalid or duplicate identity".into());
         }
-        if location.anchor == Some(Panel::Canvas) && matches!(location.placement, DockPlacement::Tab { .. } | DockPlacement::Split(DockSide::Center)) {
+        if location.anchor == Some(Panel::Canvas) && matches!(location.placement, DockPlacement::Tab { .. } | DockPlacement::Split(DockSide::Center))
+        {
             return Err("A hidden panel cannot restore over the document view".into());
         }
         let mut probe = layout.clone();
@@ -383,7 +386,12 @@ fn rect_of([x, y, width, height]: [f32; 4]) -> Rect {
 
 /// Where a `move` puts the panel relative to `anchor`: `zone` (default `center`) and `before`,
 /// with side zones mapped onto the anchor's container by [`DockPlacement::for_zone`].
-fn placement(layout: &Layout<Panel>, anchor: &Panel, zone: Option<ZoneName>, before: Option<Option<Panel>>) -> Result<DockPlacement<Panel>, DockError> {
+fn placement(
+    layout: &Layout<Panel>,
+    anchor: &Panel,
+    zone: Option<ZoneName>,
+    before: Option<Option<Panel>>,
+) -> Result<DockPlacement<Panel>, DockError> {
     let side = |side| DockPlacement::for_zone(layout, anchor, side);
     Ok(match (zone.unwrap_or(ZoneName::Center), before) {
         (ZoneName::Tab | ZoneName::Center, Some(before)) => DockPlacement::tab(before),

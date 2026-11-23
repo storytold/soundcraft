@@ -86,7 +86,6 @@ impl CaptureSlot {
             _ => None,
         }
     }
-
 }
 
 impl Drop for CaptureSlot {

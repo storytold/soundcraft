@@ -162,13 +162,14 @@ fn tempo_ops(app: &mut SoundApp, ctx: &egui::Context) {
         .open(&mut open)
         .default_size(vec2(360.0, 200.0))
         .show(ctx, |ui| {
-            egui::ComboBox::from_label(crate::localization::text("Curve"))
-                .selected_text(crate::localization::text(&app.ops.tempo_curve))
-                .show_ui(ui, |ui| {
+            egui::ComboBox::from_label(crate::localization::text("Curve")).selected_text(crate::localization::text(&app.ops.tempo_curve)).show_ui(
+                ui,
+                |ui| {
                     for c in ["constant", "linear", "parabolic", "s-curve", "scale", "stretch"] {
                         ui.selectable_value(&mut app.ops.tempo_curve, c.to_string(), crate::localization::text(c));
                     }
-                });
+                },
+            );
             ui.add(egui::DragValue::new(&mut app.ops.tempo_start).range(5.0..=999.0).prefix(crate::localization::text("start bpm ")))
                 .accessible_name(crate::localization::text("Start tempo (BPM)"));
             ui.add(egui::DragValue::new(&mut app.ops.tempo_end).range(5.0..=999.0).prefix(crate::localization::text("end bpm ")))
@@ -200,13 +201,14 @@ fn time_ops(app: &mut SoundApp, ctx: &egui::Context) {
         .open(&mut open)
         .default_size(vec2(360.0, 200.0))
         .show(ctx, |ui| {
-            egui::ComboBox::from_label(crate::localization::text("Operation"))
-                .selected_text(crate::localization::text(&app.ops.time_op))
-                .show_ui(ui, |ui| {
+            egui::ComboBox::from_label(crate::localization::text("Operation")).selected_text(crate::localization::text(&app.ops.time_op)).show_ui(
+                ui,
+                |ui| {
                     for c in ["insert", "cut", "change meter", "move song start"] {
                         ui.selectable_value(&mut app.ops.time_op, c.to_string(), crate::localization::text(c));
                     }
-                });
+                },
+            );
             match app.ops.time_op.as_str() {
                 "change meter" => {
                     ui.horizontal(|ui| {
@@ -253,13 +255,14 @@ fn midi_ops(app: &mut SoundApp, ctx: &egui::Context) {
         .open(&mut open)
         .default_size(vec2(360.0, 220.0))
         .show(ctx, |ui| {
-            egui::ComboBox::from_label(crate::localization::text("Operation"))
-                .selected_text(crate::localization::text(&app.ops.midi_op))
-                .show_ui(ui, |ui| {
+            egui::ComboBox::from_label(crate::localization::text("Operation")).selected_text(crate::localization::text(&app.ops.midi_op)).show_ui(
+                ui,
+                |ui| {
                     for c in ["quantize", "transpose", "change velocity", "flatten performance", "restore performance"] {
                         ui.selectable_value(&mut app.ops.midi_op, c.to_string(), crate::localization::text(c));
                     }
-                });
+                },
+            );
             match app.ops.midi_op.as_str() {
                 "quantize" => {
                     egui::ComboBox::from_label(crate::localization::text("Grid")).selected_text(app.ops.quant_grid.clone()).show_ui(ui, |ui| {

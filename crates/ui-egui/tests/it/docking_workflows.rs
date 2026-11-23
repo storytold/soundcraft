@@ -15,12 +15,12 @@ pub(crate) fn harness(state: Option<UiState>, width: f32, scale: f32) -> Harness
         .with_pixels_per_point(scale)
         .with_context_setup(soundcraft_ui_egui::framework::install_headless)
         .build_ui_state(
-        |ui, app: &mut SoundApp| {
-            app.logic(&ui.ctx().clone());
-            app.ui(ui);
-        },
-        app,
-    );
+            |ui, app: &mut SoundApp| {
+                app.logic(&ui.ctx().clone());
+                app.ui(ui);
+            },
+            app,
+        );
     h.run_steps(5);
     h
 }

@@ -186,7 +186,11 @@ impl<'a> IconButton<'a> {
 
 /// `stroke` no wider than half of `rect`'s smaller side; none when its width is not positive.
 fn bounded_stroke(stroke: Stroke, rect: Rect) -> Stroke {
-    if stroke.width.is_finite() && stroke.width > 0.0 { Stroke::new(stroke.width.min(rect.width().min(rect.height()) * 0.5), stroke.color) } else { Stroke::NONE }
+    if stroke.width.is_finite() && stroke.width > 0.0 {
+        Stroke::new(stroke.width.min(rect.width().min(rect.height()) * 0.5), stroke.color)
+    } else {
+        Stroke::NONE
+    }
 }
 
 /// Local colors for shared icon-button interaction; transport-specific states stay in the toolbar.

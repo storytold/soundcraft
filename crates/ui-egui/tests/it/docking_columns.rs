@@ -58,8 +58,7 @@ fn default_layouts_put_the_side_lists_in_full_height_dock_columns() {
         Some(Node::split(Axis::X, SplitSize::FixedFirst(TRACKS_WIDTH), dock(DockEdge::Start, Panel::Tracks, TRACKS_WIDTH), tabs(Panel::Canvas)))
     );
     for workspace in [&edit, &mix] {
-        let floating: Vec<_> =
-            workspace.layout().floating.iter().map(|window| (window.panels().copied().collect::<Vec<_>>(), window.rect)).collect();
+        let floating: Vec<_> = workspace.layout().floating.iter().map(|window| (window.panels().copied().collect::<Vec<_>>(), window.rect)).collect();
         assert_eq!(floating, [(vec![Panel::Memory], rect(160.0, 120.0, 480.0, 280.0)), (vec![Panel::History], rect(680.0, 120.0, 260.0, 300.0))]);
         assert!(workspace.hidden().is_empty());
     }
@@ -115,7 +114,10 @@ fn a_panel_without_a_recorded_place_reopens_at_its_default_place() {
 
     // A dock that is still shown takes the list into its first group.
     let mut state = UiState::default();
-    state.docking.apply(Action::move_beside(Panel::History, Panel::Tracks, DockPlacement::group(true, None)), false, |_| Permissions::default()).unwrap();
+    state
+        .docking
+        .apply(Action::move_beside(Panel::History, Panel::Tracks, DockPlacement::group(true, None)), false, |_| Permissions::default())
+        .unwrap();
     close(&mut state, Panel::Tracks);
     state.show_tracks_list = false;
     state.show_undo_history = true;

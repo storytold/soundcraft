@@ -208,15 +208,16 @@ fn ui_customization(app: &mut SoundApp, ctx: &egui::Context) {
                 let _ = app.run("ui.language", json!({"language": choice.id()}));
             }
             let mut chosen = None;
-            egui::ComboBox::from_label(crate::localization::text("Theme"))
-                .selected_text(crate::localization::text(app.ui.theme.label()))
-                .show_ui(ui, |ui| {
+            egui::ComboBox::from_label(crate::localization::text("Theme")).selected_text(crate::localization::text(app.ui.theme.label())).show_ui(
+                ui,
+                |ui| {
                     for mode in crate::theme::ThemeMode::ALL {
                         if ui.selectable_label(app.ui.theme == mode, crate::localization::text(mode.label())).clicked() {
                             chosen = Some(mode);
                         }
                     }
-                });
+                },
+            );
             if let Some(mode) = chosen {
                 let _ = app.run("ui.theme", json!({"mode": mode.id()}));
             }
