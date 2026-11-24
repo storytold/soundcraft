@@ -717,7 +717,13 @@ impl<F: Read + Seek> Builder<'_, F> {
             return Err(fail("Physical channel selection / split stereo unsupported"));
         }
         // Each source file is located, probed and reported once, however many edits use it.
-        if self.sources.iter().any(|s| s.key == key) || self.missing.iter().any(|m| m.key == key) {
+        if let Some(source) = self.sources.iter().find(|s| s.key == key) {
+            if physical == Some(1) && source.channels != 1 {
+                return Err(fail("Physical channel selection / split stereo unsupported"));
+            }
+            return Ok((key, offset));
+        }
+        if self.missing.iter().any(|m| m.key == key) {
             return Ok((key, offset));
         }
         let name = mob.string(PID_MOB_NAME);
