@@ -98,3 +98,19 @@ fn tapping_without_a_time_is_refused() {
     let mut e = Engine::default();
     assert!(e.execute("event.tap_tempo", &json!({})).is_err());
 }
+
+#[test]
+fn a_tap_after_undoing_another_edit_is_its_own_step_and_clears_redo() {
+    let mut e = Engine::default();
+    tap(&mut e, 0.0);
+    tap(&mut e, 600.0);
+    e.execute("event.tempo", &json!({"bpm": 80, "at": 0})).unwrap();
+    assert!(e.undo());
+    assert!(e.can_redo());
+    // The document is back to what the taps left, but the 80 BPM edit still waits in redo.
+    tap(&mut e, 1_100.0);
+    assert!(!e.can_redo(), "a new tap must drop the undone edit from redo");
+    assert_eq!(e.undo_history().len(), 2, "history: {:?}", e.undo_history());
+    assert!(e.undo());
+    assert!((bpm(&e) - 100.0).abs() < 1e-6, "undo must bring back the first series: bpm {}", bpm(&e));
+}

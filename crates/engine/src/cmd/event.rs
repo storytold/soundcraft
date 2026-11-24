@@ -161,8 +161,8 @@ fn tap_tempo(e: &mut Engine, p: &Value) -> Result<Value> {
     let before = Arc::clone(&e.doc);
     e.session_mut().tempo.set_tempo(event, bpm).map_err(|err| bad(id, err.to_string()))?;
     // The first change of a series is an undo step; later taps join it while nothing else has
-    // changed the document in between.
-    if !e.tap_doc.as_ref().is_some_and(|d| Arc::ptr_eq(d, &before)) {
+    // changed the document in between and no undone edit waits in redo.
+    if !e.redo.is_empty() || !e.tap_doc.as_ref().is_some_and(|d| Arc::ptr_eq(d, &before)) {
         e.push_undo("Tap Tempo", before);
     }
     e.tap_doc = Some(Arc::clone(&e.doc));
