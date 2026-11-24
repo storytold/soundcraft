@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """Run the synthetic packaging suites together; no app build or signing.
 
-The Linux archive helper and packaging are covered by packaging/nightly-release-tests.py (its own
-owner's checks); these are the macOS and Windows suites next to the shared caller contracts.
+These are the macOS and Windows suites, the flat Linux archive policy and the shared caller
+contracts; the shell suites (the tarball and Arch launchers, `bash -n`) run from
+packaging/nightly-checks.sh.
 """
 import importlib.util
 from pathlib import Path
@@ -15,6 +16,7 @@ def main() -> int:
     for name, relative in (
         ("sound_plist_suite", "macos/nightly_plist_tests.py"),
         ("sound_mac_sign_suite", "macos/nightly_sign_tests.py"),
+        ("sound_archive_suite", "nightly-archive-tests.py"),
         ("sound_release_dispatch_suite", "nightly-release-tests.py"),
     ):
         spec = importlib.util.spec_from_file_location(name, here / relative)

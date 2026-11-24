@@ -18,7 +18,13 @@ OUTPUT="$DIST/soundcraft-$VERSION-linux-x86_64-nightly.tar.gz"
 nightly_build_gui
 STAGE="$NIGHTLY_WORK/stage"
 mkdir -p "$STAGE"
-cp "$NIGHTLY_GUI" "$STAGE/soundcraft"
+# The launcher is the entry point (`soundcraft`); the GUI sits beside it as `soundcraft-bin` and is
+# started with the Launcher's private profile, so an unpacked tar never writes stable's settings
+# folder. The flat layout is what nightly-archive.py allows, and the launcher is a committed script
+# so shellcheck covers it like every other packaging script.
+cp "$NIGHTLY_GUI" "$STAGE/soundcraft-bin"
+chmod 755 "$STAGE/soundcraft-bin"
+cp "$ROOT/packaging/linux/nightly-launch.sh" "$STAGE/soundcraft"
 chmod 755 "$STAGE/soundcraft"
 cp "$ROOT/assets/app-icon/soundcraft-nightly.png" "$STAGE/soundcraft-nightly.png"
 nightly_copy_notices "$STAGE"

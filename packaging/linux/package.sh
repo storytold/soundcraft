@@ -141,6 +141,13 @@ has() {
 if has tar; then
   mkdir -p "$WORK/tar"
   cp -R "$STAGE/usr" "$WORK/tar/$BASENAME"
+  if [[ "$IS_NIGHTLY" = 1 ]]; then
+    # A Nightly binary only starts with its private profile, so an unpacked FHS tar (also the
+    # Flatpak's input) gets the same launcher the other Nightly formats install: bin/soundcraft
+    # starts bin/soundcraft-bin.
+    mv "$WORK/tar/$BASENAME/bin/soundcraft" "$WORK/tar/$BASENAME/bin/soundcraft-bin"
+    install -Dm755 "$HERE/nightly-launch.sh" "$WORK/tar/$BASENAME/bin/soundcraft"
+  fi
   tar -C "$WORK/tar" -czf "$DIST/$BASENAME.tar.gz" "$BASENAME"
   echo "wrote $DIST/$BASENAME.tar.gz"
 fi
@@ -176,11 +183,16 @@ if has deb || has rpm; then
     install -Dm755 "$NFPM_STAGE/usr/bin/soundcraft" "$NFPM_STAGE/usr/lib/soundcraft-nightly/soundcraft"
     cat >"$NFPM_STAGE/usr/bin/$NFPM_BIN" <<'WRAPPER'
 #!/bin/sh
+# SoundCraft Nightly: the GUI runs with the Launcher's private profile, which holds ui.json,
+# Autosave/, Presets/ and logs/ away from stable's settings folder.
 set -eu
-if [ -z "${SOUNDCRAFT_CONFIG_DIR+x}" ]; then
-  export SOUNDCRAFT_CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/soundcraft-nightly"
-fi
-exec /usr/lib/soundcraft-nightly/soundcraft "$@"
+profile="${XDG_CONFIG_HOME:-${HOME:-}/.config}/soundcraft-nightly"
+bin=/usr/lib/soundcraft-nightly/soundcraft
+# The Launcher's protocol, and a bare version query, pass through untouched.
+case "${1-}" in
+  --launch-profile | --profile-root | --version | -V) exec "$bin" "$@" ;;
+esac
+exec "$bin" --launch-profile nightly-v1 --profile-root "$profile" -- "$@"
 WRAPPER
     chmod 755 "$NFPM_STAGE/usr/bin/$NFPM_BIN"
     rm -f "$NFPM_STAGE/usr/bin/soundcraft"
@@ -198,6 +210,7 @@ WRAPPER
         -e "s|<launchable type=\"desktop-id\">$APP_ID.desktop</launchable>|<launchable type=\"desktop-id\">$NIGHTLY_DESK_ID.desktop</launchable>|g" \
         -e "s|<icon type=\"stock\">$APP_ID</icon>|<icon type=\"stock\">$NIGHTLY_DESK_ID</icon>|g" \
         -e "s|<binary>soundcraft</binary>|<binary>$NFPM_BIN</binary>|g" \
+        -e '/<mediatype>/d' \
         "$NFPM_STAGE/usr/share/metainfo/$APP_ID.metainfo.xml" >"$NFPM_STAGE/usr/share/metainfo/$NIGHTLY_DESK_ID.metainfo.xml"
     rm -f "$NFPM_STAGE/usr/share/metainfo/$APP_ID.metainfo.xml"
     rm -rf "$NFPM_STAGE/usr/share/mime"
@@ -271,12 +284,17 @@ if has appimage; then
   if [[ "$IS_NIGHTLY" = 1 ]]; then
     cat >"$APPDIR/AppRun" <<'APPRUN'
 #!/bin/sh
+# SoundCraft Nightly: the GUI runs with the Launcher's private profile, which holds ui.json,
+# Autosave/, Presets/ and logs/ away from stable's settings folder.
 set -eu
 HERE="$(dirname "$(readlink -f "$0")")"
-if [ -z "${SOUNDCRAFT_CONFIG_DIR+x}" ]; then
-  export SOUNDCRAFT_CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/soundcraft-nightly"
-fi
-exec "$HERE/usr/bin/soundcraft" "$@"
+bin="$HERE/usr/bin/soundcraft"
+profile="${XDG_CONFIG_HOME:-${HOME:-}/.config}/soundcraft-nightly"
+# The Launcher's protocol, and a bare version query, pass through untouched.
+case "${1-}" in
+  --launch-profile | --profile-root | --version | -V) exec "$bin" "$@" ;;
+esac
+exec "$bin" --launch-profile nightly-v1 --profile-root "$profile" -- "$@"
 APPRUN
     chmod 755 "$APPDIR/AppRun"
     APPIMAGE_ID="$APP_ID.nightly-v1"

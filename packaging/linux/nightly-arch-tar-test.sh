@@ -31,18 +31,29 @@ mv "$bin/soundcraft-cli" "$bin/soundcraft-nightly-cli"
 [[ ! -e "$stage/bin/.soundcraft-nightly" ]]
 cmp "$stage/bin/soundcraft" "$bin/.soundcraft-nightly/soundcraft"
 cmp "$stage/bin/soundcraft-cli" "$bin/soundcraft-nightly-cli"
-expect() {
-  expected="$1"
-  shift
+profile="${XDG_CONFIG_HOME:-${HOME:-}/.config}/soundcraft-nightly"
+# A launch adds the Launcher's literal selector/root pair and the file delimiter; a version query or
+# an already-formed protocol passes through untouched.
+expect_launch() {
+  expected="$(printf '<%s>\n' --launch-profile nightly-v1 --profile-root "$profile" -- "$@")"
   actual=$(PATH="$bin:$PATH" soundcraft-nightly "$@")
-  if [[ "$actual" != "$expected" ]]; then
+  [[ "$actual" == "$expected" ]] || {
     printf 'expected:\n%s\nactual:\n%s\n' "$expected" "$actual" >&2
     exit 1
-  fi
+  }
 }
-expect "$(printf '<%s>\n' 'session with spaces.sc' '--other-name.sc')" \
-  'session with spaces.sc' '--other-name.sc'
-expect '<--version>' --version
-expect '<-V>' -V
+expect_forwarded() {
+  expected="$(printf '<%s>\n' "$@")"
+  actual=$(PATH="$bin:$PATH" soundcraft-nightly "$@")
+  [[ "$actual" == "$expected" ]] || {
+    printf 'expected:\n%s\nactual:\n%s\n' "$expected" "$actual" >&2
+    exit 1
+  }
+}
+expect_launch
+expect_launch 'session with spaces.sc' '--other-name.sc'
+expect_forwarded --version
+expect_forwarded -V
+expect_forwarded --launch-profile nightly-v1 --profile-root /launcher/profile --version
 
-echo "PASS: Arch Nightly handoff stages binary and preserves launch arguments"
+echo "PASS: Arch Nightly handoff preserves the binary layout and passes the Launcher profile"

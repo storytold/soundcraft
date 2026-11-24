@@ -69,20 +69,27 @@ jobs:
           tz="$(mktemp -d)"
           archive="$RUNNER_TEMP/nightly-dist/soundcraft-$SOUNDCRAFT_VERSION-linux-x86_64-nightly.tar.gz"
           mkdir -p "$tz" && tar -xzf "$archive" -C "$tz"
-          # Flat, allowlisted members only: the GUI, its Nightly icon and the notices.
+          # Flat, allowlisted members only: the launcher, the GUI it starts, the Nightly icon and
+          # the notices.
           members="$(tar -tzf "$archive" | grep -v '/$' | sort | tr '\n' ' ')"
           echo "$members"
-          case "$members" in *soundcraft-cli*|*portable.txt*|*.desktop*) echo 'GUI-only tar contains a CLI, marker or launcher' >&2; exit 1;; esac
+          case "$members" in *soundcraft-cli*|*portable.txt*|*.desktop*) echo 'GUI-only tar contains a CLI, marker or desktop entry' >&2; exit 1;; esac
           test -x "$tz/soundcraft"
+          test -x "$tz/soundcraft-bin"
+          # The entry point is the launcher; the GUI beside it is what a launch starts with the
+          # profile, so an unpacked tar is isolated too.
+          head -n 1 "$tz/soundcraft" | grep -qx '#!/bin/sh' || { echo 'soundcraft is not the launcher' >&2; exit 1; }
           test -f "$tz/soundcraft-nightly.png"
-          # The version query, plain and in the Launcher's form, with an empty environment.
+          # The version query, plain and in the Launcher's form, with an empty environment (a shell
+          # script needs PATH for dirname/readlink even when everything else is cleared).
+          path=/usr/local/bin:/usr/bin:/bin
           home="$(mktemp -d)"; profile="$(mktemp -d)"; xdg="$(mktemp -d)"
-          plain="$(env -i HOME="$home" XDG_CONFIG_HOME="$xdg/c" XDG_DATA_HOME="$xdg/d" XDG_CACHE_HOME="$xdg/k" XDG_STATE_HOME="$xdg/s" "$tz/soundcraft" --version)"
+          plain="$(env -i PATH="$path" HOME="$home" XDG_CONFIG_HOME="$xdg/c" XDG_DATA_HOME="$xdg/d" XDG_CACHE_HOME="$xdg/k" XDG_STATE_HOME="$xdg/s" "$tz/soundcraft" --version)"
           test "$plain" = "SoundCraft $SOUNDCRAFT_VERSION (nightly-v1)" || { echo "plain query: $plain" >&2; exit 1; }
-          launcher="$(env -i HOME="$home" XDG_CONFIG_HOME="$xdg/c" "$tz/soundcraft" --launch-profile nightly-v1 --profile-root "$profile" --version)"
+          launcher="$(env -i PATH="$path" HOME="$home" XDG_CONFIG_HOME="$xdg/c" "$tz/soundcraft" --launch-profile nightly-v1 --profile-root "$profile" --version)"
           test "$launcher" = "SoundCraft $SOUNDCRAFT_VERSION (nightly-v1)" || { echo "launcher query: $launcher" >&2; exit 1; }
           # A native package refuses a Flatpak instance, and no stable folder is created.
-          if env -i HOME="$home" XDG_CONFIG_HOME="$xdg/c" FLATPAK_ID=ai.storyteller.soundcraft "$tz/soundcraft" --launch-profile nightly-v1 --profile-root "$(mktemp -d)/p" -- 2>/dev/null; then
+          if env -i PATH="$path" HOME="$home" XDG_CONFIG_HOME="$xdg/c" FLATPAK_ID=ai.storyteller.soundcraft "$tz/soundcraft" --launch-profile nightly-v1 --profile-root "$(mktemp -d)/p" -- 2>/dev/null; then
             echo 'a Flatpak instance must not run the native Nightly' >&2; exit 1
           fi
           for stable in config data; do test ! -e "$xdg/$stable/soundcraft" || { echo "stable $stable folder created" >&2; exit 1; }; done

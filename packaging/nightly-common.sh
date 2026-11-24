@@ -33,8 +33,11 @@ nightly_init() {
 }
 
 # Compile only: macOS runs the version query after signing (packaging/macos/nightly-verify.sh).
+# The channel and the feed identity are passed explicitly as well as inherited: the build script
+# refuses a nightly build without them, and a stable binary would not print the line checked below.
 nightly_compile_gui() {
-  (cd "$ROOT" && SOUNDCRAFT_OVERRIDE_VERSION="$VERSION" cargo build --release --locked -p soundcraft --target "$NIGHTLY_RUST_TARGET")
+  (cd "$ROOT" && SOUNDCRAFT_BUILD_CHANNEL=nightly-v1 SOUNDCRAFT_OVERRIDE_VERSION="$VERSION" \
+    cargo build --release --locked -p soundcraft --target "$NIGHTLY_RUST_TARGET")
   NIGHTLY_GUI="$CARGO_TARGET_DIR/$NIGHTLY_RUST_TARGET/release/soundcraft"
   [[ -f "$NIGHTLY_GUI" && ! -L "$NIGHTLY_GUI" ]] || nightly_die 'the owned GUI build did not produce a regular executable'
   [[ "$(git -C "$ROOT" rev-parse HEAD)" == "$SOUNDCRAFT_BUILD_SHA" && -z "$(git -C "$ROOT" status --porcelain)" ]] || nightly_die 'source changed during the build'
@@ -42,9 +45,15 @@ nightly_compile_gui() {
 
 nightly_build_gui() {
   nightly_compile_gui
-  local actual
+  local actual launcher
   actual="$("$NIGHTLY_GUI" --version)" || nightly_die 'side-effect-free nightly version verification failed'
+  # Exactly what build.rs embeds from the prepared identity: `SoundCraft <version> (nightly-v1)`.
   [[ "$actual" == "SoundCraft $VERSION (nightly-v1)" ]] || nightly_die 'the built version/flavor is not the prepared identity'
+  # The Launcher's form must answer identically and touch no root, so the Launcher and the
+  # tarball's own launcher get the same line the plain query prints.
+  launcher="$("$NIGHTLY_GUI" --launch-profile nightly-v1 --profile-root "$NIGHTLY_WORK/version-profile" --version)" \
+    || nightly_die 'the Launcher-form nightly version query failed'
+  [[ "$launcher" == "$actual" ]] || nightly_die 'the Launcher-form version query differs from the plain one'
   [[ "$(git -C "$ROOT" rev-parse HEAD)" == "$SOUNDCRAFT_BUILD_SHA" && -z "$(git -C "$ROOT" status --porcelain)" ]] || nightly_die 'source changed during the version query'
 }
 

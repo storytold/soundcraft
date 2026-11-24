@@ -75,9 +75,23 @@ Read on 2026-11-24; re-read anything that may have moved (and populate `producer
   `storytold/craft-common-actions`. Both must resolve to a **real reviewed public immutable
   commit**; the defining workflow SHA and tooling input must match.
 
+**Every Linux Nightly format starts the app the flavor's way.** The `.deb`/`.rpm` wrapper, the
+AppImage's `AppRun`, the Arch launcher, the Flatpak wrapper, the launcher inside the plain
+`nightly.tar.gz` and the FHS tree in `package.sh`'s `.tar.gz` all exec the real GUI with the literal
+`--launch-profile nightly-v1 --profile-root <${XDG_CONFIG_HOME:-~/.config}/soundcraft-nightly> --`,
+and pass a Launcher protocol or a `--version`/`-V` query through untouched, so `soundcraft --version`,
+the Launcher's version query and the smoke checks still answer without a profile. The profile holds
+`ui.json`, `Autosave/`, `Presets/` and `logs/`; it is outside stable's settings folder and outside
+the unpacked or installed copy, which the flavor's fence would otherwise refuse. The Nightly tarballs
+therefore ship `soundcraft` as the launcher next to `soundcraft-bin`, and the Nightly Flatpak — the
+one sandbox whose own app id (`ai.storyteller.soundcraft.nightly`) the fence accepts, because
+everything inside it is already that package's own — starts the GUI from `/app/bin/soundcraft-bin`.
+
 ## Local regression checks
 
-Run `python3 packaging/nightly-release-tests.py` to verify:
+Run `bash packaging/nightly-checks.sh` for everything that needs no compiler: the synthetic suites
+below, the tarball and Arch launcher tests, the FHS tar's launcher split, and `bash -n` over every
+Nightly shell script. Run `python3 packaging/nightly-release-tests.py` to verify:
 - Both callers pin the same immutable 40-hex `craft-common-actions` commit in `uses` and `tooling-revision`.
 - Both callers keep their exact context guards, have no registered schedule, and maintain the no-cache/no-platform-secret boundary.
 - `nightly-sign.yml` preserves its literal root `concurrency` serialization (`soundcraft-nightly-release`, `cancel-in-progress: false`, `queue: max`).

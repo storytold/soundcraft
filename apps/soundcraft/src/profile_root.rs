@@ -5,6 +5,10 @@ use std::ffi::OsString;
 use crate::config::{PORTABLE_DATA_DIR, portable_marker};
 use std::path::{Component, Path, PathBuf};
 
+/// The Nightly Flatpak's own app id (packaging/linux/flatpak-bundle.sh). Inside that instance the
+/// sandbox is the isolation, so it is the one Flatpak whose environment a Nightly launch accepts.
+const NIGHTLY_FLATPAK_ID: &str = "ai.storyteller.soundcraft.nightly";
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Platform {
     Windows,
@@ -203,10 +207,16 @@ fn validate_for(
             "nightly-v1 cannot be combined with SOUNDCRAFT_CONFIG_DIR; pass --launch-profile nightly-v1 --profile-root <dir> -- instead".into(),
         );
     }
-    if platform != Platform::Windows && env("FLATPAK_ID").is_some_and(|v| !v.is_empty()) {
-        // These rows are native tar/app-bundle launches, not a Flatpak package. Inheriting its
-        // runtime socket namespace could point another profile at the stable app's socket.
-        return Err("nightly-v1 native packages cannot inherit a Flatpak instance; launch through the native Launcher".into());
+    if platform != Platform::Windows {
+        if let Some(instance) = env("FLATPAK_ID").filter(|v| !v.is_empty()) {
+            // These rows are native tar/app-bundle launches, not a Flatpak package. Inheriting its
+            // runtime socket namespace could point another profile at the stable app's socket. The
+            // Nightly Flatpak is the exception: its own app id is the sandbox, so $HOME and the XDG
+            // folders in there are already this package's own.
+            if instance.to_string_lossy() != NIGHTLY_FLATPAK_ID {
+                return Err("nightly-v1 native packages cannot inherit a Flatpak instance; launch through the native Launcher".into());
+            }
+        }
     }
     let chosen = canonical_future(root)?;
     if is_portable_layout(root, platform) || is_portable_layout(&chosen, platform) {
@@ -563,6 +573,10 @@ mod tests {
         fixture.env.remove("SOUNDCRAFT_CONFIG_DIR");
         fixture.env.insert("FLATPAK_ID".into(), "ai.storyteller.soundcraft".into());
         assert!(fixture.check(Platform::Linux, &candidate).unwrap_err().contains("Flatpak"));
+        // The Nightly Flatpak is its own instance: the profile inside it is a sandbox-local folder.
+        fixture.env.insert("FLATPAK_ID".into(), "ai.storyteller.soundcraft.nightly".into());
+        let sandboxed = fixture.home().join(".var/app/ai.storyteller.soundcraft.nightly/config/soundcraft-nightly");
+        assert_eq!(fixture.check(Platform::Linux, &sandboxed).unwrap(), sandboxed);
         fixture.env.remove("FLATPAK_ID");
         fixture.env.remove("HOME");
         assert!(fixture.check(Platform::Linux, &candidate).unwrap_err().contains("HOME"));
