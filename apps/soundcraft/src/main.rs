@@ -254,9 +254,15 @@ fn main() -> eframe::Result {
         "SoundCraft",
         options,
         Box::new(move |cc| {
-            let player =
-                if no_audio { None } else { Some(soundcraft_playback::Player::with_config(Arc::new(engine.session().clone()), &prefs.audio)) };
+            // The input opens before the output (see `SoundApp::open_audio_devices`).
+            let (player, input) = if no_audio {
+                (None, None)
+            } else {
+                let (player, input) = SoundApp::open_audio_devices(Arc::new(engine.session().clone()), &prefs.audio);
+                (Some(player), input)
+            };
             let mut app = SoundApp::new(engine, player, services());
+            app.set_audio_input(input);
             app.set_startup_update_check(true);
             app.set_system_fonts(env.system_fonts());
             app.autosave_dir = env.config_dir.as_ref().map(|d| d.join("Autosave"));
