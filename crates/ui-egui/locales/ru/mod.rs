@@ -2174,7 +2174,9 @@ error_templates! {
     "`{name}` has no parameter(s): {list}" => "у `{name}` нет параметра(ов): {list}",
     "`{name}` is not a Video track" => "`{name}` не является видеодорожкой",
     "`{name}` is not a built-in instrument" => "`{name}` не является встроенным инструментом",
-    "`{name}` is used by {n} clip{plural} on the timeline; pass `with_clips: true` to remove them too" => "`{name}` используется {n} клип(ов) на таймлайне; передайте `with_clips: true`, чтобы удалить их тоже",
+    // `{plural}` is "s" whenever this template matches, so it completes `with_clips`
+    // instead of an English ending on the Russian noun.
+    "`{name}` is used by {n} clip{plural} on the timeline; pass `with_clips: true` to remove them too" => "`{name}` используется {n} клипов на таймлайне; передайте `with_clip{plural}: true`, чтобы удалить их тоже",
     "a bus named `{name}` exists" => "шина с именем `{name}` уже существует",
     "a group named `{name}` already exists" => "группа с именем `{name}` уже существует",
     "a group needs at least one track" => "группе нужна хотя бы одна дорожка",
