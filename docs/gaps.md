@@ -1,6 +1,6 @@
 # Where SoundCraft falls short of Pro Tools
 
-> **Last reviewed:** 2026-11-14 · **Last updated:** 2026-11-25 · **Change:** minor (G-01: Core Audio places takes by the host time and the device latency; previously minor: G-01: record-offset compensation; previously minor: G-01: latency reporting; previously minor: G-06: recording to disk is done (#84, long takes #888); streaming sources remain; previously minor: G-02 shrunk: MIDI input devices work; G-03: strict external-WAV AAF import; previously minor: G-05: plugin editors on Linux/X11; previously trivial: G-09: the pt-BR catalog now covers helper-passed tooltips, the status bar, the remove-session prompt and engine error text; G-08: Frequency Shifter, 28 processors; G-04: volume automation read at every sample, #1354; G-01: `setup.playback_engine` applies the device buffer in the desktop app; G-04: Clip Looping crossfade and loop count) · **Target:** Avid Pro Tools Ultimate 2026.4.1
+> **Last reviewed:** 2026-11-14 · **Last updated:** 2026-11-25 · **Change:** minor (G-01: input monitoring through the same device cycle on ASIO and Core Audio; previously minor: G-01: Core Audio places takes by the host time and the device latency; previously minor: G-01: record-offset compensation; previously minor: G-01: latency reporting; previously minor: G-06: recording to disk is done (#84, long takes #888); streaming sources remain; previously minor: G-02 shrunk: MIDI input devices work; G-03: strict external-WAV AAF import; previously minor: G-05: plugin editors on Linux/X11; previously trivial: G-09: the pt-BR catalog now covers helper-passed tooltips, the status bar, the remove-session prompt and engine error text; G-08: Frequency Shifter, 28 processors; G-04: volume automation read at every sample, #1354; G-01: `setup.playback_engine` applies the device buffer in the desktop app; G-04: Clip Looping crossfade and loop count) · **Target:** Avid Pro Tools Ultimate 2026.4.1
 
 Every known shortfall, one entry each, ranked by how much it stops a Pro Tools user from doing
 real work in SoundCraft. This is the work list: pick from the top. Rows marked **alpha blocker**
@@ -67,6 +67,12 @@ When you close a gap, delete its entry (or shrink it) in the same PR, and bump t
   same UFX, a cable through the converters) takes land 1 sample early at 64, 256 and 1024 frames.
   cpal 0.18's Core Audio capture and playback times count the buffer and safety offset twice, so
   there the stream clock is the callback's host time moved by the device latency alone.
+- **Done (2026-11-24):** input monitoring adds no device buffer of its own where the audio system
+  calls a device's callbacks in the order its streams opened: the input opens before the output
+  (at startup, on Apply and on reconnect), so the output mixes the input of the same cycle. On an
+  RME UFX under ASIO the monitor round trip fell from the device's plus 257 samples to plus 1.
+  Core Audio is opened the same way: on the same UFX through a cable the monitor round trip equals
+  the reported one at 64, 256 and 1024 frames (it was a buffer more). WASAPI is unchanged.
 - **Missing:** routing to physical channels (I/O Setup), one duplex stream on one clock (input and
   output are still separate cpal streams), ASIO
   in official builds (owner decision: Steinberg's SDK is proprietary or GPLv3), JACK, and
@@ -268,6 +274,7 @@ missing. Out of scope unless the owner decides otherwise.
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-11-25 | minor | G-01: input opens before the output on ASIO and Core Audio, so monitoring adds no device buffer (verified on both with an RME UFX); estimates unchanged |
 | 2026-11-25 | minor | G-01: Core Audio places takes by the host time and the device latency (cpal 0.18 counts the buffer and safety offset twice); 1 sample early on an RME UFX at 64–1024 frames; estimates unchanged |
 | 2026-11-24 | minor | G-01: record-offset compensation from device timing, with a per-machine record offset; estimates unchanged |
 | 2026-11-24 | minor | G-01: latency reporting (Playback Engine, `ui.audio_device`, `setup.playback_engine`); record-offset compensation remains; estimates unchanged |
