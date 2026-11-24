@@ -196,3 +196,32 @@ fn two_dragged_clips_with_the_same_span_each_show_in_the_move_ghost() {
     let ghost = texts(&ctx, &mut app, "Snare");
     assert!(ghost.iter().any(|t| t == "Solo") && ghost.iter().any(|t| t == "Twin"), "ghost texts: {ghost:?}");
 }
+
+#[test]
+fn a_locked_clip_sharing_a_dragged_clip_s_span_stays_out_of_its_ghost() {
+    let mut app = SoundApp::new(soundcraft_engine::demo::demo_engine(), None, Services::default());
+    let ctx = egui::Context::default();
+    waveforms(&ctx, &mut app, "Kick", 0.0);
+    let s = app.engine.session_mut();
+    let next = s.tracks.iter().flat_map(|t| t.clips().iter().map(|c| c.id.0)).max().unwrap() + 1;
+    let pl = s.tracks.iter_mut().find(|t| t.name == "Kick").and_then(|t| t.playlist_mut()).unwrap();
+    pl.sort();
+    let first = pl.clips.first_mut().unwrap();
+    (first.name, first.time_locked) = ("Locked".into(), true);
+    let mut twin = first.clone();
+    (twin.id, twin.name, twin.time_locked) = (soundcraft_model::ClipId(next), "Free".into(), false);
+    let ids = [first.id.0, next];
+    pl.clips.push(twin);
+    pl.sort();
+    app.engine.execute("edit.tool", &json!({"tool": "grabber"})).unwrap();
+    app.engine.execute("edit.select", &json!({"clips": ids})).unwrap();
+    waveforms(&ctx, &mut app, "Kick", 0.0);
+    let (from, to) = drag_points(&app, "Kick", "Snare");
+    let press = Event::PointerButton { pos: from, button: PointerButton::Primary, pressed: true, modifiers: Modifiers::NONE };
+    input(&ctx, &mut app, vec![Event::PointerMoved(from), press]);
+    input(&ctx, &mut app, vec![Event::PointerMoved(from + vec2(20.0, 0.0))]);
+    input(&ctx, &mut app, vec![Event::PointerMoved(to)]);
+    assert!(matches!(app.gesture, Some(Gesture::MoveClips { .. })), "{:?}", app.gesture);
+    let ghost = texts(&ctx, &mut app, "Snare");
+    assert!(ghost.iter().any(|t| t == "Free") && !ghost.iter().any(|t| t == "Locked"), "ghost texts: {ghost:?}");
+}
