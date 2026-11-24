@@ -212,7 +212,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Track Input",
             [],
             None,
-            "{tracks?, input: none|bus name|hardware name|MIDI:<channel 1-16 or *>:<device or *> (MIDI and instrument tracks), create_bus?: true} (a hardware name not starting with \"in \" that no bus has makes a bus of that name, unless create_bus is false; one starting with \"in \" is always a hardware input)",
+            "{tracks?, input: none|bus name|hardware name|MIDI:<channel 1-16 or *>:<device or *> (MIDI and instrument tracks), create_bus?: true} (the name of an existing bus always selects that bus, even one starting with \"in \", whatever create_bus is; otherwise a name starting with \"in \" is a hardware input, and any other hardware name makes a bus of that name unless create_bus is false)",
             has_selection,
             |e, p| route(e, p, true)
         ),
