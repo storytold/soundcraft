@@ -434,7 +434,7 @@ fn an_undelivered_gesture_is_canceled_without_wedging_the_next_request() {
     let (req, reply) = ControlRequest::new("ui.click", json!({"x": 10.0, "y": 10.0}));
     assert!(handle(&mut a, &ctx, &req).is_none(), "the click waits for a UI pass");
     a.advance_test_clock(Duration::from_secs(16));
-    expire_gestures(&mut a);
+    expire_gestures(&mut a, &ctx);
     let v = reply.try_recv().expect("the canceled gesture has exactly one reply");
     assert_eq!(v["ok"], false, "{v}");
     assert!(v["error"].as_str().unwrap_or_default().contains("not delivered"), "{v}");
@@ -503,7 +503,7 @@ fn a_timed_out_consumed_press_cancels_without_clicking_and_the_next_click_works(
 /// An expired scripted shortcut never reaches widgets or end-of-pass handling, while a simultaneous host shortcut
 /// still runs and a later script succeeds.
 #[test]
-fn a_timed_out_scripted_key_after_the_hook_does_not_run_and_the_next_key_works() {
+fn a_timed_out_scripted_key_does_not_run_and_the_next_key_works() {
     let (mut a, ctx) = (app(), egui::Context::default());
     crate::framework::install_headless(&ctx);
     a.advance_test_clock(Duration::ZERO);
@@ -511,46 +511,38 @@ fn a_timed_out_scripted_key_after_the_hook_does_not_run_and_the_next_key_works()
     a.run("track.new", json!({"count": 1, "format": "stereo"})).unwrap();
     let depth = a.engine.undo_history().len();
     assert!(depth > 0, "the test needs an undoable edit");
-    let applied = a.synthetic_applied_batches;
-    let quickpunch = a.engine.session().edit.quickpunch;
     let (req, reply) = ControlRequest::new("ui.key", json!({"key": "z", "cmd": true}));
     assert!(handle(&mut a, &ctx, &req).is_none());
-    let mut raw = raw_input(800.0, 600.0, 8192);
-    // A real, unrelated shortcut in the same pass must still be dispatched after the expired
-    // scripted batch is removed.
-    let command_shift = egui::Modifiers { command: true, shift: true, ..egui::Modifiers::NONE };
-    raw.events.push(egui::Event::Key { key: egui::Key::P, physical_key: None, pressed: true, repeat: false, modifiers: command_shift });
-    raw.events.push(egui::Event::Key { key: egui::Key::P, physical_key: None, pressed: false, repeat: false, modifiers: command_shift });
-    a.raw_input_hook(&ctx, &mut raw);
-    assert!(a.synthetic_batch.is_some(), "the key batch waits for a UI pass");
+    assert!(gesture_pending(&a), "the key waits for the framework to run it");
 
-    // The deadline crosses after the hook handed the key to egui but before logic and widgets.
+    // The deadline crosses before any pass ran the key.
     a.advance_test_clock(Duration::from_secs(16));
-    let mut out = ctx.run_ui(raw, |ui| {
-        a.logic(ui.ctx());
-        a.ui(ui);
-    });
-    out.textures_delta.clear();
+    let _ = frame(&mut a, &ctx, raw_input(800.0, 600.0, 8192));
     let canceled = reply.try_recv().expect("one cancellation reply");
     assert_eq!(canceled["ok"], false, "{canceled}");
-    assert!(a.synthetic_batch.is_none(), "the expired batch is dropped");
-    assert_eq!(a.synthetic_applied_batches, applied, "an expired batch is not delivered");
-    assert_eq!(a.engine.undo_history().len(), depth, "the expired key must not run its shortcut");
-    assert_eq!(a.engine.session().edit.quickpunch, !quickpunch, "a simultaneous host shortcut still runs");
-    assert!(!a.cancel_synthetic_keys);
-    assert!(
-        ctx.input(|i| !i.events.iter().any(|e| matches!(e, egui::Event::Key { key: egui::Key::Z, .. }))),
-        "the expired key is gone from the pass, not left for widgets or end-of-pass shortcuts"
-    );
+    assert!(!gesture_pending(&a));
     let _ = frame(&mut a, &ctx, raw_input(800.0, 600.0, 8192));
-    assert_eq!(a.engine.undo_history().len(), depth, "a later frame must not replay it");
+    assert_eq!(a.engine.undo_history().len(), depth, "the expired key must not run its shortcut, now or later");
 
-    // A fresh gesture after the timeout still works and runs exactly once.
+    // A fresh key after the timeout still works and runs exactly once.
     let (req, reply) = ControlRequest::new("ui.key", json!({"key": "z", "cmd": true}));
     assert!(handle(&mut a, &ctx, &req).is_none());
     deliver_gestures(&mut a, &ctx);
     assert_eq!(reply.try_recv().unwrap()["ok"], true);
     assert_eq!(a.engine.undo_history().len(), depth - 1, "a completed key still undoes exactly once");
+}
+
+/// The framework takes Escape out of egui's event list; the key is still acknowledged.
+#[test]
+fn a_scripted_escape_is_acknowledged() {
+    let (mut a, ctx) = (app(), egui::Context::default());
+    crate::framework::install_headless(&ctx);
+    a.advance_test_clock(Duration::ZERO);
+    warm(&mut a, &ctx);
+    let (req, reply) = ControlRequest::new("ui.key", json!({"key": "Escape"}));
+    assert!(handle(&mut a, &ctx, &req).is_none());
+    deliver_gestures(&mut a, &ctx);
+    assert_eq!(reply.try_recv().expect("an acknowledgement")["ok"], true);
 }
 
 /// Current timeline zoom, horizontal scroll and vertical scroll, compared before and after a gesture.

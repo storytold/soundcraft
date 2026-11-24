@@ -360,6 +360,8 @@ pub struct SoundApp {
     synthetic_pointer_active: bool,
     /// Cancel that press before the next egui input pass, without a release click/drop.
     cancel_synthetic_pointer: bool,
+    /// `ui.key` requests waiting for the framework's injected input to run.
+    injected_acks: VecDeque<control::InjectedAck>,
     /// A key/text batch crossed its deadline after [`Self::raw_input_hook`] had already appended it
     /// to the pass. Do not dispatch that stale copy through shortcuts or widgets.
     cancel_synthetic_keys: bool,

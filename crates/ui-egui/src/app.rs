@@ -81,6 +81,7 @@ impl SoundApp {
             synthetic_batch: None,
             synthetic_pointer_active: false,
             cancel_synthetic_pointer: false,
+            injected_acks: VecDeque::new(),
             cancel_synthetic_keys: false,
             cancel_synthetic_scroll: false,
             input_before_scroll: None,
@@ -185,7 +186,7 @@ impl SoundApp {
         // Frame pacing and the transport simulation use a monotonic host clock instead.
         let dt = self.tick_dt();
         self.last_frame = Some(self.uptime);
-        crate::control::expire_gestures(self);
+        crate::control::expire_gestures(self, ctx);
         crate::control::drain(self, ctx);
         self.note_recent_session();
         self.apply_editor_edits();
@@ -362,6 +363,8 @@ impl SoundApp {
         self.run_framework_dialogs(ui);
         // The sampler's drop rects are current now, so route any captured drop in this pass.
         self.route_dropped_files();
+        // A scripted key (`ui.key`) is acknowledged by the framework's idle signal, not by egui's event list.
+        crate::control::injected_settled(self, &ctx);
         // The pass that actually received the injected events has already dispatched their widget
         // side effects, even when it then asks for another layout pass. `received_synthetic` was
         // captured before menus and widgets, so a widget that consumed the event from InputState
