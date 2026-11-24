@@ -1,6 +1,6 @@
 //! SoundCraft MIDI.
 //!
-//! - [`Note`], [`CtrlEvent`] and [`Sequence`]: the MIDI content of a region / track, in ticks at
+//! - [`Note`], [`CtrlEvent`], [`SysExEvent`] and [`Sequence`]: the MIDI content of a region / track, in ticks at
 //!   [`PPQ`] (960) ticks per quarter note; [`read_smf`] / [`write_smf`]: Standard MIDI File import
 //!   and export, and [`read_smf_lenient`] for files that are slightly damaged. These come from
 //!   `craft-midi` in craft-libs, shared with the other Craft apps, and are re-exported so the rest
