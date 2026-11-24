@@ -109,6 +109,25 @@ fn output_config_can_use_the_full_device_width() {
 }
 
 #[test]
+fn core_audio_opens_every_interface_output_as_asio_does() {
+    // An interface that offers a stereo configuration besides its full width: named paths on
+    // outputs 3 and up need the full width. (A device offering only its full width, as an RME
+    // Fireface UFX does under Core Audio, fell back to its default configuration and got all 30.)
+    use crate::stream::output_width;
+    let interface = [range(2, 44_100, 192_000, cpal::SampleFormat::F32), range(30, 44_100, 192_000, cpal::SampleFormat::F32)];
+    let opened = |host: &str| pick_output_config(&interface, &[48_000], output_width(host, 2)).map(|(c, _, _)| c.channels);
+    assert_eq!(opened("CoreAudio"), Some(30), "named paths on outputs 3-30 need the whole device");
+    assert_eq!(opened("ASIO"), Some(30));
+    let builtin = [range(2, 44_100, 96_000, cpal::SampleFormat::F32)];
+    assert_eq!(pick_output_config(&builtin, &[48_000], output_width("CoreAudio", 2)).map(|(c, _, _)| c.channels), Some(2));
+    // WASAPI lists an interface's pairs as separate devices, and a desktop output may upmix:
+    // only the main mix's width opens there.
+    for host in ["WASAPI", "ALSA", "JACK", "PulseAudio"] {
+        assert_eq!(output_width(host, 2), 2, "{host}");
+    }
+}
+
+#[test]
 fn no_config_that_starts_yields_none_so_the_caller_falls_back_to_a_silent_clock() {
     let mut tried = 0;
     let won = first_started(

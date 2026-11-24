@@ -111,6 +111,15 @@ fn output_sample_preserves_packed_i24_full_scale() {
     assert_eq!(output_sample::<f32>(1.0), 1.0);
 }
 
+/// Channels to ask of the output device. Where one device is a whole multichannel interface
+/// (ASIO; Core Audio, where an interface's outputs are one device), every channel it offers stays
+/// open, so I/O Setup paths reach their hardware outputs and edits reroute live. Elsewhere a
+/// device is often one pair of an interface (WASAPI lists "Analog (3+4)" apart) or a desktop
+/// output that may upmix, and only the main mix's width opens.
+pub(crate) fn output_width(host: &str, main_width: u16) -> u16 {
+    if matches!(host, "ASIO" | "CoreAudio") { soundcraft_mix::MAX_HARDWARE_CHANNELS as u16 } else { main_width }
+}
+
 /// Open the output device `cfg` chooses (else the default) at the chosen rate (else the session
 /// rate) if possible, in the best sample format it offers (f32, else 32-, 24-, or 16-bit integers),
 /// with as many channels as it offers up to `want_ch` (at least stereo when available), and the
@@ -125,10 +134,7 @@ pub(crate) fn open_device(
     let device = devices::device(&host, cfg.output.as_deref(), true).ok_or_else(|| "no output device".to_string())?;
     let name = devices::device_name(&device).unwrap_or_else(|| "Audio device".into());
     // Prefer a config at the chosen (else session) rate; else the device default (we resample).
-    let want_ch = want_ch.max(2);
-    // Keep every ASIO output open so I/O Setup edits and session switches can reroute live.
-    #[cfg(all(windows, feature = "asio"))]
-    let want_ch = if host.id() == cpal::HostId::Asio { soundcraft_mix::MAX_HARDWARE_CHANNELS as u16 } else { want_ch };
+    let want_ch = output_width(host.id().name(), want_ch.max(2));
     let rates: Vec<u32> = cfg.sample_rate.into_iter().chain(Some(want_rate)).collect();
     let configs: Vec<cpal::SupportedStreamConfigRange> = device.supported_output_configs().map(|configs| configs.collect()).unwrap_or_default();
     let (config, format) = match pick_output_config(&configs, &rates, want_ch) {
