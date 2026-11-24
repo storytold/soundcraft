@@ -55,7 +55,11 @@ if [[ "${SOUNDCRAFT_BUILD_CHANNEL:-}" == nightly-v1 || "$VERSION" == *-nightly* 
   export SOUNDCRAFT_BUILD_CHANNEL=nightly-v1
   export SOUNDCRAFT_OVERRIDE_VERSION="$VERSION"
 fi
-BASENAME="soundcraft-$VERSION-linux-$ARCH"
+ARTIFACT_VERSION="$VERSION"
+if [[ "$IS_NIGHTLY" = 1 && "$VERSION" != *-nightly* ]]; then
+  ARTIFACT_VERSION="$VERSION-nightly"
+fi
+BASENAME="soundcraft-$ARTIFACT_VERSION-linux-$ARCH"
 
 if [[ -n "$ARCH_TAR_DIR" && "$IS_NIGHTLY" != 1 ]]; then
   echo "error: --arch-tar-dir is only for Nightly builds" >&2
