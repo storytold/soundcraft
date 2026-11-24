@@ -5098,6 +5098,7 @@ dependencies = [
 name = "soundcraft-playback"
 version = "0.20.1"
 dependencies = [
+ "coreaudio-rs",
  "cpal",
  "craft-audio",
  "log",

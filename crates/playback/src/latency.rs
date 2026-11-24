@@ -194,14 +194,60 @@ pub fn placement_offset(heard: Moment, captured: Moment, rate: f64, round_trip: 
 }
 
 /// When the first frame of an input callback was captured, on the stream clock.
+///
+/// With `device_latency` (Core Audio, see [`coreaudio_device_latency`]) the time is the callback's
+/// host time less that latency; otherwise it is cpal's capture time.
 #[cfg(not(target_os = "freebsd"))]
-pub(crate) fn capture_clock(info: &cpal::InputCallbackInfo) -> f64 {
-    clock_seconds(info.timestamp().capture)
+pub(crate) fn capture_clock(info: &cpal::InputCallbackInfo, device_latency: Option<Duration>) -> f64 {
+    let t = info.timestamp();
+    device_latency.map_or_else(|| clock_seconds(t.capture), |l| from_host_time(clock_seconds(t.callback), l, true))
 }
 
 /// When the first frame of an output callback will be heard, on the stream clock.
-pub(crate) fn playback_clock(info: &cpal::OutputCallbackInfo) -> f64 {
-    clock_seconds(info.timestamp().playback)
+///
+/// With `device_latency` (Core Audio, see [`coreaudio_device_latency`]) the time is the callback's
+/// host time plus that latency; otherwise it is cpal's playback time.
+pub(crate) fn playback_clock(info: &cpal::OutputCallbackInfo, device_latency: Option<Duration>) -> f64 {
+    let t = info.timestamp();
+    device_latency.map_or_else(|| clock_seconds(t.playback), |l| from_host_time(clock_seconds(t.callback), l, false))
+}
+
+/// A Core Audio callback's host time (seconds on the stream clock) moved to the converters: an
+/// input frame was captured `device_latency` before the HAL stamped it, an output frame is heard
+/// `device_latency` after.
+pub(crate) fn from_host_time(host_time: f64, device_latency: Duration, input: bool) -> f64 {
+    if input { host_time - device_latency.as_secs_f64() } else { host_time + device_latency.as_secs_f64() }
+}
+
+/// The device latency of a Core Audio device for one direction (`kAudioDevicePropertyLatency`:
+/// the converters and the driver, not the buffer or the safety offset), at `rate` Hz.
+///
+/// cpal 0.18's Core Audio stamps cannot place a take: the callback's `AudioTimeStamp.mHostTime`
+/// is already the HAL's time for the buffer's first frame (one buffer before the input callback
+/// runs and one after the output callback runs, safety offset included), and cpal moves it by the
+/// buffer, the safety offset and the device latency again (RustAudio/cpal#1398). Measured on a
+/// Fireface UFX through a cable, the host time moved by the device latency alone gives the round
+/// trip the converters show; cpal's capture and playback times give twice the buffer and both
+/// safety offsets more. `None` when the device or the property cannot be read; the clocks then
+/// keep cpal's times (and the callback timing places the take, see [`placement_offset`]).
+#[cfg(target_os = "macos")]
+pub(crate) fn coreaudio_device_latency(device: &cpal::Device, input: bool, rate: u32) -> Option<Duration> {
+    use coreaudio::audio_unit::macos_helpers::{audio_unit_from_device_id_uninitialized, get_device_id_from_name};
+    use coreaudio::audio_unit::{Element, Scope};
+    /// `kAudioDevicePropertyLatency` ('ltnc').
+    const DEVICE_LATENCY: u32 = u32::from_be_bytes(*b"ltnc");
+    let name = crate::devices::device_name(device)?;
+    let id = get_device_id_from_name(&name, input)?;
+    let unit = audio_unit_from_device_id_uninitialized(id, input).ok()?;
+    let scope = if input { Scope::Input } else { Scope::Output };
+    let frames: u32 = unit.get_property(DEVICE_LATENCY, scope, Element::Output).ok()?;
+    Some(Duration::from_secs_f64(f64::from(frames) / f64::from(rate.max(1))))
+}
+
+/// Elsewhere the backends' own capture and playback times are used as they are.
+#[cfg(not(target_os = "macos"))]
+pub(crate) fn coreaudio_device_latency(_device: &cpal::Device, _input: bool, _rate: u32) -> Option<Duration> {
+    None
 }
 
 /// Output latency of one callback: from the callback to when its first frame is played.
@@ -298,6 +344,31 @@ mod tests {
         // Without the clock on either side the callbacks decide.
         let no_clock = |m: Moment| Moment { clock: None, ..m };
         assert_eq!(placement_offset(no_clock(heard), moment(t, -0.01), 48_000.0, rt), 480);
+    }
+
+    /// An RME Fireface UFX under Core Audio at 1024 frames and 48 kHz (device latency 22 in and 41
+    /// out, safety offset 24 each way): the output callback's host time is 2096 samples after the
+    /// input callback's for a 2159-sample round trip through a cable. cpal's capture and playback
+    /// times add the buffer and the safety offset again (4255) and fall back to the callbacks; the
+    /// host times moved by the device latency alone give the round trip.
+    #[test]
+    fn core_audio_host_times_moved_by_the_device_latency_give_the_round_trip() {
+        let rate = 48_000.0;
+        let t = Instant::now() + Duration::from_secs(1);
+        let (input_host, output_host) = (50.0, 50.0 + 2_096.0 / rate);
+        let rt = Some(Duration::from_secs_f64(2_159.0 / rate));
+        let heard = |clock| Moment { at: t, clock: Some(clock) };
+        let captured = |clock| Moment { at: shift(t, -2_131.0 / rate).unwrap(), clock: Some(clock) };
+        let cpal = placement_offset(heard(output_host + 1_089.0 / rate), captured(input_host - 1_070.0 / rate), rate, rt);
+        assert_eq!(cpal, 2_131, "cpal's times are 4255 samples apart: the callbacks place the take");
+        let latency = |frames: f64| Duration::from_secs_f64(frames / rate);
+        let fixed = placement_offset(
+            heard(from_host_time(output_host, latency(41.0), false)),
+            captured(from_host_time(input_host, latency(22.0), true)),
+            rate,
+            rt,
+        );
+        assert_eq!(fixed, 2_159);
     }
 
     #[test]

@@ -189,13 +189,14 @@ where
     let frame = usize::from(config.channels).max(1);
     let rate = f64::from(config.sample_rate).max(1.0);
     let mut owed = 0;
+    let device_latency = crate::latency::coreaudio_device_latency(device, true, config.sample_rate);
     device.build_input_stream(
         config,
         move |data: &[T], info: &cpal::InputCallbackInfo| {
             crate::mark_audio_thread();
             sh.input_latency.observe(crate::latency::input_report(info));
             let called = std::time::Instant::now();
-            let captured = crate::latency::capture_clock(info);
+            let captured = crate::latency::capture_clock(info, device_latency);
             sh.guarded(|| {
                 for (index, part) in data.chunks(chunk).enumerate() {
                     let Some(s) = scratch.get_mut(..part.len()) else { return };
