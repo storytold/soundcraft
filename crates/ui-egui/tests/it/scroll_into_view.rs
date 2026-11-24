@@ -61,12 +61,19 @@ fn max_scroll(h: &Harness<'_, SoundApp>) -> f32 {
 }
 
 /// The centre of a Mix strip's name plate: its name is painted centred on it, at the bottom of
-/// the strip (the galley's box, not the glyphs, so "T01" and "T08" line up alike).
+/// the strip (the galley's box, not the glyphs, so "T01" and "T08" line up alike). Strips end at a
+/// console fader's length rather than the window's bottom, so it is the lowest text with the
+/// name: the Tracks list above it shows the same names.
 fn plate(h: &Harness<'_, SoundApp>, name: &str) -> Option<Pos2> {
-    h.output().shapes.iter().find_map(|shape| match &shape.shape {
-        Shape::Text(text) if text.galley.job.text == name && text.pos.y > SIZE.1 - 40.0 => Some(text.pos + text.galley.size() / 2.0),
-        _ => None,
-    })
+    h.output()
+        .shapes
+        .iter()
+        .filter_map(|shape| match &shape.shape {
+            Shape::Text(text) if text.galley.job.text == name => Some(text.pos + text.galley.size() / 2.0),
+            _ => None,
+        })
+        .filter(|p| p.y > SIZE.1 * 0.5)
+        .max_by(|a, b| a.y.total_cmp(&b.y))
 }
 
 #[test]
@@ -98,7 +105,8 @@ fn near_the_end_it_scrolls_only_as_far_as_the_scroll_bar_goes() {
 
 #[test]
 fn from_the_mix_the_clicked_strip_goes_left_and_the_edit_window_follows() {
-    let mut h = harness(20);
+    // Enough strips that the Mix can scroll T08 to the left edge.
+    let mut h = harness(24);
     let t03 = track_id(&h, "T03");
     h.state_mut().engine.session_mut().edit.selected_tracks = vec![soundcraft_model::TrackId(t03)];
     h.state_mut().ui.window = MainWindow::Mix;
@@ -135,7 +143,8 @@ fn a_track_in_a_closed_folder_scrolls_the_mix_but_not_the_edit_window() {
 
 #[test]
 fn the_command_takes_a_track_by_name_from_the_control_channel() {
-    let mut h = harness(20);
+    // Enough strips that the Mix can scroll T08 to the left edge.
+    let mut h = harness(24);
     h.state_mut().ui.window = MainWindow::Mix;
     h.run_steps(4);
     let first = plate(&h, "T01").expect("the first strip's name").x;

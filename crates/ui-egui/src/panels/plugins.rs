@@ -1,4 +1,4 @@
-use super::{Color32, Sense, SoundApp, Stroke, Tokens, Ui, json, mono, pos2, vec2};
+use super::{SoundApp, Tokens, Ui, json, mono};
 
 /// Draw plugin windows for instrument and insert slots that still exist, removing closed ones from the list.
 pub(super) fn plugin_windows(app: &mut SoundApp, ctx: &egui::Context) {
@@ -19,7 +19,7 @@ pub(super) fn plugin_windows(app: &mut SoundApp, ctx: &egui::Context) {
         let shown = egui::Window::new(format!("{tname} · {place} · {}", info.name))
             .id(egui::Id::unique(("plugin", tid.0, slot)))
             .open(&mut open)
-            .default_width(340.0)
+            .default_width(if soundcraft_mix::is_third_party(&ins.plugin) { 340.0 } else { 620.0 })
             .default_pos(egui::pos2(ctx.content_rect().width() - 380.0, 120.0))
             .show(ctx, |ui| {
                 ui.horizontal(|ui| {
@@ -31,6 +31,12 @@ pub(super) fn plugin_windows(app: &mut SoundApp, ctx: &egui::Context) {
                             let _ = app.run("mix.insert_bypass", json!({"track": tid.0, "slot": slot}));
                         }
                         ui.menu_button(crate::localization::text("Presets v"), |ui| preset_menu(app, ui, tid, slot, info, &ins));
+                        if !soundcraft_mix::is_third_party(&ins.plugin) {
+                            let label = crate::localization::text(if app.ui.plugin_list_view { "Knobs" } else { "List" });
+                            if ui.button(label).on_hover_text(crate::localization::text("Show the parameters as knobs or as a list")).clicked() {
+                                app.ui.plugin_list_view = !app.ui.plugin_list_view;
+                            }
+                        }
                     }
                     if soundcraft_mix::is_third_party(&ins.plugin) {
                         let open = app.player.as_ref().is_some_and(|p| p.editor_open(tid, slot));
@@ -65,8 +71,35 @@ pub(super) fn plugin_windows(app: &mut SoundApp, ctx: &egui::Context) {
                     crate::sampler_window::sample_strip(app, ui, tid, &ins);
                     ui.add_space(4.0);
                 }
-                if info.id == "eq_7band" || info.id == "eq_1band" {
-                    eq_curve(ui, info.id, &ins);
+                if !soundcraft_mix::is_third_party(&ins.plugin) && !instrument && !app.ui.plugin_list_view {
+                    // Built-in plugins: a graph where one helps, then knobs by band or section.
+                    let params: Vec<(&str, f32)> = ins.params.iter().map(|(k, v)| (k.as_str(), *v)).collect();
+                    let gr = app.meters.get(&tid).map_or(0.0, |m| m.gr);
+                    let value = |p: &soundcraft_dsp::ParamInfo| ins.params.get(p.id).copied().unwrap_or(p.default);
+                    let shown = |p: &soundcraft_dsp::ParamInfo, x: f32| {
+                        if instrument { crate::sampler_window::format_param(&ins.plugin, p, x) } else { p.format(x) }
+                    };
+                    let changed = super::plugin_panel::face(ui, (tid.0, slot), info, &params, gr, &value, &shown);
+                    for (param, x) in changed {
+                        if instrument {
+                            let _ = app.engine.execute_merged(
+                                "mix.instrument_param",
+                                &json!({"track": tid.0, "param": param, "value": x}),
+                                &format!("instrument_param:{}:{}", tid.0, param),
+                            );
+                        } else {
+                            let _ = app.engine.execute_merged(
+                                "mix.insert_param",
+                                &json!({"track": tid.0, "slot": slot, "param": param, "value": x}),
+                                &format!("param:{}:{slot}:{}", tid.0, param),
+                            );
+                        }
+                    }
+                    if ui.input(|i| i.pointer.any_released()) {
+                        // One undo step per knob gesture.
+                        app.engine.end_merge();
+                    }
+                    return;
                 }
                 egui::ScrollArea::vertical().show(ui, |ui| {
                     egui::Grid::new(("pg", tid.0, slot)).num_columns(3).show(ui, |ui| {
@@ -152,30 +185,6 @@ pub(super) fn plugin_windows(app: &mut SoundApp, ctx: &egui::Context) {
         }
     }
     app.ui.plugin_windows = keep;
-}
-
-fn eq_curve(ui: &mut Ui, id: &str, ins: &soundcraft_model::Insert) {
-    let t = Tokens::current();
-    let (r, _) = ui.allocate_exact_size(vec2(ui.available_width().max(300.0), 110.0), Sense::hover());
-    ui.painter().rect_filled(r, 4.0, Color32::from_rgb(14, 18, 22));
-    let n = 160;
-    let freqs: Vec<f32> = (0..n).map(|i| 20.0 * 1000f32.powf(i as f32 / (n - 1) as f32)).collect();
-    let params: Vec<(&str, f32)> = ins.params.iter().map(|(k, v)| (k.as_str(), *v)).collect();
-    let resp = if id == "eq_7band" {
-        soundcraft_dsp::eq7_response(&params, &freqs, 48_000.0)
-    } else {
-        soundcraft_dsp::eq1_response(&params, &freqs, 48_000.0)
-    };
-    for db in [-12.0f32, 0.0, 12.0] {
-        let y = r.center().y - db / 18.0 * r.height() * 0.5;
-        ui.painter().line_segment([pos2(r.min.x, y), pos2(r.max.x, y)], Stroke::new(1.0, Color32::from_rgb(40, 50, 60)));
-    }
-    let pts: Vec<egui::Pos2> = resp
-        .iter()
-        .enumerate()
-        .map(|(i, db)| pos2(r.min.x + r.width() * i as f32 / (n - 1) as f32, r.center().y - db.clamp(-18.0, 18.0) / 18.0 * r.height() * 0.5))
-        .collect();
-    ui.painter().add(egui::Shape::line(pts, Stroke::new(2.0, t.counter_text)));
 }
 
 /// Folder for a plugin's user presets.

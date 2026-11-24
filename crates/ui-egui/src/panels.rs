@@ -10,6 +10,7 @@ mod about;
 mod clips;
 mod history;
 mod memory;
+mod plugin_panel;
 mod plugins;
 mod tracks;
 mod transport;

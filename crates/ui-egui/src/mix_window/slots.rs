@@ -60,7 +60,13 @@ fn draw_mark(p: &egui::Painter, r: Rect, mark: Mark, color: Color32) {
 
 pub(super) fn empty_slot(p: &egui::Painter, r: Rect, hovered: bool, mark: Mark) {
     let t = Tokens::current();
-    p.rect_filled(r, 2.0, if hovered { shade(t.slot_empty, 0.06) } else { t.slot_empty });
+    // A see-through well (dark theme) lightens on hover by letting more of the strip through.
+    let fill = match (hovered, t.slot_empty.a()) {
+        (false, _) => t.slot_empty,
+        (true, 255) => shade(t.slot_empty, 0.06),
+        (true, a) => Color32::from_black_alpha(a / 2),
+    };
+    p.rect_filled(r, 2.0, fill);
     let color = if matches!(mark, Mark::Letter(_)) { t.slot_mark.lerp_to_gamma(t.text, 0.55) } else { t.slot_mark };
     draw_mark(p, r, mark, color);
 }

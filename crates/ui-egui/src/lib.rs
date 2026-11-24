@@ -93,6 +93,8 @@ pub struct UiState {
     pub show_midi_editor: bool,
     pub show_universe: bool,
     pub narrow_mix: bool,
+    /// Built-in effect windows show their parameters as a list of sliders instead of knobs.
+    pub plugin_list_view: bool,
     /// Mix window sections: inserts_ae, inserts_fj, sends_ae, sends_fj, io, comments, eq_curve, color.
     pub mix_views: Vec<String>,
     /// Edit window track-header columns: io, inserts_ae, sends_ae, comments, color.
@@ -181,6 +183,7 @@ impl Default for UiState {
             show_midi_editor: false,
             show_universe: false,
             narrow_mix: false,
+            plugin_list_view: false,
             mix_views: vec!["inserts_ae".into(), "sends_ae".into(), "io".into(), "color".into()],
             edit_views: vec!["color".into()],
             track_tint: 0.5,
