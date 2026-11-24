@@ -145,3 +145,54 @@ fn a_dragged_clip_shows_its_waveform_on_the_target_track_and_stays_where_it_was(
     assert_eq!(held, kick, "the clip still shows where it was");
     assert!(waveforms(&ctx, &mut app, "Snare", 0.0) > snare, "the ghost on the target track shows the clip's waveform");
 }
+
+/// The texts drawn on `name`'s row.
+fn texts(ctx: &egui::Context, app: &mut SoundApp, name: &str) -> Vec<String> {
+    let raw = RawInput { screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(1600.0, 1000.0))), ..Default::default() };
+    let mut out = ctx.run_ui(raw, |ui| {
+        app.logic(ui.ctx());
+        app.ui(ui);
+    });
+    out.textures_delta.clear();
+    let id = app.engine.session().track_by_name(name).unwrap().id.0;
+    let row = app.edit_layout.rows.iter().find(|(i, _)| *i == id).unwrap().1;
+    let [x0, _, x1, _] = app.edit_layout.timeline;
+    let lane = Rect::from_min_max(egui::pos2(x0, row[1]), egui::pos2(x1, row[3]));
+    out.shapes
+        .iter()
+        .filter_map(|c| match &c.shape {
+            Shape::Text(t) if lane.contains(t.pos) => Some(t.galley.text().to_string()),
+            _ => None,
+        })
+        .collect()
+}
+
+#[test]
+fn two_dragged_clips_with_the_same_span_each_show_in_the_move_ghost() {
+    let mut app = SoundApp::new(soundcraft_engine::demo::demo_engine(), None, Services::default());
+    let ctx = egui::Context::default();
+    waveforms(&ctx, &mut app, "Kick", 0.0);
+    // A crossfade made with long handles can leave two clips covering the same span.
+    let s = app.engine.session_mut();
+    let next = s.tracks.iter().flat_map(|t| t.clips().iter().map(|c| c.id.0)).max().unwrap() + 1;
+    let pl = s.tracks.iter_mut().find(|t| t.name == "Kick").and_then(|t| t.playlist_mut()).unwrap();
+    pl.sort();
+    let first = pl.clips.first_mut().unwrap();
+    first.name = "Solo".into();
+    let mut twin = first.clone();
+    (twin.id, twin.name) = (soundcraft_model::ClipId(next), "Twin".into());
+    let ids = [first.id.0, next];
+    pl.clips.push(twin);
+    pl.sort();
+    app.engine.execute("edit.tool", &json!({"tool": "grabber"})).unwrap();
+    app.engine.execute("edit.select", &json!({"clips": ids})).unwrap();
+    waveforms(&ctx, &mut app, "Kick", 0.0);
+    let (from, to) = drag_points(&app, "Kick", "Snare");
+    let press = Event::PointerButton { pos: from, button: PointerButton::Primary, pressed: true, modifiers: Modifiers::NONE };
+    input(&ctx, &mut app, vec![Event::PointerMoved(from), press]);
+    input(&ctx, &mut app, vec![Event::PointerMoved(from + vec2(20.0, 0.0))]);
+    input(&ctx, &mut app, vec![Event::PointerMoved(to)]);
+    assert!(matches!(app.gesture, Some(Gesture::MoveClips { .. })), "{:?}", app.gesture);
+    let ghost = texts(&ctx, &mut app, "Snare");
+    assert!(ghost.iter().any(|t| t == "Solo") && ghost.iter().any(|t| t == "Twin"), "ghost texts: {ghost:?}");
+}
