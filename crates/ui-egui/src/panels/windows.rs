@@ -677,6 +677,9 @@ pub fn playback_engine(app: &mut SoundApp, ctx: &egui::Context) {
                 crate::localized_format!("{} · {} Hz · {} ch", r.device_name, r.sample_rate, r.channels)
             }));
             ui.end_row();
+            ui.label(crate::localization::text("Latency"));
+            ui.label(latency_line(app));
+            ui.end_row();
             ui.label(crate::localization::text("Session rate"));
             let sr = app.engine.session().sample_rate.hz();
             let note = app
@@ -748,11 +751,39 @@ pub fn audio_device_command(app: &mut SoundApp, p: &serde_json::Value) -> Result
     let device = app.player.as_ref().map(|pl| {
         json!({"name": pl.device_name, "sample_rate": pl.device_rate, "channels": pl.device_channels, "buffer_size": pl.device_buffer, "silent": pl.silent})
     });
-    let mut out = json!({"config": app.ui.audio, "device": device});
+    let mut out = json!({"config": app.ui.audio, "device": device, "latency": latency_json(app)});
     if p.get("list").and_then(Value::as_bool).unwrap_or(false) {
         out["systems"] = json!(soundcraft_playback::devices::audio_systems());
     }
     Ok(out)
+}
+
+/// The latency the backend reports for the open output and input, each as (frames at that
+/// device's rate, milliseconds). `None` where nothing is open or nothing was reported yet.
+fn reported_latency(app: &SoundApp) -> (Option<(u64, f64)>, Option<(u64, f64)>) {
+    let measure =
+        |latency: Option<std::time::Duration>, rate: u32| latency.map(|l| (soundcraft_playback::latency::frames(l, rate), l.as_secs_f64() * 1000.0));
+    let output = app.player.as_ref().filter(|p| !p.silent).and_then(|p| measure(p.output_latency(), p.device_rate));
+    let input = app.recorder.as_ref().and_then(|r| measure(r.input_latency(), r.sample_rate));
+    (output, input)
+}
+
+/// The Playback Engine's latency row: output and input as the audio backend reports them.
+fn latency_line(app: &SoundApp) -> String {
+    let show = |m: Option<(u64, f64)>| {
+        m.map_or(crate::localization::text("not reported").to_string(), |(frames, ms)| {
+            crate::localized_format!("{} ms ({} samples)", format!("{ms:.1}"), frames)
+        })
+    };
+    let (output, input) = reported_latency(app);
+    crate::localized_format!("output {} · input {}", show(output), show(input))
+}
+
+/// The reported latencies for `ui.audio_device` and `setup.playback_engine`.
+fn latency_json(app: &SoundApp) -> serde_json::Value {
+    let (output, input) = reported_latency(app);
+    let part = |m: Option<(u64, f64)>| m.map_or(serde_json::Value::Null, |(frames, ms)| json!({"samples": frames, "ms": ms}));
+    json!({"output": part(output), "input": part(input)})
 }
 
 /// Programmatic `setup.playback_engine` / `setup.hardware`. `device` is the output name and
@@ -798,6 +829,7 @@ pub fn setup_audio_command(app: &mut SoundApp, id: &str, p: &serde_json::Value) 
         "buffer_size": buffer_size,
         "sample_rate": sample_rate,
         "bit_depth": app.engine.session().bit_depth,
+        "latency": latency_json(app),
         "delay_compensation": app.engine.session().edit.delay_compensation,
     }))
 }

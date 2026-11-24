@@ -29,6 +29,7 @@ pub fn loops(range: Range) -> bool {
 }
 
 pub mod devices;
+pub mod latency;
 pub mod midi;
 pub mod record;
 
@@ -146,6 +147,8 @@ struct Shared {
     /// Speed × 1000.
     speed: AtomicU32,
     meters: Mutex<MeterSnapshot>,
+    /// What the output stream's callbacks report (see [`Player::output_latency`]).
+    output_latency: latency::ReportedLatency,
 }
 
 /// What stopped the audio output.
@@ -224,6 +227,7 @@ impl Player {
             playing: AtomicBool::new(false),
             speed: AtomicU32::new(1000),
             meters: Mutex::new(MeterSnapshot::default()),
+            output_latency: latency::ReportedLatency::default(),
         });
         let want = session.sample_rate.hz();
         let want_ch = u16::try_from(main_channels(&session)).unwrap_or(2);
@@ -528,6 +532,12 @@ impl Player {
 
     pub fn is_playing(&self) -> bool {
         self.shared.playing.load(Ordering::Relaxed)
+    }
+
+    /// The output latency the audio backend reports: from an output callback to when its first
+    /// frame is heard. `None` for the silent clock, or before the stream reported one.
+    pub fn output_latency(&self) -> Option<std::time::Duration> {
+        self.shared.output_latency.get()
     }
 
     /// A copy of the meters accumulated since the last [`Player::take_meters`], leaving them in

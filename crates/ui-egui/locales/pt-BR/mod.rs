@@ -123,6 +123,7 @@ pub(super) fn translate(source: &str) -> Option<&'static str> {
             "Inclui tomadas alternativas e clipes silenciados. Atualize após editar."
         }
         "Input" => "Entrada",
+        "Latency" => "Latência",
         "Input device" => "Dispositivo de entrada",
         "Instrument" => "Instrumento",
         "Interface scale" => "Escala da interface",
@@ -950,6 +951,7 @@ fn menu_translate(source: &str) -> Option<&'static str> {
         "No sample" => "Nenhuma amostra",
         "{}: missing" => "{}: ausente",
         "none" => "nenhum",
+        "not reported" => "não informada",
         // Formatted messages. Placeholders mirror the English source so the same arguments fill
         // them; `localized_format!` selects the template at run time.
         "Active audio ends at {seconds:.2} seconds" => "O áudio ativo termina em {seconds:.2} segundos",
@@ -994,6 +996,8 @@ fn menu_translate(source: &str) -> Option<&'static str> {
         "{} for {}" => "{} para {}",
         "{} @ {} Hz" => "{} a {} Hz",
         "{} samples" => "{} amostras",
+        "{} ms ({} samples)" => "{} ms ({} amostras)",
+        "output {} · input {}" => "saída {} · entrada {}",
         "{} · {} Hz · {} ch · {}" => "{} · {} Hz · {} canais · {}",
         "{} · {} Hz · {} ch" => "{} · {} Hz · {} canais",
         "{} audio clips checked · {} issues" => "{} clipes de áudio verificados · {} problemas",
