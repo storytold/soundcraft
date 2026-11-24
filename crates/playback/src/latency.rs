@@ -74,12 +74,58 @@ impl InstantCell {
     }
 }
 
+/// The stream clock's time of `instant`, in seconds. Within one host the input and output
+/// streams share this clock (ASIO: the driver's system time; WASAPI: the performance counter;
+/// Core Audio: the host time), and it stamps the device's own moments rather than the time a
+/// callback happens to run.
+pub fn clock_seconds(instant: cpal::StreamInstant) -> f64 {
+    instant.as_nanos() as f64 / 1e9
+}
+
+/// A cell for a stream clock time (see [`clock_seconds`]) that the input callback writes once.
+#[derive(Debug, Default)]
+pub struct ClockCell(
+    /// `f64` bits + 1; 0 means none.
+    AtomicU64,
+);
+
+impl ClockCell {
+    /// Set it only when it holds none, so the first writer wins.
+    pub fn set_if_empty(&self, seconds: f64) {
+        let _ = self.0.compare_exchange(0, seconds.to_bits().wrapping_add(1), Relaxed, Relaxed);
+    }
+    pub fn clear(&self) {
+        self.0.store(0, Relaxed);
+    }
+    pub fn get(&self) -> Option<f64> {
+        match self.0.load(Relaxed) {
+            0 => None,
+            v => Some(f64::from_bits(v.wrapping_sub(1))),
+        }
+    }
+}
+
+/// A moment told two ways: by when an audio callback ran, moved by the latency its stream
+/// reports, and by the stream clock (see [`clock_seconds`]) as the backend stamped it.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Moment {
+    pub at: Instant,
+    pub clock: Option<f64>,
+}
+
+impl Moment {
+    /// The moment `seconds` later (earlier when negative).
+    pub fn shifted(self, seconds: f64) -> Option<Moment> {
+        Some(Moment { at: shift(self.at, seconds)?, clock: self.clock.map(|c| c + seconds) })
+    }
+}
+
 /// A session sample and when it was heard at the output.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Heard {
     /// Session sample position, fractional when the device runs at another rate.
     pub sample: f64,
-    pub at: Instant,
+    pub when: Moment,
 }
 
 /// What the output callbacks say about when session samples are heard: the first sample of the
@@ -103,13 +149,13 @@ impl HeardStamps {
 
     /// When `sample` was (or will be) heard at `rate` session samples per second: from the start
     /// of the pass when that is the sample, else projected from the latest callback.
-    pub fn heard_at(&self, sample: f64, rate: f64) -> Option<Instant> {
+    pub fn heard_at(&self, sample: f64, rate: f64) -> Option<Moment> {
         let pass = self.pass.lock().ok().and_then(|p| *p);
         if let Some(p) = pass.filter(|p| (p.sample - sample).abs() < 0.5) {
-            return Some(p.at);
+            return Some(p.when);
         }
         let last = self.last.lock().ok().and_then(|l| *l)?;
-        shift(last.at, (sample - last.sample) / rate.max(1.0))
+        last.when.shifted((sample - last.sample) / rate.max(1.0))
     }
 }
 
@@ -121,9 +167,41 @@ pub fn shift(at: Instant, seconds: f64) -> Option<Instant> {
 
 /// Session samples a take's first sample precedes the record start by: from its capture at
 /// `captured` to the moment `heard` that the record start was heard, at `rate`.
-pub fn placement_offset(heard: Instant, captured: Instant, rate: f64) -> i64 {
-    let seconds = if heard >= captured { heard.duration_since(captured).as_secs_f64() } else { -captured.duration_since(heard).as_secs_f64() };
-    (seconds * rate).round() as i64
+///
+/// The stream clock decides when both moments have it: a callback can run late (an input
+/// callback waits while the mix renders the output in the same device cycle, longer the heavier
+/// the session), and timing by the callbacks would place the take late by that wait. The clocks
+/// are trusted only within half the reported `round_trip` of the callback timing, the most such
+/// a wait can be; past that the backend stamps its moments otherwise than expected, and the
+/// callback timing places the take.
+pub fn placement_offset(heard: Moment, captured: Moment, rate: f64, round_trip: Option<Duration>) -> i64 {
+    let seconds = if heard.at >= captured.at {
+        heard.at.duration_since(captured.at).as_secs_f64()
+    } else {
+        -captured.at.duration_since(heard.at).as_secs_f64()
+    };
+    let by_callbacks = (seconds * rate).round() as i64;
+    let Some(by_clock) = heard.clock.zip(captured.clock).map(|(h, c)| ((h - c) * rate).round() as i64) else {
+        return by_callbacks;
+    };
+    let bound = round_trip.map_or(0.0, |rt| rt.as_secs_f64() * rate / 2.0);
+    if (by_clock.abs_diff(by_callbacks) as f64) <= bound {
+        by_clock
+    } else {
+        log::warn!("stream clock places the take {by_clock} samples early, the callbacks {by_callbacks}: using the callbacks");
+        by_callbacks
+    }
+}
+
+/// When the first frame of an input callback was captured, on the stream clock.
+#[cfg(not(target_os = "freebsd"))]
+pub(crate) fn capture_clock(info: &cpal::InputCallbackInfo) -> f64 {
+    clock_seconds(info.timestamp().capture)
+}
+
+/// When the first frame of an output callback will be heard, on the stream clock.
+pub(crate) fn playback_clock(info: &cpal::OutputCallbackInfo) -> f64 {
+    clock_seconds(info.timestamp().playback)
 }
 
 /// Output latency of one callback: from the callback to when its first frame is played.
@@ -193,23 +271,77 @@ mod tests {
         let stamps = HeardStamps::default();
         let t0 = Instant::now();
         assert_eq!(stamps.heard_at(1_000.0, 48_000.0), None);
-        // Play from 1_000; the first callback's first sample is heard at t0.
-        stamps.record(Heard { sample: 1_000.0, at: t0 }, true);
+        // Play from 1_000; the first callback's first sample is heard at t0, 100 s on the clock.
+        let start = Moment { at: t0, clock: Some(100.0) };
+        stamps.record(Heard { sample: 1_000.0, when: start }, true);
         // Later callbacks move the latest stamp on.
-        stamps.record(Heard { sample: 49_000.0, at: t0 + Duration::from_secs(1) }, false);
-        assert_eq!(stamps.heard_at(1_000.0, 48_000.0), Some(t0), "the pass start is exact");
-        // A punch at 25_000 is projected from the latest callback: half a second after t0.
-        let punch = stamps.heard_at(25_000.0, 48_000.0).map(|at| at.duration_since(t0));
-        assert!(punch.is_some_and(|d| d.abs_diff(Duration::from_millis(500)) < Duration::from_micros(1)), "{punch:?}");
+        stamps.record(Heard { sample: 49_000.0, when: start.shifted(1.0).unwrap() }, false);
+        assert_eq!(stamps.heard_at(1_000.0, 48_000.0), Some(start), "the pass start is exact");
+        // A punch at 25_000 is projected from the latest callback: half a second after the start.
+        let punch = stamps.heard_at(25_000.0, 48_000.0).unwrap();
+        assert!(punch.at.duration_since(t0).abs_diff(Duration::from_millis(500)) < Duration::from_micros(1), "{punch:?}");
+        assert!(punch.clock.is_some_and(|c| (c - 100.5).abs() < 1e-9), "{punch:?}");
+    }
+
+    /// Moments `seconds` apart by both the callbacks and the clock, from `at` and 50 s on the clock.
+    fn moment(at: Instant, seconds: f64) -> Moment {
+        Moment { at: shift(at, seconds).unwrap(), clock: Some(50.0 + seconds) }
     }
 
     #[test]
     fn the_placement_offset_is_how_long_capture_began_before_the_start_was_heard() {
-        let heard = Instant::now();
-        let early = heard - Duration::from_micros(12_646); // 607 samples at 48 kHz
-        assert_eq!(placement_offset(heard, early, 48_000.0), 607);
-        let late = heard + Duration::from_millis(1);
-        assert_eq!(placement_offset(heard, late, 48_000.0), -48);
+        let t = Instant::now() + Duration::from_secs(1);
+        let rt = Some(Duration::from_micros(12_979)); // 623 samples
+        let heard = moment(t, 0.0);
+        assert_eq!(placement_offset(heard, moment(t, -607.0 / 48_000.0), 48_000.0, rt), 607);
+        assert_eq!(placement_offset(heard, moment(t, 0.001), 48_000.0, rt), -48);
+        // Without the clock on either side the callbacks decide.
+        let no_clock = |m: Moment| Moment { clock: None, ..m };
+        assert_eq!(placement_offset(no_clock(heard), moment(t, -0.01), 48_000.0, rt), 480);
+    }
+
+    #[test]
+    fn an_input_callback_that_runs_late_does_not_place_the_take_late() {
+        // Core Audio, buffer 1024 (Mac mini and Fireface UFX): the input callback of a device
+        // cycle runs after the output callback has rendered the mix, here 0.4 ms later. The
+        // clock says the take began 2159 samples (input 1070 + output 1089) before the start
+        // was heard; the callbacks, 19 fewer, which placed takes 13 to 18 samples late.
+        let t = Instant::now() + Duration::from_secs(1);
+        let rate = 48_000.0;
+        let heard = moment(t, 1_089.0 / rate);
+        let waited = 19.0 / rate;
+        let captured = Moment { at: shift(t, waited - 1_070.0 / rate).unwrap(), clock: Some(50.0 - 1_070.0 / rate) };
+        let rt = Some(Duration::from_secs_f64(2_159.0 / rate));
+        assert_eq!(placement_offset(heard, captured, rate, rt), 2_159);
+        // A heavier session waits longer, up to the device buffer; the clock still decides.
+        let busy = Moment { at: shift(t, 1_000.0 / rate - 1_070.0 / rate).unwrap(), ..captured };
+        assert_eq!(placement_offset(heard, busy, rate, rt), 2_159);
+    }
+
+    #[test]
+    fn a_clock_far_from_the_callbacks_is_not_trusted() {
+        // Clock moments a backend stamps otherwise than expected (here two buffers of 1024 off)
+        // fall back to the callbacks, as does a stream that reported no latency to bound them.
+        let t = Instant::now() + Duration::from_secs(1);
+        let rate = 48_000.0;
+        let heard = moment(t, 1_089.0 / rate);
+        let captured = Moment { at: shift(t, -1_070.0 / rate).unwrap(), clock: Some(50.0 - 3_118.0 / rate) };
+        let rt = Some(Duration::from_secs_f64(2_159.0 / rate));
+        assert_eq!(placement_offset(heard, captured, rate, rt), 2_159);
+        let late = Moment { at: shift(t, 19.0 / rate - 1_070.0 / rate).unwrap(), clock: Some(50.0 - 1_070.0 / rate) };
+        assert_eq!(placement_offset(heard, late, rate, None), 2_140);
+    }
+
+    #[test]
+    fn a_clock_cell_holds_the_first_time_written() {
+        let cell = ClockCell::default();
+        assert_eq!(cell.get(), None);
+        cell.set_if_empty(0.0);
+        cell.set_if_empty(7.5);
+        assert_eq!(cell.get(), Some(0.0), "zero is a time, and the first writer wins");
+        cell.clear();
+        cell.set_if_empty(7.5);
+        assert_eq!(cell.get(), Some(7.5));
     }
 
     #[test]

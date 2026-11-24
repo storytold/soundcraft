@@ -546,7 +546,7 @@ impl Player {
     /// When the session sample `sample` was (or will be) heard at the output, at the session's
     /// `rate`: exact for the first sample of the latest Play, projected from the latest output
     /// callback otherwise. `None` until an output callback with a device has run.
-    pub fn heard_at(&self, sample: Samples, rate: f64) -> Option<std::time::Instant> {
+    pub fn heard_at(&self, sample: Samples, rate: f64) -> Option<latency::Moment> {
         self.shared.heard.heard_at(sample as f64, rate)
     }
 

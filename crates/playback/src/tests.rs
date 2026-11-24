@@ -352,20 +352,29 @@ fn the_output_callback_notes_when_the_play_start_and_later_samples_are_heard() {
     let mut st = audio_output_state(soundcraft_model::ChannelFormat::Stereo, vec![vec![0.0; 4_800]; 2]);
     st.shared.output_latency.observe(Some(Duration::from_micros(6_750)));
     let t0 = Instant::now();
-    // The fill that reads the Play starts 256 frames into its device buffer.
+    // The fill that reads the Play starts 256 frames into its device buffer, whose first frame
+    // the stream clock says is heard at 100 s.
     st.callback_at = Some(t0);
+    st.playback_clock = Some(100.0);
     st.chunk_offset = 256;
     st.fill(&mut [0.0; 512], 2);
-    let near = |got: Option<Instant>, want: Instant| got.is_some_and(|g| g.max(want).duration_since(g.min(want)) < Duration::from_micros(2));
+    let heard = |sample: f64| st.shared.heard.heard_at(sample, 48_000.0).unwrap();
+    let near = |got: Instant, want: Instant| got.max(want).duration_since(got.min(want)) < Duration::from_micros(2);
+    let close = |got: Option<f64>, want: f64| got.is_some_and(|g| (g - want).abs() < 2e-6);
     let start = t0 + Duration::from_micros(6_750) + Duration::from_micros(5_333);
-    assert!(near(st.shared.heard.heard_at(0.0, 48_000.0), start), "the play start is the callback plus latency plus offset");
+    assert!(near(heard(0.0).at, start), "the play start is the callback plus latency plus offset");
+    assert!(close(heard(0.0).clock, 100.0 + 256.0 / 48_000.0), "and on the clock, the playback time plus offset");
     // The next callback goes on from sample 256; any sample is projected from it.
     let t1 = t0 + Duration::from_millis(20);
     st.callback_at = Some(t1);
+    st.playback_clock = Some(100.02);
     st.chunk_offset = 0;
     st.fill(&mut [0.0; 512], 2);
-    assert!(near(st.shared.heard.heard_at(256.0, 48_000.0), t1 + Duration::from_micros(6_750)));
-    assert!(near(st.shared.heard.heard_at(0.0, 48_000.0), start), "the pass start stays exact");
+    let heard = |sample: f64| st.shared.heard.heard_at(sample, 48_000.0).unwrap();
+    assert!(near(heard(256.0).at, t1 + Duration::from_micros(6_750)));
+    assert!(close(heard(256.0).clock, 100.02));
+    assert!(near(heard(0.0).at, start), "the pass start stays exact");
+    assert!(close(heard(0.0).clock, 100.0 + 256.0 / 48_000.0));
 }
 
 #[test]

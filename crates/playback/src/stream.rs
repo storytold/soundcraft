@@ -63,6 +63,7 @@ where
             mark_audio_thread();
             guard.output_latency.observe(crate::latency::output_report(info));
             state.callback_at = Some(std::time::Instant::now());
+            state.playback_clock = Some(crate::latency::playback_clock(info));
             for (index, out) in data.chunks_mut(chunk).enumerate() {
                 state.chunk_offset = index * (chunk / frame);
                 let Some(s) = scratch.get_mut(..out.len()) else { return };

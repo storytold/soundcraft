@@ -83,6 +83,9 @@ pub(crate) struct AudioState {
     /// When the device callback that is filling now was called, and the frame of its buffer
     /// this fill starts at (set by the output stream; `None` for the silent clock).
     pub(crate) callback_at: Option<std::time::Instant>,
+    /// When that callback's first frame is heard, on the stream clock (see
+    /// [`super::latency::clock_seconds`]).
+    pub(crate) playback_clock: Option<f64>,
     pub(crate) chunk_offset: usize,
     /// A Play was read since the last fill: this fill starts the pass.
     pass_started: bool,
@@ -181,6 +184,7 @@ impl AudioState {
             read: 0.0,
             device_rate,
             callback_at: None,
+            playback_clock: None,
             chunk_offset: 0,
             pass_started: false,
             input: None,
@@ -631,15 +635,18 @@ impl AudioState {
     }
 
     /// Note when the first sample this fill outputs is heard: the device callback's time, plus the
-    /// output latency the stream reports, plus where in the device buffer this fill starts.
+    /// output latency the stream reports, plus where in the device buffer this fill starts; and
+    /// the same on the stream clock, from the callback's playback time.
     fn stamp_heard(&mut self) {
         let pass_started = std::mem::take(&mut self.pass_started);
         let Some(called) = self.callback_at.filter(|_| self.playing) else { return };
-        let lead = self.shared.output_latency.get().unwrap_or_default().as_secs_f64() + self.chunk_offset as f64 / self.device_rate.max(1.0);
+        let into = self.chunk_offset as f64 / self.device_rate.max(1.0);
+        let lead = self.shared.output_latency.get().unwrap_or_default().as_secs_f64() + into;
         let Some(at) = super::latency::shift(called, lead) else { return };
+        let when = super::latency::Moment { at, clock: self.playback_clock.map(|p| p + into) };
         // The next output frame: `read` frames into the pending block, which ends at `pos`.
         let sample = self.pos as f64 - self.pending_len as f64 + self.read;
-        self.shared.heard.record(super::latency::Heard { sample, at }, pass_started);
+        self.shared.heard.record(super::latency::Heard { sample, when }, pass_started);
     }
 
     /// Fill an interleaved device buffer.

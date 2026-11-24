@@ -243,9 +243,11 @@ impl SoundApp {
         let rate = self.engine.session().sample_rate.as_f64();
         let heard = self.player.as_ref().and_then(|p| p.heard_at(start, rate));
         let captured = self.recorder.as_ref().and_then(|r| r.first_capture());
+        let output = self.player.as_ref().and_then(|p| p.output_latency());
+        let round_trip = output.zip(self.recorder.as_ref().and_then(|r| r.input_latency())).map(|(o, i)| o + i);
         let measured = match heard.zip(captured) {
             Some((heard, captured)) => {
-                let offset = soundcraft_playback::latency::placement_offset(heard, captured, rate);
+                let offset = soundcraft_playback::latency::placement_offset(heard, captured, rate, round_trip);
                 if offset.unsigned_abs() as f64 >= rate {
                     log::warn!("recording placed without the device timing: {offset} samples between capture and playback");
                     0
