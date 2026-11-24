@@ -417,7 +417,7 @@ mod tests {
         let track = doc.track_mut(track).unwrap();
         track.ticks_timebase = true;
         track.instrument = Some(Insert::new("subtractive_synth"));
-        track.playlist_mut().unwrap().clips.push(Clip::midi(id, "eight bars", 0, end, Sequence { notes, ctrls: vec![] }));
+        track.playlist_mut().unwrap().clips.push(Clip::midi(id, "eight bars", 0, end, Sequence { notes, ctrls: vec![], sysex: vec![] }));
         for bpm in [120., 100.] {
             e.playback_tempo = Some(TempoMap::new(bpm, 4, 4).unwrap());
             let play = e.playback_session();

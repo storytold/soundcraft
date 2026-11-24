@@ -31,7 +31,7 @@ impl ClockTake {
     pub(crate) fn from_events(t: TimeCtx<'_>, grid: &TempoMap, range: Range, mut notes: NoteRows, mut ctrls: ControlRows) -> (Sequence, Self) {
         notes.sort_by_key(|(n, _)| (n.start, n.pitch, n.channel, n.length, n.velocity));
         ctrls.sort_by_key(|(c, _)| c.tick);
-        let score = Sequence { notes: notes.iter().map(|r| r.0).collect(), ctrls: ctrls.iter().map(|r| r.0).collect() };
+        let score = Sequence { notes: notes.iter().map(|r| r.0).collect(), ctrls: ctrls.iter().map(|r| r.0).collect(), sysex: Vec::new() };
         let projection =
             ClockTakeProjection { events: Events::Edited { notes, ctrls }, score_grid: t.tempo.clone(), played_grid: grid.clone(), sr: t.sr, range };
         (score, Self { capture: Arc::new(projection) })
