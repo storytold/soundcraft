@@ -277,15 +277,16 @@ edit, mix and bounce work end to end, but choosing an audio interface and buffer
 recording MIDI from a controller and session interchange (AAF/OMF) are still missing, and those
 are the alpha checklist.
 
-**Translations:** the Brazilian Portuguese (`pt-BR`) catalog is **100 % complete** for every fixed
-UI string found in the current source — menus, dialogs and buttons, tooltips (including those
-localized inside buttons and toggles), accessibility names, the Edit-window status bar, the
-remove-session question, formatted messages, engine error templates and engine error text at display
-time. All these entries are covered by a test, placeholders match, keys are unique, and the
-`pt-BR` catalog is chosen automatically when `ui.language` is `pt-BR` (or "Portuguese (Brazil)")
-under `Setup › Appearance`. Engine errors keep their run-time values and a decimal comma in
-`pt-BR`. The remaining localization work is a native-speaker (human) review of wording plus CJK /
-Devanagari / Arabic font fallbacks and RTL layout — not new UI translation. The status, the stage
+**Translations:** the Brazilian Portuguese (`pt-BR`) and Simplified Chinese (`zh-Hans`) catalogs are
+**100 % complete** for every fixed UI string found in the current source — menus, dialogs and
+buttons, tooltips (including those localized inside buttons and toggles), accessibility names, the
+Edit-window status bar, the remove-session question, formatted messages, engine error templates and
+engine error text at display time. All these entries are covered by tests, placeholders match, keys
+are unique, and a catalog is chosen automatically when `ui.language` is `pt-BR`, `zh-Hans` (or the
+matching language name) under `Setup › Appearance`. Engine errors keep their run-time values and a
+decimal comma in `pt-BR`; Chinese draws through a system Han font fallback (PingFang, Microsoft
+YaHei, Noto CJK). The remaining localization work is a native-speaker (human) review of wording
+plus Devanagari / Arabic font fallbacks and RTL layout — not new UI translation. The status, the stage
 and our effort estimates are in [`ROADMAP.md`](ROADMAP.md); the full assessment is in
 [`docs/target-app-parity.md`](docs/target-app-parity.md), the ranked list of what's missing in
 [`docs/gaps.md`](docs/gaps.md), and the menu-by-menu comparison in
