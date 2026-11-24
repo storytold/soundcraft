@@ -140,6 +140,7 @@ fn spike_session(spike_at: usize) -> (Arc<Shared>, AudioState, std::sync::mpsc::
         speed: AtomicU32::new(1000),
         meters: Mutex::new(MeterSnapshot::default()),
         output_latency: Default::default(),
+        heard: Default::default(),
     });
     let (tx, rx) = channel();
     let st = AudioState::new(rx, Arc::clone(&shared), Arc::new(s), 48_000.0, channel().0);
@@ -248,6 +249,7 @@ fn a_block_that_panics_goes_silent_and_is_reported_once() {
         speed: AtomicU32::new(1000),
         meters: Mutex::new(MeterSnapshot::default()),
         output_latency: Default::default(),
+        heard: Default::default(),
     };
     let fault = Fault::default();
     let mut out = [0.5f32; 8];
@@ -290,6 +292,7 @@ fn audio_state_plays_and_stops_at_end() {
         speed: AtomicU32::new(1000),
         meters: Mutex::new(MeterSnapshot::default()),
         output_latency: Default::default(),
+        heard: Default::default(),
     });
     let (tx, rx) = channel();
     let mut st = AudioState::new(rx, Arc::clone(&shared), s, 48_000.0, channel().0);
@@ -309,6 +312,7 @@ fn short_device_callbacks_render_short_mix_blocks() {
         speed: AtomicU32::new(1000),
         meters: Mutex::new(MeterSnapshot::default()),
         output_latency: Default::default(),
+        heard: Default::default(),
     });
     let (tx, rx) = channel();
     let mut st = AudioState::new(rx, Arc::clone(&shared), s, 48_000.0, channel().0);
@@ -334,11 +338,34 @@ fn audio_output_state(format: soundcraft_model::ChannelFormat, channels: Vec<Vec
         speed: AtomicU32::new(1000),
         meters: Mutex::new(MeterSnapshot::default()),
         output_latency: Default::default(),
+        heard: Default::default(),
     });
     let (tx, rx) = channel();
     let st = AudioState::new(rx, shared, Arc::new(s), 48_000.0, channel().0);
     tx.send(Cmd::Play { from: 0, end: None, looped: None }).unwrap();
     st
+}
+
+#[test]
+fn the_output_callback_notes_when_the_play_start_and_later_samples_are_heard() {
+    use std::time::{Duration, Instant};
+    let mut st = audio_output_state(soundcraft_model::ChannelFormat::Stereo, vec![vec![0.0; 4_800]; 2]);
+    st.shared.output_latency.observe(Some(Duration::from_micros(6_750)));
+    let t0 = Instant::now();
+    // The fill that reads the Play starts 256 frames into its device buffer.
+    st.callback_at = Some(t0);
+    st.chunk_offset = 256;
+    st.fill(&mut [0.0; 512], 2);
+    let near = |got: Option<Instant>, want: Instant| got.is_some_and(|g| g.max(want).duration_since(g.min(want)) < Duration::from_micros(2));
+    let start = t0 + Duration::from_micros(6_750) + Duration::from_micros(5_333);
+    assert!(near(st.shared.heard.heard_at(0.0, 48_000.0), start), "the play start is the callback plus latency plus offset");
+    // The next callback goes on from sample 256; any sample is projected from it.
+    let t1 = t0 + Duration::from_millis(20);
+    st.callback_at = Some(t1);
+    st.chunk_offset = 0;
+    st.fill(&mut [0.0; 512], 2);
+    assert!(near(st.shared.heard.heard_at(256.0, 48_000.0), t1 + Duration::from_micros(6_750)));
+    assert!(near(st.shared.heard.heard_at(0.0, 48_000.0), start), "the pass start stays exact");
 }
 
 #[test]
@@ -442,6 +469,7 @@ fn surround_main_maps_to_device_channels_or_folds_down() {
         speed: AtomicU32::new(1000),
         meters: Mutex::new(MeterSnapshot::default()),
         output_latency: Default::default(),
+        heard: Default::default(),
     });
     let (tx, rx) = channel();
     let mut st = AudioState::new(rx, Arc::clone(&shared), Arc::clone(&s), 48_000.0, channel().0);
@@ -476,6 +504,7 @@ fn instances_arrive_with_the_session_and_leave_through_the_return_channel() {
         speed: AtomicU32::new(1000),
         meters: Mutex::new(MeterSnapshot::default()),
         output_latency: Default::default(),
+        heard: Default::default(),
     });
     let (tx, rx) = channel();
     let (gtx, grx) = channel();
@@ -618,6 +647,7 @@ fn replaced_sessions_are_freed_on_the_ui_thread() {
         speed: AtomicU32::new(1000),
         meters: Mutex::new(MeterSnapshot::default()),
         output_latency: Default::default(),
+        heard: Default::default(),
     });
     let (tx, rx) = channel();
     let (gtx, grx) = channel();
@@ -648,6 +678,7 @@ fn looping_wraps() {
         speed: AtomicU32::new(1000),
         meters: Mutex::new(MeterSnapshot::default()),
         output_latency: Default::default(),
+        heard: Default::default(),
     });
     let (tx, rx) = channel();
     let mut st = AudioState::new(rx, Arc::clone(&shared), s, 48_000.0, channel().0);
@@ -681,6 +712,7 @@ fn locate_while_playing_drops_the_old_position_audio() {
             speed: AtomicU32::new(1000),
             meters: Mutex::new(MeterSnapshot::default()),
             output_latency: Default::default(),
+            heard: Default::default(),
         });
         let (tx, rx) = channel();
         let mut st = AudioState::new(rx, Arc::clone(&shared), Arc::new(s), 48_000.0, channel().0);
@@ -712,6 +744,7 @@ fn armed_tracks_are_heard_and_metered_after_playback_stops() {
         speed: AtomicU32::new(1000),
         meters: Mutex::new(MeterSnapshot::default()),
         output_latency: Default::default(),
+        heard: Default::default(),
     });
     let (tx, rx) = channel();
     let mut st = AudioState::new(rx, Arc::clone(&shared), Arc::new(s), 48_000.0, channel().0);
@@ -741,6 +774,7 @@ fn keyboard_session() -> (AudioState, std::sync::mpsc::Sender<Cmd>, Arc<midi::Mi
         speed: AtomicU32::new(1000),
         meters: Mutex::new(MeterSnapshot::default()),
         output_latency: Default::default(),
+        heard: Default::default(),
     });
     let (tx, rx) = channel();
     let st = AudioState::new(rx, shared, Arc::new(s.clone()), 48_000.0, channel().0);
@@ -887,6 +921,7 @@ fn live_midi_keeps_its_order_and_its_time_at_another_device_rate() {
         speed: AtomicU32::new(1000),
         meters: Mutex::new(MeterSnapshot::default()),
         output_latency: Default::default(),
+        heard: Default::default(),
     });
     let (tx2, rx) = channel();
     drop(tx);
@@ -1050,6 +1085,7 @@ fn the_age_of_a_midi_event_is_counted_at_the_transport_speed() {
         speed: AtomicU32::new(500),
         meters: Mutex::new(MeterSnapshot::default()),
         output_latency: Default::default(),
+        heard: Default::default(),
     });
     let (tx, rx) = channel();
     let mut st = AudioState::new(rx, shared, Arc::new(s), 48_000.0, channel().0);

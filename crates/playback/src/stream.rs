@@ -62,7 +62,9 @@ where
         move |data: &mut [T], info: &cpal::OutputCallbackInfo| {
             mark_audio_thread();
             guard.output_latency.observe(crate::latency::output_report(info));
-            for out in data.chunks_mut(chunk) {
+            state.callback_at = Some(std::time::Instant::now());
+            for (index, out) in data.chunks_mut(chunk).enumerate() {
+                state.chunk_offset = index * (chunk / frame);
                 let Some(s) = scratch.get_mut(..out.len()) else { return };
                 guarded_block(&failed, &guard, s, |d| state.fill(d, channels));
                 for (o, x) in out.iter_mut().zip(s.iter()) {

@@ -111,12 +111,23 @@ struct Shared {
     failed: Mutex<Option<String>>,
     /// What the input stream's callbacks report (see [`Recorder::input_latency`]).
     input_latency: crate::latency::ReportedLatency,
+    /// When the first sample of the armed take was captured (see [`Recorder::first_capture`]).
+    first_capture: crate::latency::InstantCell,
 }
 
 impl Shared {
     fn new(ring: CaptureRing) -> Shared {
         let (beats, fault, failed) = (AtomicU64::new(0), AtomicU8::new(0), Mutex::new(None));
-        Shared { armed: AtomicBool::new(false), ring, dropped: AtomicUsize::new(0), beats, fault, failed, input_latency: Default::default() }
+        Shared {
+            armed: AtomicBool::new(false),
+            ring,
+            dropped: AtomicUsize::new(0),
+            beats,
+            fault,
+            failed,
+            input_latency: Default::default(),
+            first_capture: crate::latency::InstantCell::new(),
+        }
     }
 
     /// Run the input callback's `work`. After a panic in it, the input is broken and does
@@ -172,20 +183,29 @@ where
     let mon = Arc::clone(monitor);
     let mut scratch = vec![0.0f32; 8192 * usize::from(config.channels).max(1)];
     let chunk = scratch.len();
+    let frame = usize::from(config.channels).max(1);
+    let rate = f64::from(config.sample_rate).max(1.0);
     let mut owed = 0;
     device.build_input_stream(
         config,
         move |data: &[T], info: &cpal::InputCallbackInfo| {
             crate::mark_audio_thread();
             sh.input_latency.observe(crate::latency::input_report(info));
+            let called = std::time::Instant::now();
             sh.guarded(|| {
-                for part in data.chunks(chunk) {
+                for (index, part) in data.chunks(chunk).enumerate() {
                     let Some(s) = scratch.get_mut(..part.len()) else { return };
                     for (o, x) in s.iter_mut().zip(part) {
                         *o = f32::from_sample(*x);
                     }
                     mon.push(s);
                     if sh.armed.load(Ordering::Acquire) {
+                        // The take's first sample: this part's first frame, captured the reported
+                        // input latency before the callback.
+                        let latency = sh.input_latency.get().unwrap_or_default().as_secs_f64();
+                        if let Some(at) = crate::latency::shift(called, (index * chunk / frame) as f64 / rate - latency) {
+                            sh.first_capture.set_if_empty(at);
+                        }
                         sh.capture(s, &mut owed);
                     } else {
                         owed = 0;
@@ -299,6 +319,12 @@ impl Recorder {
         self.shared.input_latency.get()
     }
 
+    /// When the first sample of the armed take was captured: its input callback's time less the
+    /// reported input latency. `None` until the first armed input callback.
+    pub fn first_capture(&self) -> Option<std::time::Instant> {
+        self.shared.first_capture.get()
+    }
+
     /// Create each take's file and start recording into them: a track's take records the given
     /// input channels into a new file, and into further files as `files` says.
     pub fn arm(&mut self, takes: Vec<(TrackId, Vec<usize>, PathBuf)>, files: TakeFiles) -> Result<(), String> {
@@ -313,6 +339,7 @@ impl Recorder {
         let ring = &self.shared.ring;
         ring.tail.store(ring.head.load(Ordering::Acquire), Ordering::Release);
         *self.shared.failed.lock().unwrap_or_else(PoisonError::into_inner) = None;
+        self.shared.first_capture.clear();
         self.shared.armed.store(true, Ordering::Release);
         let (shared, channels) = (Arc::clone(&self.shared), self.channels);
         match std::thread::Builder::new().name("take writer".into()).spawn(move || write_takes(&shared, takes, channels)) {

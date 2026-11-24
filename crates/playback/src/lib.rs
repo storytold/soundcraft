@@ -149,6 +149,8 @@ struct Shared {
     meters: Mutex<MeterSnapshot>,
     /// What the output stream's callbacks report (see [`Player::output_latency`]).
     output_latency: latency::ReportedLatency,
+    /// When session samples are heard, from the output callbacks (see [`Player::heard_at`]).
+    heard: latency::HeardStamps,
 }
 
 /// What stopped the audio output.
@@ -228,6 +230,7 @@ impl Player {
             speed: AtomicU32::new(1000),
             meters: Mutex::new(MeterSnapshot::default()),
             output_latency: latency::ReportedLatency::default(),
+            heard: latency::HeardStamps::default(),
         });
         let want = session.sample_rate.hz();
         let want_ch = u16::try_from(main_channels(&session)).unwrap_or(2);
@@ -538,6 +541,13 @@ impl Player {
     /// frame is heard. `None` for the silent clock, or before the stream reported one.
     pub fn output_latency(&self) -> Option<std::time::Duration> {
         self.shared.output_latency.get()
+    }
+
+    /// When the session sample `sample` was (or will be) heard at the output, at the session's
+    /// `rate`: exact for the first sample of the latest Play, projected from the latest output
+    /// callback otherwise. `None` until an output callback with a device has run.
+    pub fn heard_at(&self, sample: Samples, rate: f64) -> Option<std::time::Instant> {
+        self.shared.heard.heard_at(sample as f64, rate)
     }
 
     /// A copy of the meters accumulated since the last [`Player::take_meters`], leaving them in
