@@ -1,6 +1,6 @@
 # Where SoundCraft falls short of Pro Tools
 
-> **Last reviewed:** 2026-11-18 · **Last updated:** 2026-11-18 · **Change:** G-01 ASIO hardware output paths and wide input/output selectors, with Main fallback and offline input assignment. Earlier: minor (G-06: recording to disk is done (#84, long takes #888); streaming sources remain; previously minor: G-02 shrunk: MIDI input devices work; G-03: strict external-WAV AAF import; previously minor: G-05: plugin editors on Linux/X11; previously trivial: G-09: the pt-BR catalog now covers helper-passed tooltips, the status bar, the remove-session prompt and engine error text; G-08: Frequency Shifter, 28 processors; G-04: volume automation read at every sample, #1354; G-01: `setup.playback_engine` applies the device buffer in the desktop app; G-04: Clip Looping crossfade and loop count) · **Target:** Avid Pro Tools Ultimate 2026.4.1
+> **Last reviewed:** 2026-11-18 · **Last updated:** 2026-11-25 · **Change:** minor (G-01: named output paths verified on Core Audio; Core Audio opens every output); previously: G-01 ASIO hardware output paths and wide input/output selectors, with Main fallback and offline input assignment. Earlier: minor (G-06: recording to disk is done (#84, long takes #888); streaming sources remain; previously minor: G-02 shrunk: MIDI input devices work; G-03: strict external-WAV AAF import; previously minor: G-05: plugin editors on Linux/X11; previously trivial: G-09: the pt-BR catalog now covers helper-passed tooltips, the status bar, the remove-session prompt and engine error text; G-08: Frequency Shifter, 28 processors; G-04: volume automation read at every sample, #1354; G-01: `setup.playback_engine` applies the device buffer in the desktop app; G-04: Clip Looping crossfade and loop count) · **Target:** Avid Pro Tools Ultimate 2026.4.1
 
 Every known shortfall, one entry each, ranked by how much it stops a Pro Tools user from doing
 real work in SoundCraft. This is the work list: pick from the top. Rows marked **alpha blocker**
@@ -55,6 +55,11 @@ When you close a gap, delete its entry (or shrink it) in the same PR, and bump t
 - **Done (2026-11-18):** Setup › I/O maps named output paths to physical channels. Track output
   selectors assign these paths and the ASIO stream keeps all supported outputs open. Verified
   USB outputs 1–10 at 48 kHz on the TASCAM Model 12.
+- **Done (2026-11-25):** named output paths on macOS. Core Audio opens all of an interface's outputs,
+  as ASIO does. On an RME Fireface UFX with a cable from outputs 3–4 to inputs 5–6, a track on a
+  stereo path at channel 3 is heard on outputs 3–4; moving the path to channel 7 while it plays
+  silences them, and moving it back restores them. The assignment survives save and reopen. With
+  a 2-channel output device, I/O Setup marks the path Unavailable and playback goes on.
 - **Done (2026-11-18):** Track input selectors use the selected device's usable recording width.
   Track input and output lists scroll in the existing Edit and Mix selectors.
 - **Missing:** full hardware input mapping in I/O Setup, one duplex stream on one clock (input and
@@ -258,6 +263,7 @@ missing. Out of scope unless the owner decides otherwise.
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-11-25 | minor | G-01: named output paths verified on macOS (Core Audio, RME UFX); Core Audio opens every output of an interface |
 | 2026-11-14 | minor | G-03: strict external-WAV AAF import with bounded property caching; AAF/OMF export, OMF import and `.ptx` remain; estimates unchanged |
 | 2026-11-13 | trivial | G-09: the pt-BR catalog now covers tooltips localized inside buttons and toggles, the Edit-window status bar, the remove-session question, the send help text and engine errors shown in the status line; estimates unchanged |
 | 2026-11-09 | trivial | G-08: 28 processors + 3 instruments with the Frequency Shifter |
