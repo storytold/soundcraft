@@ -60,9 +60,9 @@ use callback::{AudioState, Fault, Side, take_meter_snapshot};
 use callback::{STALL, copy_meter_snapshot};
 #[cfg(not(target_arch = "wasm32"))]
 use callback::{guarded_block, stalled};
-#[cfg(test)]
-use stream::pick_output_config;
 use stream::{Opened, build_output, first_started, open_device, start_stream};
+#[cfg(test)]
+use stream::{pick_output_config, pick_wider_output_config};
 
 /// Meter values for the UI: the highest peak (and gain reduction) of every block rendered since
 /// the UI last took them with [`Player::take_meters`]. The audio thread renders blocks faster than

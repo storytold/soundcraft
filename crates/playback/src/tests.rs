@@ -77,6 +77,31 @@ fn output_config_uses_the_first_requested_rate_the_device_offers() {
     assert!(pick_output_config(&configs, &[192_000], 8).is_none());
 }
 
+/// An interface that offers only more channels than the mix (an RME Fireface UFX on Core Audio
+/// lists one 30-channel configuration) still opens at the chosen rate. The device default would
+/// be the rate the interface happens to run at; opening the input at the chosen rate then
+/// switches the device and ends the output stream.
+#[test]
+fn a_wider_only_device_still_opens_at_the_chosen_rate() {
+    let ufx = [range(30, 44_100, 192_000, cpal::SampleFormat::F32)];
+    assert!(pick_output_config(&ufx, &[48_000], 2).is_none(), "the main-width pick leaves it to the fallback");
+    let (config, buffers, format) = pick_wider_output_config(&ufx, &[48_000]).unwrap();
+    assert_eq!((config.sample_rate, config.channels, format), (48_000, 30, cpal::SampleFormat::F32));
+    assert_eq!(buffers, cpal::SupportedBufferSize::Range { min: 64, max: 1024 });
+    // The fewest channels above the mix win, then a preferred format; rates are tried in order.
+    let configs = [
+        range(16, 44_100, 48_000, cpal::SampleFormat::F32),
+        range(8, 44_100, 48_000, cpal::SampleFormat::I16),
+        range(8, 44_100, 48_000, cpal::SampleFormat::F32),
+        range(4, 96_000, 96_000, cpal::SampleFormat::F32),
+    ];
+    let (config, _, format) = pick_wider_output_config(&configs, &[192_000, 48_000]).unwrap();
+    assert_eq!((config.sample_rate, config.channels, format), (48_000, 8, cpal::SampleFormat::F32));
+    // Mono only, or no requested rate: the device default after all.
+    assert!(pick_wider_output_config(&[range(1, 44_100, 48_000, cpal::SampleFormat::F32)], &[48_000]).is_none());
+    assert!(pick_wider_output_config(&ufx, &[22_050]).is_none());
+}
+
 /// At a supported rate, a preferred sample format wins over more channels; output stays between stereo and the
 /// requested channel cap, and mono-only or wider devices take the default path.
 #[test]

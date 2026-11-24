@@ -99,11 +99,12 @@ pub(crate) fn open_device(
     let host = devices::host(cfg);
     let device = devices::device(&host, cfg.output.as_deref(), true).ok_or_else(|| "no output device".to_string())?;
     let name = devices::device_name(&device).unwrap_or_else(|| "Audio device".into());
-    // Prefer a config at the chosen (else session) rate; else the device default (we resample).
+    // Prefer a config at the chosen (else session) rate: up to the mix's width, else wider; only
+    // then the device default (we resample).
     let want_ch = want_ch.max(2);
     let rates: Vec<u32> = cfg.sample_rate.into_iter().chain(Some(want_rate)).collect();
     let configs: Vec<cpal::SupportedStreamConfigRange> = device.supported_output_configs().map(|configs| configs.collect()).unwrap_or_default();
-    let (config, format) = match pick_output_config(&configs, &rates, want_ch) {
+    let (config, format) = match pick_output_config(&configs, &rates, want_ch).or_else(|| pick_wider_output_config(&configs, &rates)) {
         Some((mut c, buffers, format)) => {
             c.buffer_size = devices::buffer_size(cfg.buffer_size, &buffers);
             (c, format)
@@ -161,4 +162,24 @@ pub(crate) fn pick_output_config(
         }
     }
     None
+}
+
+/// The output configuration for the first requested rate the device offers with more channels
+/// than the mix, when [`pick_output_config`] finds none within the mix's width: the fewest such
+/// channels, then the best sample format. Some multichannel interfaces offer only their full
+/// width (an RME Fireface UFX on Core Audio lists one 30-channel configuration). Their default
+/// configuration is the rate they happen to run at, so falling back to it ignores the chosen
+/// rate, and an input opened at the chosen rate then switches the device and ends the output.
+pub(crate) fn pick_wider_output_config(
+    configs: &[cpal::SupportedStreamConfigRange],
+    rates: &[u32],
+) -> Option<(cpal::StreamConfig, cpal::SupportedBufferSize, cpal::SampleFormat)> {
+    rates.iter().find_map(|&rate| {
+        configs
+            .iter()
+            .filter(|c| c.channels() >= 2 && c.contains_rate(rate))
+            .filter_map(|c| Some((devices::format_rank(c.sample_format())?, c)))
+            .min_by_key(|(rank, c)| (c.channels(), *rank))
+            .and_then(|(_, c)| c.try_with_sample_rate(rate).map(|config| (config.config(), *c.buffer_size(), c.sample_format())))
+    })
 }
