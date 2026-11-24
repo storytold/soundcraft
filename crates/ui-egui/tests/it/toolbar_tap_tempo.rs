@@ -103,6 +103,8 @@ fn a_tap_counts_when_the_button_goes_down_however_long_it_is_held() {
 #[test]
 fn a_click_pressed_and_released_in_one_frame_still_taps() {
     let mut r = Rig::new();
+    r.app.run("event.tempo", json!({"bpm": 90.0})).unwrap();
+    r.frame(vec![]);
     let at = r.tap_key();
     let button = |pressed| Event::PointerButton { pos: at, button: PointerButton::Primary, pressed, modifiers: Modifiers::NONE };
     for _ in 0..4 {
