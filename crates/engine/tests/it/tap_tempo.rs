@@ -114,3 +114,15 @@ fn a_tap_after_undoing_another_edit_is_its_own_step_and_clears_redo() {
     assert!(e.undo());
     assert!((bpm(&e) - 100.0).abs() < 1e-6, "undo must bring back the first series: bpm {}", bpm(&e));
 }
+
+#[test]
+fn taps_in_a_replaced_session_do_not_count_for_the_new_one() {
+    let mut e = Engine::default();
+    let fresh = e.session().clone();
+    let start = bpm(&e);
+    tap(&mut e, 0.0);
+    tap(&mut e, 600.0);
+    e.replace_session(fresh);
+    tap(&mut e, 1_100.0);
+    assert_eq!(bpm(&e), start, "the first tap in the new session only starts the count");
+}

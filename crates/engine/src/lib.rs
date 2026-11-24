@@ -312,6 +312,8 @@ impl Engine {
         self.undo.clear();
         self.redo.clear();
         self.last_selection = None;
+        self.tap_times.clear();
+        self.tap_doc = None;
         self.revision = self.revision.wrapping_add(1);
         self.dirty = false;
     }
