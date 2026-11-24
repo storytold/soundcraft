@@ -24,14 +24,54 @@ impl SoundApp {
             // closed here, on the main thread, or they would stay on screen orphaned.
             p.close_editors();
         }
-        // The input reopens on the next record or monitor with the new choice.
+        self.reopen_audio();
+        if let Some(p) = &self.player {
+            p.locate(at);
+        }
+        Ok(())
+    }
+
+    /// Open the audio devices of `audio` for `session`. Where the audio system calls a device's
+    /// callbacks in the order its streams opened (ASIO, Core Audio), the input opens first, when
+    /// there is one, as Pro Tools' Playback Engine opens both: the output callback then mixes the
+    /// input of the same device cycle, and input monitoring adds no device buffer of its own.
+    /// Elsewhere, or without an input, the player opens alone and the input opens on the next
+    /// record or monitor.
+    pub fn open_audio_devices(
+        session: std::sync::Arc<soundcraft_model::Session>,
+        audio: &soundcraft_playback::AudioConfig,
+    ) -> (Player, Option<soundcraft_playback::record::Recorder>) {
+        let input = soundcraft_playback::input_opens_first(audio)
+            .then(|| {
+                soundcraft_playback::record::Recorder::open_with(audio)
+                    .inspect_err(|e| log::info!("audio input not opened with the output: {e}"))
+                    .ok()
+            })
+            .flatten();
+        let player = Player::with_config(session, audio);
+        if let Some(r) = &input {
+            player.set_input(std::sync::Arc::clone(&r.monitor));
+        }
+        (player, input)
+    }
+
+    /// Close the open audio devices and open those of `ui.audio`, input first (see
+    /// [`Self::open_audio_devices`]).
+    fn reopen_audio(&mut self) {
+        // The old streams close before the new ones open, so the new input is the first stream
+        // the driver calls back.
+        self.player = None;
         self.recorder = None;
         self.recorder_failed = false;
-        let player = soundcraft_playback::Player::with_config(self.engine.session_arc(), &self.ui.audio);
+        let (player, input) = Self::open_audio_devices(self.engine.session_arc(), &self.ui.audio);
         self.attach_midi(&player);
-        player.locate(at);
+        self.recorder = input;
         self.player = Some(player);
-        Ok(())
+    }
+
+    /// Adopt an input opened with the output at startup (see [`Self::open_audio_devices`]).
+    pub fn set_audio_input(&mut self, input: Option<soundcraft_playback::record::Recorder>) {
+        self.recorder = input;
     }
 
     /// Open the input device once (for recording and input monitoring) and feed the player.
@@ -125,11 +165,7 @@ impl SoundApp {
             // Its plugin editors go with it; closed here, on the main thread (see `apply_audio_config`).
             p.close_editors();
         }
-        self.recorder = None;
-        self.recorder_failed = false;
-        let player = Player::with_config(self.engine.session_arc(), &self.ui.audio);
-        self.attach_midi(&player);
-        self.player = Some(player);
+        self.reopen_audio();
     }
 }
 

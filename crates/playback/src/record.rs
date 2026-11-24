@@ -863,6 +863,15 @@ impl InputRing {
             s.phase += step;
         }
     }
+
+    /// Drop everything buffered: nothing reads the input now (no track monitors it), and what
+    /// piles up meanwhile would delay the monitor when one does.
+    pub fn clear(&self) {
+        if let Ok(mut s) = self.state.try_lock() {
+            s.data.clear();
+            s.phase = 0.0;
+        }
+    }
 }
 
 #[cfg(test)]
@@ -911,6 +920,54 @@ mod ring_tests {
         assert_eq!(out[0][0], 0.0);
         assert_eq!(out[1][0], 1.0);
         assert_eq!(out[0][49], 98.0);
+    }
+
+    /// Device cycles of `n` frames: the input pushes `pushes[k % len]` frames (numbered from where
+    /// it left off), then the output reads `n`. Returns, per cycle, the newest frame pushed less
+    /// the last frame read: the monitor's latency in frames.
+    fn run_cycles(ring: &InputRing, next: &mut u32, n: usize, pushes: &[usize], cycles: usize) -> Vec<i64> {
+        let mut out = vec![vec![0.0f32; n]];
+        (0..cycles)
+            .map(|k| {
+                let m = pushes[k % pushes.len()];
+                let input: Vec<f32> = (*next..*next + m as u32).map(|i| i as f32).collect();
+                *next += m as u32;
+                ring.push(&input);
+                ring.pop_into(&mut out, n, 48_000);
+                i64::from(*next) - 1 - out[0][n - 1] as i64
+            })
+            .collect()
+    }
+
+    /// When the input runs first in each cycle the ring holds only what the output needs: nothing
+    /// is dropped, the input reads through without a gap, at one frame of latency.
+    #[test]
+    fn input_first_monitoring_keeps_every_frame() {
+        let ring = InputRing::new(1, 48_000);
+        let mut next = 0u32;
+        let mut out = vec![vec![0.0f32; 256]];
+        let mut read = Vec::new();
+        for _ in 0..400 {
+            let input: Vec<f32> = (next..next + 256).map(|i| i as f32).collect();
+            next += 256;
+            ring.push(&input);
+            ring.pop_into(&mut out, 256, 48_000);
+            read.extend_from_slice(&out[0]);
+        }
+        let tail = &read[256..];
+        assert!(tail.windows(2).all(|w| w[1] == w[0] + 1.0), "a frame was dropped or repeated");
+        assert_eq!(f64::from(next - 1) - f64::from(*read.last().unwrap()), 1.0);
+    }
+
+    /// What arrives while nothing monitors is dropped, so it delays no monitor later.
+    #[test]
+    fn clearing_the_ring_drops_what_piled_up() {
+        let ring = InputRing::new(1, 48_000);
+        ring.push(&[1.0; 24_000]);
+        ring.clear();
+        let mut next = 0u32;
+        let late = run_cycles(&ring, &mut next, 256, &[256], 2);
+        assert!(late[1] <= 1, "latency after clearing: {late:?}");
     }
 
     /// Nothing buffered: silence, not stale data.
