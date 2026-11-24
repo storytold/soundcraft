@@ -16,9 +16,9 @@
 //! behind that gesture. The connection's one-request-at-a-time reply order therefore also orders an
 //! inspect, command or screenshot after the gesture it follows.
 
-use craft_ui::runtime::windows::WindowHost;
 use crate::SoundApp;
 use crate::capture::CaptureSlot;
+use craft_ui::runtime::windows::WindowHost;
 use serde_json::{Value, json};
 use std::sync::mpsc::{Receiver, Sender, channel};
 use web_time::Instant;
@@ -580,7 +580,11 @@ fn handle(app: &mut SoundApp, ctx: &egui::Context, req: &ControlRequest) -> Opti
             let mods = craft_keymap::Mods::from_egui(&mods(p), craft_keymap::egui::platform(ctx));
             // The framework's injected input carries the key through its own stages and says when it has run.
             WindowHost::of(ctx).inject_key(egui::ViewportId::ROOT, key, mods, false);
-            app.injected_acks.push_back(InjectedAck { deadline: app.clock_now() + GESTURE_TIMEOUT, reply: Some(req.reply.clone()), response: ok(json!({})) });
+            app.injected_acks.push_back(InjectedAck {
+                deadline: app.clock_now() + GESTURE_TIMEOUT,
+                reply: Some(req.reply.clone()),
+                response: ok(json!({})),
+            });
             return None;
         }
         "ui.text" => {

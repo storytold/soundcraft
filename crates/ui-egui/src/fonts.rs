@@ -203,10 +203,7 @@ mod tests {
             ];
             for family in families {
                 let font = egui::FontId::new(14.0, family.clone());
-                assert!(
-                    ctx.fonts_mut(|f| f.has_glyphs(&font, "Check for Updates")),
-                    "{family:?} has no Latin face (system fonts {system_fonts})"
-                );
+                assert!(ctx.fonts_mut(|f| f.has_glyphs(&font, "Check for Updates")), "{family:?} has no Latin face (system fonts {system_fonts})");
             }
         }
     }

@@ -3,7 +3,7 @@
 //! last in `logic`, and [`before_ui`] first in `ui`; the browser build and tests install with [`install_headless`].
 //! [`SoundApp::run_framework_dialogs`] runs the framework dialogs after SoundCraft's own UI.
 //!
-//! The runtime takes Escape, Tab, F6 and the clipboard events for the whole window unless one of SoundCraft's own
+//! The runtime takes Escape, Tab and the clipboard events for the whole window unless one of SoundCraft's own
 //! egui widgets has the keyboard. The window's Escape is read with [`escape_pressed`]; the session view is declared
 //! to the runtime with [`host_canvas`], which keeps Tab, the edit chords and the clipboard events in egui's input for
 //! SoundCraft's shortcuts.
@@ -14,7 +14,7 @@ use craft_host::target::ShellInfo;
 use craft_host::{AppInfo, Host};
 use craft_keymap::{Chord, Key, Mods, Overrides};
 use craft_ui::fonts::{I18nScripts, SystemFonts, UiFonts};
-use craft_ui::runtime::commands::CommandInput;
+use craft_ui::runtime::commands::{CommandInput, CommandSet, NavCommand};
 use craft_ui::runtime::env::{RootEnv, Scale};
 use craft_ui::runtime::focus::{EditSet, KeepKeys, KeyUse};
 use craft_ui::runtime::frame::{FrameInput, FrameOutput};
@@ -68,14 +68,14 @@ pub(crate) fn host() -> Arc<Host> {
 }
 
 /// The runtime's default keys SoundCraft's own shortcuts use: F6 and Shift+F6 move between panes by default, and F6
-/// is the Trim tool in SoundCraft.
+/// is the Trim tool in SoundCraft. Overrides are keyed by command id, which the command set gives.
 fn command_overrides() -> Arc<Overrides> {
     static OVERRIDES: OnceLock<Arc<Overrides>> = OnceLock::new();
     OVERRIDES
         .get_or_init(|| {
             let mut overrides = Overrides::new();
-            overrides.insert("window.nextPane", Vec::new());
-            overrides.insert("window.previousPane", Vec::new());
+            overrides.insert(NavCommand::NextPane.id(), Vec::new());
+            overrides.insert(NavCommand::PreviousPane.id(), Vec::new());
             Arc::new(overrides)
         })
         .clone()
