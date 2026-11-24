@@ -2374,6 +2374,15 @@ fn dragging_a_marker_on_its_ruler_moves_it() {
     let after: Vec<_> = h.state().engine.session().markers.iter().map(|m| m.start).collect();
     assert_eq!(after, before, "a drag that grabs no marker moves none");
 
+    // Escape cancels the drag: the release that follows does not drop the marker.
+    start_drag(&mut h, pos2(x, y));
+    h.hover_at(pos2(x + 120.0, y));
+    h.step();
+    h.key_press(egui::Key::Escape);
+    h.drop_at(pos2(x + 120.0, y));
+    h.step();
+    assert_eq!(start_of(&h), Some(48_000), "a drag cancelled with Escape leaves the marker where it was");
+
     drag(&mut h, pos2(x, y), pos2(x + 120.0, y));
     let moved = start_of(&h).unwrap();
     assert!(moved > 48_000, "the marker follows the drag to the right: {moved}");

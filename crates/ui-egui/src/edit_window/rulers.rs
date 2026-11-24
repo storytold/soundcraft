@@ -103,7 +103,9 @@ fn marker_drag(app: &mut SoundApp, ui: &mut Ui, s: &Session, (tl, row): (Rect, R
     let MarkerGrab { id, start, at, .. } = grab;
     if resp.drag_stopped() || !resp.dragged() {
         ui.ctx().memory_mut(|mem| mem.data.remove::<MarkerGrab>(key));
-        if resp.drag_stopped() && at != start {
+        // Escape also stops a drag: only a release drops the marker.
+        let released = ui.input(|i| i.pointer.any_released() && !i.key_pressed(egui::Key::Escape));
+        if resp.drag_stopped() && released && at != start {
             let _ = app.run("markers.edit", json!({"id": id, "at": at}));
         }
         return;
