@@ -124,6 +124,7 @@ pub(super) fn translate(source: &str) -> Option<&'static str> {
         }
         "Input" => "Entrada",
         "Latency" => "Latência",
+        "Record offset" => "Deslocamento de gravação",
         "Input device" => "Dispositivo de entrada",
         "Instrument" => "Instrumento",
         "Interface scale" => "Escala da interface",

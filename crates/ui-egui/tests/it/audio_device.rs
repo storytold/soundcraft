@@ -36,6 +36,21 @@ fn the_reported_latency_is_null_until_an_open_stream_reports_one() {
     assert_eq!(r["latency"], json!({"output": null, "input": null}), "{r}");
 }
 
+#[test]
+fn the_record_offset_is_set_by_command_within_its_range_without_reopening_the_device() {
+    let mut app = SoundApp::new(soundcraft_engine::Engine::default(), None, Services::default());
+    let before = app.ui.audio.clone();
+    let r = app.run("ui.audio_device", json!({"record_offset": -42})).unwrap();
+    assert_eq!((r["record_offset"].as_i64(), app.ui.record_offset), (Some(-42), -42));
+    assert_eq!(app.ui.audio, before, "the device choice is untouched");
+    for bad in [json!(96_001), json!(1.5), json!("12")] {
+        assert!(app.run("ui.audio_device", json!({"record_offset": bad})).is_err(), "{bad}");
+    }
+    assert_eq!(app.ui.record_offset, -42, "a refused value changes nothing");
+    let r = app.run("setup.playback_engine", json!({"record_offset": 128})).unwrap();
+    assert_eq!((r["record_offset"].as_i64(), app.ui.record_offset), (Some(128), 128));
+}
+
 fn new_app() -> SoundApp {
     SoundApp::new(soundcraft_engine::Engine::default(), None, Services::default())
 }
