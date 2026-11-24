@@ -680,6 +680,11 @@ pub fn playback_engine(app: &mut SoundApp, ctx: &egui::Context) {
             ui.label(crate::localization::text("Latency"));
             ui.label(latency_line(app));
             ui.end_row();
+            if same_clock(app) == Some(false) {
+                ui.label("");
+                ui.label(egui::RichText::new(crate::localization::text(DIFFERENT_CLOCKS)).color(ui.visuals().warn_fg_color));
+                ui.end_row();
+            }
             ui.label(crate::localization::text("Record offset"));
             ui.horizontal(|ui| {
                 let mut offset = app.ui.record_offset;
@@ -772,12 +777,21 @@ pub fn audio_device_command(app: &mut SoundApp, p: &serde_json::Value) -> Result
     if let Some(offset) = record_offset {
         app.ui.record_offset = offset;
     }
-    let mut out = json!({"config": app.ui.audio, "device": device, "latency": latency_json(app), "record_offset": app.ui.record_offset});
+    let mut out = json!({
+        "config": app.ui.audio,
+        "device": device,
+        "latency": latency_json(app),
+        "record_offset": app.ui.record_offset,
+        "same_clock": same_clock(app),
+    });
     if p.get("list").and_then(Value::as_bool).unwrap_or(false) {
         out["systems"] = json!(soundcraft_playback::devices::audio_systems());
     }
     Ok(out)
 }
+
+/// The Playback Engine's warning when the input and output run on different clocks.
+const DIFFERENT_CLOCKS: &str = "Input and output run on different clocks: long takes drift and monitoring may click. On macOS, combine them as an Aggregate Device in Audio MIDI Setup.";
 
 /// The record offset's range in session samples, either way: two seconds at 48 kHz.
 const RECORD_OFFSET_LIMIT: i64 = 96_000;
@@ -801,6 +815,18 @@ fn latency_line(app: &SoundApp) -> String {
     };
     let (output, input) = reported_latency(app);
     crate::localized_format!("output {} · input {}", show(output), show(input))
+}
+
+/// Whether the open output and the input (open, else the one recording would open) share one
+/// clock, see [`soundcraft_playback::devices::same_clock`]. `None` without an open output device
+/// or without any input device.
+fn same_clock(app: &SoundApp) -> Option<bool> {
+    let output = app.player.as_ref().filter(|p| !p.silent)?.device_name.clone();
+    let input = match app.recorder.as_ref() {
+        Some(r) => r.device_name.clone(),
+        None => soundcraft_playback::devices::input_device_name(&app.ui.audio)?,
+    };
+    Some(soundcraft_playback::devices::same_clock(&soundcraft_playback::devices::system_name(&app.ui.audio), &output, &input))
 }
 
 /// The reported latencies for `ui.audio_device` and `setup.playback_engine`.
@@ -858,6 +884,7 @@ pub fn setup_audio_command(app: &mut SoundApp, id: &str, p: &serde_json::Value) 
         "bit_depth": app.engine.session().bit_depth,
         "latency": latency_json(app),
         "record_offset": app.ui.record_offset,
+        "same_clock": same_clock(app),
         "delay_compensation": app.engine.session().edit.delay_compensation,
     }))
 }

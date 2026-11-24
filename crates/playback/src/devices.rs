@@ -161,6 +161,25 @@ fn in_open_order(host: &str) -> bool {
     matches!(host, "ASIO" | "CoreAudio")
 }
 
+/// Whether `input` and `output` run on one clock under audio system `host`. One device does:
+/// one ASIO driver, one Core Audio device (an Aggregate Device counts as one; Core Audio keeps
+/// its members in step), one device name elsewhere. WASAPI's input and output endpoints are
+/// separate devices, each on its own thread and clock, even on one interface. Two clocks drift
+/// apart over a long take, and the monitor buffer between them runs short or piles up.
+pub fn same_clock(host: &str, output: &str, input: &str) -> bool {
+    !host.eq_ignore_ascii_case("WASAPI") && output == input
+}
+
+/// The name of `cfg`'s audio system as cpal reports it (the default one when none is chosen).
+pub fn system_name(cfg: &AudioConfig) -> String {
+    host(cfg).id().name().to_string()
+}
+
+/// The name of the input device `cfg` opens: the chosen one when present, else the default.
+pub fn input_device_name(cfg: &AudioConfig) -> Option<String> {
+    device(&host(cfg), cfg.input.as_deref(), false).and_then(|d| device_name(&d))
+}
+
 /// The chosen audio system, else the default one.
 pub(crate) fn host(cfg: &AudioConfig) -> cpal::Host {
     cfg.system
@@ -202,6 +221,28 @@ pub(crate) fn buffer_size(want: Option<u32>, supported: &cpal::SupportedBufferSi
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn input_and_output_share_a_clock_only_on_one_device_outside_wasapi() {
+        // (audio system, output, input, one clock?)
+        let cases = [
+            ("ASIO", "RME Fireface UFX", "RME Fireface UFX", true),
+            ("ASIO", "RME Fireface UFX", "Focusrite USB ASIO", false),
+            ("CoreAudio", "Fireface UFX (23693403)", "Fireface UFX (23693403)", true),
+            // An Aggregate Device is one device: Core Audio keeps its members on one clock.
+            ("CoreAudio", "Aggregate Device", "Aggregate Device", true),
+            ("CoreAudio", "Fireface UFX (23693403)", "MacBook Pro Microphone", false),
+            // WASAPI's input and output endpoints are separate devices, each on its own thread
+            // and clock, even on one interface and even when the names match.
+            ("WASAPI", "Speakers (RME Fireface UFX)", "Analog (1+2) (RME Fireface UFX)", false),
+            ("WASAPI", "Same Name", "Same Name", false),
+            ("ALSA", "hw:UFX", "hw:UFX", true),
+            ("ALSA", "hw:UFX", "hw:PCH", false),
+        ];
+        for (host, output, input, one) in cases {
+            assert_eq!(same_clock(host, output, input), one, "{host}: {output} / {input}");
+        }
+    }
 
     #[test]
     fn the_input_opens_first_where_callbacks_run_in_open_order() {

@@ -953,6 +953,9 @@ fn menu_translate(source: &str) -> Option<&'static str> {
         "{}: missing" => "{}: ausente",
         "none" => "nenhum",
         "not reported" => "não informada",
+        "Input and output run on different clocks: long takes drift and monitoring may click. On macOS, combine them as an Aggregate Device in Audio MIDI Setup." => {
+            "Entrada e saída usam relógios diferentes: tomadas longas se desalinham e o monitoramento pode estalar. No macOS, combine-as em um Dispositivo Agregado na Configuração de Áudio e MIDI."
+        }
         // Formatted messages. Placeholders mirror the English source so the same arguments fill
         // them; `localized_format!` selects the template at run time.
         "Active audio ends at {seconds:.2} seconds" => "O áudio ativo termina em {seconds:.2} segundos",

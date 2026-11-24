@@ -37,6 +37,16 @@ fn the_reported_latency_is_null_until_an_open_stream_reports_one() {
 }
 
 #[test]
+fn whether_input_and_output_share_a_clock_is_null_until_both_are_open() {
+    // Nothing open: whether the two share a clock is not known, so it is null, never a guess.
+    let mut app = SoundApp::new(soundcraft_engine::Engine::default(), None, Services::default());
+    for command in ["ui.audio_device", "setup.playback_engine"] {
+        let r = app.run(command, json!({})).unwrap();
+        assert!(r.get("same_clock").is_some_and(serde_json::Value::is_null), "{command}: {r}");
+    }
+}
+
+#[test]
 fn the_record_offset_is_set_by_command_within_its_range_without_reopening_the_device() {
     let mut app = SoundApp::new(soundcraft_engine::Engine::default(), None, Services::default());
     let before = app.ui.audio.clone();
