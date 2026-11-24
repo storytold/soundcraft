@@ -1,6 +1,6 @@
 # Hardware parity
 
-> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-11-24 · **Change:** minor (record offset compensation from device timing; previously minor: latency reporting: Playback Engine shows the reported input and output latency; previously minor: record to disk: done, #84 and #888, previously trivial: bounces of a bus fed by an aux compensate its latency, #246; previously minor: MIDI input devices, live play-through with controllers, and MIDI recording) · **Target:** Avid Pro Tools Ultimate 2026.4.1
+> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-11-25 · **Change:** minor (Core Audio record placement from the host time and device latency; previously minor: record offset compensation from device timing; previously minor: latency reporting: Playback Engine shows the reported input and output latency; previously minor: record to disk: done, #84 and #888, previously trivial: bounces of a bus fed by an aux compensate its latency, #246; previously minor: MIDI input devices, live play-through with controllers, and MIDI recording) · **Target:** Avid Pro Tools Ultimate 2026.4.1
 
 A DAW is judged by how it drives audio interfaces, MIDI gear, control surfaces and sync. This is
 SoundCraft's weakest dimension. Ours is measured from `crates/playback` (cpal) and the absence of
@@ -22,7 +22,7 @@ Legend: ✅ works · 🟡 partial · ❌ missing.
 | Duplex stream on one clock | ✅ | ❌ separate input/output streams | ❌ | ❌ | ❌ | ❌ |
 | Hardware I/O mapping (I/O Setup to physical channels) | ✅ | 🟡 multichannel output in order; no per-channel map | 🟡 | 🟡 | 🟡 | ❌ |
 | Low-latency monitoring | ✅ | ❌ (`options.low_latency_monitoring` is a stored flag) | ❌ | ❌ | ❌ | ❌ |
-| Latency reporting and record offset compensation | ✅ | 🟡 latency shown; takes placed from the reported Core Audio timing and a record offset (not yet verified) | 🟡 latency shown; takes placed from device timing plus a record offset: ASIO exact to the digital loopback's lead on an RME UFX, also under a heavy mix; WASAPI shared 14–18 ms late (shared mode under-reports its input latency), correctable on average with the record offset | 🟡 as on macOS (not yet verified) | 🟡 output latency shown (not yet verified) | ❌ |
+| Latency reporting and record offset compensation | ✅ | 🟡 latency shown; takes placed from the Core Audio host time and device latency, plus a record offset: 1 sample early through a cable on an RME UFX at 64–1024 frames (not yet under a heavy mix) | 🟡 latency shown; takes placed from device timing plus a record offset: ASIO exact to the digital loopback's lead on an RME UFX, also under a heavy mix; WASAPI shared 14–18 ms late (shared mode under-reports its input latency), correctable on average with the record offset | 🟡 as on macOS (not yet verified) | 🟡 output latency shown (not yet verified) | ❌ |
 | Sample rate follows the session; resample when it can't | ✅ (switches device) | 🟡 resamples (input pitch bug fixed, #28) | 🟡 | 🟡 | 🟡 | 🟡 |
 | Avid HDX / HD Native DSP, Hybrid Engine DSP mode | ✅ | ❌ (out of reach: Avid hardware) | ❌ | ❌ | ❌ | ❌ |
 | Disk allocation / record to disk | ✅ | ✅ takes written to disk as they record (#84); a long take goes on in a new file (#888) | 🟡 same recorder (not yet verified on Windows) | 🟡 same recorder (input not yet verified) | ❌ no recording | ❌ |
@@ -72,6 +72,7 @@ Legend: ✅ works · 🟡 partial · ❌ missing.
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-11-25 | minor | Core Audio: takes placed from the host time and device latency, 1 sample early through a cable on an RME UFX at 64–1024 frames |
 | 2026-11-24 | minor | Record offset compensation: takes placed from device timing, plus a per-machine record offset |
 | 2026-11-24 | minor | Latency reporting: the Playback Engine, `ui.audio_device` and `setup.playback_engine` show the input and output latency cpal reports; record offset compensation remains |
 | 2026-11-18 | minor | MIDI input devices (`midir`): live play-through to record-enabled MIDI and instrument tracks (notes, pedal, controllers, pitch bend, aftertouch), MIDI recording into clips, per-track device and channel, device switches in Playback Engine; guide in `midi-input.md` |
