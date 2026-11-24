@@ -718,8 +718,10 @@ fn tap_key(app: &mut SoundApp, ui: &mut Ui, rect: Rect) {
     key(ui.painter(), rect, &resp, t.counter_off);
     ui.painter().text(rect.center(), Align2::CENTER_CENTER, crate::localization::text("Tap"), bold(10.0), t.mode_off_text);
     resp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, crate::localization::text("Tap Tempo")));
-    if resp.clicked() {
-        let now = ui.input(|i| i.time) * 1000.0;
+    // A mouse tap counts when the button goes down, on the beat, however long it is held; a keyboard or
+    // accessibility activation, which has no press of its own, counts when it comes.
+    let (now, pressed, released) = ui.input(|i| (i.time * 1000.0, i.pointer.primary_pressed(), i.pointer.primary_released()));
+    if (pressed && resp.is_pointer_button_down_on()) || (resp.clicked() && !released) {
         let _ = app.run("event.tap_tempo", json!({"time_ms": now, "at": app.position()}));
     }
     resp.on_hover_text(crate::localization::text("Click on the beat to set the tempo"));

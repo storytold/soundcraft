@@ -80,3 +80,22 @@ fn clicking_tap_sets_the_tempo_from_the_clicks_in_one_undo_step() {
     r.app.run("edit.undo", json!({})).unwrap();
     assert_eq!(r.bpm(), 90.0);
 }
+
+#[test]
+fn a_tap_counts_when_the_button_goes_down_however_long_it_is_held() {
+    let mut r = Rig::new();
+    let at = r.tap_key();
+    let button = |pressed| Event::PointerButton { pos: at, button: PointerButton::Primary, pressed, modifiers: Modifiers::NONE };
+    // Presses half a second (ten frames) apart, the last one held much longer than the others.
+    for hold in [1, 1, 1, 7] {
+        r.frame(vec![Event::PointerMoved(at), button(true)]);
+        for _ in 1..hold {
+            r.frame(vec![]);
+        }
+        r.frame(vec![button(false)]);
+        for _ in hold + 1..10 {
+            r.frame(vec![]);
+        }
+    }
+    assert!((r.bpm() - 120.0).abs() < 1.0, "bpm {}", r.bpm());
+}
