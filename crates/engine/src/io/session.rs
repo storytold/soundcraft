@@ -49,9 +49,14 @@ pub(crate) fn open_session_linked(e: &mut Engine, path: &Path, links: &Path) -> 
     let dir = path.parent().map(Path::to_path_buf).unwrap_or_default();
     let mut missing = Vec::new();
     let mut files = DecodedFiles::new();
-    for src in &s.sources {
-        let decoded =
-            stored_path(&src.path, links).map_err(|why| format!("{}: {why}", src.path)).and_then(|p| decode_file(&mut files, &p, s.sample_rate.hz()));
+    let samples: std::collections::HashSet<_> = s.tracks.iter().filter_map(|t| t.instrument.as_ref().and_then(|i| i.sample)).collect();
+    let mut order: Vec<_> = s.sources.iter().collect();
+    order.sort_by_key(|x| !samples.contains(&x.id));
+    for src in order {
+        let whole = samples.contains(&src.id);
+        let decoded = stored_path(&src.path, links)
+            .map_err(|why| format!("{}: {why}", src.path))
+            .and_then(|p| decode_file(&mut files, &p, s.sample_rate.hz(), whole));
         match decoded {
             Ok(audio) => s.pool.insert(src.id, audio),
             Err(err) => missing.push(err),
@@ -80,13 +85,15 @@ pub(crate) type DecodedFiles = std::collections::HashMap<PathBuf, std::result::R
 
 /// The audio of the file at `p` at `rate`, decoded the first time it is asked for. The error
 /// names the file.
+/// With `whole` the file is always decoded into memory (a sampler reads its sample directly); a file
+/// first asked for that way stays in memory for every source sharing it, so ask for those first.
 /// A file named in a session is hostile input too: a path that leaves the read root is not read.
-pub(crate) fn decode_file(files: &mut DecodedFiles, p: &Path, rate: u32) -> std::result::Result<Arc<SourceAudio>, String> {
+pub(crate) fn decode_file(files: &mut DecodedFiles, p: &Path, rate: u32, whole: bool) -> std::result::Result<Arc<SourceAudio>, String> {
     crate::file_access::check_read(p)?;
     files
         .entry(file_key(p))
         .or_insert_with(|| {
-            if let Ok(Some(audio)) = stream_file(p, rate) {
+            if !whole && let Ok(Some(audio)) = stream_file(p, rate) {
                 return Ok(audio);
             }
             let bytes = read_file(p).map_err(|_| p.display().to_string())?;
@@ -317,6 +324,42 @@ mod save_tests {
         assert_eq!(soundcraft_mix::render_range(copied.session(), range, 1_024), soundcraft_mix::render_range(decoded.session(), range, 1_024));
     }
 
+    #[test]
+    fn a_sampler_sample_stays_in_memory_when_a_stream_eligible_session_reopens() {
+        let dir = Scratch::new("stream-sampler");
+        let tone: Vec<f32> = (0..48_000).map(|i| 0.5 * (std::f32::consts::TAU * 440.0 * i as f32 / 48_000.0).sin()).collect();
+        let buf = AudioBuffer { sample_rate: 48_000, channels: vec![tone] };
+        let bytes = craft_audio::encode(&buf, &craft_audio::EncodeOptions::new(craft_audio::EncodeFormat::Wav)).unwrap();
+        let mut e = Engine::default();
+        e.execute("track.new", &json!({"kind": "instrument", "format": "stereo"})).unwrap();
+        let t = e.session().tracks.last().unwrap().id;
+        crate::io::load_sampler_bytes(&mut e, t, "tone.wav", &bytes).unwrap();
+        let mut seq = soundcraft_midi::Sequence::default();
+        seq.notes.push(soundcraft_midi::Note {
+            pitch: 60,
+            velocity: 127,
+            release_velocity: 64,
+            channel: 0,
+            start: 0,
+            length: soundcraft_time::TICKS_PER_QUARTER,
+        });
+        let s = e.session_mut();
+        let cid = s.new_clip_id();
+        crate::edit::place_clip(s, t, Clip::midi(cid, "notes", 0, 48_000 * 2, seq));
+        let path = dir.0.join("Sampler/Sampler.scraft").to_string_lossy().into_owned();
+        save_session(&mut e, &path).unwrap();
+        let range = Range::new(0, 48_000);
+        let before = soundcraft_mix::render_range(e.session(), range, 512);
+        let _threshold = StreamThreshold::set(1 << 12);
+        let back = reopen(&path);
+        let id = back.session().track(t).unwrap().instrument.as_ref().and_then(|i| i.sample).unwrap();
+        let audio = back.session().pool.get(id).unwrap();
+        assert!(!audio.buffer.channels.is_empty() && !audio.buffer.channels[0].is_empty(), "the sampler keeps its sample");
+        assert!(soundcraft_mix::streamed(audio).is_none());
+        let after = soundcraft_mix::render_range(back.session(), range, 512);
+        assert!(after[0].iter().fold(0.0f32, |m, v| m.max(v.abs())) > 0.05, "the note sounds");
+        assert_eq!(after, before);
+    }
     #[test]
     fn saving_never_replaces_audio_of_another_session() {
         let dir = std::env::temp_dir().join(format!("soundcraft-no-replace-{}", std::process::id()));
