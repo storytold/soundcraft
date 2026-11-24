@@ -96,3 +96,44 @@ fn export_midi_keeps_the_notes_of_a_clip_trimmed_at_both_ends_in_place() {
     // The note cut by the start trim is gone; the others keep their place and the last stops at the end.
     assert_eq!(notes, vec![(62, 1000, 960), (64, 2000, 880)]);
 }
+
+/// #1702: an import that replaces the session's tempo says so, and `tempo_map: false` keeps it.
+#[test]
+fn import_midi_reports_when_it_replaces_the_session_tempo() {
+    let smf = soundcraft_midi::Smf {
+        format: 1,
+        tracks: vec![soundcraft_midi::SmfTrack {
+            name: "Keys".into(),
+            sequence: soundcraft_midi::Sequence {
+                notes: vec![soundcraft_midi::Note { pitch: 60, velocity: 100, start: 0, length: 960, channel: 0, release_velocity: 64 }],
+                ..Default::default()
+            },
+        }],
+        tempos: vec![(0, 100.0)],
+        ..Default::default()
+    };
+    let dir = std::env::temp_dir().join(format!("soundcraft-import-midi-tempo-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("keys.mid");
+    std::fs::write(&path, soundcraft_midi::write_smf(&smf).unwrap()).unwrap();
+    let path = path.to_string_lossy().into_owned();
+
+    for (tempo_map, changes) in [(None, true), (Some(false), false)] {
+        let mut e = Engine::default();
+        e.execute("event.tempo", &json!({"bpm": 60.0})).unwrap();
+        let before = e.session().tempo.clone();
+        let mut params = json!({"path": path});
+        if let Some(v) = tempo_map {
+            params["tempo_map"] = json!(v);
+        }
+        let r = e.execute("file.import_midi", &params).unwrap();
+        assert_eq!(e.session().tempo != before, changes, "tempo_map {tempo_map:?}");
+        assert_eq!(r["tempo_map_changed"], json!(changes), "tempo_map {tempo_map:?}: {r}");
+    }
+    // A file whose tempo the session already has changes nothing, and says so.
+    let mut e = Engine::default();
+    e.execute("event.tempo", &json!({"bpm": 100.0})).unwrap();
+    let r = e.execute("file.import_midi", &json!({"path": path})).unwrap();
+    assert_eq!(r["tempo_map_changed"], json!(false), "{r}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
