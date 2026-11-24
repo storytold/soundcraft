@@ -177,13 +177,16 @@ if has deb || has rpm; then
     cat >"$NFPM_STAGE/usr/bin/$NFPM_BIN" <<'WRAPPER'
 #!/bin/sh
 set -eu
+if [ -z "${SOUNDCRAFT_CONFIG_DIR+x}" ]; then
+  export SOUNDCRAFT_CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/soundcraft-nightly"
+fi
 exec /usr/lib/soundcraft-nightly/soundcraft "$@"
 WRAPPER
     chmod 755 "$NFPM_STAGE/usr/bin/$NFPM_BIN"
     rm -f "$NFPM_STAGE/usr/bin/soundcraft"
     mv "$NFPM_STAGE/usr/bin/soundcraft-cli" "$NFPM_STAGE/usr/bin/$NFPM_CLI"
     mv "$NFPM_STAGE/usr/share/doc/soundcraft" "$NFPM_STAGE/usr/share/doc/$NFPM_NAME"
-    sed -e "s|^Exec=soundcraft\([[:space:]]\|$\)|Exec=$NFPM_BIN\1|" \
+    sed -e "s#^Exec=soundcraft\([[:space:]]\|$\)#Exec=$NFPM_BIN\1#" \
         -e "s|^TryExec=soundcraft$|TryExec=$NFPM_BIN|" \
         -e "s|^Icon=$APP_ID$|Icon=$NIGHTLY_DESK_ID|" \
         -e "s|^Name=SoundCraft$|Name=SoundCraft Nightly|" \
@@ -265,8 +268,17 @@ if has appimage; then
   fi
   APPDIR="$WORK/SoundCraft.AppDir"
   cp -R "$STAGE" "$APPDIR"
-  ln -s usr/bin/soundcraft "$APPDIR/AppRun"
   if [[ "$IS_NIGHTLY" = 1 ]]; then
+    cat >"$APPDIR/AppRun" <<'APPRUN'
+#!/bin/sh
+set -eu
+HERE="$(dirname "$(readlink -f "$0")")"
+if [ -z "${SOUNDCRAFT_CONFIG_DIR+x}" ]; then
+  export SOUNDCRAFT_CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/soundcraft-nightly"
+fi
+exec "$HERE/usr/bin/soundcraft" "$@"
+APPRUN
+    chmod 755 "$APPDIR/AppRun"
     APPIMAGE_ID="$APP_ID.nightly-v1"
     sed -e "s|^Icon=$APP_ID$|Icon=$APPIMAGE_ID|" \
         -e "s|^Name=SoundCraft$|Name=SoundCraft Nightly|" \
@@ -282,6 +294,7 @@ if has appimage; then
     cp "$NIGHTLY_ICON" "$APPDIR/$APPIMAGE_ID.png"
     ln -s "$APPIMAGE_ID.png" "$APPDIR/.DirIcon"
   else
+    ln -s usr/bin/soundcraft "$APPDIR/AppRun"
     cp "$HERE/$APP_ID.desktop" "$APPDIR/$APP_ID.desktop"
     cp "$ROOT/assets/app-icon/hicolor/256x256/apps/$APP_ID.png" "$APPDIR/$APP_ID.png"
     ln -s "$APP_ID.png" "$APPDIR/.DirIcon"

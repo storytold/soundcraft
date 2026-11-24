@@ -28,7 +28,7 @@ bin="$work/installed/bin"
 mv "$bin/soundcraft" "$bin/soundcraft-nightly"
 mv "$bin/soundcraft-cli" "$bin/soundcraft-nightly-cli"
 
-test ! -e "$stage/bin/.soundcraft-nightly"
+[[ ! -e "$stage/bin/.soundcraft-nightly" ]]
 cmp "$stage/bin/soundcraft" "$bin/.soundcraft-nightly/soundcraft"
 cmp "$stage/bin/soundcraft-cli" "$bin/soundcraft-nightly-cli"
 expect() {
