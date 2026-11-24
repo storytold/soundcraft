@@ -95,8 +95,9 @@ pub(super) fn overlay(app: &mut SoundApp, ui: &mut Ui, tl: Rect, area: Rect) {
         && let Some(dest) = &plan.dest
     {
         // Crossfades can leave two clips on a track with the same span: each takes the next one not yet drawn, and
-        // like the drag only clips that are not locked.
-        let mut drawn = Vec::new();
+        // like the drag only clips that are not locked. A playlist is sorted by start, so the span is found by search.
+        let selected: std::collections::HashSet<_> = clips.iter().copied().collect();
+        let mut drawn = std::collections::HashSet::new();
         for &(t, was, len) in &plan.moving {
             let d = ops::lands(dest, t);
             let start = plan
@@ -106,12 +107,16 @@ pub(super) fn overlay(app: &mut SoundApp, ui: &mut Ui, tl: Rect, area: Rect) {
                 .map_or(was + delta, |(_, first, slots)| ops::nearest_slot(slots, first + delta) + (was - first));
             if let Some((_, r)) = app.edit_layout.rows.iter().find(|(i, _)| *i == d.0) {
                 if let (Some(src), Some(dst)) = (s.track(t), s.track(d))
+                    && let at = src.clips().partition_point(|c| c.start < was)
                     && let Some(clip) = src
                         .clips()
-                        .iter()
-                        .find(|c| clips.contains(&c.id) && !ops::locked(c) && c.start == was && c.length == len && !drawn.contains(&c.id))
+                        .get(at..)
+                        .into_iter()
+                        .flatten()
+                        .take_while(|c| c.start == was)
+                        .find(|c| c.length == len && !ops::locked(c) && selected.contains(&c.id) && !drawn.contains(&c.id))
                 {
-                    drawn.push(clip.id);
+                    drawn.insert(clip.id);
                     let lane = lane_rect(dst, Rect::from_min_max(pos2(tl.min.x, r[1]), pos2(tl.max.x, r[3])), tl);
                     let mut ghost = painter.with_clip_rect(lane.intersect(area));
                     ghost.multiply_opacity(GHOST_OPACITY);
