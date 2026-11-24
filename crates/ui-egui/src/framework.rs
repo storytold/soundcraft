@@ -14,7 +14,7 @@ use craft_host::target::ShellInfo;
 use craft_host::{AppInfo, Host};
 use craft_keymap::{Chord, Key, Mods, Overrides};
 use craft_ui::fonts::{I18nScripts, SystemFonts, UiFonts};
-use craft_ui::runtime::commands::{CommandInput, CommandSet, NavCommand};
+use craft_ui::runtime::commands::{CommandInput, CommandSet, NavCommand, QuitCommand};
 use craft_ui::runtime::env::{RootEnv, Scale};
 use craft_ui::runtime::focus::{EditSet, KeepKeys, KeyUse};
 use craft_ui::runtime::frame::{FrameInput, FrameOutput};
@@ -62,13 +62,19 @@ pub fn install_headless(ctx: &egui::Context) {
     }
 }
 
-/// Who SoundCraft is to the framework's dialogs (the update dialogs show its name).
+/// Who SoundCraft is to the framework's dialogs (the update dialogs show its name and icon).
 pub(crate) fn host() -> Arc<Host> {
-    Arc::new(Host::builder(AppInfo { id: "soundcraft", name: "SoundCraft", version: env!("CARGO_PKG_VERSION") }).build())
+    Arc::new(
+        Host::builder(AppInfo { id: "soundcraft", name: "SoundCraft", version: env!("CARGO_PKG_VERSION") })
+            .icon_png(include_bytes!("../../../assets/app-icon/hicolor/128x128/apps/ai.storyteller.soundcraft.png"))
+            .build(),
+    )
 }
 
 /// The runtime's default keys SoundCraft's own shortcuts use: F6 and Shift+F6 move between panes by default, and F6
-/// is the Trim tool in SoundCraft. Overrides are keyed by command id, which the command set gives.
+/// is the Trim tool in SoundCraft; Cmd+Q (Ctrl+Q) is the runtime's Quit, and SoundCraft quits through its own
+/// `app.quit`, which keeps its recording and recovery rules. Overrides are keyed by command id, which the command set
+/// gives.
 fn command_overrides() -> Arc<Overrides> {
     static OVERRIDES: OnceLock<Arc<Overrides>> = OnceLock::new();
     OVERRIDES
@@ -76,6 +82,7 @@ fn command_overrides() -> Arc<Overrides> {
             let mut overrides = Overrides::new();
             overrides.insert(NavCommand::NextPane.id(), Vec::new());
             overrides.insert(NavCommand::PreviousPane.id(), Vec::new());
+            overrides.insert(QuitCommand::Quit.id(), Vec::new());
             Arc::new(overrides)
         })
         .clone()
