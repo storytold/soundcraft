@@ -5026,6 +5026,7 @@ name = "soundcraft-engine"
 version = "0.20.1"
 dependencies = [
  "cfb",
+ "craft-aaf",
  "craft-audio",
  "craft-docpath",
  "craft-score",
