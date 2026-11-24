@@ -1,6 +1,6 @@
 # Where SoundCraft falls short of Pro Tools
 
-> **Last reviewed:** 2026-11-14 · **Last updated:** 2026-11-24 · **Change:** minor (G-01: latency reporting; previously minor: G-06: recording to disk is done (#84, long takes #888); streaming sources remain; previously minor: G-02 shrunk: MIDI input devices work; G-03: strict external-WAV AAF import; previously minor: G-05: plugin editors on Linux/X11; previously trivial: G-09: the pt-BR catalog now covers helper-passed tooltips, the status bar, the remove-session prompt and engine error text; G-08: Frequency Shifter, 28 processors; G-04: volume automation read at every sample, #1354; G-01: `setup.playback_engine` applies the device buffer in the desktop app; G-04: Clip Looping crossfade and loop count) · **Target:** Avid Pro Tools Ultimate 2026.4.1
+> **Last reviewed:** 2026-11-14 · **Last updated:** 2026-11-24 · **Change:** minor (G-01: record-offset compensation; previously minor: G-01: latency reporting; previously minor: G-06: recording to disk is done (#84, long takes #888); streaming sources remain; previously minor: G-02 shrunk: MIDI input devices work; G-03: strict external-WAV AAF import; previously minor: G-05: plugin editors on Linux/X11; previously trivial: G-09: the pt-BR catalog now covers helper-passed tooltips, the status bar, the remove-session prompt and engine error text; G-08: Frequency Shifter, 28 processors; G-04: volume automation read at every sample, #1354; G-01: `setup.playback_engine` applies the device buffer in the desktop app; G-04: Clip Looping crossfade and loop count) · **Target:** Avid Pro Tools Ultimate 2026.4.1
 
 Every known shortfall, one entry each, ranked by how much it stops a Pro Tools user from doing
 real work in SoundCraft. This is the work list: pick from the top. Rows marked **alpha blocker**
@@ -56,8 +56,14 @@ When you close a gap, delete its entry (or shrink it) in the same PR, and bump t
   `setup.playback_engine` show the input and output latency cpal reports per stream. ASIO reports
   the driver's figures; WASAPI shared under-reports (an RME UFX reported 49 ms for a measured 79 ms
   round trip); Core Audio is not yet verified.
+- **Done (2026-11-24):** record-offset compensation: a take is placed from when its first sample
+  was captured and when the record start was heard, as the devices report them, plus a per-machine
+  record offset (Setup › Playback Engine, `record_offset`) for drivers that misreport. On an RME UFX
+  through its internal loopback, ASIO takes moved from 557 samples late to within 4 samples of the
+  digital loopback's own lead; WASAPI shared from 67–87 ms late to 19–29 ms (the reported latency is
+  short and varies by one 10 ms period). Core Audio is not yet verified.
 - **Missing:** routing to physical channels (I/O Setup), one duplex stream on one clock (input and
-  output are still separate cpal streams), record-offset compensation, ASIO
+  output are still separate cpal streams), ASIO
   in official builds (owner decision: Steinberg's SDK is proprietary or GPLv3), JACK, and
   verification on macOS and Linux. The mix still runs in fixed 512-sample blocks.
 - **Evidence:** code above; Playback Engine window says "Mix block size: 512 samples"; issue #42
@@ -257,6 +263,7 @@ missing. Out of scope unless the owner decides otherwise.
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-11-24 | minor | G-01: record-offset compensation from device timing, with a per-machine record offset; estimates unchanged |
 | 2026-11-24 | minor | G-01: latency reporting (Playback Engine, `ui.audio_device`, `setup.playback_engine`); record-offset compensation remains; estimates unchanged |
 | 2026-11-14 | minor | G-03: strict external-WAV AAF import with bounded property caching; AAF/OMF export, OMF import and `.ptx` remain; estimates unchanged |
 | 2026-11-13 | trivial | G-09: the pt-BR catalog now covers tooltips localized inside buttons and toggles, the Edit-window status bar, the remove-session question, the send help text and engine errors shown in the status line; estimates unchanged |
