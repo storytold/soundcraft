@@ -20,7 +20,7 @@ STAGE="$NIGHTLY_WORK/stage"
 mkdir -p "$STAGE"
 cp "$NIGHTLY_GUI" "$STAGE/soundcraft"
 chmod 755 "$STAGE/soundcraft"
-cp "$ROOT/assets/app-icon/soundcraft-1024.png" "$STAGE/soundcraft-nightly.png"
+cp "$ROOT/assets/app-icon/soundcraft-nightly.png" "$STAGE/soundcraft-nightly.png"
 nightly_copy_notices "$STAGE"
 # The private mktemp cwd is the helper authority root, not a CLI path parent.
 (cd "$NIGHTLY_WORK" && python3 "$ROOT/packaging/nightly-archive.py" linux stage archive.tar.gz)
