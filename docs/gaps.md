@@ -58,10 +58,11 @@ When you close a gap, delete its entry (or shrink it) in the same PR, and bump t
   round trip); Core Audio is not yet verified.
 - **Done (2026-11-24):** record-offset compensation: a take is placed from when its first sample
   was captured and when the record start was heard, as the devices report them, plus a per-machine
-  record offset (Setup › Playback Engine, `record_offset`) for drivers that misreport. On an RME UFX
-  through its internal loopback, ASIO takes moved from 557 samples late to within 4 samples of the
-  digital loopback's own lead; WASAPI shared from 67–87 ms late to 19–29 ms (the reported latency is
-  short and varies by one 10 ms period). Core Audio is not yet verified.
+  record offset (Setup › Playback Engine, `record_offset`) for drivers that misreport. Both moments
+  come from the stream clock, so a heavy mix delaying the input callback does not move the take. On
+  an RME UFX through its internal loopback, ASIO takes moved from 557 samples late to exactly the
+  digital loopback's own 50-sample lead, also with a 3 ms render load; WASAPI shared from 67–87 ms
+  late to 14–18 ms (shared mode under-reports its input latency). Core Audio is not yet verified.
 - **Missing:** routing to physical channels (I/O Setup), one duplex stream on one clock (input and
   output are still separate cpal streams), ASIO
   in official builds (owner decision: Steinberg's SDK is proprietary or GPLv3), JACK, and
