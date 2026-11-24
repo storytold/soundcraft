@@ -304,7 +304,8 @@ pub(super) fn feed_meter(d: &mut MeterDisplay, peak: [f32; 2], gr: f32, dt: f32)
 /// record-enabled or input-monitored. A MIDI or instrument track listens to MIDI devices, so
 /// arming one does not open an audio device or complain that there is none.
 pub(super) fn wants_audio_input(s: &soundcraft_model::Session) -> bool {
-    s.tracks.iter().any(|t| !t.kind.is_midi() && (t.mixer.input_monitor || t.mixer.record_arm))
+    // An inactive track keeps its record and monitor buttons but takes no input.
+    s.tracks.iter().any(|t| !t.kind.is_midi() && !t.inactive && (t.mixer.input_monitor || t.mixer.record_arm))
 }
 
 #[cfg(test)]
@@ -327,6 +328,17 @@ mod audio_input_tests {
         s.track_mut(vox).unwrap().mixer.input_monitor = false;
         s.track_mut(vox).unwrap().mixer.record_arm = true;
         assert!(wants_audio_input(&s));
+    }
+
+    #[test]
+    fn an_inactive_audio_track_does_not_ask_for_the_audio_input() {
+        let mut s = Session::default();
+        let vox = s.add_track(TrackKind::Audio, ChannelFormat::Mono, None);
+        let track = s.track_mut(vox).unwrap();
+        track.mixer.record_arm = true;
+        track.mixer.input_monitor = true;
+        track.inactive = true;
+        assert!(!wants_audio_input(&s), "an inactive track keeps its buttons but records and monitors nothing");
     }
 }
 
