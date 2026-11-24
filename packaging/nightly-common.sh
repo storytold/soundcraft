@@ -36,6 +36,8 @@ nightly_init() {
 # The channel and the feed identity are passed explicitly as well as inherited: the build script
 # refuses a nightly build without them, and a stable binary would not print the line checked below.
 nightly_compile_gui() {
+  # Signing material never reaches compilation (the Windows -CheckBuildEnvironment rule).
+  nightly_refuse_signing_env
   (cd "$ROOT" && SOUNDCRAFT_BUILD_CHANNEL=nightly-v1 SOUNDCRAFT_OVERRIDE_VERSION="$VERSION" \
     cargo build --release --locked -p soundcraft --target "$NIGHTLY_RUST_TARGET")
   NIGHTLY_GUI="$CARGO_TARGET_DIR/$NIGHTLY_RUST_TARGET/release/soundcraft"
