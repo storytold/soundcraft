@@ -45,12 +45,38 @@ impl Language {
         }
     }
 
-    pub fn parse(tag: &str) -> Option<Self> {
+    /// Whether this language has the glyphs it needs on the given build target.
+    ///
+    /// WebAssembly builds ship only egui's default fonts (no Hebrew glyphs), so Hebrew is left
+    /// disabled in the browser until a Hebrew font is available there.
+    pub const fn supported_on_target(self, wasm: bool) -> bool {
+        !(wasm && matches!(self, Self::Hebrew))
+    }
+
+    /// Whether this language is available on the current build target.
+    pub const fn is_supported(self) -> bool {
+        self.supported_on_target(cfg!(target_arch = "wasm32"))
+    }
+
+    /// Languages selectable in the UI on the current build target.
+    pub fn supported() -> impl Iterator<Item = Self> {
+        Self::ALL.into_iter().filter(|language| language.is_supported())
+    }
+
+    /// Parses a language tag on a target with (`wasm = true`) or without (`wasm = false`) the
+    /// browser font limitation.
+    pub fn parse_for(tag: &str, wasm: bool) -> Option<Self> {
         let trimmed = tag.trim();
-        if trimmed.eq_ignore_ascii_case("iw") {
-            return Some(Self::Hebrew);
-        }
-        Self::ALL.into_iter().find(|language| language.id().eq_ignore_ascii_case(trimmed))
+        let parsed = if trimmed.eq_ignore_ascii_case("iw") {
+            Some(Self::Hebrew)
+        } else {
+            Self::ALL.into_iter().find(|language| language.id().eq_ignore_ascii_case(trimmed))
+        };
+        parsed.filter(|language| language.supported_on_target(wasm))
+    }
+
+    pub fn parse(tag: &str) -> Option<Self> {
+        Self::parse_for(tag, cfg!(target_arch = "wasm32"))
     }
 
     /// Rewrites the decimal point of a rendered number for this language.
@@ -381,6 +407,19 @@ mod tests {
         assert_eq!(Language::parse(" he "), Some(Language::Hebrew));
         assert_eq!(Language::parse("iw"), Some(Language::Hebrew));
         assert_eq!(Language::parse("fr"), None);
+    }
+
+    #[test]
+    fn hebrew_is_excluded_on_wasm_without_hebrew_fonts() {
+        assert!(Language::English.supported_on_target(true));
+        assert!(Language::PortugueseBrazil.supported_on_target(true));
+        assert!(!Language::Hebrew.supported_on_target(true));
+        assert!(Language::Hebrew.supported_on_target(false));
+        assert_eq!(Language::parse_for("he", true), None);
+        assert_eq!(Language::parse_for("iw", true), None);
+        assert_eq!(Language::parse_for("he", false), Some(Language::Hebrew));
+        assert_eq!(Language::parse_for("iw", false), Some(Language::Hebrew));
+        assert_eq!(Language::parse_for("pt-BR", true), Some(Language::PortugueseBrazil));
     }
 
     #[test]
