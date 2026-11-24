@@ -449,6 +449,11 @@ fn loop_clips(e: &mut Engine, p: &Value) -> Result<Value> {
             c.loop_id = Some(lid);
         }
         let mut copies = Vec::new();
+        // Each repetition starts where the previous one ended, so copies butt up exactly and
+        // every full repetition has the fitted length. Placing each boundary via
+        // tick_to_samples rounds independently, which made full repetitions a sample short
+        // or long even at a constant tempo.
+        let mut cursor: Option<Samples> = None;
         for k in 1..=reps {
             let mut nc = c.clone();
             nc.start = 0;
@@ -457,18 +462,23 @@ fn loop_clips(e: &mut Engine, p: &Value) -> Result<Value> {
                 // and its length is that beat's span at the tempo in effect where it starts, so
                 // the loop keeps landing on grid across tempo changes.
                 let at_tick = start_tick + k * beat_ticks;
-                let at = s.tempo.tick_to_samples(at_tick, sr);
-                let full = s.tempo.tick_to_samples(at_tick + beat_ticks, sr).saturating_sub(at);
+                let grid_at = s.tempo.tick_to_samples(at_tick, sr);
+                let at = cursor.unwrap_or(grid_at);
+                let full = s.tempo.tick_to_samples(at_tick + beat_ticks, sr).saturating_sub(grid_at);
                 let take = match end {
                     Some(e) => full.min(e.saturating_sub(at)).max(0),
                     None => {
-                        if k == reps && last < c.length {
+                        if s.tempo.tempos().len() <= 1 {
+                            // Constant tempo: every repetition is exactly the fitted clip.
+                            len
+                        } else if k == reps && last < c.length {
                             last
                         } else {
                             full
                         }
                     }
                 };
+                cursor = Some(at + take);
                 (at, take)
             } else {
                 let at = c.start + c.length * k;
