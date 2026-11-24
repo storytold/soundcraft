@@ -88,10 +88,11 @@ jobs:
           test "$plain" = "SoundCraft $SOUNDCRAFT_VERSION (nightly-v1)" || { echo "plain query: $plain" >&2; exit 1; }
           launcher="$(env -i PATH="$path" HOME="$home" XDG_CONFIG_HOME="$xdg/c" "$tz/soundcraft" --launch-profile nightly-v1 --profile-root "$profile" --version)"
           test "$launcher" = "SoundCraft $SOUNDCRAFT_VERSION (nightly-v1)" || { echo "launcher query: $launcher" >&2; exit 1; }
-          # A native package refuses a Flatpak instance, and no stable folder is created.
-          if env -i PATH="$path" HOME="$home" XDG_CONFIG_HOME="$xdg/c" FLATPAK_ID=ai.storyteller.soundcraft "$tz/soundcraft" --launch-profile nightly-v1 --profile-root "$(mktemp -d)/p" -- 2>/dev/null; then
-            echo 'a Flatpak instance must not run the native Nightly' >&2; exit 1
-          fi
+          # A native package refuses a Flatpak instance with exit status 2 (the same status whether or
+          # not a display exists), and no stable folder is created.
+          status=0
+          env -i PATH="$path" HOME="$home" XDG_CONFIG_HOME="$xdg/c" FLATPAK_ID=ai.storyteller.soundcraft "$tz/soundcraft" --launch-profile nightly-v1 --profile-root "$(mktemp -d)/p" -- >/dev/null 2>&1 || status=$?
+          test "$status" -eq 2 || { echo "a Flatpak instance must be refused with exit status 2, got $status" >&2; exit 1; }
           for stable in config data; do test ! -e "$xdg/$stable/soundcraft" || { echo "stable $stable folder created" >&2; exit 1; }; done
       - name: Keep the unsigned archive
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2

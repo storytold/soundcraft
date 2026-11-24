@@ -48,10 +48,7 @@ pub fn finish_once(shared: &Shared, unclean_notice_shown: bool) {
 /// link at either name is replaced rather than followed; a failure leaves `path` untouched.
 fn atomic_write_no_follow(path: &Path, bytes: &[u8]) -> io::Result<()> {
     use std::io::Write as _;
-    let nonce = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_err(|error| io::Error::other(error.to_string()))?
-        .as_nanos();
+    let nonce = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_err(|error| io::Error::other(error.to_string()))?.as_nanos();
     let name = path.file_name().ok_or_else(|| io::Error::other("Nightly session state needs a file name"))?;
     let temporary = path.with_file_name(format!(".{}.{}.{nonce}.tmp", name.to_string_lossy(), std::process::id()));
     let mut file = OpenOptions::new().write(true).create_new(true).open(&temporary)?;
@@ -143,7 +140,8 @@ mod tests {
         fn new() -> Self {
             static NEXT: AtomicU64 = AtomicU64::new(0);
             loop {
-                let path = std::env::temp_dir().join(format!("soundcraft-nightly-session-{}-{}", std::process::id(), NEXT.fetch_add(1, Ordering::Relaxed)));
+                let path =
+                    std::env::temp_dir().join(format!("soundcraft-nightly-session-{}-{}", std::process::id(), NEXT.fetch_add(1, Ordering::Relaxed)));
                 match std::fs::create_dir(&path) {
                     Ok(()) => return Self(path),
                     Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,

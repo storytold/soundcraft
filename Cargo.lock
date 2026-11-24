@@ -4951,6 +4951,7 @@ dependencies = [
  "soundcraft-ui-egui",
  "winit",
  "winresource",
+ "winsafe",
 ]
 
 [[package]]

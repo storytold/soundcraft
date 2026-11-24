@@ -99,8 +99,10 @@ fn installation_boundary(platform: Platform, exe: &Path) -> Result<PathBuf, Stri
 fn forbidden_roots(platform: Platform, env: &impl Fn(&str) -> Option<OsString>, exe: &Path) -> Result<Vec<PathBuf>, String> {
     let mut roots = match platform {
         Platform::Windows => {
-            let mut roots =
-                ["APPDATA", "LOCALAPPDATA"].into_iter().map(|key| required_base(env, key).map(|p| p.join("SoundCraft"))).collect::<Result<Vec<_>, _>>()?;
+            let mut roots = ["APPDATA", "LOCALAPPDATA"]
+                .into_iter()
+                .map(|key| required_base(env, key).map(|p| p.join("SoundCraft")))
+                .collect::<Result<Vec<_>, _>>()?;
             // The MSI's default per-user and per-machine folders (install-policy.wxi). A custom
             // install folder is not known here; the executable's own folder is fenced below.
             roots.push(required_base(env, "LOCALAPPDATA")?.join("Programs").join("ArtCraft").join("SoundCraft"));
@@ -204,19 +206,18 @@ fn validate_for(
         // the stable override variable instead passes the profile explicitly; the message names
         // that, because this is what a Linux nightly launcher hits when it exports the variable.
         return Err(
-            "nightly-v1 cannot be combined with SOUNDCRAFT_CONFIG_DIR; pass --launch-profile nightly-v1 --profile-root <dir> -- instead".into(),
+            "nightly-v1 cannot be combined with SOUNDCRAFT_CONFIG_DIR; pass --launch-profile nightly-v1 --profile-root <dir> -- instead".into()
         );
     }
-    if platform != Platform::Windows {
-        if let Some(instance) = env("FLATPAK_ID").filter(|v| !v.is_empty()) {
-            // These rows are native tar/app-bundle launches, not a Flatpak package. Inheriting its
-            // runtime socket namespace could point another profile at the stable app's socket. The
-            // Nightly Flatpak is the exception: its own app id is the sandbox, so $HOME and the XDG
-            // folders in there are already this package's own.
-            if instance.to_string_lossy() != NIGHTLY_FLATPAK_ID {
-                return Err("nightly-v1 native packages cannot inherit a Flatpak instance; launch through the native Launcher".into());
-            }
-        }
+    // These rows are native tar/app-bundle launches, not a Flatpak package. Inheriting its
+    // runtime socket namespace could point another profile at the stable app's socket. The
+    // Nightly Flatpak is the exception: its own app id is the sandbox, so $HOME and the XDG
+    // folders in there are already this package's own.
+    if platform != Platform::Windows
+        && let Some(instance) = env("FLATPAK_ID").filter(|v| !v.is_empty())
+        && instance.to_string_lossy() != NIGHTLY_FLATPAK_ID
+    {
+        return Err("nightly-v1 native packages cannot inherit a Flatpak instance; launch through the native Launcher".into());
     }
     let chosen = canonical_future(root)?;
     if is_portable_layout(root, platform) || is_portable_layout(&chosen, platform) {
@@ -267,7 +268,8 @@ mod tests {
         fn new() -> Self {
             static NEXT: AtomicU64 = AtomicU64::new(0);
             let root = loop {
-                let candidate = std::env::temp_dir().join(format!("soundcraft-profile-policy-{}-{}", std::process::id(), NEXT.fetch_add(1, Ordering::Relaxed)));
+                let candidate =
+                    std::env::temp_dir().join(format!("soundcraft-profile-policy-{}-{}", std::process::id(), NEXT.fetch_add(1, Ordering::Relaxed)));
                 match std::fs::create_dir(&candidate) {
                     Ok(()) => break std::fs::canonicalize(candidate).unwrap(),
                     Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
@@ -393,10 +395,6 @@ mod tests {
         assert!(fixture.check(Platform::Linux, &private).is_ok());
         assert_eq!(std::fs::canonicalize(private.join("Autosave")).unwrap(), autosave);
     }
-
-
-
-    #[test]
 
     #[test]
     fn overlap_check_handles_ancestor_descendant_and_prefix_lookalikes() {

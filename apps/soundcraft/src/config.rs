@@ -358,7 +358,8 @@ mod config_tests {
     #[test]
     fn the_stable_channel_keeps_its_own_resolution() {
         let vars = [("XDG_CONFIG_HOME", "/xdg")];
-        let dir = config_dir_with(Platform::Other, |name| vars.iter().find_map(|(key, value)| (*key == name).then(|| OsString::from(value))), None, None);
+        let dir =
+            config_dir_with(Platform::Other, |name| vars.iter().find_map(|(key, value)| (*key == name).then(|| OsString::from(value))), None, None);
         assert_eq!(dir, Some(PathBuf::from("/xdg/soundcraft")));
     }
 

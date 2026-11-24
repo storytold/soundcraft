@@ -1,4 +1,4 @@
-#!/bin/env bash
+#!/usr/bin/env bash
 # package.sh's FHS tar without a build: a Nightly tar ships the launcher as bin/soundcraft and
 # the GUI beside it as bin/soundcraft-bin, so an unpacked distro tarball (also the Flatpak's
 # input) starts the private profile too; the stable tar keeps the bare GUI. Stub binaries stand in

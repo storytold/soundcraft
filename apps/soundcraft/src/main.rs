@@ -88,13 +88,10 @@ impl eframe::App for App {
         let app_name = os_window::name_for(os_window::identity());
         let document = (self.0.engine.session().name.as_str(), self.0.engine.is_dirty());
         let title = if self.0.native_menu_bar {
-            format!(
-                "{} — {}",
-                soundcraft_ui_egui::os_title(app_name, Some(document), true),
-                if self.0.ui.window == soundcraft_ui_egui::MainWindow::Edit { "Edit" } else { "Mix" }
-            )
+            let section = if self.0.ui.window == soundcraft_ui_egui::MainWindow::Edit { "Edit" } else { "Mix" };
+            soundcraft_ui_egui::os_title_with_section(app_name, Some(document), section)
         } else {
-            soundcraft_ui_egui::os_title(app_name, Some(document), true)
+            soundcraft_ui_egui::os_title(app_name, Some(document.0))
         };
         set_title(ctx, title);
     }
@@ -206,10 +203,12 @@ fn app_icon() -> Option<egui::IconData> {
     eframe::icon_data::from_png_bytes(png).map_err(|e| log::warn!("app icon: {e}")).ok()
 }
 
-
 /// Set the immutable Windows AUMID for the Nightly flavor before any window or COM service.
 fn initialize_nightly_process_identity() -> Result<(), process_identity::IdentityError> {
-    process_identity::initialize(build_flavor::COMPILED == build_flavor::BuildFlavor::NightlyV1, os_window::id_for(os_window::LaunchIdentity::NightlyV1))
+    process_identity::initialize(
+        build_flavor::COMPILED == build_flavor::BuildFlavor::NightlyV1,
+        os_window::id_for(os_window::LaunchIdentity::NightlyV1),
+    )
 }
 
 /// Report a refused launch profile on standard error, and in a dialog on a desktop session: a
@@ -242,7 +241,8 @@ fn prepare_launch() -> Option<Vec<std::ffi::OsString>> {
     // Plain `--version`, or the Launcher's `--launch-profile nightly-v1 --profile-root <dir>
     // --version`: answered before root validation, process identity, IPC or any window, as
     // `SoundCraft <version> (nightly-v1)` on standard output with nothing on standard error.
-    if build_flavor::COMPILED == build_flavor::BuildFlavor::NightlyV1 && (build_flavor::version_query(&argv) || launch_profile::version_query(&argv)) {
+    if build_flavor::COMPILED == build_flavor::BuildFlavor::NightlyV1 && (build_flavor::version_query(&argv) || launch_profile::version_query(&argv))
+    {
         use std::io::Write as _;
         let _ = writeln!(std::io::stdout(), "SoundCraft {}", build_flavor::version(build_flavor::COMPILED, env!("SOUNDCRAFT_BUILT_VERSION")));
         return None;
@@ -253,7 +253,11 @@ fn prepare_launch() -> Option<Vec<std::ffi::OsString>> {
             initialize_nightly_process_identity().map_err(|error| error.to_string())?;
             Ok(launch)
         })
-        .and_then(|launch| launch_profile::prepare(launch, |root| launch_profile::validate_root(root, |key| std::env::var_os(key), std::env::current_exe().ok().as_deref())))
+        .and_then(|launch| {
+            launch_profile::prepare(launch, |root| {
+                launch_profile::validate_root(root, |key| std::env::var_os(key), std::env::current_exe().ok().as_deref())
+            })
+        })
         .unwrap_or_else(|error| {
             report_launch_profile_error(&error);
             std::process::exit(2)
