@@ -595,11 +595,19 @@ fn midi_inputs(app: &mut SoundApp, ui: &mut egui::Ui) {
 /// Setup › Playback Engine / Hardware: choose the audio system, devices, rate and buffer size.
 pub fn playback_engine(app: &mut SoundApp, ctx: &egui::Context) {
     let mut open = app.ui.show_playback_engine;
+    // The window's unapplied edits, with the choice they started from. A choice changed elsewhere
+    // (`ui.audio_device`, `setup.playback_engine`, a reconnect) replaces them, so the window never
+    // shows, or applies, an earlier choice.
+    let draft_id = egui::Id::unique("audio_draft");
     if !open {
+        // Closed from the menu or by command: unapplied edits go, as with the close button.
+        ctx.data_mut(|d| d.remove_temp::<(AudioConfig, AudioConfig)>(draft_id));
         return;
     }
-    let draft_id = egui::Id::unique("audio_draft");
-    let mut draft = ctx.data(|d| d.get_temp::<AudioConfig>(draft_id)).unwrap_or_else(|| app.ui.audio.clone());
+    let mut draft = ctx
+        .data(|d| d.get_temp::<(AudioConfig, AudioConfig)>(draft_id))
+        .filter(|(from, _)| *from == app.ui.audio)
+        .map_or_else(|| app.ui.audio.clone(), |(_, draft)| draft);
     let mut refresh = false;
     let mut apply = false;
     let systems = audio_systems(ctx, false);
@@ -709,11 +717,11 @@ pub fn playback_engine(app: &mut SoundApp, ctx: &egui::Context) {
         app.ui.status = e;
     }
     if open {
-        ctx.data_mut(|d| d.insert_temp(draft_id, draft));
+        ctx.data_mut(|d| d.insert_temp(draft_id, (app.ui.audio.clone(), draft)));
     } else {
         // Closing discards unapplied edits and the device list (re-read on the next open).
         ctx.data_mut(|d| {
-            d.remove_temp::<AudioConfig>(draft_id);
+            d.remove_temp::<(AudioConfig, AudioConfig)>(draft_id);
             d.remove_temp::<Arc<Vec<AudioSystem>>>(egui::Id::unique("audio_systems"));
         });
     }

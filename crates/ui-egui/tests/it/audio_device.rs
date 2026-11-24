@@ -1,4 +1,6 @@
 //! `ui.audio_device`: the audio device choice is kept only once the devices reopen with it.
+use egui::vec2;
+use egui_kittest::{Harness, kittest::Queryable};
 use serde_json::json;
 use soundcraft_ui_egui::{Services, SoundApp};
 
@@ -100,4 +102,49 @@ fn playback_engine_applies_the_same_device_choice_as_the_audio_command() {
     soundcraft_ui_egui::menus::invoke_menu(&mut app, "setup.playback_engine", "Setup > Playback Engine...");
     assert!(app.ui.show_playback_engine, "the menu still opens the Playback Engine window");
     assert_eq!(app.ui.audio, cfg, "opening the window does not change the device");
+}
+
+/// The Playback Engine window, rendered, with the app's audio choice set to `buffer` samples.
+fn playback_engine_harness(buffer: u32) -> Harness<'static, SoundApp> {
+    let mut app = SoundApp::new(soundcraft_engine::Engine::default(), None, Services::default());
+    app.ui.audio.buffer_size = Some(buffer);
+    app.ui.show_playback_engine = true;
+    let mut h = Harness::builder().with_size(vec2(1600.0, 1000.0)).build_ui_state(
+        |ui, app: &mut SoundApp| {
+            app.logic(&ui.ctx().clone());
+            app.ui(ui);
+        },
+        app,
+    );
+    h.run_steps(3);
+    h
+}
+
+/// Whether the Buffer size selector shows `text`.
+fn shows(h: &Harness<'_, SoundApp>, text: &str) -> bool {
+    h.query_all_by_label("Buffer size").any(|n| n.value().is_some_and(|v| v == text))
+}
+
+/// A command (or another window) changes the audio choice while the Playback Engine is closed or
+/// open: the window then shows the current choice, and Apply has nothing to apply, so it never
+/// puts an earlier choice back.
+#[test]
+fn the_playback_engine_shows_the_current_choice_after_a_command_changes_it() {
+    let mut h = playback_engine_harness(256);
+    assert!(shows(&h, "256 samples"), "the window opens on the current choice");
+
+    // Closed from the menu (not its close button), then the choice changes by command.
+    h.state_mut().ui.show_playback_engine = false;
+    h.run_steps(2);
+    h.state_mut().ui.audio.buffer_size = Some(512);
+    h.state_mut().ui.show_playback_engine = true;
+    h.run_steps(3);
+    assert!(shows(&h, "512 samples"), "reopened on the choice the command made");
+    assert!(!shows(&h, "256 samples"), "not on the earlier one");
+
+    // Changed while the window is open.
+    h.state_mut().ui.audio.buffer_size = Some(1024);
+    h.run_steps(3);
+    assert!(shows(&h, "1024 samples"), "an open window follows a change made elsewhere");
+    assert!(h.query_by_label("Revert").is_none(), "nothing to revert: no edit differs from the current choice");
 }
