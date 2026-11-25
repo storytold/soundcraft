@@ -147,6 +147,47 @@ fn split_then_heal_rejoins_stretched_clip() {
     assert_eq!(clips(&s, t), vec![(1000, 4000, 1000)]);
 }
 
+/// The clip menu offers Heal Separation only when `can_heal` says so; it must agree with `heal`.
+#[test]
+fn can_heal_agrees_with_heal() {
+    let split = |s: &mut Session, t| {
+        separate_at(s, t, 3000);
+    };
+    let cut = |s: &mut Session, t| {
+        clear_range(s, t, Range::new(2000, 3000), false);
+    };
+    let other_file = |s: &mut Session, t| {
+        separate_at(s, t, 3000);
+        if let Some(pl) = s.track_mut(t).and_then(|t| t.playlist_mut())
+            && let ClipContent::Audio { source, .. } = &mut pl.clips[1].content
+        {
+            *source = SourceId(501);
+        }
+    };
+    let louder = |s: &mut Session, t| {
+        separate_at(s, t, 3000);
+        if let Some(pl) = s.track_mut(t).and_then(|t| t.playlist_mut()) {
+            pl.clips[1].gain_db = 3.0;
+        }
+    };
+    let cases: [fn(&mut Session, TrackId); 4] = [split, cut, other_file, louder];
+    for (i, setup) in cases.into_iter().enumerate() {
+        for range in [Range::new(0, 10_000), heal_range(Range::point(3000)), heal_range(Range::point(2500)), Range::new(6000, 7000)] {
+            let (mut s, t) = session_with_clip();
+            setup(&mut s, t);
+            let predicted = can_heal(&s, t, range);
+            assert_eq!(predicted, heal(&mut s, t, range) > 0, "case {i}, range {range:?}");
+        }
+    }
+    // The check must not be vacuous: a split heals at its seam, another file never does.
+    let (mut s, t) = session_with_clip();
+    split(&mut s, t);
+    assert!(can_heal(&s, t, heal_range(Range::point(3000))));
+    let (mut s, t) = session_with_clip();
+    other_file(&mut s, t);
+    assert!(!can_heal(&s, t, Range::new(0, 10_000)));
+}
+
 #[test]
 fn clear_slip_and_shuffle() {
     let (mut s, t) = session_with_clip();
