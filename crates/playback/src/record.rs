@@ -111,7 +111,43 @@ struct Shared {
     failed: Mutex<Option<String>>,
     clock: Option<Arc<crate::record_clock::OutputClock>>,
     first_capture: crate::record_clock::Stamp,
-    frames_captured: AtomicU64,
+    frames_captured: TakeCount,
+}
+
+/// Frames captured for the current take, tagged with the take, so that an input callback still
+/// running for the previous take cannot add to the next one's count.
+#[derive(Default)]
+struct TakeCount(AtomicU64);
+
+impl TakeCount {
+    const FRAMES: u64 = (1 << 48) - 1;
+
+    /// Start a new take's count at zero.
+    fn restart(&self) {
+        let take = (self.0.load(Ordering::Relaxed) >> 48).wrapping_add(1) & 0xffff;
+        self.0.store(take << 48, Ordering::Release);
+    }
+
+    /// The take counting now, to pass to [`TakeCount::add`].
+    fn take(&self) -> u64 {
+        self.0.load(Ordering::Acquire) >> 48
+    }
+
+    /// Count `frames` for `take`, unless another take started since.
+    fn add(&self, take: u64, frames: u64) {
+        let mut v = self.0.load(Ordering::Acquire);
+        while v >> 48 == take {
+            let next = (v & !Self::FRAMES) | (v & Self::FRAMES).saturating_add(frames).min(Self::FRAMES);
+            match self.0.compare_exchange_weak(v, next, Ordering::AcqRel, Ordering::Acquire) {
+                Ok(_) => return,
+                Err(now) => v = now,
+            }
+        }
+    }
+
+    fn frames(&self) -> u64 {
+        self.0.load(Ordering::Acquire) & Self::FRAMES
+    }
 }
 
 impl Shared {
@@ -126,7 +162,7 @@ impl Shared {
             failed,
             clock: None,
             first_capture: Default::default(),
-            frames_captured: AtomicU64::new(0),
+            frames_captured: TakeCount::default(),
         }
     }
 
@@ -210,6 +246,8 @@ where
                         *o = f32::from_sample(*x);
                     }
                     mon.push(s);
+                    // Read before `armed`: a take armed after this read has a new tag.
+                    let take = sh.frames_captured.take();
                     if sh.armed.load(Ordering::Acquire) {
                         if let Some(clock) = &sh.clock
                             && sh.first_capture.read().is_none()
@@ -223,7 +261,7 @@ where
                         }
                         sh.capture(s, &mut owed);
                         if sh.clock.is_some() {
-                            sh.frames_captured.fetch_add((s.len() / channels) as u64, Ordering::Release);
+                            sh.frames_captured.add(take, (s.len() / channels) as u64);
                         }
                     } else {
                         owed = 0;
@@ -411,7 +449,7 @@ impl Recorder {
         ring.tail.store(ring.head.load(Ordering::Acquire), Ordering::Release);
         *self.shared.failed.lock().unwrap_or_else(PoisonError::into_inner) = None;
         self.shared.first_capture.clear();
-        self.shared.frames_captured.store(0, Ordering::Relaxed);
+        self.shared.frames_captured.restart();
         if let Some(clock) = &self.shared.clock {
             clock.first_play.clear();
         }
@@ -479,7 +517,7 @@ impl Recorder {
 
     /// Frames captured since the take was armed, counted only on a shared ASIO clock.
     pub fn captured_frames(&self) -> u64 {
-        self.shared.frames_captured.load(Ordering::Acquire)
+        self.shared.frames_captured.frames()
     }
 
     /// Whether capture runs on the ASIO output's callback clock, so a take can be aligned to it.
@@ -996,6 +1034,26 @@ impl InputRing {
             }
             s.phase += step;
         }
+    }
+}
+
+#[cfg(test)]
+mod take_count_tests {
+    use super::TakeCount;
+
+    /// A callback that read the previous take's tag before the next take was armed adds nothing to it.
+    #[test]
+    fn a_late_callback_does_not_count_for_the_next_take() {
+        let count = TakeCount::default();
+        count.restart();
+        let old = count.take();
+        count.add(old, 512);
+        assert_eq!(count.frames(), 512);
+        count.restart();
+        count.add(old, 8192);
+        assert_eq!(count.frames(), 0);
+        count.add(count.take(), 256);
+        assert_eq!(count.frames(), 256);
     }
 }
 
