@@ -61,11 +61,12 @@ impl SoundApp {
             }
         };
         if !started {
-            let _ = self.refuse_on_lost_output(recording);
             if recording {
                 // End the record pass `start_recording` armed, which would otherwise stay armed.
                 self.stop_play();
             }
+            // After that cleanup, which reports the recording: the Reconnect advice is what stays shown.
+            let _ = self.refuse_on_lost_output(recording);
             return;
         }
         // The loop as the audio engine takes it: a range too short to loop is played once.
@@ -194,8 +195,10 @@ impl SoundApp {
         if e.loop_record && !sel.is_empty() && soundcraft_playback::loops(sel) {
             self.record_start = sel.start;
             self.punch = None;
-            self.start_play(sel.start, None, Some(sel));
+            // The plan goes in first: a start refused on a lost output stops the pass, and
+            // `finish_recording` then consumes the plan instead of it outliving the pass.
             self.plan_recording(takes, Some(sel.len()));
+            self.start_play(sel.start, None, Some(sel));
         } else {
             // Record into the selection when there is one (punch), with pre/post-roll if enabled;
             // the take is trimmed back to the punch range afterwards.
@@ -204,8 +207,8 @@ impl SoundApp {
             self.record_start = from;
             self.punch = (!sel.is_empty()).then_some(sel);
             let end = (!sel.is_empty()).then_some(sel.end + post);
-            self.start_play(from, end, None);
             self.plan_recording(takes, None);
+            self.start_play(from, end, None);
         }
     }
 
@@ -475,8 +478,12 @@ impl SoundApp {
                 }
                 TransportRequest::PlayFrom(at) => {
                     if self.is_playing() {
-                        if self.refuse_on_lost_output(self.engine.transport.recording) {
+                        if self.player.as_ref().is_some_and(|p| p.lost()) {
+                            let recording = self.engine.transport.recording;
+                            // Stop first: finishing a recording sets its own status, which the
+                            // Reconnect advice then replaces.
                             self.stop_play();
+                            let _ = self.refuse_on_lost_output(recording);
                             continue;
                         }
                         // Playing on from `at` drops the end and loop of the earlier selection.
