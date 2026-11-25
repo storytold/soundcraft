@@ -1007,6 +1007,58 @@ fn delay_compensation_aligns_an_aux_return_on_a_named_output() {
     assert!(latent[at[0]] > 0.26, "both paths sum at one frame: {}", latent[at[0]]);
 }
 
+/// A track routed to a path that shares a physical channel with an aux-fed path waits for the aux
+/// returns too, even through a chain of overlapping paths; with no aux latency nothing is delayed.
+#[test]
+fn delay_compensation_aligns_overlapping_named_outputs() {
+    let mut s = Session::default();
+    let n = 4096;
+    let mut imp = vec![0.0f32; n];
+    imp[1000] = 0.25;
+    s.pool.insert(SourceId(903), Arc::new(SourceAudio::new(AudioBuffer { sample_rate: 48_000, channels: vec![imp] })));
+    s.outputs.push(soundcraft_model::OutputPath { name: "Cue".into(), first_channel: 2, format: ChannelFormat::Mono });
+    s.outputs.push(soundcraft_model::OutputPath { name: "Wide".into(), first_channel: 2, format: ChannelFormat::Stereo });
+    s.outputs.push(soundcraft_model::OutputPath { name: "Alias".into(), first_channel: 3, format: ChannelFormat::Mono });
+    let bus = s.add_bus("Cue Bus", ChannelFormat::Mono);
+    let aux = s.add_track(TrackKind::Aux, ChannelFormat::Mono, Some("Cue Return"));
+    s.track_mut(aux).unwrap().mixer.input = Route::Bus(bus);
+    s.track_mut(aux).unwrap().mixer.output = Route::Hardware("Cue".into());
+    for output in [Route::Hardware("Wide".into()), Route::Hardware("Alias".into()), Route::Bus(bus)] {
+        let t = s.add_track(TrackKind::Audio, ChannelFormat::Mono, None);
+        let cid = s.new_clip_id();
+        let tr = s.track_mut(t).unwrap();
+        tr.playlist_mut().unwrap().clips.push(Clip::audio(cid, "i", SourceId(903), 0, 0, n as i64));
+        tr.mixer.output = output;
+    }
+    // Channel 2 carries the aux return and the "Wide" track; channel 3 carries the "Wide" track
+    // and the "Alias" track, which overlaps "Wide" only.
+    let channels = |s: &Session| {
+        let mut mix = MixEngine::new(48_000.0, 512);
+        mix.set_hardware_channels(4);
+        let mut out = vec![vec![0.0f32; 512]; 2];
+        let (mut two, mut three) = (Vec::new(), Vec::new());
+        for pos in (0..n).step_by(512) {
+            mix.render(s, pos as i64, 512, &mut out);
+            two.extend_from_slice(&mix.hardware_output()[2][..512]);
+            three.extend_from_slice(&mix.hardware_output()[3][..512]);
+        }
+        (two, three)
+    };
+    let (two, three) = channels(&s);
+    assert_eq!(impulse_at(&two), vec![1000], "no aux latency: no extra delay");
+    assert_eq!(impulse_at(&three), vec![1000], "no aux latency: no extra delay");
+
+    let mut comp = Insert::new("compressor");
+    comp.params.insert("lookahead".into(), 5.0);
+    comp.params.insert("ratio".into(), 1.0);
+    s.track_mut(aux).unwrap().mixer.inserts[0] = Some(comp);
+    let (two, three) = channels(&s);
+    let at = impulse_at(&two);
+    assert_eq!(at.len(), 1, "the overlapping direct and aux signals must arrive together: {at:?}");
+    assert!(at[0] > 1000);
+    assert_eq!(impulse_at(&three), at, "a path chained through an overlap waits as well");
+}
+
 #[test]
 fn offline_renders_line_up_with_the_timeline_in_any_block_size() {
     let mut s = Session::default();
