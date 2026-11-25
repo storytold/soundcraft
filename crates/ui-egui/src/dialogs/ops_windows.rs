@@ -38,6 +38,8 @@ pub struct OpsState {
     pub identify_beats: u32,
     pub identify_meter_num: u32,
     pub identify_meter_den: u32,
+    /// The selection start the meter fields were last read from (they follow the selection).
+    pub identify_meter_sel: Option<i64>,
 }
 
 impl Default for OpsState {
@@ -70,6 +72,7 @@ impl Default for OpsState {
             identify_beats: 0,
             identify_meter_num: 4,
             identify_meter_den: 4,
+            identify_meter_sel: None,
         }
     }
 }
@@ -123,6 +126,18 @@ fn beat_detective(app: &mut SoundApp, ctx: &egui::Context) {
                 }
             });
             ui.separator();
+            // The meter fields mirror the meter at the selection start (on open and whenever
+            // the selection moves), so untouched controls send the meter already there and
+            // Set Tempo writes no redundant meter event.
+            let sel_start = app.engine.session().edit.selection.start;
+            if app.ops.identify_meter_sel != Some(sel_start) {
+                let s = app.engine.session();
+                let t0 = s.tempo.samples_to_ticks(sel_start.max(0), s.sample_rate);
+                let m = s.tempo.meter_at_tick(t0);
+                app.ops.identify_meter_num = m.numerator;
+                app.ops.identify_meter_den = m.denominator;
+                app.ops.identify_meter_sel = Some(sel_start);
+            }
             ui.horizontal(|ui| {
                 ui.label(crate::localization::text("Identify Beat: selection is"));
                 ui.add(egui::DragValue::new(&mut app.ops.identify_bars).range(0..=999))
