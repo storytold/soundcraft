@@ -311,8 +311,12 @@ pub(super) fn translate(source: &str) -> Option<&'static str> {
         "Enter position…" => "Inserir posição…",
         "Receiving {incoming} fps; session is {session} fps" => "Recebendo {incoming} qps; a sessão está em {session} qps",
         "Take MTC chase offline before recording" => "Desconecte o seguimento de MTC antes de gravar",
-        "The session has conflicting timecode offsets. Chase uses the External Timecode Offset." => "A sessão tem deslocamentos de timecode conflitantes. O seguimento usa o deslocamento externo de timecode.",
-        "Cannot record MIDI: open an audio output in Setup > Playback Engine to start the audio engine." => "Não é possível gravar MIDI: abra uma saída de áudio em Configuração > Mecanismo de reprodução para iniciar o mecanismo de áudio.",
+        "The session has conflicting timecode offsets. Chase uses the External Timecode Offset." => {
+            "A sessão tem deslocamentos de timecode conflitantes. O seguimento usa o deslocamento externo de timecode."
+        }
+        "Cannot record MIDI: open an audio output in Setup > Playback Engine to start the audio engine." => {
+            "Não é possível gravar MIDI: abra uma saída de áudio em Configuração > Mecanismo de reprodução para iniciar o mecanismo de áudio."
+        }
         "Title" => "Título",
         "Track Color" => "Cor da faixa",
         "Track Height" => "Altura da faixa",
