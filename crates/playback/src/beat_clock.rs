@@ -87,6 +87,17 @@ impl Cursor {
         block.playing && self.pass != Some(block.pass) && at < block.origin.saturating_sub(offset)
     }
 
+    /// A repayment window paces owed pulses on the map it was planned with. A map change
+    /// ahead of the current position that moves its end replans it on the new map, so the
+    /// window rejoins the live grid instead of relaunching the receiver.
+    fn replan(&mut self, old: &Session, new: &Session) {
+        if let (Some(at), Some(window)) = (self.last_position, self.repayment)
+            && window.moved(old, new)
+        {
+            self.repayment = Repayment::new(self.next_pulse, at, new);
+        }
+    }
+
     fn advance(&mut self, playing: bool, at: i64, locate: bool, tempo: &TempoMap, rate: SampleRate, mut send: impl FnMut(&[u8])) {
         if !playing || at < 0 {
             self.delayed_start = playing;
@@ -186,16 +197,13 @@ impl SyncEncoder for Cursor {
     fn remap(&mut self, old: &Session, new: &Session) {
         if let Some(at) = self.last_position {
             self.remap |= remapped(old, new, at);
-            // A repayment window paces owed pulses on the map it was planned with. An edit
-            // ahead of the current position that moves its end replans it on the new map, so
-            // the window rejoins the live grid instead of relaunching the receiver.
-            if !self.remap
-                && let Some(window) = self.repayment
-                && window.moved(old, new)
-            {
-                self.repayment = Repayment::new(self.next_pulse, at, new);
+            if !self.remap {
+                self.replan(old, new);
             }
         }
+    }
+    fn regrid(&mut self, old: &Session, new: &Session) {
+        self.replan(old, new);
     }
     fn update(&mut self, b: Presentation, now: Instant, s: &Session, send: &mut dyn FnMut(Instant, &[u8])) -> Option<Instant> {
         let at = b.sample_index_at(now);
@@ -499,6 +507,51 @@ mod tests {
         run(&mut cursor, 626_000..1_500_000, &edited);
         assert_eq!(transport, [(0, vec![START])]);
         let live = (edited.tempo.samples_to_ticks_f(72_000, edited.sample_rate) / TICKS_PER_CLOCK as f64) as i64;
+        assert!(cursor.next_pulse.abs_diff(live) <= 1, "{} pulses sent, {live} live", cursor.next_pulse);
+    }
+
+    #[test]
+    fn a_live_grid_change_during_repayment_rejoins_the_grid_without_a_relaunch() {
+        let mut song = Session { sample_rate: SampleRate::HZ_48000, ..Session::default() };
+        song.tempo.set_tempo(0, 120.).unwrap();
+        let base = Instant::now();
+        let roll = Presentation {
+            generation: 0,
+            sample_rate: song.sample_rate,
+            system_delay_samples: 0,
+            pass: 1,
+            origin: 0,
+            playing: true,
+            sample: 0.,
+            heard_at: base,
+            samples_per_second: 48_000.,
+            limit: 1e9,
+            looped: None,
+            end: None,
+            lead: Some(Duration::ZERO),
+        };
+        let mut cursor = Cursor::default();
+        let mut transport = Vec::new();
+        let mut run = |cursor: &mut Cursor, range: std::ops::Range<u64>, session: &Session| {
+            for us in range.step_by(250) {
+                cursor.update(roll, base + Duration::from_micros(us), session, &mut |_, m| {
+                    if m != [CLOCK] {
+                        transport.push((us, m.to_vec()));
+                    }
+                });
+            }
+        };
+        run(&mut cursor, 0..200_000, &song);
+        cursor.timing_lost();
+        run(&mut cursor, 625_000..626_000, &song);
+        assert!(cursor.repayment.is_some());
+        // An accepted Clock-follow grid doubles the tempo ahead of the current position.
+        let mut grid = song.clone();
+        grid.tempo.set_tempo(TICKS_PER_QUARTER * 3 / 2, 240.).unwrap();
+        cursor.regrid(&song, &grid);
+        run(&mut cursor, 626_000..1_500_000, &grid);
+        assert_eq!(transport, [(0, vec![START])]);
+        let live = (grid.tempo.samples_to_ticks_f(72_000, grid.sample_rate) / TICKS_PER_CLOCK as f64) as i64;
         assert!(cursor.next_pulse.abs_diff(live) <= 1, "{} pulses sent, {live} live", cursor.next_pulse);
     }
 

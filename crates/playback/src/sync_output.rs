@@ -558,10 +558,12 @@ impl<C: Destination> Port<C> {
                 r.encoder.timing_lost();
             }
             if let Some(new) = revision {
-                if new.remap
-                    && let Some(old) = &r.map
-                {
-                    r.encoder.remap(&old.doc, &new.doc);
+                if let Some(old) = &r.map {
+                    if new.remap {
+                        r.encoder.remap(&old.doc, &new.doc);
+                    } else {
+                        r.encoder.regrid(&old.doc, &new.doc);
+                    }
                 }
                 r.map = Some(new);
             }
