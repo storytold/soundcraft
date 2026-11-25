@@ -72,7 +72,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Loop...",
             ["Clip"],
             Some("Cmd+Alt+L"),
-            "{clips?, count?: n, length?: samples, fill?: bool}: count is the clip plus its loops; length is the whole looped clip, with the last loop cut short to fit; fill loops up to the next clip on the track, or else to the session end",
+            "{clips?, count?: n, length?: samples, fill?: bool}: count is the clip plus its loops; length is the whole looped clip, with the last loop cut short to fit; fill loops up to the next clip on the track, or else to the session end; at most 1000 loops",
             has_selection,
             loop_clips
         ),
@@ -296,12 +296,13 @@ fn layer(e: &mut Engine, p: &Value, front: bool) -> Result<Value> {
     Ok(json!({}))
 }
 
-/// The most loops `clip.loop` makes of one clip.
-const MAX_LOOPS: i64 = 1000;
+/// The most loops `clip.loop` makes of one clip, whether by count, length or fill: Number of Loops,
+/// which counts the clip itself, goes up to one more.
+pub const MAX_LOOPS: i64 = 1000;
 
 fn loop_clips(e: &mut Engine, p: &Value) -> Result<Value> {
     let ids = clip_ids_param(e, p);
-    let count = i64_or(p, "count", 4).clamp(1, 512);
+    let count = i64_or(p, "count", 4).clamp(1, MAX_LOOPS + 1);
     let total = position_param(e, "clip.loop", p, "length")?;
     let fill = p.get("fill").and_then(Value::as_bool).unwrap_or(false);
     let s = e.session_mut();
@@ -334,7 +335,7 @@ fn loop_clips(e: &mut Engine, p: &Value) -> Result<Value> {
                 }
                 (reps, if rest > 0 { rest } else { len })
             }
-            None => ((count - 1).clamp(0, MAX_LOOPS), len),
+            None => (count - 1, len),
         };
         if reps > 0 && c.loop_id.is_none() {
             let lid = s.alloc();
@@ -351,7 +352,8 @@ fn loop_clips(e: &mut Engine, p: &Value) -> Result<Value> {
                 // `start` is 0 here, so the end is the length; the trim also shortens the fades to fit and removes a sync point past the cut.
                 nc.trim_end_to(last);
             }
-            copies.push((c.start + c.length * k, nc));
+            // Saturating, as the length and fill path is: a clip length read from a file can be absurd.
+            copies.push((c.start.saturating_add(c.length.saturating_mul(k)), nc));
         }
         for (at, nc) in copies {
             let length = nc.length;
