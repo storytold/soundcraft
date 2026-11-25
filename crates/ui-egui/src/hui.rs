@@ -402,6 +402,8 @@ pub(crate) fn document_replaced(app: &mut SoundApp) {
         link.ready = false;
         link.decoder = Decode::default();
         link.lamps = None;
+        // Input received before the replacement belongs to the old document.
+        while link.packets.try_recv().is_ok() {}
     }
 }
 
@@ -1240,6 +1242,19 @@ mod tests {
         poll(&mut app, &ctx);
         app.write_automation();
         assert_eq!(lane(&app), stopped, "a late release cannot add a point to a new pass");
+    }
+
+    #[test]
+    fn input_queued_before_a_document_replacement_is_dropped() {
+        let (mut app, track, packets) = test_app();
+        let ctx = egui::Context::default();
+        packets.send([0x90, 0x10, 127]).unwrap();
+        document_replaced(&mut app);
+        poll(&mut app, &ctx);
+        assert!(!app.engine.session().track(track).unwrap().mixer.mute);
+        packets.send([0x90, 0x10, 127]).unwrap();
+        poll(&mut app, &ctx);
+        assert!(app.engine.session().track(track).unwrap().mixer.mute, "the link still takes new input");
     }
 
     #[test]
