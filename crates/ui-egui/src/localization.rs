@@ -379,44 +379,11 @@ mod tests {
         assert_eq!(text("Appearance"), "Appearance");
     }
 
-    // Feature keys fall back to English until the translation catalog is updated.
-    fn permits_untranslated_sync_label(source: &str) -> bool {
-        matches!(
-            source,
-            "Audio output “{name}” is unavailable. Reconnect it in Playback Engine when stopped."
-                | "Audio output timing is unavailable. Compensated MIDI outputs need a valid measurement."
-                | "Include the reported audio output lead and the mixer's compensated plug-in delay."
-                | "Limited by the audio output lead ({lead} ms)"
-                | "Stop playback or recording before reconnecting this output."
-                | "Cannot record MIDI: open an audio output in Setup > Playback Engine to start the audio engine."
-                | "EXT"
-                | "Effective input offset (samples)"
-                | "Enter position…"
-                | "External MIDI clock"
-                | "External Timecode Offset"
-                | "Follow MIDI clock"
-                | "Follow external MIDI Clock"
-                | "Gen MTC"
-                | "Input offset"
-                | "MIDI clock input"
-                | "MTC Reader Port"
-                | "Offset (samples)"
-                | "Negative values make SoundCraft respond earlier."
-                | "Online (chase MTC)"
-                | "Online"
-                | "Receiving {incoming} fps; session is {session} fps"
-                | "Stop if MIDI clock is lost"
-                | "Sync"
-                | "Take MTC chase offline before recording"
-                | "The session has conflicting timecode offsets. Chase uses the External Timecode Offset."
-        ) && Language::PortugueseBrazil.text(source) == source
-    }
-
     #[test]
     fn portuguese_catalog_covers_every_menu_label() {
         for path in include_str!("../../engine/catalog/menus.txt").lines().chain(crate::menus::MENU_WINDOWS.iter().map(|(p, _)| *p)) {
             for label in path.split(" > ").map(str::trim).filter(|label| !label.is_empty()) {
-                assert!(super::pt_br::translate(label).is_some() || permits_untranslated_sync_label(label), "missing pt-BR menu label: {label}");
+                assert!(super::pt_br::translate(label).is_some(), "missing pt-BR menu label: {label}");
             }
         }
     }
