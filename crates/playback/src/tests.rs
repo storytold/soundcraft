@@ -268,6 +268,49 @@ fn a_block_that_panics_goes_silent_and_is_reported_once() {
 }
 
 #[test]
+fn sustained_slow_asio_callbacks_request_idle_recovery() {
+    // Successive 256-frame callbacks captured at 48 kHz after USB STORAGE.
+    let gaps_us = [251415, 250779, 251056, 251436, 250864, 251117, 250825, 250922];
+    let mut now = std::time::Instant::now();
+    let mut cadence = asio_recovery::Cadence::default();
+    cadence.observe(now, 256, 48000);
+    let mut requested = false;
+    for gap in gaps_us {
+        now += std::time::Duration::from_micros(gap);
+        requested |= asio_recovery::recovery_due(cadence.observe(now, 256, 48000), false, false, false, None, now);
+    }
+    assert!(requested, "continuing quarter-second callbacks must request a rebuild when stopped");
+}
+
+#[test]
+fn recovery_waits_for_transport_recording_and_retry_deadline() {
+    use asio_recovery::recovery_due;
+    let now = std::time::Instant::now();
+    for (playing, recording, pending) in [(true, false, false), (false, true, false), (true, true, false), (false, false, true)] {
+        assert!(!recovery_due(true, playing, recording, pending, None, now));
+    }
+    assert!(!recovery_due(true, false, false, false, Some(now + std::time::Duration::from_secs(1)), now));
+    assert!(recovery_due(true, false, false, false, Some(now), now));
+}
+
+#[test]
+fn cadence_ignores_isolated_gaps_and_slow_devices_with_large_buffers() {
+    use asio_recovery::Cadence;
+    use std::time::{Duration, Instant};
+    let mut now = Instant::now();
+    let mut watch = Cadence::default();
+    for gap in [5, 251, 251, 251, 5, 251, 5, 5] {
+        now += Duration::from_millis(gap);
+        assert!(!watch.observe(now, 256, 48000));
+    }
+    let mut watch = Cadence::default();
+    for _ in 0..10 {
+        now += Duration::from_millis(251);
+        assert!(!watch.observe(now, 12000, 48000));
+    }
+}
+
+#[test]
 fn a_lost_or_stalled_device_is_reported_once() {
     let ago = |seen: &mut Option<(u64, std::time::Instant)>| {
         if let Some(s) = seen {

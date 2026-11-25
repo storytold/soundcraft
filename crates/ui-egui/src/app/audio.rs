@@ -27,6 +27,10 @@ impl SoundApp {
             return;
         }
         let Some(player) = &self.player else { return };
+        // After an idle ASIO recovery, wait for the output to reopen before attaching the input.
+        if player.awaiting_asio_output() {
+            return;
+        }
         match player.open_input(&self.ui.audio) {
             Ok(r) => {
                 player.set_input(std::sync::Arc::clone(&r.monitor));
@@ -59,6 +63,12 @@ impl SoundApp {
             self.reconnect_audio();
             self.ui.status = output_status(false, false, &cause, crate::localization::text("SoundCraft reopened it."));
             return;
+        }
+        if let Some(p) = &mut self.player {
+            p.recover_idle_asio(self.engine.transport.playing, self.engine.transport.recording, !self.engine.transport_requests.is_empty(), || {
+                self.recorder = None;
+                self.recorder_failed = false;
+            });
         }
         let Some(p) = &self.player else { return };
         let Some(trouble) = p.trouble() else { return };
