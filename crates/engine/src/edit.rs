@@ -482,7 +482,7 @@ pub(crate) fn compose_clock_midi<'a>(
             let at = grid.tick_to_samples(play_origin.saturating_add(tick), sr);
             clip.range().contains(at) && !visible.contains(at)
         };
-        let projected = take.map(|take| take.project_events(sequence));
+        let projected = take.map(|take| take.played_events(sequence, clip.start, grid));
         for (i, &note) in sequence.notes.iter().enumerate() {
             let played = projected.as_ref().map_or(Some(note), |p| p.0[i]);
             if played.is_some_and(|n| heard_outside_selection(n.start)) {

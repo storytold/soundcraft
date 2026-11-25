@@ -95,7 +95,7 @@ impl crate::ClockTake {
                 if range.contains(at) { (relative(score, score_origin, score_base), false) } else { (score_tick(heard), true) }
             })
         };
-        let (played_notes, played_ctrls) = self.project_events(sequence);
+        let (played_notes, played_ctrls) = self.played_events(sequence, source.start, grid);
         let notes = sequence
             .notes
             .iter()
@@ -128,7 +128,8 @@ impl crate::ClockTake {
                 Some((c, played))
             })
             .collect();
-        Self::from_events(time, grid, range, notes, ctrls)
+        let (sequence, take) = Self::from_events(time, grid, range, notes, ctrls);
+        (sequence, take.rebased(source, range, grid))
     }
 }
 
@@ -1103,7 +1104,9 @@ mod tests {
         assert_eq!(attack_and_cc_samples(score, t), [(65, 84_000), (88, 84_000)]);
         assert!(attack_and_cc_samples(&e.playback_session(), t).is_empty(), "the slow clock still places both events outside the clip");
         e.playback_tempo = Some(TempoMap::new(60., 4, 4).unwrap());
-        assert_eq!(attack_and_cc_samples(&e.playback_session(), t).len(), 2, "both events sound again on return to capture tempo");
+        // The split converted its point to ticks once, at 45 BPM. Both events keep their
+        // captured beat, as in the unsplit take, when the clock returns to 60 BPM.
+        assert_eq!(attack_and_cc_samples(&e.playback_session(), t), [(65, 84_000), (88, 84_000)], "both events sound again on their captured beat");
     }
 
     /// Count only attacks and CCs that fall inside their own clip, like the audio scheduler.
