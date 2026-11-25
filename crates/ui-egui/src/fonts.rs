@@ -66,7 +66,7 @@ const HEBREW: &[(&str, u32)] = &[
 const MAX_FONT_BYTES: u64 = 64 << 20;
 
 #[cfg(not(target_arch = "wasm32"))]
-const HEBREW_REQUIRED_GLYPHS: &str = "אבגדהוזחטיכלמנסעפצקרשת";
+const HEBREW_REQUIRED_GLYPHS: &str = "אבגדהוזחטיכלמנסעפצקרשתךםןףץ";
 
 #[cfg(not(target_arch = "wasm32"))]
 fn is_sfnt(bytes: &[u8]) -> bool {
@@ -286,7 +286,7 @@ mod tests {
     /// Hebrew labels draw in every family, not as boxes; skipped when the system has no Hebrew font.
     #[test]
     fn every_family_draws_hebrew_with_a_system_hebrew_font() {
-        assert_family_draws_script("system-hebrew", "Hebrew", "אבעברית");
+        assert_family_draws_script("system-hebrew", "Hebrew", HEBREW_REQUIRED_GLYPHS);
     }
 
     #[cfg(not(target_arch = "wasm32"))]
