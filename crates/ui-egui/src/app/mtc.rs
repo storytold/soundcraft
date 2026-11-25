@@ -149,8 +149,13 @@ impl SoundApp {
                 }
                 self.mtc_status = "Before session start";
             }
-            Some((ChaseEvent::Locate(p), _)) => {
-                if self.is_playing() {
+            Some((ChaseEvent::Locate(p), lock)) => {
+                if let Some(player) = &self.player {
+                    // As for a stop: a newer roll may already own the callback, and only the roll
+                    // this locate ended may be stopped (the callback halts that one itself).
+                    player.end_observed_mtc_chase(lock);
+                    self.engine.transport.playing = player.is_playing();
+                } else if self.is_playing() {
                     self.stop_play();
                 }
                 self.mtc_chasing = false;
