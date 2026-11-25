@@ -565,8 +565,8 @@ pub fn live_label(app: &SoundApp, id: Option<&str>) -> Option<String> {
 /// Menu-style invocation: may open a dialog.
 pub fn invoke_menu(app: &mut SoundApp, id: &str, path: &str) {
     #[cfg(windows)]
-    if id == "setup.peripherals" {
-        let _ = crate::hui::command(app, id, &json!({"value": true}));
+    if matches!(id, "setup.peripherals" | "ui.hui") {
+        let _ = crate::hui::command(app, "setup.peripherals", &json!({"value": true}));
         return;
     }
     if id == "file.import_aaf" || path == "File > Import > Session Data..." {

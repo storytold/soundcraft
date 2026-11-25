@@ -1354,6 +1354,13 @@ mod tests {
     }
 
     #[test]
+    fn the_midi_controllers_palette_entry_opens_the_panel() {
+        let (mut app, _, _) = test_app();
+        crate::menus::invoke_menu(&mut app, "ui.hui", "");
+        assert!(app.hui.show);
+    }
+
+    #[test]
     fn mcu_master_fader_follows_the_main_mix_across_banks() {
         let (mut app, _, packets) = test_app();
         app.run("track.new", json!({"count": 15, "kind":"audio","format":"mono"})).unwrap();
