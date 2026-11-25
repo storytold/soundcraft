@@ -330,6 +330,7 @@ impl SoundApp {
         #[cfg(windows)]
         if playing {
             crate::hui::clear_pending_touch_samples(self, true);
+            crate::hui::clamp_touch_starts(self, pos);
         }
         let from = std::mem::replace(&mut self.last_write_at, if playing { pos } else { i64::MIN });
         // The gesture state cached from the known UI phase, never hidden-tick stale input.
