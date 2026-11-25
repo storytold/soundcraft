@@ -238,11 +238,17 @@ impl SoundApp {
     /// Session samples the take's first sample precedes `start` by: from when the input captured
     /// it to when the output played the sample at `start`, both as the devices report them, less
     /// the record offset. Without both moments (no device, or nothing reported), or with an
-    /// implausible difference of a second or more, only the record offset applies.
-    fn placement_offset(&self, start: Samples) -> Samples {
+    /// implausible difference of a second or more, only the record offset applies. In `looped`
+    /// playback the sample at `start` is heard once a round: the round the take began in counts.
+    fn placement_offset(&self, start: Samples, looped: Option<Range>) -> Samples {
         let rate = self.engine.session().sample_rate.as_f64();
-        let heard = self.player.as_ref().and_then(|p| p.heard_at(start, rate));
         let captured = self.recorder.as_ref().and_then(|r| r.first_capture());
+        let heard = self.player.as_ref().and_then(|p| p.heard_at(start, rate)).map(|heard| {
+            match (looped.filter(|l| (l.start..l.end).contains(&start)), captured) {
+                (Some(l), Some(captured)) => soundcraft_playback::latency::nearest_round(heard, captured, l.len() as f64 / rate),
+                _ => heard,
+            }
+        });
         let output = self.player.as_ref().and_then(|p| p.output_latency());
         let round_trip = output.zip(self.recorder.as_ref().and_then(|r| r.input_latency())).map(|(o, i)| o + i);
         let measured = match heard.zip(captured) {
@@ -301,7 +307,10 @@ impl SoundApp {
             rate: 0,
             takes: Vec::new(),
         });
-        plan.placement_offset = self.placement_offset(plan.start);
+        // A punch on the fly during loop playback starts mid-loop; a loop recording starts at the
+        // pass start, which is stamped exactly.
+        let looped = if plan.pass.is_none() { self.play_loop } else { None };
+        plan.placement_offset = self.placement_offset(plan.start, looped);
         self.punch = None;
         self.autosaved_rev = 0;
         let ids = soundcraft_engine::io::place_recording(&mut self.engine, &plan, takes);
@@ -620,12 +629,12 @@ mod tests {
     #[test]
     fn without_device_timing_only_the_record_offset_places_a_take() {
         let mut app = SoundApp::new(soundcraft_engine::Engine::default(), None, crate::Services::default());
-        assert_eq!(app.placement_offset(48_000), 0);
+        assert_eq!(app.placement_offset(48_000, None), 0);
         // A positive record offset places takes later: their first sample follows the start.
         app.ui.record_offset = 100;
-        assert_eq!(app.placement_offset(48_000), -100);
+        assert_eq!(app.placement_offset(48_000, None), -100);
         app.ui.record_offset = -64;
-        assert_eq!(app.placement_offset(48_000), 64);
+        assert_eq!(app.placement_offset(48_000, None), 64);
     }
 
     #[test]

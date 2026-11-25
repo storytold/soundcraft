@@ -169,6 +169,23 @@ impl HeardStamps {
     }
 }
 
+/// `heard`, when a sample of a loop of `period` seconds is heard, moved by whole rounds to the
+/// round nearest `captured`. A sample after the pass start is projected from the latest callback
+/// (see [`HeardStamps::heard_at`]), which names the round that callback is in, not the round a
+/// take began in. Right while the take's real offset is under half a round.
+pub fn nearest_round(heard: Moment, captured: Moment, period: f64) -> Moment {
+    if period.is_nan() || period <= 0.0 {
+        return heard;
+    }
+    let gap = if captured.at >= heard.at {
+        captured.at.duration_since(heard.at).as_secs_f64()
+    } else {
+        -heard.at.duration_since(captured.at).as_secs_f64()
+    };
+    let rounds = (gap / period).round();
+    if rounds == 0.0 { heard } else { heard.shifted(rounds * period).unwrap_or(heard) }
+}
+
 /// `at` moved by `seconds` (earlier when negative).
 pub fn shift(at: Instant, seconds: f64) -> Option<Instant> {
     let d = Duration::try_from_secs_f64(seconds.abs()).ok()?;
@@ -285,6 +302,23 @@ mod tests {
 
     fn at(micros: u64) -> StreamInstant {
         StreamInstant::from_micros(micros)
+    }
+
+    #[test]
+    fn a_take_begun_in_an_earlier_loop_round_is_timed_by_that_round() {
+        let t0 = Instant::now();
+        let moment = |s: f64| Moment { at: t0 + Duration::from_secs_f64(s), clock: Some(100.0 + s) };
+        // A 0.25 s loop; the take began 3 ms after its start sample was heard, and the latest
+        // callback, two rounds on, projects that sample to its own round.
+        let captured = moment(10.003);
+        let projected = moment(10.5);
+        let heard = nearest_round(projected, captured, 0.25);
+        assert!(heard.at.duration_since(t0).abs_diff(Duration::from_secs(10)) < Duration::from_micros(1), "{heard:?}");
+        assert!(heard.clock.is_some_and(|c| (c - 110.0).abs() < 1e-9), "{heard:?}");
+        assert_eq!(placement_offset(heard, captured, 48_000.0, None), -144);
+        // The same round, or no loop, stays as it is.
+        assert_eq!(nearest_round(moment(10.0), captured, 0.25), moment(10.0));
+        assert_eq!(nearest_round(projected, captured, 0.0), projected);
     }
 
     #[test]
