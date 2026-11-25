@@ -67,7 +67,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "I/O...",
             ["Setup"],
             None,
-            "{action?: list|create_bus|rename_bus|delete_bus|create_output|rename_output|delete_output, name?, new_name?, format?: stereo, first_channel?: 0}",
+            "{action?: list|create_bus|rename_bus|delete_bus|create_output|set_output|rename_output|delete_output, name?, new_name?, format?: stereo, first_channel?: 0}",
             always,
             io_setup
         ),
@@ -337,32 +337,73 @@ fn io_setup(e: &mut Engine, p: &Value) -> Result<Value> {
             unroute_bus(s, bid);
         }
         "create_output" => {
+            check_output_name(&name)?;
             if s.outputs.iter().any(|o| o.name.eq_ignore_ascii_case(&name)) {
                 return Err(bad(id, format!("an output named `{name}` exists")));
             }
-            let first = i64_or(p, "first_channel", 0).clamp(0, 1023) as u16;
+            let first = output_first_channel(i64_or(p, "first_channel", 0), format)?;
             s.outputs.push(OutputPath { name, first_channel: first, format });
         }
         "rename_output" => {
             let to = new_name.ok_or_else(|| bad(id, "`new_name` required"))?;
-            let o = s.outputs.iter_mut().find(|o| o.name.eq_ignore_ascii_case(&name)).ok_or_else(|| bad(id, format!("no output `{name}`")))?;
+            if s.outputs.iter().any(|o| o.name.eq_ignore_ascii_case(&to) && !o.name.eq_ignore_ascii_case(&name)) {
+                return Err(bad(id, format!("an output named `{to}` exists")));
+            }
+            let index = s.outputs.iter().position(|o| o.name.eq_ignore_ascii_case(&name)).ok_or_else(|| bad(id, format!("no output `{name}`")))?;
+            if index != 0 {
+                check_output_name(&to)?;
+            }
+            let o = &mut s.outputs[index];
             let old = std::mem::replace(&mut o.name, to.clone());
             for t in &mut s.tracks {
-                if t.mixer.output == Route::Hardware(old.clone()) {
+                if matches!(&t.mixer.output, Route::Hardware(path) if path.eq_ignore_ascii_case(&old)) {
                     t.mixer.output = Route::Hardware(to.clone());
                 }
             }
         }
-        "delete_output" => {
-            let before = s.outputs.len();
-            s.outputs.retain(|o| !o.name.eq_ignore_ascii_case(&name));
-            if s.outputs.len() == before {
-                return Err(bad(id, format!("no output `{name}`")));
+        "set_output" => {
+            let (index, output) = s
+                .outputs
+                .iter_mut()
+                .enumerate()
+                .find(|(_, o)| o.name.eq_ignore_ascii_case(&name))
+                .ok_or_else(|| bad(id, format!("no output `{name}`")))?;
+            let first = i64_or(p, "first_channel", i64::from(output.first_channel));
+            let format = if p.get("format").is_some() { format } else { output.format };
+            if index == 0 && format != output.format {
+                return Err(bad(id, "use Main output format to change the main mix width"));
             }
+            output.first_channel = output_first_channel(first, format)?;
+            output.format = format;
+        }
+        "delete_output" => {
+            let index = s.outputs.iter().position(|o| o.name.eq_ignore_ascii_case(&name)).ok_or_else(|| bad(id, format!("no output `{name}`")))?;
+            if index == 0 {
+                return Err(bad(id, "the main output path cannot be deleted"));
+            }
+            s.outputs.remove(index);
         }
         other => return Err(bad(id, format!("unknown action `{other}`"))),
     }
     Ok(io_state(s))
+}
+
+fn check_output_name(name: &str) -> Result<()> {
+    if ["none", "no input", "no output", "main", "out 1-2", "master"].iter().any(|word| name.eq_ignore_ascii_case(word)) {
+        return Err(bad("setup.io", format!("`{name}` is reserved for routing")));
+    }
+    Ok(())
+}
+
+fn output_first_channel(first: i64, format: ChannelFormat) -> Result<u16> {
+    let width = format.channels();
+    if first < 0
+        || first.saturating_add(width as i64) > soundcraft_mix::MAX_HARDWARE_CHANNELS as i64
+        || !(1..=soundcraft_mix::MAX_CHANNELS).contains(&width)
+    {
+        return Err(bad("setup.io", "output path is outside the supported channel range"));
+    }
+    Ok(first as u16)
 }
 
 fn current_timecode(e: &mut Engine, p: &Value) -> Result<Value> {

@@ -88,6 +88,7 @@ fn output_format(app: &SoundApp, track: &Track) -> ChannelFormat {
     match &track.mixer.output {
         Route::Main => s.main_format(),
         Route::Bus(b) => s.bus(*b).map_or(ChannelFormat::Stereo, |b| b.format),
+        Route::Hardware(name) => s.outputs.iter().find(|path| path.name.eq_ignore_ascii_case(name)).map_or(ChannelFormat::Stereo, |path| path.format),
         _ => ChannelFormat::Stereo,
     }
 }
