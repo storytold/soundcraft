@@ -997,7 +997,7 @@ fn menu_translate(source: &str) -> Option<&'static str> {
         "{} for {}" => "{} para {}",
         "{} @ {} Hz" => "{} a {} Hz",
         "{} samples" => "{} amostras",
-        "{} ms ({} samples)" => "{} ms ({} amostras)",
+        "{:.1} ms ({} samples)" => "{:.1} ms ({} amostras)",
         "output {} · input {}" => "saída {} · entrada {}",
         "{} · {} Hz · {} ch · {}" => "{} · {} Hz · {} canais · {}",
         "{} · {} Hz · {} ch" => "{} · {} Hz · {} canais",
