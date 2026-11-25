@@ -243,6 +243,10 @@ impl AudioState {
                         self.mix.set_hardware_channels(old.hardware_output().len());
                         let _ = self.garbage.send(old.drain_plugins());
                         self.mix.midi_ports = self.midi.as_ref().map(|f| Arc::clone(f.ports()));
+                        // The new engine's hardware outputs start empty: drop what is left of
+                        // the main mix too, so both are next read from the same block.
+                        self.pending_len = 0;
+                        self.read = 0.0;
                     }
                     self.mix.adopt(instances);
                     // The main format changed (a document edit, not steady state): resize.
