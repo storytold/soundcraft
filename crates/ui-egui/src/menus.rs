@@ -865,6 +865,9 @@ pub fn run_ui_command(app: &mut SoundApp, id: &str, p: &Value) -> Option<Result<
                 }
                 match serde_json::from_value::<crate::UiState>(cur) {
                     Ok(ns) => {
+                        if p.get("language").is_some() && !ns.language.is_supported_with_system_fonts(app.system_fonts()) {
+                            return Some(Err(format!("language `{}` is unavailable without a Hebrew system font", ns.language.id())));
+                        }
                         if let Err(error) = crate::docking::validate(&ns.docking).and_then(|()| crate::docking::validate_mix(&ns.mix_docking)) {
                             return Some(Err(error));
                         }

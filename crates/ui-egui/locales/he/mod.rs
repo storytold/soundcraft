@@ -234,7 +234,7 @@ pub(super) fn translate(source: &str) -> Option<&'static str> {
         "Track options" => "אפשרויות רצועה",
         "Track tint in the Edit window" => "גוון רצועות בחלון העריכה",
         "Tracks" => "ערוצים",
-        "Transport" => "תחבורה",
+        "Transport" => "טרנספורט",
         "Transpose" => "שחלוף (Transpose)",
         "Unknown label" => "תווית לא ידועה",
         "Update check is not supported in the web browser." => "בדיקת עדכונים אינה נתמכת בדפדפן.",
@@ -249,7 +249,7 @@ pub(super) fn translate(source: &str) -> Option<&'static str> {
         "Video Universe" => "סקירת וידאו",
         "Voice: dyn plays the track, off makes it inactive" => "קולות: dyn מפעיל את הרצועה, off משבית אותה",
         "Workspace" => "סביבת עבודה",
-        "Write automation for the selected tracks:" => "כתוב אוטומציה לרצועות שנבחרו:",
+        "Write automation for the selected tracks:" => "כתיבת אוטומציה לרצועות שנבחרו:",
         "Write to Current" => "כתיבה לנוכחי",
         "Write to Notes" => "כתיבה לתווים",
         "front" => "קדמי",
@@ -2012,7 +2012,7 @@ pub(super) fn translate(source: &str) -> Option<&'static str> {
         "{name} on {track} put out invalid audio, so it is bypassed until playback stops or starts again." => {
             "{name} ברצועה {track} הוציא שמע לא תקין, ולכן נעקף עד לעצירת הניגון או להפעלתו מחדש."
         }
-        "“{name}” has {what} from an earlier run, autosaved {age}." => "ל-״{name}״ יש {what} מהפעלה קודמת, שנשמר אוטומטית לפני {age}.",
+        "“{name}” has {what} from an earlier run, autosaved {age}." => "ל-״{name}״ יש {what} מהפעלה קודמת, שנשמר אוטומטית {age}.",
         _ => return error_translation(source),
     })
 }

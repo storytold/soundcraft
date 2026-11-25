@@ -610,6 +610,9 @@ mod tests {
         app.set_system_fonts(false);
         assert!(app.run("ui.language", json!({"language": "he"})).is_err());
         assert_eq!(app.ui.language, crate::localization::Language::English);
+        assert!(app.run("ui.set", json!({"language": "he"})).is_err());
+        assert_eq!(app.ui.language, crate::localization::Language::English);
+        assert!(app.run("ui.set", json!({"show_preferences": false})).is_ok());
         // Simulate loading a persisted Hebrew preference when system fonts are disabled.
         app.ui.language = crate::localization::Language::Hebrew;
         let ctx = egui::Context::default();
@@ -636,6 +639,9 @@ mod tests {
         app.logic(&ctx);
         assert!(!craft_ui::direction::is_rtl(&ctx));
         assert!(!ctx.global_style().right_to_left);
+
+        assert!(app.run("ui.set", json!({"language": "he"})).is_ok());
+        assert_eq!(app.ui.language, crate::localization::Language::Hebrew);
     }
 
     #[test]

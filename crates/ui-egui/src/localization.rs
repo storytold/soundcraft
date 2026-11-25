@@ -413,15 +413,15 @@ mod tests {
     #[test]
     fn language_tags_are_stable_and_round_trip() {
         for language in Language::ALL {
-            assert_eq!(Language::parse(language.id()), Some(language));
+            assert_eq!(Language::parse_any(language.id()), Some(language));
             let encoded = serde_json::to_value(language).unwrap_or_default();
             let decoded: Language = serde_json::from_value(encoded).unwrap_or_default();
             assert_eq!(decoded, language);
         }
-        assert_eq!(Language::parse(" PT-br "), Some(Language::PortugueseBrazil));
-        assert_eq!(Language::parse(" he "), Some(Language::Hebrew));
-        assert_eq!(Language::parse("iw"), Some(Language::Hebrew));
-        assert_eq!(Language::parse("fr"), None);
+        assert_eq!(Language::parse_any(" PT-br "), Some(Language::PortugueseBrazil));
+        assert_eq!(Language::parse_any(" he "), Some(Language::Hebrew));
+        assert_eq!(Language::parse_any("iw"), Some(Language::Hebrew));
+        assert_eq!(Language::parse_any("fr"), None);
     }
 
     #[test]

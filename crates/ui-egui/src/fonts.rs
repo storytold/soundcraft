@@ -65,6 +65,44 @@ const HEBREW: &[(&str, u32)] = &[
 #[cfg(not(target_arch = "wasm32"))]
 const MAX_FONT_BYTES: u64 = 64 << 20;
 
+#[cfg(not(target_arch = "wasm32"))]
+const HEBREW_REQUIRED_GLYPHS: &str = "אבגדהוזחטיכלמנסעפצקרשת";
+
+#[cfg(not(target_arch = "wasm32"))]
+fn is_sfnt(bytes: &[u8]) -> bool {
+    matches!(bytes.get(..4), Some(b"\0\x01\0\0" | b"OTTO" | b"true" | b"ttcf"))
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn required_sample(lang: Option<&str>) -> &'static str {
+    match lang {
+        Some("he") => HEBREW_REQUIRED_GLYPHS,
+        Some("ko") => "가한국어",
+        _ => "A",
+    }
+}
+
+/// Validates that `font` has a supported SFNT header, parses cleanly in `epaint`, and covers every
+/// glyph in `sample`.
+#[cfg(not(target_arch = "wasm32"))]
+fn is_valid_font(font: &FontData, sample: &str) -> bool {
+    if !is_sfnt(font.font.as_ref().as_ref()) {
+        return false;
+    }
+    let font = Arc::new(font.clone());
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let mut defs = FontDefinitions::empty();
+        defs.font_data.insert("candidate".into(), font);
+        defs.families.insert(FontFamily::Proportional, vec!["candidate".into()]);
+        let ctx = egui::Context::default();
+        ctx.set_fonts(defs);
+        ctx.run_ui(egui::RawInput::default(), |_| {}).textures_delta.clear();
+        let font_id = egui::FontId::proportional(13.0);
+        ctx.fonts_mut(|f| f.has_glyphs(&font_id, sample))
+    }))
+    .unwrap_or(false)
+}
+
 /// Asks fontconfig for the desktop's font matching `pattern`. Only TrueType/OpenType results are
 /// used: egui cannot read Type 1 or bitmap fonts, which `fc-match` may return on minimal systems.
 /// With `lang`, the match must support that language (`fc-match` always returns its best match,
@@ -89,8 +127,7 @@ fn load_from_fontconfig(pattern: &str, lang: Option<&str>) -> Option<FontData> {
         return None;
     }
     let bytes = std::fs::read(path).ok()?;
-    let sfnt = matches!(bytes.get(..4), Some(b"\0\x01\0\0" | b"OTTO" | b"true" | b"ttcf"));
-    if !sfnt {
+    if !is_sfnt(&bytes) {
         return None;
     }
     let mut font = FontData::from_owned(bytes);
@@ -103,8 +140,9 @@ fn load(cands: &[(&str, u32)], pattern: &str, lang: Option<&str>, system_fonts: 
     if !system_fonts {
         return None;
     }
+    let sample = required_sample(lang);
     #[cfg(any(target_os = "linux", target_os = "freebsd"))]
-    if let Some(font) = load_from_fontconfig(pattern, lang) {
+    if let Some(font) = load_from_fontconfig(pattern, lang).filter(|f| is_valid_font(f, sample)) {
         return Some(font);
     }
     #[cfg(not(any(target_os = "linux", target_os = "freebsd")))]
@@ -116,7 +154,9 @@ fn load(cands: &[(&str, u32)], pattern: &str, lang: Option<&str>, system_fonts: 
         if let Ok(bytes) = std::fs::read(p) {
             let mut fd = FontData::from_owned(bytes);
             fd.index = *idx;
-            return Some(fd);
+            if is_valid_font(&fd, sample) {
+                return Some(fd);
+            }
         }
     }
     None
@@ -125,6 +165,14 @@ fn load(cands: &[(&str, u32)], pattern: &str, lang: Option<&str>, system_fonts: 
 #[cfg(target_arch = "wasm32")]
 fn load(_: &[(&str, u32)], _: &str, _: Option<&str>, _: bool) -> Option<FontData> {
     None
+}
+
+fn hebrew_font_data(system_fonts: bool) -> Option<Arc<FontData>> {
+    if !system_fonts {
+        return None;
+    }
+    static HEBREW_FONT: std::sync::OnceLock<Option<Arc<FontData>>> = std::sync::OnceLock::new();
+    HEBREW_FONT.get_or_init(|| load(HEBREW, "sans-serif:lang=he", Some("he"), true).map(Arc::new)).clone()
 }
 
 /// The font set: the bundled faces, plus the system ones when `system_fonts` is true.
@@ -145,14 +193,16 @@ pub fn definitions(system_fonts: bool) -> FontDefinitions {
         bold_family.insert(0, "system-regular".into());
     }
     fonts.families.insert(FontFamily::Name("bold".into()), bold_family);
-    for (name, candidates, pattern, lang) in
-        [("system-hangul", HANGUL, "sans-serif:lang=ko", "ko"), ("system-hebrew", HEBREW, "sans-serif:lang=he", "he")]
-    {
-        if let Some(font) = load(candidates, pattern, Some(lang), system_fonts) {
-            fonts.font_data.insert(name.into(), Arc::new(font));
-            for family in fonts.families.values_mut() {
-                family.push(name.into());
-            }
+    if let Some(font) = load(HANGUL, "sans-serif:lang=ko", Some("ko"), system_fonts) {
+        fonts.font_data.insert("system-hangul".into(), Arc::new(font));
+        for family in fonts.families.values_mut() {
+            family.push("system-hangul".into());
+        }
+    }
+    if let Some(font) = hebrew_font_data(system_fonts) {
+        fonts.font_data.insert("system-hebrew".into(), font);
+        for family in fonts.families.values_mut() {
+            family.push("system-hebrew".into());
         }
     }
     fonts
@@ -160,11 +210,7 @@ pub fn definitions(system_fonts: bool) -> FontDefinitions {
 
 /// Whether a Hebrew-capable system font can be loaded on this target when `system_fonts` is true.
 pub fn has_hebrew_font(system_fonts: bool) -> bool {
-    if !system_fonts {
-        return false;
-    }
-    static AVAILABLE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *AVAILABLE.get_or_init(|| load(HEBREW, "sans-serif:lang=he", Some("he"), true).is_some())
+    hebrew_font_data(system_fonts).is_some()
 }
 
 pub fn install(ctx: &egui::Context, system_fonts: bool) {
@@ -241,5 +287,19 @@ mod tests {
     #[test]
     fn every_family_draws_hebrew_with_a_system_hebrew_font() {
         assert_family_draws_script("system-hebrew", "Hebrew", "אבעברית");
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn invalid_or_non_hebrew_fonts_are_rejected_before_enabling_hebrew() {
+        assert!(!is_valid_font(&FontData::from_static(b"not a font"), HEBREW_REQUIRED_GLYPHS));
+        assert!(!is_valid_font(&FontData::from_static(b"\0\x01\0\0truncated"), HEBREW_REQUIRED_GLYPHS));
+        let defs = FontDefinitions::default();
+        if let Some((_, latin_only)) = defs.font_data.iter().find(|(name, _)| name.as_str() == "Ubuntu-Light") {
+            assert!(!is_valid_font(latin_only, HEBREW_REQUIRED_GLYPHS));
+            assert!(is_valid_font(latin_only, "A"));
+        }
+        assert_eq!(has_hebrew_font(true), definitions(true).font_data.contains_key("system-hebrew"));
+        assert!(!has_hebrew_font(false));
     }
 }

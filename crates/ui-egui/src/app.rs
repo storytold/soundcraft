@@ -175,10 +175,6 @@ impl SoundApp {
             theme::apply(ctx, light);
             self.theme_applied = Some(light);
         }
-        let direction = self.ui.language.direction();
-        if theme_changed || craft_ui::direction::HasDirection::direction(ctx) != direction {
-            craft_ui::direction::apply(ctx, direction);
-        }
         // A logic-only tick while hidden gets no fresh events: `ctx.input` still says what the last
         // completed pass saw. Do not let that stale pointer/keyboard state keep writing automation
         // or hold a transient fader gesture (loss of visibility cancels a Touch drag by design).
@@ -197,6 +193,10 @@ impl SoundApp {
         self.last_frame = Some(self.uptime);
         crate::control::expire_gestures(self);
         crate::control::drain(self, ctx);
+        let direction = self.ui.language.direction();
+        if theme_changed || craft_ui::direction::HasDirection::direction(ctx) != direction {
+            craft_ui::direction::apply(ctx, direction);
+        }
         self.note_recent_session();
         self.apply_editor_edits();
         // A multi-pass frame runs this logic once per pass; bounce slices and background-import
