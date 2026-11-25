@@ -509,7 +509,7 @@ impl<C: SyncPort> Port<C> {
             }
         }
         pending.sort_by_key(|m| m.at);
-        for e in pending.iter() {
+        for (index, e) in pending.iter().enumerate() {
             match port.send_at(e.at, &e.bytes[..e.len]) {
                 Ok(handed) => {
                     stats.record(e.at, handed);
@@ -518,7 +518,9 @@ impl<C: SyncPort> Port<C> {
                     }
                 }
                 Err(err) => {
-                    self.stop_pending |= e.bytes[..e.len] == [craft_midi_sync::sync::STOP];
+                    // Reopening resets the encoders, so a Stop that was not delivered from
+                    // the failed packet onward must be sent after reconnecting.
+                    self.stop_pending |= pending[index..].iter().any(|e| e.bytes[..e.len] == [craft_midi_sync::sync::STOP]);
                     self.disconnect(name, err, now, stats);
                     return Some(self.retry);
                 }

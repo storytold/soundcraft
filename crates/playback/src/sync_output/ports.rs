@@ -51,17 +51,19 @@ fn winmm_names(mut ports: PortNames, saved: &Bindings) -> PortNames {
         group.0 += 1;
         group.1 &= name.is_some();
     }
-    let pinned: BTreeSet<_> = saved.values().collect();
     for (name, id) in &mut ports {
         let Some(label) = name else { continue };
         let (count, fully_named) = groups[id];
         if !fully_named || id.is_empty() {
             continue;
         }
-        let pair = format!("winmm-port:{}:{id}{label}", id.len());
-        if count > 1 || pinned.contains(&pair) {
-            *id = pair;
+        // A lone connector is keyed by name too: the interface ID alone would let a sibling
+        // that appears later on the same interface inherit its binding. A binding saved by
+        // interface ID alone is kept only for a lone connector with the label it was saved under.
+        if count == 1 && saved.get(label.as_str()) == Some(id) {
+            continue;
         }
+        *id = format!("winmm-port:{}:{id}{label}", id.len());
     }
     ports
 }
@@ -147,7 +149,8 @@ mod tests {
         let names = winmm_names(raw.clone(), &Bindings::new());
         let saved = assign(&Bindings::new(), names);
         assert_ne!(saved["DIN"], saved["DAW"]);
-        assert_eq!(saved["Other"], "other");
+        // A lone connector is keyed by its name as well as its interface.
+        assert!(saved["Other"] != "other" && saved["Other"].ends_with("Other"), "{saved:?}");
         let mut reversed = raw;
         reversed.reverse();
         assert_eq!(assign(&saved, winmm_names(reversed, &saved)), saved);
@@ -157,6 +160,18 @@ mod tests {
         let legacy = Bindings::from([("DIN".into(), "usb".into())]);
         let changed = assign(&legacy, winmm_names(listed(&[("DIN", "usb"), ("DAW", "usb")]), &legacy));
         assert!(!changed.contains_key("DIN")); // a legacy ambiguous ID needs reselection
+    }
+
+    #[test]
+    fn a_lone_winmm_connector_binding_never_passes_to_a_sibling_on_the_same_interface() {
+        let learned = assign(&Bindings::new(), winmm_names(listed(&[("DIN", "usb")]), &Bindings::new()));
+        let swapped = assign(&learned, winmm_names(listed(&[("DAW", "usb")]), &learned));
+        assert!(!swapped.contains_key("DIN"), "{swapped:?}");
+        assert_eq!(assign(&learned, winmm_names(listed(&[("DIN", "usb")]), &learned)), learned);
+        // A binding saved by interface ID alone follows only the connector it was saved for.
+        let legacy = Bindings::from([("DIN".into(), "usb".into())]);
+        assert_eq!(assign(&legacy, winmm_names(listed(&[("DIN", "usb")]), &legacy))["DIN"], "usb");
+        assert!(!assign(&legacy, winmm_names(listed(&[("DAW", "usb")]), &legacy)).contains_key("DIN"));
     }
 
     #[test]

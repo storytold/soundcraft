@@ -47,6 +47,12 @@ impl Repayment {
         Some(Self { first_owed, last_pulse, start_sample: sample(first_live), end_sample: sample(last_pulse) })
     }
 
+    /// Whether `new` moves the end of this window, which `old` planned.
+    pub(super) fn moved(self, old: &Session, new: &Session) -> bool {
+        let end = |s: &Session| s.tempo.tick_to_samples(self.last_pulse.saturating_mul(TICKS_PER_CLOCK), s.sample_rate);
+        end(old) != end(new)
+    }
+
     pub(super) fn expired(self, at: i64) -> bool {
         at > self.end_sample
     }
