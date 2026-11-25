@@ -7,9 +7,9 @@ use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows_sys::Win32::UI::Input::KeyboardAndMouse::GetActiveWindow;
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     AdjustWindowRectEx, CS_HREDRAW, CS_VREDRAW, CW_USEDEFAULT, CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GWL_EXSTYLE,
-    GWL_STYLE, GetWindowLongPtrW, IDC_ARROW, IsWindow, IsWindowVisible, LoadCursorW, MSG, PM_REMOVE, PeekMessageW, RegisterClassExW, SW_HIDE,
-    SW_SHOW, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOZORDER, SetForegroundWindow, SetWindowPos, ShowWindow, WM_CLOSE, WM_TIMER, WNDCLASSEXW, WS_CAPTION,
-    WS_CLIPCHILDREN, WS_OVERLAPPED, WS_SYSMENU,
+    GWL_STYLE, GetWindowLongPtrW, IDC_ARROW, IsWindow, IsWindowVisible, LoadCursorW, MSG, PM_REMOVE, PeekMessageW, PostQuitMessage, RegisterClassExW,
+    SW_HIDE, SW_SHOW, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOZORDER, SetForegroundWindow, SetWindowPos, ShowWindow, WM_CLOSE, WM_QUIT, WM_TIMER,
+    WNDCLASSEXW, WS_CAPTION, WS_CLIPCHILDREN, WS_OVERLAPPED, WS_SYSMENU,
 };
 
 pub const SUPPORTED: bool = true;
@@ -186,11 +186,18 @@ pub fn resize(window: *mut c_void, w: f64, h: f64) {
 /// Dispatches up to 32 `WM_TIMER`s pending on this thread (main thread only). The cap keeps a timer
 /// that re-arms on every dispatch from starving the frame; leftovers are served next tick.
 fn pump_timers() {
-    // SAFETY: `PeekMessageW`/`DispatchMessageW` on this thread's own queue; `msg` outlives both.
+    // SAFETY: `PeekMessageW`/`DispatchMessageW`/`PostQuitMessage` on this thread's own queue;
+    // `msg` outlives them all.
     unsafe {
         let mut msg: MSG = std::mem::zeroed();
         for _ in 0..32 {
             if PeekMessageW(&mut msg, std::ptr::null_mut(), WM_TIMER, WM_TIMER, PM_REMOVE) == 0 {
+                break;
+            }
+            if msg.message == WM_QUIT {
+                // PeekMessageW returns WM_QUIT regardless of the filter — repost it with its
+                // exit code so the app's own message loop still sees the quit, and stop here.
+                PostQuitMessage(msg.wParam as i32);
                 break;
             }
             DispatchMessageW(&msg);
@@ -236,6 +243,26 @@ mod tests {
                 assert_eq!(unsafe { GetUpdateRect(h, std::ptr::null_mut(), 0) }, 0, "the timer's paint is still pending");
                 unsafe { KillTimer(h, 1) };
                 window.close();
+            })
+            .expect("spawn")
+            .join()
+            .expect("join");
+    }
+
+    /// `PeekMessageW` returns `WM_QUIT` regardless of the filter range, so the pump can swallow
+    /// the quit the app's own loop is waiting for. It must repost it — with its exit code — and
+    /// stop, leaving the signal for the owning loop.
+    #[test]
+    fn the_pump_leaves_a_quit_and_its_exit_code_for_the_owning_loop() {
+        std::thread::Builder::new()
+            .name("main".into())
+            .spawn(|| {
+                // SAFETY: this thread owns the queue it posts to and peeks.
+                unsafe { PostQuitMessage(7) };
+                pump_timers();
+                let mut msg: MSG = unsafe { std::mem::zeroed() };
+                assert_ne!(unsafe { PeekMessageW(&mut msg, std::ptr::null_mut(), 0, 0, PM_REMOVE) }, 0, "the pump swallowed the quit");
+                assert_eq!((msg.message, msg.wParam), (WM_QUIT, 7), "the quit signal or its exit code changed");
             })
             .expect("spawn")
             .join()
