@@ -1,24 +1,35 @@
 //! Projection between the editable score and external-clock playback.
-use super::{CtrlEvent, CtrlKind, Note, Range, SampleRate, Sequence, Session, TempoMap};
+use super::{CtrlEvent, CtrlKind, Note, Range, SampleRate, Samples, Sequence, Session, TempoMap};
 use crate::{ClockTake, edit::TimeCtx};
 use std::{collections::HashMap, sync::Arc};
 
 type NoteRows = Vec<(Note, Option<Note>)>;
 type ControlRows = Vec<(CtrlEvent, Option<CtrlEvent>)>;
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 enum Events {
     Recorded { score: Sequence, played: Sequence },
     Edited { notes: NoteRows, ctrls: ControlRows },
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub(crate) struct ClockTakeProjection {
     events: Events,
     score_grid: TempoMap,
     played_grid: TempoMap,
     sr: SampleRate,
     range: Range,
+    origin: MusicalOrigin,
+}
+
+/// Where a split piece's musical frame begins: `before` samples ahead of the clip start lies
+/// the captured take's start, and the piece starts `ticks` after it. The split point is
+/// converted to ticks once, on the follow grid in force at the split, so the piece's events
+/// keep their beats, as in the unsplit take, when the follow tempo changes later.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+struct MusicalOrigin {
+    before: Samples,
+    ticks: i64,
 }
 
 impl ClockTake {
@@ -32,8 +43,14 @@ impl ClockTake {
         notes.sort_by_key(|(n, _)| (n.start, n.pitch, n.channel, n.length, n.velocity));
         ctrls.sort_by_key(|(c, _)| c.tick);
         let score = Sequence { notes: notes.iter().map(|r| r.0).collect(), ctrls: ctrls.iter().map(|r| r.0).collect(), sysex: Vec::new() };
-        let projection =
-            ClockTakeProjection { events: Events::Edited { notes, ctrls }, score_grid: t.tempo.clone(), played_grid: grid.clone(), sr: t.sr, range };
+        let projection = ClockTakeProjection {
+            events: Events::Edited { notes, ctrls },
+            score_grid: t.tempo.clone(),
+            played_grid: grid.clone(),
+            sr: t.sr,
+            range,
+            origin: MusicalOrigin::default(),
+        };
         (score, Self { capture: Arc::new(projection) })
     }
 
@@ -41,6 +58,30 @@ impl ClockTake {
     /// sources stay paired through consolidation, pitch splits and copy/paste.
     pub(crate) fn project_events(&self, seq: &Sequence) -> (Vec<Option<Note>>, Vec<Option<CtrlEvent>>) {
         self.capture.project_events(seq)
+    }
+
+    /// Playback timings in ticks from `clip_start` on `grid`, keeping each event on its
+    /// captured beat when a split piece's start falls elsewhere on a later follow grid.
+    pub(crate) fn played_events(&self, seq: &Sequence, clip_start: Samples, grid: &TempoMap) -> (Vec<Option<Note>>, Vec<Option<CtrlEvent>>) {
+        let (mut notes, mut ctrls) = self.project_events(seq);
+        let shift = self.capture.shift(clip_start, grid);
+        if shift != 0 {
+            notes.iter_mut().flatten().for_each(|n| n.start = n.start.saturating_add(shift));
+            ctrls.iter_mut().flatten().for_each(|c| c.tick = c.tick.saturating_add(shift));
+        }
+        (notes, ctrls)
+    }
+
+    /// A piece cut from `source` (the parent clip's range) at `range` on `grid`: convert the
+    /// cut to ticks once, from the parent's musical origin.
+    pub(crate) fn rebased(mut self, source: Range, range: Range, grid: &TempoMap) -> Self {
+        let parent = self.capture.origin;
+        let sr = self.capture.sr;
+        let before = parent.before.saturating_add(range.start.saturating_sub(source.start));
+        let origin = range.start.saturating_sub(before);
+        let ticks = grid.samples_to_ticks(range.start, sr).saturating_sub(grid.samples_to_ticks(origin, sr));
+        Arc::make_mut(&mut self.capture).origin = MusicalOrigin { before, ticks };
+        self
     }
 
     /// The editor knows which row the user deleted even if several editable
@@ -94,27 +135,58 @@ impl ClockTake {
             played_grid: source.played_grid.clone(),
             sr: source.sr,
             range: source.range,
+            origin: source.origin,
         });
     }
 }
 
 impl ClockTakeProjection {
     pub(super) fn recorded(score: Sequence, played: Sequence, doc: &Session, grid: &TempoMap, range: Range) -> Self {
-        Self { events: Events::Recorded { score, played }, score_grid: doc.tempo.clone(), played_grid: grid.clone(), sr: doc.sample_rate, range }
+        Self {
+            events: Events::Recorded { score, played },
+            score_grid: doc.tempo.clone(),
+            played_grid: grid.clone(),
+            sr: doc.sample_rate,
+            range,
+            origin: MusicalOrigin::default(),
+        }
+    }
+
+    /// Ticks to add to the projected events of a clip starting at `clip_start` on `grid`.
+    fn shift(&self, clip_start: Samples, grid: &TempoMap) -> i64 {
+        if self.origin == MusicalOrigin::default() {
+            return 0;
+        }
+        let origin = grid.samples_to_ticks(clip_start.saturating_sub(self.origin.before), self.sr);
+        origin.saturating_add(self.origin.ticks).saturating_sub(grid.samples_to_ticks(clip_start, self.sr))
     }
 
     /// The exact two capture passes include the recorder's half-open boundary rounding.
-    pub(crate) fn project(&self, seq: &mut Sequence) {
+    /// `grid` is the follow grid of the playback snapshot for a clip at `clip_start`.
+    pub(crate) fn project(&self, seq: &mut Sequence, clip_start: Samples, grid: &TempoMap) {
         if let Events::Recorded { score, played } = &self.events
             && seq == score
         {
             seq.clone_from(played);
-            return;
+        } else {
+            let (notes, ctrls) = self.project_events(seq);
+            seq.notes = notes.into_iter().flatten().collect();
+            seq.ctrls = ctrls.into_iter().flatten().collect();
+            seq.sort();
         }
-        let (notes, ctrls) = self.project_events(seq);
-        seq.notes = notes.into_iter().flatten().collect();
-        seq.ctrls = ctrls.into_iter().flatten().collect();
-        seq.sort();
+        let shift = self.shift(clip_start, grid);
+        if shift != 0 {
+            // An event before the clip start is not played, as before the split; a Note On
+            // never precedes the beginning of its clip.
+            seq.notes.retain_mut(|n| {
+                n.start = n.start.saturating_add(shift);
+                n.start >= 0
+            });
+            seq.ctrls.retain_mut(|c| {
+                c.tick = c.tick.saturating_add(shift);
+                c.tick >= 0
+            });
+        }
     }
 
     fn project_events(&self, seq: &Sequence) -> (Vec<Option<Note>>, Vec<Option<CtrlEvent>>) {

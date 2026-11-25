@@ -488,11 +488,12 @@ impl Engine {
         if self.follow_takes.is_empty() {
             return;
         }
+        let live = self.playback_tempo.clone().unwrap_or_else(|| doc.tempo.clone());
         for clip in doc.tracks.iter_mut().flat_map(|t| &mut t.playlists).flat_map(|p| &mut p.clips) {
             if let Some(grid) = self.follow_takes.get(&clip.id)
                 && let soundcraft_model::ClipContent::Midi { sequence } = &mut clip.content
             {
-                grid.capture.project(sequence);
+                grid.capture.project(sequence, clip.start, &live);
             }
         }
     }
