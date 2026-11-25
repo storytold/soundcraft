@@ -405,6 +405,8 @@ pub trait SyncEncoder: Send {
     }
     fn stop(&mut self, _send: &mut dyn FnMut(&[u8])) {}
     fn remap(&mut self, _old: &Session, _new: &Session) {}
+    /// A live Clock-follow grid replaced the tempo map. The transport is not relocated.
+    fn regrid(&mut self, _old: &Session, _new: &Session) {}
     fn error(&self) -> Option<&'static str> {
         None
     }

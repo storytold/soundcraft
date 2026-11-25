@@ -1162,6 +1162,56 @@ fn a_follow_grid_revision_changes_pulse_spacing_at_its_audible_block_without_rel
 }
 
 #[test]
+fn a_follow_grid_revision_reaches_the_encoder_as_a_regrid_and_an_edit_as_a_remap() {
+    struct Revisions(Arc<std::sync::Mutex<Vec<&'static str>>>);
+    impl SyncEncoder for Revisions {
+        fn reset(&mut self) {}
+        fn update(&mut self, _: Presentation, _: Instant, _: &Session, _: &mut dyn FnMut(Instant, &[u8])) -> Option<Instant> {
+            None
+        }
+        fn remap(&mut self, _: &Session, _: &Session) {
+            self.0.lock().unwrap().push("remap");
+        }
+        fn regrid(&mut self, _: &Session, _: &Session) {
+            self.0.lock().unwrap().push("regrid");
+        }
+    }
+    let base = Instant::now();
+    let lead = Duration::from_millis(50);
+    let initial = Arc::new(Session::default());
+    let mut grid = (*initial).clone();
+    grid.tempo.set_tempo(soundcraft_time::TICKS_PER_QUARTER, 240.).unwrap();
+    let grid = Arc::new(grid);
+    let mut edited = (*grid).clone();
+    edited.tempo.set_tempo(soundcraft_time::TICKS_PER_QUARTER * 2, 90.).unwrap();
+    let edited = Arc::new(edited);
+    let mut output = Output::default();
+    output.stats.connected().insert("DIN".into());
+    let (tx, _rx) = channel();
+    let calls = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let mut port = active_port(0, true);
+    port.routes[0].as_mut().unwrap().encoder = Box::new(Revisions(calls.clone()));
+    let mut generation = output.configure(&initial, &tx, None);
+    let mut session = initial.clone();
+    for ms in 0..=400 {
+        let now = base + Duration::from_millis(ms);
+        if ms == 100 {
+            generation = output.configure(&grid, &tx, Some(&initial));
+            session = grid.clone();
+        }
+        if ms == 250 {
+            generation = output.configure(&edited, &tx, None);
+            session = edited.clone();
+        }
+        if ms % 10 == 0 {
+            output.view.lock().unwrap().push(Presentation { generation, ..block(now, ms as f64 * 48., 480., lead) });
+        }
+        port.poll("DIN", now, &session, &output.view, &output.stats, &mut Vec::new());
+    }
+    assert_eq!(*calls.lock().unwrap(), ["regrid", "remap"]);
+}
+
+#[test]
 fn tempo_change_relocates_when_the_new_map_becomes_audible() {
     let base = Instant::now();
     let lead = Duration::from_millis(50);
