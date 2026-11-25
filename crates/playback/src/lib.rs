@@ -157,6 +157,8 @@ pub enum OutputTrouble {
     Gone,
     /// The device stopped asking for audio while playing.
     Stalled,
+    /// The ASIO driver is still calling back but is no longer keeping up with its audio clock.
+    ClockTooSlow,
 }
 
 /// The transport and audio device.
@@ -175,6 +177,9 @@ pub struct Player {
     pub device_name: String,
     #[cfg(all(windows, feature = "asio"))]
     asio_device: Option<cpal::Device>,
+    /// Frames the ASIO output had asked for when last checked, and when (`asio_clock_slow`).
+    #[cfg(all(windows, feature = "asio"))]
+    asio_watch: Mutex<Option<(u64, std::time::Instant)>>,
     pub device_rate: u32,
     /// Output channels the device was opened with (0 for the silent clock).
     pub device_channels: u16,
@@ -229,13 +234,25 @@ impl Player {
     /// stopped asking for audio while playing.
     pub fn trouble(&self) -> Option<OutputTrouble> {
         #[cfg(not(target_arch = "wasm32"))]
-        let stalled = {
+        let clock = {
             let playing = self.shared.playing.load(Ordering::Relaxed) && !self.silent;
-            stalled(&mut self.watch.lock().unwrap_or_else(PoisonError::into_inner), self.fault.beats.load(Ordering::Relaxed), playing)
+            let stopped = stalled(&mut self.watch.lock().unwrap_or_else(PoisonError::into_inner), self.fault.beats.load(Ordering::Relaxed), playing);
+            #[cfg(all(windows, feature = "asio"))]
+            let slow = self.asio_device.is_some()
+                && callback::asio_clock_slow(
+                    &mut self.asio_watch.lock().unwrap_or_else(PoisonError::into_inner),
+                    self.fault.asio_frames.load(Ordering::Relaxed),
+                    std::time::Instant::now(),
+                    self.device_rate,
+                    playing,
+                );
+            #[cfg(not(all(windows, feature = "asio")))]
+            let slow = false;
+            if stopped { Some(OutputTrouble::Stalled) } else { slow.then_some(OutputTrouble::ClockTooSlow) }
         };
         #[cfg(target_arch = "wasm32")]
-        let stalled = false;
-        self.fault.trouble(stalled)
+        let clock = None;
+        self.fault.trouble(clock)
     }
 
     fn side(&self) -> std::sync::MutexGuard<'_, Side> {
@@ -311,6 +328,8 @@ impl Player {
                                 use cpal::traits::DeviceTrait;
                                 device.id().ok().filter(|id| id.host() == cpal::HostId::Asio).map(|_| device)
                             },
+                            #[cfg(all(windows, feature = "asio"))]
+                            asio_watch: Mutex::new(None),
                             device_name: name,
                             device_rate: rate,
                             device_channels: config.channels,
@@ -390,6 +409,8 @@ impl Player {
             _stream: None,
             #[cfg(all(windows, feature = "asio"))]
             asio_device: None,
+            #[cfg(all(windows, feature = "asio"))]
+            asio_watch: Mutex::new(None),
             device_name: "No audio device (silent)".into(),
             device_rate: rate,
             device_channels: 0,

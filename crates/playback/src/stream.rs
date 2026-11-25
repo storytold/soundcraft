@@ -57,10 +57,16 @@ where
     let mut scratch = vec![0.0f32; 8192 * frame];
     let chunk = scratch.len();
     let (failed, guard, gone) = (Arc::clone(fault), Arc::clone(shared), Arc::clone(fault));
+    #[cfg(all(windows, feature = "asio"))]
+    let asio = device.id().is_ok_and(|id| id.host() == cpal::HostId::Asio);
     device.build_output_stream(
         config,
         move |data: &mut [T], _: &cpal::OutputCallbackInfo| {
             mark_audio_thread();
+            #[cfg(all(windows, feature = "asio"))]
+            if asio {
+                failed.asio_frames.fetch_add((data.len() / frame) as u64, Ordering::Relaxed);
+            }
             for out in data.chunks_mut(chunk) {
                 let Some(s) = scratch.get_mut(..out.len()) else { return };
                 guarded_block(&failed, &guard, s, |d| state.fill(d, channels));

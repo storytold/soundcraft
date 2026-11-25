@@ -1324,6 +1324,7 @@ fn menu_translate(source: &str) -> Option<&'static str> {
         "Without a name, the clips keep their names." => "Sem nome, os clipes mantêm seus nomes.",
         "audio on" => "áudio ativado",
         "is unavailable" => "está indisponível",
+        "stopped providing audio at its configured rate" => "parou de fornecer áudio na taxa configurada",
         "marker" => "marcador",
         "modified" => "modificado",
         "movie offline" => "filme indisponível",
