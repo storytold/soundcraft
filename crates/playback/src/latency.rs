@@ -35,10 +35,14 @@ impl ReportedLatency {
     }
 }
 
-/// The process-wide origin that [`InstantCell`] counts from.
+/// The process-wide origin that [`InstantCell`] counts from: [`PLAUSIBLE`] before it was first
+/// needed, so a capture moved back by any accepted input latency is still after it.
 fn epoch() -> Instant {
     static EPOCH: std::sync::OnceLock<Instant> = std::sync::OnceLock::new();
-    *EPOCH.get_or_init(Instant::now)
+    *EPOCH.get_or_init(|| {
+        let now = Instant::now();
+        now.checked_sub(PLAUSIBLE).unwrap_or(now)
+    })
 }
 
 /// An instant an audio callback writes and another thread reads, without locking.
@@ -49,7 +53,8 @@ pub struct InstantCell(
 );
 
 impl InstantCell {
-    /// A cell whose instants may be as early as now (the epoch is fixed no later than this).
+    /// A cell whose instants may be as early as [`PLAUSIBLE`] before now (the epoch is fixed no
+    /// later than that).
     pub fn new() -> Self {
         epoch();
         Self::default()
@@ -130,7 +135,8 @@ pub struct Heard {
 
 /// What the output callbacks say about when session samples are heard: the first sample of the
 /// pass that the latest Play started, and the first sample of the latest callback. The audio
-/// thread only `try_lock`s; a busy lock skips one update.
+/// thread only `try_lock`s; a busy lock skips one update of the latest callback, and the pass's
+/// stamp waits for the next callback.
 #[derive(Debug, Default)]
 pub struct HeardStamps {
     pass: Mutex<Option<Heard>>,
@@ -138,9 +144,13 @@ pub struct HeardStamps {
 }
 
 impl HeardStamps {
-    pub(crate) fn record(&self, heard: Heard, pass_started: bool) {
-        if pass_started && let Ok(mut p) = self.pass.try_lock() {
-            *p = Some(heard);
+    /// Note the latest callback's `heard`, and publish `pass`, the pass's first sample, taking it
+    /// when the lock is free (it stays for the next callback when it is not).
+    pub(crate) fn record(&self, heard: Heard, pass: &mut Option<Heard>) {
+        if pass.is_some()
+            && let Ok(mut p) = self.pass.try_lock()
+        {
+            *p = pass.take();
         }
         if let Ok(mut l) = self.last.try_lock() {
             *l = Some(heard);
@@ -157,6 +167,23 @@ impl HeardStamps {
         let last = self.last.lock().ok().and_then(|l| *l)?;
         last.when.shifted((sample - last.sample) / rate.max(1.0))
     }
+}
+
+/// `heard`, when a sample of a loop of `period` seconds is heard, moved by whole rounds to the
+/// round nearest `captured`. A sample after the pass start is projected from the latest callback
+/// (see [`HeardStamps::heard_at`]), which names the round that callback is in, not the round a
+/// take began in. Right while the take's real offset is under half a round.
+pub fn nearest_round(heard: Moment, captured: Moment, period: f64) -> Moment {
+    if period.is_nan() || period <= 0.0 {
+        return heard;
+    }
+    let gap = if captured.at >= heard.at {
+        captured.at.duration_since(heard.at).as_secs_f64()
+    } else {
+        -heard.at.duration_since(captured.at).as_secs_f64()
+    };
+    let rounds = (gap / period).round();
+    if rounds == 0.0 { heard } else { heard.shifted(rounds * period).unwrap_or(heard) }
 }
 
 /// `at` moved by `seconds` (earlier when negative).
@@ -278,6 +305,57 @@ mod tests {
     }
 
     #[test]
+    fn a_take_begun_in_an_earlier_loop_round_is_timed_by_that_round() {
+        let t0 = Instant::now();
+        let moment = |s: f64| Moment { at: t0 + Duration::from_secs_f64(s), clock: Some(100.0 + s) };
+        // A 0.25 s loop; the take began 3 ms after its start sample was heard, and the latest
+        // callback, two rounds on, projects that sample to its own round.
+        let captured = moment(10.003);
+        let projected = moment(10.5);
+        let heard = nearest_round(projected, captured, 0.25);
+        assert!(heard.at.duration_since(t0).abs_diff(Duration::from_secs(10)) < Duration::from_micros(1), "{heard:?}");
+        assert!(heard.clock.is_some_and(|c| (c - 110.0).abs() < 1e-9), "{heard:?}");
+        assert_eq!(placement_offset(heard, captured, 48_000.0, None), -144);
+        // The same round, or no loop, stays as it is.
+        assert_eq!(nearest_round(moment(10.0), captured, 0.25), moment(10.0));
+        assert_eq!(nearest_round(projected, captured, 0.0), projected);
+    }
+
+    #[test]
+    fn a_pass_stamp_skipped_on_a_busy_lock_is_published_by_the_next_callback() {
+        let stamps = HeardStamps::default();
+        let moment = |s: u64| Moment { at: epoch() + Duration::from_secs(s), clock: Some(s as f64) };
+        let mut pending = Some(Heard { sample: 0.0, when: moment(1) });
+        stamps.record(Heard { sample: 0.0, when: moment(1) }, &mut pending);
+        assert_eq!(pending, None);
+        // A second Play from the same sample while the UI reads the pass.
+        let start = Heard { sample: 0.0, when: moment(10) };
+        let mut pending = Some(start);
+        {
+            let _reading = stamps.pass.lock().unwrap();
+            stamps.record(start, &mut pending);
+        }
+        assert_eq!(pending, Some(start), "kept for the next callback");
+        stamps.record(Heard { sample: 512.0, when: moment(11) }, &mut pending);
+        assert_eq!(pending, None);
+        assert_eq!(stamps.heard_at(0.0, 48_000.0), Some(start.when), "the new pass's start, not the old one");
+    }
+
+    #[test]
+    fn an_instant_cell_keeps_a_capture_from_before_it_was_made() {
+        let cell = InstantCell::new();
+        // The first callback after the recorder opened, its first frame captured 20 ms earlier.
+        let captured = Instant::now().checked_sub(Duration::from_millis(20)).unwrap();
+        cell.set_if_empty(captured);
+        let kept = cell.get().unwrap();
+        assert!(kept.max(captured) - kept.min(captured) < Duration::from_micros(1), "{kept:?} vs {captured:?}");
+        cell.clear();
+        cell.set(captured);
+        let kept = cell.get().unwrap();
+        assert!(kept.max(captured) - kept.min(captured) < Duration::from_micros(1));
+    }
+
+    #[test]
     fn a_stream_reports_nothing_until_its_first_plausible_callback() {
         let latency = ReportedLatency::default();
         assert_eq!(latency.get(), None);
@@ -319,9 +397,9 @@ mod tests {
         assert_eq!(stamps.heard_at(1_000.0, 48_000.0), None);
         // Play from 1_000; the first callback's first sample is heard at t0, 100 s on the clock.
         let start = Moment { at: t0, clock: Some(100.0) };
-        stamps.record(Heard { sample: 1_000.0, when: start }, true);
+        stamps.record(Heard { sample: 1_000.0, when: start }, &mut Some(Heard { sample: 1_000.0, when: start }));
         // Later callbacks move the latest stamp on.
-        stamps.record(Heard { sample: 49_000.0, when: start.shifted(1.0).unwrap() }, false);
+        stamps.record(Heard { sample: 49_000.0, when: start.shifted(1.0).unwrap() }, &mut None);
         assert_eq!(stamps.heard_at(1_000.0, 48_000.0), Some(start), "the pass start is exact");
         // A punch at 25_000 is projected from the latest callback: half a second after the start.
         let punch = stamps.heard_at(25_000.0, 48_000.0).unwrap();

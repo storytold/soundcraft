@@ -89,6 +89,8 @@ pub(crate) struct AudioState {
     pub(crate) chunk_offset: usize,
     /// A Play was read since the last fill: this fill starts the pass.
     pass_started: bool,
+    /// The stamp of the pass's first sample, until the UI's lock lets it be published.
+    pending_pass: Option<super::latency::Heard>,
     input: Option<Arc<record::InputRing>>,
     recording: bool,
     midi: Option<Arc<midi::MidiFeed>>,
@@ -187,6 +189,7 @@ impl AudioState {
             playback_clock: None,
             chunk_offset: 0,
             pass_started: false,
+            pending_pass: None,
             input: None,
             recording: false,
             midi: None,
@@ -646,7 +649,11 @@ impl AudioState {
         let when = super::latency::Moment { at, clock: self.playback_clock.map(|p| p + into) };
         // The next output frame: `read` frames into the pending block, which ends at `pos`.
         let sample = self.pos as f64 - self.pending_len as f64 + self.read;
-        self.shared.heard.record(super::latency::Heard { sample, when }, pass_started);
+        let heard = super::latency::Heard { sample, when };
+        if pass_started {
+            self.pending_pass = Some(heard);
+        }
+        self.shared.heard.record(heard, &mut self.pending_pass);
     }
 
     /// Fill an interleaved device buffer.
