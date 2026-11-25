@@ -512,23 +512,23 @@ fn number_combo(ui: &mut egui::Ui, id: &str, name: &str, value: &mut Option<u32>
 fn midi_event_text(e: &soundcraft_mix::LiveMidi) -> String {
     let ch = e.channel() + 1;
     match e.status & 0xF0 {
-        0x90 if e.data2 > 0 => format!("note {} on, velocity {}, channel {ch}", soundcraft_midi::note_name(e.data1), e.data2),
-        0x80 | 0x90 => format!("note {} off, channel {ch}", soundcraft_midi::note_name(e.data1)),
-        0xA0 => format!("aftertouch {} on note {}, channel {ch}", e.data2, soundcraft_midi::note_name(e.data1)),
-        0xB0 => format!("controller {} = {}, channel {ch}", e.data1, e.data2),
-        0xC0 => format!("program {}, channel {ch}", u16::from(e.data1) + 1),
-        0xD0 => format!("aftertouch {}, channel {ch}", e.data1),
-        0xE0 => format!("pitch bend {}, channel {ch}", (i32::from(e.data2) << 7 | i32::from(e.data1)) - 8192),
-        _ => format!("message {:#04x}", e.status),
+        0x90 if e.data2 > 0 => crate::localized_format!("note {} on, velocity {}, channel {}", soundcraft_midi::note_name(e.data1), e.data2, ch),
+        0x80 | 0x90 => crate::localized_format!("note {} off, channel {}", soundcraft_midi::note_name(e.data1), ch),
+        0xA0 => crate::localized_format!("aftertouch {} on note {}, channel {}", e.data2, soundcraft_midi::note_name(e.data1), ch),
+        0xB0 => crate::localized_format!("controller {} = {}, channel {}", e.data1, e.data2, ch),
+        0xC0 => crate::localized_format!("program {}, channel {}", u16::from(e.data1) + 1, ch),
+        0xD0 => crate::localized_format!("aftertouch {}, channel {}", e.data1, ch),
+        0xE0 => crate::localized_format!("pitch bend {}, channel {}", (i32::from(e.data2) << 7 | i32::from(e.data1)) - 8192, ch),
+        _ => crate::localized_format!("message {}", format!("{:#04x}", e.status)),
     }
 }
 
 /// The MIDI inputs of Setup › Playback Engine: every input port with a switch, and on request what
 /// arrives from it, to see that a keyboard gets through.
 fn midi_inputs(app: &mut SoundApp, ui: &mut egui::Ui) {
-    ui.strong("MIDI inputs");
+    ui.strong(crate::localization::text("MIDI inputs"));
     let Some(m) = &app.midi_inputs else {
-        ui.weak("No audio engine, so MIDI devices are not opened.");
+        ui.weak(crate::localization::text("No audio engine, so MIDI devices are not opened."));
         return;
     };
     if let Some(e) = m.error() {
@@ -537,7 +537,7 @@ fn midi_inputs(app: &mut SoundApp, ui: &mut egui::Ui) {
     }
     let ports = m.ports().to_vec();
     if ports.is_empty() {
-        ui.weak("No MIDI input device found. Plug one in: it shows up here by itself.");
+        ui.weak(crate::localization::text("No MIDI input device found. Plug one in: it shows up here by itself."));
     }
     // Per port name: whether its debug readout is shown, and the last message seen from it.
     let debug_id = egui::Id::unique("playback-engine-midi-debug");
@@ -547,28 +547,35 @@ fn midi_inputs(app: &mut SoundApp, ui: &mut egui::Ui) {
     if dropped > 0 {
         ui.colored_label(
             ui.visuals().warn_fg_color,
-            format!("{dropped} MIDI event(s) arrived faster than they could be played and were dropped; held notes of that device were released."),
+            crate::localized_format!(
+                "{} MIDI event(s) arrived faster than they could be played and were dropped; held notes of that device were released.",
+                dropped
+            ),
         );
     }
     if let Some(e) = last
         && let Some(from) = m.feed().ports().name(e.port)
     {
-        debug.entry(from.to_string()).or_default().1 = Some(format!("{} (message {count} of all devices)", midi_event_text(&e)));
+        debug.entry(from.to_string()).or_default().1 = Some(crate::localized_format!("{} (message {} of all devices)", midi_event_text(&e), count));
     }
     let mut toggle = None;
     egui::Grid::new("pe-midi").num_columns(3).show(ui, |ui| {
         for p in &ports {
             let mut on = p.enabled;
-            if crate::widgets::checkbox(ui, &mut on, &p.name).on_hover_text("Play and record from this device").changed() {
+            if crate::widgets::checkbox(ui, &mut on, &p.name).on_hover_text(crate::localization::text("Play and record from this device")).changed() {
                 toggle = Some((p.name.clone(), on));
             }
             match (p.enabled, p.open) {
-                (false, _) => ui.weak("off"),
-                (true, true) => ui.label("connected"),
-                (true, false) => ui.colored_label(ui.visuals().warn_fg_color, "could not be opened"),
+                (false, _) => ui.weak(crate::localization::text("off")),
+                (true, true) => ui.label(crate::localization::text("connected")),
+                (true, false) => ui.colored_label(ui.visuals().warn_fg_color, crate::localization::text("could not be opened")),
             };
             let shown = &mut debug.entry(p.name.clone()).or_default().0;
-            if ui.selectable_label(*shown, "Test").on_hover_text("Show what arrives from this device").clicked() {
+            if ui
+                .selectable_label(*shown, crate::localization::text("Test"))
+                .on_hover_text(crate::localization::text("Show what arrives from this device"))
+                .clicked()
+            {
                 *shown = !*shown;
             }
             ui.end_row();
@@ -581,10 +588,11 @@ fn midi_inputs(app: &mut SoundApp, ui: &mut egui::Ui) {
         let Some((true, seen)) = debug.get(&p.name) else { continue };
         ui.separator();
         ui.label(&p.name);
-        ui.weak(format!("Enabled: {}, open: {}", if p.enabled { "yes" } else { "no" }, if p.open { "yes" } else { "no" }));
+        let yes_no = |b: bool| crate::localization::text(if b { "yes" } else { "no" });
+        ui.weak(crate::localized_format!("Enabled: {}, open: {}", yes_no(p.enabled), yes_no(p.open)));
         ui.weak(match seen {
-            Some(text) => format!("Last received: {text}"),
-            None => "Last received: nothing yet".to_string(),
+            Some(text) => crate::localized_format!("Last received: {}", text),
+            None => crate::localization::text("Last received: nothing yet").to_string(),
         });
         // Keep the readout live while it is shown.
         ui.ctx().request_repaint_after_secs(0.1);
