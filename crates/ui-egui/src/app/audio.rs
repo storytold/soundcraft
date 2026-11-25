@@ -57,6 +57,7 @@ impl SoundApp {
                         // The old ASIO callback must be dropped before reopening the device.
                     }
                     let restored = Player::with_config(self.engine.session_arc(), &self.ui.audio);
+                    self.attach_midi(&restored);
                     restored.locate(at);
                     self.player = Some(restored);
                 }
