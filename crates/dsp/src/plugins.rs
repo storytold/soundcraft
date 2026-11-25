@@ -4,6 +4,7 @@ pub mod auto_pan;
 pub mod drums;
 pub mod dynamics;
 pub mod eq;
+pub mod freq_shifter;
 pub mod harmonic;
 pub mod modulation;
 pub mod pitch;
@@ -32,6 +33,7 @@ pub(crate) static REGISTRY: &[&PluginInfo] = &[
     &modulation::FLANGER_INFO,
     &modulation::PHASER_INFO,
     &modulation::RING_INFO,
+    &freq_shifter::FREQ_SHIFTER_INFO,
     &harmonic::SAT_INFO,
     &harmonic::LOFI_INFO,
     &harmonic::RECT_INFO,
@@ -67,6 +69,7 @@ pub(crate) fn instantiate(id: &str) -> Option<Box<dyn Plugin>> {
         "flanger" => Box::new(modulation::ModFx::flanger()),
         "phaser" => Box::new(modulation::Phaser::new()),
         "ring_mod" => Box::new(modulation::RingMod::new()),
+        "freq_shifter" => Box::new(freq_shifter::FreqShifter::new()),
         "saturator" => Box::new(harmonic::Saturator::new()),
         "lofi" => Box::new(harmonic::LoFi::new()),
         "rectifier" => Box::new(harmonic::Rectifier::new()),

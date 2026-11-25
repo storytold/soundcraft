@@ -263,7 +263,13 @@ fn draw_clip_content(cl: &ClipLane<'_>, clip: &Clip, g: &ClipGeom<'_>) {
                     }
                 }
             } else {
-                painter.text(body_r.center(), Align2::CENTER_CENTER, "media offline", regular(10.0), Color32::from_rgb(220, 120, 120));
+                painter.text(
+                    body_r.center(),
+                    Align2::CENTER_CENTER,
+                    crate::localization::text("media offline"),
+                    regular(10.0),
+                    Color32::from_rgb(220, 120, 120),
+                );
             }
         }
         ClipContent::Video { .. } => {} // thumbnails: video_track::draw_lane

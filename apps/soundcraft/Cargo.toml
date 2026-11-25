@@ -48,3 +48,5 @@ objc2-app-kit = { version = "0.3", default-features = false, features = ["NSAppl
 
 [target.'cfg(windows)'.dependencies]
 craft-update = { workspace = true }
+# The Nightly flavor's explicit taskbar identity (process_identity.rs); stable sets none.
+winsafe = { version = "0.0.29", features = ["user", "shell"] }

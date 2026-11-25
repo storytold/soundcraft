@@ -1,7 +1,7 @@
 //! Crash-recovery copies of open sessions, one folder each, written in the background, and the
 //! recovery of the ones left behind with unsaved work.
 
-use crate::io::{Recording, open_session_linked, sanitize_name};
+use crate::io::{Recording, open_session_linked, sanitize_name, take_part};
 use crate::{Engine, EngineError, Result};
 use craft_audio::{BitDepth, EncodeOptions};
 use soundcraft_model::{Session, SourceAudio, SourceId};
@@ -360,8 +360,10 @@ pub fn recover(e: &mut Engine, left: &Leftover) -> Result<Vec<String>> {
 }
 
 /// The takes of the recording `left` holds the plan of, repaired, minus those already in `s`.
-/// A take the plan names that isn't a take file SoundCraft recorded, in a folder it records into,
-/// is left untouched and added to `skipped`.
+/// A take that filled its first file goes on in the next ones ([`take_part`]): all of them are
+/// taken, in order, up to the first that holds nothing. A take file the plan names that isn't a
+/// take SoundCraft recorded, in a folder it records into, is left untouched and added to
+/// `skipped`, and ends its take there.
 fn unfinished_takes(left: &Leftover, s: &Session, skipped: &mut Vec<String>) -> Option<(Recording, Vec<(soundcraft_model::TrackId, PathBuf)>)> {
     let plan: Recording = serde_json::from_str(&std::fs::read_to_string(left.dir.join(RECORDING)).ok()?).ok()?;
     let known: Vec<PathBuf> =
@@ -369,15 +371,19 @@ fn unfinished_takes(left: &Leftover, s: &Session, skipped: &mut Vec<String>) -> 
     let folders = take_folders(left);
     let mut takes = Vec::new();
     for t in &plan.takes {
-        if std::fs::canonicalize(&t.path).is_ok_and(|p| known.contains(&p)) {
-            continue;
-        }
-        match repair_take(&t.path, &folders, t.channels, plan.rate) {
-            Ok(frames) if frames > 0 => takes.push((t.track, t.path.clone())),
-            Ok(_) => {}
-            Err(err) => {
-                log::warn!("recovery skipped the take {}: {err}", t.path.display());
-                skipped.push(format!("{}: {err}", t.path.display()));
+        let parts = (2..).map(|n| take_part(&t.path, n)).take_while(|p| p.exists());
+        for path in std::iter::once(t.path.clone()).chain(parts) {
+            if std::fs::canonicalize(&path).is_ok_and(|p| known.contains(&p)) {
+                continue;
+            }
+            match repair_take(&path, &folders, t.channels, plan.rate) {
+                Ok(frames) if frames > 0 => takes.push((t.track, path)),
+                Ok(_) => break,
+                Err(err) => {
+                    log::warn!("recovery skipped the take {}: {err}", path.display());
+                    skipped.push(format!("{}: {err}", path.display()));
+                    break;
+                }
             }
         }
     }
@@ -404,11 +410,11 @@ fn repair_take(path: &Path, folders: &[PathBuf], channels: usize, rate: u32) -> 
     if !folder.is_some_and(|d| folders.contains(&d)) {
         return Err(refuse("not in a folder SoundCraft records into"));
     }
-    let header = |frames| craft_audio::wav_float_header(rate, u16::try_from(channels).unwrap_or(u16::MAX), frames).map_err(std::io::Error::other);
+    let header = |frames| take_header(channels, rate, frames);
     let expected = header(0)?;
     let mut f = std::fs::OpenOptions::new().read(true).write(true).open(path)?;
     let mut head = vec![0u8; expected.len()];
-    if std::io::Read::read_exact(&mut f, &mut head).is_err() || !is_take_header(&head, &expected) {
+    if std::io::Read::read_exact(&mut f, &mut head).is_err() || !is_take_header(&head, channels, rate) {
         return Err(refuse("not a take SoundCraft recorded"));
     }
     let audio = f.metadata()?.len().saturating_sub(expected.len() as u64);
@@ -419,22 +425,26 @@ fn repair_take(path: &Path, folders: &[PathBuf], channels: usize, rate: u32) -> 
     Ok(frames)
 }
 
-/// `head` is a take header like `expected` (the recorder's header for no frames yet): RIFF or
-/// RF64 WAVE, the same format chunk at the same place, and the data chunk right after it all.
-/// Only the sizes and frame counts may differ.
-fn is_take_header(head: &[u8], expected: &[u8]) -> bool {
-    let magic = matches!(head.get(..4), Some(b"RIFF" | b"RF64")) && head.get(8..12) == Some(b"WAVE");
-    let fmt = expected.windows(4).position(|w| w == b"fmt ");
-    let fmt_len = fmt.and_then(|at| expected.get(at + 4..at + 8)).and_then(|b| b.try_into().ok()).map(u32::from_le_bytes);
-    let same_fmt = match (fmt, fmt_len) {
-        (Some(at), Some(n)) => {
-            let end = at.saturating_add(8).saturating_add(n as usize);
-            expected.get(at..end).is_some_and(|chunk| head.get(at..end) == Some(chunk))
+/// The WAV header the recorder writes for a take of `channels` at `rate` holding `frames`: 32-bit
+/// float, RIFF or RF64 by size ([`craft_audio::wav_float_header`]).
+fn take_header(channels: usize, rate: u32, frames: u64) -> std::io::Result<Vec<u8>> {
+    craft_audio::wav_float_header(rate, u16::try_from(channels).unwrap_or(u16::MAX), frames).map_err(std::io::Error::other)
+}
+
+/// `head` is a header the recorder writes for a take of `channels` at `rate`: exactly the one
+/// for the frame count its data chunk claims, RIFF or RF64. The recorder rewrites only the sizes
+/// and frame counts as the take grows, so a WAV with anything else in the header (its own
+/// metadata in the reserved chunk, another chunk, another format) isn't a take.
+fn is_take_header(head: &[u8], channels: usize, rate: u32) -> bool {
+    let data_len = match head.get(..4) {
+        Some(b"RIFF") => {
+            head.len().checked_sub(4).and_then(|at| head.get(at..)).and_then(|b| b.try_into().ok()).map(u32::from_le_bytes).map(u64::from)
         }
-        _ => false,
+        Some(b"RF64") => head.get(28..36).and_then(|b| b.try_into().ok()).map(u64::from_le_bytes),
+        _ => None,
     };
-    let data = expected.len().checked_sub(8).and_then(|at| head.get(at..at + 4)) == Some(b"data");
-    magic && same_fmt && data
+    let block = channels as u64 * 4;
+    data_len.filter(|n| block > 0 && n % block == 0).and_then(|n| take_header(channels, rate, n / block).ok()).is_some_and(|written| written == head)
 }
 
 /// Delete a leftover autosave.
@@ -740,6 +750,62 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// A take that went on in more files before the crash is placed whole: the full files as they
+    /// are, the last one repaired, end to end.
+    #[test]
+    fn a_take_in_several_files_at_a_crash_is_placed_whole_on_recovery() {
+        use crate::io::Take;
+        let dir = folder("autosave-take-files");
+        let root = dir.join("Autosave");
+        let mut e = Engine::default();
+        let track =
+            soundcraft_model::TrackId(e.execute("track.new", &json!({"name": "Vox", "format": "mono"})).unwrap()["tracks"][0].as_u64().unwrap());
+        let take = root.join(sanitize_name(&e.session().name)).join("Audio Files/Vox_01.wav");
+        std::fs::create_dir_all(take.parent().unwrap()).unwrap();
+        let audio = |n: usize| (0..n).flat_map(|i| (i as f32 / 1000.0).to_le_bytes()).collect::<Vec<u8>>();
+        std::fs::write(&take, [take_header(1, 48_000, 300).unwrap(), audio(300)].concat()).unwrap();
+        std::fs::write(take_part(&take, 2), [take_header(1, 48_000, 300).unwrap(), audio(300)].concat()).unwrap();
+        std::fs::write(take_part(&take, 3), [take_header(1, 48_000, 100).unwrap(), audio(250)].concat()).unwrap();
+        let plan = Recording { start: 48_000, pass: None, punch: None, rate: 48_000, takes: vec![Take { track, path: take, channels: 1 }] };
+        let w = Autosaver::new(root.clone());
+        w.write(e.session_arc(), None, Some(plan));
+        drop(w);
+        let mut r = Engine::default();
+        recover(&mut r, &leftovers(&root)[0]).unwrap();
+        let clips: Vec<_> = r.session().track(track).unwrap().clips().iter().map(|c| (c.name.clone(), c.start, c.length)).collect();
+        assert_eq!(clips, [("Vox_01".into(), 48_000, 300), ("Vox_01-2".into(), 48_300, 300), ("Vox_01-3".into(), 48_600, 250)]);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A take's parts after an empty one, or one that isn't a take, are not recovered: the take
+    /// ends there, as where they go depends on what it holds.
+    #[test]
+    fn recovery_stops_a_take_at_a_part_that_holds_nothing() {
+        use crate::io::Take;
+        for (case, second) in [("empty", take_header(1, 48_000, 0).unwrap()), ("not a take", b"not audio".repeat(8))] {
+            let dir = folder(&format!("autosave-take-stops-{}", case.replace(' ', "-")));
+            let root = dir.join("Autosave");
+            let mut e = Engine::default();
+            let track =
+                soundcraft_model::TrackId(e.execute("track.new", &json!({"name": "Vox", "format": "mono"})).unwrap()["tracks"][0].as_u64().unwrap());
+            let take = root.join(sanitize_name(&e.session().name)).join("Audio Files/Vox_01.wav");
+            std::fs::create_dir_all(take.parent().unwrap()).unwrap();
+            let audio = |n: usize| (0..n).flat_map(|i| (i as f32 / 1000.0).to_le_bytes()).collect::<Vec<u8>>();
+            std::fs::write(&take, [take_header(1, 48_000, 300).unwrap(), audio(300)].concat()).unwrap();
+            std::fs::write(take_part(&take, 2), &second).unwrap();
+            std::fs::write(take_part(&take, 3), [take_header(1, 48_000, 200).unwrap(), audio(200)].concat()).unwrap();
+            let plan = Recording { start: 0, pass: None, punch: None, rate: 48_000, takes: vec![Take { track, path: take, channels: 1 }] };
+            let w = Autosaver::new(root.clone());
+            w.write(e.session_arc(), None, Some(plan));
+            drop(w);
+            let mut r = Engine::default();
+            recover(&mut r, &leftovers(&root)[0]).unwrap();
+            let clips: Vec<_> = r.session().track(track).unwrap().clips().iter().map(|c| c.name.clone()).collect();
+            assert_eq!(clips, ["Vox_01"], "part 2 {case}: part 3 isn't placed");
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+    }
+
     #[test]
     fn recovery_never_writes_a_file_that_isnt_a_take_in_a_take_folder() {
         use crate::io::Take;
@@ -752,8 +818,15 @@ mod tests {
         std::fs::create_dir_all(&takes).unwrap();
         let wav = [craft_audio::wav_float_header(48_000, 1, 0).unwrap(), vec![0; 4_000]].concat();
         let text = b"not audio at all, but long enough to be mistaken for a header if nobody looked at it ......".repeat(4);
-        let files =
-            [(takes.join("notes.wav"), text.clone()), (dir.join("Elsewhere/Vox_01.wav"), wav.clone()), (takes.join("../Vox_02.wav"), wav.clone())];
+        // another app's WAV with its own metadata where the recorder reserves room, chunk sizes unchanged
+        let mut tagged = wav.clone();
+        tagged[12..48].copy_from_slice(b"LIST\x1c\0\0\0INFOISFT\x10\0\0\0another recorder");
+        let files = [
+            (takes.join("notes.wav"), text.clone()),
+            (dir.join("Elsewhere/Vox_01.wav"), wav.clone()),
+            (takes.join("../Vox_02.wav"), wav.clone()),
+            (takes.join("Vox_04.wav"), tagged),
+        ];
         for (path, bytes) in &files {
             std::fs::create_dir_all(path.parent().unwrap()).unwrap();
             std::fs::write(path, bytes).unwrap();
@@ -849,6 +922,25 @@ mod tests {
         std::fs::File::create(&file).unwrap().set_len(crate::io::MAX_SESSION_BYTES + 1).unwrap();
         assert_eq!(saved_name(&file), None);
         assert_eq!(saved_name(&dir.0.join("none")), None);
+    }
+
+    #[test]
+    fn a_take_header_is_one_the_recorder_writes_for_its_frames() {
+        let header = |frames| take_header(2, 48_000, frames).unwrap();
+        for frames in [0, 1, 48_000, 1 << 31] {
+            assert!(is_take_header(&header(frames), 2, 48_000), "{frames} frames");
+        }
+        assert!(header(1 << 31).starts_with(b"RF64"));
+        assert!(!is_take_header(&header(10), 1, 48_000));
+        assert!(!is_take_header(&header(10), 2, 44_100));
+        let mut odd = header(10);
+        let at = odd.len() - 4;
+        odd[at..].copy_from_slice(&79u32.to_le_bytes());
+        assert!(!is_take_header(&odd, 2, 48_000), "a data size that isn't whole frames");
+        let mut fact = header(10);
+        let at = fact.len() - 12;
+        fact[at..at + 4].copy_from_slice(&11u32.to_le_bytes());
+        assert!(!is_take_header(&fact, 2, 48_000), "a frame count the data doesn't hold");
     }
 
     #[test]
