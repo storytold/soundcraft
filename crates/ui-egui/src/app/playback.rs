@@ -272,6 +272,16 @@ impl SoundApp {
                 None => p.set_recording(false),
             }
         }
+        // A punch stops where the output stopped rendering, but what it played up to the punch-out
+        // reaches the input a round trip later. The take is placed by that round trip, so keep
+        // taking in until then: the take still covers the whole punch, and the extra input is
+        // trimmed off with the punch range.
+        if self.punch.is_some()
+            && let Some(wait) =
+                punch_tail(self.player.as_ref().and_then(|p| p.output_latency()), self.recorder.as_ref().and_then(|r| r.input_latency()))
+        {
+            std::thread::sleep(wait);
+        }
         // The audio input stops taking in first: waiting for the MIDI below would otherwise add
         // what the input hears meanwhile to the audio takes. No input device is open when the
         // pass was MIDI only.
@@ -580,9 +590,32 @@ impl SoundApp {
     }
 }
 
+/// How long the input keeps recording after a punch-out: the devices' reported round trip, the
+/// time the last punched sample takes from the output back to the input. `None` without both
+/// latencies (the take is then placed without them, so it ends where the input stopped) or for a
+/// round trip of a second or more, which placement also leaves out.
+fn punch_tail(output: Option<std::time::Duration>, input: Option<std::time::Duration>) -> Option<std::time::Duration> {
+    let round_trip = output? + input?;
+    (round_trip < std::time::Duration::from_secs(1)).then_some(round_trip)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_punch_keeps_recording_for_the_reported_round_trip() {
+        use std::time::Duration;
+        let ms = Duration::from_millis;
+        // An RME UFX on Core Audio at 256 frames: 321 samples out, 302 in, at 48 kHz.
+        assert_eq!(
+            punch_tail(Some(ms(6) + Duration::from_micros(687)), Some(ms(6) + Duration::from_micros(292))),
+            Some(ms(12) + Duration::from_micros(979))
+        );
+        assert_eq!(punch_tail(None, Some(ms(6))), None);
+        assert_eq!(punch_tail(Some(ms(6)), None), None);
+        assert_eq!(punch_tail(Some(ms(600)), Some(ms(600))), None);
+    }
 
     #[test]
     fn without_device_timing_only_the_record_offset_places_a_take() {
