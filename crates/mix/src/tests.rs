@@ -2324,3 +2324,44 @@ fn an_attack_released_late_by_a_wire_held_backlog_keeps_its_length() {
     assert!(on > 24_000, "the attack was held: {events:?}");
     assert!(off - on >= 12_000, "a late attack lost {} samples of its length: {events:?}", 12_000 - (off - on));
 }
+
+#[test]
+fn a_seek_discards_the_score_range_the_wire_held_back() {
+    use soundcraft_midi::{Note, Sequence};
+    use soundcraft_model::{ChannelFormat, Clip, TrackKind};
+    // One tick is 25 samples: the note sounds 36 000..42 000, between the held wire and the seek.
+    let mut s = Session { sample_rate: soundcraft_time::SampleRate::HZ_48000, ..Session::default() };
+    let t = s.add_track(TrackKind::Instrument, ChannelFormat::Stereo, None);
+    let clip = s.new_clip_id();
+    let tr = s.track_mut(t).unwrap();
+    tr.instrument = Some(Insert::new("clap:test.notes"));
+    let mut seq = Sequence::default();
+    seq.notes.push(Note { start: 1440, length: 240, pitch: 60, channel: 0, velocity: 100, release_velocity: 64 });
+    tr.playlist_mut().unwrap().clips.push(Clip::midi(clip, "note", 0, 96_000, seq));
+    let block = Arc::new(std::sync::atomic::AtomicI64::new(0));
+    let events = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let mut eng = MixEngine::new(48_000.0, 512);
+    eng.set_external_instances(true);
+    eng.adopt(vec![PreparedInstance {
+        track: t,
+        slot: INSTRUMENT_SLOT,
+        id: "clap:test.notes".into(),
+        ch: 2,
+        plugin: Box::new(NoteLog { inner: soundcraft_dsp::create("gain").unwrap(), block: Arc::clone(&block), events: Arc::clone(&events) }),
+    }]);
+    let mut out = vec![vec![0.0; 512]; 2];
+    // The wire holds the score at 24 001 while the device runs on.
+    let mut pos = 0;
+    while pos < 24_576 {
+        block.store(pos, std::sync::atomic::Ordering::Relaxed);
+        eng.render_with_clock_limit(&s, pos, 512, &mut out, Some(960));
+        pos += 512;
+    }
+    // A seek past the note: the destination block plays only its own range.
+    for pos in [48_000, 48_512] {
+        block.store(pos, std::sync::atomic::Ordering::Relaxed);
+        eng.render_with_clock_limit(&s, pos, 512, &mut out, Some(4_000));
+    }
+    let events = events.lock().unwrap().clone();
+    assert!(events.iter().all(|e| e.1 != 60), "a note from the skipped range played: {events:?}");
+}
