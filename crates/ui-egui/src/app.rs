@@ -27,6 +27,11 @@ impl SoundApp {
         self.system_fonts = on;
     }
 
+    /// Whether fonts installed from the system are enabled for this app instance.
+    pub const fn system_fonts(&self) -> bool {
+        self.system_fonts
+    }
+
     /// Build an app around an engine and optional player, initialising UI, recording, autosave, control and
     /// synthetic-input state.
     pub fn new(engine: Engine, player: Option<Player>, services: Services) -> Self {
@@ -146,7 +151,7 @@ impl SoundApp {
     /// Each host iteration starts with `raw_input_hook`; its editor-poll admission prevents an
     /// empty queue on a discarded pass from ending a still-active plugin gesture.
     pub fn logic(&mut self, ctx: &egui::Context) {
-        if !self.ui.language.is_supported() {
+        if !self.ui.language.is_supported_with_system_fonts(self.system_fonts) {
             self.ui.language = crate::localization::Language::English;
         }
         let _language = crate::localization::enter(self.ui.language);

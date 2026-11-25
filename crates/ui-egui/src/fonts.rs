@@ -158,6 +158,15 @@ pub fn definitions(system_fonts: bool) -> FontDefinitions {
     fonts
 }
 
+/// Whether a Hebrew-capable system font can be loaded on this target when `system_fonts` is true.
+pub fn has_hebrew_font(system_fonts: bool) -> bool {
+    if !system_fonts {
+        return false;
+    }
+    static AVAILABLE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *AVAILABLE.get_or_init(|| load(HEBREW, "sans-serif:lang=he", Some("he"), true).is_some())
+}
+
 pub fn install(ctx: &egui::Context, system_fonts: bool) {
     ctx.set_fonts(definitions(system_fonts));
 }

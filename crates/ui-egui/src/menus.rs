@@ -631,11 +631,11 @@ pub fn run_ui_command(app: &mut SoundApp, id: &str, p: &Value) -> Option<Result<
             let Some(tag) = p.get("language").and_then(Value::as_str) else {
                 return Some(Ok(json!({"language": app.ui.language.id()})));
             };
-            let Some(language) = crate::localization::Language::parse_for(tag, false) else {
+            let Some(language) = crate::localization::Language::parse_any(tag) else {
                 return Some(Err(format!("unknown language `{tag}` (en, pt-BR, or he)")));
             };
-            if !language.is_supported() {
-                return Some(Err(format!("language `{}` is unavailable on web builds (no Hebrew font is bundled)", language.id())));
+            if !language.is_supported_with_system_fonts(app.system_fonts()) {
+                return Some(Err(format!("language `{}` is unavailable without a Hebrew system font", language.id())));
             }
             app.ui.language = language;
             json!({"language": language.id()})

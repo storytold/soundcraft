@@ -45,38 +45,53 @@ impl Language {
         }
     }
 
-    /// Whether this language has the glyphs it needs on the given build target.
+    /// Whether this language has the glyphs it needs when `hebrew_font` indicates a Hebrew-capable
+    /// face is available in the active font set.
     ///
-    /// WebAssembly builds ship only egui's default fonts (no Hebrew glyphs), so Hebrew is left
-    /// disabled in the browser until a Hebrew font is available there.
-    pub const fn supported_on_target(self, wasm: bool) -> bool {
-        !(wasm && matches!(self, Self::Hebrew))
+    /// Bundled egui fonts cover Latin and Cyrillic only, so Hebrew is offered only when a Hebrew
+    /// system font is loaded (never on WebAssembly or when system fonts lack Hebrew).
+    pub const fn supported_with(self, hebrew_font: bool) -> bool {
+        hebrew_font || !matches!(self, Self::Hebrew)
     }
 
-    /// Whether this language is available on the current build target.
-    pub const fn is_supported(self) -> bool {
-        self.supported_on_target(cfg!(target_arch = "wasm32"))
+    /// Whether this language is available on the current target with system fonts enabled.
+    pub fn is_supported(self) -> bool {
+        self.supported_with(crate::fonts::has_hebrew_font(true))
     }
 
-    /// Languages selectable in the UI on the current build target.
+    /// Whether this language is available given whether system fonts are enabled.
+    pub fn is_supported_with_system_fonts(self, system_fonts: bool) -> bool {
+        self.supported_with(crate::fonts::has_hebrew_font(system_fonts))
+    }
+
+    /// Languages selectable in the UI when system fonts are enabled or disabled.
+    pub fn supported_for(system_fonts: bool) -> impl Iterator<Item = Self> {
+        let hebrew_font = crate::fonts::has_hebrew_font(system_fonts);
+        Self::ALL.into_iter().filter(move |language| language.supported_with(hebrew_font))
+    }
+
+    /// Languages selectable in the UI on the current target with system fonts enabled.
     pub fn supported() -> impl Iterator<Item = Self> {
-        Self::ALL.into_iter().filter(|language| language.is_supported())
+        Self::supported_for(true)
     }
 
-    /// Parses a language tag on a target with (`wasm = true`) or without (`wasm = false`) the
-    /// browser font limitation.
-    pub fn parse_for(tag: &str, wasm: bool) -> Option<Self> {
+    /// Parses a language tag without checking font availability.
+    pub fn parse_any(tag: &str) -> Option<Self> {
         let trimmed = tag.trim();
-        let parsed = if trimmed.eq_ignore_ascii_case("iw") {
+        if trimmed.eq_ignore_ascii_case("iw") {
             Some(Self::Hebrew)
         } else {
             Self::ALL.into_iter().find(|language| language.id().eq_ignore_ascii_case(trimmed))
-        };
-        parsed.filter(|language| language.supported_on_target(wasm))
+        }
+    }
+
+    /// Parses a language tag, filtering by whether a Hebrew-capable font is available.
+    pub fn parse_for(tag: &str, hebrew_font: bool) -> Option<Self> {
+        Self::parse_any(tag).filter(|language| language.supported_with(hebrew_font))
     }
 
     pub fn parse(tag: &str) -> Option<Self> {
-        Self::parse_for(tag, cfg!(target_arch = "wasm32"))
+        Self::parse_for(tag, crate::fonts::has_hebrew_font(true))
     }
 
     /// Rewrites the decimal point of a rendered number for this language.
@@ -410,16 +425,21 @@ mod tests {
     }
 
     #[test]
-    fn hebrew_is_excluded_on_wasm_without_hebrew_fonts() {
-        assert!(Language::English.supported_on_target(true));
-        assert!(Language::PortugueseBrazil.supported_on_target(true));
-        assert!(!Language::Hebrew.supported_on_target(true));
-        assert!(Language::Hebrew.supported_on_target(false));
-        assert_eq!(Language::parse_for("he", true), None);
-        assert_eq!(Language::parse_for("iw", true), None);
-        assert_eq!(Language::parse_for("he", false), Some(Language::Hebrew));
-        assert_eq!(Language::parse_for("iw", false), Some(Language::Hebrew));
-        assert_eq!(Language::parse_for("pt-BR", true), Some(Language::PortugueseBrazil));
+    fn hebrew_is_excluded_without_a_hebrew_font() {
+        assert!(Language::English.supported_with(false));
+        assert!(Language::PortugueseBrazil.supported_with(false));
+        assert!(!Language::Hebrew.supported_with(false));
+        assert!(Language::Hebrew.supported_with(true));
+        assert!(!Language::Hebrew.is_supported_with_system_fonts(false));
+        assert!(Language::English.is_supported_with_system_fonts(false));
+        assert!(Language::PortugueseBrazil.is_supported_with_system_fonts(false));
+        assert!(!Language::supported_for(false).any(|language| language == Language::Hebrew));
+        assert_eq!(Language::parse_for("he", false), None);
+        assert_eq!(Language::parse_for("iw", false), None);
+        assert_eq!(Language::parse_for("he", true), Some(Language::Hebrew));
+        assert_eq!(Language::parse_for("iw", true), Some(Language::Hebrew));
+        assert_eq!(Language::parse_for("pt-BR", false), Some(Language::PortugueseBrazil));
+        assert_eq!(Language::Hebrew.is_supported(), crate::fonts::has_hebrew_font(true));
     }
 
     #[test]

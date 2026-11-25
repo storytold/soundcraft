@@ -191,7 +191,7 @@ fn ui_customization(app: &mut SoundApp, ctx: &egui::Context) {
             craft_ui::ComboBox::from_label(crate::localization::text("Language"))
                 .selected_text(crate::localization::text(language.native_name()))
                 .show_ui(ui, |ui| {
-                    for choice in crate::localization::Language::supported() {
+                    for choice in crate::localization::Language::supported_for(app.system_fonts()) {
                         if ui.selectable_label(language == choice, crate::localization::text(choice.native_name())).clicked() {
                             selected_language = Some(choice);
                         }
