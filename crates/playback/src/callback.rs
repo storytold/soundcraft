@@ -3,7 +3,7 @@ use super::{
     PluginEditor, PluginStateReader, PluginStates, PreparedInstance, Range, Receiver, Samples, Sender, Session, Shared, SyncSender, TrackId,
     itu_stereo_fold, main_channels, midi, record, sync_channel,
 };
-use soundcraft_mix::{LiveMidi, midi_port_bit, midi_thru};
+use soundcraft_mix::{LiveMidi, main_first_channel, midi_port_bit, midi_thru};
 use soundcraft_model::TrackKind;
 
 /// How the audio output is doing, for the UI.
@@ -240,7 +240,7 @@ impl AudioState {
                     changed = true;
                     if (s.sample_rate.as_f64() - self.session.sample_rate.as_f64()).abs() > 0.5 {
                         let mut old = std::mem::replace(&mut self.mix, new_engine(s.sample_rate.as_f64() as f32));
-                        self.mix.set_hardware_channels(old.hardware_output().len());
+                        self.mix.set_hardware_channels(old.hardware_channels());
                         let _ = self.garbage.send(old.drain_plugins());
                         self.mix.midi_ports = self.midi.as_ref().map(|f| Arc::clone(f.ports()));
                         // The new engine's hardware outputs start empty: drop what is left of
@@ -701,9 +701,7 @@ impl AudioState {
             return;
         }
         let quantum = ((callback_frames as f64 * step).ceil() as usize).clamp(1, BLOCK);
-        let first = self.session.outputs.first().map_or(0, |path| usize::from(path.first_channel));
-        let main_width = self.pending.len();
-        let first = if first + main_width <= channels { first } else { 0 };
+        let first = main_first_channel(&self.session, channels);
         if !midi_live {
             self.drop_midi();
         }
