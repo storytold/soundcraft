@@ -117,12 +117,11 @@ fn generator_waits_for_observed_presentation_only_when_compensation_is_enabled()
         port.poll("MTC", now, &song, &view, &Stats::default(), &mut Vec::new());
         assert_eq!(capture.lock().unwrap().is_empty(), compensate);
 
-        // A real zero report allows immediate delivery, even on the compensated route. The
-        // first group's start is a quarter frame old by now, so its pieces wait for the next group.
+        // A real zero report allows immediate delivery, even on the compensated route.
         let next = now + Duration::from_millis(10);
         view.lock().unwrap().push(Presentation { heard_at: next, sample: 480., ..block });
         port.poll("MTC", next, &song, &view, &Stats::default(), &mut Vec::new());
-        assert!(capture.lock().unwrap().iter().any(|(_, _, msg)| msg[0] == 0xf0));
+        assert!(capture.lock().unwrap().iter().any(|(_, _, msg)| msg[0] == 0xf1));
     }
 }
 
