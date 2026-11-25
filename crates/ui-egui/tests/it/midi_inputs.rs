@@ -228,3 +228,22 @@ fn a_midi_pass_without_a_connected_device_says_so() {
     assert!(!h.state().engine.transport.recording);
     assert!(h.state().ui.status.contains("no MIDI input device is connected"), "{}", h.state().ui.status);
 }
+
+/// `setup.midi_input_devices` (Setup › MIDI › MIDI Input Devices…, and what agents call) switches
+/// the devices themselves, as the Playback Engine's switches do, and says what it did (#1753).
+#[test]
+fn the_command_switches_the_devices_like_the_window_does() {
+    let mut h = harness(&[]);
+    let r = h.state_mut().run("setup.midi_input_devices", serde_json::json!({"disable": ["Keys"]})).unwrap();
+    h.run_steps(2);
+    assert_eq!(port(&h, "Keys"), Some((false, false)), "switched off and closed: {r}");
+    assert_eq!(port(&h, "Drum Pad"), Some((true, true)), "the other device is untouched");
+    assert_eq!(h.state().ui.midi_inputs_off, names(&["Keys"]), "kept in the preferences, as the switch keeps it");
+    assert_eq!(r["applied"], true, "{r}");
+    assert!(r["ports"].as_array().is_some_and(|p| p.iter().any(|p| p["name"] == "Keys" && p["enabled"] == false)), "{r}");
+
+    let r = h.state_mut().run("setup.midi_input_devices", serde_json::json!({"enable": ["Keys"]})).unwrap();
+    h.run_steps(2);
+    assert_eq!(port(&h, "Keys"), Some((true, true)), "switched back on: {r}");
+    assert!(h.state().ui.midi_inputs_off.is_empty());
+}

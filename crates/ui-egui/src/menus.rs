@@ -631,6 +631,10 @@ pub fn run_ui_command(app: &mut SoundApp, id: &str, p: &Value) -> Option<Result<
     if matches!(id, "setup.playback_engine" | "setup.hardware") {
         return Some(crate::windows::setup_audio_command(app, id, p));
     }
+    // The devices themselves, not only the session's list (#1753).
+    if id == "setup.midi_input_devices" {
+        return Some(app.midi_input_devices_command(p));
+    }
     let toggle = |v: &mut bool| {
         *v = p.get("value").and_then(Value::as_bool).unwrap_or(!*v);
         json!({"value": *v})

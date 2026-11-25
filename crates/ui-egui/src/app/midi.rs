@@ -161,8 +161,36 @@ impl SoundApp {
             m.set_enabled(name, on);
             self.ui.midi_inputs_off = m.disabled().to_vec();
         }
-        // The session's own record of the devices in use follows the switch.
-        let _ = self.run("setup.midi_input_devices", json!({ if on { "enable" } else { "disable" }: [name] }));
+        // The session's own record of the devices in use follows the switch. The engine's command
+        // directly: `setup.midi_input_devices` in the app comes back here.
+        let _ = self.engine.execute("setup.midi_input_devices", &json!({ if on { "enable" } else { "disable" }: [name] }));
+    }
+
+    /// `setup.midi_input_devices` in the app: switches the named devices as the Playback Engine's
+    /// switches do (kept in the prefs, so a device switched off stays off when it is plugged in
+    /// again), and replies with the session's list and the devices' state. Without MIDI input
+    /// (`applied: false`) only the session's list changes, as headless.
+    pub(crate) fn midi_input_devices_command(&mut self, p: &serde_json::Value) -> Result<serde_json::Value, String> {
+        for (key, on) in [("enable", true), ("disable", false)] {
+            let names: Vec<String> = p
+                .get(key)
+                .and_then(serde_json::Value::as_array)
+                .map(|a| a.iter().filter_map(|n| n.as_str()).take(64).map(str::to_string).collect())
+                .unwrap_or_default();
+            for name in names.iter().filter(|n| !n.trim().is_empty()) {
+                self.set_midi_input_enabled(name, on);
+            }
+        }
+        let mut out = self.engine.execute("setup.midi_input_devices", &json!({})).map_err(|e| e.to_string())?;
+        out["applied"] = json!(self.midi_inputs.is_some());
+        out["ports"] = json!(
+            self.midi_inputs.as_ref().map(|m| m
+                .ports()
+                .iter()
+                .map(|p| json!({"name": p.name, "enabled": p.enabled, "open": p.open}))
+                .collect::<Vec<_>>())
+        );
+        Ok(out)
     }
 }
 
