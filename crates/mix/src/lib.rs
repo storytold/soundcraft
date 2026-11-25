@@ -512,6 +512,10 @@ impl MixEngine {
                     st.chase = true;
                     st.live.clear();
                 }
+                // A score range Clock held back belongs to the old position, and so do
+                // ringing clicks. An origin armed by `start_midi_at` is for this block.
+                self.held_score_from = None;
+                self.click_tails.clear();
             }
             self.last_end = pos.saturating_add(frames as i64);
         }
