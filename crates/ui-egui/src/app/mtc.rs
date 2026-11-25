@@ -143,9 +143,18 @@ impl SoundApp {
         let event = inputs.feed().take_mtc_with_lock();
         self.update_mtc_warning(self.mtc_rate_warning());
         match event {
-            Some((ChaseEvent::Locate(p) | ChaseEvent::Roll(p, _), _)) if self.mtc_at(p) < 0 => {
+            Some((ChaseEvent::Locate(p) | ChaseEvent::Roll(p, _), lock)) if self.mtc_at(p) < 0 => {
                 if self.mtc_status != "Before session start" {
-                    self.stop_mtc_transport();
+                    if let Some(player) = &self.player {
+                        // As for a stop: only the roll this observation belongs to may be ended,
+                        // not a newer one that began since (the callback halts its own chase of a
+                        // position before the session start).
+                        player.end_observed_mtc_chase(lock);
+                        self.mtc_chasing = false;
+                        self.engine.transport.playing = player.is_playing();
+                    } else {
+                        self.stop_mtc_transport();
+                    }
                 }
                 self.mtc_status = "Before session start";
             }
