@@ -177,6 +177,8 @@ impl SoundApp {
             if matches!(self.gesture, Some(Gesture::Fader { .. } | Gesture::SendFader { .. })) {
                 self.gesture = None;
             }
+            // Nor hold a MIDI Keyboard window note: its release would only be seen by a UI pass.
+            crate::panels::windows::release_midi_keyboard(self, ctx);
         }
         // UI input time is stale on logic-only ticks and identical across passes of one frame.
         // Frame pacing and the transport simulation use a monotonic host clock instead.

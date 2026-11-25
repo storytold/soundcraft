@@ -319,8 +319,8 @@ pub(super) fn translate(source: &str) -> Option<&'static str> {
         "No engine" => "Sem mecanismo de áudio",
         "default buffer" => "buffer padrão",
         "MIDI Keyboard keys" => "Teclas do teclado MIDI",
-        "Click and hold keys to play the record-enabled or monitored instruments; a click also step-enters the note into the selected MIDI clip at the insertion point." => {
-            "Clique e segure as teclas para tocar os instrumentos habilitados para gravação ou monitorados; um clique também insere a nota no clipe MIDI selecionado, no ponto de inserção."
+        "Click and hold keys to play the record-enabled or monitored instruments; outside a record pass, a click also step-enters the note into the selected MIDI clip at the insertion point." => {
+            "Clique e segure as teclas para tocar os instrumentos habilitados para gravação ou monitorados; fora de uma gravação, um clique também insere a nota no clipe MIDI selecionado, no ponto de inserção."
         }
         "Bus name: {name}" => "Nome do bus: {name}",
         "Model" => "Modelo",

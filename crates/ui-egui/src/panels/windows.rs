@@ -327,10 +327,23 @@ fn keyboard_send(app: &SoundApp, bytes: [u8; 3]) {
 /// The port name the MIDI Keyboard window plays as.
 pub(crate) const KEYBOARD_PORT: &str = "MIDI Keyboard";
 
+/// Where the MIDI Keyboard window keeps the key held down between passes.
+fn keyboard_held_id() -> egui::Id {
+    egui::Id::unique("midi-keyboard-held")
+}
+
+/// Let go of the key held down in the MIDI Keyboard window, if any. A tick while the window is
+/// hidden runs no UI pass that would see the button come up, so the note ends here instead.
+pub(crate) fn release_midi_keyboard(app: &SoundApp, ctx: &egui::Context) {
+    if let Some(n) = ctx.data_mut(|d| d.remove_temp::<Option<u8>>(keyboard_held_id())).flatten() {
+        keyboard_send(app, [0x80, n, 0]);
+    }
+}
+
 fn midi_keyboard(app: &mut SoundApp, ctx: &egui::Context) {
     let mut open = app.ui.show_midi_keyboard;
     // The key held down, so it is let go however the press ends.
-    let held_id = egui::Id::unique("midi-keyboard-held");
+    let held_id = keyboard_held_id();
     let mut held: Option<u8> = ctx.data(|d| d.get_temp(held_id)).flatten();
     win(ctx, &mut open, "MIDI Keyboard", vec2(640.0, 110.0), |ui| {
         let (r, resp) = ui.allocate_exact_size(vec2(ui.available_width().max(400.0), 80.0), Sense::click_and_drag());
@@ -359,7 +372,13 @@ fn midi_keyboard(app: &mut SoundApp, ctx: &egui::Context) {
         // it is let go.
         let under = resp.interact_pointer_pos().and_then(|q| keyboard_key_at(r, q));
         let down = resp.is_pointer_button_down_on();
-        let now = if down { under } else { None };
+        let mut now = if down { under } else { None };
+        // A press and release within one pass (a quick click on a slow frame) is a click with the
+        // button already up: play the key until the next pass lets it go.
+        if now.is_none() && held.is_none() && resp.clicked() {
+            now = under;
+            ui.ctx().request_repaint();
+        }
         if now != held {
             if let Some(n) = held {
                 keyboard_send(app, [0x80, n, 0]);
@@ -369,8 +388,10 @@ fn midi_keyboard(app: &mut SoundApp, ctx: &egui::Context) {
             }
             held = now;
         }
-        // Step input: add the note at the insertion point (relative to the clip) and advance.
+        // Step input: add the note at the insertion point (relative to the clip) and advance. Not
+        // during a record pass: that records what is played, and must not jump to the next step.
         if resp.clicked()
+            && !app.engine.transport.recording
             && let Some(p) = under
             && let Some(cid) = crate::midi_editor::target_clip(app)
         {
@@ -385,7 +406,7 @@ fn midi_keyboard(app: &mut SoundApp, ctx: &egui::Context) {
         }
         ui.label(
             egui::RichText::new(crate::localization::text(
-                "Click and hold keys to play the record-enabled or monitored instruments; a click also step-enters the note into the selected MIDI clip at the insertion point.",
+                "Click and hold keys to play the record-enabled or monitored instruments; outside a record pass, a click also step-enters the note into the selected MIDI clip at the insertion point.",
             ))
             .small(),
         );

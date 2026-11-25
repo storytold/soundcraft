@@ -36,7 +36,7 @@ Legend: ✅ works · 🟡 partial · ❌ missing.
 | MIDI Thru, input filter | ✅ | 🟡 record-enabled and input-monitored MIDI/instrument tracks play the keyboard through their instrument (notes, the sustain pedal, controllers, pitch bend, aftertouch and program changes); the input filter keeps the filtered kinds out of recordings. No thru to external gear |
 | MIDI Beat Clock out, MTC generate/chase | ✅ | ❌ |
 | MIDI learn / controller mapping | ✅ (via surfaces and plug-in maps) | ❌ |
-| Virtual MIDI keyboard | ✅ (MIDI Keyboard window) | ✅ the MIDI Keyboard window plays record-enabled and monitored instruments through the live MIDI path and is recorded in a MIDI pass, also with no MIDI device; a click also step-enters the note into the selected MIDI clip |
+| Virtual MIDI keyboard | ✅ (MIDI Keyboard window) | ✅ the MIDI Keyboard window plays record-enabled and monitored instruments through the live MIDI path and is recorded in a MIDI pass, also with no MIDI device; outside a record pass, a click also step-enters the note into the selected MIDI clip |
 
 ## Control surfaces
 
