@@ -70,7 +70,7 @@ Read on 2026-11-24; re-read anything that may have moved before `nightly-signer`
 | `platforms` | three rows | Storytold stable signing identities (`windows-x86_64`, `linux-x86_64`, `macos-aarch64`) |
 | `candidate_policy.required_workflows` | CI (`ci.yml`, workflow `380135771`), `gate / gate (ubuntu-24.04)` | Workflow list API and recent `main` push runs |
 | `candidate_policy.sonar` | `storytold` / `storytold_soundcraft`, app `12526` | `sonar-project.properties`; the SonarCloud check on `main` commits |
-| Sonar conditions | All six quality-gate conditions required (`accepted_conditions: []`) | Quality gate of `storytold_soundcraft` `main` (all OK) |
+| Sonar conditions | `new_security_rating` accepted (max 5); the other five required | Quality gate of `storytold_soundcraft` `main` (all OK) |
 | Sonar `issue_types` / `debt` | `VULNERABILITY`; `[]` (0 unresolved vulnerabilities on `main`) | `api/issues/search` on `main` |
 
 ## Ownership and interface

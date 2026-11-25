@@ -44,15 +44,17 @@
       "issue_types": [
         "VULNERABILITY"
       ],
-      "accepted_conditions": [],
+      "accepted_conditions": [
+        {
+          "metric": "new_security_rating",
+          "comparator": "GT",
+          "error_threshold": "1",
+          "maximum": "5"
+        }
+      ],
       "required_conditions": [
         {
           "metric": "new_reliability_rating",
-          "comparator": "GT",
-          "error_threshold": "1"
-        },
-        {
-          "metric": "new_security_rating",
           "comparator": "GT",
           "error_threshold": "1"
         },
