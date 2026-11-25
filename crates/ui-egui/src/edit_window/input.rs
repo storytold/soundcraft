@@ -617,7 +617,8 @@ pub(super) fn clip_edit_items(s: &Session, clicked: ClipId) -> Vec<(&'static str
     let tracks: Vec<&Track> = s.tracks.iter().filter(|t| s.edit.selected_tracks.contains(&t.id)).collect();
     let in_range = |t: &Track| t.clips().iter().filter(|c| if r.is_empty() { c.range().contains(r.start) } else { c.range().overlaps(&r) }).count();
     let points: &[Samples] = if r.is_empty() { &[r.start] } else { &[r.start, r.end] };
-    let cuts = |t: &Track| t.clips().iter().any(|c| points.iter().any(|&p| p > c.start && p < c.end()));
+    // Separate leaves time- and edit-locked clips whole, so they offer no cut.
+    let cuts = |t: &Track| t.clips().iter().any(|c| !ops::locked(c) && points.iter().any(|&p| p > c.start && p < c.end()));
     let mut items = Vec::new();
     if tracks.iter().all(|t| in_range(t) <= 1) && tracks.iter().any(|t| cuts(t)) {
         items.push(("Separate", "edit.separate"));

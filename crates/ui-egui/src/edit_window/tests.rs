@@ -2404,6 +2404,12 @@ fn clip_menu_offers_split_and_join_by_selection() {
     assert_eq!(items(&s, a), vec!["edit.separate"]);
     // A clip outside the selection gets none of them.
     assert!(items(&s, b).is_empty());
+    // Separate leaves a locked clip whole, so the menu does not offer it there.
+    for lock in [(|c: &mut Clip| c.time_locked = true) as fn(&mut Clip), |c: &mut Clip| c.edit_locked = true] {
+        let mut locked = s.clone();
+        lock(&mut locked.track_mut(t).and_then(Track::playlist_mut).unwrap().clips[0]);
+        assert!(!items(&locked, a).contains(&"edit.separate"));
+    }
     // A range over two clips from different files: Consolidate joins them; Heal cannot and Separate is hidden.
     select(&mut s, 0, 2_000);
     assert_eq!(items(&s, b), vec!["edit.consolidate"]);
