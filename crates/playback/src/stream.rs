@@ -88,12 +88,12 @@ where
 }
 
 /// Channels to ask of the output device. Where one device is a whole multichannel interface
-/// (Core Audio, where an interface's outputs are one device), every channel it offers stays
+/// (ASIO; Core Audio, where an interface's outputs are one device), every channel it offers stays
 /// open, so I/O Setup paths reach their hardware outputs and edits reroute live. Elsewhere a
 /// device is often one pair of an interface (WASAPI lists "Analog (3+4)" apart) or a desktop
 /// output that may upmix, and only the main mix's width opens.
 pub(crate) fn output_width(host: &str, main_width: u16) -> u16 {
-    if host == "CoreAudio" { soundcraft_mix::MAX_HARDWARE_CHANNELS as u16 } else { main_width }
+    if matches!(host, "ASIO" | "CoreAudio") { soundcraft_mix::MAX_HARDWARE_CHANNELS as u16 } else { main_width }
 }
 
 /// Open the output device `cfg` chooses (else the default) at the chosen rate (else the session
