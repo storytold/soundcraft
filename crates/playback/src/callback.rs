@@ -332,7 +332,8 @@ impl AudioState {
 
     /// The transport speed now, as a factor.
     fn speed(&self) -> f64 {
-        (f64::from(self.shared.speed.load(Ordering::Relaxed)) / 1000.0).clamp(0.1, 4.0)
+        // Acquire: a speed the UI set after sending a command finds that command in the queue.
+        (f64::from(self.shared.speed.load(Ordering::Acquire)) / 1000.0).clamp(0.1, 4.0)
     }
 
     /// Session frames to a device frame at the transport speed `speed`.
@@ -650,10 +651,7 @@ impl AudioState {
         // The next output frame: `read` frames into the pending block, which ends at `pos`.
         let sample = self.pos as f64 - self.pending_len as f64 + self.read;
         let heard = super::latency::Heard { sample, when, speed };
-        if pass_started {
-            self.pending_pass = Some(heard);
-        }
-        self.shared.heard.record(heard, &mut self.pending_pass);
+        self.shared.heard.record(heard, pass_started, &mut self.pending_pass);
     }
 
     /// Fill an interleaved device buffer.
