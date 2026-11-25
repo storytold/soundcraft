@@ -280,42 +280,100 @@ fn event_list(app: &mut SoundApp, ctx: &egui::Context) {
     app.ui.show_event_list = open;
 }
 
+/// The lowest note of the MIDI Keyboard window (C3) and how many white keys it shows.
+const KEYBOARD_BASE: u8 = 48;
+const KEYBOARD_WHITES: usize = 28;
+
+fn is_black(note: u8) -> bool {
+    matches!(note % 12, 1 | 3 | 6 | 8 | 10)
+}
+
+/// The key of the MIDI Keyboard window under `pos`, drawn in `r`: a black key where one is (they
+/// sit over the white keys), else the white key.
+fn keyboard_key_at(r: egui::Rect, pos: egui::Pos2) -> Option<u8> {
+    if !r.contains(pos) {
+        return None;
+    }
+    let w = r.width() / KEYBOARD_WHITES as f32;
+    let mut white = 0usize;
+    let mut found = None;
+    for note in KEYBOARD_BASE..KEYBOARD_BASE + 48 {
+        if is_black(note) {
+            let kr = egui::Rect::from_min_size(egui::pos2(r.min.x + white as f32 * w - w * 0.3, r.min.y), vec2(w * 0.6, r.height() * 0.6));
+            if kr.contains(pos) {
+                return Some(note);
+            }
+        } else {
+            let kr = egui::Rect::from_min_size(egui::pos2(r.min.x + white as f32 * w, r.min.y), vec2(w - 1.0, r.height()));
+            if kr.contains(pos) {
+                found = Some(note);
+            }
+            white += 1;
+        }
+    }
+    found
+}
+
+/// Play `bytes` from the MIDI Keyboard window through the live MIDI path, as a device called
+/// "MIDI Keyboard" (#1752): record-enabled and monitored instruments play it, a record pass
+/// captures it, MIDI Thru and the input filter apply.
+fn keyboard_send(app: &SoundApp, bytes: [u8; 3]) {
+    if let Some(m) = &app.midi_inputs {
+        let feed = m.feed();
+        feed.receive(feed.ports().assign(KEYBOARD_PORT), &bytes);
+    }
+}
+
+/// The port name the MIDI Keyboard window plays as.
+pub(crate) const KEYBOARD_PORT: &str = "MIDI Keyboard";
+
 fn midi_keyboard(app: &mut SoundApp, ctx: &egui::Context) {
     let mut open = app.ui.show_midi_keyboard;
+    // The key held down, so it is let go however the press ends.
+    let held_id = egui::Id::unique("midi-keyboard-held");
+    let mut held: Option<u8> = ctx.data(|d| d.get_temp(held_id)).flatten();
     win(ctx, &mut open, "MIDI Keyboard", vec2(640.0, 110.0), |ui| {
-        let (r, resp) = ui.allocate_exact_size(vec2(ui.available_width().max(400.0), 80.0), Sense::click());
-        let whites = 28;
-        let w = r.width() / whites as f32;
+        let (r, resp) = ui.allocate_exact_size(vec2(ui.available_width().max(400.0), 80.0), Sense::click_and_drag());
+        resp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Group, true, crate::localization::text("MIDI Keyboard keys")));
+        let w = r.width() / KEYBOARD_WHITES as f32;
         let mut wi = 0;
-        let base = 48u8;
-        let mut clicked: Option<u8> = None;
-        let pos = resp.interact_pointer_pos();
-        for p in base..base + 48 {
-            if !matches!(p % 12, 1 | 3 | 6 | 8 | 10) {
+        for p in KEYBOARD_BASE..KEYBOARD_BASE + 48 {
+            if !is_black(p) {
                 let kr = egui::Rect::from_min_size(egui::pos2(r.min.x + wi as f32 * w, r.min.y), vec2(w - 1.0, r.height()));
-                ui.painter().rect_filled(kr, 2.0, Color32::from_rgb(235, 235, 235));
-                if resp.clicked() && pos.is_some_and(|q| kr.contains(q)) {
-                    clicked = Some(p);
-                }
+                let fill = if held == Some(p) { Color32::from_rgb(170, 200, 235) } else { Color32::from_rgb(235, 235, 235) };
+                ui.painter().rect_filled(kr, 2.0, fill);
                 wi += 1;
             }
         }
         wi = 0;
-        for p in base..base + 48 {
-            if matches!(p % 12, 1 | 3 | 6 | 8 | 10) {
+        for p in KEYBOARD_BASE..KEYBOARD_BASE + 48 {
+            if is_black(p) {
                 let kr = egui::Rect::from_min_size(egui::pos2(r.min.x + wi as f32 * w - w * 0.3, r.min.y), vec2(w * 0.6, r.height() * 0.6));
-                ui.painter().rect_filled(kr, 2.0, Color32::from_rgb(20, 20, 20));
-                if resp.clicked() && pos.is_some_and(|q| kr.contains(q)) {
-                    clicked = Some(p);
-                }
+                let fill = if held == Some(p) { Color32::from_rgb(60, 90, 130) } else { Color32::from_rgb(20, 20, 20) };
+                ui.painter().rect_filled(kr, 2.0, fill);
             } else {
                 wi += 1;
             }
         }
-        if let Some(p) = clicked
+        // Play: note on while a key is held (sliding to another key moves the note), note off when
+        // it is let go.
+        let under = resp.interact_pointer_pos().and_then(|q| keyboard_key_at(r, q));
+        let down = resp.is_pointer_button_down_on();
+        let now = if down { under } else { None };
+        if now != held {
+            if let Some(n) = held {
+                keyboard_send(app, [0x80, n, 0]);
+            }
+            if let Some(n) = now {
+                keyboard_send(app, [0x90, n, 100]);
+            }
+            held = now;
+        }
+        // Step input: add the note at the insertion point (relative to the clip) and advance.
+        if resp.clicked()
+            && let Some(p) = under
             && let Some(cid) = crate::midi_editor::target_clip(app)
         {
-            // Step input: add the note at the insertion point (relative to the clip) and advance.
             let s = app.engine.session();
             let (clip_start, at) = (s.find_clip(cid).map_or(0, |(_, c)| c.start), s.edit.selection.start);
             let rel = s.tempo.samples_to_ticks(at, s.sample_rate) - s.tempo.samples_to_ticks(clip_start, s.sample_rate);
@@ -326,10 +384,16 @@ fn midi_keyboard(app: &mut SoundApp, ctx: &egui::Context) {
             let _ = app.run("transport.locate", json!({"at": next}));
         }
         ui.label(
-            egui::RichText::new(crate::localization::text("Click keys to step-enter notes into the selected MIDI clip at the insertion point."))
-                .small(),
+            egui::RichText::new(crate::localization::text(
+                "Click and hold keys to play the record-enabled or monitored instruments; a click also step-enters the note into the selected MIDI clip at the insertion point.",
+            ))
+            .small(),
         );
     });
+    if !open && let Some(n) = held.take() {
+        keyboard_send(app, [0x80, n, 0]);
+    }
+    ctx.data_mut(|d| d.insert_temp(held_id, held));
     app.ui.show_midi_keyboard = open;
 }
 

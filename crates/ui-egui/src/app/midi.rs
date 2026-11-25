@@ -7,8 +7,10 @@ use soundcraft_playback::midi::MidiInputs;
 
 impl SoundApp {
     /// Whether a MIDI input port is open.
+    /// Whether MIDI can come in: a port is open, or the MIDI Keyboard window is (it plays through
+    /// the same path, #1752).
     pub(crate) fn midi_connected(&self) -> bool {
-        self.midi_inputs.as_ref().is_some_and(|m| m.feed().connected() > 0)
+        self.midi_inputs.as_ref().is_some_and(|m| m.feed().connected() > 0 || self.ui.show_midi_keyboard)
     }
 
     /// Hand the MIDI inputs to a (new) audio engine.

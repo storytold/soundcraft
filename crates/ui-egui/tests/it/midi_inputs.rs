@@ -228,3 +228,59 @@ fn a_midi_pass_without_a_connected_device_says_so() {
     assert!(!h.state().engine.transport.recording);
     assert!(h.state().ui.status.contains("no MIDI input device is connected"), "{}", h.state().ui.status);
 }
+
+/// The MIDI Keyboard window plays what is clicked through the live MIDI path, as a keyboard
+/// would: note on while a key is held, note off when it is let go (#1752).
+#[test]
+fn the_midi_keyboard_window_plays_the_key_held_down() {
+    let mut app = SoundApp::new(soundcraft_engine::Engine::default(), None, Services::default());
+    app.midi_inputs = Some(MidiInputs::with_port_names(Vec::new(), Vec::new()));
+    app.ui.show_midi_keyboard = true;
+    let mut h = Harness::builder().with_size(vec2(1600.0, 1000.0)).build_ui_state(
+        |ui, app: &mut SoundApp| {
+            app.logic(&ui.ctx().clone());
+            app.ui(ui);
+        },
+        app,
+    );
+    h.run_steps(3);
+    let keys = h.get_by_label("MIDI Keyboard keys").rect();
+    // The first white key (C3, note 48): half a key in from the left, low enough to miss the black keys.
+    let at = egui::pos2(keys.min.x + keys.width() / 28.0 / 2.0, keys.max.y - 5.0);
+    let pointer = |pressed| Event::PointerButton { pos: at, button: egui::PointerButton::Primary, pressed, modifiers: Modifiers::NONE };
+    h.event(Event::PointerMoved(at));
+    h.event(pointer(true));
+    h.run_steps(2);
+    let (count, last) = h.state().midi_inputs.as_ref().unwrap().feed().activity();
+    let last = last.expect("a note on arrived");
+    assert_eq!((count, last.status & 0xF0, last.data1), (1, 0x90, 48), "note on for C3");
+    assert!(last.data2 > 0, "with a velocity");
+    h.event(pointer(false));
+    h.run_steps(2);
+    let (count, last) = h.state().midi_inputs.as_ref().unwrap().feed().activity();
+    let last = last.unwrap();
+    assert_eq!((count, last.status & 0xF0, last.data1), (2, 0x80, 48), "note off when the key is let go");
+}
+
+/// With no MIDI device at all, the MIDI Keyboard window is a source: a MIDI pass starts while it
+/// is open, and is refused, as before, once it is closed (#1752).
+#[test]
+fn the_midi_keyboard_window_counts_as_a_midi_source_for_recording() {
+    let (mut h, synth, _) = recording_harness();
+    h.state_mut().midi_inputs.as_mut().unwrap().set_port_names(Vec::new());
+    h.state_mut().midi_inputs.as_mut().unwrap().rescan();
+    arm(&mut h, synth, true);
+    h.state_mut().ui.show_midi_keyboard = true;
+    h.run_steps(3);
+    h.get_by_label("transport.record").click();
+    h.run_steps(3);
+    assert!(h.state().engine.transport.recording, "{}", h.state().ui.status);
+    h.get_by_label("transport.stop").click();
+    h.run_steps(3);
+    h.state_mut().ui.show_midi_keyboard = false;
+    h.run_steps(3);
+    h.get_by_label("transport.record").click();
+    h.run_steps(3);
+    assert!(!h.state().engine.transport.recording);
+    assert!(h.state().ui.status.contains("no MIDI input device is connected"), "{}", h.state().ui.status);
+}

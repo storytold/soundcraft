@@ -74,9 +74,6 @@ pub(super) fn translate(source: &str) -> Option<&'static str> {
         "Click a take (or the selection) to promote it to the main playlist" => {
             "Clique em uma tomada (ou na seleção) para promovê-la à playlist principal"
         }
-        "Click keys to step-enter notes into the selected MIDI clip at the insertion point." => {
-            "Clique nas teclas para inserir notas passo a passo no clipe MIDI selecionado, no ponto de inserção."
-        }
         "Click: open instrument · right-click: change" => "Clique: abrir instrumento · botão direito: alterar",
         "Clip effects gain (dB)" => "Ganho dos efeitos do clipe (dB)",
         "Clip end pad ms" => "Margem no fim do clipe (ms)",
@@ -321,6 +318,10 @@ pub(super) fn translate(source: &str) -> Option<&'static str> {
         }
         "No engine" => "Sem mecanismo de áudio",
         "default buffer" => "buffer padrão",
+        "MIDI Keyboard keys" => "Teclas do teclado MIDI",
+        "Click and hold keys to play the record-enabled or monitored instruments; a click also step-enters the note into the selected MIDI clip at the insertion point." => {
+            "Clique e segure as teclas para tocar os instrumentos habilitados para gravação ou monitorados; um clique também insere a nota no clipe MIDI selecionado, no ponto de inserção."
+        }
         "Bus name: {name}" => "Nome do bus: {name}",
         "Model" => "Modelo",
         "Version" => "Versão",
