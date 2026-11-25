@@ -21,7 +21,7 @@ chmod 755 "$work/tree/soundcraft"
 
 # The bytes are the shared template rendered for this app, not a local script.
 sha256sum "$HERE/nightly-launch.sh" | cut -d' ' -f1 | grep -qx \
-  ff15f2de183336c57d049188dc526e6f3555fef05e1f6a657adae309fc9207fe || {
+  bdaa899cedd4ef71c77f21af8eb61cca4d62d585fe4d16662c4ef36ff8ed82a2 || {
   echo "FAIL: nightly-launch.sh is not the shared template rendered for soundcraft" >&2
   exit 1
 }
@@ -65,6 +65,14 @@ expect "$XDG_DATA_HOME/$identity" 'session.sc'
 expect_query "$XDG_DATA_HOME/$identity"
 unset XDG_DATA_HOME
 expect_query "$HOME/.local/share/$identity"
+
+# The ArtCraft Launcher names its own profile and per-install root: the argv goes through unchanged.
+forward="--launch-profile nightly-v1 --profile-root $work/launcher profile with space -- file.doc"
+actual=$("$work/tree/soundcraft" --launch-profile nightly-v1 --profile-root "$work/launcher profile with space" -- file.doc)
+[[ "$actual" == "$(printf '<%s>\n' --launch-profile nightly-v1 --profile-root "$work/launcher profile with space" -- file.doc)" ]] || {
+  printf 'expected the Launcher argv unchanged\nactual:\n%s\n' "$actual" >&2
+  exit 1
+}
 
 # The launcher itself writes nothing: the profile folder is the GUI's to create.
 [[ ! -e "$HOME/.local/share/$identity" ]] || { echo "FAIL: the launcher created the profile" >&2; exit 1; }
