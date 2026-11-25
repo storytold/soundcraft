@@ -7,8 +7,14 @@ use soundcraft_ui_egui::docking;
 
 /// Portable mode (#268): this file beside the executable keeps settings, autosaves, presets and
 /// logs in [`PORTABLE_DATA_DIR`] next to it instead of the user profile.
-const PORTABLE_MARKER: &str = "portable.txt";
-const PORTABLE_DATA_DIR: &str = "SoundCraftData";
+pub(crate) const PORTABLE_MARKER: &str = "portable.txt";
+pub(crate) const PORTABLE_DATA_DIR: &str = "SoundCraftData";
+
+/// The portable marker in `dir`, if it is a regular file (never a link or a directory).
+pub(crate) fn portable_marker(dir: &std::path::Path) -> Option<std::path::PathBuf> {
+    let marker = dir.join(PORTABLE_MARKER);
+    std::fs::symlink_metadata(&marker).ok().filter(|m| m.file_type().is_file()).map(|_| marker)
+}
 
 #[derive(Clone, Copy)]
 enum Platform {
@@ -32,10 +38,17 @@ pub fn resolve_config_dir(get: impl Fn(&str) -> Option<OsString>) -> Option<Path
         Platform::Other
     };
     let exe = std::env::current_exe().ok();
-    config_dir_with(platform, get, exe.as_deref().and_then(Path::parent))
+    // The one place a validated Nightly profile replaces every data root: ui.json, Autosave/,
+    // Presets/ and logs/ all hang off this folder, before any of them is first used.
+    config_dir_with(platform, get, exe.as_deref().and_then(Path::parent), crate::launch_profile::current().root())
 }
 
-fn config_dir_with(platform: Platform, env: impl Fn(&str) -> Option<OsString>, exe_dir: Option<&Path>) -> Option<PathBuf> {
+fn config_dir_with(platform: Platform, env: impl Fn(&str) -> Option<OsString>, exe_dir: Option<&Path>, nightly: Option<&Path>) -> Option<PathBuf> {
+    // The compiled Nightly flavor cannot run without a profile (`build_flavor::require_profile`),
+    // so this is the complete settings folder and never falls back to Stable data.
+    if let Some(root) = nightly {
+        return Some(root.to_path_buf());
+    }
     if let Some(dir) = env(crate::env::CONFIG_DIR) {
         return (!dir.is_empty()).then(|| PathBuf::from(dir));
     }
@@ -55,12 +68,26 @@ fn config_dir_with(platform: Platform, env: impl Fn(&str) -> Option<OsString>, e
     }
 }
 
-/// Create `dir` if needed and prove a file can be written in it.
-fn writable(dir: &Path) -> std::io::Result<()> {
+/// Create `dir` if needed and prove a file can be written in it. The Nightly profile validator
+/// injects this same exclusive probe.
+///
+/// The probe never replaces an existing entry: `create_new` cannot truncate one, and a name that is
+/// already taken (an interrupted run, or a file someone else made) is left untouched while the next
+/// name is tried. Only a file this call created is removed again.
+pub(crate) fn writable(dir: &Path) -> std::io::Result<()> {
     std::fs::create_dir_all(dir)?;
-    let probe = dir.join(format!(".write-test-{}", std::process::id()));
-    std::fs::write(&probe, b"")?;
-    std::fs::remove_file(probe)
+    for attempt in 0..8u32 {
+        let probe = dir.join(format!(".write-test-{}-{attempt}", std::process::id()));
+        match std::fs::OpenOptions::new().write(true).create_new(true).open(&probe) {
+            Ok(file) => {
+                drop(file);
+                return std::fs::remove_file(probe);
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(error) => return Err(error),
+        }
+    }
+    Err(std::io::Error::new(std::io::ErrorKind::AlreadyExists, "no free write-probe name"))
 }
 
 /// Read bounded settings, recovering unreadable docking metadata independently of other settings.
@@ -251,7 +278,7 @@ mod config_tests {
     }
 
     fn resolve(platform: Platform, vars: &[(&str, &str)]) -> Option<PathBuf> {
-        config_dir_with(platform, |name| vars.iter().find_map(|(key, value)| (*key == name).then(|| OsString::from(value))), None)
+        config_dir_with(platform, |name| vars.iter().find_map(|(key, value)| (*key == name).then(|| OsString::from(value))), None, None)
     }
 
     #[test]
@@ -263,6 +290,7 @@ mod config_tests {
                     assert_eq!(name, "SOUNDCRAFT_CONFIG_DIR");
                     Some(OsString::from("isolated/settings"))
                 },
+                None,
                 None,
             );
             assert_eq!(actual, Some(PathBuf::from("isolated/settings")));
@@ -279,6 +307,7 @@ mod config_tests {
                         assert_eq!(name, "SOUNDCRAFT_CONFIG_DIR");
                         Some(OsString::new())
                     },
+                    None,
                     None
                 ),
                 None
@@ -318,7 +347,33 @@ mod config_tests {
     }
 
     fn resolve_with_exe(vars: &[(&str, &str)], exe: &Path) -> Option<PathBuf> {
-        config_dir_with(Platform::Windows, |name| vars.iter().find_map(|(key, value)| (*key == name).then(|| OsString::from(value))), Some(exe))
+        config_dir_with(Platform::Windows, |name| vars.iter().find_map(|(key, value)| (*key == name).then(|| OsString::from(value))), Some(exe), None)
+    }
+
+    #[test]
+    fn a_validated_nightly_profile_replaces_every_settings_root() {
+        let nightly = PathBuf::from("/launcher/profiles/soundcraft");
+        let vars = [("SOUNDCRAFT_CONFIG_DIR", "/custom"), ("HOME", "/user"), ("APPDATA", "/roaming"), ("XDG_CONFIG_HOME", "/xdg")];
+        for platform in [Platform::Mac, Platform::Windows, Platform::Other] {
+            let dir = config_dir_with(
+                platform,
+                |name| vars.iter().find_map(|(key, value)| (*key == name).then(|| OsString::from(value))),
+                None,
+                Some(&nightly),
+            );
+            assert_eq!(dir, Some(nightly.clone()), "the profile wins over the variable and the platform default");
+        }
+        // Even an empty override variable cannot take the Nightly settings folder away.
+        let dir = config_dir_with(Platform::Other, |_| Some(OsString::new()), None, Some(&nightly));
+        assert_eq!(dir, Some(nightly.clone()));
+    }
+
+    #[test]
+    fn the_stable_channel_keeps_its_own_resolution() {
+        let vars = [("XDG_CONFIG_HOME", "/xdg")];
+        let dir =
+            config_dir_with(Platform::Other, |name| vars.iter().find_map(|(key, value)| (*key == name).then(|| OsString::from(value))), None, None);
+        assert_eq!(dir, Some(PathBuf::from("/xdg/soundcraft")));
     }
 
     #[cfg(unix)]
@@ -326,6 +381,6 @@ mod config_tests {
     fn config_override_preserves_non_unicode_paths() {
         use std::os::unix::ffi::OsStringExt as _;
         let value = OsString::from_vec(b"isolated/\xff".to_vec());
-        assert_eq!(config_dir_with(Platform::Mac, |_| Some(value.clone()), None), Some(PathBuf::from(value)));
+        assert_eq!(config_dir_with(Platform::Mac, |_| Some(value.clone()), None, None), Some(PathBuf::from(value)));
     }
 }
