@@ -68,6 +68,9 @@ use app::{automation_step_due, editor_changes, editor_states_due, failed_plugin_
 pub use services::Services;
 pub use state::{DragSource, MainWindow};
 
+/// The record offset's range in session samples, either way: two seconds at 48 kHz.
+pub(crate) const RECORD_OFFSET_LIMIT: i64 = 96_000;
+
 /// UI state (serde, so agents can read and set it).
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(default)]
@@ -131,6 +134,7 @@ pub struct UiState {
     pub audio: soundcraft_playback::AudioConfig,
     /// Record offset in session samples (Setup › Playback Engine): added to where every audio take
     /// is placed, for a driver whose reported latency is off. Positive places takes later.
+    /// Within ±[`RECORD_OFFSET_LIMIT`].
     pub record_offset: i64,
     /// The Mix window lives in its own native window (Window › Mix in Separate Window); the main
     /// window then always shows Edit.
