@@ -76,11 +76,16 @@ Read on 2026-11-24; re-read anything that may have moved (and populate `producer
   commit**; the defining workflow SHA and tooling input must match.
 
 **Every Linux Nightly format starts the app the flavor's way.** The `.deb`/`.rpm` wrapper, the
-AppImage's `AppRun`, the Arch launcher, the Flatpak wrapper, the launcher inside the plain
-`nightly.tar.gz` and the FHS tree in `package.sh`'s `.tar.gz` all exec the real GUI with the literal
+AppImage's `AppRun`, the Arch launcher and the Flatpak wrapper all exec the real GUI with the literal
 `--launch-profile nightly-v1 --profile-root <${XDG_CONFIG_HOME:-~/.config}/soundcraft-nightly> --`,
 and pass a Launcher protocol or a `--version`/`-V` query through untouched, so `soundcraft --version`,
-the Launcher's version query and the smoke checks still answer without a profile. The profile holds
+the Launcher's version query and the smoke checks still answer without a profile. The plain
+`nightly.tar.gz` (and `package.sh`'s tree tarball, which installs the same file) is the exception: its
+`soundcraft` is craft-common-actions' shared launcher template
+(#363, rendered for this app), which execs `soundcraft-bin` beside it with
+`--profile-root <${XDG_DATA_HOME:-~/.local/share}/ai.storyteller.soundcraft.nightly> --`, forwards a
+first-argument `--launch-profile` pair unchanged, and asks a bare `--version`/`-V` in the Launcher's
+own form. The profile holds
 `ui.json`, `Autosave/`, `Presets/` and `logs/`; it is outside stable's settings folder and outside
 the unpacked or installed copy, which the flavor's fence would otherwise refuse. The Nightly tarballs
 therefore ship `soundcraft` as the launcher next to `soundcraft-bin`, and the Nightly Flatpak — the
