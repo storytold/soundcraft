@@ -335,6 +335,44 @@ fn a_dragged_send_level_writes_send_automation() {
     }
 }
 
+/// A latched send stops writing once it is retargeted, and returning it to the touched bus
+/// does not resume the latch without a new touch.
+#[test]
+fn a_send_retargeted_away_and_back_stays_released() {
+    use soundcraft_model::AutoParam;
+    let mut app = SoundApp::new(soundcraft_engine::demo::demo_engine(), None, Services::default());
+    let lead = app.engine.session().track_by_name("Lead").unwrap().id;
+    let points = |app: &SoundApp| app.engine.session().track(lead).unwrap().lane(&AutoParam::SendLevel(0)).map_or(0, |l| l.points.len());
+    let pass = |app: &mut SoundApp| {
+        app.handle_transport(0.1);
+        app.write_automation();
+    };
+    let original = {
+        let s = app.engine.session();
+        let soundcraft_model::Route::Bus(bus) = &s.track(lead).unwrap().mixer.sends[0].as_ref().unwrap().target else { panic!("a bus send") };
+        s.bus(*bus).unwrap().name.clone()
+    };
+    app.run("mix.new_bus", json!({"name": "Other"})).unwrap();
+    app.run("mix.automation_mode", json!({"tracks": ["Lead"], "mode": "latch"})).unwrap();
+    app.run("transport.play", json!({})).unwrap();
+    pass(&mut app);
+    app.pointer_down = true;
+    app.gesture = Some(super::Gesture::SendFader { track: lead, slot: 0 });
+    pass(&mut app);
+    app.pointer_down = false;
+    app.gesture = None;
+    pass(&mut app);
+    assert!(points(&app) > 0, "the touch latched the send");
+    app.run("mix.send", json!({"track": lead.0, "slot": 0, "bus": "Other"})).unwrap();
+    pass(&mut app);
+    app.run("mix.send", json!({"track": lead.0, "slot": 0, "bus": original})).unwrap();
+    let returned = points(&app);
+    for _ in 0..3 {
+        pass(&mut app);
+    }
+    assert_eq!(points(&app), returned, "the latch stays released after the send returns");
+}
+
 #[test]
 fn plugin_states_read_during_a_drag_keep_it_one_undo_step() {
     let mut app = SoundApp::new(soundcraft_engine::demo::demo_engine(), None, Services::default());
