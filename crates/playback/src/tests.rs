@@ -227,6 +227,27 @@ fn named_output_uses_its_physical_channel_and_remaps_on_session_edit() {
 }
 
 #[test]
+fn a_rate_change_keeps_named_outputs_in_step_with_the_main_mix() {
+    use soundcraft_model::{ChannelFormat, OutputPath, Route};
+    let (shared, audio, _, track) = spike_session(0);
+    let (tx, rx) = channel();
+    // A device rate unlike the session's leaves part of a rendered block unread after a callback.
+    let mut audio = AudioState::new(rx, shared, Arc::clone(&audio.session), 44_100.0, channel().0);
+    audio.mix.set_hardware_channels(10);
+    let mut session = (*audio.session).clone();
+    session.outputs.push(OutputPath { name: "Cue".into(), first_channel: 9, format: ChannelFormat::Mono });
+    session.track_mut(track).unwrap().mixer.output = Route::Hardware("Cue".into());
+    tx.send(Cmd::Session(Arc::new(session.clone()), vec![])).unwrap();
+    tx.send(Cmd::Play { from: 0, end: None, looped: None }).unwrap();
+    let mut frames = [0.0; 10 * 32];
+    audio.fill(&mut frames, 10);
+    session.sample_rate = soundcraft_time::SampleRate::new(44_100).unwrap();
+    tx.send(Cmd::Session(Arc::new(session), vec![])).unwrap();
+    audio.fill(&mut frames, 10);
+    assert!(frames.as_chunks::<10>().0.iter().all(|frame| frame[9] > 0.0), "the named output plays from the first frame after the change");
+}
+
+#[test]
 fn each_of_ten_named_paths_reaches_only_its_assigned_output() {
     use soundcraft_model::{ChannelFormat, OutputPath, Route};
     let (_, mut audio, tx, track) = spike_session(0);
