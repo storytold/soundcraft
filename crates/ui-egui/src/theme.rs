@@ -594,6 +594,8 @@ mod tests {
         assert!(app.run("ui.language", json!({"language": "fr"})).is_err());
         assert_eq!(app.ui.language, crate::localization::Language::PortugueseBrazil);
         assert!(crate::menus::UI_COMMANDS.iter().any(|command| command.0 == "ui.language"));
+        assert_eq!(app.run("ui.language", json!({"language": "zh-Hans"})), Ok(json!({"language": "zh-Hans"})));
+        assert_eq!(app.ui.language, crate::localization::Language::SimplifiedChinese);
     }
 
     #[test]

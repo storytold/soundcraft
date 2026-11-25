@@ -1,6 +1,6 @@
 # Where SoundCraft falls short of Pro Tools
 
-> **Last reviewed:** 2026-11-14 · **Last updated:** 2026-11-18 · **Change:** minor (G-06: recording to disk is done (#84, long takes #888); streaming sources remain; previously minor: G-02 shrunk: MIDI input devices work; G-03: strict external-WAV AAF import; previously minor: G-05: plugin editors on Linux/X11; previously trivial: G-09: the pt-BR catalog now covers helper-passed tooltips, the status bar, the remove-session prompt and engine error text; G-08: Frequency Shifter, 28 processors; G-04: volume automation read at every sample, #1354; G-01: `setup.playback_engine` applies the device buffer in the desktop app; G-04: Clip Looping crossfade and loop count) · **Target:** Avid Pro Tools Ultimate 2026.4.1
+> **Last reviewed:** 2026-11-14 · **Last updated:** 2026-11-22 · **Change:** minor (G-09: the zh-Hans catalog now covers the fixed UI strings, with a Han fallback and a web subset; previously G-06: recording to disk is done (#84, long takes #888); streaming sources remain; previously minor: G-02 shrunk: MIDI input devices work; G-03: strict external-WAV AAF import; previously minor: G-05: plugin editors on Linux/X11; previously trivial: G-09: the pt-BR catalog now covers helper-passed tooltips, the status bar, the remove-session prompt and engine error text; G-08: Frequency Shifter, 28 processors; G-04: volume automation read at every sample, #1354; G-01: `setup.playback_engine` applies the device buffer in the desktop app; G-04: Clip Looping crossfade and loop count) · **Target:** Avid Pro Tools Ultimate 2026.4.1
 
 Every known shortfall, one entry each, ranked by how much it stops a Pro Tools user from doing
 real work in SoundCraft. This is the work list: pick from the top. Rows marked **alpha blocker**
@@ -23,7 +23,7 @@ When you close a gap, delete its entry (or shrink it) in the same PR, and bump t
 | G-06 | Sources decoded whole into RAM (recording to disk is done: #84, #888) | Performance | [hardware-parity.md](hardware-parity.md) | 15–25 |
 | G-07 | Nothing is compared against Pro Tools' output (no fidelity harness) | Features | this file | 20–30 |
 | G-08 | Built-in plugin catalogue thin and unverified | Features | [plugin-parity.md](plugin-parity.md) | 80–120 |
-| G-09 | English-first UI with a pt-BR catalog (not native-reviewed); all fixed UI strings covered, no CJK/RTL rendering | Localization | [localization-parity.md](localization-parity.md) | 20–40 |
+| G-09 | English-first UI with pt-BR and zh-Hans catalogs (neither native-reviewed); all fixed UI strings covered, CJK fallback ships, no other Pro Tools languages and no RTL/complex-script shaping | Localization | [localization-parity.md](localization-parity.md) | 55–90 |
 | G-10 | No control surfaces (HUI/MCU, EUCON) | Hardware | [hardware-parity.md](hardware-parity.md) | 40–70 |
 | G-11 | No external sync (MTC, LTC, MIDI clock, video reference) | Hardware | [hardware-parity.md](hardware-parity.md) | 15–25 |
 | G-12 | Immersive delivery: no Dolby Atmos/ADM BWF, MPEG-H, binaural | Features | [file-format-parity.md](file-format-parity.md) | 50–80 |
@@ -169,15 +169,17 @@ parametric request #139. ≈ 80–120 h.
 
 ### G-09. Localization
 
-See [`localization-parity.md`](localization-parity.md): a pt-BR catalog covers the menu labels and
-every fixed UI string passed to `text` / `localized_format!` or localized inside a button, toggle or
-close button (test-checked), including the Edit-window status bar, the remove-session question and
-the send help text; engine errors are matched against catalog templates at display time by
-`error_text`. What remains is independent native-speaker review plus egui's lack of complex-script
-shaping and RTL, and the missing other Pro Tools languages; values built at run time (file, track
-and device names) and engine command parameter documentation stay untranslated. egui has no
-complex-script shaping or RTL; no CJK font fallback (PR #141 open). ≈ 70–110 h plus
-native-speaker review.
+See [`localization-parity.md`](localization-parity.md): pt-BR and zh-Hans catalogs cover the menu
+labels and every fixed UI string passed to `text` / `localized_format!` or localized inside a button,
+toggle or close button (test-checked), including the Edit-window status bar, the remove-session
+question and the send help text; pt-BR also matches engine errors against catalog templates through
+`error_text`, while zh-Hans keeps diagnostics English. Chinese has a Han font fallback on the desktop
+(a system face, never redistributed) and an OFL subset in the web build, ordered ahead of the Hangul
+fallback except under a Korean interface. What remains is independent native-speaker review of both
+catalogs, the other Pro Tools languages (Spanish, French, German, Japanese, Korean, Traditional
+Chinese, Hindi/Arabic for the non-target languages), and egui's lack of complex-script shaping and
+RTL; values built at run time (file, track and device names) and engine command parameter
+documentation stay untranslated. ≈ 55–90 h plus native-speaker review.
 
 ### G-10. Control surfaces
 

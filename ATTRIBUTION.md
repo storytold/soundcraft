@@ -21,9 +21,18 @@ are bundled.
 
 ## Fonts
 
-SoundCraft bundles no font files. It uses the default fonts shipped inside the `egui` crate
-(Ubuntu-Light: Ubuntu Font Licence 1.0; Hack: MIT; Noto Emoji: OFL-1.1; emoji-icon-font: MIT)
-and, at runtime, the operating system's own UI fonts when available (never redistributed).
+SoundCraft ships one font file, for the web build only. Everything else is the default fonts
+shipped inside the `egui` crate (Ubuntu-Light: Ubuntu Font Licence 1.0; Hack: MIT; Noto Emoji:
+OFL-1.1; emoji-icon-font: MIT) and, at runtime, the operating system's own UI fonts when available
+(never redistributed).
+
+The browser cannot reach the operating system's fonts, and egui's bundled faces carry no Han
+glyphs, so a Simplified Chinese interface would draw boxes. `assets/fonts/NotoSansSC-SoundCraftSubset.ttf`
+is therefore compiled into the web build alone (`crates/ui-egui/src/fonts.rs`): a subset of the
+Noto Sans SC variable font, pinned at weight 400 and reduced with fontTools to the UI glyph set
+(the zh-Hans catalog, GB 2312 level-1 common characters, ASCII, Latin-1 letters and the UI's
+punctuation, arrows and triangles; about 1.1 MiB). It is SIL Open Font License 1.1 — see
+`assets/fonts/OFL.txt`. Native builds never embed it and keep drawing with system fonts.
 
 ## Bundled egui font icons
 
@@ -47,6 +56,8 @@ here. The subset uses default_fonts; the parent face uses monochrome_emoji_fonts
 | `docs/brand/artcraft-mark.png` | ArtCraft Team | ArtCraft brand assets | ArtCraft brand terms |
 | `docs/brand/artcraft-mark-black.svg` | ArtCraft Team | ArtCraft brand assets | ArtCraft brand terms |
 | `docs/brand/artcraft-mark-black.png` | ArtCraft Team | ArtCraft brand assets | ArtCraft brand terms |
+| `assets/fonts/NotoSansSC-SoundCraftSubset.ttf` | Google LLC / Noto Project Authors | Noto Sans SC variable font, subset to the UI glyph set and pinned at weight 400 (generated with fontTools by `docs/i18n/tools/subset_web_font.py`) | SIL Open Font License 1.1 (`assets/fonts/OFL.txt`) |
+| `assets/fonts/OFL.txt` | Noto Project Authors / SIL | SIL Open Font License 1.1 text | OFL-1.1 |
 | `assets/app-icon/icon.svg` | SoundCraft contributors | original (hand-placed SVG paths; placeholder app icon) | MIT OR Apache-2.0 |
 | `packaging/macos/dmg/` (all files) | @XusBadia | original (macOS DMG window background and layout, from the app icon; see `packaging/macos/dmg/README.md`) | MIT OR Apache-2.0 |
 | `assets/app-icon/soundcraft-1024.png` | SoundCraft contributors | original, rendered from `icon.svg` | MIT OR Apache-2.0 |

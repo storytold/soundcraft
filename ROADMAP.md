@@ -52,7 +52,7 @@ measures readiness and adds hardware, localization and field bug reports.
 | UI/UX fidelity | ~55 % | 60–100 | [ui-parity.md](docs/ui-parity.md) |
 | File formats | ~40 % | 70–120 | [file-format-parity.md](docs/file-format-parity.md) |
 | Hardware (interfaces, MIDI, surfaces, sync) | ~12 % | 110–180 | [hardware-parity.md](docs/hardware-parity.md) |
-| Localization | ~12 % (1 of Pro Tools' 8 languages; English and pt-BR fixed UI strings, no CJK/RTL font fallback or native review) | 70–110 | [localization-parity.md](docs/localization-parity.md) |
+| Localization | ~19 % (2 of Pro Tools' 8 languages; English, pt-BR and zh-Hans fixed UI strings, with a CJK fallback and a web Han font; no RTL or complex-script shaping, no native review) | 55–90 | [localization-parity.md](docs/localization-parity.md) |
 | Performance | ~35 % (unmeasured) | 40–70 | [hardware-parity.md](docs/hardware-parity.md#performance) |
 | Stability | ~45 % | 50–80 | [gaps.md](docs/gaps.md) |
 | Platforms | ~65 % (5 platforms built, macOS exercised) | 20–40 | [gaps.md](docs/gaps.md) |
@@ -86,7 +86,7 @@ Weights and evidence per row: [target-app-parity.md](docs/target-app-parity.md#f
 | Language | Code | Status | Translated |
 |---|---|---|---:|
 | English | en | full | 100 % |
-| Simplified Chinese | zh-Hans | none | 0 % |
+| Simplified Chinese | zh-Hans | full — 100 % of fixed UI strings; CJK fallback, web Han font, tests pass | 100 % (native-speaker review pending) |
 | Spanish | es | none (PR #143 open) | 0 % |
 | Hindi | hi | none | 0 % |
 | Arabic | ar | none | 0 % |
@@ -98,7 +98,7 @@ Weights and evidence per row: [target-app-parity.md](docs/target-app-parity.md#f
 | Korean | ko | none | 0 % |
 | Vietnamese | vi | none | 0 % |
 
-Other languages shipped: 0 complete. Brazilian Portuguese covers the fixed UI strings (100 %), with native-speaker review, CJK/RTL font fallbacks and script shaping still pending. Detail: [localization-parity.md](docs/localization-parity.md).
+Other languages shipped: 2. Brazilian Portuguese and Simplified Chinese cover the fixed UI strings (100 %); both still need native-speaker review, and CJK fallbacks now ship for Chinese while RTL and complex-script shaping are still missing. Detail: [localization-parity.md](docs/localization-parity.md).
 
 ## Upcoming
 
@@ -189,6 +189,7 @@ mutated and truncated movies. Field reports from the first public week are track
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-11-22 | minor | Languages table: Simplified Chinese (zh-Hans) covers the fixed UI strings through the `locales/zh-Hans` catalog, with a Han system-font fallback and an OFL web subset; needs native review. Localization estimate 70–110 → 55–90 h |
 | 2026-11-14 | minor | Strict external-WAV AAF import with bounded property caching; remaining interchange work and readiness estimates unchanged |
 | 2026-11-09 | trivial | Progress log: Frequency Shifter plugin; readiness estimates unchanged |
 | 2026-11-08 | trivial | Command-click breakpoint/control priority and insertion affordance; active-tool drags retained; readiness estimates unchanged |
