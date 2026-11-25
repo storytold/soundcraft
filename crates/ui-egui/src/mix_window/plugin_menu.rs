@@ -8,11 +8,12 @@ pub fn plugin_menu(app: &mut SoundApp, ui: &mut Ui, id: TrackId, slot: usize, oc
     let instrument_track = app.engine.session().track(id).is_some_and(|t| t.kind == soundcraft_model::TrackKind::Instrument);
     let search = MenuSearch::show(ui, egui::Id::unique(("plugin-search", id.0, slot)), crate::localization::text("Search plugins…"));
     if search.typing() {
-        if instrument_track && let Some(plugin) = plugin_search(ui, &search, true) {
-            run_pick(app, ui, "mix.instrument", json!({"track": id.0, "plugin": plugin}));
-        }
-        if let Some(plugin) = plugin_search(ui, &search, false) {
-            pick_insert(app, ui, id, slot, &plugin);
+        if let Some((plugin, instrument)) = plugin_search(ui, &search, instrument_track, true) {
+            if instrument {
+                run_pick(app, ui, "mix.instrument", json!({"track": id.0, "plugin": plugin}));
+            } else {
+                pick_insert(app, ui, id, slot, &plugin);
+            }
         }
         return;
     }
@@ -68,7 +69,7 @@ pub fn instrument_menu(app: &mut SoundApp, ui: &mut Ui, id: TrackId) {
     let slot = soundcraft_mix::INSTRUMENT_SLOT;
     let search = MenuSearch::show(ui, egui::Id::unique(("instrument-search", id.0)), crate::localization::text("Search instruments…"));
     if search.typing() {
-        if let Some(plugin) = plugin_search(ui, &search, true) {
+        if let Some((plugin, _)) = plugin_search(ui, &search, true, false) {
             run_pick(app, ui, "mix.instrument", json!({"track": id.0, "plugin": plugin}));
         }
         return;
@@ -135,14 +136,49 @@ fn run_pick(app: &mut SoundApp, ui: &Ui, cmd: &str, params: serde_json::Value) {
     ui.close();
 }
 
-/// The plugins whose name or vendor holds the search text: the built-in ones, then Audio Units
-/// (listing them creates no instances) and whichever of CLAP and VST3 have been scanned, with a
-/// button to scan each of the others. Returns the id picked.
-fn plugin_search(ui: &mut Ui, search: &MenuSearch, instruments: bool) -> Option<String> {
+/// The plugins whose name or vendor holds the search text, as one list: the instruments first (when
+/// the picker takes them), then the effects. One list shares one highlight and one Enter pick, so
+/// navigation cannot be reset by an empty kind and one Enter picks exactly one row; the row's kind
+/// then decides which command the pick dispatches (#372). Returns the id picked and its kind.
+fn plugin_search(ui: &mut Ui, search: &MenuSearch, instruments: bool, effects: bool) -> Option<(String, bool)> {
+    let mut rows = Vec::new();
+    let mut unscanned = (false, false);
+    if instruments {
+        search_rows(search, true, &mut rows, &mut unscanned);
+    }
+    if effects {
+        search_rows(search, false, &mut rows, &mut unscanned);
+    }
+    let n = rows.len();
+    let picked = search.rows(ui, n, 320.0, |ui, i, highlighted| menu_row(ui, highlighted, &rows[i].label));
+    if n == 0 {
+        ui.weak(crate::localization::text("No matches"));
+    }
+    if unscanned.0 || unscanned.1 {
+        ui.separator();
+        ui.horizontal(|ui| {
+            if unscanned.0 && ui.small_button(crate::localization::text("Scan CLAP")).clicked() {
+                soundcraft_clap_host::scan();
+            }
+            if unscanned.1 && ui.small_button(crate::localization::text("Scan VST3")).clicked() {
+                soundcraft_vst3_host::scan();
+            }
+        });
+    }
+    picked.map(|i| (rows[i].id.clone(), rows[i].instrument))
+}
+
+/// One kind of the search's matches appended to `rows`: the built-in ones, then Audio Units
+/// (listing them creates no instances) and whichever of CLAP and VST3 have been scanned; `unscanned`
+/// records which of the two still lack a scan, for the buttons that run it.
+fn search_rows(search: &MenuSearch, instruments: bool, rows: &mut Vec<SearchRow>, unscanned: &mut (bool, bool)) {
     let mut built_in: Vec<&soundcraft_dsp::PluginInfo> =
         soundcraft_dsp::plugins().iter().copied().filter(|p| p.is_instrument == instruments && search.matches(p.name)).collect();
     built_in.sort_by_cached_key(|p| p.name.to_lowercase());
+    rows.extend(built_in.iter().map(|p| SearchRow { id: p.id.to_string(), label: p.name.to_string(), instrument: instruments }));
     let (clap, vst3) = (soundcraft_clap_host::cached(), soundcraft_vst3_host::cached());
+    unscanned.0 |= clap.is_none();
+    unscanned.1 |= vst3.is_none();
     let mut hosted: Vec<(MenuPlugin, &str)> = Vec::new();
     for d in clap.iter().flatten().filter(|d| d.is_instrument == instruments) {
         hosted.push((MenuPlugin { id: d.id.clone(), name: d.name.clone(), vendor: d.vendor.clone() }, "CLAP"));
@@ -155,30 +191,18 @@ fn plugin_search(ui: &mut Ui, search: &MenuSearch, instruments: bool) -> Option<
     }
     hosted.retain(|(p, _)| search.matches(&p.name) || search.matches(&p.vendor));
     hosted.sort_by_cached_key(|(p, format)| (p.name.to_lowercase(), *format));
-    let n = built_in.len() + hosted.len();
-    let picked = search.rows(ui, n, 320.0, |ui, i, highlighted| match built_in.get(i) {
-        Some(p) => menu_row(ui, highlighted, p.name),
-        None => {
-            let (p, format) = &hosted[i - built_in.len()];
-            let label = if p.vendor.is_empty() { format!("{} ({format})", p.name) } else { format!("{} — {} ({format})", p.name, p.vendor) };
-            menu_row(ui, highlighted, &label)
-        }
-    });
-    if n == 0 {
-        ui.weak(crate::localization::text("No matches"));
-    }
-    if clap.is_none() || vst3.is_none() {
-        ui.separator();
-        ui.horizontal(|ui| {
-            if clap.is_none() && ui.small_button(crate::localization::text("Scan CLAP")).clicked() {
-                soundcraft_clap_host::scan();
-            }
-            if vst3.is_none() && ui.small_button(crate::localization::text("Scan VST3")).clicked() {
-                soundcraft_vst3_host::scan();
-            }
-        });
-    }
-    picked.map(|i| built_in.get(i).map_or_else(|| hosted[i - built_in.len()].0.id.clone(), |p| p.id.to_string()))
+    rows.extend(hosted.iter().map(|(p, format)| {
+        let label = if p.vendor.is_empty() { format!("{} ({format})", p.name) } else { format!("{} — {} ({format})", p.name, p.vendor) };
+        SearchRow { id: p.id.clone(), label, instrument: instruments }
+    }));
+}
+
+/// A search result row: its drawn label, the plugin id it dispatches and whether the pick is an
+/// instrument (the track's instrument slot) or an effect (the menu's insert slot).
+struct SearchRow {
+    id: String,
+    label: String,
+    instrument: bool,
 }
 
 /// A picker menu's search field. It has the keyboard as soon as the menu opens and starts empty
