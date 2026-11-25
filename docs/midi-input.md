@@ -66,6 +66,10 @@ the track's instrument, with the transport stopped or running.
   let go, and each has its own sustain pedal.
 - Taking the track out of record, or switching its monitor off, ends the notes that are held.
 
+Without a keyboard, **Window › MIDI Keyboard** plays the same way: click and hold a key, or slide
+across the keys. It counts as a MIDI device called *MIDI Keyboard*, so a record pass takes what it
+plays even when no device is connected.
+
 ## 4. Record
 
 Record-enable one or more MIDI or instrument tracks and record as usual (**Record**, then
