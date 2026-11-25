@@ -11,6 +11,8 @@ pub struct ControlChange {
     steps: i32,
     range: (i32, i32),
     pub presses: u32,
+    /// Whether MIDI Learn was waiting for a control when this was captured.
+    learning: bool,
 }
 
 impl ControlChange {
@@ -18,6 +20,12 @@ impl ControlChange {
     pub fn relative_value(&self, position: u8) -> u8 {
         // capture() shifts both endpoints by the same delta and clamps monotonically.
         (i32::from(position) + self.steps).clamp(self.range.0, self.range.1) as u8
+    }
+
+    /// Whether this was captured while MIDI Learn waited for a control: a move of an assigned
+    /// control captured before Learn started still goes to the mixer.
+    pub fn learning(&self) -> bool {
+        self.learning
     }
 }
 
@@ -62,14 +70,23 @@ impl ControlTap {
             false
         };
         let delta = i32::from(event.data2) - 64;
-        let mut change = ControlChange { event, steps: delta, range: (delta.max(0), (127 + delta).min(127)), presses: u32::from(pressed) };
+        let mut change = ControlChange {
+            event,
+            steps: delta,
+            range: (delta.max(0), (127 + delta).min(127)),
+            presses: u32::from(pressed),
+            learning: self.learning,
+        };
         if self.learning && empty {
             self.first = Some(change);
         } else {
             // One latest move per source, ordered by its last movement. The first learn
-            // event is kept separately so a stalled frame can both assign and apply a knob.
-            if let Some(i) =
-                self.pending.iter().position(|c| (c.event.port, c.event.status, c.event.data1) == (event.port, event.status, event.data1))
+            // event is kept separately so a stalled frame can both assign and apply a knob. A move
+            // captured before Learn started is not merged into one captured during it.
+            if let Some(i) = self
+                .pending
+                .iter()
+                .position(|c| (c.event.port, c.event.status, c.event.data1, c.learning) == (event.port, event.status, event.data1, self.learning))
             {
                 let old = self.pending.remove(i);
                 change.range = ((old.range.0 + delta).clamp(0, 127), (old.range.1 + delta).clamp(0, 127));

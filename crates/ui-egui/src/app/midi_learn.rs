@@ -157,7 +157,9 @@ impl SoundApp {
             let channel = (event.status & 0x0F) + 1;
             let cc = event.data1;
             let existing = bindings.iter().find(|b| b.source.cc == cc && b.source.channel == channel && b.source.device == device);
-            if let Some(target) = self.midi_learn_target {
+            // Only input captured while Learn waited is learn input: an assigned control moved
+            // before Learn started (after `start_midi_learn` drained the feed) still moves the mixer.
+            if let Some(target) = self.midi_learn_target.filter(|_| change.learning()) {
                 if existing.is_some_and(|b| b.target != target) {
                     self.ui.status = text("MIDI Learn: this control is already assigned. Turn another control.").to_owned();
                     continue;
@@ -652,6 +654,61 @@ mod tests {
         feed.receive(port, &[0xb0, 21, 30]);
         app.service_midi_learn();
         assert!(midi_learn::bindings(app.engine.session()).any(|b| b.target.parameter == Parameter::Pan(0) && b.source.cc == 21));
+    }
+
+    #[test]
+    fn midi_learn_start_keeps_an_assigned_move_queued_after_its_drain() {
+        let (mut app, feed, id, port) = controller();
+        let original = app.engine.session().track(id).unwrap().mixer.volume_db;
+        // What `start_midi_learn` does after its drain, with a move arriving in between.
+        app.service_midi_learn();
+        feed.receive(port, &[0xb0, 71, 20]);
+        app.midi_learn_target = Some(Target { track: id, parameter: Parameter::Pan(0) });
+        app.midi_route_revision = None;
+        app.sync_midi_routes();
+        feed.receive(port, &[0xb0, 21, 30]);
+        app.service_midi_learn();
+        assert_ne!(app.engine.session().track(id).unwrap().mixer.volume_db, original, "the assigned move reached the mixer");
+        let bindings: Vec<_> = midi_learn::bindings(app.engine.session()).collect();
+        assert!(bindings.iter().any(|b| b.target.parameter == Parameter::Pan(0) && b.source.cc == 21), "Learn took the next control");
+        assert!(bindings.iter().any(|b| b.target.parameter == Parameter::Volume && b.source.cc == 71), "the volume keeps its control");
+    }
+
+    /// A send moved by MIDI and then retargeted away and back within the release interval does
+    /// not resume Latch writing: the retarget released the MIDI touch with the latch.
+    #[test]
+    fn a_midi_moved_send_retargeted_away_and_back_stays_released() {
+        use soundcraft_model::AutoParam;
+        let (mut app, feed, id, port) = controller();
+        app.run("mix.new_bus", json!({"name":"FX"})).unwrap();
+        app.run("mix.new_bus", json!({"name":"Other"})).unwrap();
+        let send = app.run("mix.send", json!({"track":id,"slot":0,"bus":"FX"})).unwrap();
+        app.run(
+            "midi.learn.bind",
+            json!({"target":{"track":id,"parameter":{"send_level":{"slot":0,"bus":send["bus"]}}},"source":{"device":"Keys","channel":1,"cc":76}}),
+        )
+        .unwrap();
+        app.run("mix.automation_mode", json!({"tracks":[id],"mode":"latch"})).unwrap();
+        app.run("transport.play", json!({})).unwrap();
+        let ctx = egui::Context::default();
+        let frame = |app: &mut SoundApp| {
+            app.advance_test_clock(std::time::Duration::from_millis(30));
+            let _ = ctx.run_logic(&egui::RawInput::default(), |ctx| app.logic(ctx));
+        };
+        let points = |app: &SoundApp| app.engine.session().track(id).unwrap().lane(&AutoParam::SendLevel(0)).map_or(0, |l| l.points.len());
+        frame(&mut app);
+        feed.receive(port, &[0xb0, 76, 60]);
+        frame(&mut app);
+        frame(&mut app);
+        assert!(points(&app) > 0, "the MIDI move latched the send");
+        app.run("mix.send", json!({"track":id,"slot":0,"bus":"Other"})).unwrap();
+        frame(&mut app);
+        app.run("mix.send", json!({"track":id,"slot":0,"bus":"FX"})).unwrap();
+        let returned = points(&app);
+        for _ in 0..3 {
+            frame(&mut app);
+        }
+        assert_eq!(points(&app), returned, "within the release interval, the latch stays released after the send returns");
     }
 
     #[test]
