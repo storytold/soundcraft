@@ -1124,6 +1124,31 @@ fn delay_compensation_uses_the_main_mix_channels_playback_uses() {
     assert_eq!(impulse_at(&physical[0]), vec![1000]);
 }
 
+/// A path that does not fit the device plays nothing, so it links no paths: one that overlaps it
+/// but not the main mix does not wait for the aux returns. Once it fits, it does.
+#[test]
+fn delay_compensation_skips_paths_that_do_not_fit_the_device() {
+    let mut s = Session::default();
+    let n = 4096;
+    s.outputs.push(soundcraft_model::OutputPath { name: "Wide".into(), first_channel: 1, format: ChannelFormat::Surround51 });
+    s.outputs.push(soundcraft_model::OutputPath { name: "Far".into(), first_channel: 3, format: ChannelFormat::Mono });
+    let aux = s.add_track(TrackKind::Aux, ChannelFormat::Stereo, Some("Verb"));
+    s.track_mut(aux).unwrap().mixer.inserts[0] = Some(lookahead());
+    impulse_tracks(&mut s, n, 906, vec![Route::Main, Route::Hardware("Far".into())]);
+
+    // "Wide" (channels 1-6) does not fit 4 channels.
+    let (main, physical) = render_device(&s, n, 4);
+    let at = impulse_at(&main);
+    assert_eq!(at.len(), 1, "{at:?}");
+    assert!(at[0] > 1000);
+    assert_eq!(impulse_at(&physical[3]), vec![1000], "no played path links the far path to the main mix");
+
+    // On 8 channels "Wide" plays and shares channel 1 with the main mix and channel 3 with "Far".
+    let (main, physical) = render_device(&s, n, 8);
+    assert_eq!(impulse_at(&main), at);
+    assert_eq!(impulse_at(&physical[3]), at, "a path chained through a played overlap waits");
+}
+
 /// A path that shares a channel with the main mix waits for the master faders' inserts too, both
 /// for tracks and for an aux routed to it; a path apart from the main mix does not.
 #[test]
