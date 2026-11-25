@@ -55,7 +55,7 @@ pub const MIDI_HEIGHT: f32 = 320.0;
 pub type Workspace = craft_behavior::dock::Workspace<Panel>;
 
 /// The height the MIDI editor's tab adds above its body in the default layout.
-const MIDI_TAB_HEIGHT: f32 = 26.0;
+const MIDI_TAB_HEIGHT: f32 = 28.0;
 
 /// The document view stays docked and open, and panels open in splits beside it.
 fn permissions(panel: &Panel) -> Permissions {
