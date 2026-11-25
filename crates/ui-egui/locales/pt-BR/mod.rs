@@ -1330,6 +1330,8 @@ fn menu_translate(source: &str) -> Option<&'static str> {
         "asked to be reopened" => "pediu para ser reaberto",
         "SoundCraft reopened it." => "O SoundCraft o reabriu.",
         "SoundCraft reopens it in a moment." => "O SoundCraft o reabrirá em instantes.",
+        "is available again" => "está disponível novamente",
+        "SoundCraft reopens it when it is back." => "O SoundCraft o reabrirá quando ele voltar.",
         "marker" => "marcador",
         "modified" => "modificado",
         "movie offline" => "filme indisponível",

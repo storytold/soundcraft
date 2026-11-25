@@ -65,10 +65,20 @@ impl SoundApp {
             return;
         }
         if let Some(p) = &mut self.player {
-            p.recover_idle_asio(self.engine.transport.playing, self.engine.transport.recording, !self.engine.transport_requests.is_empty(), || {
-                self.recorder = None;
-                self.recorder_failed = false;
-            });
+            let outcome = p.recover_idle_asio(
+                self.engine.transport.playing,
+                self.engine.transport.recording,
+                !self.engine.transport_requests.is_empty(),
+                || {
+                    self.recorder = None;
+                    self.recorder_failed = false;
+                },
+            );
+            // Without this the status line keeps the last advice (to reconnect by hand) after the
+            // device came back on its own, and says nothing while it is away.
+            if let Some(status) = idle_recovery_status(outcome, &p.device_name) {
+                self.ui.status = status;
+            }
         }
         let Some(p) = &self.player else { return };
         let Some(trouble) = p.trouble() else { return };
@@ -228,6 +238,17 @@ fn output_status(recording: bool, playing: bool, cause: &str, then: &str) -> Str
     }
 }
 
+/// The status line for an idle ASIO recovery attempt on device `name`, if it did anything.
+fn idle_recovery_status(outcome: soundcraft_playback::IdleRecovery, name: &str) -> Option<String> {
+    use soundcraft_playback::IdleRecovery;
+    let (cause, then) = match outcome {
+        IdleRecovery::None => return None,
+        IdleRecovery::Reopened => (crate::localization::text("is available again"), crate::localization::text("SoundCraft reopened it.")),
+        IdleRecovery::Waiting => (crate::localization::text("is unavailable"), crate::localization::text("SoundCraft reopens it when it is back.")),
+    };
+    Some(output_status(false, false, &format!("“{name}” {cause}"), then))
+}
+
 /// The status line for an input problem `what`, with what to do about it (`then`).
 fn input_status(recording: bool, what: &str, then: &str) -> String {
     if recording {
@@ -273,8 +294,24 @@ pub(super) fn wants_audio_input(s: &soundcraft_model::Session) -> bool {
 
 #[cfg(test)]
 mod reset_tests {
-    use super::{AUTO_REOPEN_GAP, input_status, may_reopen, output_status};
+    use super::{AUTO_REOPEN_GAP, idle_recovery_status, input_status, may_reopen, output_status};
+    use soundcraft_playback::IdleRecovery;
     use std::time::{Duration, Instant};
+
+    #[test]
+    fn an_idle_recovery_says_whether_the_device_is_back() {
+        // On a Model 12 put in USB STORAGE mode or unplugged and plugged back, the status line kept
+        // "use Reconnect audio device" after SoundCraft had reopened the device on its own.
+        assert_eq!(idle_recovery_status(IdleRecovery::None, "Model Mixer ASIO"), None, "a quiet frame keeps the status");
+        assert_eq!(
+            idle_recovery_status(IdleRecovery::Waiting, "Model Mixer ASIO").as_deref(),
+            Some("Audio output: “Model Mixer ASIO” is unavailable. SoundCraft reopens it when it is back.")
+        );
+        assert_eq!(
+            idle_recovery_status(IdleRecovery::Reopened, "Model Mixer ASIO").as_deref(),
+            Some("Audio output: “Model Mixer ASIO” is available again. SoundCraft reopened it.")
+        );
+    }
 
     #[test]
     fn a_reset_is_reopened_automatically_unless_one_was_just_reopened() {

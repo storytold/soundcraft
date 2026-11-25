@@ -167,6 +167,17 @@ pub enum OutputTrouble {
     ClockTooSlow,
 }
 
+/// What an idle ASIO recovery attempt did (see [`Player::recover_idle_asio`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IdleRecovery {
+    /// Nothing was due.
+    None,
+    /// The stream was rebuilt; audio flows again.
+    Reopened,
+    /// The device is not back yet; another attempt follows in a few seconds.
+    Waiting,
+}
+
 /// The transport and audio device.
 pub struct Player {
     shared: Arc<Shared>,
@@ -265,11 +276,14 @@ impl Player {
 
     /// Rebuild an abnormally slow ASIO endpoint only after transport and capture are idle.
     /// The input shares the ASIO driver and must be released before rebuilding the output.
-    pub fn recover_idle_asio(&mut self, playing: bool, recording: bool, pending: bool, release_input: impl FnOnce()) {
+    pub fn recover_idle_asio(&mut self, playing: bool, recording: bool, pending: bool, release_input: impl FnOnce()) -> IdleRecovery {
         #[cfg(all(windows, feature = "asio"))]
-        self.recover_idle_stream(playing, recording, pending, release_input);
+        return self.recover_idle_stream(playing, recording, pending, release_input);
         #[cfg(not(all(windows, feature = "asio")))]
-        let _ = (playing, recording, pending, release_input);
+        {
+            let _ = (playing, recording, pending, release_input);
+            IdleRecovery::None
+        }
     }
 
     /// Wait for the original output device before attempting to attach the input.

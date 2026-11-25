@@ -30,7 +30,7 @@ pub(crate) fn recovery_due(slow: bool, playing: bool, recording: bool, pending_t
 #[cfg(all(windows, feature = "asio"))]
 pub(crate) mod native {
     use super::{Cadence, Duration, Instant, recovery_due};
-    use crate::{Arc, AudioState, Fault, Mutex, Ordering, Player, Shared, stream};
+    use crate::{Arc, AudioState, Fault, IdleRecovery, Mutex, Ordering, Player, Shared, stream};
     use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
     use std::sync::atomic::AtomicBool;
 
@@ -85,16 +85,16 @@ pub(crate) mod native {
     }
 
     impl Player {
-        pub(crate) fn recover_idle_stream(&mut self, playing: bool, recording: bool, pending: bool, release_input: impl FnOnce()) {
+        pub(crate) fn recover_idle_stream(&mut self, playing: bool, recording: bool, pending: bool, release_input: impl FnOnce()) -> IdleRecovery {
             let playing = playing || self.is_playing();
-            let Some(recovery) = &mut self.asio_recovery else { return };
+            let Some(recovery) = &mut self.asio_recovery else { return IdleRecovery::None };
             let now = Instant::now();
             if self.fault.failed.load(Ordering::Relaxed) {
-                return;
+                return IdleRecovery::None;
             }
             let slow = self._stream.is_none() || recovery.slow.load(Ordering::Relaxed);
             if !recovery_due(slow, playing, recording, pending, recovery.retry_at, now) {
-                return;
+                return IdleRecovery::None;
             }
             release_input();
             drop(self._stream.take());
@@ -110,8 +110,12 @@ pub(crate) mod native {
                     *self.watch.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = None;
                     *self.asio_watch.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = None;
                     log::info!("Reopened idle ASIO stream on {} after sustained slow callbacks", self.device_name);
+                    IdleRecovery::Reopened
                 }
-                Err(e) => log::warn!("Cannot yet reopen idle ASIO stream on {}: {e}", self.device_name),
+                Err(e) => {
+                    log::warn!("Cannot yet reopen idle ASIO stream on {}: {e}", self.device_name);
+                    IdleRecovery::Waiting
+                }
             }
         }
     }
