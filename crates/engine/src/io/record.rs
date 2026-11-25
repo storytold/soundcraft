@@ -65,8 +65,12 @@ pub fn take_file_samples(rate: u32, session_rate: u32) -> u64 {
 }
 
 /// Place recorded take files as `plan` says, as one undo step ("Record").
+///
+/// A measured delay (`placement_offset > 0`) is applied once, at the take's head: the frames it
+/// holds before `start` are dropped and loop passes split from there, so each pass stays whole.
 pub fn place_recording(e: &mut Engine, plan: &Recording, takes: Vec<(TrackId, PathBuf)>) -> Vec<soundcraft_model::ClipId> {
-    add_recording_in(e, plan.origin(), takes, plan.pass, plan.crop())
+    let lead = plan.placement_offset.max(0);
+    add_recording_in(e, plan.start.max(plan.origin()), lead, takes, plan.pass, plan.crop())
 }
 
 /// Turn recorded take files into clips at `start`, as one undo step ("Record"); each file is the
@@ -77,14 +81,16 @@ pub fn place_recording(e: &mut Engine, plan: &Recording, takes: Vec<(TrackId, Pa
 /// `pass` (loop recording), a take becomes one clip per pass (at most 1000), each pass after the
 /// first on a new playlist.
 pub fn add_recording(e: &mut Engine, start: Samples, takes: Vec<(TrackId, PathBuf)>, pass: Option<Samples>) -> Vec<soundcraft_model::ClipId> {
-    add_recording_in(e, start, takes, pass, None)
+    add_recording_in(e, start, 0, takes, pass, None)
 }
 
 /// [`add_recording`] limited to the `punch` range: each clip is cut to it before it's placed, so
-/// the material around the punch isn't overwritten.
+/// the material around the punch isn't overwritten. The first `lead` frames of each take precede
+/// `start` and are not placed.
 fn add_recording_in(
     e: &mut Engine,
     start: Samples,
+    lead: Samples,
     takes: Vec<(TrackId, PathBuf)>,
     pass: Option<Samples>,
     punch: Option<Range>,
@@ -112,7 +118,7 @@ fn add_recording_in(
             let Ok(file) = read.inspect_err(|err| e.message(err.to_string())) else { break };
             files.push(file);
         }
-        let (clips, problems) = place_take(e.session_mut(), tid, files, start, pass, punch);
+        let (clips, problems) = place_take(e.session_mut(), tid, files, start, lead, pass, punch);
         for problem in problems {
             e.message(problem);
         }
@@ -170,6 +176,7 @@ fn place_take(
     tid: TrackId,
     files: Vec<TakeFile>,
     start: Samples,
+    lead: Samples,
     pass: Option<Samples>,
     punch: Option<Range>,
 ) -> (Vec<soundcraft_model::ClipId>, Vec<String>) {
@@ -188,12 +195,13 @@ fn place_take(
             (f, Range::new(from, len))
         })
         .collect();
-    let pass = pass.unwrap_or(len).max(1);
+    let lead = lead.clamp(0, len);
+    let pass = pass.unwrap_or(len - lead).max(1);
     // Work out what each pass keeps first, so a file nothing is placed from isn't read or registered.
     let mut kept_passes = Vec::new();
-    for offset in (0..len).step_by(usize::try_from(pass).unwrap_or(usize::MAX)).take(1_000) {
+    for offset in (lead..len).step_by(usize::try_from(pass).unwrap_or(usize::MAX)).take(1_000) {
         let n = pass.min(len - offset);
-        if offset > 0 && n < pass / 8 {
+        if offset > lead && n < pass / 8 {
             break;
         }
         let (clip_start, cut, clip_len) = match punch {
@@ -233,7 +241,7 @@ fn place_take(
     }
     let mut out = Vec::new();
     for (offset, kept, clip_start) in kept_passes {
-        if offset > 0
+        if offset > lead
             && let Some(t) = s.track_mut(tid)
         {
             t.playlists.push(soundcraft_model::Playlist::new(format!("{}.{:02}", t.name, t.playlists.len() + 1)));
@@ -554,7 +562,7 @@ mod record_tests {
         let measured = |f: &PathBuf| measure_take_file(f, 48_000).unwrap();
         let mut take: Vec<_> = files.iter().map(measured).collect();
         std::fs::remove_file(&files[2]).unwrap();
-        let (clips, problems) = place_take(e.session_mut(), vox, std::mem::take(&mut take), 0, None, Some(Range::new(100, 500)));
+        let (clips, problems) = place_take(e.session_mut(), vox, std::mem::take(&mut take), 0, 0, None, Some(Range::new(100, 500)));
         assert_eq!((clips.len(), problems), (2, Vec::<String>::new()), "the third file is outside the punch: never read");
         assert_eq!(heard(&e, vox), [vec![0.1, 0.2]]);
 
@@ -563,7 +571,7 @@ mod record_tests {
         write_take_of(&files[2], 300, 0.3);
         let take: Vec<_> = files.iter().map(measured).collect();
         std::fs::remove_file(&files[1]).unwrap();
-        let (clips, problems) = place_take(e.session_mut(), vox, take, 0, None, Some(Range::new(100, 800)));
+        let (clips, problems) = place_take(e.session_mut(), vox, take, 0, 0, None, Some(Range::new(100, 800)));
         assert_eq!(clips.len(), 1, "the take ends at the file that can't be decoded");
         assert!(problems.len() == 1 && problems[0].contains("Vox_01-2.wav"), "{problems:?}");
         assert_eq!(heard(&e, vox), [vec![0.1]]);
@@ -610,6 +618,23 @@ mod record_tests {
         let clip = &e.session().track(track).unwrap().clips()[0];
         assert_eq!((clip.start, clip.source_offset(), clip.length), (0, 128, 1372));
         assert_eq!(live_span(plan.origin(), None, plan.crop(), 1500), Some((-128, Range::new(0, 1372))));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// Loop recording with a measured delay: the delay is taken off the head once, and every pass
+    /// after it is whole, on its own playlist.
+    #[test]
+    fn compensated_loop_passes_stay_whole() {
+        let dir = std::env::temp_dir().join(format!("soundcraft-compensated-loop-{}", std::process::id()));
+        let path = dir.join("Take.wav");
+        write_take(&path, 128 + 3 * 400 + 40);
+        let mut e = Engine::default();
+        let track = armed(&mut e, "Take", "mono", "In 1");
+        let plan = Recording { start: 1_000, pass: Some(400), punch: None, placement_offset: 128, rate: 48_000, takes: vec![] };
+        place_recording(&mut e, &plan, vec![(track, path)]);
+        let t = e.session().track(track).unwrap();
+        let passes: Vec<_> = t.playlists.iter().flat_map(|p| p.clips.iter().map(|c| (c.start, c.source_offset(), c.length))).collect();
+        assert_eq!(passes, [(1_000, 128, 400), (1_000, 528, 400), (1_000, 928, 400)], "the 40-frame tail is under an eighth of a pass");
         let _ = std::fs::remove_dir_all(dir);
     }
 }
