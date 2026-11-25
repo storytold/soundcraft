@@ -15,20 +15,20 @@ pub(super) fn transport_window(app: &mut SoundApp, ctx: &egui::Context) {
             let flags = app.engine.session().edit.flags.clone();
             let expanded = flags.contains("view.transport.expanded");
             ui.horizontal(|ui| {
-                // The names are the Edit toolbar's tooltips, so both transports read the same.
-                for (icon, cmd, name) in [
-                    ("rtz", "transport.rtz", "Return to Zero (Home)"),
-                    ("rewind", "transport.rewind", "Rewind"),
-                    ("stop", "transport.stop", "Stop (Space)"),
-                    ("play", "transport.play", "Play (Space)"),
-                    ("ffwd", "transport.fast_forward", "Fast Forward"),
-                    ("end", "transport.go_to_end", "Go to End (End)"),
-                    ("record", "transport.record", "Record (F12 or Cmd+Space)"),
+                // The same names and keys as the Edit toolbar's transport, so both read the same.
+                for (icon, cmd, name, keys) in [
+                    ("rtz", "transport.rtz", "Return to Zero", &["Home"][..]),
+                    ("rewind", "transport.rewind", "Rewind", &[]),
+                    ("stop", "transport.stop", "Stop", &["Space"]),
+                    ("play", "transport.play", "Play", &["Space"]),
+                    ("ffwd", "transport.fast_forward", "Fast Forward", &[]),
+                    ("end", "transport.go_to_end", "Go to End", &["End"]),
+                    ("record", "transport.record", "Record", &crate::toolbar::RECORD_KEYS),
                 ] {
                     let resp = match cmd {
-                        "transport.play" => crate::widgets::icon_button(ui, vec2(34.0, 26.0), icon, app.is_playing(), name),
-                        "transport.record" => crate::widgets::icon_button(ui, vec2(34.0, 26.0), icon, app.engine.transport.recording, name),
-                        _ => crate::widgets::icon_action(ui, vec2(34.0, 26.0), icon, name),
+                        "transport.play" => crate::widgets::icon_button(ui, vec2(34.0, 26.0), icon, app.is_playing(), name, keys),
+                        "transport.record" => crate::widgets::icon_button(ui, vec2(34.0, 26.0), icon, app.engine.transport.recording, name, keys),
+                        _ => crate::widgets::icon_action(ui, vec2(34.0, 26.0), icon, name, keys),
                     };
                     if cmd == "transport.record"
                         && let Some(why) = app.record_hint()

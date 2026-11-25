@@ -1,7 +1,7 @@
 //! The Edit window toolbar.
 
 use crate::theme::{Tokens, bold, mono, regular};
-use crate::widgets::{expose_button, expose_menu_button, expose_toggle, icon_action, icon_button, key, key_fill};
+use crate::widgets::{expose_button, expose_menu_button, expose_toggle, icon_action, icon_button, key, key_fill, with_shortcut};
 use crate::{SoundApp, icons};
 use egui::{Align2, Color32, CornerRadius, Painter, Rect, Sense, Stroke, StrokeKind, Ui, pos2, vec2};
 use serde_json::json;
@@ -10,6 +10,9 @@ use soundcraft_model::{EditMode, EditState, Session, Tool};
 use soundcraft_time::{FeetFramesValue, GridScale, GridValue, NoteValue, TimeFormat, TimecodeValue, format_length};
 
 pub const HEIGHT: f32 = 78.0;
+
+/// Record's keys, F12 first: macOS gives Cmd+Space to Spotlight unless the user frees it.
+pub(crate) const RECORD_KEYS: [&str; 2] = ["F12", "Cmd+Space"];
 
 fn group(ui: &mut Ui, w: f32, h: f32, add: impl FnOnce(&mut Ui, Rect)) {
     let t = Tokens::current();
@@ -140,31 +143,26 @@ fn zoom_group(app: &mut SoundApp, ui: &mut Ui) {
             ui.spacing_mut().item_spacing = vec2(2.0, 3.0);
             ui.horizontal(|ui| {
                 ui.spacing_mut().item_spacing.x = 2.0;
-                if icon_action(ui, vec2(28.0, 22.0), "minus", "Zoom out (Cmd+[)").clicked() {
+                if icon_action(ui, vec2(28.0, 22.0), "minus", "Zoom Out", &["Cmd+["]).clicked() {
                     let _ = app.run("view.zoom_out", json!({}));
                 }
-                if icon_action(ui, vec2(30.0, 22.0), "wave", "Waveform zoom in (Cmd+Alt+])").clicked() {
+                if icon_action(ui, vec2(30.0, 22.0), "wave", "Waveform Zoom In", &["Cmd+Alt+]"]).clicked() {
                     let _ = app.run("view.waveform_zoom", json!({"factor": 2.0}));
                 }
-                if icon_action(ui, vec2(28.0, 22.0), "plus", "Zoom in (Cmd+])").clicked() {
+                if icon_action(ui, vec2(28.0, 22.0), "plus", "Zoom In", &["Cmd+]"]).clicked() {
                     let _ = app.run("view.zoom_in", json!({}));
                 }
-                if icon_action(ui, vec2(28.0, 22.0), "zoom", "Fill window with session (Alt+A)").clicked() {
+                if icon_action(ui, vec2(28.0, 22.0), "zoom", "Fill Window With Session", &["Alt+A"]).clicked() {
                     let w = ui.ctx().content_rect().width() - 420.0;
                     let _ = app.run("view.zoom_fit", json!({"width_px": w}));
                 }
             });
             ui.horizontal(|ui| {
                 ui.spacing_mut().item_spacing.x = 2.0;
+                let cmd = crate::shortcuts::shortcut_label("Cmd", ui.ctx().os().is_mac());
+                let preset_tip = crate::localized_format!("Zoom preset (click to recall, {cmd}-click to store)", cmd = cmd);
                 for i in 1..=5 {
-                    let r = crate::widgets::text_toggle(
-                        ui,
-                        vec2(22.0, 18.0),
-                        &i.to_string(),
-                        false,
-                        Color32::GRAY,
-                        crate::localization::text("Zoom preset (click to recall, Cmd-click to store)"),
-                    );
+                    let r = crate::widgets::text_toggle(ui, vec2(22.0, 18.0), &i.to_string(), false, Color32::GRAY, &preset_tip);
                     // Each preset is named by its number, so the five are told apart; recalling one sets no state.
                     let r = crate::widgets::as_push_button(r);
                     expose_button(&r, &format!("{} {i}", crate::localization::text("Zoom Preset")));
@@ -187,7 +185,8 @@ fn tools(app: &mut SoundApp, ui: &mut Ui) {
             ui.spacing_mut().item_spacing = vec2(2.0, 3.0);
             let row = ui.horizontal(|ui| {
                 ui.spacing_mut().item_spacing.x = 2.0;
-                if icon_button(ui, vec2(36.0, 26.0), "zoom_toggle", app.engine.session().edit.zoom_toggle.is_some(), "Zoom Toggle (E)").clicked() {
+                if icon_button(ui, vec2(36.0, 26.0), "zoom_toggle", app.engine.session().edit.zoom_toggle.is_some(), "Zoom Toggle", &["E"]).clicked()
+                {
                     crate::edit_window::zoom_toggle(app);
                 }
                 for (tool, icon) in [
@@ -199,8 +198,8 @@ fn tools(app: &mut SoundApp, ui: &mut Ui) {
                     (Tool::Pencil, "pencil"),
                 ] {
                     let smart_member = cur == Tool::Smart && matches!(tool, Tool::Trim | Tool::Selector | Tool::Grabber);
-                    let tip = format!("{}{}", crate::localization::text(tool.label()), tool.fkey().map(|k| format!(" ({k})")).unwrap_or_default());
-                    if icon_button(ui, vec2(36.0, 26.0), icon, cur == tool || smart_member, &tip).clicked() {
+                    let keys: Vec<&str> = tool.fkey().into_iter().collect();
+                    if icon_button(ui, vec2(36.0, 26.0), icon, cur == tool || smart_member, tool.label(), &keys).clicked() {
                         let _ = app.run("edit.tool", json!({"tool": tool.id()}));
                     }
                 }
@@ -212,15 +211,17 @@ fn tools(app: &mut SoundApp, ui: &mut Ui) {
             let bracket = Rect::from_min_max(pos2(bx0 - 2.0, r.min.y + 1.0), pos2(bx1 + 2.0, r.min.y + 5.0));
             let resp = ui.interact(bracket.expand2(vec2(0.0, 2.0)), ui.scope_id().with("smart"), Sense::click());
             ui.painter().rect_filled(bracket, 1.0, if cur == Tool::Smart { t.accent } else { t.tool_bracket_off });
-            expose_toggle(&resp, crate::localization::text("Smart Tool"), cur == Tool::Smart);
-            if resp.on_hover_text(crate::localization::text("Smart Tool (F6+F7 / F7+F8)")).clicked() {
+            let name = crate::localization::text("Smart Tool");
+            expose_toggle(&resp, name, cur == Tool::Smart);
+            let tip = with_shortcut(&resp, name, &["F6+F7 / F7+F8"]);
+            if resp.on_hover_text(tip).clicked() {
                 let _ = app.run("edit.tool", json!({"tool": "smart"}));
             }
             ui.horizontal(|ui| {
                 ui.spacing_mut().item_spacing.x = 2.0;
                 let e = app.engine.session().edit.clone();
                 for (id, icon, on, tip) in option_toggles(&e) {
-                    if icon_button(ui, vec2(36.0, 18.0), icon, on, tip).clicked() {
+                    if icon_button(ui, vec2(36.0, 18.0), icon, on, tip, &[]).clicked() {
                         let _ = app.run(id, json!({}));
                     }
                 }
@@ -597,29 +598,34 @@ fn transport(app: &mut SoundApp, ui: &mut Ui) {
             ui.spacing_mut().item_spacing = vec2(3.0, 4.0);
             ui.horizontal(|ui| {
                 ui.spacing_mut().item_spacing.x = 3.0;
-                if icon_button(ui, vec2(38.0, 28.0), "loop", looped, "Loop Playback (Cmd+Shift+L)").clicked() {
+                if icon_button(ui, vec2(38.0, 28.0), "loop", looped, "Loop Playback", &["Cmd+Shift+L"]).clicked() {
                     let _ = app.run("options.loop_playback", json!({}));
                 }
                 let (r, resp) = ui.allocate_exact_size(vec2(38.0, 28.0), Sense::click());
                 key(ui.painter(), r, &resp, key_fill(&resp));
                 icons::draw(ui.painter(), r.shrink(5.0), "stop", if playing { t.text } else { t.accent });
-                expose_button(&resp, crate::localization::text("Stop"));
-                if resp.on_hover_text(crate::localization::text("Stop (Space)")).clicked() {
+                let name = crate::localization::text("Stop");
+                expose_button(&resp, name);
+                let tip = with_shortcut(&resp, name, &["Space"]);
+                if resp.on_hover_text(tip).clicked() {
                     let _ = app.run("transport.stop", json!({}));
                 }
                 let (r, resp) = ui.allocate_exact_size(vec2(38.0, 28.0), Sense::click());
                 key(ui.painter(), r, &resp, if playing { Color32::from_rgb(40, 90, 50) } else { key_fill(&resp) });
                 icons::draw(ui.painter(), r.shrink(5.0), "play", if playing { Color32::from_rgb(120, 255, 140) } else { t.counter_text });
-                expose_toggle(&resp, crate::localization::text("Play"), playing);
-                if resp.on_hover_text(crate::localization::text("Play (Space)")).clicked() {
+                let name = crate::localization::text("Play");
+                expose_toggle(&resp, name, playing);
+                let tip = with_shortcut(&resp, name, &["Space"]);
+                if resp.on_hover_text(tip).clicked() {
                     let _ = app.run("transport.play", json!({}));
                 }
                 let (r, resp) = ui.allocate_exact_size(vec2(38.0, 28.0), Sense::click());
                 key(ui.painter(), r, &resp, if recording { Color32::from_rgb(110, 30, 30) } else { key_fill(&resp) });
                 icons::draw(ui.painter(), r.shrink(5.0), "record", t.rec);
-                expose_toggle(&resp, crate::localization::text("Record"), recording);
-                // macOS gives Cmd+Space to Spotlight unless the user frees it, so name F12 first.
-                let resp = resp.on_hover_text(crate::localization::text("Record (F12 or Cmd+Space)"));
+                let name = crate::localization::text("Record");
+                expose_toggle(&resp, name, recording);
+                let tip = with_shortcut(&resp, name, &RECORD_KEYS);
+                let resp = resp.on_hover_text(tip);
                 if let Some(why) = app.record_hint() {
                     // Below the whole group, so the hint covers none of its buttons.
                     let below = Rect::from_min_max(r.min, pos2(r.max.x, g.max.y));
@@ -631,13 +637,13 @@ fn transport(app: &mut SoundApp, ui: &mut Ui) {
             });
             ui.horizontal(|ui| {
                 ui.spacing_mut().item_spacing.x = 3.0;
-                for (icon, cmd, tip) in [
-                    ("rtz", "transport.rtz", "Return to Zero (Home)"),
-                    ("rewind", "transport.rewind", "Rewind"),
-                    ("ffwd", "transport.fast_forward", "Fast Forward"),
-                    ("end", "transport.go_to_end", "Go to End (End)"),
+                for (icon, cmd, label, keys) in [
+                    ("rtz", "transport.rtz", "Return to Zero", &["Home"][..]),
+                    ("rewind", "transport.rewind", "Rewind", &[]),
+                    ("ffwd", "transport.fast_forward", "Fast Forward", &[]),
+                    ("end", "transport.go_to_end", "Go to End", &["End"]),
                 ] {
-                    if icon_action(ui, vec2(38.0, 22.0), icon, tip).clicked() {
+                    if icon_action(ui, vec2(38.0, 22.0), icon, label, keys).clicked() {
                         let _ = app.run(cmd, json!({}));
                     }
                 }
