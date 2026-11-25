@@ -861,8 +861,12 @@ fn output_paths(app: &mut SoundApp, ui: &mut egui::Ui) {
     let channels = app.player.as_ref().map_or(0, |player| player.device_channels);
     let names = app.player.as_ref().map(|player| player.device_channel_names.clone()).unwrap_or_default();
     if ui.button(crate::localization::text("New Output")).clicked() {
-        let name =
-            (1..=paths.len() + 1).map(|index| format!("Output {index}")).find(|name| !paths.iter().any(|path| path.name.eq_ignore_ascii_case(name)));
+        // Output and bus names share one namespace (a route names either).
+        let busses = &app.engine.session().busses;
+        let taken = |name: &str| {
+            paths.iter().any(|path| path.name.eq_ignore_ascii_case(name)) || busses.iter().any(|bus| bus.name.eq_ignore_ascii_case(name))
+        };
+        let name = (1..=paths.len() + busses.len() + 1).map(|index| format!("Output {index}")).find(|name| !taken(name));
         if let Some(name) = name {
             let first = (0..channels)
                 .find(|channel| {
@@ -883,15 +887,18 @@ fn output_paths(app: &mut SoundApp, ui: &mut egui::Ui) {
             ui.label("");
             ui.end_row();
             for (index, path) in paths.iter().enumerate() {
+                // The path's name as of this frame's commands: a rename below changes it.
+                let mut row_name = path.name.clone();
                 ui.push_id(index, |ui| {
                     let id = ui.scope_id().with(("output_name", &path.name));
                     let mut name: String = ui.ctx().memory(|memory| memory.data.get_temp(id)).unwrap_or_else(|| path.name.clone());
                     let field = ui.add_sized([155.0, ui.spacing().interact_size.y], egui::TextEdit::singleline(&mut name));
                     let edit = crate::widgets::named_text_field(field, crate::localization::text("Output path name"));
                     ui.ctx().memory_mut(|memory| memory.data.insert_temp(id, name.clone()));
-                    if edit.lost_focus() && name != path.name {
-                        if let Err(error) = app.run("setup.io", json!({"action": "rename_output", "name": path.name, "new_name": name})) {
-                            app.ui.status = error;
+                    if edit.lost_focus() && name != row_name {
+                        match app.run("setup.io", json!({"action": "rename_output", "name": row_name, "new_name": name})) {
+                            Ok(_) => row_name = name.trim().to_string(),
+                            Err(error) => app.ui.status = error,
                         }
                         ui.ctx().memory_mut(|memory| memory.data.remove::<String>(id));
                     }
@@ -924,7 +931,7 @@ fn output_paths(app: &mut SoundApp, ui: &mut egui::Ui) {
                     })
                     .inner;
                 if (channel.changed() || (index != 0 && format != path.format)) && first > 0 {
-                    let mut args = json!({"action": "set_output", "name": path.name, "first_channel": first - 1});
+                    let mut args = json!({"action": "set_output", "name": row_name, "first_channel": first - 1});
                     if index != 0 {
                         args["format"] = json!(format.label());
                     }
@@ -935,7 +942,7 @@ fn output_paths(app: &mut SoundApp, ui: &mut egui::Ui) {
                         ui.label(crate::localization::text(if index == 0 { "Playing from channel 1" } else { "Unavailable" }));
                     }
                     if index != 0 && ui.small_button(crate::localization::text("Delete")).clicked() {
-                        let _ = app.run("setup.io", json!({"action": "delete_output", "name": path.name}));
+                        let _ = app.run("setup.io", json!({"action": "delete_output", "name": row_name}));
                     }
                 });
                 ui.end_row();
