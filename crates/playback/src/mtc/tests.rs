@@ -52,7 +52,9 @@ fn generated_timecode_counts_audio_samples_when_device_and_host_clocks_differ() 
         b.samples_per_second = actual_hz;
         let mut ordinal = 0_u32;
         let mut locates = 0;
-        for ms in (0..=600_002).step_by(2) {
+        // Poll every millisecond: a quarter frame is never handed off more than
+        // QUARTER_FRAME_LATENESS after its grid time, so none is skipped.
+        for ms in 0..=600_002 {
             encoder.update(b, first + Duration::from_millis(ms), &song, &mut |at, bytes| {
                 if bytes[0] == 0xf0 {
                     locates += 1;
@@ -88,6 +90,50 @@ fn slightly_late_first_presentation_never_bunches_quarter_frames() {
     }
     let min_qf = qfs.windows(2).map(|p| p[1] - p[0]).min().unwrap();
     assert!(min_qf >= 8_100, "minimum QF spacing {min_qf} us");
+}
+
+#[test]
+fn a_late_wake_skips_to_the_next_group_instead_of_bunching_quarter_frames() {
+    use crate::sync_clock::SyncEncoder;
+    // 25 fps: a quarter frame is 10 ms (480 samples at 48 kHz).
+    let song = session(FrameRate::Fps25);
+    let first = Instant::now();
+    let b = block(first, 0, 48_000, true, 1);
+    let quarter = Duration::from_millis(10);
+    // The worker first wakes 9 ms after the origin, then on time except for one wake 5 ms
+    // late in the middle of the second group it sends.
+    let mut mtc = Encoder::default();
+    let mut qfs = Vec::new();
+    let mut now = first + Duration::from_millis(9);
+    let mut delayed = false;
+    while now < first + Duration::from_millis(400) {
+        let next = mtc.update(b, now, &song, &mut |at, msg| {
+            if msg[0] == 0xf1 {
+                qfs.push((now, at, msg[1] >> 4));
+            }
+        });
+        let Some(mut next) = next else { break };
+        if !delayed && qfs.len() == 11 {
+            delayed = true;
+            next += Duration::from_millis(5);
+        }
+        now = next;
+    }
+    assert!(delayed);
+    for pair in qfs.windows(2) {
+        let gap = pair[1].0 - pair[0].0;
+        assert!(gap >= quarter - QUARTER_FRAME_LATENESS, "quarter frames {gap:?} apart: {qfs:?}");
+    }
+    // Every handoff is on its grid time and each run of pieces starts a whole group.
+    let ms = |at: Instant| (at - first).as_secs_f64() * 1e3;
+    for &(handed, at, _) in &qfs {
+        assert!(handed - at <= QUARTER_FRAME_LATENESS, "{qfs:?}");
+        assert!((ms(at) / 10. - (ms(at) / 10.).round()).abs() < 1e-6, "{qfs:?}");
+    }
+    assert!((ms(qfs[0].1) - 80.).abs() < 1e-6 && qfs[0].2 == 0, "{qfs:?}");
+    let resumed = qfs.windows(2).position(|p| p[1].1 - p[0].1 > quarter + Duration::from_micros(1)).expect("the late wake skipped pieces") + 1;
+    assert!((ms(qfs[resumed].1) - 240.).abs() < 1e-6 && qfs[resumed].2 == 0, "{qfs:?}");
+    assert!(mtc.stale > 0);
 }
 
 #[test]
