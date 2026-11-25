@@ -307,6 +307,9 @@ impl AudioState {
                         self.halt();
                     }
                 }
+                // While chasing, incoming timecode owns the cursor. A local locate ends chase
+                // first (EndChase), so a locate that finds a roll here is a stale observation.
+                Cmd::Locate(_) if self.chasing => {}
                 Cmd::Locate(at) => {
                     self.pos = at;
                     #[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
