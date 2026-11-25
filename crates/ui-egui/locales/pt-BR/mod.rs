@@ -210,10 +210,16 @@ pub(super) fn translate(source: &str) -> Option<&'static str> {
         "Offset (samples)" => "Deslocamento (amostras)",
         "The saved MIDI output is unavailable." => "A saída MIDI salva não está disponível.",
         "Limited by the audio output lead ({lead} ms)" => "Limitado pela antecipação da saída de áudio ({lead} ms)",
-        "Audio output “{name}” is unavailable. Reconnect it in Playback Engine when stopped." => "A saída de áudio “{name}” não está disponível. Reconecte-a no Mecanismo de reprodução com o transporte parado.",
-        "Audio output timing is unavailable. Compensated MIDI outputs need a valid measurement." => "A temporização da saída de áudio não está disponível. As saídas MIDI compensadas precisam de uma medição válida.",
+        "Audio output “{name}” is unavailable. Reconnect it in Playback Engine when stopped." => {
+            "A saída de áudio “{name}” não está disponível. Reconecte-a no Mecanismo de reprodução com o transporte parado."
+        }
+        "Audio output timing is unavailable. Compensated MIDI outputs need a valid measurement." => {
+            "A temporização da saída de áudio não está disponível. As saídas MIDI compensadas precisam de uma medição válida."
+        }
         "Stop playback or recording before reconnecting this output." => "Pare a reprodução ou a gravação antes de reconectar esta saída.",
-        "Include the reported audio output lead and the mixer's compensated plug-in delay." => "Incluir a antecipação informada da saída de áudio e o atraso de plug-in compensado do mixer.",
+        "Include the reported audio output lead and the mixer's compensated plug-in delay." => {
+            "Incluir a antecipação informada da saída de áudio e o atraso de plug-in compensado do mixer."
+        }
         "Refresh Report" => "Atualizar relatório",
         "Remove from Folder" => "Remover da pasta",
         "Remove send" => "Remover envio",
@@ -289,6 +295,24 @@ pub(super) fn translate(source: &str) -> Option<&'static str> {
         "Time Scale" => "Escala de tempo",
         "Timecode burn-in" => "Sobreposição de timecode",
         "Timecode Rate" => "Taxa de timecode",
+        "External Timecode Offset" => "Deslocamento externo de timecode",
+        "Session Start" => "Início da sessão",
+        "Freewheel" => "Roda livre",
+        "Freewheel (frames)" => "Roda livre (quadros)",
+        "No timecode received" => "Nenhum timecode recebido",
+        "Received timecode" => "Timecode recebido",
+        "Use received position" => "Usar a posição recebida",
+        "When changing the session start" => "Ao alterar o início da sessão",
+        "MTC Generator Port" => "Porta do gerador de MTC",
+        "MTC Reader Port" => "Porta do leitor de MTC",
+        "Online (chase MTC)" => "Conectado (seguir MTC)",
+        "Online" => "Conectado",
+        "Gen MTC" => "Gerar MTC",
+        "Enter position…" => "Inserir posição…",
+        "Receiving {incoming} fps; session is {session} fps" => "Recebendo {incoming} qps; a sessão está em {session} qps",
+        "Take MTC chase offline before recording" => "Desconecte o seguimento de MTC antes de gravar",
+        "The session has conflicting timecode offsets. Chase uses the External Timecode Offset." => "A sessão tem deslocamentos de timecode conflitantes. O seguimento usa o deslocamento externo de timecode.",
+        "Cannot record MIDI: open an audio output in Setup > Playback Engine to start the audio engine." => "Não é possível gravar MIDI: abra uma saída de áudio em Configuração > Mecanismo de reprodução para iniciar o mecanismo de áudio.",
         "Title" => "Título",
         "Track Color" => "Cor da faixa",
         "Track Height" => "Altura da faixa",
