@@ -155,6 +155,20 @@ fn spike_session(spike_at: usize) -> (Arc<Shared>, AudioState, std::sync::mpsc::
 }
 
 #[test]
+fn recording_clock_arms_once_only_when_play_starts_with_recording_on() {
+    let (_, mut audio, tx, _) = spike_session(0);
+    let mut out = [0.0; 64];
+    audio.fill(&mut out, 2);
+    assert!(!audio.started_now);
+    tx.send(Cmd::Recording(true, 0)).unwrap();
+    tx.send(Cmd::Play { from: 0, end: None, looped: None }).unwrap();
+    audio.fill(&mut out, 2);
+    assert!(audio.started_now);
+    audio.fill(&mut out, 2);
+    assert!(!audio.started_now);
+}
+
+#[test]
 fn a_spike_in_one_block_among_quiet_ones_reaches_the_ui() {
     // Eight 512-frame blocks per callback, as between two UI polls; the spike is in the 3rd.
     let (shared, mut st, _tx, t) = spike_session(2 * 512 + 100);

@@ -31,6 +31,7 @@ pub fn loops(range: Range) -> bool {
 pub mod devices;
 pub mod midi;
 pub mod record;
+mod record_clock;
 
 pub use devices::AudioConfig;
 
@@ -220,7 +221,7 @@ impl Player {
             && reuses_output_device(cfg.input.as_deref(), &self.device_name)
         {
             let buffer = self.device_buffer.map_or(cpal::BufferSize::Default, cpal::BufferSize::Fixed);
-            return record::Recorder::open_on_device(device, cfg, Some((self.device_rate, buffer)));
+            return record::Recorder::open_synced(device, cfg, (self.device_rate, buffer), Arc::clone(&self.fault.record_clock));
         }
         record::Recorder::open_with(cfg).map_err(Into::into)
     }

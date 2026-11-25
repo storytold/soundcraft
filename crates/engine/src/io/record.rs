@@ -11,9 +11,24 @@ pub struct Recording {
     pub start: Samples,
     pub pass: Option<Samples>,
     pub punch: Option<Range>,
+    /// Measured device and callback delay in session samples. Older recovery plans start at zero correction.
+    #[serde(default)]
+    pub placement_offset: Samples,
     /// The input's sample rate, which the take files are written at.
     pub rate: u32,
     pub takes: Vec<Take>,
+}
+
+impl Recording {
+    /// Where the take's first sample belongs on the timeline, after the measured delay.
+    pub fn origin(&self) -> Samples {
+        self.start.saturating_sub(self.placement_offset)
+    }
+
+    /// Keep leading capture from replacing material before the requested start.
+    pub fn crop(&self) -> Option<Range> {
+        self.punch.or_else(|| (self.placement_offset > 0).then(|| Range::new(self.start, soundcraft_time::MAX_POSITION)))
+    }
 }
 
 /// One track's take file.
@@ -51,7 +66,7 @@ pub fn take_file_samples(rate: u32, session_rate: u32) -> u64 {
 
 /// Place recorded take files as `plan` says, as one undo step ("Record").
 pub fn place_recording(e: &mut Engine, plan: &Recording, takes: Vec<(TrackId, PathBuf)>) -> Vec<soundcraft_model::ClipId> {
-    add_recording_in(e, plan.start, takes, plan.pass, plan.punch)
+    add_recording_in(e, plan.origin(), takes, plan.pass, plan.crop())
 }
 
 /// Turn recorded take files into clips at `start`, as one undo step ("Record"); each file is the
@@ -323,6 +338,7 @@ mod record_tests {
             start: 1_000,
             pass: None,
             punch: Some(Range::new(1_400, 1_600)),
+            placement_offset: 0,
             rate: 48_000,
             takes: vec![Take { track: vox, path: take.clone(), channels: 1 }],
         };
@@ -353,6 +369,7 @@ mod record_tests {
             start: 1_000,
             pass: None,
             punch: Some(Range::new(5_000, 6_000)),
+            placement_offset: 0,
             rate: 48_000,
             takes: vec![Take { track: vox, path: take.clone(), channels: 1 }],
         };
@@ -394,7 +411,8 @@ mod record_tests {
         e.execute("edit.undo", &json!({})).unwrap();
 
         let sources = e.session().sources.len();
-        let plan = Recording { start: 1_000, pass: None, punch: Some(Range::new(1_800, 2_200)), rate: 48_000, takes: Vec::new() };
+        let plan =
+            Recording { start: 1_000, pass: None, punch: Some(Range::new(1_800, 2_200)), placement_offset: 0, rate: 48_000, takes: Vec::new() };
         place_recording(&mut e, &plan, takes);
         assert_eq!(passes(&e, vox), [vec![("Vox_01".into(), 1_800, 200, 800), ("Vox_01-2".into(), 2_000, 200, 0)]]);
         assert_eq!(e.session().sources.len(), sources + 2, "the third file holds nothing inside the punch");
@@ -468,7 +486,7 @@ mod record_tests {
         e.execute("edit.undo", &json!({})).unwrap();
         // a punch over the second and third files: only they are read and placed
         let sources = e.session().sources.len();
-        let plan = Recording { start: 0, pass: None, punch: Some(Range::new(1_500, 1_900)), rate: 48_000, takes: Vec::new() };
+        let plan = Recording { start: 0, pass: None, punch: Some(Range::new(1_500, 1_900)), placement_offset: 0, rate: 48_000, takes: Vec::new() };
         place_recording(&mut e, &plan, takes);
         assert_eq!(heard(&e, vox), [vec![0.2, 0.3]]);
         assert_eq!(passes(&e, vox), [vec![("Vox_01-2".into(), 1_500, 200, 500), ("Vox_01-3".into(), 1_700, 200, 0)]]);
@@ -493,7 +511,7 @@ mod record_tests {
         add_recording(&mut e, 0, takes.clone(), None);
         assert_eq!(heard(&e, vox), [vec![0.1]]);
         e.execute("edit.undo", &json!({})).unwrap();
-        let plan = Recording { start: 0, pass: None, punch: Some(Range::new(500, 5_000)), rate: 48_000, takes: Vec::new() };
+        let plan = Recording { start: 0, pass: None, punch: Some(Range::new(500, 5_000)), placement_offset: 0, rate: 48_000, takes: Vec::new() };
         place_recording(&mut e, &plan, takes);
         assert_eq!(passes(&e, vox), [vec![("Vox_01".into(), 500, 500, 500)]]);
         let _ = std::fs::remove_dir_all(&dir);
@@ -573,5 +591,25 @@ mod record_tests {
         let punch = Some(Range::new(1_200, 1_400));
         assert_eq!(live_span(1_000, None, punch, 150), None);
         assert_eq!(live_span(1_000, None, punch, 500), Some((1_000, Range::new(1_200, 1_400))));
+    }
+
+    #[test]
+    fn compensated_origin_is_used_before_punch_crop_and_can_precede_session_zero() {
+        let dir = std::env::temp_dir().join(format!("soundcraft-compensated-{}", std::process::id()));
+        let path = dir.join("Take.wav");
+        write_take(&path, 1_500);
+        let mut e = Engine::default();
+        let track = armed(&mut e, "Take", "mono", "In 1");
+        let mut plan = Recording { start: 0, pass: None, punch: Some(Range::new(400, 1000)), placement_offset: 128, rate: 48_000, takes: vec![] };
+        place_recording(&mut e, &plan, vec![(track, path.clone())]);
+        let clip = &e.session().track(track).unwrap().clips()[0];
+        assert_eq!((clip.start, clip.source_offset(), clip.length), (400, 528, 600));
+        e.execute("edit.undo", &json!({})).unwrap();
+        plan.punch = None;
+        place_recording(&mut e, &plan, vec![(track, path)]);
+        let clip = &e.session().track(track).unwrap().clips()[0];
+        assert_eq!((clip.start, clip.source_offset(), clip.length), (0, 128, 1372));
+        assert_eq!(live_span(plan.origin(), None, plan.crop(), 1500), Some((-128, Range::new(0, 1372))));
+        let _ = std::fs::remove_dir_all(dir);
     }
 }
