@@ -1751,6 +1751,35 @@ fn an_editor_edit_reported_before_a_document_replacement_stays_out_of_the_new_do
     assert_eq!(cutoff(&app, keys), 500.0);
 }
 
+#[test]
+fn a_midi_move_during_a_native_instrument_gesture_survives_the_gesture_end() {
+    use std::cell::{Cell, RefCell};
+    use std::rc::Rc;
+    let ctx = egui::Context::default();
+    let mut app = SoundApp::new(soundcraft_engine::demo::demo_engine(), None, Services::default());
+    let keys = app.engine.session().track_by_name("Keys").unwrap().id;
+    let inputs = soundcraft_playback::midi::MidiInputs::with_port_names(vec![], vec!["Controller".into()]);
+    let feed = std::sync::Arc::clone(inputs.feed());
+    let port = feed.ports().assign("Controller");
+    app.midi_inputs = Some(inputs);
+    let target = json!({"track": keys, "parameter": {"plugin": {"slot": null, "plugin": "subtractive_synth", "id": "cutoff"}}});
+    app.run("midi.learn.bind", json!({"target": target, "source": {"device": "Controller", "channel": 1, "cc": 20}})).unwrap();
+    let reports = Rc::new(RefCell::new(Vec::<soundcraft_playback::EditorEdit>::new()));
+    let (latest, polls, captures) = (Rc::new(Cell::new(1u8)), Rc::new(Cell::new(0)), Rc::new(RefCell::new(Vec::new())));
+    app.editor_poll_fixture = Some(poll_fixture(&reports, &latest, &polls, &captures));
+    reports.borrow_mut().push((keys, soundcraft_mix::INSTRUMENT_SLOT, "cutoff".into(), 100.0));
+    editor_poll_frame(&mut app, &ctx);
+    // The native gesture goes on with another parameter while the knob moves the cutoff.
+    reports.borrow_mut().push((keys, soundcraft_mix::INSTRUMENT_SLOT, "resonance".into(), 30.0));
+    feed.receive(port, &[0xb0, 20, 127]);
+    editor_poll_frame(&mut app, &ctx);
+    let moved = cutoff(&app, keys);
+    assert_ne!(moved, 100.0);
+    editor_poll_frame(&mut app, &ctx);
+    assert!(app.editor_states.is_empty(), "the native gesture ended");
+    assert_eq!(cutoff(&app, keys), moved);
+}
+
 /// The engine's revision, undo history and journal are as they were.
 fn assert_history_unchanged(
     app: &SoundApp,
