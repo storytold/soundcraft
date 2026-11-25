@@ -91,7 +91,7 @@ Choose **Edit Parameters…** from the instrument or insert menu. In the SoundCr
 
 The assigned CC goes to the mixer. Notes, other channels and unassigned controls still reach monitored instruments and MIDI takes. During Learn, the first eligible unassigned knob is reserved immediately. Switch pedals (64–69), bank select (0/32), data entry (6/38), RPN/NRPN (98–101), increment/decrement (96/97) and channel-mode messages (120–127) stay on the performance path. An instrument keeps the last value it received from a newly assigned CC. Before learning a modulation wheel or expression pedal, return it to the value you want the instrument to keep.
 
-A knob turn ends after 300 ms after its last value change. A repeated absolute value leaves the timeout unchanged. Overlapping turns share one undo step. Volume reaches unity at 95 and pan centers at 64. During playback, track Volume, track Pan and Send Level write automation. Touch ends at release. Latch and Touch/Latch continue a ride until Stop. Write records throughout the pass. MIDI moves of Send Pan, Mute and Solo change the live mix without writing automation points.
+A knob turn ends after 300 ms after its last value change. A repeated absolute value leaves the timeout unchanged. Overlapping turns share one undo step. Volume reaches unity at 95 and pan centers at 64. During playback, track Volume, track Pan and Send Level write automation on tracks in Touch, Latch, Touch/Latch or Write mode; in Off, Read or Trim mode they change the live mix only. Touch ends at release. Latch and Touch/Latch continue a ride until Stop. Write records throughout the pass. MIDI moves of Send Pan, Mute and Solo change the live mix without writing automation points.
 
 ## If something is lost
 
