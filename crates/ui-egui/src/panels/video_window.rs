@@ -51,8 +51,15 @@ fn draw_video_surface(app: &SoundApp, painter: &egui::Painter, img: Rect, pic: O
         }
     };
     if let Some(m) = msg {
-        painter.text(img.center(), Align2::CENTER_CENTER, m, regular(12.0), Color32::from_gray(170));
+        let text = message_galley(painter, m, img);
+        painter.galley(img.center() - text.size() / 2.0, text, Color32::from_gray(170));
     }
+}
+
+/// A message over the picture (offline, unsupported, an error), wrapped to the picture's width so
+/// a long reason stays readable in a small window (#1756).
+fn message_galley(painter: &egui::Painter, message: String, img: Rect) -> std::sync::Arc<egui::Galley> {
+    painter.layout(message, regular(12.0), Color32::from_gray(170), (img.width() - 16.0).max(32.0))
 }
 
 fn video(app: &mut SoundApp, ctx: &egui::Context) {
@@ -215,7 +222,23 @@ fn universe(app: &mut SoundApp, ctx: &egui::Context) {
 
 #[cfg(test)]
 mod tests {
-    use super::{strip_position, thumb_xs};
+    use super::{message_galley, strip_position, thumb_xs};
+
+    /// The unsupported-codec reason, as `craft-video` words it for HEVC, fits a narrow picture.
+    #[test]
+    fn a_long_message_wraps_to_the_picture_width() {
+        let message = "unsupported: hevc pictures are not supported yet (H.264, ProRes and Motion JPEG are)".to_string();
+        let img = egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(240.0, 135.0));
+        let ctx = egui::Context::default();
+        let mut out = ctx.run_ui(egui::RawInput::default(), |ui| {
+            let painter = ui.painter();
+            let text = message_galley(painter, message.clone(), img);
+            assert!(text.size().x <= img.width(), "{} wider than {}", text.size().x, img.width());
+            assert!(text.rows.len() > 1, "wrapped onto more than one line");
+            assert_eq!(text.text(), message, "nothing is cut");
+        });
+        out.textures_delta.clear();
+    }
 
     #[test]
     fn thumbnails_of_a_clip_far_left_of_the_strip_are_evenly_spaced() {
