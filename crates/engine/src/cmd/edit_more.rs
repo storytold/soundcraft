@@ -493,7 +493,11 @@ fn paste_merge_midi(e: &mut Engine, p: &Value) -> Result<Value> {
                         && let ClipContent::Midi { sequence: hs } = &mut h.content
                     {
                         let take = if let Some((score, take)) = composed {
+                            // The composed score carries notes and controllers only. Like the
+                            // ordinary merge, keep the host's SysEx packets where they are.
+                            let sysex = std::mem::take(&mut hs.sysex);
                             *hs = score;
+                            hs.sysex = sysex;
                             Some(take)
                         } else {
                             let diff = tempo.samples_to_ticks(pos, sr) - tempo.samples_to_ticks(hstart, sr);
