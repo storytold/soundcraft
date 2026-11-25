@@ -648,7 +648,7 @@ impl LiveDocks {
 }
 
 /// Gives the session view, drawn in `rect`, the keyboard focus on a press in it, when it opens or shows another
-/// document, and when its focus went nowhere (a press on a control that takes none, a dialog that closed). It waits for
+/// document, and when its focus went nowhere (a dialog that closed). It waits for
 /// a modal dialog, menu or popup to close. A press leaves the focus with the text field it landed on; a view that opens
 /// leaves it with any text field and with a widget of another layer. Called after the view's widgets, so that the field
 /// under a press has taken the focus already.
@@ -677,7 +677,7 @@ fn focus_session_view(app: &mut crate::SoundApp, ui: &egui::Ui, edit: bool, rect
     let field_pressed =
         || ctx.text_edit_focused() && focused.and_then(|field| ctx.read_response(field)).is_some_and(|field| field.is_pointer_button_down_on());
     let takes = if pressed {
-        !field_pressed()
+        focused != Some(id) && !field_pressed()
     } else if wanted {
         focused != Some(id) && !ctx.text_edit_focused() && focused.is_none_or(|focused| layer(focused) == layer(id))
     } else {
