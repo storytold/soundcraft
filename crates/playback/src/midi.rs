@@ -609,9 +609,9 @@ impl MidiFeed {
         let gap = self.pending_gap.swap(false, Ordering::Relaxed);
         if accepted {
             self.recorded_lost.fetch_add(losses, Ordering::Relaxed);
-            if gap {
-                self.record_gap.store(true, Ordering::Relaxed);
-            }
+            // The take starts here: a gap left by the end of the previous take does not belong to
+            // it. Its loss stays counted in `recorded_lost`.
+            self.record_gap.store(gap, Ordering::Relaxed);
             self.recorded_visible.store(self.recorded.write.load(Ordering::Relaxed), Ordering::Release);
         } else {
             // No consumer has seen the tentative suffix. Rewind only the producer cursor.
@@ -1359,6 +1359,26 @@ mod tests {
         assert_eq!(std::iter::from_fn(|| f.next()).count(), INCOMING);
         f.receive(2, &[0x90, 61, 100]);
         assert_eq!((f.dropped(), f.take_lost()), (3, 0), "the queue works again");
+    }
+
+    #[test]
+    fn a_gap_at_the_end_of_one_take_does_not_cut_a_note_in_the_next() {
+        let f = MidiFeed::default();
+        let e = LiveMidi { offset: 0, port: 1, status: 0x90, data1: 60, data2: 100 };
+        for at in 0..RECORDED.next_power_of_two() + 1 {
+            f.record(at as i64, &e);
+        }
+        let mut out = Vec::new();
+        f.take_recorded(&mut out);
+        assert_eq!(f.take_recorded_lost(), 1);
+        // The next take's first note arrives while its start is still tentative.
+        f.begin_pass();
+        f.record(500, &LiveMidi { data1: 64, ..e });
+        f.finish_pending_start(true);
+        f.record(600, &LiveMidi { status: 0x80, data1: 64, ..e });
+        out.clear();
+        f.take_recorded(&mut out);
+        assert_eq!(out.iter().map(|r| (r.at, r.status)).collect::<Vec<_>>(), [(500, 0x90), (600, 0x80)]);
     }
 
     #[test]
