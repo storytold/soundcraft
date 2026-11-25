@@ -429,6 +429,37 @@ fn ui_stop_from_an_earlier_lock_cannot_restart_the_new_roll() {
 }
 
 #[test]
+fn a_before_session_observation_cannot_end_a_newer_roll() {
+    let rate = FrameRate::Fps25;
+    let mut s = session(rate);
+    s.timecode_start = s.sample_rate.samples(3600.);
+    let (mut state, tx, _) = callback(s, 48000.);
+    let feed = Arc::new(crate::midi::MidiFeed::default());
+    feed.set_mtc_source(Some(0));
+    tx.send(Cmd::Midi(feed.clone())).unwrap();
+    // The UI takes a locate before the session start, with the lock it belongs to.
+    feed.set_clock(0);
+    feed.receive(0, &locate(3590 * 25, rate));
+    let (_, observed) = feed.take_mtc_with_lock().unwrap();
+    state.fill(&mut [0.; 480], 2);
+    assert!(!state.shared.playing.load(Ordering::Acquire));
+    // Before the UI acts on it, a roll inside the session begins.
+    feed.receive(0, &locate(3600 * 25, rate));
+    for i in 0..16 {
+        feed.set_clock(100_000 + i * 10000);
+        feed.receive(0, &quarters(3600 * 25 + i / 8 * 2, rate)[(i % 8) as usize]);
+    }
+    state.fill(&mut [0.; 480], 2);
+    assert!(state.shared.playing.load(Ordering::Acquire));
+    let before = state.shared.position.load(Ordering::Acquire);
+    // What the UI sends for the before-session observation leaves the newer roll playing.
+    tx.send(Cmd::EndChase(Some(observed))).unwrap();
+    state.fill(&mut [0.; 480], 2);
+    assert!(state.shared.playing.load(Ordering::Acquire));
+    assert_eq!(state.shared.position.load(Ordering::Acquire), before + 240);
+}
+
+#[test]
 fn jam_sync_audio_free_runs_for_ten_seconds_and_seeks_only_on_the_second_new_group() {
     let (mut audio, tx, _) = callback(session(FrameRate::Fps25), 48000.);
     let feed = Arc::new(crate::midi::MidiFeed::default());
