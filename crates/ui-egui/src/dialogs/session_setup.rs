@@ -59,19 +59,19 @@ impl SessionSetup {
             ui.ctx().request_repaint_after(std::time::Duration::from_millis(33));
         }
         ui.horizontal(|ui| {
-            ui.label(text("Received timecode"));
-            ui.monospace(incoming.as_deref().unwrap_or(text("No timecode received")));
+            ui.label(crate::localization::text("Received timecode"));
+            ui.monospace(incoming.as_deref().unwrap_or(crate::localization::text("No timecode received")));
             if let Some(warning) = app.mtc_rate_warning() {
                 ui.label(warning);
             }
-            if ui.add_enabled(incoming.is_some(), egui::Button::new(text("Use received position"))).clicked()
+            if ui.add_enabled(incoming.is_some(), egui::Button::new(crate::localization::text("Use received position"))).clicked()
                 && let Some(label) = &incoming
             {
                 self.start.clone_from(label);
             }
         });
         ui.horizontal(|ui| {
-            let caption = ui.label(text("Session Start"));
+            let caption = ui.label(crate::localization::text("Session Start"));
             let id = ui.make_persistent_id("session_start_label");
             let capture = ui.memory(|m| m.has_focus(id))
                 && ui.input_mut(|input| {
@@ -91,38 +91,38 @@ impl SessionSetup {
     pub(super) fn show(&mut self, app: &SoundApp, ui: &mut Ui, enter: bool) -> Option<Value> {
         let session = app.engine.session();
         if self.confirm_start {
-            ui.label(text("When changing the session start"));
+            ui.label(crate::localization::text("When changing the session start"));
             for (key, caption) in [("relative", "Keep clips' distance from the session start"), ("timecode", "Keep clips at their timecode")] {
                 if ui.button(text(caption)).clicked() {
                     return Some(self.params(session, key));
                 }
             }
-            if ui.button(text("Cancel")).clicked() {
+            if ui.button(crate::localization::text("Cancel")).clicked() {
                 ui.ctx().memory_mut(|m| m.data.insert_temp(egui::Id::unique("dlg_cancel"), true));
             }
             return None;
         }
         self.received_position(app, ui);
         ui.horizontal(|ui| {
-            let caption = ui.label(text("External Timecode Offset"));
+            let caption = ui.label(crate::localization::text("External Timecode Offset"));
             ui.text_edit_singleline(&mut self.external).labelled_by(caption.id);
         });
         ui.horizontal(|ui| {
-            ui.label(text("Freewheel"));
+            ui.label(crate::localization::text("Freewheel"));
             for (key, label) in [("none", "None"), ("frames", "Frames"), ("jam_sync", "Jam Sync")] {
                 ui.radio_value(&mut self.freewheel, key.to_string(), text(label));
             }
             if self.freewheel == "frames" {
-                let caption = ui.label(text("Freewheel (frames)"));
+                let caption = ui.label(crate::localization::text("Freewheel (frames)"));
                 ui.add(egui::DragValue::new(&mut self.freewheel_frames).range(4..=40)).labelled_by(caption.id);
             }
         });
-        craft_ui::ComboBox::from_label(text("Timecode Rate")).selected_text(text(&self.frame_rate)).show_ui(ui, |ui| {
+        craft_ui::ComboBox::from_label(crate::localization::text("Timecode Rate")).selected_text(text(&self.frame_rate)).show_ui(ui, |ui| {
             for rate in FrameRate::ALL {
                 ui.selectable_value(&mut self.frame_rate, rate.label().to_owned(), text(rate.label()));
             }
         });
-        craft_ui::ComboBox::from_label(text("Bit Depth")).selected_text(text(&self.bit_depth)).show_ui(ui, |ui| {
+        craft_ui::ComboBox::from_label(crate::localization::text("Bit Depth")).selected_text(text(&self.bit_depth)).show_ui(ui, |ui| {
             for value in ["16", "24", "32f"] {
                 ui.selectable_value(&mut self.bit_depth, value.to_string(), text(value));
             }

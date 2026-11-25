@@ -577,7 +577,7 @@ mod tests {
     }
 
     #[test]
-    fn localized_source_strings_have_catalog_entries_or_verified_fallbacks() {
+    fn every_localized_source_string_has_a_catalog_entry() {
         fn visit(dir: &std::path::Path, missing: &mut Vec<String>) {
             let Ok(read) = std::fs::read_dir(dir) else { return };
             for entry in read.flatten() {
@@ -591,7 +591,6 @@ mod tests {
                             let start = at + marker.len() - 1;
                             if let Some((source, _)) = literal(&text[start..])
                                 && super::pt_br::translate(&source).is_none()
-                                && !permits_untranslated_sync_label(&source)
                             {
                                 missing.push(format!("{}: {source:?}", path.display()));
                             }
