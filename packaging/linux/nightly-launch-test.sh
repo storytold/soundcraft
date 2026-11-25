@@ -67,7 +67,6 @@ unset XDG_DATA_HOME
 expect_query "$HOME/.local/share/$identity"
 
 # The ArtCraft Launcher names its own profile and per-install root: the argv goes through unchanged.
-forward="--launch-profile nightly-v1 --profile-root $work/launcher profile with space -- file.doc"
 actual=$("$work/tree/soundcraft" --launch-profile nightly-v1 --profile-root "$work/launcher profile with space" -- file.doc)
 [[ "$actual" == "$(printf '<%s>\n' --launch-profile nightly-v1 --profile-root "$work/launcher profile with space" -- file.doc)" ]] || {
   printf 'expected the Launcher argv unchanged\nactual:\n%s\n' "$actual" >&2
