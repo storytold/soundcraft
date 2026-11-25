@@ -25,6 +25,9 @@ pub(crate) struct LostAudio {
     /// The output and input device that went away.
     pub(crate) output: Option<String>,
     pub(crate) input: Option<String>,
+    /// A device is still there but stopped working (stalled, failed, or could not be reopened):
+    /// only Reconnect reopens it, so the offer stays when nothing is waited for.
+    pub(crate) by_hand: bool,
     /// Readings in a row that listed the output and the input.
     steady: (u32, u32),
     /// What the background thread reads; `None` while nothing is waited for. Dropping it ends
@@ -41,7 +44,7 @@ impl LostAudio {
 
     /// Reads the device list with `probe` every `every`.
     pub(crate) fn with_probe(system: Option<String>, probe: Probe, every: Duration) -> Self {
-        LostAudio { system, output: None, input: None, steady: (0, 0), list: None, probe, every }
+        LostAudio { system, output: None, input: None, by_hand: false, steady: (0, 0), list: None, probe, every }
     }
 
     /// Wait for the output (or input) device `name`, which went away, to come back.
@@ -139,10 +142,16 @@ impl SoundApp {
             // An input still away opens again when it is back, not on the next record.
             self.recorder_failed = input_away;
             if self.player.as_ref().is_some_and(|p| !p.silent && p.device_name == name) {
+                if let Some(l) = &mut self.lost_audio {
+                    l.by_hand = false;
+                }
                 self.ui.status = crate::localized_format!("“{name}” is back: SoundCraft reconnected it.", name = name);
             } else {
                 self.ui.status =
                     crate::localized_format!("“{name}” is back, but SoundCraft could not open it. Use Reconnect to try again.", name = name);
+                if let Some(l) = &mut self.lost_audio {
+                    l.by_hand = true;
+                }
                 return;
             }
         } else if input
@@ -155,7 +164,18 @@ impl SoundApp {
             self.recorder_failed = false;
             self.ui.status = crate::localized_format!("“{name}” is back.", name = name);
         }
-        if self.lost_audio.as_ref().is_some_and(|l| !l.waiting()) {
+        if self.lost_audio.as_ref().is_some_and(|l| !l.waiting() && !l.by_hand) {
+            self.lost_audio = None;
+        }
+    }
+
+    /// The input device `name` opened: stop waiting for it.
+    pub(super) fn input_opened(&mut self, name: &str) {
+        let Some(l) = &mut self.lost_audio else { return };
+        if l.input.as_deref() == Some(name) {
+            l.input_done();
+        }
+        if !l.waiting() && !l.by_hand {
             self.lost_audio = None;
         }
     }
@@ -172,13 +192,13 @@ impl SoundApp {
         }
         let name = p.device_name.clone();
         self.ui.status = crate::localized_format!("Reconnected to “{name}”.", name = name);
-        // A device that went away and is still not back is still waited for.
+        // A device that went away and is still not back is still waited for; an input that is
+        // back stops being waited for when it opens (`input_opened`).
         let still_away = self.lost_audio.as_mut().is_some_and(|l| {
+            l.by_hand = false;
             if l.output.as_ref().is_some_and(|away| *away == name) {
                 l.output_done();
             }
-            l.input = None;
-            l.watch();
             l.waiting()
         });
         if !still_away {
@@ -271,12 +291,15 @@ mod tests {
         assert!(!l.waiting());
     }
 
-    /// A SoundApp whose output device "UFX" went away while stopped, waited for on `devices`.
+    /// A device name no test machine has, so that reopening it never depends on the devices there.
+    const AWAY: &str = "SoundCraft test device that is never present";
+
+    /// A SoundApp whose output device `AWAY` went away while stopped, waited for on `devices`.
     fn app_with_lost_output(devices: &Devices) -> crate::SoundApp {
         let mut app = crate::SoundApp::new(soundcraft_engine::Engine::default(), None, crate::Services::default());
         app.lost_audio = Some(lost(devices));
-        app.audio_lost().away("UFX".into(), true);
-        app.ui.status = "Audio output: “UFX” is unavailable".into();
+        app.audio_lost().away(AWAY.into(), true);
+        app.ui.status = format!("Audio output: “{AWAY}” is unavailable");
         app
     }
 
@@ -284,7 +307,7 @@ mod tests {
     fn a_returning_output_is_not_reopened_while_the_transport_runs() {
         let devices = Devices::default();
         let mut app = app_with_lost_output(&devices);
-        devices.set(&["UFX"]);
+        devices.set(&[AWAY]);
         app.engine.transport.playing = true;
         let until = Instant::now() + Duration::from_millis(200);
         while Instant::now() < until {
@@ -301,17 +324,17 @@ mod tests {
         let devices = Devices::default();
         let mut app = app_with_lost_output(&devices);
         // Its input went away with it.
-        app.audio_lost().away("UFX".into(), false);
+        app.audio_lost().away(AWAY.into(), false);
         app.recorder_failed = true;
         app.watch_replug();
         assert!(app.player.is_none(), "not back yet");
-        devices.set(&["UFX"]);
+        devices.set(&[AWAY]);
         let until = Instant::now() + Duration::from_secs(5);
         while app.player.is_none() && Instant::now() < until {
             app.watch_replug();
             std::thread::sleep(Duration::from_millis(5));
         }
-        // The test machine has no "UFX": the reopen falls back to another device or the silent
+        // No machine has `AWAY`: the reopen falls back to another device or the silent
         // clock, which the status says instead of claiming success.
         assert!(app.player.is_some(), "the devices were reopened");
         assert!(!app.ui.status.contains("unavailable"), "{}", app.ui.status);
@@ -363,7 +386,52 @@ mod tests {
         h.run_steps(2);
         assert!(h.state().player.is_some(), "the devices were reopened");
         assert_ne!(h.state().ui.status, stale);
-        assert!(!h.state().offers_reconnect());
-        assert!(h.query_by_label("Reconnect").is_none(), "the offer goes with the trouble");
+        // Without an output device the reopen runs on the silent clock, which is still trouble.
+        let opened = h.state().player.as_ref().is_some_and(|p| !p.silent);
+        assert_eq!(h.state().offers_reconnect(), !opened, "{}", h.state().ui.status);
+        assert_eq!(h.query_by_label("Reconnect").is_none(), opened, "the offer goes with the trouble");
+    }
+
+    /// An output that stalled is reopened only by Reconnect: an input that goes away and comes
+    /// back meanwhile does not take the offer away.
+    #[test]
+    fn a_returning_input_keeps_the_offer_for_a_stalled_output() {
+        let devices = Devices::default();
+        let mut app = crate::SoundApp::new(soundcraft_engine::Engine::default(), None, crate::Services::default());
+        app.lost_audio = Some(lost(&devices));
+        app.audio_lost().by_hand = true;
+        app.audio_lost().away(AWAY.into(), false);
+        app.recorder_failed = true;
+        devices.set(&[AWAY]);
+        let until = Instant::now() + Duration::from_secs(5);
+        while app.recorder_failed && Instant::now() < until {
+            app.watch_replug();
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert!(!app.recorder_failed, "the input may open again");
+        assert!(app.offers_reconnect(), "the stalled output still needs Reconnect");
+    }
+
+    /// Reconnect while an input is still away keeps waiting for it, so that it opens again once
+    /// it is back even if opening it failed in between.
+    #[test]
+    fn reconnect_keeps_waiting_for_an_input_still_away() {
+        let devices = Devices::default();
+        let mut app = crate::SoundApp::new(soundcraft_engine::Engine::default(), None, crate::Services::default());
+        app.lost_audio = Some(lost(&devices));
+        app.audio_lost().away(AWAY.into(), false);
+        app.reconnect_audio();
+        assert_eq!(app.lost_audio.as_ref().and_then(|l| l.input.as_deref()), Some(AWAY));
+        assert!(app.offers_reconnect());
+        // Opening the input failed while it was away.
+        app.recorder_failed = true;
+        devices.set(&[AWAY]);
+        let until = Instant::now() + Duration::from_secs(5);
+        while app.recorder_failed && Instant::now() < until {
+            app.watch_replug();
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert!(!app.recorder_failed, "the input that came back may open again");
+        assert!(app.lost_audio.as_ref().is_none_or(|l| l.input.is_none()));
     }
 }

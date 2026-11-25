@@ -46,7 +46,9 @@ impl SoundApp {
                 if let Some(p) = &self.player {
                     p.set_input(std::sync::Arc::clone(&r.monitor));
                 }
+                let name = r.device_name.clone();
                 self.recorder = Some(r);
+                self.input_opened(&name);
             }
             Err(e) => {
                 self.recorder_failed = true;
@@ -63,6 +65,8 @@ impl SoundApp {
         let lost = self.audio_lost();
         if trouble == OutputTrouble::Gone {
             lost.away(name.clone(), true);
+        } else {
+            lost.by_hand = true;
         }
         let (cause, then) = match trouble {
             OutputTrouble::Bug => (
@@ -96,7 +100,6 @@ impl SoundApp {
     pub(super) fn watch_input(&mut self) {
         let recording = self.engine.transport.recording;
         let Some(r) = &mut self.recorder else { return };
-        let (gone, name) = (r.gone(), r.device_name.clone());
         let Some(trouble) = r.trouble() else {
             let lost = r.lost_ms();
             if recording && lost > self.lost_shown {
@@ -105,6 +108,8 @@ impl SoundApp {
             }
             return;
         };
+        // Read after `trouble`, so it agrees with the fault reported (a fault is never cleared).
+        let (gone, name) = (r.gone(), r.device_name.clone());
         if recording {
             self.stop_play();
         }
@@ -115,6 +120,8 @@ impl SoundApp {
                 let lost = self.audio_lost();
                 if gone {
                     lost.away(name, false);
+                } else {
+                    lost.by_hand = true;
                 }
                 (what, crate::localization::text("Reconnect it, then use Reconnect audio device in Setup › Playback Engine."))
             }
