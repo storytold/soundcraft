@@ -276,6 +276,12 @@ impl SoundApp {
             if let Err(err) = self.engine.execute_merged(id, &params, &key) {
                 self.ui.status = crate::localization::error_text(&err.to_string());
             } else {
+                if let (Parameter::Plugin { slot: None, id, .. }, Some((_, values))) =
+                    (&target.parameter, self.instrument_edits.get_mut(&target.track))
+                {
+                    // A native gesture still in progress must not restore its older value.
+                    values.remove(id);
+                }
                 self.midi_moves.retain(|(other, _)| *other != target);
                 self.midi_moves.push((target, self.uptime + RELEASE_SECONDS));
             }
