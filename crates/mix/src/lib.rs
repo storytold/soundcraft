@@ -111,6 +111,14 @@ pub fn main_channels(s: &Session) -> usize {
     s.main_format().channels().clamp(MAIN_CHANNELS, MAX_CHANNELS)
 }
 
+/// The device channel the main mix starts on in a stream of `channels`: its path's first channel,
+/// or channel 0 when the main mix does not fit the device from there. Playback places the main
+/// mix by this, and delay compensation finds the paths that share its channels by it.
+pub fn main_first_channel(s: &Session, channels: usize) -> usize {
+    let first = s.outputs.first().map_or(0, |path| usize::from(path.first_channel));
+    if first + main_channels(s) <= channels { first } else { 0 }
+}
+
 /// Renders sessions. Keep one per playback stream; plugin state persists across blocks.
 pub struct MixEngine {
     sample_rate: f32,
@@ -120,6 +128,8 @@ pub struct MixEngine {
     main: Vec<Vec<f32>>,
     /// Independent hardware paths, indexed by physical channel. Empty for offline rendering.
     physical: Vec<Vec<f32>>,
+    /// The device's output channels ([`MixEngine::set_hardware_channels`]); 0 for offline rendering.
+    device_channels: usize,
     main_fmt: ChannelFormat,
     pub meters: HashMap<TrackId, StripMeter>,
     pub main_meter: StripMeter,
@@ -144,6 +154,12 @@ pub struct MixEngine {
     /// the main mix's path or with a path an aux returns onto, directly or through other such
     /// paths: tracks routed to one wait for the aux returns as the main mix does.
     aux_fed_outputs: Vec<usize>,
+    /// Named output paths other than the main mix's that share a physical channel with it,
+    /// directly or through other paths: what is routed to one waits for the master faders' inserts
+    /// as well, as the main mix does.
+    main_outputs: Vec<usize>,
+    /// Latency of the master faders' inserts.
+    master_latency: usize,
     aux_latency: usize,
     /// Live input for the next block (planar), set by the audio host for input monitoring.
     pub input: Vec<Vec<f32>>,
@@ -184,6 +200,7 @@ impl MixEngine {
             busses: HashMap::new(),
             main: vec![vec![0.0; max_block]; MAIN_CHANNELS],
             physical: Vec::new(),
+            device_channels: 0,
             main_fmt: ChannelFormat::Stereo,
             meters: HashMap::new(),
             main_meter: StripMeter::default(),
@@ -195,6 +212,8 @@ impl MixEngine {
             track_latency: 0,
             aux_fed: Vec::new(),
             aux_fed_outputs: Vec::new(),
+            main_outputs: Vec::new(),
+            master_latency: 0,
             aux_latency: 0,
             input: Vec::new(),
             midi: Vec::new(),
@@ -260,7 +279,13 @@ impl MixEngine {
 
     /// Reserve the device's output channels before the first audio block.
     pub fn set_hardware_channels(&mut self, channels: usize) {
+        self.device_channels = channels;
         self.physical.resize_with(channels.min(MAX_HARDWARE_CHANNELS), || vec![0.0; self.max_block]);
+    }
+
+    /// The device's output channels, as given to [`MixEngine::set_hardware_channels`].
+    pub fn hardware_channels(&self) -> usize {
+        self.device_channels
     }
 
     pub fn hardware_output(&self) -> &[Vec<f32>] {
@@ -512,11 +537,17 @@ impl MixEngine {
         // An aux that returns onto a bus delays it by the slowest aux return, so the tracks routed
         // to that bus wait as well (as the ones routed to the main mix do) and the bus lines up.
         self.aux_latency = lmax_a;
+        self.master_latency = lmax_m;
         self.aux_fed.clear();
         self.aux_fed_outputs.clear();
+        self.main_outputs.clear();
         if pdc {
-            // The first path is the main mix's.
+            // The first path is the main mix's, where playback puts it.
+            let main_first = main_first_channel(s, self.device_channels);
             if !s.outputs.is_empty() {
+                self.main_outputs.push(0);
+                close_overlaps(s, main_first, &mut self.main_outputs);
+                self.main_outputs.retain(|&i| i != 0);
                 self.aux_fed_outputs.push(0);
             }
             for t in s.tracks.iter().filter(|t| is_aux(t) && is_live(t)) {
@@ -534,19 +565,7 @@ impl MixEngine {
             }
             // Paths that share a physical channel sum there, so a path overlapping a waiting one
             // waits as well.
-            loop {
-                let before = self.aux_fed_outputs.len();
-                for (i, path) in s.outputs.iter().enumerate() {
-                    if !self.aux_fed_outputs.contains(&i)
-                        && self.aux_fed_outputs.iter().any(|&j| s.outputs.get(j).is_some_and(|other| outputs_overlap(path, other)))
-                    {
-                        self.aux_fed_outputs.push(i);
-                    }
-                }
-                if self.aux_fed_outputs.len() == before {
-                    break;
-                }
-            }
+            close_overlaps(s, main_first, &mut self.aux_fed_outputs);
         }
         for (i, st) in work.iter_mut() {
             let Some(t) = s.tracks.get(*i) else { continue };
@@ -563,7 +582,8 @@ impl MixEngine {
                 Route::Hardware(name) => output_index(s, name).is_some_and(|path| self.aux_fed_outputs.contains(&path)),
                 Route::None | Route::Input(_) => false,
             };
-            st.out_extra.set(if waits { lmax_a } else { 0 }, ch);
+            let extra = if waits { lmax_a } else { 0 } + self.master_wait(s, t);
+            st.out_extra.set(extra, ch);
         }
         for (i, st) in work.iter_mut() {
             if let Some(t) = s.tracks.get(*i) {
@@ -592,7 +612,7 @@ impl MixEngine {
             let ch = st.buf.len();
             st.align.set(if pdc { lmax_a.saturating_sub(st.latency) } else { 0 }, ch);
             st.align.process(&mut st.buf, frames);
-            st.out_extra.set(0, ch);
+            st.out_extra.set(self.master_wait(s, t), ch);
             self.route_strip(s, t, &mut st, pos, frames);
             self.strips.insert(t.id, st);
         }
@@ -681,6 +701,15 @@ impl MixEngine {
     }
 
     /// Send, meter and pan a processed strip into its output path.
+    /// Delay that lines a strip routed to a path sharing the main mix's channels up with the main
+    /// mix, which the master faders' inserts delay.
+    fn master_wait(&self, s: &Session, t: &Track) -> usize {
+        match &t.mixer.output {
+            Route::Hardware(name) if output_index(s, name).is_some_and(|path| self.main_outputs.contains(&path)) => self.master_latency,
+            _ => 0,
+        }
+    }
+
     fn route_strip(&mut self, s: &Session, t: &Track, strip: &mut Strip, pos: Samples, frames: usize) {
         let m = self.meters.entry(t.id).or_default();
         m.measure(&strip.buf, frames, strip.gr);
@@ -768,10 +797,29 @@ fn output_index(s: &Session, name: &str) -> Option<usize> {
     s.outputs.iter().position(|path| path.name.eq_ignore_ascii_case(name))
 }
 
-/// Whether two output paths share a physical channel.
-fn outputs_overlap(a: &soundcraft_model::OutputPath, b: &soundcraft_model::OutputPath) -> bool {
-    let (a0, b0) = (usize::from(a.first_channel), usize::from(b.first_channel));
-    a0 < b0 + b.format.channels() && b0 < a0 + a.format.channels()
+/// Physical channels of output path `i`; the main mix's (the first) starts at `main_first`
+/// ([`main_first_channel`]), as playback puts it.
+fn path_channels(s: &Session, i: usize, main_first: usize) -> Option<std::ops::Range<usize>> {
+    let path = s.outputs.get(i)?;
+    let (first, width) = if i == 0 { (main_first, main_channels(s)) } else { (usize::from(path.first_channel), path.format.channels()) };
+    Some(first..first + width)
+}
+
+/// Add to `paths` (indices into `Session::outputs`) every path that shares a physical channel
+/// with one of them, directly or through a chain of such paths: they sum there.
+fn close_overlaps(s: &Session, main_first: usize, paths: &mut Vec<usize>) {
+    loop {
+        let before = paths.len();
+        for i in 0..s.outputs.len() {
+            let Some(a) = path_channels(s, i, main_first) else { continue };
+            if !paths.contains(&i) && paths.iter().any(|&j| path_channels(s, j, main_first).is_some_and(|b| a.start < b.end && b.start < a.end)) {
+                paths.push(i);
+            }
+        }
+        if paths.len() == before {
+            break;
+        }
+    }
 }
 
 fn is_aux(t: &Track) -> bool {
