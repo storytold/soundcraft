@@ -498,7 +498,12 @@ impl Player {
         let _ = self.tx.send(Cmd::Midi(feed));
     }
 
+    /// Switch recording on or off. A record pass begun here gets its record stamp from the first
+    /// output callback that plays after it (see [`Player::record_start_heard`]).
     pub fn set_recording(&self, on: bool) {
+        if on {
+            self.shared.heard.begin_record();
+        }
         let _ = self.tx.send(Cmd::Recording(on, 0));
     }
 
@@ -552,6 +557,13 @@ impl Player {
     /// leaves the speed a pass played). `None` until an output callback with a device has run.
     pub fn heard_at(&self, sample: Samples, rate: f64) -> Option<(latency::Moment, f64)> {
         self.shared.heard.heard_at(sample as f64, rate)
+    }
+
+    /// When the record start `sample` of the latest record pass was heard, at the session's `rate`,
+    /// in the round of `looped` that pass began in, and the speed then: from the moment latched as
+    /// the pass began, not from a later callback. `None` until that moment is published.
+    pub fn record_start_heard(&self, sample: Samples, rate: f64, looped: Option<Range>) -> Option<(latency::Moment, f64)> {
+        self.shared.heard.record_start_heard(sample as f64, rate, looped.map(|l| l.len() as f64))
     }
 
     /// A copy of the meters accumulated since the last [`Player::take_meters`], leaving them in
