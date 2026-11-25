@@ -15,11 +15,13 @@ mod input;
 mod midi;
 mod playback;
 mod plugins;
+mod replug;
 
 #[cfg(test)]
 pub(crate) use playback::automation_step_due;
 #[cfg(test)]
 pub(crate) use plugins::{editor_changes, editor_states_due, failed_plugin_status};
+pub(crate) use replug::LostAudio;
 
 impl SoundApp {
     /// Whether fonts installed from the system are used besides the bundled ones (on by default).
@@ -41,6 +43,7 @@ impl SoundApp {
             record_start: 0,
             punch: None,
             recorder_failed: false,
+            lost_audio: None,
             midi_inputs: None,
             midi_scan_at: 0.0,
             midi_take: Vec::new(),
@@ -204,6 +207,7 @@ impl SoundApp {
         }
         self.watch_output();
         self.watch_input();
+        self.watch_replug();
         // Stop the old playback before sending a replacement session to the audio thread.
         self.handle_transport(dt);
         if self.engine.revision != self.last_rev {

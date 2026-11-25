@@ -108,7 +108,20 @@ fn status_bar(app: &mut SoundApp, ui: &mut Ui) {
     let tracks = if s.tracks.len() == 1 { crate::localized_format!("1 track") } else { crate::localized_format!("{n} tracks", n = s.tracks.len()) };
     let mut left = crate::localized_format!("{} · {} Hz · {} · {} · {}", s.name, s.sample_rate.hz(), depth, tracks, app.ui.status);
     soundcraft_model::truncate_chars(&mut left, 4 * soundcraft_model::MAX_NAME_CHARS);
-    ui.painter().text(pos2(r.min.x + 10.0, r.center().y), Align2::LEFT_CENTER, left, regular(11.0), t.text_dim);
+    let mut x = r.min.x + 10.0;
+    if app.offers_reconnect() {
+        // The audio devices need reopening: offer it where the message asks for it, not only in
+        // Setup › Playback Engine.
+        let text = crate::localization::text("Reconnect");
+        let width = ui.painter().layout_no_wrap(text.to_string(), regular(11.0), t.text).size().x;
+        let at = Rect::from_min_size(pos2(x - 4.0, r.min.y + 2.0), vec2(width + 12.0, r.height() - 4.0));
+        let button = egui::Button::new(egui::RichText::new(text).font(regular(11.0))).small();
+        if ui.put(at, button).on_hover_text(crate::localization::text("Reconnect audio device")).clicked() {
+            let _ = app.run("ui.reconnect_audio", json!({}));
+        }
+        x = at.max.x + 8.0;
+    }
+    ui.painter().text(pos2(x, r.center().y), Align2::LEFT_CENTER, left, regular(11.0), t.text_dim);
     let undo = app.engine.undo_label().map_or(String::new(), |l| crate::localized_format!("Undo {l}", l = crate::localization::text(l)));
     ui.painter().text(
         pos2(r.max.x - 10.0, r.center().y),

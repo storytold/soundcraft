@@ -697,7 +697,7 @@ pub fn playback_engine(app: &mut SoundApp, ctx: &egui::Context) {
             let _ = app.run("options.delay_compensation", json!({"value": dc}));
         }
         if ui.button(crate::localization::text("Reconnect audio device")).clicked() {
-            app.reconnect_audio();
+            let _ = app.run("ui.reconnect_audio", json!({}));
         }
         ui.separator();
         midi_inputs(app, ui);
@@ -745,14 +745,28 @@ pub fn audio_device_command(app: &mut SoundApp, p: &serde_json::Value) -> Result
     if changed {
         app.apply_audio_config(cfg)?;
     }
-    let device = app.player.as_ref().map(|pl| {
-        json!({"name": pl.device_name, "sample_rate": pl.device_rate, "channels": pl.device_channels, "buffer_size": pl.device_buffer, "silent": pl.silent})
-    });
+    let device = open_device(app);
     let mut out = json!({"config": app.ui.audio, "device": device});
     if p.get("list").and_then(Value::as_bool).unwrap_or(false) {
         out["systems"] = json!(soundcraft_playback::devices::audio_systems());
     }
     Ok(out)
+}
+
+/// The open output device, as `ui.audio_device` and `ui.reconnect_audio` return it.
+fn open_device(app: &SoundApp) -> Option<serde_json::Value> {
+    app.player.as_ref().map(|pl| {
+        json!({"name": pl.device_name, "sample_rate": pl.device_rate, "channels": pl.device_channels, "buffer_size": pl.device_buffer, "silent": pl.silent})
+    })
+}
+
+/// `ui.reconnect_audio`: reopens the audio devices with the current choice, as Reconnect audio
+/// device does (a take in progress is kept). Returns the open device and the status line, which
+/// says what opened.
+pub fn reconnect_audio_command(app: &mut SoundApp) -> Result<serde_json::Value, String> {
+    app.reconnect_audio();
+    let device = open_device(app);
+    Ok(json!({"device": device, "status": app.ui.status}))
 }
 
 /// Programmatic `setup.playback_engine` / `setup.hardware`. `device` is the output name and

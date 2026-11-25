@@ -27,6 +27,8 @@ impl SoundApp {
         // The input reopens on the next record or monitor with the new choice.
         self.recorder = None;
         self.recorder_failed = false;
+        // A device chosen here replaces any that went away.
+        self.lost_audio = None;
         let player = soundcraft_playback::Player::with_config(self.engine.session_arc(), &self.ui.audio);
         self.attach_midi(&player);
         player.locate(at);
@@ -58,6 +60,10 @@ impl SoundApp {
         let Some(p) = &self.player else { return };
         let Some(trouble) = p.trouble() else { return };
         let name = p.device_name.clone();
+        let lost = self.audio_lost();
+        if trouble == OutputTrouble::Gone {
+            lost.away(name.clone(), true);
+        }
         let (cause, then) = match trouble {
             OutputTrouble::Bug => (
                 crate::localization::text("the audio engine hit an internal error (see the log)").to_string(),
@@ -65,7 +71,7 @@ impl SoundApp {
             ),
             OutputTrouble::Gone => (
                 format!("“{}” {}", name, crate::localization::text("is unavailable")),
-                crate::localization::text("Check the audio device, then use Reconnect audio device in Setup › Playback Engine."),
+                crate::localization::text("SoundCraft reconnects it when it is back, or use Reconnect."),
             ),
             OutputTrouble::Stalled => (
                 format!("“{}” {}", name, crate::localization::text("stopped asking for audio")),
@@ -90,6 +96,7 @@ impl SoundApp {
     pub(super) fn watch_input(&mut self) {
         let recording = self.engine.transport.recording;
         let Some(r) = &mut self.recorder else { return };
+        let (gone, name) = (r.gone(), r.device_name.clone());
         let Some(trouble) = r.trouble() else {
             let lost = r.lost_ms();
             if recording && lost > self.lost_shown {
@@ -105,6 +112,10 @@ impl SoundApp {
             Trouble::Device(what) => {
                 self.recorder = None;
                 self.recorder_failed = true;
+                let lost = self.audio_lost();
+                if gone {
+                    lost.away(name, false);
+                }
                 (what, crate::localization::text("Reconnect it, then use Reconnect audio device in Setup › Playback Engine."))
             }
             Trouble::Disk(what) => (what, crate::localization::text("Check the disk, then record again.")),
@@ -116,8 +127,8 @@ impl SoundApp {
         };
     }
 
-    /// Reopen the audio devices, keeping a take in progress.
-    pub fn reconnect_audio(&mut self) {
+    /// Reopen the audio devices with `cfg`, keeping a take in progress (see `reconnect_audio`).
+    pub(super) fn reopen_audio(&mut self, cfg: &soundcraft_playback::AudioConfig) {
         if self.is_playing() || self.engine.transport.recording {
             self.stop_play();
         }
@@ -127,7 +138,7 @@ impl SoundApp {
         }
         self.recorder = None;
         self.recorder_failed = false;
-        let player = Player::with_config(self.engine.session_arc(), &self.ui.audio);
+        let player = Player::with_config(self.engine.session_arc(), cfg);
         self.attach_midi(&player);
         self.player = Some(player);
     }

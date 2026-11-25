@@ -341,6 +341,12 @@ impl Recorder {
         (self.seen.1.elapsed() >= STALL).then(|| Trouble::Device(format!("“{name}” stopped sending audio")))
     }
 
+    /// True when the input device went away (its stream reported it unavailable), as opposed to
+    /// stalling or hitting a bug: it can be reopened once the device is back.
+    pub fn gone(&self) -> bool {
+        self.shared.fault.load(Ordering::Relaxed) == GONE
+    }
+
     /// Input the current take has lost to a slow disk so far, in milliseconds.
     pub fn lost_ms(&self) -> u64 {
         let frames = self.shared.dropped.load(Ordering::Relaxed) / self.channels.max(1);
@@ -613,9 +619,12 @@ mod tests {
         shared.guarded(|| ran = true);
         assert!(!ran);
         assert_eq!(r.trouble(), Some(Trouble::Device("the audio input hit an internal error (see the log)".into())));
+        assert!(!r.gone(), "a broken input is not one that went away");
         let gone = Arc::new(Shared::new(CaptureRing::new(64)));
         gone.fault.store(GONE, Ordering::Relaxed);
-        assert_eq!(recorder(&gone).trouble(), Some(Trouble::Device("“Mic In” is unavailable".into())));
+        let mut away = recorder(&gone);
+        assert_eq!(away.trouble(), Some(Trouble::Device("“Mic In” is unavailable".into())));
+        assert!(away.gone(), "an input that went away can be reopened when it is back");
     }
 
     #[test]

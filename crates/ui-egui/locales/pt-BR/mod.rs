@@ -198,6 +198,7 @@ pub(super) fn translate(source: &str) -> Option<&'static str> {
         "Quantize to the grid" => "Quantizar para a grade",
         "Quit" => "Sair",
         "Recall" => "Recuperar",
+        "Reconnect" => "Reconectar",
         "Reconnect audio device" => "Reconectar dispositivo de áudio",
         "Record (F12 or Cmd+Space)" => "Gravar (F12 ou Cmd+Espaço)",
         "Recover" => "Recuperar",
@@ -1029,6 +1030,7 @@ fn menu_translate(source: &str) -> Option<&'static str> {
         "Assign Send" => "Atribuir envio",
         "Assign to VCA" => "Atribuir ao VCA",
         "Audio Device" => "Dispositivo de áudio",
+        "Reconnect Audio Device" => "Reconectar dispositivo de áudio",
         "AudioSuite Process" => "Processar no AudioSuite",
         "Auto Rename..." => "Renomear automaticamente...",
         "Automation Mode" => "Modo de automação",
@@ -1240,9 +1242,6 @@ fn menu_translate(source: &str) -> Option<&'static str> {
         "CLIPS" => "CLIPES",
         "COMMENTS" => "COMENTÁRIOS",
         "Change" => "Alterar",
-        "Check the audio device, then use Reconnect audio device in Setup › Playback Engine." => {
-            "Verifique o dispositivo de áudio e use Reconectar dispositivo de áudio em Configurar › Mecanismo de reprodução."
-        }
         "Check the disk, then record again." => "Verifique o disco e grave novamente.",
         "Chords" => "Acordes",
         "Clips" => "Clipes",
@@ -1293,6 +1292,16 @@ fn menu_translate(source: &str) -> Option<&'static str> {
         "REL GRID" => "REL GRADE",
         "Reconnect it, then use Reconnect audio device in Setup › Playback Engine." => {
             "Reconecte-o e use Reconectar dispositivo de áudio em Configurar › Mecanismo de reprodução."
+        }
+        "Reconnect opened no audio device: SoundCraft runs on a silent clock." => {
+            "Reconectar não abriu nenhum dispositivo de áudio: o SoundCraft funciona com um relógio silencioso."
+        }
+        "Reconnected to “{name}”." => "Reconectado a “{name}”.",
+        "SoundCraft reconnects it when it is back, or use Reconnect." => "O SoundCraft o reconecta quando ele voltar, ou use Reconectar.",
+        "“{name}” is back." => "“{name}” voltou.",
+        "“{name}” is back: SoundCraft reconnected it." => "“{name}” voltou: o SoundCraft o reconectou.",
+        "“{name}” is back, but SoundCraft could not open it. Use Reconnect to try again." => {
+            "“{name}” voltou, mas o SoundCraft não conseguiu abri-lo. Use Reconectar para tentar de novo."
         }
         "Recording stopped: {cause} The take is kept up to there. {then}" => "Gravação interrompida: {cause} A gravação foi mantida até aqui. {then}",
         "Recording stopped: {what} The take is kept up to there. {then}" => "Gravação interrompida: {what} A gravação foi mantida até aqui. {then}",

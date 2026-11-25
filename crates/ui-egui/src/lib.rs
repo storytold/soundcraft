@@ -312,6 +312,8 @@ pub struct SoundApp {
     /// Punch range to trim the take to (pre/post-roll recordings).
     punch: Option<Range>,
     recorder_failed: bool,
+    /// The audio devices need reopening, and those that went away are waited for.
+    lost_audio: Option<app::LostAudio>,
     /// MIDI device input, opened on the first frame of an app that has an audio engine.
     pub midi_inputs: Option<soundcraft_playback::midi::MidiInputs>,
     /// When the MIDI ports were last looked for (app uptime, seconds).

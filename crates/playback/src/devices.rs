@@ -109,6 +109,23 @@ pub fn audio_systems() -> Vec<AudioSystem> {
         .collect()
 }
 
+/// Whether the audio system `system` (the default one for `None`) lists an output device named
+/// `output` and an input device named `input`; a device that is not asked for counts as present.
+/// It reads the device list and opens nothing, so it can be polled from a background thread while
+/// a device that went away is waited for (cpal does not expose Core Audio's device-list
+/// notification). An audio system that is not available lists nothing.
+pub fn devices_present(system: Option<&str>, output: Option<&str>, input: Option<&str>) -> (bool, bool) {
+    let host = match system {
+        Some(want) => cpal::available_hosts().into_iter().find(|id| id.name().eq_ignore_ascii_case(want)).and_then(|id| cpal::host_from_id(id).ok()),
+        None => Some(cpal::default_host()),
+    };
+    let Some(host) = host else { return (output.is_none(), input.is_none()) };
+    let named = |want: &str, d: &cpal::Device| device_name(d).as_deref() == Some(want);
+    let out = output.is_none_or(|want| host.output_devices().is_ok_and(|mut ds| ds.any(|d| named(want, &d))));
+    let inp = input.is_none_or(|want| host.input_devices().is_ok_and(|mut ds| ds.any(|d| named(want, &d))));
+    (out, inp)
+}
+
 /// True when a cpal error means the stream is dead and only a rebuild can restore audio. cpal 0.18
 /// reports every operation through one [`cpal::Error`]: `DeviceNotAvailable` means the device went
 /// away, and `StreamInvalidated` explicitly requires the stream to be rebuilt. SoundCraft has no
