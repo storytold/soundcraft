@@ -709,6 +709,18 @@ mod tests {
             frame(&mut app);
         }
         assert_eq!(points(&app), returned, "within the release interval, the latch stays released after the send returns");
+        // Moved away and back by two commands of one frame, before an automation pass sees it.
+        feed.receive(port, &[0xb0, 76, 70]);
+        frame(&mut app);
+        frame(&mut app);
+        assert!(points(&app) > returned, "the new MIDI move latched the send again");
+        app.run("mix.send", json!({"track":id,"slot":0,"bus":"Other"})).unwrap();
+        app.run("mix.send", json!({"track":id,"slot":0,"bus":"FX"})).unwrap();
+        let returned = points(&app);
+        for _ in 0..3 {
+            frame(&mut app);
+        }
+        assert_eq!(points(&app), returned, "released between the two commands");
     }
 
     #[test]

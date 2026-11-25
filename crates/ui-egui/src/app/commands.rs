@@ -39,6 +39,8 @@ impl SoundApp {
                     self.meters.values_mut().chain([&mut self.main_meter]).for_each(|m| m.clip = false);
                 }
                 self.sync_midi_routes();
+                // Before a later command can put a send back on the bus its touch was on.
+                self.release_retargeted_sends();
                 Ok(v)
             }
             Err(e) => {
