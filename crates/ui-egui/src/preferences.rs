@@ -1328,6 +1328,21 @@ mod tests {
         }
     }
 
+    /// The record offset calibrates the interface: recalling a layout saved before or without it
+    /// keeps the current one.
+    #[test]
+    fn configuration_recall_keeps_the_record_offset() {
+        let mut older = serde_json::to_value(crate::UiState::default()).unwrap();
+        older.as_object_mut().unwrap().remove("record_offset");
+        let saved = crate::UiState { record_offset: 64, ..crate::UiState::default() };
+        for saved in [older, serde_json::to_value(saved).unwrap()] {
+            let mut app = SoundApp::new(Engine::default(), None, crate::Services::default());
+            app.ui.record_offset = -300;
+            crate::windows::recall_configuration(&mut app, &saved).unwrap();
+            assert_eq!(app.ui.record_offset, -300);
+        }
+    }
+
     /// Enter belongs to the focused search field and must not apply its window.
     #[test]
     fn enter_in_search_does_not_apply_or_close_preferences() {
