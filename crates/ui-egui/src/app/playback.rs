@@ -304,6 +304,22 @@ impl SoundApp {
         self.engine.hold_merge(may_write.then_some("automation_pass"));
     }
 
+    /// A send retargeted since its touch releases the latch, even if it later returns to that bus.
+    /// So does its MIDI touch: a CC that moved the send to the old bus no longer counts as held.
+    /// Run after every command and before each automation pass, so a send moved away and back
+    /// between two passes is released too.
+    pub(crate) fn release_retargeted_sends(&mut self) {
+        let session = self.engine.session();
+        let send_route = |t, slot: usize| session.track(t).and_then(|tr| tr.mixer.sends.get(slot)?.as_ref()).map(|send| &send.target);
+        self.touched_sends.retain(|&(t, slot), route| send_route(t, slot) == Some(route));
+        self.midi_moves.retain(|(target, _)| match target.parameter {
+            soundcraft_engine::midi_learn::Parameter::SendLevel { slot, bus } | soundcraft_engine::midi_learn::Parameter::SendPan { slot, bus } => {
+                send_route(target.track, slot) == Some(&soundcraft_model::Route::Bus(bus))
+            }
+            _ => true,
+        });
+    }
+
     /// While playing, record volume automation from fader positions for tracks in Write mode, and
     /// for Touch/Latch tracks whose fader is (or, for Latch, was) being moved. Send levels follow the
     /// same rules, per send, from its slot or its floating send window. Each point replaces the
@@ -314,17 +330,7 @@ impl SoundApp {
         const PASS: &str = "automation_pass";
         let playing = self.is_playing();
         self.prepare_automation_merge();
-        // A send retargeted since its touch releases the latch, even if it later returns to that bus.
-        // So does its MIDI touch: a CC that moved the send to the old bus no longer counts as held.
-        let session = self.engine.session();
-        let send_route = |t, slot: usize| session.track(t).and_then(|tr| tr.mixer.sends.get(slot)?.as_ref()).map(|send| &send.target);
-        self.touched_sends.retain(|&(t, slot), route| send_route(t, slot) == Some(route));
-        self.midi_moves.retain(|(target, _)| match target.parameter {
-            soundcraft_engine::midi_learn::Parameter::SendLevel { slot, bus } | soundcraft_engine::midi_learn::Parameter::SendPan { slot, bus } => {
-                send_route(target.track, slot) == Some(&soundcraft_model::Route::Bus(bus))
-            }
-            _ => true,
-        });
+        self.release_retargeted_sends();
         if !playing && self.touched.is_empty() && self.touched_sends.is_empty() && self.touched_pans.is_empty() {
             self.last_write_at = i64::MIN;
             if self.engine.merge_key() == Some(PASS) {
