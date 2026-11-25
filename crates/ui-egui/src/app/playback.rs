@@ -174,11 +174,13 @@ impl SoundApp {
     }
 
     /// Remember where the armed `takes` go (split into passes of `pass` when loop recording) and
-    /// autosave that plan with the session.
+    /// autosave that plan with the session. Its placement offset is the record offset alone until
+    /// the take ends and the device timing is known, so a take recovered after a crash is placed
+    /// by the record offset too.
     fn plan_recording(&mut self, takes: Vec<soundcraft_engine::io::Take>, pass: Option<Samples>) {
         let rate = self.recorder.as_ref().map_or(0, |r| r.sample_rate);
-        self.take_plan =
-            Some(soundcraft_engine::io::Recording { start: self.record_start, pass, punch: self.punch, placement_offset: 0, rate, takes });
+        let placement_offset = Samples::default().saturating_sub(self.ui.record_offset);
+        self.take_plan = Some(soundcraft_engine::io::Recording { start: self.record_start, pass, punch: self.punch, placement_offset, rate, takes });
         if let Some(root) = self.autosave_dir.clone() {
             self.queue_autosave(root);
         }
@@ -635,6 +637,18 @@ mod tests {
         assert_eq!(app.placement_offset(48_000, None), -100);
         app.ui.record_offset = -64;
         assert_eq!(app.placement_offset(48_000, None), 64);
+    }
+
+    #[test]
+    fn the_autosaved_take_plan_carries_the_record_offset() {
+        let mut app = SoundApp::new(soundcraft_engine::Engine::default(), None, crate::Services::default());
+        app.ui.record_offset = -128;
+        app.plan_recording(Vec::new(), None);
+        // Recovery after a crash places the take by the plan as autosaved: as the take would be
+        // placed on finishing without device timing.
+        let saved = app.take_plan.as_ref().map(|p| p.placement_offset);
+        assert_eq!(saved, Some(128));
+        assert_eq!(saved, Some(app.placement_offset(app.record_start, None)));
     }
 
     #[test]
