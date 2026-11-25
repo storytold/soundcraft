@@ -13,8 +13,10 @@ pub const UPDATE_APP: craft_update::app::App = craft_update::app::App {
     ..craft_update::suite::SOUNDCRAFT
 };
 
+pub mod aaf_import;
 pub mod appearance;
 pub mod bounce;
+pub mod channel_titles;
 pub mod control;
 pub mod credits;
 pub mod dialogs;
@@ -26,6 +28,7 @@ pub mod import;
 pub mod localization;
 pub mod menus;
 pub mod mix_window;
+pub mod os_window;
 pub mod palette;
 pub mod panels;
 pub mod preferences;
@@ -63,9 +66,27 @@ mod services;
 mod state;
 
 #[cfg(test)]
+mod exit_hook_tests;
+
+#[cfg(test)]
 use app::{automation_step_due, editor_changes, editor_states_due, failed_plugin_status};
+pub use channel_titles::{os_title, os_title_with_section};
 pub use services::Services;
 pub use state::{DragSource, MainWindow};
+
+/// The version line this build reports: the app binary sets the compiled identity once at start-up
+/// (a Nightly build's exact feed version), so About and diagnostics never guess it.
+static BUILD_VERSION: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+
+/// Record the compiled version. Later calls are ignored: the first value is the process's build.
+pub fn set_build_version(version: String) {
+    let _ = BUILD_VERSION.set(version);
+}
+
+/// The compiled version, or the crate's own when no binary recorded one (tests, the web build).
+pub fn build_version() -> &'static str {
+    BUILD_VERSION.get().map_or(env!("CARGO_PKG_VERSION"), String::as_str)
+}
 
 /// UI state (serde, so agents can read and set it).
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -329,6 +350,7 @@ pub struct SoundApp {
     pub preset_dir: Option<std::path::PathBuf>,
     last_autosave: Option<std::time::Instant>,
     pub dialogs: dialogs::Dialogs,
+    pub aaf_import: aaf_import::ImportState,
     pub(crate) updates_rt: updates_ui::Runtime,
     pub meters: HashMap<TrackId, MeterDisplay>,
     pub main_meter: MeterDisplay,

@@ -319,6 +319,15 @@ fn gcd(mut a: u32, mut b: u32) -> u32 {
     a.max(1)
 }
 
+/// The number of samples [`resample`] gives for `len` samples converted from `from` to `to` Hz,
+/// so a caller can lay out converted audio before converting it.
+pub fn resampled_len(len: usize, from: u32, to: u32) -> usize {
+    if from == 0 || to == 0 || from == to {
+        return len;
+    }
+    ((len as f64 * (f64::from(to) / f64::from(from))).round() as usize).min(MAX_OFFLINE_SAMPLES)
+}
+
 /// High-quality windowed-sinc sample-rate conversion from `from` Hz to `to` Hz.
 pub fn resample(ch: &[Vec<f32>], from: u32, to: u32) -> Vec<Vec<f32>> {
     if from == 0 || to == 0 || from == to {
@@ -330,7 +339,7 @@ pub fn resample(ch: &[Vec<f32>], from: u32, to: u32) -> Vec<Vec<f32>> {
     let bank = Polyphase::new(from, to, &table);
     ch.iter()
         .map(|c| {
-            let out_len = ((c.len() as f64 * ratio).round() as usize).min(MAX_OFFLINE_SAMPLES);
+            let out_len = resampled_len(c.len(), from, to);
             match &bank {
                 Some(b) => b.run(c, out_len),
                 None => resample_channel(c, ratio, out_len, &table),
