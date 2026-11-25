@@ -422,6 +422,14 @@ mod tests {
     }
 
     #[test]
+    fn reported_latency_uses_the_language_decimal_separator() {
+        let ms = 6.8_f64;
+        assert_eq!(format_positional("{:.1} ms ({} samples)", &[Arg::new(&ms), Arg::new(&326)]), "6.8 ms (326 samples)");
+        let _scope = enter(Language::PortugueseBrazil);
+        assert_eq!(format_positional("{:.1} ms ({} samples)", &[Arg::new(&ms), Arg::new(&326)]), "6,8 ms (326 amostras)");
+    }
+
+    #[test]
     fn braces_can_be_escaped() {
         assert_eq!(format_positional("{{{}}}", &[Arg::new(&5)]), "{5}");
     }
