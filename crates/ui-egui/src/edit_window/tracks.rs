@@ -208,7 +208,7 @@ pub(super) fn view_menu(app: &mut SoundApp, ui: &mut Ui, track: &Track) {
 pub(crate) fn height_menu(app: &mut SoundApp, ui: &mut Ui, id: TrackId) {
     let s = app.engine.session();
     let current = s.track(id).map(|t| t.height);
-    let own: Vec<TrackId> = if s.edit.selected_tracks.contains(&id) { s.edit.selected_tracks.iter().copied().collect() } else { vec![id] };
+    let own: Vec<TrackId> = if s.edit.selected_tracks.contains(&id) { s.edit.selected_tracks.to_vec() } else { vec![id] };
     for h in TrackHeight::ALL {
         if ui.selectable_label(current == Some(h), h.label()).clicked() {
             let tracks = height_targets(app.engine.session(), ui.input(|i| i.modifiers), &own);
