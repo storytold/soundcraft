@@ -66,7 +66,8 @@ impl SoundApp {
     pub(super) fn watch_output(&mut self) {
         if let Some(cause) = self.reopen_pending.take() {
             self.reconnect_audio();
-            self.ui.status = output_status(false, false, &cause, crate::localization::text("SoundCraft reopened it."));
+            let silent = self.player.as_ref().is_none_or(|p| p.silent);
+            self.ui.status = reset_reopen_status(&cause, silent);
             return;
         }
         if let Some(p) = &mut self.player {
@@ -254,6 +255,18 @@ fn output_status(recording: bool, playing: bool, cause: &str, then: &str) -> Str
     }
 }
 
+/// The status line after the automatic reopen that followed a device reset (`cause`). A reopen
+/// that could not start an output stream falls back to the silent clock, which has no recovery of
+/// its own: the user must reconnect.
+fn reset_reopen_status(cause: &str, silent: bool) -> String {
+    let then = if silent {
+        crate::localization::text("Use Reconnect audio device in Setup › Playback Engine.")
+    } else {
+        crate::localization::text("SoundCraft reopened it.")
+    };
+    output_status(false, false, cause, then)
+}
+
 /// The status line for an idle ASIO recovery attempt on device `name`, if it did anything.
 fn idle_recovery_status(outcome: soundcraft_playback::IdleRecovery, name: &str) -> Option<String> {
     use soundcraft_playback::IdleRecovery;
@@ -310,9 +323,21 @@ pub(super) fn wants_audio_input(s: &soundcraft_model::Session) -> bool {
 
 #[cfg(test)]
 mod reset_tests {
-    use super::{AUTO_REOPEN_GAP, idle_recovery_status, input_status, may_reopen, output_status};
+    use super::{AUTO_REOPEN_GAP, idle_recovery_status, input_status, may_reopen, output_status, reset_reopen_status};
     use soundcraft_playback::IdleRecovery;
     use std::time::{Duration, Instant};
+
+    #[test]
+    fn a_reset_reopen_that_found_no_output_says_to_reconnect() {
+        // The reopen falls back to the silent clock when no output stream starts; the status line
+        // said "SoundCraft reopened it." while nothing played, and nothing later corrected it.
+        let cause = "“Model Mixer ASIO” asked to be reopened";
+        assert_eq!(reset_reopen_status(cause, false), "Audio output: “Model Mixer ASIO” asked to be reopened. SoundCraft reopened it.");
+        assert_eq!(
+            reset_reopen_status(cause, true),
+            "Audio output: “Model Mixer ASIO” asked to be reopened. Use Reconnect audio device in Setup › Playback Engine."
+        );
+    }
 
     #[test]
     fn an_idle_recovery_says_whether_the_device_is_back() {
