@@ -362,7 +362,10 @@ impl Reader {
         let last = self.last_at.unwrap_or(now).min(self.last_group.unwrap_or(now).saturating_add((2. * frame_us).ceil() as i64));
         let elapsed = now.saturating_sub(last);
         if self.options.freewheel == 0 && !self.options.jam {
-            if elapsed as f64 >= frame_us * 2. {
+            // MTC verifies the full time every eight quarter frames (two frames). Allow a 10%
+            // delivery margin, as MIDI Active Sensing does, so whole groups delivered in one
+            // burst every two frames stay locked.
+            if elapsed as f64 > frame_us * 2.2 {
                 self.loss();
             }
             return;
@@ -600,7 +603,7 @@ mod tests {
     use crate::midi::MidiFeed;
     use std::sync::atomic::AtomicBool;
 
-    fn cycle(frame: u8, mut receive: impl FnMut(&[u8])) {
+    pub(super) fn cycle(frame: u8, mut receive: impl FnMut(&[u8])) {
         for (i, nibble) in [frame & 15, frame >> 4, 0, 0, 0, 0, 0, 2].into_iter().enumerate() {
             receive(&[0xf1, (i as u8) << 4 | nibble]);
         }
@@ -992,10 +995,31 @@ mod dropout_tests {
             if discontinuity {
                 r.read(&[0xf1, 0x30], 151_000);
             }
-            assert!(matches!(r.tracking(if discontinuity { 151_001 } else { 191_667 }), Tracking::Idle));
+            if !discontinuity {
+                assert!(matches!(r.tracking(198_333), Tracking::Rolling { .. }));
+            }
+            assert!(matches!(r.tracking(if discontinuity { 151_001 } else { 198_334 }), Tracking::Idle));
             assert_eq!(r.stats.freewheel_entries, 0);
-            assert_eq!(r.take(191_668), Some(ChaseEvent::Stop));
+            assert_eq!(r.take(198_335), Some(ChaseEvent::Stop));
         }
+    }
+
+    #[test]
+    fn none_stays_locked_when_whole_groups_arrive_every_two_frames() {
+        let mut r = Reader::default();
+        r.options.freewheel = 0;
+        for group in 0..12_u8 {
+            let at = i64::from(group) * 80_000;
+            // The audio callback may check tracking just before the MIDI callback delivers the group.
+            if group > 1 {
+                assert!(matches!(r.tracking(at + 5_000), Tracking::Rolling { .. }), "group {group}");
+            }
+            super::tests::cycle(2 * group, |b| r.read(b, at + 5_000));
+            assert_ne!(r.take(at + 5_001), Some(ChaseEvent::Stop), "group {group}");
+        }
+        assert_eq!((r.stats.locks, r.stats.losses), (1, 0));
+        assert!(matches!(r.tracking(11 * 80_000 + 5_000 + 88_000), Tracking::Rolling { .. }));
+        assert!(matches!(r.tracking(11 * 80_000 + 5_000 + 88_001), Tracking::Idle));
     }
 
     #[test]
