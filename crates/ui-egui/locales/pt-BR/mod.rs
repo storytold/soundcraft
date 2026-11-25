@@ -118,7 +118,6 @@ pub(super) fn translate(source: &str) -> Option<&'static str> {
         "Grab bag" => "Diversos",
         "Grid" => "Grade",
         "Identify Beat: selection is" => "Identificar batida: a seleção tem",
-        "beat(s) at" => "batida(s) em",
         "in" => "em",
         "Includes alternate takes and muted clips. Refresh after editing." => {
             "Inclui tomadas alternativas e clipes silenciados. Atualize após editar."
@@ -940,9 +939,6 @@ fn menu_translate(source: &str) -> Option<&'static str> {
         "start bpm " => "andamento inicial ",
         "end bpm " => "andamento final ",
         "Identify beat bars" => "Compassos para identificar a batida",
-        "Identify beat beats" => "Batidas para identificar a batida",
-        "Identify meter numerator" => "Numerador do compasso para identificar a batida",
-        "Identify meter denominator" => "Denominador do compasso para identificar a batida",
         "Start tempo (BPM)" => "Andamento inicial (BPM)",
         "End tempo (BPM)" => "Andamento final (BPM)",
         "Meter numerator" => "Numerador do compasso",
