@@ -1,6 +1,6 @@
 # SoundCraft roadmap: milestones and what's next
 
-> **Last reviewed:** 2026-11-14 · **Last updated:** 2026-11-18 · **Change:** minor (M6: long takes continue in a new file (#888); previously minor: MIDI input landed, the gate row needs checking on macOS and Windows; strict external-WAV AAF import; previously trivial: 28 built-in processors with the Frequency Shifter; G-05 estimate after Linux/X11 plugin editors; M15: partial pt-BR catalog; readiness estimates unchanged) · **Target:** Avid Pro Tools Ultimate 2026.4.1
+> **Last reviewed:** 2026-11-14 · **Last updated:** 2026-11-24 · **Change:** trivial (M15: French and Spanish catalogs, partial; previously minor: M6: long takes continue in a new file (#888); previously minor: MIDI input landed, the gate row needs checking on macOS and Windows; strict external-WAV AAF import; previously trivial: 28 built-in processors with the Frequency Shifter; G-05 estimate after Linux/X11 plugin editors; M15: partial pt-BR catalog; readiness estimates unchanged) · **Target:** Avid Pro Tools Ultimate 2026.4.1
 
 Forward-looking plan. Status and numbers: [`../ROADMAP.md`](../ROADMAP.md) and
 [`target-app-parity.md`](target-app-parity.md); the ranked work list: [`gaps.md`](gaps.md).
@@ -49,7 +49,7 @@ Status: ✅ done · 🟡 in progress · ⬜ not started.
 | M12 | **Hardware**: audio interfaces, MIDI devices, sync, control surfaces | ⬜ | 110–180 |
 | M13 | **Interchange**: AAF/OMF import/export, disk streaming | 🟡 strict external-WAV AAF import; export, OMF and disk streaming missing | 65–115 |
 | M14 | **Fidelity harness** against Pro Tools (null tests, plugin responses) | ⬜ | 20–30 |
-| M15 | **Localization**: catalog, fonts/RTL, the 8 Pro Tools languages first | 🟡 partial (pt-BR catalog; needs native review; PRs #141, #143 open) | 45–80 |
+| M15 | **Localization**: catalog, fonts/RTL, the 8 Pro Tools languages first | 🟡 partial (pt-BR catalog; French and Spanish partial; needs native review; PR #141 open) | 45–80 |
 | M16 | Built-in plugin depth, sidechain, ARA | ⬜ | 110–170 |
 | M17 | Immersive delivery (ADM BWF, object renderer, binaural) and video depth | ⬜ | 80–130 |
 
@@ -88,6 +88,7 @@ There is no `cargo xtask scorecard` in this repo; the measured number is `cargo 
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-11-24 | trivial | M15: French and Spanish catalogs (partial, ≈ 62 %) on the `localization` layer (#143). Estimates unchanged |
 | 2026-11-18 | minor | MIDI input devices landed (G-02 shrunk); the MIDI gate row is unverified until checked on macOS and Windows |
 | 2026-11-14 | minor | M13 is in progress with strict external-WAV AAF import; the exchange gate still fails without AAF export, OMF or `.ptx`; estimates unchanged |
 | 2026-11-09 | trivial | 28 built-in processors with the Frequency Shifter |

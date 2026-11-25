@@ -1,5 +1,9 @@
 //! Language selection and source-language fallback for UI strings.
 
+#[path = "../locales/es/mod.rs"]
+mod es;
+#[path = "../locales/fr/mod.rs"]
+mod fr;
 #[path = "../locales/pt-BR/mod.rs"]
 mod pt_br;
 
@@ -17,17 +21,23 @@ pub enum Language {
     English,
     #[serde(rename = "pt-BR")]
     PortugueseBrazil,
+    #[serde(rename = "fr")]
+    French,
+    #[serde(rename = "es")]
+    Spanish,
 }
 
 impl Language {
     /// All supported languages, in the order they are shown in the language menu.
-    pub const ALL: [Self; 2] = [Self::English, Self::PortugueseBrazil];
+    pub const ALL: [Self; 4] = [Self::English, Self::PortugueseBrazil, Self::French, Self::Spanish];
 
     /// Stable language tag used in preferences and control commands.
     pub const fn id(self) -> &'static str {
         match self {
             Self::English => "en",
             Self::PortugueseBrazil => "pt-BR",
+            Self::French => "fr",
+            Self::Spanish => "es",
         }
     }
 
@@ -36,6 +46,8 @@ impl Language {
         match self {
             Self::English => "English",
             Self::PortugueseBrazil => "Portuguese (Brazil)",
+            Self::French => "French",
+            Self::Spanish => "Spanish",
         }
     }
 
@@ -47,7 +59,7 @@ impl Language {
     pub fn localize_decimal(self, number: &str) -> String {
         match self {
             Self::English => number.to_owned(),
-            Self::PortugueseBrazil => number.replace('.', ","),
+            Self::PortugueseBrazil | Self::French | Self::Spanish => number.replace('.', ","),
         }
     }
 
@@ -56,6 +68,8 @@ impl Language {
         match self {
             Self::English => source,
             Self::PortugueseBrazil => pt_br::translate(source).unwrap_or(source),
+            Self::French => fr::translate(source).unwrap_or(source),
+            Self::Spanish => es::translate(source).unwrap_or(source),
         }
     }
 }
@@ -89,6 +103,8 @@ fn error_text_in(language: Language, message: &str, depth: usize) -> String {
     let templates: &[(&str, &str)] = match language {
         Language::English => &[],
         Language::PortugueseBrazil => pt_br::ERROR_TEMPLATES,
+        Language::French => fr::ERROR_TEMPLATES,
+        Language::Spanish => es::ERROR_TEMPLATES,
     };
     let mut best: Option<(usize, &str, Vec<(String, String)>)> = None;
     for (template, translation) in templates {
@@ -354,7 +370,8 @@ mod tests {
             assert_eq!(decoded, language);
         }
         assert_eq!(Language::parse(" PT-br "), Some(Language::PortugueseBrazil));
-        assert_eq!(Language::parse("fr"), None);
+        assert_eq!(Language::parse(" FR "), Some(Language::French));
+        assert_eq!(Language::parse("de"), None);
     }
 
     #[test]
@@ -362,6 +379,10 @@ mod tests {
         assert_ne!(Language::PortugueseBrazil.text("Appearance"), "Appearance");
         assert_eq!(Language::PortugueseBrazil.text("A source string with no catalog entry"), "A source string with no catalog entry");
         assert_eq!(Language::English.text("Appearance"), "Appearance");
+        for language in [Language::French, Language::Spanish] {
+            assert_ne!(language.text("Appearance"), "Appearance", "{language:?}");
+            assert_eq!(language.text("A source string with no catalog entry"), "A source string with no catalog entry");
+        }
     }
 
     #[test]
@@ -460,9 +481,17 @@ mod tests {
         None
     }
 
-    /// Every `"source" => "translation"` pair of the catalog, read from its source file.
-    fn catalog_entries() -> Vec<(String, String)> {
-        let text = include_str!("../locales/pt-BR/mod.rs");
+    type Lookup = fn(&str) -> Option<&'static str>;
+
+    /// Every catalog: its tag, source file and lookup.
+    const CATALOGS: [(&str, &str, Lookup); 3] = [
+        ("pt-BR", include_str!("../locales/pt-BR/mod.rs"), super::pt_br::translate),
+        ("fr", include_str!("../locales/fr/mod.rs"), super::fr::translate),
+        ("es", include_str!("../locales/es/mod.rs"), super::es::translate),
+    ];
+
+    /// Every `"source" => "translation"` pair of a catalog, read from its source file.
+    fn catalog_entries(text: &str) -> Vec<(String, String)> {
         let mut lines = text.lines().map(str::trim);
         let mut entries = Vec::new();
         while let Some(line) = lines.next() {
@@ -495,20 +524,24 @@ mod tests {
 
     #[test]
     fn catalog_entries_are_parsed_and_unique() {
-        let entries = catalog_entries();
-        assert!(entries.len() > 1000, "parsed only {} catalog entries", entries.len());
-        let mut keys: Vec<&str> = entries.iter().map(|(key, _)| key.as_str()).collect();
-        keys.sort_unstable();
-        let before = keys.len();
-        keys.dedup();
-        assert_eq!(before, keys.len(), "duplicate catalog keys");
+        for (tag, text, _) in CATALOGS {
+            let entries = catalog_entries(text);
+            assert!(entries.len() > 1000, "{tag}: parsed only {} catalog entries", entries.len());
+            let mut keys: Vec<&str> = entries.iter().map(|(key, _)| key.as_str()).collect();
+            keys.sort_unstable();
+            let before = keys.len();
+            keys.dedup();
+            assert_eq!(before, keys.len(), "{tag}: duplicate catalog keys");
+        }
     }
 
     #[test]
     fn catalog_translations_keep_the_english_placeholders() {
-        for (source, translation) in catalog_entries() {
-            assert_eq!(placeholders(&source), placeholders(&translation), "placeholders differ for {source:?}");
-            assert_eq!(super::pt_br::translate(&source), Some(translation.as_str()), "lookup differs for {source:?}");
+        for (tag, text, translate) in CATALOGS {
+            for (source, translation) in catalog_entries(text) {
+                assert_eq!(placeholders(&source), placeholders(&translation), "{tag}: placeholders differ for {source:?}");
+                assert_eq!(translate(&source), Some(translation.as_str()), "{tag}: lookup differs for {source:?}");
+            }
         }
     }
 
