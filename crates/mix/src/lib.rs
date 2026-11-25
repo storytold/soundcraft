@@ -546,7 +546,7 @@ impl MixEngine {
             let main_first = main_first_channel(s, self.device_channels);
             if !s.outputs.is_empty() {
                 self.main_outputs.push(0);
-                close_overlaps(s, main_first, &mut self.main_outputs);
+                close_overlaps(s, main_first, self.device_channels, &mut self.main_outputs);
                 self.main_outputs.retain(|&i| i != 0);
                 self.aux_fed_outputs.push(0);
             }
@@ -565,7 +565,7 @@ impl MixEngine {
             }
             // Paths that share a physical channel sum there, so a path overlapping a waiting one
             // waits as well.
-            close_overlaps(s, main_first, &mut self.aux_fed_outputs);
+            close_overlaps(s, main_first, self.device_channels, &mut self.aux_fed_outputs);
         }
         for (i, st) in work.iter_mut() {
             let Some(t) = s.tracks.get(*i) else { continue };
@@ -763,13 +763,8 @@ impl MixEngine {
                     return;
                 }
                 let Some(path) = s.outputs.iter().find(|path| path.name.eq_ignore_ascii_case(name)) else { return };
-                let width = path.format.channels();
-                if !(1..=MAX_CHANNELS).contains(&width) {
-                    return;
-                }
-                let first = usize::from(path.first_channel);
-                let Some(dst) = self.physical.get_mut(first..first + width) else { return };
-                (dst, path.format)
+                let Some(channels) = fitted_channels(path, self.physical.len()) else { return };
+                (&mut self.physical[channels], path.format)
             }
             Route::None => return,
         };
@@ -797,22 +792,33 @@ fn output_index(s: &Session, name: &str) -> Option<usize> {
     s.outputs.iter().position(|path| path.name.eq_ignore_ascii_case(name))
 }
 
-/// Physical channels of output path `i`; the main mix's (the first) starts at `main_first`
-/// ([`main_first_channel`]), as playback puts it.
-fn path_channels(s: &Session, i: usize, main_first: usize) -> Option<std::ops::Range<usize>> {
+/// Physical channels of a named output path (not the main mix's) on a device of `channels`
+/// outputs, or `None` when it does not fit there: then nothing is played on it.
+fn fitted_channels(path: &soundcraft_model::OutputPath, channels: usize) -> Option<std::ops::Range<usize>> {
+    let width = path.format.channels();
+    let first = usize::from(path.first_channel);
+    ((1..=MAX_CHANNELS).contains(&width) && first + width <= channels.min(MAX_HARDWARE_CHANNELS)).then_some(first..first + width)
+}
+
+/// Physical channels of output path `i` on a device of `channels` outputs; the main mix's (the
+/// first) starts at `main_first` ([`main_first_channel`]), as playback puts it. `None` for a path
+/// that does not fit the device ([`fitted_channels`]), as nothing is played on it.
+fn path_channels(s: &Session, i: usize, main_first: usize, channels: usize) -> Option<std::ops::Range<usize>> {
     let path = s.outputs.get(i)?;
-    let (first, width) = if i == 0 { (main_first, main_channels(s)) } else { (usize::from(path.first_channel), path.format.channels()) };
-    Some(first..first + width)
+    if i == 0 { Some(main_first..main_first + main_channels(s)) } else { fitted_channels(path, channels) }
 }
 
 /// Add to `paths` (indices into `Session::outputs`) every path that shares a physical channel
-/// with one of them, directly or through a chain of such paths: they sum there.
-fn close_overlaps(s: &Session, main_first: usize, paths: &mut Vec<usize>) {
+/// with one of them on a device of `channels` outputs, directly or through a chain of such paths:
+/// they sum there. A path that does not fit the device plays nothing, so it links no others.
+fn close_overlaps(s: &Session, main_first: usize, channels: usize, paths: &mut Vec<usize>) {
     loop {
         let before = paths.len();
         for i in 0..s.outputs.len() {
-            let Some(a) = path_channels(s, i, main_first) else { continue };
-            if !paths.contains(&i) && paths.iter().any(|&j| path_channels(s, j, main_first).is_some_and(|b| a.start < b.end && b.start < a.end)) {
+            let Some(a) = path_channels(s, i, main_first, channels) else { continue };
+            if !paths.contains(&i)
+                && paths.iter().any(|&j| path_channels(s, j, main_first, channels).is_some_and(|b| a.start < b.end && b.start < a.end))
+            {
                 paths.push(i);
             }
         }
