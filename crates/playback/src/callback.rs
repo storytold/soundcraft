@@ -91,6 +91,11 @@ pub(crate) struct AudioState {
     pass_started: bool,
     /// The stamp of the pass's first sample, until the UI's lock lets it be published.
     pending_pass: Option<super::latency::Heard>,
+    /// A record pass began (its number, see [`super::latency::HeardStamps::begin_record`]): the
+    /// next fill that plays latches the first sample it outputs as the pass's record stamp.
+    record_begun: Option<u64>,
+    /// That record stamp, until the UI's lock lets it be published.
+    pending_record: Option<(u64, super::latency::Heard)>,
     input: Option<Arc<record::InputRing>>,
     recording: bool,
     midi: Option<Arc<midi::MidiFeed>>,
@@ -190,6 +195,8 @@ impl AudioState {
             chunk_offset: 0,
             pass_started: false,
             pending_pass: None,
+            record_begun: None,
+            pending_record: None,
             input: None,
             recording: false,
             midi: None,
@@ -238,6 +245,9 @@ impl AudioState {
                 }
                 Cmd::Recording(r, pass) => {
                     self.recording = r;
+                    // The heard moment of the record start is latched as the pass begins: once
+                    // the loop has gone round, the record start is heard again in later rounds.
+                    self.record_begun = r.then(|| self.shared.heard.latest_record());
                     self.midi_wraps = 0;
                     self.midi_stopped = None;
                     // The pass has begun here: its start is no longer waited for.
@@ -652,6 +662,10 @@ impl AudioState {
         let sample = self.pos as f64 - self.pending_len as f64 + self.read;
         let heard = super::latency::Heard { sample, when, speed };
         self.shared.heard.record(heard, pass_started, &mut self.pending_pass);
+        if let Some(n) = self.record_begun.take() {
+            self.pending_record = Some((n, heard));
+        }
+        self.shared.heard.record_begun(&mut self.pending_record);
     }
 
     /// Fill an interleaved device buffer.
