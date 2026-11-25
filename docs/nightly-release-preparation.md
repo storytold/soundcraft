@@ -14,13 +14,17 @@ gh api repos/storytold/soundcraft/actions/workflows/nightly.yml --jq .id
 The callers pass no platform secrets. The unsigned reusable caller's maximum OIDC/attestation
 permissions are for its isolated attester; its compiler narrows to contents and Actions read
 only, with no OIDC, attestation write, release environment or platform signing secrets.
-Shared tooling is pinned to `88148a57ef09ef407d73c0f385e04cc7f4c2720a`, the `craft-common-actions`
-main commit that merged [#364](https://github.com/storytold/craft-common-actions/pull/364), which
-lets the signer run on the policy's signer branch (`release` or `nightly-signer`). It includes
-[#363](https://github.com/storytold/craft-common-actions/pull/363) (the multi-app pipeline, which
-makes the signer's `app-name` input required), #339 (`605d5876`) and #342 (`a4f6fd51`).
-Both callers name it in `uses` and `tooling-revision`. A pin is reviewed
-source availability, not provider, queue, native signing or crypto qualification.
+Shared tooling is pinned to `fc7124a1defa96813aee060031dc8b4d2afa3652`, the craft-common-actions
+main commit that merged [#370](https://github.com/storytold/craft-common-actions/pull/370) (the
+Windows and macOS nightly registry rows for the 14 apps) after
+[#369](https://github.com/storytold/craft-common-actions/pull/369) (shared helper checkouts kept out
+of the app's clean-source check, and macOS on `macos-15`), following
+[#364](https://github.com/storytold/craft-common-actions/pull/364) (the signer may run on the
+policy's signer branch) and [#363](https://github.com/storytold/craft-common-actions/pull/363) (the
+multi-app pipeline, which makes the signer's `app-name` input required and admits any reviewed
+registry app), with #342 (`a4f6fd51`, policy v3 and the `platforms` input) and #339 (`605d5876`)
+earlier. Both callers name it in `uses` and `tooling-revision`. A pin is reviewed source
+availability, not provider, queue, native signing or crypto qualification.
 Existing stable workflows are unchanged.
 
 **First runs.** The first runs are manual dispatches in this order: `nightly.yml` on `main` (only a
@@ -63,7 +67,7 @@ Read on 2026-11-24; re-read anything that may have moved before `nightly-signer`
 |---|---|---|
 | `repository_id` | `1408486424` | `gh api repos/storytold/soundcraft --jq .id` |
 | `producer_workflow_id` | `429730684` | `gh api repos/storytold/soundcraft/actions/workflows/nightly.yml --jq .id` (path `.github/workflows/nightly.yml`, state `active`) |
-| `producer_tooling_revision`, `signer_tooling_revision`, `producer_workflow_ref` | `88148a57…` (`craft-common-actions` signer-branch change, on #363) | The callers' pin |
+| `producer_tooling_revision`, `signer_tooling_revision`, `producer_workflow_ref` | `fc7124a1…` (`craft-common-actions` Windows/macOS registry rows, #370 after #369, following #364) | The callers' pin |
 | `release_branch` | `nightly-signer` | The shared validator allows `release` or `nightly-signer`; the signer guard names the same ref |
 | `manual_actors` / `automatic_signer_actors` | the five release managers / `[]` | `release-managers` team (id `19837241`); equals the producer caller's `manual-actors` |
 | `max_age_seconds`, `max_artifact_bytes` | `86400`, `2147483648` | Go-live checklist |
