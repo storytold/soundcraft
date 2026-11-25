@@ -153,8 +153,12 @@ struct Shared {
 pub enum OutputTrouble {
     /// A block panicked; the output stays silent.
     Bug,
-    /// The device went away, or the stream was invalidated and must be rebuilt.
+    /// The device went away.
     Gone,
+    /// The device is still present but asked for the stream to be rebuilt (cpal's
+    /// `StreamInvalidated`, an ASIO driver's reset request, for example after its buffer size
+    /// changed in the driver's own settings). Reopening the device restores audio.
+    Reset,
     /// The device stopped asking for audio while playing.
     Stalled,
     /// The ASIO driver is still calling back but is no longer keeping up with its audio clock.

@@ -84,7 +84,9 @@ where
             // reconnects; a rerouted default device (`DeviceChanged`) keeps playing on the new
             // route, and an xrun is transient, so neither counts as losing the stream.
             if devices::stream_lost(&e) {
-                gone.gone.store(true, Ordering::Relaxed);
+                // Set before `gone`, so a reader that sees `gone` also sees whether it was a reset.
+                gone.reset.store(devices::stream_reset(&e), Ordering::Relaxed);
+                gone.gone.store(true, Ordering::Release);
             }
             log::warn!("audio stream error: {e}");
         },
