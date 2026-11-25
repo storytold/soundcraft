@@ -66,6 +66,7 @@ pub const PARAM_FLAG_DISPLAY_LOG: u32 = 1 << 22;
 pub const PARAM_FLAG_READABLE: u32 = 1 << 30;
 pub const PARAM_FLAG_WRITABLE: u32 = 1 << 31;
 pub const PARAM_FLAG_METER_READ_ONLY: u32 = 1 << 15;
+pub const PARAM_FLAG_NON_REAL_TIME: u32 = 1 << 24;
 
 pub const UNIT_INDEXED: u32 = 1;
 pub const UNIT_CUSTOM: u32 = 26;
