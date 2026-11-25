@@ -16,20 +16,33 @@ pub(crate) fn midi_input_name(track: &Track) -> String {
     if input.device.is_none() && input.channel.is_none() { crate::localization::text("All MIDI").to_string() } else { input.label() }
 }
 
+/// The devices the MIDI input menu offers, each with whether it is connected: the enabled
+/// devices, the MIDI Keyboard window (connected while it is open, #1752), and `current`, the
+/// device the track listens to, which stays in the list while it is unplugged.
+fn midi_input_devices(app: &SoundApp, current: Option<&str>) -> Vec<(String, bool)> {
+    let Some(m) = &app.midi_inputs else {
+        return current.map(|d| vec![(d.to_string(), false)]).unwrap_or_default();
+    };
+    let mut devices: Vec<(String, bool)> = m.ports().iter().filter(|p| p.enabled).map(|p| (p.name.clone(), p.open)).collect();
+    let keyboard = crate::panels::windows::KEYBOARD_PORT;
+    if !devices.iter().any(|(n, _)| n == keyboard) {
+        devices.push((keyboard.to_string(), app.ui.show_midi_keyboard));
+    }
+    if let Some(d) = current
+        && !devices.iter().any(|(n, _)| n == d)
+    {
+        devices.push((d.to_string(), false));
+    }
+    devices
+}
+
 /// The MIDI input menu of a MIDI or instrument track: a device (or all) and a channel (or all).
 pub(crate) fn midi_input_menu(app: &mut SoundApp, ui: &mut Ui, id: TrackId) {
     let Some(route) = app.engine.session().track(id).map(|t| t.mixer.input.clone()) else { return };
     let now = soundcraft_model::MidiInput::of(&route);
     let (device, channel) = (now.device.map(str::to_string), now.channel);
     let mut pick: Option<(Option<String>, Option<u8>)> = None;
-    let mut devices: Vec<(String, bool)> =
-        app.midi_inputs.as_ref().map(|m| m.ports().iter().filter(|p| p.enabled).map(|p| (p.name.clone(), p.open)).collect()).unwrap_or_default();
-    // A device the track listens to stays in the list while it is unplugged.
-    if let Some(d) = &device
-        && !devices.iter().any(|(n, _)| n == d)
-    {
-        devices.push((d.clone(), false));
-    }
+    let devices = midi_input_devices(app, device.as_deref());
     ui.strong(crate::localization::text("MIDI input"));
     if ui.selectable_label(device.is_none(), crate::localization::text("All devices")).clicked() {
         pick = Some((None, channel));
@@ -40,7 +53,8 @@ pub(crate) fn midi_input_menu(app: &mut SoundApp, ui: &mut Ui, id: TrackId) {
             pick = Some((Some(name.clone()), channel));
         }
     }
-    if devices.is_empty() {
+    // The MIDI Keyboard window alone is no device found.
+    if devices.iter().all(|(n, _)| n == crate::panels::windows::KEYBOARD_PORT) {
         ui.weak(crate::localization::text("No MIDI input device found"));
     }
     ui.separator();
@@ -178,5 +192,17 @@ mod midi_input_tests {
             assert_eq!(shown(&app, midi), text, "{input}");
         }
         assert_eq!(shown(&app, audio), "In 1", "an audio track still shows its audio input");
+    }
+
+    /// The MIDI Keyboard window is a device a track can listen to alone, with no hardware
+    /// connected: connected while the window is open (#1752).
+    #[test]
+    fn the_midi_input_menu_offers_the_midi_keyboard_window() {
+        let mut app = SoundApp::new(soundcraft_engine::Engine::default(), None, crate::Services::default());
+        assert_eq!(midi_input_devices(&app, None), Vec::new(), "no MIDI system, no keyboard to play through it");
+        app.midi_inputs = Some(soundcraft_playback::midi::MidiInputs::with_port_names(Vec::new(), Vec::new()));
+        assert_eq!(midi_input_devices(&app, None), vec![("MIDI Keyboard".to_string(), false)]);
+        app.ui.show_midi_keyboard = true;
+        assert_eq!(midi_input_devices(&app, Some("Keys")), vec![("MIDI Keyboard".to_string(), true), ("Keys".to_string(), false)]);
     }
 }
