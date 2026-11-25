@@ -310,6 +310,20 @@ mod tests {
     }
 
     #[test]
+    fn a_half_speed_play_ending_while_online_restores_normal_speed() {
+        let mut host = app();
+        assert!(host.mtc_online);
+        let player = soundcraft_playback::Player::new(host.engine.session_arc());
+        player.set_speed(0.5);
+        host.player = Some(player);
+        // The bounded Half Speed play has ended in the callback.
+        host.engine.transport.playing = true;
+        host.handle_transport(0.0);
+        assert!(!host.engine.transport.playing);
+        assert_eq!(host.player.as_ref().unwrap().speed(), 1.0);
+    }
+
+    #[test]
     fn online_service_reports_why_a_pending_record_was_refused() {
         let mut host = app();
         let reason = host.run("transport.record", json!({})).unwrap_err();

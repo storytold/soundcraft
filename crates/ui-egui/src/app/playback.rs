@@ -580,6 +580,8 @@ impl SoundApp {
             if ended {
                 if self.mtc_online {
                     // The next input lock can already be rolling by the time a queued Stop reaches the device.
+                    // Half Speed still must not carry over to the next Play; chase runs at normal speed.
+                    p.set_speed(1.0);
                     self.note_play_stopped();
                 } else {
                     self.stop_play();
