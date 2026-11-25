@@ -1976,3 +1976,22 @@ fn a_stopped_locate_keeps_a_held_keyboard_note_sounding() {
     feed.receive(0, &[0x80, 60, 0]);
     assert!(!heard(&mut st, 60));
 }
+
+#[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+#[test]
+fn a_stopped_locate_while_monitoring_publishes_the_transport_position() {
+    use crate::sync_clock::{DeviceTiming, Publisher, View};
+    use std::time::{Duration, Instant};
+    let (mut state, tx, _, _, _) = keyboard_session();
+    let view = View::default();
+    tx.send(Cmd::Clock(Some(Publisher::new(view.clone(), Arc::default())))).unwrap();
+    let now = Instant::now();
+    state.device_timing = Some(DeviceTiming::new(now, Some(Duration::ZERO), 0));
+    state.fill(&mut [0.; 1200], 2);
+    tx.send(Cmd::Locate(42_000)).unwrap();
+    state.device_timing = Some(DeviceTiming::new(now, Some(Duration::ZERO), 600));
+    state.fill(&mut [0.; 128], 2);
+    let block = view.lock().unwrap().read(now + Duration::from_millis(13), true, 0).0.unwrap();
+    assert!(!block.playing);
+    assert_eq!((block.sample, block.origin), (42_000., 42_000));
+}

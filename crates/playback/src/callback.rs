@@ -725,7 +725,7 @@ impl AudioState {
         let step = self.step(speed);
         #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
         let mut presentation = self.clock.as_mut().map(|clock| {
-            let sample = self.pos as f64 - self.pending_len as f64 + self.read;
+            let sample = if self.playing { self.pos as f64 - self.pending_len as f64 + self.read } else { self.pos as f64 };
             let limit = sample + callback_frames as f64 * step;
             let origin = *clock.origin.get_or_insert(sample.floor() as i64);
             let (heard_at, lead) = match self.device_timing {
