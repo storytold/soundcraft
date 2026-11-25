@@ -17,6 +17,10 @@ impl SoundApp {
             return Err(crate::localization::text("stop recording before changing the audio device").into());
         }
         self.ui.audio = cfg;
+        // The new player starts stopped: so does the transport, as with Reconnect.
+        if self.is_playing() {
+            self.stop_play();
+        }
         self.reopen_audio();
         Ok(())
     }
@@ -82,6 +86,15 @@ impl SoundApp {
             }
         }
         let Some(p) = &self.player else { return };
+        // While the device is away there is no output stream to run the transport: a Play (or a
+        // record) started meanwhile stops at once, and the idle recovery keeps trying.
+        let (recording, playing) = (self.engine.transport.recording, self.engine.transport.playing);
+        if p.awaiting_asio_output() && (recording || playing) {
+            let cause = format!("“{}” {}", p.device_name, crate::localization::text("is unavailable"));
+            self.stop_play();
+            self.ui.status = output_status(recording, playing, &cause, crate::localization::text("SoundCraft reopens it when it is back."));
+            return;
+        }
         let Some(trouble) = p.trouble() else { return };
         let name = p.device_name.clone();
         let (cause, then) = match trouble {
@@ -197,6 +210,8 @@ impl SoundApp {
     /// on the next record or monitor.
     fn reopen_audio(&mut self) {
         let at = self.position();
+        // Keep what open plugin editors changed: the plugins go with the old player.
+        self.capture_plugin_states();
         // The device opened here replaces one a device reset would have reopened.
         self.reopen_pending = None;
         self.recorder = None;
