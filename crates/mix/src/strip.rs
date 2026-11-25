@@ -85,6 +85,11 @@ pub(crate) struct DelayLine {
 impl DelayLine {
     pub(crate) fn set(&mut self, len: usize, ch: usize) {
         let len = len.min(MAX_LATENCY);
+        // At zero the line is bypassed and stops taking audio in (`process`): what it holds is
+        // from before, so it starts again from silence rather than replay that.
+        if self.len == 0 && len > 0 {
+            self.clear();
+        }
         self.len = len;
         let cap = self.bufs.first().map_or(0, Vec::len);
         if self.bufs.len() != ch {

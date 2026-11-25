@@ -48,6 +48,22 @@ fn delay_line_change_keeps_buffers_and_history() {
 }
 
 #[test]
+fn a_delay_line_back_from_zero_does_not_replay_old_audio() {
+    // Low Latency Monitoring sets a monitored track's compensation to zero and back (#1754).
+    let mut d = DelayLine::default();
+    d.set(4, 1);
+    let mut io = vec![vec![1.0f32; 8]];
+    d.process(&mut io, 8);
+    d.set(0, 1);
+    let mut io = vec![vec![0.0f32; 8]];
+    d.process(&mut io, 8);
+    d.set(4, 1);
+    let mut io = vec![vec![0.0f32; 8]];
+    d.process(&mut io, 8);
+    assert_eq!(io[0], vec![0.0; 8], "audio from before the bypass came back");
+}
+
+#[test]
 fn stored_instrument_params_reach_the_plugin() {
     // #152: a saved instrument level of -12 dB must render quieter than -6 dB.
     // RMS over the held part of the note, past any parameter smoothing.
