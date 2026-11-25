@@ -61,6 +61,7 @@ fn anchored_start_preserves_attack_phase_across_device_buffers() {
             (stamp, quarters(60 + 2 * (piece / 8) as i64, rate)[piece % 8][1])
         })
         .collect();
+    let mut all = Vec::new();
     for buffer in [128, 256, 512, 2048] {
         let first: Vec<_> = (0..buffer)
             .step_by(buffer / 8)
@@ -72,5 +73,10 @@ fn anchored_start_preserves_attack_phase_across_device_buffers() {
         let spread = first.iter().max().unwrap() - first.iter().min().unwrap();
         eprintln!("buffer={buffer} first={first:?} spread={spread} us");
         assert!(spread <= 21, "buffer {buffer}: first attacks {first:?}");
+        // The stopped locate is presented one device buffer after lock (`follow_mtc`): less that
+        // buffer, every size starts the attack at the same moment.
+        all.extend(first.iter().map(|us| us - buffer as i64 * 1_000_000 / 48_000));
     }
+    let spread = all.iter().max().unwrap() - all.iter().min().unwrap();
+    assert!(spread <= 21, "first attacks less one device buffer, across sizes: {all:?}");
 }
