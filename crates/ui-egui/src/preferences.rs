@@ -1343,6 +1343,18 @@ mod tests {
         }
     }
 
+    /// `ui.set` holds the record offset to the range Setup > Playback Engine allows: a punch
+    /// waits a negative offset out, so an unbounded one would never finish.
+    #[test]
+    fn ui_set_refuses_a_record_offset_out_of_range() {
+        let mut app = SoundApp::new(Engine::default(), None, crate::Services::default());
+        assert!(app.run("ui.set", json!({"record_offset": i64::MIN})).is_err());
+        assert!(app.run("ui.set", json!({"record_offset": crate::RECORD_OFFSET_LIMIT + 1})).is_err());
+        assert_eq!(app.ui.record_offset, 0);
+        assert!(app.run("ui.set", json!({"record_offset": -crate::RECORD_OFFSET_LIMIT})).is_ok());
+        assert_eq!(app.ui.record_offset, -crate::RECORD_OFFSET_LIMIT);
+    }
+
     /// Enter belongs to the focused search field and must not apply its window.
     #[test]
     fn enter_in_search_does_not_apply_or_close_preferences() {
