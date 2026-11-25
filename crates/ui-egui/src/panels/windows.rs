@@ -895,9 +895,12 @@ fn physical_paths(app: &mut SoundApp, ui: &mut egui::Ui, input: bool, channels: 
     let direction = if input { "input" } else { "output" };
     if ui.button(crate::localization::text(if input { "New Input" } else { "New Output" })).clicked() {
         let prefix = if input { "Input" } else { "Output" };
-        let name = (1..=paths.len() + 1)
-            .map(|index| format!("{prefix} {index}"))
-            .find(|name| !paths.iter().any(|(path, _, _)| path.eq_ignore_ascii_case(name)));
+        // Output and bus names share one namespace (a route names either).
+        let busses: &[_] = if input { &[] } else { &app.engine.session().busses };
+        let taken = |name: &str| {
+            paths.iter().any(|(path, _, _)| path.eq_ignore_ascii_case(name)) || busses.iter().any(|bus| bus.name.eq_ignore_ascii_case(name))
+        };
+        let name = (1..=paths.len() + busses.len() + 1).map(|index| format!("{prefix} {index}")).find(|name| !taken(name));
         if let Some(name) = name {
             let first = (0..channels)
                 .find(|channel| {
@@ -919,6 +922,8 @@ fn physical_paths(app: &mut SoundApp, ui: &mut egui::Ui, input: bool, channels: 
             ui.end_row();
             for (index, (path_name, first_channel, path_format)) in paths.iter().enumerate() {
                 let main = !input && index == 0;
+                // The path's name as of this frame's commands: a rename below changes it.
+                let mut row_name = path_name.clone();
                 ui.push_id(index, |ui| {
                     let id = ui.scope_id().with((direction, path_name));
                     let mut name: String = ui.ctx().memory(|memory| memory.data.get_temp(id)).unwrap_or_else(|| path_name.clone());
@@ -927,10 +932,10 @@ fn physical_paths(app: &mut SoundApp, ui: &mut egui::Ui, input: bool, channels: 
                         field,
                         crate::localization::text(if input { "Input path name" } else { "Output path name" }),
                     );
-                    if edit.lost_focus() && name != *path_name {
-                        if let Err(error) = app.run("setup.io", json!({"action": format!("rename_{direction}"), "name": path_name, "new_name": name}))
-                        {
-                            app.ui.status = error;
+                    if edit.lost_focus() && name != row_name {
+                        match app.run("setup.io", json!({"action": format!("rename_{direction}"), "name": row_name, "new_name": name})) {
+                            Ok(_) => row_name = name.trim().to_string(),
+                            Err(error) => app.ui.status = error,
                         }
                         ui.data_mut(|data| data.remove::<String>(id));
                     } else if edit.has_focus() {
@@ -956,7 +961,7 @@ fn physical_paths(app: &mut SoundApp, ui: &mut egui::Ui, input: bool, channels: 
                 let upper = max_first.max(first);
                 let channel = ui.add(egui::DragValue::new(&mut first).range(1..=upper).update_while_editing(false)).labelled_by(channel_label.id);
                 if (channel.changed() || (!main && format != *path_format)) && first > 0 {
-                    let mut args = json!({"action": format!("set_{direction}"), "name": path_name, "first_channel": first - 1});
+                    let mut args = json!({"action": format!("set_{direction}"), "name": row_name, "first_channel": first - 1});
                     if !main {
                         args["format"] = json!(format.label());
                     }
@@ -967,7 +972,7 @@ fn physical_paths(app: &mut SoundApp, ui: &mut egui::Ui, input: bool, channels: 
                         ui.label(crate::localization::text(if main { "Playing from channel 1" } else { "Unavailable" }));
                     }
                     if !main && ui.small_button(crate::localization::text("Delete")).clicked() {
-                        let _ = app.run("setup.io", json!({"action": format!("delete_{direction}"), "name": path_name}));
+                        let _ = app.run("setup.io", json!({"action": format!("delete_{direction}"), "name": row_name}));
                     }
                 });
                 ui.end_row();

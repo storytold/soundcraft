@@ -1139,6 +1139,13 @@ mod tests {
         assert_eq!(e.session().track_by_name("Kick").unwrap().mixer.output, Route::Hardware("Headphones".into()));
         e.execute("track.output", &json!({"track":"Kick","output":"main","create_bus":false})).unwrap();
         assert_eq!(e.session().track_by_name("Kick").unwrap().mixer.output, Route::Main);
+        // A route names a bus or an output path, so the two never share a name.
+        let verb = e.session().busses[0].name.to_uppercase();
+        assert!(step(&mut e, json!({"action":"create_output","name":verb})).is_err());
+        assert!(step(&mut e, json!({"action":"rename_output","name":"Headphones","new_name":verb})).is_err());
+        assert!(step(&mut e, json!({"action":"create_bus","name":"headphones"})).is_err());
+        let bus = e.session().busses[0].name.clone();
+        assert!(step(&mut e, json!({"action":"rename_bus","name":bus,"new_name":"HEADPHONES"})).is_err());
     }
     #[test]
     fn comp_from_alternate_playlist() {

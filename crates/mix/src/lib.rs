@@ -140,6 +140,9 @@ pub struct MixEngine {
     /// Busses an aux returns onto, and the latency of the slowest aux return: audio written onto
     /// such a bus waits for it, so a bounce of the bus drops it as well.
     aux_fed: Vec<BusId>,
+    /// Named output paths (indices into `Session::outputs`) an aux returns onto: tracks routed
+    /// to one wait for the aux returns as the main mix does.
+    aux_fed_outputs: Vec<usize>,
     aux_latency: usize,
     /// Live input for the next block (planar), set by the audio host for input monitoring.
     pub input: Vec<Vec<f32>>,
@@ -190,6 +193,7 @@ impl MixEngine {
             latency: 0,
             track_latency: 0,
             aux_fed: Vec::new(),
+            aux_fed_outputs: Vec::new(),
             aux_latency: 0,
             input: Vec::new(),
             midi: Vec::new(),
@@ -508,12 +512,19 @@ impl MixEngine {
         // to that bus wait as well (as the ones routed to the main mix do) and the bus lines up.
         self.aux_latency = lmax_a;
         self.aux_fed.clear();
+        self.aux_fed_outputs.clear();
         if pdc {
             for t in s.tracks.iter().filter(|t| is_aux(t) && is_live(t)) {
-                if let Route::Bus(b) = &t.mixer.output
-                    && !self.aux_fed.contains(b)
-                {
-                    self.aux_fed.push(*b);
+                match &t.mixer.output {
+                    Route::Bus(b) if !self.aux_fed.contains(b) => self.aux_fed.push(*b),
+                    Route::Hardware(name) => {
+                        if let Some(path) = output_index(s, name)
+                            && !self.aux_fed_outputs.contains(&path)
+                        {
+                            self.aux_fed_outputs.push(path);
+                        }
+                    }
+                    _ => {}
                 }
             }
         }
@@ -529,7 +540,9 @@ impl MixEngine {
             let waits = match &t.mixer.output {
                 Route::Main => true,
                 Route::Bus(b) => self.aux_fed.contains(b),
-                _ => false,
+                // The first path is the main mix's.
+                Route::Hardware(name) => output_index(s, name).is_some_and(|path| path == 0 || self.aux_fed_outputs.contains(&path)),
+                Route::None | Route::Input(_) => false,
             };
             st.out_extra.set(if waits { lmax_a } else { 0 }, ch);
         }
@@ -675,7 +688,7 @@ impl MixEngine {
             apply_matrix(src, frames, &mut dst.buf, &m, gain);
         }
         let src: &[Vec<f32>] = match &t.mixer.output {
-            Route::Main | Route::Bus(_) if strip.out_extra.len > 0 => {
+            Route::Main | Route::Bus(_) | Route::Hardware(_) if strip.out_extra.len > 0 => {
                 if strip.outbuf.len() != strip.buf.len() {
                     strip.outbuf = vec![Vec::new(); strip.buf.len()];
                 }
@@ -729,6 +742,11 @@ std::thread_local! {
 
 fn is_live(t: &Track) -> bool {
     !(t.kind == TrackKind::Master || t.inactive || t.kind == TrackKind::Vca)
+}
+
+/// Index of the named output path `name` in `Session::outputs`.
+fn output_index(s: &Session, name: &str) -> Option<usize> {
+    s.outputs.iter().position(|path| path.name.eq_ignore_ascii_case(name))
 }
 
 fn is_aux(t: &Track) -> bool {

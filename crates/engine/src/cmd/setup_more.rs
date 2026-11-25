@@ -324,6 +324,7 @@ fn io_setup(e: &mut Engine, p: &Value) -> Result<Value> {
             if s.bus_by_name(&name).is_some() {
                 return Err(bad(id, format!("a bus named `{name}` exists")));
             }
+            check_name_free_of_outputs(s, &name)?;
             s.add_bus(&name, format);
         }
         "rename_bus" => {
@@ -331,6 +332,7 @@ fn io_setup(e: &mut Engine, p: &Value) -> Result<Value> {
             if s.bus_by_name(&to).is_some() {
                 return Err(bad(id, format!("a bus named `{to}` exists")));
             }
+            check_name_free_of_outputs(s, &to)?;
             let b = s.busses.iter_mut().find(|b| b.name.eq_ignore_ascii_case(&name)).ok_or_else(|| bad(id, format!("no bus `{name}`")))?;
             b.name = to;
         }
@@ -344,6 +346,7 @@ fn io_setup(e: &mut Engine, p: &Value) -> Result<Value> {
             if s.outputs.iter().any(|o| o.name.eq_ignore_ascii_case(&name)) {
                 return Err(bad(id, format!("an output named `{name}` exists")));
             }
+            check_name_free_of_busses(s, &name)?;
             let first = output_first_channel(i64_or(p, "first_channel", 0), format)?;
             s.outputs.push(OutputPath { name, first_channel: first, format });
         }
@@ -352,6 +355,7 @@ fn io_setup(e: &mut Engine, p: &Value) -> Result<Value> {
             if s.outputs.iter().any(|o| o.name.eq_ignore_ascii_case(&to) && !o.name.eq_ignore_ascii_case(&name)) {
                 return Err(bad(id, format!("an output named `{to}` exists")));
             }
+            check_name_free_of_busses(s, &to)?;
             let index = s.outputs.iter().position(|o| o.name.eq_ignore_ascii_case(&name)).ok_or_else(|| bad(id, format!("no output `{name}`")))?;
             if index != 0 {
                 check_output_name(&to)?;
@@ -458,6 +462,21 @@ fn input_channel(p: &Value, default: u16, format: ChannelFormat) -> Result<u16> 
         return Err(bad("setup.io", "input path is outside the supported channel range"));
     }
     Ok(first as u16)
+}
+
+/// Routes name busses and output paths alike (`track.output`), so one name cannot be both.
+fn check_name_free_of_busses(s: &Session, name: &str) -> Result<()> {
+    if s.bus_by_name(name).is_some() {
+        return Err(bad("setup.io", format!("a bus named `{name}` exists")));
+    }
+    Ok(())
+}
+
+fn check_name_free_of_outputs(s: &Session, name: &str) -> Result<()> {
+    if s.outputs.iter().any(|o| o.name.eq_ignore_ascii_case(name)) {
+        return Err(bad("setup.io", format!("an output named `{name}` exists")));
+    }
+    Ok(())
 }
 
 fn check_output_name(name: &str) -> Result<()> {

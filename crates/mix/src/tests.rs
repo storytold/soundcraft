@@ -962,6 +962,51 @@ fn delay_compensation_aligns_an_aux_insert() {
     assert_eq!(impulse_at(&zero[0]), impulse_at(&control[0]));
 }
 
+/// A track routed straight to a named output and an aux returning onto the same output line up,
+/// as they do on the main mix; with no aux latency nothing is delayed.
+#[test]
+fn delay_compensation_aligns_an_aux_return_on_a_named_output() {
+    let mut s = Session::default();
+    let n = 4096;
+    let mut imp = vec![0.0f32; n];
+    imp[1000] = 0.25;
+    s.pool.insert(SourceId(902), Arc::new(SourceAudio::new(AudioBuffer { sample_rate: 48_000, channels: vec![imp] })));
+    s.outputs.push(soundcraft_model::OutputPath { name: "Cue".into(), first_channel: 2, format: ChannelFormat::Mono });
+    let bus = s.add_bus("Cue Bus", ChannelFormat::Mono);
+    let aux = s.add_track(TrackKind::Aux, ChannelFormat::Mono, Some("Cue Return"));
+    s.track_mut(aux).unwrap().mixer.input = Route::Bus(bus);
+    s.track_mut(aux).unwrap().mixer.output = Route::Hardware("Cue".into());
+    for output in [Route::Hardware("cue".into()), Route::Bus(bus)] {
+        let t = s.add_track(TrackKind::Audio, ChannelFormat::Mono, None);
+        let cid = s.new_clip_id();
+        let tr = s.track_mut(t).unwrap();
+        tr.playlist_mut().unwrap().clips.push(Clip::audio(cid, "i", SourceId(902), 0, 0, n as i64));
+        tr.mixer.output = output;
+    }
+    let cue = |s: &Session| {
+        let mut mix = MixEngine::new(48_000.0, 512);
+        mix.set_hardware_channels(4);
+        let mut out = vec![vec![0.0f32; 512]; 2];
+        let mut cue = Vec::new();
+        for pos in (0..n).step_by(512) {
+            mix.render(s, pos as i64, 512, &mut out);
+            cue.extend_from_slice(&mix.hardware_output()[2][..512]);
+        }
+        cue
+    };
+    assert_eq!(impulse_at(&cue(&s)), vec![1000], "no aux latency: no extra delay");
+
+    let mut comp = Insert::new("compressor");
+    comp.params.insert("lookahead".into(), 5.0);
+    comp.params.insert("ratio".into(), 1.0);
+    s.track_mut(aux).unwrap().mixer.inserts[0] = Some(comp);
+    let latent = cue(&s);
+    let at = impulse_at(&latent);
+    assert_eq!(at.len(), 1, "the direct and aux signals must arrive together: {at:?}");
+    assert!(at[0] > 1000);
+    assert!(latent[at[0]] > 0.26, "both paths sum at one frame: {}", latent[at[0]]);
+}
+
 #[test]
 fn offline_renders_line_up_with_the_timeline_in_any_block_size() {
     let mut s = Session::default();
