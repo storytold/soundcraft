@@ -323,6 +323,11 @@ fn short_device_callbacks_render_short_mix_blocks() {
 }
 
 fn audio_output_state(format: soundcraft_model::ChannelFormat, channels: Vec<Vec<f32>>) -> AudioState {
+    audio_output_state_and_commands(format, channels).0
+}
+
+/// [`audio_output_state`], with the sender of its commands.
+fn audio_output_state_and_commands(format: soundcraft_model::ChannelFormat, channels: Vec<Vec<f32>>) -> (AudioState, std::sync::mpsc::Sender<Cmd>) {
     use soundcraft_model::{Clip, SourceAudio, SourceId, TrackKind};
     let mut s = Session::default();
     s.edit.click = false;
@@ -343,7 +348,31 @@ fn audio_output_state(format: soundcraft_model::ChannelFormat, channels: Vec<Vec
     let (tx, rx) = channel();
     let st = AudioState::new(rx, shared, Arc::new(s), 48_000.0, channel().0);
     tx.send(Cmd::Play { from: 0, end: None, looped: None }).unwrap();
-    st
+    (st, tx)
+}
+
+/// The UI stops a half-speed pass by sending Stop and only then putting the speed back: the
+/// callback that renders at full speed reads the Stop first and publishes no full-speed stamp,
+/// so the take is still timed at the speed it was played.
+#[test]
+fn a_callback_after_a_half_speed_stop_publishes_no_full_speed_stamp() {
+    use std::time::{Duration, Instant};
+    let (mut st, tx) = audio_output_state_and_commands(soundcraft_model::ChannelFormat::Stereo, vec![vec![0.0; 4_800]; 2]);
+    st.shared.output_latency.observe(Some(Duration::from_micros(6_750)));
+    st.shared.speed.store(500, Ordering::Relaxed);
+    let t0 = Instant::now();
+    st.callback_at = Some(t0);
+    st.fill(&mut [0.0; 512], 2);
+    st.callback_at = Some(t0 + Duration::from_millis(5));
+    st.fill(&mut [0.0; 512], 2);
+    let before = st.shared.heard.heard_at(64.0, 48_000.0);
+    assert_eq!(before.map(|(_, speed)| speed), Some(0.5));
+    // `Player::stop`, then `Player::set_speed(1.0)`, as `stop_play` does.
+    tx.send(Cmd::Stop).unwrap();
+    st.shared.speed.store(1000, Ordering::Release);
+    st.callback_at = Some(t0 + Duration::from_millis(10));
+    st.fill(&mut [0.0; 512], 2);
+    assert_eq!(st.shared.heard.heard_at(64.0, 48_000.0), before, "the half-speed stamps still tell the pass");
 }
 
 #[test]
@@ -358,7 +387,7 @@ fn the_output_callback_notes_when_the_play_start_and_later_samples_are_heard() {
     st.playback_clock = Some(100.0);
     st.chunk_offset = 256;
     st.fill(&mut [0.0; 512], 2);
-    let heard = |sample: f64| st.shared.heard.heard_at(sample, 48_000.0).unwrap();
+    let heard = |sample: f64| st.shared.heard.heard_at(sample, 48_000.0).unwrap().0;
     let near = |got: Instant, want: Instant| got.max(want).duration_since(got.min(want)) < Duration::from_micros(2);
     let close = |got: Option<f64>, want: f64| got.is_some_and(|g| (g - want).abs() < 2e-6);
     let start = t0 + Duration::from_micros(6_750) + Duration::from_micros(5_333);
@@ -370,7 +399,7 @@ fn the_output_callback_notes_when_the_play_start_and_later_samples_are_heard() {
     st.playback_clock = Some(100.02);
     st.chunk_offset = 0;
     st.fill(&mut [0.0; 512], 2);
-    let heard = |sample: f64| st.shared.heard.heard_at(sample, 48_000.0).unwrap();
+    let heard = |sample: f64| st.shared.heard.heard_at(sample, 48_000.0).unwrap().0;
     assert!(near(heard(256.0).at, t1 + Duration::from_micros(6_750)));
     assert!(close(heard(256.0).clock, 100.02));
     assert!(near(heard(0.0).at, start), "the pass start stays exact");
