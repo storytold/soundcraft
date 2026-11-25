@@ -598,11 +598,8 @@ mod tests {
             assert_eq!(app.ui.language, crate::localization::Language::Hebrew);
         }
         assert!(app.run("ui.language", json!({"language": "fr"})).is_err());
-        let expected = if crate::fonts::has_hebrew_font(true) {
-            crate::localization::Language::Hebrew
-        } else {
-            crate::localization::Language::PortugueseBrazil
-        };
+        let expected =
+            if crate::fonts::has_hebrew_font(true) { crate::localization::Language::Hebrew } else { crate::localization::Language::PortugueseBrazil };
         assert_eq!(app.ui.language, expected);
         assert!(crate::menus::UI_COMMANDS.iter().any(|command| command.0 == "ui.language"));
     }
