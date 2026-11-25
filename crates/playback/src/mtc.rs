@@ -1,7 +1,7 @@
 //! MIDI Time Code encoding on the shared presentation-clock worker.
 use crate::Player;
 #[cfg(any(target_os = "windows", target_os = "macos", target_os = "linux"))]
-use crate::sync_clock::{Presentation, SyncEncoder};
+use crate::sync_clock::{CATCH_UP_SPACING, Presentation, SyncEncoder};
 #[cfg(any(target_os = "windows", target_os = "macos", target_os = "linux"))]
 use craft_midi_sync::sync::{Rate, full_frame, quarter_frames};
 #[cfg(any(target_os = "windows", target_os = "macos", target_os = "linux"))]
@@ -10,7 +10,7 @@ use soundcraft_time::FrameRate;
 #[cfg(any(target_os = "windows", target_os = "macos", target_os = "linux"))]
 use soundcraft_time::Timecode;
 #[cfg(any(target_os = "windows", target_os = "macos", target_os = "linux"))]
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 pub const UNSUPPORTED_RATE: &str = "MIDI Time Code needs a session at 23.976, 24, 25, 29.97 non-drop, 29.97 drop-frame or 30 fps.";
 
@@ -68,10 +68,12 @@ impl Player {
     }
 }
 
-/// The latest a quarter frame may be handed off after its grid time. Consecutive pieces
-/// then stay at least a quarter frame less this apart (the worker's own wake floor).
+/// Quarter frames in one group (two frames). A piece at most this many quarter frames late
+/// is still sent, catching up on the grid at least `CATCH_UP_SPACING` apart. Readers check
+/// piece order, so a dropped piece costs the whole group while a late one only shifts it.
+/// Further behind, the generator sends a Full Message and rejoins at the next group.
 #[cfg(any(target_os = "windows", target_os = "macos", target_os = "linux"))]
-const QUARTER_FRAME_LATENESS: Duration = Duration::from_millis(1);
+const RESYNC_QUARTERS: f64 = 8.;
 
 #[cfg(any(target_os = "windows", target_os = "macos", target_os = "linux"))]
 #[derive(Default)]
@@ -81,6 +83,7 @@ pub(crate) struct Encoder {
     next: i64,
     group: [[u8; 2]; 8],
     stale: u64,
+    last_sent: Option<Instant>,
 }
 
 #[cfg(any(target_os = "windows", target_os = "macos", target_os = "linux"))]
@@ -96,7 +99,11 @@ impl SyncEncoder for Encoder {
         let at = block.sample_heard_at(now) + start;
         let quarter = rate.samples_per_frame(sr) / 4.;
         let relaunch = self.pass.replace((block.pass, block.playing)) != Some((block.pass, block.playing));
-        let recovering = std::mem::take(&mut self.lost_while_rolling);
+        // More than one group behind, or the timeline moved back past the group the
+        // generator joined: locate to the live frame like a recovery.
+        let behind = at / quarter - self.next as f64;
+        let resync = !relaunch && block.playing && (behind > RESYNC_QUARTERS || behind < -(RESYNC_QUARTERS + 1.));
+        let recovering = std::mem::take(&mut self.lost_while_rolling) || resync;
         if relaunch || recovering {
             // A worker normally wakes just after the requested first sample.
             // A late attachment or remap well into the pass locates to the live frame.
@@ -122,33 +129,29 @@ impl SyncEncoder for Encoder {
             return None;
         }
         let target = |piece: i64| piece as f64 * quarter - start;
-        let mut sample = target(self.next);
-        let mut deadline = block.instant_for(sample);
-        // MTC sends quarter frames at quarter-frame intervals, F1 0X on a frame boundary
-        // (MIDI Time Code 4.2.1, p. 3). A piece handed off later than this would arrive
-        // bunched with the next one, so the rest of its group is dropped and output
-        // resumes with the next complete group on its own frame boundary.
-        if deadline.checked_add(QUARTER_FRAME_LATENESS).is_some_and(|t| t < now) {
-            let group = ((at / (8. * quarter)).ceil() as i64).saturating_mul(8);
-            self.stale = self.stale.saturating_add(group.saturating_sub(self.next).max(0) as u64);
-            self.next = group;
-            sample = target(group);
-            deadline = block.instant_for(sample);
-        }
+        let sample = target(self.next);
+        let deadline = block.instant_for(sample);
         if sample >= block.limit {
             return None;
         }
         if deadline > now {
             return Some(deadline);
         }
+        // A late piece catches up on the grid, never closer than the catch-up spacing.
+        if let Some(last) = self.last_sent
+            && now < last + CATCH_UP_SPACING
+        {
+            return Some(last + CATCH_UP_SPACING);
+        }
         let index = self.next.rem_euclid(8) as usize;
         if index == 0 {
             self.group = quarters(self.next.div_euclid(4), rate);
         }
         send(deadline, &self.group[index]);
+        self.last_sent = Some(now);
         self.next = self.next.saturating_add(1);
         let sample = target(self.next);
-        (sample < block.limit).then(|| block.instant_for(sample).max(now + Duration::from_millis(1)))
+        (sample < block.limit).then(|| block.instant_for(sample).max(now + CATCH_UP_SPACING))
     }
     fn timing_lost(&mut self) {
         self.lost_while_rolling |= self.pass.is_some_and(|(_, playing)| playing);
