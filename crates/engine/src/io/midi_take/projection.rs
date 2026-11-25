@@ -74,6 +74,18 @@ impl ClockTake {
         removed
     }
 
+    /// Note-split moves the notes `moves` selects to a new clip. Each clip keeps only the
+    /// rows of its own notes, so a note added later to one clip cannot take the capture
+    /// timing of a note the other clip owns. Controllers stay with the source.
+    pub(crate) fn split_notes(&self, seq: &Sequence, moves: impl Fn(&Note) -> bool) -> (Self, Self) {
+        let (notes, ctrls) = self.project_events(seq);
+        let (moved, kept): (NoteRows, NoteRows) = seq.notes.iter().copied().zip(notes).partition(|(n, _)| moves(n));
+        let (mut source, mut target) = (self.clone(), self.clone());
+        source.replace_rows(kept, seq.ctrls.iter().copied().zip(ctrls).collect());
+        target.replace_rows(moved, Vec::new());
+        (source, target)
+    }
+
     fn replace_rows(&mut self, notes: NoteRows, ctrls: ControlRows) {
         let source = &*self.capture;
         self.capture = Arc::new(ClockTakeProjection {

@@ -672,6 +672,36 @@ mod tests {
     }
 
     #[test]
+    fn pitch_split_gives_each_clip_only_its_own_capture_rows() {
+        let (mut e, track, id) = captured_clock_note();
+        let ClipContent::Midi { sequence } = &e.session().find_clip(id).unwrap().1.content else { panic!("expected a MIDI clip") };
+        let mut sequence = sequence.clone();
+        sequence.notes[0].pitch = 72;
+        sequence.notes[0].start = 960;
+        let other = e.session_mut().new_clip_id();
+        e.session_mut().track_mut(track).unwrap().playlist_mut().unwrap().clips.push(Clip::midi(other, "overlap", 24_000, 72_000, sequence));
+        e.execute("edit.consolidate", &json!({"tracks":[track.0],"start":0,"end":96_000})).unwrap();
+        let cid = e.session().track(track).unwrap().clips()[0].id;
+        let ClipContent::Midi { sequence } = &e.session().find_clip(cid).unwrap().1.content else { panic!("expected a MIDI clip") };
+        let moved = *sequence.notes.iter().find(|n| n.pitch == 72).unwrap();
+        assert_eq!(moved.start, 1920);
+        let split = e.execute("event.select_split_notes", &json!({"clips":[cid.0],"pitch_from":72,"pitch_to":72,"action":"split"})).unwrap();
+        let target = TrackId(split["tracks"][0].as_u64().unwrap());
+        let played = |e: &Engine, track| {
+            let doc = e.playback_session();
+            let ClipContent::Midi { sequence } = &doc.track(track).unwrap().clips()[0].content else { panic!("expected a MIDI clip") };
+            sequence.notes.iter().map(|n| (n.pitch, n.start)).collect::<Vec<_>>()
+        };
+        assert_eq!(played(&e, track), [(65, 960)]);
+        assert_eq!(played(&e, target), [(72, 1440)]);
+        // A new note on the source that equals the moved one is placed from the score,
+        // not at the moved note's captured tick.
+        let ClipContent::Midi { sequence } = &mut e.session_mut().find_clip_mut(cid).unwrap().content else { panic!("expected a MIDI clip") };
+        sequence.notes.push(moved);
+        assert_eq!(played(&e, track), [(65, 960), (72, 960)]);
+    }
+
+    #[test]
     fn overlapping_consolidation_keeps_each_events_capture_after_velocity_edit() {
         let (mut e, track, id) = captured_clock_note();
         let ClipContent::Midi { sequence } = &mut e.session_mut().find_clip_mut(id).unwrap().content else { panic!("expected a MIDI clip") };

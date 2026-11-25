@@ -333,6 +333,9 @@ fn select_split(e: &mut Engine, p: &Value) -> Result<Value> {
         if !split || hit.is_empty() {
             continue;
         }
+        let (lo, hi) = (from.min(to), from.max(to));
+        let split_takes =
+            s.takes.as_deref().and_then(|takes| takes.get(&cid)).map(|take| take.split_notes(sequence, |n| (lo..=hi).contains(&n.pitch)));
         if let Some(cl) = s.find_clip_mut(cid)
             && let ClipContent::Midi { sequence } = &mut cl.content
         {
@@ -349,10 +352,9 @@ fn select_split(e: &mut Engine, p: &Value) -> Result<Value> {
         };
         let mut nc = c.clone();
         nc.id = s.new_clip_id();
-        if let Some(takes) = &mut s.takes
-            && let Some(take) = takes.get(&cid).cloned()
-        {
-            takes.insert(nc.id, take);
+        if let (Some(takes), Some((source, moved))) = (&mut s.takes, split_takes) {
+            takes.insert(cid, source);
+            takes.insert(nc.id, moved);
         }
         // Note-split has always copied only the matching notes, not controllers. SysEx is the same
         // default now that Sequence has that field: packets stay on the source clip. Full SysEx
