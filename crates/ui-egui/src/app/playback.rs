@@ -281,12 +281,16 @@ impl SoundApp {
             }
         }
         // A punch stops where the output stopped rendering, but what it played up to the punch-out
-        // reaches the input a round trip later. The take is placed by that round trip, so keep
-        // taking in until then: the take still covers the whole punch, and the extra input is
-        // trimmed off with the punch range.
+        // reaches the input a round trip later. The take is placed by that round trip, and a
+        // negative record offset places it earlier still, so keep taking in until then: the take
+        // still covers the whole punch, and the extra input is trimmed off with the punch range.
         if self.punch.is_some()
-            && let Some(wait) =
-                punch_tail(self.player.as_ref().and_then(|p| p.output_latency()), self.recorder.as_ref().and_then(|r| r.input_latency()))
+            && let Some(wait) = punch_tail(
+                self.player.as_ref().and_then(|p| p.output_latency()),
+                self.recorder.as_ref().and_then(|r| r.input_latency()),
+                self.ui.record_offset,
+                self.engine.session().sample_rate.as_f64(),
+            )
         {
             std::thread::sleep(wait);
         }
@@ -602,12 +606,19 @@ impl SoundApp {
 }
 
 /// How long the input keeps recording after a punch-out: the devices' reported round trip, the
-/// time the last punched sample takes from the output back to the input. `None` without both
-/// latencies (the take is then placed without them, so it ends where the input stopped) or for a
-/// round trip of a second or more, which placement also leaves out.
-fn punch_tail(output: Option<std::time::Duration>, input: Option<std::time::Duration>) -> Option<std::time::Duration> {
-    let round_trip = output? + input?;
-    (round_trip < std::time::Duration::from_secs(1)).then_some(round_trip)
+/// time the last punched sample takes from the output back to the input, and a negative
+/// `record_offset` (session samples at `rate`), which places the take earlier by as much again.
+/// The round trip counts only with both latencies (the take is otherwise placed without them) and
+/// under a second, as placement takes it. `None` when there is nothing to wait for.
+fn punch_tail(
+    output: Option<std::time::Duration>,
+    input: Option<std::time::Duration>,
+    record_offset: Samples,
+    rate: f64,
+) -> Option<std::time::Duration> {
+    let round_trip = output.zip(input).map(|(o, i)| o + i).filter(|rt| *rt < std::time::Duration::from_secs(1)).unwrap_or_default();
+    let earlier = std::time::Duration::try_from_secs_f64(record_offset.min(0).unsigned_abs() as f64 / rate.max(1.0)).unwrap_or_default();
+    Some(round_trip + earlier).filter(|wait| !wait.is_zero())
 }
 
 #[cfg(test)]
@@ -619,13 +630,17 @@ mod tests {
         use std::time::Duration;
         let ms = Duration::from_millis;
         // An RME UFX on Core Audio at 256 frames: 321 samples out, 302 in, at 48 kHz.
-        assert_eq!(
-            punch_tail(Some(ms(6) + Duration::from_micros(687)), Some(ms(6) + Duration::from_micros(292))),
-            Some(ms(12) + Duration::from_micros(979))
-        );
-        assert_eq!(punch_tail(None, Some(ms(6))), None);
-        assert_eq!(punch_tail(Some(ms(6)), None), None);
-        assert_eq!(punch_tail(Some(ms(600)), Some(ms(600))), None);
+        let (out, inp) = (Some(ms(6) + Duration::from_micros(687)), Some(ms(6) + Duration::from_micros(292)));
+        assert_eq!(punch_tail(out, inp, 0, 48_000.0), Some(ms(12) + Duration::from_micros(979)));
+        assert_eq!(punch_tail(None, Some(ms(6)), 0, 48_000.0), None);
+        assert_eq!(punch_tail(Some(ms(6)), None, 0, 48_000.0), None);
+        assert_eq!(punch_tail(Some(ms(600)), Some(ms(600)), 0, 48_000.0), None);
+        // A record offset of -4800 places the take 100 ms earlier: the input records that much longer.
+        assert_eq!(punch_tail(out, inp, -4_800, 48_000.0), Some(ms(112) + Duration::from_micros(979)));
+        assert_eq!(punch_tail(None, None, -4_800, 48_000.0), Some(ms(100)));
+        // A positive one places it later; the round trip still covers the punch.
+        assert_eq!(punch_tail(out, inp, 4_800, 48_000.0), Some(ms(12) + Duration::from_micros(979)));
+        assert_eq!(punch_tail(None, None, 4_800, 48_000.0), None);
     }
 
     #[test]
