@@ -1,6 +1,6 @@
 # SoundCraft roadmap: milestones and what's next
 
-> **Last reviewed:** 2026-11-14 · **Last updated:** 2026-11-18 · **Change:** minor (M6: long takes continue in a new file (#888); previously minor: MIDI input landed, the gate row needs checking on macOS and Windows; strict external-WAV AAF import; previously trivial: 28 built-in processors with the Frequency Shifter; G-05 estimate after Linux/X11 plugin editors; M15: partial pt-BR catalog; readiness estimates unchanged) · **Target:** Avid Pro Tools Ultimate 2026.4.1
+> **Last reviewed:** 2026-11-14 · **Last updated:** 2026-11-18 · **Change:** minor (M6: long takes continue in a new file (#888); previously minor: MIDI input landed, the gate row needs checking on macOS and Windows; strict external-WAV AAF import; previously trivial: 28 built-in processors with the Frequency Shifter; G-05 estimate after Linux/X11 plugin editors; M15: partial pt-BR catalog; readiness estimates unchanged; M15: system CJK font fallback, #141) · **Target:** Avid Pro Tools Ultimate 2026.4.1
 
 Forward-looking plan. Status and numbers: [`../ROADMAP.md`](../ROADMAP.md) and
 [`target-app-parity.md`](target-app-parity.md); the ranked work list: [`gaps.md`](gaps.md).
@@ -49,7 +49,7 @@ Status: ✅ done · 🟡 in progress · ⬜ not started.
 | M12 | **Hardware**: audio interfaces, MIDI devices, sync, control surfaces | ⬜ | 110–180 |
 | M13 | **Interchange**: AAF/OMF import/export, disk streaming | 🟡 strict external-WAV AAF import; export, OMF and disk streaming missing | 65–115 |
 | M14 | **Fidelity harness** against Pro Tools (null tests, plugin responses) | ⬜ | 20–30 |
-| M15 | **Localization**: catalog, fonts/RTL, the 8 Pro Tools languages first | 🟡 partial (pt-BR catalog; needs native review; PRs #141, #143 open) | 45–80 |
+| M15 | **Localization**: catalog, fonts/RTL, the 8 Pro Tools languages first | 🟡 partial (pt-BR catalog; needs native review; CJK font fallback landed, #141; catalog, RTL and Devanagari/Arabic fallback open; PR #143 open) | 45–80 |
 | M16 | Built-in plugin depth, sidechain, ARA | ⬜ | 110–170 |
 | M17 | Immersive delivery (ADM BWF, object renderer, binaural) and video depth | ⬜ | 80–130 |
 
@@ -95,6 +95,7 @@ There is no `cargo xtask scorecard` in this repo; the measured number is `cargo 
 | 2026-10-30 | trivial | G-05 down to 10–15 h and the mix row's VST3 windows updated: VST3 and embedded CLAP editors are hosted on Linux/X11 (#527) |
 | 2026-10-30 | minor | M6: record to disk is done (#84), long takes continue in a new file (#888); dropped from the tracking row and M13. Estimates unchanged: G-06's 15–25 h was always the streaming-sources work |
 | 2026-10-25 | trivial | Record-workflow evidence: `setup.playback_engine` applies the device and buffer in the desktop app; headless returns `applied: false` |
+| 2026-10-22 | trivial | M15: the interface falls back to the system's Japanese, Chinese and Korean fonts (#141) |
 | 2026-10-24 | trivial | 27 built-in processors, as the plugin registry holds; the sampler (#108) is no longer listed under plugin essentials |
 | 2026-10-14 | trivial | M8: reject oversized MCP batches before execution (#460) |
 | 2026-10-10 | minor | Added the alpha gate (3 of 6 core workflows fail → pre-alpha) |
