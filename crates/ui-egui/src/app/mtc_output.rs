@@ -1,29 +1,28 @@
 use super::{SoundApp, Value, json};
-use crate::{
-    localization::text,
-    midi_sync::{MAX_SYNC_PORTS, valid_port},
-};
+use crate::midi_sync::{MAX_SYNC_PORTS, valid_port};
 use soundcraft_playback::mtc;
 
 impl SoundApp {
     pub(crate) fn mtc_output_settings(&mut self, ui: &mut egui::Ui) {
         let mut chosen = self.ui.mtc_output_port.clone();
         let mut chosen_id = None;
-        craft_ui::ComboBox::from_label(text("MTC Generator Port")).selected_text(chosen.as_deref().unwrap_or(text("None"))).show_ui(ui, |ui| {
-            ui.selectable_value(&mut chosen, None, text("None"));
-            match soundcraft_playback::midi_sync_output_ids(&self.ui.midi_sync.port_ids) {
-                Ok(ports) => {
-                    for (label, id) in ports {
-                        if ui.selectable_value(&mut chosen, Some(label.clone()), label).changed() {
-                            chosen_id = Some(id);
+        craft_ui::ComboBox::from_label(crate::localization::text("MTC Generator Port"))
+            .selected_text(chosen.as_deref().unwrap_or(crate::localization::text("None")))
+            .show_ui(ui, |ui| {
+                ui.selectable_value(&mut chosen, None, crate::localization::text("None"));
+                match soundcraft_playback::midi_sync_output_ids(&self.ui.midi_sync.port_ids) {
+                    Ok(ports) => {
+                        for (label, id) in ports {
+                            if ui.selectable_value(&mut chosen, Some(label.clone()), label).changed() {
+                                chosen_id = Some(id);
+                            }
                         }
                     }
+                    Err(e) => {
+                        ui.label(crate::localization::error_text(&e));
+                    }
                 }
-                Err(e) => {
-                    ui.label(crate::localization::error_text(&e));
-                }
-            }
-        });
+            });
         if chosen != self.ui.mtc_output_port
             && let Err(e) = self.mtc_output_command_with_id(&json!({"port":chosen}), chosen_id)
         {

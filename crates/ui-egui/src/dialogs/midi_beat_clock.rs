@@ -1,4 +1,4 @@
-use crate::{localization::text, midi_sync::MidiSync};
+use crate::midi_sync::MidiSync;
 use serde_json::{Value, json};
 use std::collections::BTreeSet;
 
@@ -27,15 +27,15 @@ impl MidiBeatClock {
         if let Some(error) = app.player.as_ref().and_then(soundcraft_playback::Player::midi_clock_error) {
             ui.label(crate::localization::error_text(&error));
         }
-        crate::widgets::checkbox(ui, &mut self.settings.enabled, text("Enable MIDI Beat Clock"));
-        if ui.button(text("Refresh devices")).clicked() {
+        crate::widgets::checkbox(ui, &mut self.settings.enabled, crate::localization::text("Enable MIDI Beat Clock"));
+        if ui.button(crate::localization::text("Refresh devices")).clicked() {
             self.refresh();
         }
         let available = self.outputs.as_ref().map(Vec::as_slice).unwrap_or_default();
         if let Err(error) = &self.outputs {
             ui.label(crate::localization::error_text(error));
         } else if available.is_empty() {
-            ui.label(text("No MIDI output devices found"));
+            ui.label(crate::localization::text("No MIDI output devices found"));
         }
         let saved_outputs = self.settings.ports.iter().filter_map(|(name, port)| {
             (port.enabled || port.out_offset_samples != 0 || app.ui.mtc_output_port.as_ref() == Some(name)).then_some(name)
@@ -56,7 +56,7 @@ impl MidiBeatClock {
                             .and_then(|p| p.device_lead_us);
                         let offset = super::port_offset_field(ui, &mut port.out_offset_samples, rate, limited_lead);
                         if !available.contains(&name) {
-                            ui.label(text("The saved MIDI output is unavailable."));
+                            ui.label(crate::localization::text("The saved MIDI output is unavailable."));
                         }
                         enabled || offset
                     })
@@ -66,7 +66,7 @@ impl MidiBeatClock {
                 }
             }
         });
-        if ui.button(text("Copy diagnostics")).clicked()
+        if ui.button(crate::localization::text("Copy diagnostics")).clicked()
             && let Ok(status) = app.sync_command("setup.midi_sync_status", &json!({}))
         {
             ui.ctx().copy_text(status.to_string());
