@@ -343,6 +343,8 @@ pub(super) fn translate(source: &str) -> Option<&'static str> {
         "All devices" => "Kaikki laitteet",
         "No MIDI input device found" => "MIDI-tulolaitetta ei löytynyt",
         "{name} (not connected)" => "{name} (ei kytketty)",
+        "Updated by ArtCraft Launcher." => "Päivittää ArtCraft Launcher.",
+        "Report a problem" => "Ilmoita ongelmasta",
         _ => return menu_translate(source),
     })
 }
