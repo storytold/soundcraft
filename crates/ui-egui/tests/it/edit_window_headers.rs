@@ -409,10 +409,16 @@ fn an_insert_hosted_submenu_scans_in_the_background() {
     for _ in 0..10 {
         step(&mut h);
     }
+    // The submenu lists one menu_button per vendor of a cached effect, so a vendor label has to
+    // be rendered for the results to count — a populated cache alone proves nothing.
+    let vendor_rendered = |h: &Harness<'_, SoundApp>| {
+        soundcraft_clap_host::cached()
+            .unwrap_or_default()
+            .iter()
+            .any(|d| !d.is_instrument && h.query_by_label(if d.vendor.is_empty() { "Unknown vendor" } else { d.vendor.as_str() }).is_some())
+    };
     assert!(
-        h.query_by_label("Scanning plugins…").is_some()
-            || h.query_by_label("No CLAP plugins found").is_some()
-            || soundcraft_clap_host::cached().is_some_and(|l| !l.is_empty()),
+        h.query_by_label("Scanning plugins…").is_some() || h.query_by_label("No CLAP plugins found").is_some() || vendor_rendered(&h),
         "the CLAP submenu is neither scanning nor listing results"
     );
     for _ in 0..200 {
@@ -429,7 +435,7 @@ fn an_insert_hosted_submenu_scans_in_the_background() {
         step(&mut h);
     }
     assert!(
-        h.query_by_label("No CLAP plugins found").is_some() || soundcraft_clap_host::cached().is_some_and(|l| !l.is_empty()),
+        h.query_by_label("No CLAP plugins found").is_some() || vendor_rendered(&h),
         "the scan finished but the reopened submenu still shows nothing"
     );
 }
