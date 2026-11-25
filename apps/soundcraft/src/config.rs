@@ -70,11 +70,24 @@ fn config_dir_with(platform: Platform, env: impl Fn(&str) -> Option<OsString>, e
 
 /// Create `dir` if needed and prove a file can be written in it. The Nightly profile validator
 /// injects this same exclusive probe.
+///
+/// The probe never replaces an existing entry: `create_new` cannot truncate one, and a name that is
+/// already taken (an interrupted run, or a file someone else made) is left untouched while the next
+/// name is tried. Only a file this call created is removed again.
 pub(crate) fn writable(dir: &Path) -> std::io::Result<()> {
     std::fs::create_dir_all(dir)?;
-    let probe = dir.join(format!(".write-test-{}", std::process::id()));
-    std::fs::write(&probe, b"")?;
-    std::fs::remove_file(probe)
+    for attempt in 0..8u32 {
+        let probe = dir.join(format!(".write-test-{}-{attempt}", std::process::id()));
+        match std::fs::OpenOptions::new().write(true).create_new(true).open(&probe) {
+            Ok(file) => {
+                drop(file);
+                return std::fs::remove_file(probe);
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(error) => return Err(error),
+        }
+    }
+    Err(std::io::Error::new(std::io::ErrorKind::AlreadyExists, "no free write-probe name"))
 }
 
 /// Read bounded settings, recovering unreadable docking metadata independently of other settings.

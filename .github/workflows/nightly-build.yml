@@ -93,7 +93,8 @@ jobs:
           status=0
           env -i PATH="$path" HOME="$home" XDG_CONFIG_HOME="$xdg/c" FLATPAK_ID=ai.storyteller.soundcraft "$tz/soundcraft" --launch-profile nightly-v1 --profile-root "$(mktemp -d)/p" -- >/dev/null 2>&1 || status=$?
           test "$status" -eq 2 || { echo "a Flatpak instance must be refused with exit status 2, got $status" >&2; exit 1; }
-          for stable in config data; do test ! -e "$xdg/$stable/soundcraft" || { echo "stable $stable folder created" >&2; exit 1; }; done
+          # Look where the configured XDG folders actually point, not at $xdg/config and $xdg/data.
+          for dir in "$xdg/c" "$xdg/d" "$xdg/k" "$xdg/s"; do test ! -e "$dir/soundcraft" || { echo "stable folder created: $dir/soundcraft" >&2; exit 1; }; done
       - name: Keep the unsigned archive
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:

@@ -29,6 +29,13 @@ DOCS
 chmod 755 "$CARGO_TARGET_DIR/release/examples/man-and-completions"
 
 nightly=0.0.1-nightly.20261124.1.1.g0123456789ab
+# package.sh labels the tar after the host architecture unless CROSS_ARCH says otherwise, so the
+# fixture reads the same label instead of assuming x86_64.
+case "$(uname -m)" in
+  x86_64 | amd64) arch=x86_64 ;;
+  aarch64 | arm64) arch=aarch64 ;;
+  *) printf "unsupported test architecture %s\n" "$(uname -m)" >&2; exit 1 ;;
+esac
 SOUNDCRAFT_BUILD_CHANNEL=nightly-v1 SOUNDCRAFT_VERSION="$nightly" \
   SOUNDCRAFT_BUILD_SHA=0123456789ab0123456789ab0123456789ab0123 SOUNDCRAFT_BUILD_DATE=2026-11-24 \
   bash "$ROOT/packaging/linux/package.sh" --skip-build --formats tar >/dev/null
@@ -37,13 +44,13 @@ SOUNDCRAFT_VERSION=0.0.1 \
 
 extract() {
   mkdir -p "$work/$2"
-  tar -xzf "$DIST/soundcraft-$1-linux-x86_64.tar.gz" -C "$work/$2"
+  tar -xzf "$DIST/soundcraft-$1-linux-$arch.tar.gz" -C "$work/$2"
 }
 extract "$nightly" nightly
 extract 0.0.1 stable
 
-nightly_root="$work/nightly/soundcraft-$nightly-linux-x86_64"
-stable_root="$work/stable/soundcraft-0.0.1-linux-x86_64"
+nightly_root="$work/nightly/soundcraft-$nightly-linux-$arch"
+stable_root="$work/stable/soundcraft-0.0.1-linux-$arch"
 fail() { printf '%s\n' "$1" >&2; exit 1; }
 
 [[ -x "$nightly_root/bin/soundcraft" ]] || fail "the Nightly tar has no bin/soundcraft"
