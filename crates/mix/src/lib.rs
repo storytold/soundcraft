@@ -140,8 +140,9 @@ pub struct MixEngine {
     /// Busses an aux returns onto, and the latency of the slowest aux return: audio written onto
     /// such a bus waits for it, so a bounce of the bus drops it as well.
     aux_fed: Vec<BusId>,
-    /// Named output paths (indices into `Session::outputs`) an aux returns onto: tracks routed
-    /// to one wait for the aux returns as the main mix does.
+    /// Named output paths (indices into `Session::outputs`) that share a physical channel with
+    /// the main mix's path or with a path an aux returns onto, directly or through other such
+    /// paths: tracks routed to one wait for the aux returns as the main mix does.
     aux_fed_outputs: Vec<usize>,
     aux_latency: usize,
     /// Live input for the next block (planar), set by the audio host for input monitoring.
@@ -514,6 +515,10 @@ impl MixEngine {
         self.aux_fed.clear();
         self.aux_fed_outputs.clear();
         if pdc {
+            // The first path is the main mix's.
+            if !s.outputs.is_empty() {
+                self.aux_fed_outputs.push(0);
+            }
             for t in s.tracks.iter().filter(|t| is_aux(t) && is_live(t)) {
                 match &t.mixer.output {
                     Route::Bus(b) if !self.aux_fed.contains(b) => self.aux_fed.push(*b),
@@ -525,6 +530,21 @@ impl MixEngine {
                         }
                     }
                     _ => {}
+                }
+            }
+            // Paths that share a physical channel sum there, so a path overlapping a waiting one
+            // waits as well.
+            loop {
+                let before = self.aux_fed_outputs.len();
+                for (i, path) in s.outputs.iter().enumerate() {
+                    if !self.aux_fed_outputs.contains(&i)
+                        && self.aux_fed_outputs.iter().any(|&j| s.outputs.get(j).is_some_and(|other| outputs_overlap(path, other)))
+                    {
+                        self.aux_fed_outputs.push(i);
+                    }
+                }
+                if self.aux_fed_outputs.len() == before {
+                    break;
                 }
             }
         }
@@ -540,8 +560,7 @@ impl MixEngine {
             let waits = match &t.mixer.output {
                 Route::Main => true,
                 Route::Bus(b) => self.aux_fed.contains(b),
-                // The first path is the main mix's.
-                Route::Hardware(name) => output_index(s, name).is_some_and(|path| path == 0 || self.aux_fed_outputs.contains(&path)),
+                Route::Hardware(name) => output_index(s, name).is_some_and(|path| self.aux_fed_outputs.contains(&path)),
                 Route::None => false,
             };
             st.out_extra.set(if waits { lmax_a } else { 0 }, ch);
@@ -747,6 +766,12 @@ fn is_live(t: &Track) -> bool {
 /// Index of the named output path `name` in `Session::outputs`.
 fn output_index(s: &Session, name: &str) -> Option<usize> {
     s.outputs.iter().position(|path| path.name.eq_ignore_ascii_case(name))
+}
+
+/// Whether two output paths share a physical channel.
+fn outputs_overlap(a: &soundcraft_model::OutputPath, b: &soundcraft_model::OutputPath) -> bool {
+    let (a0, b0) = (usize::from(a.first_channel), usize::from(b.first_channel));
+    a0 < b0 + b.format.channels() && b0 < a0 + a.format.channels()
 }
 
 fn is_aux(t: &Track) -> bool {
