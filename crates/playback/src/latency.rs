@@ -151,6 +151,12 @@ pub struct HeardStamps {
     /// Passes started so far, counted without a lock: a pass stamp answers only while its pass is
     /// the latest, so an older one is not taken for a pass whose stamp still waits.
     passes: AtomicU64,
+    /// The first sample heard once the latest record pass began, with the number of that record
+    /// pass (see [`HeardStamps::record_start_heard`]).
+    record: Mutex<Option<(u64, Heard)>>,
+    /// Record passes the UI has begun ([`HeardStamps::begin_record`]): a record stamp answers only
+    /// for the latest.
+    records: AtomicU64,
 }
 
 impl HeardStamps {
@@ -173,6 +179,47 @@ impl HeardStamps {
         }
     }
 
+    /// The UI begins a record pass, before it tells the audio thread: the stamp the audio thread
+    /// latches for it carries this number.
+    pub(crate) fn begin_record(&self) {
+        self.records.fetch_add(1, Release);
+    }
+
+    /// The number of the record pass the UI began last, read by the audio thread when the command
+    /// that begins it arrives.
+    pub(crate) fn latest_record(&self) -> u64 {
+        self.records.load(Acquire)
+    }
+
+    /// Publish `pending`, the first sample heard since a record pass began, with that pass's
+    /// number, when the lock is free (it stays for the next callback when it is not).
+    pub(crate) fn record_begun(&self, pending: &mut Option<(u64, Heard)>) {
+        if pending.is_some()
+            && let Ok(mut r) = self.record.try_lock()
+        {
+            *r = pending.take();
+        }
+    }
+
+    /// When `sample`, the record start, was heard in the loop round the latest record pass began
+    /// in, and the speed then: projected from the first sample heard once the pass began (latched
+    /// by the audio thread, so later loop rounds do not move it). The record start lies within
+    /// about a callback of that sample; in a loop of `round` samples the record start nearest it
+    /// counts, which takes a wrap between the two into account. `None` while the latest record
+    /// pass has no stamp yet (it began while nothing was heard, or a busy lock holds it back).
+    pub fn record_start_heard(&self, sample: f64, rate: f64, round: Option<f64>) -> Option<(Moment, f64)> {
+        let latest = self.records.load(Acquire);
+        let (n, begun) = self.record.lock().ok().and_then(|r| *r)?;
+        if n != latest {
+            return None;
+        }
+        let mut ahead = sample - begun.sample;
+        if let Some(len) = round.filter(|l| *l > 0.0) {
+            ahead -= (ahead / len).round() * len;
+        }
+        Some((begun.when.shifted(ahead / (rate * begun.speed).max(1.0))?, begun.speed))
+    }
+
     /// When `sample` was (or will be) heard at the session `rate`, and the transport speed of the
     /// stamp that tells it (see [`Heard::speed`]): from the start of the latest pass when that is
     /// the sample, else projected from the latest callback at the speed it rendered.
@@ -190,7 +237,10 @@ impl HeardStamps {
 /// `heard`, when a sample of a loop of `period` seconds is heard, moved by whole rounds to the
 /// round nearest `captured`. A sample after the pass start is projected from the latest callback
 /// (see [`HeardStamps::heard_at`]), which names the round that callback is in, not the round a
-/// take began in. Right while the take's real offset is under half a round.
+/// take began in. Right while the take's real offset is under half a round: only a fallback for
+/// a record pass that has no stamp latched when it began (see
+/// [`HeardStamps::record_start_heard`]), as a capture-to-playback gap of half a round or more
+/// (a short loop, a long round trip) lands it a whole round off.
 pub fn nearest_round(heard: Moment, captured: Moment, period: f64) -> Moment {
     if period.is_nan() || period <= 0.0 {
         return heard;
@@ -337,6 +387,41 @@ mod tests {
         // The same round, or no loop, stays as it is.
         assert_eq!(nearest_round(moment(10.0), captured, 0.25), moment(10.0));
         assert_eq!(nearest_round(projected, captured, 0.0), projected);
+    }
+
+    #[test]
+    fn a_take_whose_gap_is_over_half_a_loop_round_is_placed_by_the_round_its_pass_began_in() {
+        // A 4800-sample loop (0.1 s at 48 kHz) and 3840 samples (0.08 s) from the capture of the
+        // take's first sample to when the record start is heard: over half a round.
+        let rate = 48_000.0;
+        let t0 = Instant::now() + Duration::from_secs(1);
+        let moment = |s: f64| Moment { at: shift(t0, s).unwrap(), clock: Some(100.0 + s) };
+        let stamps = HeardStamps::default();
+        stamps.begin_record();
+        // The punch at sample 1_100: the first callback after it outputs sample 1_000 at 10 s.
+        let mut pending = Some((stamps.latest_record(), Heard { sample: 1_000.0, when: moment(10.0), speed: 1.0 }));
+        stamps.record_begun(&mut pending);
+        assert_eq!(pending, None);
+        // Rounds later the latest callback outputs sample 1_000 again, at 10.3 s.
+        stamps.record(Heard { sample: 1_000.0, when: moment(10.3), speed: 1.0 }, false, &mut None);
+        let start = 1_100.0;
+        let heard_then = 10.0 + 100.0 / rate;
+        let captured = moment(heard_then - 0.08);
+        let (heard, speed) = stamps.record_start_heard(start, rate, Some(4_800.0)).unwrap();
+        assert_eq!(speed, 1.0);
+        assert_eq!(placement_offset(heard, captured, rate, None), 3_840);
+        assert_eq!(placement_offset(heard, captured, rate, Some(Duration::from_millis(80))), 3_840, "by the clock as well");
+        // The round nearest the capture, from the latest callback, is a whole round off.
+        let (projected, _) = stamps.heard_at(start, rate).unwrap();
+        assert_eq!(placement_offset(nearest_round(projected, captured, 0.1), captured, rate, None), -960);
+        // A record start just after a wrap from the latched sample is heard just after it.
+        let mut pending = Some((stamps.latest_record(), Heard { sample: 4_790.0, when: moment(20.0), speed: 1.0 }));
+        stamps.record_begun(&mut pending);
+        let (heard, _) = stamps.record_start_heard(10.0, rate, Some(4_800.0)).unwrap();
+        assert!(heard.clock.is_some_and(|c| (c - (120.0 + 20.0 / rate)).abs() < 1e-9), "{heard:?}");
+        // A later record pass whose stamp is not published yet has none: the earlier one's does not answer.
+        stamps.begin_record();
+        assert_eq!(stamps.record_start_heard(start, rate, Some(4_800.0)), None);
     }
 
     #[test]

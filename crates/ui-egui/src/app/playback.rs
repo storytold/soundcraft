@@ -243,17 +243,23 @@ impl SoundApp {
     /// it to when the output played the sample at `start`, both as the devices report them, less
     /// the record offset. Without both moments (no device), without both reported latencies, or
     /// with an implausible difference of a second or more, only the record offset applies. In `looped`
-    /// playback the sample at `start` is heard once a round: the round the take began in counts.
+    /// playback the sample at `start` is heard once a round: the round the take began in counts,
+    /// as latched when the pass began. Only when nothing was latched (no output stamp yet) is it
+    /// the round nearest the capture, which is right while the take's offset is under half a round.
     fn placement_offset(&self, start: Samples, looped: Option<Range>) -> Samples {
         let rate = self.engine.session().sample_rate.as_f64();
         let captured = self.recorder.as_ref().and_then(|r| r.first_capture());
-        let heard = self.player.as_ref().and_then(|p| p.heard_at(start, rate)).map(|(heard, speed)| {
-            // A round lasts longer at half speed: the session samples go by at the speed played.
-            match (looped.filter(|l| (l.start..l.end).contains(&start)), captured) {
-                (Some(l), Some(captured)) => soundcraft_playback::latency::nearest_round(heard, captured, l.len() as f64 / (rate * speed)),
-                _ => heard,
-            }
-        });
+        let player = self.player.as_ref();
+        let heard = match looped.filter(|l| (l.start..=l.end).contains(&start)) {
+            Some(l) => player.and_then(|p| p.record_start_heard(start, rate, Some(l))).map(|(heard, _)| heard).or_else(|| {
+                // A round lasts longer at half speed: the session samples go by at the speed played.
+                player.and_then(|p| p.heard_at(start, rate)).map(|(heard, speed)| match captured {
+                    Some(captured) => soundcraft_playback::latency::nearest_round(heard, captured, l.len() as f64 / (rate * speed)),
+                    None => heard,
+                })
+            }),
+            None => player.and_then(|p| p.heard_at(start, rate)).map(|(heard, _)| heard),
+        };
         let output = self.player.as_ref().and_then(|p| p.output_latency());
         let round_trip = output.zip(self.recorder.as_ref().and_then(|r| r.input_latency())).map(|(o, i)| o + i);
         // Without both latencies the capture moment lacks the input's share, and the punch-out
