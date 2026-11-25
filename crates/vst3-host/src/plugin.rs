@@ -526,13 +526,15 @@ impl PluginEditor for Vst3Editor {
         let edits = self.host.take_edits();
         let refreshed = self.host.parameter_values_changed.swap(false, Ordering::Relaxed);
         if self.info.is_instrument && was_open && refreshed {
+            // After kParamValuesChanged the controller holds the current values; a queued edit
+            // only stands in when it cannot be read.
             let latest: HashMap<_, _> = edits.into_iter().collect();
             return self
                 .ids
                 .iter()
                 .enumerate()
                 .filter_map(|(i, &id)| {
-                    let n = latest.get(&id).copied().or_else(|| self.link.normalized_value(id))?;
+                    let n = self.link.normalized_value(id).or_else(|| latest.get(&id).copied())?;
                     Some((self.info.params.get(i)?.id.to_string(), self.plain(i, n)?))
                 })
                 .collect();
