@@ -314,6 +314,10 @@ impl SoundApp {
         const PASS: &str = "automation_pass";
         let playing = self.is_playing();
         self.prepare_automation_merge();
+        // A send retargeted since its touch releases the latch, even if it later returns to that bus.
+        let session = self.engine.session();
+        self.touched_sends
+            .retain(|&(t, slot), route| session.track(t).and_then(|tr| tr.mixer.sends.get(slot)?.as_ref()).is_some_and(|send| send.target == *route));
         if !playing && self.touched.is_empty() && self.touched_sends.is_empty() && self.touched_pans.is_empty() {
             self.last_write_at = i64::MIN;
             if self.engine.merge_key() == Some(PASS) {
