@@ -375,6 +375,41 @@ fn a_callback_after_a_half_speed_stop_publishes_no_full_speed_stamp() {
     assert_eq!(st.shared.heard.heard_at(64.0, 48_000.0), before, "the half-speed stamps still tell the pass");
 }
 
+/// A punch on the fly while a loop plays: the callback after the record command latches when the
+/// record start is heard in that round, and later rounds do not move it.
+#[test]
+fn a_punch_during_loop_playback_keeps_the_round_it_began_in() {
+    use std::time::{Duration, Instant};
+    let (mut st, tx) = audio_output_state_and_commands(soundcraft_model::ChannelFormat::Stereo, vec![vec![0.0; 4_800]; 2]);
+    st.shared.output_latency.observe(Some(Duration::from_micros(6_750)));
+    let looped = Range::new(0, 4_800);
+    tx.send(Cmd::Play { from: 0, end: None, looped: Some(looped) }).unwrap();
+    // 256 frames a callback at 48 kHz.
+    let t0 = Instant::now();
+    let at = |k: u32| t0 + Duration::from_micros(u64::from(k) * 16_000 / 3);
+    for k in 0..5 {
+        st.callback_at = Some(at(k));
+        st.fill(&mut [0.0; 512], 2);
+    }
+    // `Player::set_recording(true)`, then the playhead the UI reads as the record start.
+    st.shared.heard.begin_record();
+    tx.send(Cmd::Recording(true, 0)).unwrap();
+    let start = st.shared.position.load(Ordering::Relaxed);
+    // Three rounds and more follow.
+    for k in 5..70 {
+        st.callback_at = Some(at(k));
+        st.fill(&mut [0.0; 512], 2);
+    }
+    // The callback after the command outputs sample 1_280 (5 × 256).
+    let want = at(5) + Duration::from_micros(6_750) + Duration::from_secs_f64((start - 1_280) as f64 / 48_000.0);
+    let (heard, speed) = st.shared.heard.record_start_heard(start as f64, 48_000.0, Some(4_800.0)).unwrap();
+    assert_eq!(speed, 1.0);
+    assert!(heard.at.max(want).duration_since(heard.at.min(want)) < Duration::from_micros(2), "{heard:?} vs {want:?}");
+    // Projected from the latest callback, the record start falls in a later round.
+    let (later, _) = st.shared.heard.heard_at(start as f64, 48_000.0).unwrap();
+    assert!(later.at > want + Duration::from_millis(100), "{later:?}");
+}
+
 #[test]
 fn the_output_callback_notes_when_the_play_start_and_later_samples_are_heard() {
     use std::time::{Duration, Instant};
