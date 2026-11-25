@@ -315,9 +315,16 @@ impl SoundApp {
         let playing = self.is_playing();
         self.prepare_automation_merge();
         // A send retargeted since its touch releases the latch, even if it later returns to that bus.
+        // So does its MIDI touch: a CC that moved the send to the old bus no longer counts as held.
         let session = self.engine.session();
-        self.touched_sends
-            .retain(|&(t, slot), route| session.track(t).and_then(|tr| tr.mixer.sends.get(slot)?.as_ref()).is_some_and(|send| send.target == *route));
+        let send_route = |t, slot: usize| session.track(t).and_then(|tr| tr.mixer.sends.get(slot)?.as_ref()).map(|send| &send.target);
+        self.touched_sends.retain(|&(t, slot), route| send_route(t, slot) == Some(route));
+        self.midi_moves.retain(|(target, _)| match target.parameter {
+            soundcraft_engine::midi_learn::Parameter::SendLevel { slot, bus } | soundcraft_engine::midi_learn::Parameter::SendPan { slot, bus } => {
+                send_route(target.track, slot) == Some(&soundcraft_model::Route::Bus(bus))
+            }
+            _ => true,
+        });
         if !playing && self.touched.is_empty() && self.touched_sends.is_empty() && self.touched_pans.is_empty() {
             self.last_write_at = i64::MIN;
             if self.engine.merge_key() == Some(PASS) {
