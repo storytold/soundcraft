@@ -2413,6 +2413,12 @@ fn clip_menu_offers_split_and_join_by_selection() {
     // A range over two clips from different files: Consolidate joins them; Heal cannot and Separate is hidden.
     select(&mut s, 0, 2_000);
     assert_eq!(items(&s, b), vec!["edit.consolidate"]);
+    // Consolidate refuses a range that holds a locked clip, so the menu does not offer it then.
+    for lock in [(|c: &mut Clip| c.time_locked = true) as fn(&mut Clip), |c: &mut Clip| c.edit_locked = true] {
+        let mut locked = s.clone();
+        lock(&mut locked.track_mut(t).and_then(Track::playlist_mut).unwrap().clips[0]);
+        assert!(!items(&locked, b).contains(&"edit.consolidate"));
+    }
     // An insertion point on the seam of two pieces of one file: Heal joins them.
     select(&mut s, 6_000, 6_000);
     assert!(items(&s, d).contains(&"edit.heal"));

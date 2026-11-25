@@ -626,7 +626,8 @@ pub(super) fn clip_edit_items(s: &Session, clicked: ClipId) -> Vec<(&'static str
     if tracks.iter().any(|t| ops::can_heal(s, t.id, ops::heal_range(r))) {
         items.push(("Heal Separation", "edit.heal"));
     }
-    if !r.is_empty() && tracks.iter().any(|t| in_range(t) >= 2) {
+    // Consolidate refuses a range that holds a locked clip on any selected track.
+    if !r.is_empty() && tracks.iter().any(|t| in_range(t) >= 2) && !tracks.iter().any(|t| ops::holds_locked(s, t.id, r)) {
         items.push(("Consolidate", "edit.consolidate"));
     }
     items
