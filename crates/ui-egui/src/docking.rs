@@ -635,6 +635,16 @@ struct ViewFocus {
     wanted: bool,
     /// The view had the focus, and no other widget has taken it.
     returns: bool,
+    /// An overlay ([`crate::framework::overlay_open`]) was up.
+    overlay: bool,
+    /// The view kept Tab.
+    kept_tab: bool,
+}
+
+impl LiveDocks {
+    fn view_focus(&mut self, edit: bool) -> &mut ViewFocus {
+        if edit { &mut self.edit_focus } else { &mut self.mix_focus }
+    }
 }
 
 /// Gives the session view, drawn in `rect`, the keyboard focus on a press in it, when it opens or shows another
@@ -649,12 +659,16 @@ fn focus_session_view(app: &mut crate::SoundApp, ui: &egui::Ui, edit: bool, rect
     let pressed = ui.rect_contains_pointer(rect) && ui.input(|input| input.pointer.any_pressed());
     let overlay = crate::framework::overlay_open(app, ctx);
     let (pass, document) = (ctx.cumulative_pass_nr(), app.doc_epoch);
-    let state = if edit { &mut app.docks.edit_focus } else { &mut app.docks.mix_focus };
+    let state = app.docks.view_focus(edit);
     let stayed = state.shown.is_some_and(|(last, shown)| shown == document && (last == pass || last + 1 == pass));
     state.shown = Some((pass, document));
     state.wanted |= pressed || !stayed;
     state.returns |= focused == Some(id);
-    if overlay {
+    // egui keeps the focus on a widget of a closed overlay for the pass after the last one that drew it.
+    if std::mem::replace(&mut state.overlay, overlay) || overlay {
+        if !overlay {
+            ctx.request_repaint();
+        }
         return;
     }
     let wanted = std::mem::take(&mut state.wanted);
@@ -706,9 +720,14 @@ impl DockPanels<Panel> for Panels<'_> {
         let id = crate::framework::session_view_id(self.edit);
         let view = ui.interact(rect, id, egui::Sense::focusable_noninteractive());
         view.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Canvas, true, crate::localization::text(Panel::Canvas.label())));
+        // The shortcuts read the root window's keys only, so a Mix window of its own leaves Tab to the focus. A press of
+        // Tab is the view's to its release: the repeats of the one that reached the last stop stay here.
+        let shortcuts_run = ui.ctx().viewport_id() == egui::ViewportId::ROOT;
+        let held = self.app.docks.view_focus(self.edit).kept_tab && ui.input(|input| input.key_down(egui::Key::Tab));
+        let keeps_tab = |app: &crate::SoundApp| shortcuts_run && (held || crate::shortcuts::tab_has_work(app));
         // Declared before the widgets drawn over it, for its place in Tab order, and again after this pass's input has
         // changed what Tab has to do.
-        crate::framework::host_canvas(ui.ctx(), id, crate::shortcuts::tab_has_work(self.app));
+        crate::framework::host_canvas(ui.ctx(), id, keeps_tab(self.app));
         ui.painter().rect_filled(rect, 0.0, crate::theme::Tokens::current().window_bg);
         if self.edit {
             crate::edit_window::main_area(self.app, ui);
@@ -716,7 +735,9 @@ impl DockPanels<Panel> for Panels<'_> {
             crate::mix_window::content(self.app, ui);
         }
         focus_session_view(self.app, ui, self.edit, rect);
-        crate::framework::host_canvas(ui.ctx(), id, crate::shortcuts::tab_has_work(self.app));
+        let kept_tab = keeps_tab(self.app);
+        self.app.docks.view_focus(self.edit).kept_tab = kept_tab;
+        crate::framework::host_canvas(ui.ctx(), id, kept_tab);
         Some(rect.height())
     }
 }

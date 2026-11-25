@@ -1,17 +1,24 @@
 //! The session view as a Tab stop: it takes the keyboard when it opens and when it is pressed, keeps Tab while Tab has
 //! a stop to go to, and leaves every other key to the shortcuts, as with nothing focused.
 
-use egui::{Event, Id, Key, Modifiers, PointerButton, Pos2, vec2};
+use std::cell::{Cell, RefCell};
+
+use egui::accesskit::Role;
+use egui::{Event, Id, Key, Modifiers, PointerButton, Pos2, RawInput, Rect, vec2};
 use egui_kittest::{Harness, kittest::Queryable};
 use serde_json::json;
 use soundcraft_model::{ClipId, Tool};
 use soundcraft_ui_egui::framework::session_view_id;
-use soundcraft_ui_egui::{Services, SoundApp, edit_window};
+use soundcraft_ui_egui::{Services, SoundApp, edit_window, menus};
 
 type AppHarness = Harness<'static, SoundApp>;
 
 fn harness() -> AppHarness {
-    let app = SoundApp::new(soundcraft_engine::demo::demo_engine(), None, Services::default());
+    harness_of(soundcraft_engine::demo::demo_engine())
+}
+
+fn harness_of(engine: soundcraft_engine::Engine) -> AppHarness {
+    let app = SoundApp::new(engine, None, Services::default());
     let mut h =
         Harness::builder().with_context_setup(soundcraft_ui_egui::framework::install_headless).with_size(vec2(1600.0, 1000.0)).build_ui_state(
             |ui, app: &mut SoundApp| {
@@ -106,6 +113,28 @@ fn the_focused_session_view_keeps_tab_until_the_last_stop() {
 }
 
 #[test]
+fn a_held_tab_that_reaches_the_last_stop_stays_in_the_session_view() {
+    let mut h = harness();
+    let end = kick_clips(&h).into_iter().map(|clip| clip.2).max().unwrap();
+    select(&mut h, json!({"tracks": ["Kick"], "start": end - 1, "exact": true}));
+    let tab = |h: &mut AppHarness, pressed: bool, repeat: bool| {
+        h.event(Event::Key { key: Key::Tab, physical_key: None, pressed, repeat, modifiers: Modifiers::NONE });
+        h.run_steps(1);
+    };
+    tab(&mut h, true, false);
+    assert_eq!((insertion(&h), focused(&h)), (end, edit_view()), "the press reaches the last stop");
+    for _ in 0..3 {
+        tab(&mut h, true, true);
+        assert_eq!(focused(&h), edit_view(), "a repeat");
+    }
+    tab(&mut h, false, false);
+    h.run_steps(2);
+    assert_eq!(focused(&h), edit_view());
+    press(&mut h, Modifiers::NONE, Key::Tab);
+    assert!(focused(&h).is_some() && focused(&h) != edit_view(), "the next press moves on");
+}
+
+#[test]
 fn a_press_in_the_session_view_takes_the_keyboard_from_a_toolbar_button() {
     let mut h = harness();
     let tool = h.state().engine.session().edit.tool;
@@ -144,6 +173,101 @@ fn a_session_view_that_opens_takes_the_focus() {
     h.state_mut().run("window.toggle_mix_edit", json!({})).unwrap();
     h.run_steps(3);
     assert_eq!(focused(&h), edit_view());
+}
+
+#[test]
+fn a_closed_search_gives_the_focus_back_to_the_session_view() {
+    let mut h = harness();
+    for (typed, key) in [("", Key::Escape), ("Zoom In", Key::Enter)] {
+        h.state_mut().run("window.search", json!({})).unwrap();
+        h.run_steps(3);
+        assert!(h.ctx.text_edit_focused(), "the search field");
+        h.event(Event::Text(typed.into()));
+        press(&mut h, Modifiers::NONE, key);
+        h.run_steps(2);
+        assert!(!h.state().ui.show_search);
+        assert_eq!(focused(&h), edit_view(), "{key:?}");
+        select(&mut h, json!({"tracks": ["Kick"], "start": 0}));
+        press(&mut h, Modifiers::NONE, Key::Tab);
+        assert!(insertion(&h) > 0, "{key:?}: Tab moves the insertion point");
+    }
+}
+
+#[test]
+fn a_session_made_from_a_dialog_takes_the_focus() {
+    let mut h = harness_of(soundcraft_engine::Engine::default());
+    h.get_by_label("Trim (F6)").focus();
+    h.run_steps(2);
+    assert_ne!(focused(&h), edit_view());
+    menus::invoke_menu(h.state_mut(), "session.new", "File > New Session...");
+    h.run_steps(3);
+    assert_eq!(h.state().dialogs.open_name(), Some("new_session"));
+    h.get_by_role_and_label(Role::Button, "Create").focus();
+    h.run_steps(2);
+    press(&mut h, Modifiers::NONE, Key::Enter);
+    h.run_steps(2);
+    assert_eq!((h.state().dialogs.open_name(), focused(&h)), (None, edit_view()));
+}
+
+thread_local! {
+    /// The events of the Mix window's next pass, and the widget that had its focus in the last one.
+    static MIX_EVENTS: RefCell<Vec<Event>> = const { RefCell::new(Vec::new()) };
+    static MIX_FOCUS: Cell<Option<Id>> = const { Cell::new(None) };
+}
+
+/// Draws the Mix window as a native one: its pass runs inside the main window's, as eframe's does.
+fn render_mix(ctx: &egui::Context, viewport: egui::ImmediateViewport<'_>) {
+    let mut show = viewport.viewport_ui_cb;
+    let mut input = RawInput {
+        viewport_id: viewport.ids.this,
+        screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(1100.0, 720.0))),
+        events: MIX_EVENTS.take(),
+        ..Default::default()
+    };
+    input.viewports.insert(viewport.ids.this, egui::ViewportInfo { parent: Some(viewport.ids.parent), ..Default::default() });
+    let mut output = ctx.run_ui(input, |ui| {
+        show(ui);
+        MIX_FOCUS.set(ui.ctx().memory(|m| m.focused()));
+    });
+    output.textures_delta.clear();
+}
+
+/// Runs a frame of both windows with `events` in the Mix window, then settles.
+fn mix_frames(ctx: &egui::Context, app: &mut SoundApp, events: Vec<Event>) -> Option<Id> {
+    MIX_EVENTS.set(events);
+    for _ in 0..4 {
+        let screen_rect = Some(Rect::from_min_size(Pos2::ZERO, vec2(1600.0, 1000.0)));
+        ctx.run_ui(RawInput { screen_rect, ..Default::default() }, |ui| {
+            app.logic(ui.ctx());
+            app.ui(ui);
+        })
+        .textures_delta
+        .clear();
+    }
+    MIX_FOCUS.get()
+}
+
+#[test]
+fn tab_and_shift_tab_leave_the_session_view_of_a_separate_mix_window() {
+    let ctx = egui::Context::default();
+    soundcraft_ui_egui::framework::install_headless(&ctx);
+    ctx.set_embed_viewports(false);
+    egui::Context::set_immediate_viewport_renderer(render_mix);
+    let mut app = SoundApp::new(soundcraft_engine::demo::demo_engine(), None, Services::default());
+    app.run("edit.select", json!({"tracks": ["Kick"], "start": 0})).unwrap();
+    app.run("window.mix_separate", json!({"value": true})).unwrap();
+    let view = Some(session_view_id(false));
+    assert_eq!(mix_frames(&ctx, &mut app, Vec::new()), view, "the opened Mix window's session view has its focus");
+    let tab = |modifiers: Modifiers| -> Vec<Event> {
+        let key = [true, false].map(|pressed| Event::Key { key: Key::Tab, physical_key: None, pressed, repeat: false, modifiers });
+        [Event::ModifiersChanged(modifiers)].into_iter().chain(key).chain([Event::ModifiersChanged(Modifiers::NONE)]).collect()
+    };
+    let after = mix_frames(&ctx, &mut app, tab(Modifiers::NONE));
+    assert!(after.is_some() && after != view, "Tab goes on to the strips");
+    assert_eq!(mix_frames(&ctx, &mut app, tab(Modifiers::SHIFT)), view, "Shift+Tab walks back");
+    let before = mix_frames(&ctx, &mut app, tab(Modifiers::SHIFT));
+    assert!(before.is_some() && before != view, "and past the view");
+    assert_eq!(app.engine.session().edit.selection.start, 0);
 }
 
 #[test]
