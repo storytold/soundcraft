@@ -1,4 +1,4 @@
-use crate::{midi_sync::MidiSync};
+use crate::midi_sync::MidiSync;
 use serde_json::{Value, json};
 use std::collections::BTreeSet;
 
