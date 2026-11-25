@@ -52,8 +52,10 @@ impl SoundApp {
     pub(crate) fn stop_play(&mut self) {
         if let Some(p) = &self.player {
             // Half-speed is a separate command. Stop must not leave that rate for the next Play.
-            p.set_speed(1.0);
+            // Stop first: a callback that renders at the speed put back has the Stop to read, and
+            // publishes no stamp at that speed for the pass that is still playing.
             p.stop();
+            p.set_speed(1.0);
         }
         if self.engine.transport.recording {
             self.finish_recording();
@@ -245,7 +247,7 @@ impl SoundApp {
     fn placement_offset(&self, start: Samples, looped: Option<Range>) -> Samples {
         let rate = self.engine.session().sample_rate.as_f64();
         let captured = self.recorder.as_ref().and_then(|r| r.first_capture());
-        let heard = self.player.as_ref().and_then(|p| p.heard_at(start, rate).map(|heard| (heard, p.heard_speed()))).map(|(heard, speed)| {
+        let heard = self.player.as_ref().and_then(|p| p.heard_at(start, rate)).map(|(heard, speed)| {
             // A round lasts longer at half speed: the session samples go by at the speed played.
             match (looped.filter(|l| (l.start..l.end).contains(&start)), captured) {
                 (Some(l), Some(captured)) => soundcraft_playback::latency::nearest_round(heard, captured, l.len() as f64 / (rate * speed)),

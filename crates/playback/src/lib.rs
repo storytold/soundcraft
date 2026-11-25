@@ -521,7 +521,9 @@ impl Player {
 
     pub fn set_speed(&self, speed: f32) {
         let v = if speed.is_finite() { (speed.clamp(0.1, 4.0) * 1000.0) as u32 } else { 1000 };
-        self.shared.speed.store(v, Ordering::Relaxed);
+        // Release: the callback that renders at this speed also sees what was sent before it,
+        // so a Stop sent first stops that callback before it publishes a stamp at this speed.
+        self.shared.speed.store(v, Ordering::Release);
     }
 
     /// Playback rate last requested, 1.0 at full speed.
@@ -545,15 +547,11 @@ impl Player {
 
     /// When the session sample `sample` was (or will be) heard at the output, at the session's
     /// `rate`: exact for the first sample of the latest Play, projected from the latest output
-    /// callback otherwise. `None` until an output callback with a device has run.
-    pub fn heard_at(&self, sample: Samples, rate: f64) -> Option<latency::Moment> {
+    /// callback otherwise. With it, the transport speed of the stamp it comes from, read in the
+    /// same look (stamps are published only while playing, so a Stop that puts the speed back
+    /// leaves the speed a pass played). `None` until an output callback with a device has run.
+    pub fn heard_at(&self, sample: Samples, rate: f64) -> Option<(latency::Moment, f64)> {
         self.shared.heard.heard_at(sample as f64, rate)
-    }
-
-    /// The transport speed the latest output callback rendered at, 1.0 before one ran. It stays
-    /// after a Stop puts the speed back, so a pass's loop rounds are timed at the speed it played.
-    pub fn heard_speed(&self) -> f64 {
-        self.shared.heard.speed()
     }
 
     /// A copy of the meters accumulated since the last [`Player::take_meters`], leaving them in
