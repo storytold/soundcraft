@@ -6,7 +6,7 @@ use windows_sys::Win32::Graphics::Gdi::{GetMonitorInfoW, MONITOR_DEFAULTTONEARES
 use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows_sys::Win32::UI::Input::KeyboardAndMouse::GetActiveWindow;
 use windows_sys::Win32::UI::WindowsAndMessaging::{
-    AdjustWindowRectEx, CS_HREDRAW, CS_VREDRAW, CreateWindowExW, DefWindowProcW, DestroyWindow, GWL_EXSTYLE, GWL_STYLE, GetCursorPos,
+    AdjustWindowRectEx, CS_HREDRAW, CS_VREDRAW, CreateWindowExW, DefWindowProcW, DestroyWindow, GWL_EXSTYLE, GWL_STYLE, GetClientRect, GetCursorPos,
     GetWindowLongPtrW, GetWindowRect, IDC_ARROW, IsWindow, IsWindowVisible, LoadCursorW, RegisterClassExW, SW_HIDE, SW_SHOW, SWP_NOACTIVATE,
     SWP_NOZORDER, SetForegroundWindow, SetWindowPos, ShowWindow, WM_CLOSE, WNDCLASSEXW, WS_CAPTION, WS_CLIPCHILDREN, WS_OVERLAPPED, WS_SYSMENU,
 };
@@ -176,8 +176,21 @@ pub fn fit_client(w: f64, h: f64) -> (f64, f64) {
     (w.min(f64::from(fw)), h.min(f64::from(fh)))
 }
 
-/// Resizes a host window's client area (`window` from [`HostWindow::raw`]); main thread only.
-/// The window stays on its monitor, fitted to the work area, and the client size it actually
+/// A host window's current client size (`window` from [`HostWindow::raw`]); main thread only.
+pub fn client_size(window: *mut c_void) -> Option<(f64, f64)> {
+    if !on_main_thread() || window.is_null() {
+        return None;
+    }
+    let mut r = RECT::default();
+    // SAFETY: `IsWindow` accepts any value; `r` is valid, writable memory.
+    (unsafe { IsWindow(window) } != 0 && unsafe { GetClientRect(window, &mut r) } != 0)
+        .then(|| (f64::from(r.right - r.left), f64::from(r.bottom - r.top)))
+}
+
+/// Resizes a host window's client area to the negotiated `w`×`h` (`window` from
+/// [`HostWindow::raw`]); main thread only. The size the caller negotiated with the plugin is
+/// kept — even when it is bigger than the work area, where the window is moved so its title bar
+/// stays reachable and its clipped side can be dragged into view — and the client size actually
 /// applied comes back so the caller can tell the plugin the agreed size (#1448).
 pub fn resize(window: *mut c_void, w: f64, h: f64) -> (f64, f64) {
     // SAFETY: `IsWindow` accepts any value.
@@ -192,11 +205,11 @@ pub fn resize(window: *mut c_void, w: f64, h: f64) -> (f64, f64) {
     if unsafe { GetWindowRect(window, &mut rect) } == 0 {
         return (w, h);
     }
-    let (x, y, nw, nh) = fit_window(rect.left, rect.top, ow, oh, work_area_of(window));
-    // SAFETY: as above; the window keeps its monitor and stays inside its work area.
-    unsafe { SetWindowPos(window, std::ptr::null_mut(), x, y, nw, nh, SWP_NOZORDER | SWP_NOACTIVATE) };
-    // The applied client is the applied outer minus the chrome the style adds.
-    (f64::from((nw - (ow - w as i32)).max(1)), f64::from((nh - (oh - h as i32)).max(1)))
+    let (x, y) = place_inside(rect.left, rect.top, ow, oh, work_area_of(window));
+    // SAFETY: as above; the window keeps its negotiated size and stays reachable.
+    unsafe { SetWindowPos(window, std::ptr::null_mut(), x, y, ow, oh, SWP_NOZORDER | SWP_NOACTIVATE) };
+    // Windows can cap a window's extent: report the client size it actually applied.
+    client_size(window).unwrap_or((w, h))
 }
 
 /// The work area (screen minus taskbar and docked bars) of the monitor nearest `pt`.
@@ -246,36 +259,11 @@ fn place_inside(x: i32, y: i32, w: i32, h: i32, work: RECT) -> (i32, i32) {
     (x, y)
 }
 
-/// The window rect `x`,`y`,`w`,`h` constrained to `work` (#1448): an oversized window shrinks to
-/// the largest size that fits, and the origin moves only as much as needed to land fully inside.
-fn fit_window(x: i32, y: i32, w: i32, h: i32, work: RECT) -> (i32, i32, i32, i32) {
-    let w = w.clamp(1, (work.right - work.left).max(1));
-    let h = h.clamp(1, (work.bottom - work.top).max(1));
-    let (x, y) = place_inside(x, y, w, h, work);
-    (x, y, w, h)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
     const WORK: RECT = RECT { left: -1920, top: 0, right: 0, bottom: 1040 };
-
-    #[test]
-    fn fit_window_keeps_origin_inside() {
-        // Right/bottom and left/top overhangs are pulled back inside (#1448).
-        let (x, y, w, h) = fit_window(-50, 1000, 400, 300, WORK);
-        assert!((x, y, w, h) == (-400, 740, 400, 300));
-        let (x, y, w, h) = fit_window(-2500, -100, 400, 300, WORK);
-        assert!((x, y, w, h) == (-1920, 0, 400, 300));
-    }
-
-    #[test]
-    fn fit_window_shrinks_oversized() {
-        // Bigger than the monitor: largest size that fits, top-left at the work area's (#1448).
-        let (x, y, w, h) = fit_window(500, 500, 4000, 2000, WORK);
-        assert!((x, y, w, h) == (-1920, 0, 1920, 1040));
-    }
 
     #[test]
     fn place_inside_keeps_oversized_windows_draggable() {
