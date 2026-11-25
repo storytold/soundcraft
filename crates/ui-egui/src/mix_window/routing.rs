@@ -92,29 +92,66 @@ pub(crate) fn route_popup(app: &mut SoundApp, resp: &egui::Response, id: TrackId
             return;
         }
         // Query only when opening the selector, never on each frame of the popup.
-        let inputs = if input {
+        let (inputs, names) = if input {
             let cached = was_open.then(|| ui.data(|data| data.get_temp(width_key))).flatten();
             cached.unwrap_or_else(|| {
-                let channels = app.available_input_channels();
-                ui.data_mut(|data| data.insert_temp(width_key, channels));
-                channels
+                let names = app.player.as_ref().map(|player| player.input_channel_names(&app.ui.audio)).unwrap_or_default();
+                let found = (app.available_input_channels(), names);
+                ui.data_mut(|data| data.insert_temp(width_key, found.clone()));
+                found
             })
         } else {
-            0
+            (0, app.player.as_ref().map(|player| player.device_channel_names.clone()).unwrap_or_default())
         };
-        route_menu(app, ui, id, input, inputs);
+        route_menu(app, ui, id, input, inputs, &names);
     });
 }
 
+/// The device's name for `width` channels from `first` (0-based): "ADAT 1", "Analog 1-2", or
+/// "Analog 8–Mic 9" across two groups. `None` when the device leaves any of them unnamed or
+/// names them only by number.
+pub(crate) fn channel_span(names: &[String], first: usize, width: usize) -> Option<String> {
+    let span = names.get(first..first.checked_add(width)?)?;
+    fn named(name: &str) -> Option<&str> {
+        let name = name.trim();
+        (!name.is_empty() && !name.chars().all(|c| c.is_ascii_digit())).then_some(name)
+    }
+    let (a, b) = (named(span.first()?)?, named(span.last()?)?);
+    if !span.iter().all(|name| named(name).is_some()) {
+        return None;
+    }
+    if width == 1 {
+        return Some(a.to_string());
+    }
+    Some(match (a.rsplit_once(' '), b.rsplit_once(' ')) {
+        (Some((group, _)), Some((same, last))) if group == same => format!("{a}-{last}"),
+        _ => format!("{a}–{b}"),
+    })
+}
+
+/// `label` followed by the device's name for its channels: "In 15 (ADAT 1)". Only the menu text
+/// changes; the route keeps the numbered name, so sessions open the same on any interface.
+fn with_channel_names(label: String, names: &[String], first: usize, width: usize) -> String {
+    match channel_span(names, first, width) {
+        Some(name) if !name.eq_ignore_ascii_case(&label) => format!("{label} ({name})"),
+        _ => label,
+    }
+}
+
 /// Input or output menu with searchable hardware paths and buses.
-fn route_menu(app: &mut SoundApp, ui: &mut Ui, id: TrackId, input: bool, inputs: usize) {
+/// `names` are the device's names for the channels in that direction (see [`channel_span`]).
+fn route_menu(app: &mut SoundApp, ui: &mut Ui, id: TrackId, input: bool, inputs: usize, names: &[String]) {
     let key = if input { "input" } else { "output" };
     let cmd = if input { "track.input" } else { "track.output" };
     let hint = crate::localization::text(if input { "Search inputs…" } else { "Search outputs…" });
     let search = MenuSearch::show(ui, egui::Id::unique(("route-search", id.0, input)), hint);
     let list_height = (ui.ctx().content_rect().height() - 105.0).clamp(48.0, 420.0);
     let busses: Vec<String> = app.engine.session().busses.iter().map(|b| b.name.clone()).collect();
-    let main_name = app.engine.session().outputs.first().map_or_else(|| "Out 1-2".to_string(), |o| o.name.clone());
+    let session = app.engine.session();
+    let main_name = session.outputs.first().map_or_else(
+        || "Out 1-2".to_string(),
+        |o| with_channel_names(o.name.clone(), names, usize::from(o.first_channel), session.main_format().channels()),
+    );
     // (label, the route the command is given)
     let mut fixed = vec![(crate::localization::text(if input { "no input" } else { "no output" }).to_string(), "none".to_string())];
     if input {
@@ -122,11 +159,12 @@ fn route_menu(app: &mut SoundApp, ui: &mut Ui, id: TrackId, input: bool, inputs:
         let channels = if inputs == 0 { 8 } else { inputs };
         fixed.extend((width..=channels).map(|last| {
             let first = last + 1 - width;
-            if width == 1 {
+            let (label, value) = if width == 1 {
                 (crate::localized_format!("In {}", first), format!("In {first}"))
             } else {
                 (crate::localized_format!("In {}-{}", first, last), format!("In {first}-{last}"))
-            }
+            };
+            (with_channel_names(label, names, first - 1, width), value)
         }));
         if let Some(track) = app.engine.session().track(id)
             && let Route::Hardware(name) = &track.mixer.input
@@ -136,7 +174,11 @@ fn route_menu(app: &mut SoundApp, ui: &mut Ui, id: TrackId, input: bool, inputs:
         }
     } else {
         fixed.push((main_name, "main".to_string()));
-        fixed.extend(app.engine.session().outputs.iter().skip(1).map(|path| (path.name.clone(), path.name.clone())));
+        fixed.extend(
+            session.outputs.iter().skip(1).map(|path| {
+                (with_channel_names(path.name.clone(), names, usize::from(path.first_channel), path.format.channels()), path.name.clone())
+            }),
+        );
     }
     if search.typing() {
         let visible: Vec<_> =
@@ -225,7 +267,7 @@ mod tests {
                         let button = ui.button(label);
                         egui::Popup::menu(&button)
                             .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
-                            .show(|ui| route_menu(app, ui, id, input, ports));
+                            .show(|ui| route_menu(app, ui, id, input, ports, &[]));
                     }
                 },
                 app,
@@ -263,6 +305,56 @@ mod tests {
                 assert_eq!(*actual, super::Route::Hardware(last));
             }
         }
+    }
+
+    #[test]
+    fn the_interfaces_channel_names_find_a_path_that_keeps_its_numbered_route() {
+        let _palette = crate::theme::lock_test_palette();
+        // Named like a Fireface UFX: Analog 1-8, Mic (in) or Phones (out) 9-12, AES L/R, ADAT 1-16.
+        let names = |middle: &str| -> Vec<String> {
+            (1..=8)
+                .map(|n| format!("Analog {n}"))
+                .chain((9..=12).map(|n| format!("{middle} {n}")))
+                .chain(["AES L".to_string(), "AES R".to_string()])
+                .chain((1..=16).map(|n| format!("ADAT {n}")))
+                .collect()
+        };
+        let (inputs, outputs) = (names("Mic"), names("Phones"));
+        let mut engine = soundcraft_engine::Engine::default();
+        engine.execute("track.new", &json!({"format": "mono"})).unwrap();
+        engine.execute("setup.io", &json!({"action": "create_output", "name": "Cue", "first_channel": 8, "format": "stereo"})).unwrap();
+        let id = engine.session().tracks.first().unwrap().id;
+        let app = SoundApp::new(engine, None, Services::default());
+        let mut ready = false;
+        let mut h = Harness::builder().with_size(egui::vec2(360.0, 400.0)).with_max_steps(32).build_ui_state(
+            move |ui, app: &mut SoundApp| {
+                if !ready {
+                    crate::fonts::install(ui.ctx(), true);
+                    crate::theme::apply(ui.ctx(), false);
+                    ready = true;
+                }
+                for (label, input) in [("Choose input", true), ("Choose output", false)] {
+                    let button = ui.button(label);
+                    egui::Popup::menu(&button)
+                        .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
+                        .show(|ui| route_menu(app, ui, id, input, inputs.len(), if input { &inputs } else { &outputs }));
+                }
+            },
+            app,
+        );
+        for (button, typed) in [("Choose input", "adat 1"), ("Choose output", "phones")] {
+            h.run();
+            h.get_by_label(button).click();
+            h.run();
+            h.event(egui::Event::Text(typed.into()));
+            h.run();
+            h.key_press(egui::Key::Enter);
+            h.run();
+        }
+        let track = h.state().engine.session().track(id).unwrap();
+        // The first input named ADAT 1 is the 15th; the routes stay numbered and named as before.
+        assert_eq!(track.mixer.input, super::Route::Hardware("In 15".into()));
+        assert_eq!(track.mixer.output, super::Route::Hardware("Cue".into()), "the path on channels 9-10 is found by their name");
     }
 }
 

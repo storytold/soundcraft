@@ -722,7 +722,8 @@ pub fn playback_engine(app: &mut SoundApp, ctx: &egui::Context) {
 
 /// `ui.audio_device`: `{list?: bool}` returns the audio systems and their devices;
 /// `{system?, output?, input?, sample_rate?, buffer_size?}` (a `null` value means "default") sets
-/// the choice and reopens the devices. Always returns the choice and the open device.
+/// the choice and reopens the devices. Always returns the choice and the open device, with the
+/// names the interface gives its output and input channels (Core Audio only; empty elsewhere).
 pub fn audio_device_command(app: &mut SoundApp, p: &serde_json::Value) -> Result<serde_json::Value, String> {
     use serde_json::Value;
     let mut changed = false;
@@ -746,7 +747,10 @@ pub fn audio_device_command(app: &mut SoundApp, p: &serde_json::Value) -> Result
         app.apply_audio_config(cfg)?;
     }
     let device = app.player.as_ref().map(|pl| {
-        json!({"name": pl.device_name, "sample_rate": pl.device_rate, "channels": pl.device_channels, "buffer_size": pl.device_buffer, "silent": pl.silent})
+        json!({
+            "name": pl.device_name, "sample_rate": pl.device_rate, "channels": pl.device_channels, "buffer_size": pl.device_buffer, "silent": pl.silent,
+            "output_channel_names": pl.device_channel_names, "input_channel_names": pl.input_channel_names(&app.ui.audio),
+        })
     });
     let mut out = json!({"config": app.ui.audio, "device": device});
     if p.get("list").and_then(Value::as_bool).unwrap_or(false) {
@@ -855,6 +859,7 @@ fn output_paths(app: &mut SoundApp, ui: &mut egui::Ui) {
     use soundcraft_model::ChannelFormat;
     let paths = app.engine.session().outputs.clone();
     let channels = app.player.as_ref().map_or(0, |player| player.device_channels);
+    let names = app.player.as_ref().map(|player| player.device_channel_names.clone()).unwrap_or_default();
     if ui.button(crate::localization::text("New Output")).clicked() {
         let name =
             (1..=paths.len() + 1).map(|index| format!("Output {index}")).find(|name| !paths.iter().any(|path| path.name.eq_ignore_ascii_case(name)));
@@ -908,7 +913,16 @@ fn output_paths(app: &mut SoundApp, ui: &mut egui::Ui) {
                 let mut first = usize::from(path.first_channel) + 1;
                 let max_first = if channels == 0 { 1024 } else { usize::from(channels).saturating_sub(format.channels()).saturating_add(1) };
                 let upper = max_first.max(first);
-                let channel = ui.add(egui::DragValue::new(&mut first).range(1..=upper).update_while_editing(false));
+                let channel = ui
+                    .horizontal(|ui| {
+                        let channel = ui.add(egui::DragValue::new(&mut first).range(1..=upper).update_while_editing(false));
+                        // The interface's own name for the path's channels, when it gives one.
+                        if let Some(name) = crate::mix_window::channel_span(&names, first.saturating_sub(1), format.channels()) {
+                            ui.label(egui::RichText::new(name).small());
+                        }
+                        channel
+                    })
+                    .inner;
                 if (channel.changed() || (index != 0 && format != path.format)) && first > 0 {
                     let mut args = json!({"action": "set_output", "name": path.name, "first_channel": first - 1});
                     if index != 0 {

@@ -28,6 +28,9 @@
 //! Not hosted yet: Audio Unit editor views (Cocoa `AUCocoaUIBase`), sidechain/extra buses, and
 //! parameters outside the global scope.
 //!
+//! It also reads the names a Core Audio device gives its channels ([`device_channel_names`]),
+//! which cpal does not expose, so that FFI stays in this crate too.
+//!
 //! Off macOS (and on `wasm32`) the crate compiles to stubs: scans are empty and nothing can be
 //! created.
 
@@ -265,6 +268,21 @@ pub fn create(id: &str) -> Option<Box<dyn Plugin>> {
 /// its parameters; the result is cached (and leaked, see the crate docs).
 pub fn plugin_info(id: &str) -> Option<&'static PluginInfo> {
     api::plugin_info(id)
+}
+
+/// The names a Core Audio device (by its UID, `kAudioDevicePropertyDeviceUID`) gives its first
+/// `channels` input or output channels, such as "Analog 1" or "ADAT 3": an empty string for a
+/// channel without a name, and no names when the device is not found. This crate is the app's
+/// isolated macOS FFI, so the one Core Audio property cpal does not expose is read here. Off
+/// macOS there are none.
+pub fn device_channel_names(uid: &str, input: bool, channels: usize) -> Vec<String> {
+    #[cfg(target_os = "macos")]
+    return ffi::device_channel_names(uid, input, channels);
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = (uid, input, channels);
+        Vec::new()
+    }
 }
 
 #[cfg(test)]

@@ -5106,6 +5106,7 @@ dependencies = [
  "midir",
  "serde",
  "serde_json",
+ "soundcraft-au-host",
  "soundcraft-dsp",
  "soundcraft-mix",
  "soundcraft-model",

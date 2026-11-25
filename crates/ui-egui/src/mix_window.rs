@@ -19,7 +19,7 @@ mod slots;
 
 pub(crate) use output::{output_window, toggle_output_window};
 pub use plugin_menu::{instrument_menu, plugin_info, plugin_menu};
-pub(crate) use routing::{input_name, route_name, route_popup};
+pub(crate) use routing::{channel_span, input_name, route_name, route_popup};
 #[cfg(test)]
 use sends::dragged_send_db;
 pub(crate) use sends::{Readout, editable_readout, parse_db, parse_pan};

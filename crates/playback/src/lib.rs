@@ -176,6 +176,9 @@ pub struct Player {
     pub device_rate: u32,
     /// Output channels the device was opened with (0 for the silent clock).
     pub device_channels: u16,
+    /// The names the device gives those output channels ("Analog 1", "ADAT 3"), an empty string
+    /// for a channel without one; empty when the audio system names none (only Core Audio does).
+    pub device_channel_names: Vec<String>,
     /// The device buffer in frames when one was chosen (`None`: the device default).
     pub device_buffer: Option<u32>,
     /// True when no audio device could be opened (silent clock).
@@ -207,6 +210,24 @@ impl Player {
         {
             let _ = cfg;
             0
+        }
+    }
+
+    /// The names the input device gives its channels (see [`Player::device_channel_names`]),
+    /// without opening a recording stream: for the routing menus.
+    pub fn input_channel_names(&self, cfg: &AudioConfig) -> Vec<String> {
+        #[cfg(not(target_os = "freebsd"))]
+        return record::input_device(cfg)
+            .ok()
+            .map(|device| {
+                let channels = record::input_config(&device, cfg).map_or(0, |config| usize::from(config.channels()));
+                devices::channel_names(&device, true, channels)
+            })
+            .unwrap_or_default();
+        #[cfg(target_os = "freebsd")]
+        {
+            let _ = cfg;
+            Vec::new()
         }
     }
 
@@ -293,6 +314,7 @@ impl Player {
                             device_name: name,
                             device_rate: rate,
                             device_channels: config.channels,
+                            device_channel_names: devices::channel_names(&device, false, channels),
                             device_buffer: buffer,
                             silent: false,
                         }
@@ -370,6 +392,7 @@ impl Player {
             device_name: "No audio device (silent)".into(),
             device_rate: rate,
             device_channels: 0,
+            device_channel_names: Vec::new(),
             device_buffer: None,
             silent: true,
         }
@@ -393,6 +416,7 @@ impl Player {
             device_name: "No audio device".into(),
             device_rate: session.sample_rate.hz(),
             device_channels: 0,
+            device_channel_names: Vec::new(),
             device_buffer: None,
             silent: true,
         }

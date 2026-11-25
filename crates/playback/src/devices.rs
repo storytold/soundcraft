@@ -71,6 +71,20 @@ pub(crate) fn device_name(d: &cpal::Device) -> Option<String> {
     d.description().ok().map(|description| description.name().to_owned())
 }
 
+/// The names `device` gives its first `channels` input or output channels ("Analog 1", "ADAT 3"),
+/// an empty string for a channel without one. cpal has no API for them; Core Audio names them
+/// per channel element, so they are read there. Other audio systems give none.
+pub(crate) fn channel_names(device: &cpal::Device, input: bool, channels: usize) -> Vec<String> {
+    #[cfg(target_os = "macos")]
+    if let Ok(id) = device.id()
+        && id.host() == cpal::HostId::CoreAudio
+    {
+        return soundcraft_au_host::device_channel_names(id.id(), input, channels);
+    }
+    let _ = (device, input, channels);
+    Vec::new()
+}
+
 /// Describe one cpal device as [`DeviceInfo`], or return `None` when its name or supported configurations cannot be
 /// read. Only formats the playback path can convert are considered.
 fn describe(d: &cpal::Device, default_name: Option<&str>, output: bool) -> Option<DeviceInfo> {
