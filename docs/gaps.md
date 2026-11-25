@@ -1,6 +1,6 @@
 # Where SoundCraft falls short of Pro Tools
 
-> **Last reviewed:** 2026-11-14 · **Last updated:** 2026-11-18 · **Change:** minor (G-06: recording to disk is done (#84, long takes #888); streaming sources remain; previously minor: G-02 shrunk: MIDI input devices work; G-03: strict external-WAV AAF import; previously minor: G-05: plugin editors on Linux/X11; previously trivial: G-09: the pt-BR catalog now covers helper-passed tooltips, the status bar, the remove-session prompt and engine error text; G-08: Frequency Shifter, 28 processors; G-04: volume automation read at every sample, #1354; G-01: `setup.playback_engine` applies the device buffer in the desktop app; G-04: Clip Looping crossfade and loop count) · **Target:** Avid Pro Tools Ultimate 2026.4.1
+> **Last reviewed:** 2026-11-14 · **Last updated:** 2026-11-25 · **Change:** minor (G-02: `setup.midi_input_devices` switches the devices in the app; previously minor: G-06: recording to disk is done (#84, long takes #888); streaming sources remain; previously minor: G-02 shrunk: MIDI input devices work; G-03: strict external-WAV AAF import; previously minor: G-05: plugin editors on Linux/X11; previously trivial: G-09: the pt-BR catalog now covers helper-passed tooltips, the status bar, the remove-session prompt and engine error text; G-08: Frequency Shifter, 28 processors; G-04: volume automation read at every sample, #1354; G-01: `setup.playback_engine` applies the device buffer in the desktop app; G-04: Clip Looping crossfade and loop count) · **Target:** Avid Pro Tools Ultimate 2026.4.1
 
 Every known shortfall, one entry each, ranked by how much it stops a Pro Tools user from doing
 real work in SoundCraft. This is the work list: pick from the top. Rows marked **alpha blocker**
@@ -74,11 +74,14 @@ When you close a gap, delete its entry (or shrink it) in the same PR, and bump t
   preferences. User guide: [midi-input.md](midi-input.md). On Linux, live play was checked with
   a hardware keyboard (Akai MPK mini 3) and recording with a virtual one;
   **not yet on macOS or Windows** (type-checked only).
+- **Done (2026-11-25):** in the app, `setup.midi_input_devices` switches the devices themselves, as
+  the Playback Engine's switches do, and replies with each device's state (#1753). Headless, it
+  still only stores the names in the session and replies `applied: false`.
 - **Missing:** MIDI output (external synths, MIDI tracks without an instrument), MIDI clock/MTC
   out, loop and merge recording (a MIDI take replaces what it covers; a loop pass piles every
   pass into one clip), audition from the MIDI editor (`midi_editor.rs:288`), MIDI
-  input on FreeBSD and the web. `setup.midi_input_devices` and `setup.midi_studio` still only
-  store names in the session; the real device switches are app preferences.
+  input on FreeBSD and the web. `setup.midi_studio` still only stores names
+  in the session.
 - **Impact:** you can play and record a keyboard, not drive hardware synths or sync other gear.
 - **Estimate:** ≈ 12–22 h (output tracks and thru, clock out, merge/loop takes, controller path).
 
@@ -253,6 +256,7 @@ missing. Out of scope unless the owner decides otherwise.
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-11-25 | minor | G-02: `setup.midi_input_devices` switches the devices in the app (#1753); estimates unchanged |
 | 2026-11-14 | minor | G-03: strict external-WAV AAF import with bounded property caching; AAF/OMF export, OMF import and `.ptx` remain; estimates unchanged |
 | 2026-11-13 | trivial | G-09: the pt-BR catalog now covers tooltips localized inside buttons and toggles, the Edit-window status bar, the remove-session question, the send help text and engine errors shown in the status line; estimates unchanged |
 | 2026-11-09 | trivial | G-08: 28 processors + 3 instruments with the Frequency Shifter |
