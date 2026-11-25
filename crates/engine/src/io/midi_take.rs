@@ -198,6 +198,12 @@ fn midi_take_on_grid(
     // their samples: two positions a few samples apart may share a tick, and a press in the
     // last samples of the range starts its note a tick earlier so that it plays.
     let mut down: HashMap<(u8, u8, u8), (i64, u8, u32, Samples)> = HashMap::new();
+    // The score grid decides whether a loop-head piece is long enough to keep, so the follow
+    // grid of an external-clock take keeps exactly the same notes.
+    let score_base = s.tempo.samples_to_ticks(range.start, sr);
+    let score_tick = |at: Samples| s.tempo.samples_to_ticks(at, sr).saturating_sub(score_base).max(0);
+    let score_end = |at: Samples| if at >= range.end { score_tick(range.end).max(1) } else { score_tick(at) };
+    let score_last_start = score_end(range.end).saturating_sub(1).max(0);
     let close = |seq: &mut Sequence,
                  (_, channel, pitch): (u8, u8, u8),
                  (start, velocity, since, pressed): (i64, u8, u32, Samples),
@@ -227,8 +233,12 @@ fn midi_take_on_grid(
         // it was played. Held for a whole round or more, it covers the loop: the second note
         // then ends where the first begins, so the two do not overlap.
         seq.notes.push(note(start, end_tick, 64));
-        let end = if rounds > 1 || (rounds == 1 && end_at >= pressed) { start } else { end };
-        if end > 0 {
+        let whole_round = rounds > 1 || (rounds == 1 && end_at >= pressed);
+        let end = if whole_round { start } else { end };
+        // The piece from the loop start has no Note On of its own. Shorter than one score tick,
+        // it is left out on every grid.
+        let score = if whole_round { score_tick(pressed).min(score_last_start) } else { score_end(end_at) };
+        if score > 0 {
             seq.notes.push(note(0, end, release));
         }
     };
@@ -1409,6 +1419,42 @@ mod tests {
         ];
         assert_eq!(got, want);
         assert!(seq.notes.iter().all(|n| n.start >= 0 && n.start + n.length <= 3840), "every note is inside the loop");
+    }
+
+    #[test]
+    fn a_loop_head_piece_under_one_score_tick_is_left_out_on_the_follow_grid_too() {
+        let mut e = Engine::default();
+        let t = armed(&mut e, "Follow", "MIDI:*:keys");
+        e.session_mut().tempo = TempoMap::new(90., 4, 4).unwrap();
+        e.playback_tempo = Some(TempoMap::new(120., 4, 4).unwrap());
+        let range = Range::new(0, 96_000);
+        // Sample 14 is tick 0 at 90 BPM and tick 1 at 120 BPM.
+        let events = [
+            ev(24_000, 0, 0x90, 64, 100),
+            ev(48_000, 0, 0x80, 64, 0),
+            ev(90_000, 0, 0x90, 60, 100),
+            ev(96_000, u8::MAX, MidiTakeEvent::WRAP, 0, 0),
+            ev(14, 0, 0x80, 60, 0),
+        ];
+        let inputs = midi_record_inputs(&e);
+        add_midi_recording_from(&mut e, range, MidiPass::Loop { stopped: None, marked: true }, &events, &["keys".into()], &inputs, false);
+        let pitches = |doc: &Session| {
+            let ClipContent::Midi { sequence } = &doc.track(t).unwrap().clips()[0].content else { panic!("MIDI") };
+            let mut notes: Vec<_> = sequence.notes.iter().map(|n| (n.pitch, n.velocity)).collect();
+            notes.sort_unstable();
+            notes
+        };
+        assert_eq!(pitches(e.session()), [(60, 100), (64, 100)]);
+        assert_eq!(pitches(&e.playback_session()), [(60, 100), (64, 100)], "the held note stays whole in the round it began");
+        let doc = e.session_mut();
+        let id = doc.track(t).unwrap().clips()[0].id;
+        let Some(ClipContent::Midi { sequence }) =
+            doc.track_mut(t).unwrap().playlist_mut().unwrap().clips.iter_mut().find(|c| c.id == id).map(|c| &mut c.content)
+        else {
+            panic!("MIDI")
+        };
+        sequence.notes.iter_mut().filter(|n| n.pitch == 64).for_each(|n| n.velocity = 50);
+        assert_eq!(pitches(&e.playback_session()), [(60, 100), (64, 50)], "an unrelated velocity edit keeps the same notes");
     }
 
     #[test]
