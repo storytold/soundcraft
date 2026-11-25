@@ -35,10 +35,14 @@ impl ReportedLatency {
     }
 }
 
-/// The process-wide origin that [`InstantCell`] counts from.
+/// The process-wide origin that [`InstantCell`] counts from: [`PLAUSIBLE`] before it was first
+/// needed, so a capture moved back by any accepted input latency is still after it.
 fn epoch() -> Instant {
     static EPOCH: std::sync::OnceLock<Instant> = std::sync::OnceLock::new();
-    *EPOCH.get_or_init(Instant::now)
+    *EPOCH.get_or_init(|| {
+        let now = Instant::now();
+        now.checked_sub(PLAUSIBLE).unwrap_or(now)
+    })
 }
 
 /// An instant an audio callback writes and another thread reads, without locking.
@@ -49,7 +53,8 @@ pub struct InstantCell(
 );
 
 impl InstantCell {
-    /// A cell whose instants may be as early as now (the epoch is fixed no later than this).
+    /// A cell whose instants may be as early as [`PLAUSIBLE`] before now (the epoch is fixed no
+    /// later than that).
     pub fn new() -> Self {
         epoch();
         Self::default()
@@ -275,6 +280,20 @@ mod tests {
 
     fn at(micros: u64) -> StreamInstant {
         StreamInstant::from_micros(micros)
+    }
+
+    #[test]
+    fn an_instant_cell_keeps_a_capture_from_before_it_was_made() {
+        let cell = InstantCell::new();
+        // The first callback after the recorder opened, its first frame captured 20 ms earlier.
+        let captured = Instant::now().checked_sub(Duration::from_millis(20)).unwrap();
+        cell.set_if_empty(captured);
+        let kept = cell.get().unwrap();
+        assert!(kept.max(captured) - kept.min(captured) < Duration::from_micros(1), "{kept:?} vs {captured:?}");
+        cell.clear();
+        cell.set(captured);
+        let kept = cell.get().unwrap();
+        assert!(kept.max(captured) - kept.min(captured) < Duration::from_micros(1));
     }
 
     #[test]
