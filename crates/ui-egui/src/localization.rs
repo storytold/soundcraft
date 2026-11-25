@@ -512,18 +512,6 @@ mod tests {
         }
     }
 
-    // These feature strings use the English source until the translation catalog catches up.
-    fn permits_untranslated_beat_clock_label(source: &str) -> bool {
-        matches!(
-            source,
-            "Audio output “{name}” is unavailable. Reconnect it in Playback Engine when stopped."
-                | "Audio output timing is unavailable. Compensated MIDI outputs need a valid measurement."
-                | "Include the reported audio output lead and the mixer's compensated plug-in delay."
-                | "Limited by the audio output lead ({lead} ms)"
-                | "Stop playback or recording before reconnecting this output."
-        ) && Language::PortugueseBrazil.text(source) == source
-    }
-
     #[test]
     fn beat_clock_uses_the_catalog_or_english_with_the_device_name_and_offset() {
         let _scope = enter(Language::PortugueseBrazil);
@@ -540,7 +528,7 @@ mod tests {
     }
 
     #[test]
-    fn localized_source_strings_have_catalog_entries_or_verified_fallbacks() {
+    fn every_localized_source_string_has_a_catalog_entry() {
         fn visit(dir: &std::path::Path, missing: &mut Vec<String>) {
             let Ok(read) = std::fs::read_dir(dir) else { return };
             for entry in read.flatten() {
@@ -554,7 +542,6 @@ mod tests {
                             let start = at + marker.len() - 1;
                             if let Some((source, _)) = literal(&text[start..])
                                 && super::pt_br::translate(&source).is_none()
-                                && !permits_untranslated_beat_clock_label(&source)
                             {
                                 missing.push(format!("{}: {source:?}", path.display()));
                             }
