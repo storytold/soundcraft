@@ -871,16 +871,18 @@ mod backend {
             let (found, listed): (Vec<_>, Vec<_>) = scanner
                 .ports()
                 .into_iter()
-                .filter_map(|p| {
+                .map(|p| {
                     let raw = scanner.port_name(&p).unwrap_or_default();
-                    (Some(raw.as_str()) != reserved).then(|| {
-                        let id = identity(&p, &raw);
-                        (p, (id, raw))
-                    })
+                    let id = identity(&p, &raw);
+                    (p, (id, raw))
                 })
                 .unzip();
+            // The surface's port keeps its name, so the other ports keep theirs and their switches.
             let names = assign_names(&mut self.names, &listed);
             self.scanner = Some(scanner);
+            let free = |(_, raw): &(String, String)| Some(raw.as_str()) != reserved;
+            let (found, (listed, names)): (Vec<_>, (Vec<_>, Vec<_>)) =
+                found.into_iter().zip(listed.into_iter().zip(names)).filter(|(_, (port, _))| free(port)).unzip();
             // A connection belongs to its port, not to a name: it stays while that port is there
             // and switched on, and no other port takes it over.
             // One that goes says so, before anything is opened: a device replugged between two
