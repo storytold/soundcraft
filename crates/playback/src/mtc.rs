@@ -68,6 +68,11 @@ impl Player {
     }
 }
 
+/// The latest a quarter frame may be handed off after its grid time. Consecutive pieces
+/// then stay at least a quarter frame less this apart (the worker's own wake floor).
+#[cfg(any(target_os = "windows", target_os = "macos", target_os = "linux"))]
+const QUARTER_FRAME_LATENESS: Duration = Duration::from_millis(1);
+
 #[cfg(any(target_os = "windows", target_os = "macos", target_os = "linux"))]
 #[derive(Default)]
 pub(crate) struct Encoder {
@@ -119,7 +124,11 @@ impl SyncEncoder for Encoder {
         let target = |piece: i64| piece as f64 * quarter - start;
         let mut sample = target(self.next);
         let mut deadline = block.instant_for(sample);
-        if deadline.checked_add(Duration::from_millis(100)).is_some_and(|t| t < now) {
+        // MTC sends quarter frames at quarter-frame intervals, F1 0X on a frame boundary
+        // (MIDI Time Code 4.2.1, p. 3). A piece handed off later than this would arrive
+        // bunched with the next one, so the rest of its group is dropped and output
+        // resumes with the next complete group on its own frame boundary.
+        if deadline.checked_add(QUARTER_FRAME_LATENESS).is_some_and(|t| t < now) {
             let group = ((at / (8. * quarter)).ceil() as i64).saturating_mul(8);
             self.stale = self.stale.saturating_add(group.saturating_sub(self.next).max(0) as u64);
             self.next = group;
