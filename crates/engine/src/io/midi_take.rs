@@ -502,6 +502,25 @@ mod tests {
     }
 
     #[test]
+    fn clock_paste_merge_keeps_the_host_sysex() {
+        let mut e = Engine::default();
+        let source = armed(&mut e, "Captured", "MIDI:*:keys");
+        e.playback_tempo = Some(TempoMap::new(60., 4, 4).unwrap());
+        add_midi_recording(&mut e, Range::new(0, 96_000), &[ev(48_000, 0, 0x90, 65, 127), ev(72_000, 0, 0x80, 65, 0)], &["keys".into()], false);
+        let host_track = armed(&mut e, "Host", "MIDI:*:piano");
+        let packet = soundcraft_midi::SysExEvent { tick: 240, status: 0xF0, data: vec![0x7E, 0x7F, 0x09, 0x01, 0xF7] };
+        let sequence = Sequence { notes: vec![], ctrls: vec![], sysex: vec![packet.clone()] };
+        let host = e.session_mut().new_clip_id();
+        crate::edit::place_clip(&mut e, host_track, Clip::midi(host, "ordinary", 0, 192_000, sequence));
+        e.execute("edit.copy", &json!({"tracks":[source.0],"start":0,"end":96_000})).unwrap();
+        let merged = e.execute("edit.paste_merge_midi", &json!({"tracks":[host_track.0],"at":0})).unwrap();
+        assert_eq!(merged["merged"], 1);
+        let ClipContent::Midi { sequence } = &e.session().find_clip(host).unwrap().1.content else { panic!("MIDI") };
+        assert_eq!(sequence.notes.len(), 1);
+        assert_eq!(sequence.sysex, vec![packet]);
+    }
+
+    #[test]
     fn clock_paste_merge_into_overlapping_hosts_preserves_their_visible_ends() {
         let (mut e, source, input_id) = captured_clock_note();
         e.session_mut().find_clip_mut(input_id).unwrap().length = 120_000;
