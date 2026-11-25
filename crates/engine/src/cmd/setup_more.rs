@@ -469,7 +469,8 @@ fn midi_inputs(e: &mut Engine, p: &Value) -> Result<Value> {
         }
     }
     let enabled: Vec<&str> = s.edit.flags.iter().filter_map(|f| f.strip_prefix("midi.input.")).collect();
-    Ok(json!({"enabled": enabled}))
+    // Only the session's list: the devices are switched by the app, which says so (#1753).
+    Ok(json!({"enabled": enabled, "applied": false}))
 }
 
 fn import_session_data(e: &mut Engine, p: &Value) -> Result<Value> {
@@ -673,6 +674,7 @@ mod tests {
         assert_eq!(r["filtered"], json!(["sysex"]));
         let r = e.execute("setup.midi_input_devices", &json!({"enable": ["Keys"]})).unwrap();
         assert_eq!(r["enabled"], json!(["Keys"]));
+        assert_eq!(r["applied"], false, "headless switches no device");
         let r = e.execute("setup.video_sync_offset", &json!({"frames": 2})).unwrap();
         assert_eq!(r["samples"], 3200.0);
     }
