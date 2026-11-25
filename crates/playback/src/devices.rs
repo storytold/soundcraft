@@ -175,6 +175,43 @@ pub(crate) fn device(host: &cpal::Host, name: Option<&str>, output: bool) -> Opt
     if output { host.default_output_device() } else { host.default_input_device() }
 }
 
+/// Why the device does not run at the chosen buffer size, when it does not.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BufferNote {
+    /// The size is outside the range the driver reports; the device runs at its default buffer.
+    OutsideRange { min: u32, max: u32 },
+    /// The driver reports no range and refused the size; the device runs at its default buffer.
+    Refused { want: u32 },
+}
+
+impl BufferNote {
+    /// The note in English (the reply's `buffer_note`, and the key of the window's translation).
+    pub fn english(&self) -> String {
+        match self {
+            BufferNote::OutsideRange { min, max } => format!("The device allows {min}–{max} samples; it runs at its default buffer."),
+            BufferNote::Refused { want } => format!("The device did not take {want} samples; it runs at its default buffer."),
+        }
+    }
+}
+
+/// The note for a chosen buffer (`want`) the device did not take (`used`, `None` for its
+/// default), given the range its driver reports.
+pub fn buffer_note(want: Option<u32>, used: Option<u32>, range: Option<(u32, u32)>) -> Option<BufferNote> {
+    let want = want?;
+    if used == Some(want) {
+        return None;
+    }
+    Some(range.map_or(BufferNote::Refused { want }, |(min, max)| BufferNote::OutsideRange { min, max }))
+}
+
+/// The range a driver reports, if it reports one.
+pub(crate) fn buffer_range(supported: &cpal::SupportedBufferSize) -> Option<(u32, u32)> {
+    match supported {
+        cpal::SupportedBufferSize::Range { min, max } => Some((*min, *max)),
+        cpal::SupportedBufferSize::Unknown => None,
+    }
+}
+
 /// The buffer to request: the chosen size when the device's range allows it, else the default.
 pub(crate) fn buffer_size(want: Option<u32>, supported: &cpal::SupportedBufferSize) -> cpal::BufferSize {
     match (want, supported) {
@@ -189,6 +226,19 @@ pub(crate) fn buffer_size(want: Option<u32>, supported: &cpal::SupportedBufferSi
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A buffer the driver does not take is said, not silently replaced (#1757).
+    #[test]
+    fn a_buffer_the_device_did_not_take_gets_a_note() {
+        // The RME UFX on Core Audio allows 15..=3072 frames (measured); 4096 opens at its default.
+        assert_eq!(buffer_note(Some(4096), None, Some((15, 3072))), Some(BufferNote::OutsideRange { min: 15, max: 3072 }));
+        assert_eq!(BufferNote::OutsideRange { min: 15, max: 3072 }.english(), "The device allows 15–3072 samples; it runs at its default buffer.");
+        // The driver gave no range and refused the size.
+        assert_eq!(buffer_note(Some(100), None, None), Some(BufferNote::Refused { want: 100 }));
+        // Taken as asked, or nothing asked: no note.
+        assert_eq!(buffer_note(Some(256), Some(256), Some((15, 3072))), None);
+        assert_eq!(buffer_note(None, None, Some((15, 3072))), None);
+    }
 
     #[test]
     fn config_round_trips_and_tolerates_missing_fields() {

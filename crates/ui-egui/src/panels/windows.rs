@@ -672,6 +672,11 @@ pub fn playback_engine(app: &mut SoundApp, ctx: &egui::Context) {
                 }
             }));
             ui.end_row();
+            if let Some(note) = buffer_note(app) {
+                ui.label("");
+                ui.label(egui::RichText::new(buffer_note_text(note)).color(ui.visuals().warn_fg_color));
+                ui.end_row();
+            }
             ui.label(crate::localization::text("Input"));
             ui.label(app.recorder.as_ref().map_or(crate::localization::text("opened on first record or monitor").to_string(), |r| {
                 crate::localized_format!("{} · {} Hz · {} ch", r.device_name, r.sample_rate, r.channels)
@@ -746,13 +751,31 @@ pub fn audio_device_command(app: &mut SoundApp, p: &serde_json::Value) -> Result
         app.apply_audio_config(cfg)?;
     }
     let device = app.player.as_ref().map(|pl| {
-        json!({"name": pl.device_name, "sample_rate": pl.device_rate, "channels": pl.device_channels, "buffer_size": pl.device_buffer, "silent": pl.silent})
+        let range = pl.device_buffer_range.map(|(min, max)| json!({"min": min, "max": max}));
+        json!({"name": pl.device_name, "sample_rate": pl.device_rate, "channels": pl.device_channels, "buffer_size": pl.device_buffer, "buffer_range": range, "silent": pl.silent})
     });
-    let mut out = json!({"config": app.ui.audio, "device": device});
+    let mut out = json!({"config": app.ui.audio, "device": device, "buffer_note": buffer_note(app).map(|n| n.english())});
     if p.get("list").and_then(Value::as_bool).unwrap_or(false) {
         out["systems"] = json!(soundcraft_playback::devices::audio_systems());
     }
     Ok(out)
+}
+
+/// Why the open output does not run at the chosen buffer, when it does not (#1757).
+fn buffer_note(app: &SoundApp) -> Option<soundcraft_playback::devices::BufferNote> {
+    let player = app.player.as_ref().filter(|p| !p.silent)?;
+    soundcraft_playback::devices::buffer_note(app.ui.audio.buffer_size, player.device_buffer, player.device_buffer_range)
+}
+
+/// The window's wording of a [`soundcraft_playback::devices::BufferNote`].
+fn buffer_note_text(note: soundcraft_playback::devices::BufferNote) -> String {
+    use soundcraft_playback::devices::BufferNote;
+    match note {
+        BufferNote::OutsideRange { min, max } => {
+            crate::localized_format!("The device allows {}–{} samples; it runs at its default buffer.", min, max)
+        }
+        BufferNote::Refused { want } => crate::localized_format!("The device did not take {} samples; it runs at its default buffer.", want),
+    }
 }
 
 /// Programmatic `setup.playback_engine` / `setup.hardware`. `device` is the output name and
@@ -796,6 +819,7 @@ pub fn setup_audio_command(app: &mut SoundApp, id: &str, p: &serde_json::Value) 
         "applied": applied,
         "device": device,
         "buffer_size": buffer_size,
+        "buffer_note": buffer_note(app).map(|n| n.english()),
         "sample_rate": sample_rate,
         "bit_depth": app.engine.session().bit_depth,
         "delay_compensation": app.engine.session().edit.delay_compensation,

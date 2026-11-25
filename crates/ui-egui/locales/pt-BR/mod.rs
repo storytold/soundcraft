@@ -321,6 +321,12 @@ pub(super) fn translate(source: &str) -> Option<&'static str> {
         }
         "No engine" => "Sem mecanismo de áudio",
         "default buffer" => "buffer padrão",
+        "The device allows {}–{} samples; it runs at its default buffer." => {
+            "O dispositivo aceita {}–{} amostras; ele funciona com o buffer padrão."
+        }
+        "The device did not take {} samples; it runs at its default buffer." => {
+            "O dispositivo não aceitou {} amostras; ele funciona com o buffer padrão."
+        }
         "Bus name: {name}" => "Nome do bus: {name}",
         "Model" => "Modelo",
         "Version" => "Versão",

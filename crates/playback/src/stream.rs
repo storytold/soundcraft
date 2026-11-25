@@ -94,7 +94,7 @@ pub(crate) fn open_device(
     want_rate: u32,
     want_ch: u16,
     cfg: &AudioConfig,
-) -> Result<(cpal::Device, cpal::StreamConfig, cpal::SampleFormat, String), String> {
+) -> Result<(cpal::Device, cpal::StreamConfig, cpal::SampleFormat, String, Option<(u32, u32)>), String> {
     use cpal::traits::DeviceTrait;
     let host = devices::host(cfg);
     let device = devices::device(&host, cfg.output.as_deref(), true).ok_or_else(|| "no output device".to_string())?;
@@ -103,10 +103,10 @@ pub(crate) fn open_device(
     let want_ch = want_ch.max(2);
     let rates: Vec<u32> = cfg.sample_rate.into_iter().chain(Some(want_rate)).collect();
     let configs: Vec<cpal::SupportedStreamConfigRange> = device.supported_output_configs().map(|configs| configs.collect()).unwrap_or_default();
-    let (config, format) = match pick_output_config(&configs, &rates, want_ch) {
+    let (config, format, range) = match pick_output_config(&configs, &rates, want_ch) {
         Some((mut c, buffers, format)) => {
             c.buffer_size = devices::buffer_size(cfg.buffer_size, &buffers);
-            (c, format)
+            (c, format, devices::buffer_range(&buffers))
         }
         None => {
             let d = device.default_output_config().map_err(|e| e.to_string())?;
@@ -126,10 +126,10 @@ pub(crate) fn open_device(
             };
             let mut stream_config = c.config();
             stream_config.buffer_size = devices::buffer_size(cfg.buffer_size, c.buffer_size());
-            (stream_config, c.sample_format())
+            (stream_config, c.sample_format(), devices::buffer_range(c.buffer_size()))
         }
     };
-    Ok((device, config, format, name))
+    Ok((device, config, format, name, range))
 }
 
 /// Pick the output configuration for the first requested rate the device offers (the configured
