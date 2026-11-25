@@ -512,7 +512,7 @@ pub fn show(app: &mut SoundApp, ctx: &egui::Context) {
     // button only when no widget has the keyboard focus or a text field has it. A held Enter's repeats do not press it.
     let fresh_enter =
         |i: &egui::InputState| i.events.iter().any(|e| matches!(e, egui::Event::Key { key: egui::Key::Enter, pressed: true, repeat: false, .. }));
-    let enter = !first_frame && ctx.input(fresh_enter) && (ctx.memory(|m| m.focused().is_none()) || ctx.text_edit_focused());
+    let enter = !first_frame && ctx.input(fresh_enter) && (!crate::framework::widget_has_keyboard(ctx) || ctx.text_edit_focused());
     let esc = crate::framework::escape_pressed(ctx);
     egui::Window::new(egui::RichText::new(crate::localization::text(&title)).font(bold(13.0)))
         .id(egui::Id::unique(&title))

@@ -574,12 +574,14 @@ pub(crate) fn arrange(app: &mut crate::SoundApp) -> Result<(), String> {
     Ok(())
 }
 
-/// The workspaces the Edit and Mix docks show, and the panels' specs.
+/// The workspaces the Edit and Mix docks show, the panels' specs and the session views' keyboard focus.
 #[derive(Default)]
 pub(crate) struct LiveDocks {
     edit: Option<Arc<Workspace>>,
     mix: Option<Arc<Workspace>>,
     specs: Tracked<DockSpecs>,
+    edit_focus: ViewFocus,
+    mix_focus: ViewFocus,
 }
 
 impl LiveDocks {
@@ -624,9 +626,52 @@ fn refresh_specs(app: &mut crate::SoundApp) {
     }
 }
 
-/// The session view's id as the window's document canvas.
-fn session_id(edit: bool) -> egui::Id {
-    egui::Id::unique(("soundcraft-session-view", edit))
+/// What a session view knows of its keyboard focus from the pass that drew it last.
+#[derive(Default)]
+struct ViewFocus {
+    /// That pass's number and the document the view showed (`SoundApp::doc_epoch`).
+    shown: Option<(u64, u64)>,
+    /// The view opened or was pressed and has yet to ask for the focus.
+    wanted: bool,
+    /// The view had the focus, and no other widget has taken it.
+    returns: bool,
+}
+
+/// Gives the session view, drawn in `rect`, the keyboard focus on a press in it, when it opens or shows another
+/// document, and when its focus went nowhere (a press on a control that takes none, a dialog that closed). It waits for
+/// a modal dialog, menu or popup to close. A press leaves the focus with the text field it landed on; a view that opens
+/// leaves it with any text field and with a widget of another layer. Called after the view's widgets, so that the field
+/// under a press has taken the focus already.
+fn focus_session_view(app: &mut crate::SoundApp, ui: &egui::Ui, edit: bool, rect: Rect) {
+    let ctx = ui.ctx();
+    let id = crate::framework::session_view_id(edit);
+    let focused = ctx.memory(|memory| memory.focused());
+    let pressed = ui.rect_contains_pointer(rect) && ui.input(|input| input.pointer.any_pressed());
+    let overlay = crate::framework::overlay_open(app, ctx);
+    let (pass, document) = (ctx.cumulative_pass_nr(), app.doc_epoch);
+    let state = if edit { &mut app.docks.edit_focus } else { &mut app.docks.mix_focus };
+    let stayed = state.shown.is_some_and(|(last, shown)| shown == document && (last == pass || last + 1 == pass));
+    state.shown = Some((pass, document));
+    state.wanted |= pressed || !stayed;
+    state.returns |= focused == Some(id);
+    if overlay {
+        return;
+    }
+    let wanted = std::mem::take(&mut state.wanted);
+    state.returns &= focused.is_none_or(|focused| focused == id);
+    let layer = |id| ctx.read_response(id).map(|widget| widget.layer_id);
+    let field_pressed =
+        || ctx.text_edit_focused() && focused.and_then(|field| ctx.read_response(field)).is_some_and(|field| field.is_pointer_button_down_on());
+    let takes = if pressed {
+        !field_pressed()
+    } else if wanted {
+        focused != Some(id) && !ctx.text_edit_focused() && focused.is_none_or(|focused| layer(focused) == layer(id))
+    } else {
+        state.returns && focused.is_none()
+    };
+    if takes {
+        crate::framework::focus_session_view(ctx, id);
+    }
 }
 
 /// The dock's panels over the app in one pass.
@@ -658,13 +703,20 @@ impl DockPanels<Panel> for Panels<'_> {
         if !panels.contains(&Panel::Canvas) {
             return None;
         }
-        crate::framework::host_canvas(ui.ctx(), session_id(self.edit));
+        let id = crate::framework::session_view_id(self.edit);
+        let view = ui.interact(rect, id, egui::Sense::focusable_noninteractive());
+        view.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Canvas, true, crate::localization::text(Panel::Canvas.label())));
+        // Declared before the widgets drawn over it, for its place in Tab order, and again after this pass's input has
+        // changed what Tab has to do.
+        crate::framework::host_canvas(ui.ctx(), id, crate::shortcuts::tab_has_work(self.app));
         ui.painter().rect_filled(rect, 0.0, crate::theme::Tokens::current().window_bg);
         if self.edit {
             crate::edit_window::main_area(self.app, ui);
         } else {
             crate::mix_window::content(self.app, ui);
         }
+        focus_session_view(self.app, ui, self.edit, rect);
+        crate::framework::host_canvas(ui.ctx(), id, crate::shortcuts::tab_has_work(self.app));
         Some(rect.height())
     }
 }

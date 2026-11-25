@@ -59,12 +59,22 @@ fn search_chord(m: Modifiers, mac: bool) -> bool {
 /// resolves to, not by its keys.
 const REPEATING: [&str; 3] = ["view.zoom_in", "view.zoom_out", "view.waveform_zoom"];
 
+/// Whether a dialog that holds back the shortcuts is open.
+fn dialog_open(app: &SoundApp) -> bool {
+    app.dialogs.open.is_some() || app.ui.show_preferences
+}
+
+/// Whether Tab has something to do in the focused session view: the shortcuts run and `edit.tab` has a stop ahead.
+pub(crate) fn tab_has_work(app: &SoundApp) -> bool {
+    !dialog_open(app) && soundcraft_engine::cmd::tab_stop_ahead(app.engine.session())
+}
+
 /// Dispatch global keyboard shortcuts once no text field or dialog wants input, ignoring non-scripted auto-repeats
 /// (except the [`REPEATING`] zoom commands) while still running a host press alongside a scripted one.
 pub fn handle(app: &mut SoundApp, ctx: &egui::Context) {
     // Cmd+= and Cmd+0 are Mix/Edit and Quantize to Grid, not egui's built-in interface zoom.
     ctx.options_mut(|o| o.zoom_with_keyboard = false);
-    if ctx.egui_wants_keyboard_input() || app.dialogs.open.is_some() || app.ui.show_preferences {
+    if crate::framework::widget_has_keyboard(ctx) || dialog_open(app) {
         return;
     }
     // A scripted press is identified by its exact position in this pass's events, not by matching
@@ -106,8 +116,6 @@ pub fn handle(app: &mut SoundApp, ctx: &egui::Context) {
             let _ = app.run(c.0, json!({}));
         }
     }
-    // Tab moves the insertion point here, so egui must not also hand focus to the first widget: that would block every shortcut.
-    ctx.memory_mut(|m| m.move_focus(egui::FocusDirection::None));
 }
 
 /// The command a host auto-repeat of this chord runs, if it is one of [`REPEATING`]. A repeat

@@ -720,7 +720,7 @@ pub fn show(app: &mut SoundApp, ctx: &egui::Context) {
     select_page_from_keyboard(ctx, &mut page);
     // A single-line text edit releases focus on Enter in the frame that receives the key. Capture
     // ownership before drawing so Enter in Search cannot also apply and close the window.
-    let typing = ctx.egui_wants_keyboard_input();
+    let typing = crate::framework::widget_has_keyboard(ctx);
     // egui closes a ComboBox before this window observes Escape, so preserve the previous frame's
     // popup state to keep the same key from also canceling the complete Preferences window.
     let popup_was_open = app.preferences.popup_open;

@@ -46,9 +46,11 @@ fn tab_leaves_the_keys_to_the_shortcuts() {
     for _ in 0..3 {
         type_in_app(&ctx, &mut app, &[]);
     }
+    app.run("edit.select", json!({"tracks": ["Kick"], "start": 0})).unwrap();
+    let view = Some(soundcraft_ui_egui::framework::session_view_id(true));
     for tab in [Modifiers::NONE, Modifiers::SHIFT] {
         type_in_app(&ctx, &mut app, &[(Key::Tab, tab)]);
-        assert_eq!(ctx.memory(|m| m.focused()), None, "{tab:?}");
+        assert_eq!(ctx.memory(|m| m.focused()), view, "{tab:?}");
         let zoom = app.engine.session().edit.zoom.samples_per_px;
         type_in_app(&ctx, &mut app, &[(Key::T, Modifiers::NONE)]);
         assert_eq!(app.engine.session().edit.zoom.samples_per_px, zoom / 2.0, "{tab:?}");

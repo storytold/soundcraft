@@ -319,7 +319,7 @@ impl SoundApp {
         // Input preparation: remember this pass's real pointer/keyboard state, which `logic` (run
         // before `ui` in each pass and alone on hidden ticks) uses for gestures and automation.
         self.pointer_down = ctx.input(|i| i.pointer.any_down());
-        self.wants_keyboard = ctx.egui_wants_keyboard_input();
+        self.wants_keyboard = crate::framework::widget_has_keyboard(&ctx);
         // The integration creates this Ui before logic resolves the current frame's palette.
         ui.set_style(ctx.global_style());
         if !self.fonts_ready {

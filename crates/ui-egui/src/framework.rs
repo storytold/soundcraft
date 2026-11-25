@@ -5,8 +5,9 @@
 //!
 //! The runtime takes Escape, Tab and the clipboard events for the whole window unless one of SoundCraft's own
 //! egui widgets has the keyboard. The window's Escape is read with [`escape_pressed`]; the session view is declared
-//! to the runtime with [`host_canvas`], which keeps Tab, the edit chords and the clipboard events in egui's input for
-//! SoundCraft's shortcuts.
+//! to the runtime with [`host_canvas`], which keeps the edit chords and the clipboard events in egui's input for
+//! SoundCraft's shortcuts, and Tab while the focused view has work for it. A focused view leaves the keyboard to the
+//! shortcuts ([`widget_has_keyboard`]).
 
 use std::sync::{Arc, OnceLock};
 
@@ -16,9 +17,10 @@ use craft_keymap::{Chord, Key, Mods, Overrides};
 use craft_ui::fonts::{I18nScripts, SystemFonts, UiFonts};
 use craft_ui::runtime::commands::{CommandInput, CommandSet, NavCommand, QuitCommand};
 use craft_ui::runtime::env::{RootEnv, Scale};
-use craft_ui::runtime::focus::{EditSet, KeepKeys, KeyUse};
+use craft_ui::runtime::focus::{EditSet, FocusTarget, KeepKeys, KeyUse};
 use craft_ui::runtime::frame::{FrameInput, FrameOutput};
 use craft_ui::runtime::keys::{Intent, with_window_intents};
+use craft_ui::runtime::overlay::{self, OpenFilter};
 use craft_ui::shell::embed::{self, CloseDecision};
 use craft_window::system::WindowSystem;
 
@@ -129,12 +131,41 @@ impl SoundApp {
 const EDIT_MODE_KEYS: [Chord; 4] =
     [Chord::new(Mods::ALT, Key::Num1), Chord::new(Mods::ALT, Key::Num2), Chord::new(Mods::ALT, Key::Num3), Chord::new(Mods::ALT, Key::Num4)];
 
+/// The widget of the session view: the Edit window's tracks and timeline (`edit`) or the Mix window's strips.
+pub fn session_view_id(edit: bool) -> egui::Id {
+    egui::Id::unique(("soundcraft-session-view", edit))
+}
+
 /// Declares the session view `id`, drawn in this pass, as the window's document canvas. With nothing focused it is
-/// the window's key target: Tab, the edit chords, the clipboard events and the edit-mode keys stay in egui's input for
-/// SoundCraft's shortcuts, as do the arrows, Enter and the page keys.
-pub(crate) fn host_canvas(ctx: &egui::Context, id: egui::Id) {
-    const KEYS: KeyUse = KeyUse::CANVAS.with_keep(KeepKeys::Tab).with_edits(EditSet::ALL).with_claims(&EDIT_MODE_KEYS);
-    craft_ui::runtime::focus::host_canvas(ctx, id, KEYS);
+/// the window's key target: the edit chords, the clipboard events and the edit-mode keys stay in egui's input for
+/// SoundCraft's shortcuts, as do the arrows, Enter and the page keys. Tab and Shift+Tab stop at the view; with
+/// `keeps_tab` the focused view keeps them in egui's input, else they move on from it.
+pub(crate) fn host_canvas(ctx: &egui::Context, id: egui::Id, keeps_tab: bool) {
+    const KEYS: KeyUse = KeyUse::CANVAS.with_edits(EditSet::ALL).with_claims(&EDIT_MODE_KEYS);
+    let keys = if keeps_tab { KEYS.with_keep(KeepKeys::Tab) } else { KEYS };
+    craft_ui::runtime::focus::host_canvas(ctx, id, keys);
+}
+
+/// Gives the session view `id`, declared in this pass, the keyboard focus.
+pub(crate) fn focus_session_view(ctx: &egui::Context, id: egui::Id) {
+    craft_ui::runtime::focus::request(ctx, FocusTarget::Id(id));
+}
+
+/// Whether a widget other than the session view has the keyboard. A focused session view leaves it to SoundCraft's
+/// shortcuts, as with nothing focused.
+pub(crate) fn widget_has_keyboard(ctx: &egui::Context) -> bool {
+    ctx.memory(|memory| memory.focused()).is_some_and(|focused| ![true, false].map(session_view_id).contains(&focused))
+}
+
+/// Whether a modal dialog, SoundCraft's, egui's or the framework's, or an egui menu or popup is up. A framework menu
+/// holds the focus in its own layer.
+pub(crate) fn overlay_open(app: &SoundApp, ctx: &egui::Context) -> bool {
+    app.dialogs.open.is_some()
+        || app.ui.show_preferences
+        || app.ui.show_search
+        || egui::Popup::is_any_open(ctx)
+        || ctx.memory(|memory| memory.top_modal_layer()).is_some()
+        || overlay::any_open(ctx, OpenFilter::Modal)
 }
 
 /// Whether Escape was pressed in this pass: from egui while one of SoundCraft's own widgets or popups has the
