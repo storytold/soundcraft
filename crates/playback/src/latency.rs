@@ -4,7 +4,10 @@
 //! WASAPI and Core Audio: the device position and stream latency).
 
 use std::sync::Mutex;
-use std::sync::atomic::{AtomicU64, Ordering::Relaxed};
+use std::sync::atomic::{
+    AtomicU64,
+    Ordering::{Acquire, Relaxed, Release},
+};
 use std::time::{Duration, Instant};
 
 /// A report longer than this is treated as missing: it would come from a mismatched clock.
@@ -142,38 +145,45 @@ pub struct Heard {
 /// stamp waits for the next callback.
 #[derive(Debug, Default)]
 pub struct HeardStamps {
-    pass: Mutex<Option<Heard>>,
+    /// The pass's first sample, with the number of the pass it belongs to.
+    pass: Mutex<Option<(u64, Heard)>>,
     last: Mutex<Option<Heard>>,
+    /// Passes started so far, counted without a lock: a pass stamp answers only while its pass is
+    /// the latest, so an older one is not taken for a pass whose stamp still waits.
+    passes: AtomicU64,
 }
 
 impl HeardStamps {
-    /// Note the latest callback's `heard`, and publish `pass`, the pass's first sample, taking it
-    /// when the lock is free (it stays for the next callback when it is not).
-    pub(crate) fn record(&self, heard: Heard, pass: &mut Option<Heard>) {
+    /// Note the latest callback's `heard`, which is the first sample of a new pass when `started`;
+    /// and publish `pass`, the pass's first sample still to publish, taking it when the lock is
+    /// free (it stays for the next callback when it is not).
+    pub(crate) fn record(&self, heard: Heard, started: bool, pass: &mut Option<Heard>) {
+        if started {
+            self.passes.fetch_add(1, Release);
+            *pass = Some(heard);
+        }
         if pass.is_some()
             && let Ok(mut p) = self.pass.try_lock()
         {
-            *p = pass.take();
+            // Only the audio thread counts passes: the count is this pass's.
+            *p = pass.take().map(|h| (self.passes.load(Relaxed), h));
         }
         if let Ok(mut l) = self.last.try_lock() {
             *l = Some(heard);
         }
     }
 
-    /// When `sample` was (or will be) heard at the session `rate`: from the start of the pass
-    /// when that is the sample, else projected from the latest callback at the speed it rendered.
-    pub fn heard_at(&self, sample: f64, rate: f64) -> Option<Moment> {
+    /// When `sample` was (or will be) heard at the session `rate`, and the transport speed of the
+    /// stamp that tells it (see [`Heard::speed`]): from the start of the latest pass when that is
+    /// the sample, else projected from the latest callback at the speed it rendered.
+    pub fn heard_at(&self, sample: f64, rate: f64) -> Option<(Moment, f64)> {
+        let latest = self.passes.load(Acquire);
         let pass = self.pass.lock().ok().and_then(|p| *p);
-        if let Some(p) = pass.filter(|p| (p.sample - sample).abs() < 0.5) {
-            return Some(p.when);
+        if let Some((_, p)) = pass.filter(|(n, p)| *n == latest && (p.sample - sample).abs() < 0.5) {
+            return Some((p.when, p.speed));
         }
         let last = self.last.lock().ok().and_then(|l| *l)?;
-        last.when.shifted((sample - last.sample) / (rate * last.speed).max(1.0))
-    }
-
-    /// The transport speed of the latest callback, 1.0 before one ran.
-    pub fn speed(&self) -> f64 {
-        self.last.lock().ok().and_then(|l| *l).map_or(1.0, |l| l.speed)
+        Some((last.when.shifted((sample - last.sample) / (rate * last.speed).max(1.0))?, last.speed))
     }
 }
 
@@ -333,20 +343,25 @@ mod tests {
     fn a_pass_stamp_skipped_on_a_busy_lock_is_published_by_the_next_callback() {
         let stamps = HeardStamps::default();
         let moment = |s: u64| Moment { at: epoch() + Duration::from_secs(s), clock: Some(s as f64) };
-        let mut pending = Some(Heard { sample: 0.0, when: moment(1), speed: 1.0 });
-        stamps.record(Heard { sample: 0.0, when: moment(1), speed: 1.0 }, &mut pending);
+        let mut pending = None;
+        stamps.record(Heard { sample: 0.0, when: moment(1), speed: 1.0 }, true, &mut pending);
         assert_eq!(pending, None);
-        // A second Play from the same sample while the UI reads the pass.
-        let start = Heard { sample: 0.0, when: moment(10), speed: 1.0 };
-        let mut pending = Some(start);
+        // A second Play from the same sample, at half speed, while the UI reads the pass; the
+        // latest callback after it also renders on from elsewhere before the pass is published.
+        let start = Heard { sample: 0.0, when: moment(10), speed: 0.5 };
         {
             let _reading = stamps.pass.lock().unwrap();
-            stamps.record(start, &mut pending);
+            stamps.record(start, true, &mut pending);
         }
         assert_eq!(pending, Some(start), "kept for the next callback");
-        stamps.record(Heard { sample: 512.0, when: moment(11), speed: 1.0 }, &mut pending);
+        let later = Heard { sample: 48_000.0, when: moment(12), speed: 0.5 };
+        *stamps.last.lock().unwrap() = Some(later);
+        // Until then the old pass's stamp does not answer for the new pass: the latest callback
+        // tells it, two seconds before at half speed.
+        assert_eq!(stamps.heard_at(0.0, 48_000.0), Some((moment(10), 0.5)), "not the old pass's start");
+        stamps.record(Heard { sample: 48_512.0, when: moment(13), speed: 0.5 }, false, &mut pending);
         assert_eq!(pending, None);
-        assert_eq!(stamps.heard_at(0.0, 48_000.0), Some(start.when), "the new pass's start, not the old one");
+        assert_eq!(stamps.heard_at(0.0, 48_000.0), Some((start.when, 0.5)), "the new pass's start and its speed");
     }
 
     #[test]
@@ -405,12 +420,12 @@ mod tests {
         assert_eq!(stamps.heard_at(1_000.0, 48_000.0), None);
         // Play from 1_000; the first callback's first sample is heard at t0, 100 s on the clock.
         let start = Moment { at: t0, clock: Some(100.0) };
-        stamps.record(Heard { sample: 1_000.0, when: start, speed: 1.0 }, &mut Some(Heard { sample: 1_000.0, when: start, speed: 1.0 }));
+        stamps.record(Heard { sample: 1_000.0, when: start, speed: 1.0 }, true, &mut None);
         // Later callbacks move the latest stamp on.
-        stamps.record(Heard { sample: 49_000.0, when: start.shifted(1.0).unwrap(), speed: 1.0 }, &mut None);
-        assert_eq!(stamps.heard_at(1_000.0, 48_000.0), Some(start), "the pass start is exact");
+        stamps.record(Heard { sample: 49_000.0, when: start.shifted(1.0).unwrap(), speed: 1.0 }, false, &mut None);
+        assert_eq!(stamps.heard_at(1_000.0, 48_000.0), Some((start, 1.0)), "the pass start is exact");
         // A punch at 25_000 is projected from the latest callback: half a second after the start.
-        let punch = stamps.heard_at(25_000.0, 48_000.0).unwrap();
+        let (punch, _) = stamps.heard_at(25_000.0, 48_000.0).unwrap();
         assert!(punch.at.duration_since(t0).abs_diff(Duration::from_millis(500)) < Duration::from_micros(1), "{punch:?}");
         assert!(punch.clock.is_some_and(|c| (c - 100.5).abs() < 1e-9), "{punch:?}");
     }
@@ -418,13 +433,12 @@ mod tests {
     #[test]
     fn a_sample_is_projected_at_the_speed_the_latest_callback_played() {
         let stamps = HeardStamps::default();
-        assert_eq!(stamps.speed(), 1.0);
         let t0 = Instant::now();
         let start = Moment { at: t0, clock: Some(100.0) };
         // At half speed 48_000 session samples go by in two seconds.
-        stamps.record(Heard { sample: 49_000.0, when: start.shifted(2.0).unwrap(), speed: 0.5 }, &mut None);
-        assert_eq!(stamps.speed(), 0.5);
-        let punch = stamps.heard_at(25_000.0, 48_000.0).unwrap();
+        stamps.record(Heard { sample: 49_000.0, when: start.shifted(2.0).unwrap(), speed: 0.5 }, false, &mut None);
+        let (punch, speed) = stamps.heard_at(25_000.0, 48_000.0).unwrap();
+        assert_eq!(speed, 0.5, "with the speed of the stamp it was projected from");
         assert!(punch.at.duration_since(t0).abs_diff(Duration::from_secs(1)) < Duration::from_micros(1), "{punch:?}");
         assert!(punch.clock.is_some_and(|c| (c - 101.0).abs() < 1e-9), "{punch:?}");
     }
