@@ -219,23 +219,37 @@ fn named_output_uses_its_physical_channel_and_remaps_on_session_edit() {
 
 #[test]
 fn a_rate_change_keeps_named_outputs_in_step_with_the_main_mix() {
-    use soundcraft_model::{ChannelFormat, OutputPath, Route};
+    use soundcraft_model::{ChannelFormat, Clip, OutputPath, Route, SourceAudio, SourceId, TrackKind};
     let (shared, audio, _, track) = spike_session(0);
     let (tx, rx) = channel();
     // A device rate unlike the session's leaves part of a rendered block unread after a callback.
     let mut audio = AudioState::new(rx, shared, Arc::clone(&audio.session), 44_100.0, channel().0);
     audio.mix.set_hardware_channels(10);
     let mut session = (*audio.session).clone();
+    // One spike before the rate change and one after it, on a track routed to the main mix and
+    // on one routed to the named output.
+    let mut x = vec![0.01f32; 48_000];
+    x[200..232].fill(0.9);
+    x[1200..1232].fill(0.9);
+    session.pool.insert(SourceId(5), Arc::new(SourceAudio::new(craft_audio::AudioBuffer { sample_rate: 48_000, channels: vec![x] })));
     session.outputs.push(OutputPath { name: "Cue".into(), first_channel: 9, format: ChannelFormat::Mono });
     session.track_mut(track).unwrap().mixer.output = Route::Hardware("Cue".into());
+    let main = session.add_track(TrackKind::Audio, ChannelFormat::Mono, None);
+    let id = session.new_clip_id();
+    session.track_mut(main).unwrap().playlist_mut().unwrap().clips.push(Clip::audio(id, "x", SourceId(5), 0, 0, 48_000));
     tx.send(Cmd::Session(Arc::new(session.clone()), vec![])).unwrap();
     tx.send(Cmd::Play { from: 0, end: None, looped: None }).unwrap();
-    let mut frames = [0.0; 10 * 32];
+    let spike = |frames: &[f32], channel: usize| frames.as_chunks::<10>().0.iter().position(|frame| frame[channel] > 0.3);
+    let mut frames = [0.0; 10 * 512];
     audio.fill(&mut frames, 10);
+    assert!(spike(&frames, 9).is_some());
+    assert_eq!(spike(&frames, 0), spike(&frames, 9), "before the change");
     session.sample_rate = soundcraft_time::SampleRate::new(44_100).unwrap();
     tx.send(Cmd::Session(Arc::new(session), vec![])).unwrap();
     audio.fill(&mut frames, 10);
     assert!(frames.as_chunks::<10>().0.iter().all(|frame| frame[9] > 0.0), "the named output plays from the first frame after the change");
+    assert!(spike(&frames, 9).is_some());
+    assert_eq!(spike(&frames, 0), spike(&frames, 9), "after the change");
 }
 
 #[test]
