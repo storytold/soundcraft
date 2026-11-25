@@ -824,24 +824,8 @@ fn encode(img: &egui::ColorImage, path: Option<&str>, token: u64) -> Value {
     }
 }
 
-/// Minimal base64 (standard alphabet) to avoid another dependency.
-pub fn base64(data: &[u8]) -> String {
-    const T: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-    let mut out = String::with_capacity(data.len().div_ceil(3) * 4);
-    for chunk in data.chunks(3) {
-        let b = [chunk.first().copied().unwrap_or(0), chunk.get(1).copied().unwrap_or(0), chunk.get(2).copied().unwrap_or(0)];
-        let n = (u32::from(b[0]) << 16) | (u32::from(b[1]) << 8) | u32::from(b[2]);
-        for i in 0..4 {
-            if i <= chunk.len() {
-                let idx = ((n >> (18 - 6 * i)) & 63) as usize;
-                out.push(char::from(T.get(idx).copied().unwrap_or(b'A')));
-            } else {
-                out.push('=');
-            }
-        }
-    }
-    out
-}
+/// Standard padded Base64 without line wrapping, shared across Craft apps.
+pub use craft_mime::transfer::base64;
 
 #[cfg(test)]
 mod tests;
