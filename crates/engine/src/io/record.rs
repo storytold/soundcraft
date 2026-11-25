@@ -4,12 +4,13 @@ use super::session::{save_copy, save_session};
 use super::{AudioBuffer, Clip, Engine, EngineError, FileFormat, OsStr, Path, PathBuf, Range, Samples, Session, TrackId, read_file};
 
 /// A recording's plan, made when it starts: each record-enabled track's take file, where the
-/// takes start on the timeline, the loop length they split into when loop recording, and the
-/// punch range they're trimmed to.
+/// capture starts on the timeline, the loop length they split into when loop recording, and the
+/// selected range. The range trims a punch or locates the first loop pass after pre-roll.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Recording {
     pub start: Samples,
     pub pass: Option<Samples>,
+    /// Selected punch or loop range, stored as `punch` in autosave plans.
     pub punch: Option<Range>,
     /// The input's sample rate, which the take files are written at.
     pub rate: u32,
@@ -65,8 +66,8 @@ pub fn add_recording(e: &mut Engine, start: Samples, takes: Vec<(TrackId, PathBu
     add_recording_in(e, start, takes, pass, None)
 }
 
-/// [`add_recording`] limited to the `punch` range: each clip is cut to it before it's placed, so
-/// the material around the punch isn't overwritten.
+/// [`add_recording`] with an optional selection: a punch cuts each clip to it, so the material
+/// around the punch isn't overwritten; a loop's passes start at it, after any pre-roll.
 fn add_recording_in(
     e: &mut Engine,
     start: Samples,
@@ -88,6 +89,7 @@ fn add_recording_in(
     // file is decoded once the take is laid out and it holds a kept span, one file at a time, so
     // a punch on a take of several files decodes no more than the files it keeps.
     let every_file_placed = pass.is_none() && punch.is_none();
+    let sources_before = e.session().sources.len();
     let mut out = Vec::new();
     for (tid, paths) in tracks {
         let mut files = Vec::new();
@@ -103,7 +105,8 @@ fn add_recording_in(
         }
         out.extend(clips);
     }
-    if !out.is_empty() {
+    // A short loop take places no clip but stays in the Clips list, so it is undone with the rest.
+    if !out.is_empty() || e.session().sources.len() > sources_before {
         e.push_undo("Record", before);
     }
     out
@@ -173,27 +176,17 @@ fn place_take(
             (f, Range::new(from, len))
         })
         .collect();
-    let pass = pass.unwrap_or(len).max(1);
-    // Work out what each pass keeps first, so a file nothing is placed from isn't read or registered.
-    let mut kept_passes = Vec::new();
-    for offset in (0..len).step_by(usize::try_from(pass).unwrap_or(usize::MAX)).take(1_000) {
-        let n = pass.min(len - offset);
-        if offset > 0 && n < pass / 8 {
-            break;
-        }
-        let (clip_start, cut, clip_len) = match punch {
-            Some(p) => {
-                let Some(kept) = Range::new(start, start.saturating_add(n)).intersect(&p) else { continue };
-                (kept.start, kept.start.saturating_sub(start), kept.len())
-            }
-            None => (start, 0, n),
-        };
-        // What this pass keeps, as a span of the take, and where that span starts on the timeline.
-        kept_passes.push((offset, Range::new(offset.saturating_add(cut), offset.saturating_add(cut).saturating_add(clip_len)), clip_start));
-    }
+    // Work out what each pass keeps first, so a file nothing is placed from isn't read or registered:
+    // what each pass keeps, as a span of the take, and where that span starts on the timeline.
+    let kept_passes: Vec<_> = recording_clips(start, len, pass, punch)
+        .into_iter()
+        .map(|(index, offset, clip_start, clip_len)| (index, Range::new(offset, offset.saturating_add(clip_len)), clip_start))
+        .collect();
+    // A loop take stopped before any pass is kept stays reachable in the Clips list.
+    let keep_every_file = kept_passes.is_empty() && len > 0 && pass.is_some_and(|p| p > 0);
     let mut sources = Vec::new();
     for (file, span) in files {
-        if !kept_passes.iter().any(|(_, kept, _)| kept.intersect(&span).is_some()) {
+        if !keep_every_file && !kept_passes.iter().any(|(_, kept, _)| kept.intersect(&span).is_some()) {
             continue;
         }
         let read = match file.audio {
@@ -217,8 +210,8 @@ fn place_take(
         sources.push((src, name, span));
     }
     let mut out = Vec::new();
-    for (offset, kept, clip_start) in kept_passes {
-        if offset > 0
+    for (index, kept, clip_start) in kept_passes {
+        if index > 0
             && let Some(t) = s.track_mut(tid)
         {
             t.playlists.push(soundcraft_model::Playlist::new(format!("{}.{:02}", t.name, t.playlists.len() + 1)));
@@ -235,13 +228,48 @@ fn place_take(
     (out, problems)
 }
 
+/// The pass index, offset in the take, timeline start, and length of each clip a take of `len`
+/// samples recorded from `origin` keeps. Without `pass` it is the take within `selection` (a
+/// punch). With `pass` (loop recording), passes start at the selection, after any pre-roll; each
+/// complete pass is kept, and a partial final pass only past its midpoint (at most 1000 passes).
+/// The take's files keep all the audio.
+fn recording_clips(origin: Samples, len: Samples, pass: Option<Samples>, selection: Option<Range>) -> Vec<(Samples, Samples, Samples, Samples)> {
+    let audio = Range::new(origin, origin.saturating_add(len));
+    let Some(pass) = pass.filter(|p| *p > 0) else {
+        let range = selection.unwrap_or_else(|| Range::new(origin, audio.end));
+        return audio.intersect(&range).map(|kept| (0, kept.start.saturating_sub(origin), kept.start, kept.len())).into_iter().collect();
+    };
+    let start = selection.map_or(origin, |range| range.start);
+    let mut clips = Vec::new();
+    for index in 0..1_000 {
+        let Some(elapsed) = pass.checked_mul(index) else { break };
+        let from = start.saturating_add(elapsed);
+        if audio.end.saturating_sub(from) <= pass / 2 {
+            break;
+        }
+        if let Some(kept) = audio.intersect(&Range::new(from, from.saturating_add(pass))) {
+            let clip_start = kept.start.saturating_sub(elapsed);
+            let trim = clip_start.saturating_neg().max(0);
+            if kept.len() > trim {
+                clips.push((index, kept.start.saturating_sub(origin).saturating_add(trim), clip_start.max(0), kept.len() - trim));
+            }
+        }
+    }
+    clips
+}
+
 /// Where a take recording from `start` shows while it holds `len` samples, as it will be placed:
-/// just the pass under way when loop recording in passes of `pass`, within the `punch` range.
+/// just the pass under way when loop recording in passes of `pass` (which start at the selection
+/// `punch`, after any pre-roll), within the `punch` range otherwise.
 /// Returns the timeline position of its first sample and the span it covers.
 pub fn live_span(start: Samples, pass: Option<Samples>, punch: Option<Range>, len: Samples) -> Option<(Samples, Range)> {
-    let origin = start.saturating_sub(pass.filter(|p| *p > 0).map_or(0, |p| len / p * p));
-    let span = Range::new(start, origin.saturating_add(len));
-    Some((origin, span.intersect(&punch.unwrap_or(span))?))
+    let loop_start = punch.map_or(start, |range| range.start);
+    let elapsed = start.saturating_add(len).saturating_sub(loop_start).max(0);
+    let wrapped = pass.filter(|p| *p > 0).map_or(0, |p| elapsed / p * p);
+    let origin = start.saturating_sub(wrapped);
+    let span = Range::new(origin, origin.saturating_add(len));
+    let range = punch.unwrap_or_else(|| Range::new(if pass.is_some() { loop_start.max(0) } else { 0 }, span.end.max(0)));
+    Some((origin, span.intersect(&range)?))
 }
 
 #[cfg(test)]
@@ -422,9 +450,11 @@ mod record_tests {
                 vec![clip("Vox_01", 1_000, 800, 0)],
                 vec![clip("Vox_01", 1_000, 200, 800), clip("Vox_01-2", 1_200, 600, 0)],
                 vec![clip("Vox_01-2", 1_000, 400, 600), clip("Vox_01-3", 1_400, 400, 0)],
-                vec![clip("Vox_01-3", 1_000, 100, 400)],
             ]
         );
+        // The last 100 of an 800-sample pass are not past its midpoint: no fourth pass is placed,
+        // and the take's last file still holds them.
+        assert_eq!(e.session().sources.len(), 3);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -573,5 +603,38 @@ mod record_tests {
         let punch = Some(Range::new(1_200, 1_400));
         assert_eq!(live_span(1_000, None, punch, 150), None);
         assert_eq!(live_span(1_000, None, punch, 500), Some((1_000, Range::new(1_200, 1_400))));
+    }
+
+    #[test]
+    fn a_short_first_loop_take_remains_available_and_undoable() {
+        let dir = std::env::temp_dir().join(format!("soundcraft-short-loop-{}", std::process::id()));
+        let mut e = Engine::default();
+        let vox = armed(&mut e, "Vox", "mono", "In 1");
+        let take = dir.join("Audio Files/Short Loop.wav");
+        write_take(&take, 499);
+        let plan = Recording { start: 700, pass: Some(400), punch: Some(Range::new(1_000, 1_400)), rate: 48_000, takes: vec![] };
+        assert!(place_recording(&mut e, &plan, vec![(vox, take)]).is_empty());
+        assert_eq!(e.session().sources.len(), 1);
+        e.execute("edit.undo", &json!({})).unwrap();
+        assert!(e.session().sources.is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn loop_passes_start_after_preroll_and_keep_only_a_majority_tail() {
+        let selection = Some(Range::new(1_000, 1_400));
+        let clips = |len| recording_clips(700, len, Some(400), selection);
+        assert!(clips(499).is_empty(), "an early stop on the first pass places no clip");
+        assert!(clips(500).is_empty(), "at the midpoint no majority was recorded");
+        assert_eq!(clips(501), vec![(0, 300, 1_000, 201)]);
+        let full = vec![(0, 300, 1_000, 400), (1, 700, 1_000, 400), (2, 1_100, 1_000, 400)];
+        assert_eq!(clips(1_700), full);
+        let mut with_tail = full;
+        with_tail.push((3, 1_500, 1_000, 201));
+        assert_eq!(clips(1_701), with_tail);
+        assert_eq!(live_span(700, Some(400), selection, 200), None);
+        assert_eq!(live_span(700, Some(400), selection, 310), Some((700, Range::new(1_000, 1_010))));
+        assert_eq!(live_span(700, Some(400), selection, 700), None);
+        assert_eq!(live_span(700, Some(400), selection, 730), Some((300, Range::new(1_000, 1_030))));
     }
 }
