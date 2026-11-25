@@ -1,4 +1,5 @@
 use super::{Color32, Sense, SoundApp, Stroke, Tokens, Ui, json, mono, pos2, vec2};
+use std::io::Write as _;
 
 /// Draw plugin windows for instrument and insert slots that still exist, removing closed ones from the list.
 pub(super) fn plugin_windows(app: &mut SoundApp, ctx: &egui::Context) {
@@ -183,6 +184,32 @@ fn preset_dir(app: &SoundApp, plugin: &str) -> Option<std::path::PathBuf> {
     app.preset_dir.as_ref().map(|d| d.join(crate::preset_folder_name(plugin)))
 }
 
+/// Write a preset without following a link, so a Nightly profile cannot write outside itself: the
+/// plugin's folder must be a real directory and the preset file a real file (or absent). The body is
+/// staged in the same folder and renamed over the name, which replaces a link there instead of
+/// writing through it.
+fn save_preset(dir: &std::path::Path, name: &str, body: &serde_json::Value) -> std::io::Result<()> {
+    match std::fs::symlink_metadata(dir) {
+        Ok(meta) if meta.file_type().is_dir() => {}
+        Ok(_) => return Err(std::io::Error::other("the preset folder is not a directory")),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => std::fs::create_dir_all(dir)?,
+        Err(error) => return Err(error),
+    }
+    let target = dir.join(format!("{name}.json"));
+    if std::fs::symlink_metadata(&target).is_ok_and(|meta| !meta.file_type().is_file()) {
+        return Err(std::io::Error::other("the preset is not a regular file"));
+    }
+    let staged = dir.join(format!(".{name}.json.{}.tmp", std::process::id()));
+    let mut file = std::fs::OpenOptions::new().write(true).create_new(true).open(&staged)?;
+    if let Err(error) = file.write_all(body.to_string().as_bytes()) {
+        drop(file);
+        let _ = std::fs::remove_file(&staged);
+        return Err(error);
+    }
+    drop(file);
+    std::fs::rename(&staged, &target)
+}
+
 /// Factory default plus user presets for a plugin insert; user presets need a desktop preset directory.
 fn preset_menu(
     app: &mut SoundApp,
@@ -235,7 +262,7 @@ fn preset_menu(
         if ui.button(crate::localization::text("Save")).clicked() {
             let clean = soundcraft_engine::io::sanitize_name(&name);
             let body = json!({"format": "soundcraft-plugin-preset", "plugin": info.id, "params": ins.params});
-            let ok = std::fs::create_dir_all(&dir).is_ok() && std::fs::write(dir.join(format!("{clean}.json")), body.to_string()).is_ok();
+            let ok = save_preset(&dir, &clean, &body).is_ok();
             app.ui.status = if ok {
                 crate::localized_format!("Saved preset {clean}", clean = clean)
             } else {
