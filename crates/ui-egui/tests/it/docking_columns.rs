@@ -43,7 +43,7 @@ fn dock_columns(h: &egui_kittest::Harness<'_, SoundApp>, side: DockEdge) -> Vec<
 #[test]
 fn default_layouts_put_the_side_lists_in_full_height_dock_columns() {
     let edit = docking::edit_default();
-    let session = Node::split(Axis::Y, SplitSize::FixedSecond(MIDI_HEIGHT + 26.0), tabs(Panel::Canvas), tabs(Panel::Midi));
+    let session = Node::split(Axis::Y, SplitSize::FixedSecond(MIDI_HEIGHT + 28.0), tabs(Panel::Canvas), tabs(Panel::Midi));
     let expected = Node::split(
         Axis::X,
         SplitSize::FixedFirst(TRACKS_WIDTH),
