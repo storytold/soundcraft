@@ -640,7 +640,7 @@ impl AudioState {
     /// Note when the first sample this fill outputs is heard: the device callback's time, plus the
     /// output latency the stream reports, plus where in the device buffer this fill starts; and
     /// the same on the stream clock, from the callback's playback time.
-    fn stamp_heard(&mut self) {
+    fn stamp_heard(&mut self, speed: f64) {
         let pass_started = std::mem::take(&mut self.pass_started);
         let Some(called) = self.callback_at.filter(|_| self.playing) else { return };
         let into = self.chunk_offset as f64 / self.device_rate.max(1.0);
@@ -649,7 +649,7 @@ impl AudioState {
         let when = super::latency::Moment { at, clock: self.playback_clock.map(|p| p + into) };
         // The next output frame: `read` frames into the pending block, which ends at `pos`.
         let sample = self.pos as f64 - self.pending_len as f64 + self.read;
-        let heard = super::latency::Heard { sample, when };
+        let heard = super::latency::Heard { sample, when, speed };
         if pass_started {
             self.pending_pass = Some(heard);
         }
@@ -711,7 +711,7 @@ impl AudioState {
             drop(quiet);
         }
         self.midi_started = false;
-        self.stamp_heard();
+        self.stamp_heard(speed);
         // A command may have installed a session at another sample rate: the audio is rendered
         // at the rate that is there now, at the same speed.
         let step = self.step(speed);

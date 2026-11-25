@@ -131,6 +131,9 @@ pub struct Heard {
     /// Session sample position, fractional when the device runs at another rate.
     pub sample: f64,
     pub when: Moment,
+    /// The transport speed the callback rendered at, 1.0 at full speed: session samples went by
+    /// at the session rate times this.
+    pub speed: f64,
 }
 
 /// What the output callbacks say about when session samples are heard: the first sample of the
@@ -157,15 +160,20 @@ impl HeardStamps {
         }
     }
 
-    /// When `sample` was (or will be) heard at `rate` session samples per second: from the start
-    /// of the pass when that is the sample, else projected from the latest callback.
+    /// When `sample` was (or will be) heard at the session `rate`: from the start of the pass
+    /// when that is the sample, else projected from the latest callback at the speed it rendered.
     pub fn heard_at(&self, sample: f64, rate: f64) -> Option<Moment> {
         let pass = self.pass.lock().ok().and_then(|p| *p);
         if let Some(p) = pass.filter(|p| (p.sample - sample).abs() < 0.5) {
             return Some(p.when);
         }
         let last = self.last.lock().ok().and_then(|l| *l)?;
-        last.when.shifted((sample - last.sample) / rate.max(1.0))
+        last.when.shifted((sample - last.sample) / (rate * last.speed).max(1.0))
+    }
+
+    /// The transport speed of the latest callback, 1.0 before one ran.
+    pub fn speed(&self) -> f64 {
+        self.last.lock().ok().and_then(|l| *l).map_or(1.0, |l| l.speed)
     }
 }
 
@@ -325,18 +333,18 @@ mod tests {
     fn a_pass_stamp_skipped_on_a_busy_lock_is_published_by_the_next_callback() {
         let stamps = HeardStamps::default();
         let moment = |s: u64| Moment { at: epoch() + Duration::from_secs(s), clock: Some(s as f64) };
-        let mut pending = Some(Heard { sample: 0.0, when: moment(1) });
-        stamps.record(Heard { sample: 0.0, when: moment(1) }, &mut pending);
+        let mut pending = Some(Heard { sample: 0.0, when: moment(1), speed: 1.0 });
+        stamps.record(Heard { sample: 0.0, when: moment(1), speed: 1.0 }, &mut pending);
         assert_eq!(pending, None);
         // A second Play from the same sample while the UI reads the pass.
-        let start = Heard { sample: 0.0, when: moment(10) };
+        let start = Heard { sample: 0.0, when: moment(10), speed: 1.0 };
         let mut pending = Some(start);
         {
             let _reading = stamps.pass.lock().unwrap();
             stamps.record(start, &mut pending);
         }
         assert_eq!(pending, Some(start), "kept for the next callback");
-        stamps.record(Heard { sample: 512.0, when: moment(11) }, &mut pending);
+        stamps.record(Heard { sample: 512.0, when: moment(11), speed: 1.0 }, &mut pending);
         assert_eq!(pending, None);
         assert_eq!(stamps.heard_at(0.0, 48_000.0), Some(start.when), "the new pass's start, not the old one");
     }
@@ -397,14 +405,28 @@ mod tests {
         assert_eq!(stamps.heard_at(1_000.0, 48_000.0), None);
         // Play from 1_000; the first callback's first sample is heard at t0, 100 s on the clock.
         let start = Moment { at: t0, clock: Some(100.0) };
-        stamps.record(Heard { sample: 1_000.0, when: start }, &mut Some(Heard { sample: 1_000.0, when: start }));
+        stamps.record(Heard { sample: 1_000.0, when: start, speed: 1.0 }, &mut Some(Heard { sample: 1_000.0, when: start, speed: 1.0 }));
         // Later callbacks move the latest stamp on.
-        stamps.record(Heard { sample: 49_000.0, when: start.shifted(1.0).unwrap() }, &mut None);
+        stamps.record(Heard { sample: 49_000.0, when: start.shifted(1.0).unwrap(), speed: 1.0 }, &mut None);
         assert_eq!(stamps.heard_at(1_000.0, 48_000.0), Some(start), "the pass start is exact");
         // A punch at 25_000 is projected from the latest callback: half a second after the start.
         let punch = stamps.heard_at(25_000.0, 48_000.0).unwrap();
         assert!(punch.at.duration_since(t0).abs_diff(Duration::from_millis(500)) < Duration::from_micros(1), "{punch:?}");
         assert!(punch.clock.is_some_and(|c| (c - 100.5).abs() < 1e-9), "{punch:?}");
+    }
+
+    #[test]
+    fn a_sample_is_projected_at_the_speed_the_latest_callback_played() {
+        let stamps = HeardStamps::default();
+        assert_eq!(stamps.speed(), 1.0);
+        let t0 = Instant::now();
+        let start = Moment { at: t0, clock: Some(100.0) };
+        // At half speed 48_000 session samples go by in two seconds.
+        stamps.record(Heard { sample: 49_000.0, when: start.shifted(2.0).unwrap(), speed: 0.5 }, &mut None);
+        assert_eq!(stamps.speed(), 0.5);
+        let punch = stamps.heard_at(25_000.0, 48_000.0).unwrap();
+        assert!(punch.at.duration_since(t0).abs_diff(Duration::from_secs(1)) < Duration::from_micros(1), "{punch:?}");
+        assert!(punch.clock.is_some_and(|c| (c - 101.0).abs() < 1e-9), "{punch:?}");
     }
 
     /// Moments `seconds` apart by both the callbacks and the clock, from `at` and 50 s on the clock.

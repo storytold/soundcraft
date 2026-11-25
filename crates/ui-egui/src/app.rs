@@ -151,6 +151,9 @@ impl SoundApp {
         let _language = crate::localization::enter(self.ui.language);
         self.ui.undo_levels = self.ui.undo_levels.clamp(1, 64);
         self.engine.set_history_limit(self.ui.undo_levels);
+        // Saved preferences are read as they are: a record offset out of range would place every
+        // take that far off, and a punch would wait that long for it.
+        self.ui.record_offset = self.ui.record_offset.clamp(-crate::RECORD_OFFSET_LIMIT, crate::RECORD_OFFSET_LIMIT);
         // Fonts set now take effect next frame, so draw only from the frame after.
         if !self.fonts_ready {
             if self.fonts_installed {
