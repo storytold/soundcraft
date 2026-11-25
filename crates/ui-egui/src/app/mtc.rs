@@ -203,7 +203,9 @@ impl SoundApp {
         let mut online = self.mtc_online;
         let changed = crate::widgets::checkbox(ui, &mut online, crate::localization::text("Online (chase MTC)")).changed();
         if selected != self.ui.mtc_input_port || changed {
-            let online = online && selected.is_some();
+            // An explicit Online attempt reaches validation, which explains a missing input.
+            // Clearing the input of an online reader takes it offline.
+            let online = online && (changed || selected.is_some());
             if let Err(e) = self.mtc_command(&json!({"input":selected,"online":online})) {
                 self.ui.status = crate::localization::error_text(&e);
             }
