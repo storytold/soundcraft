@@ -33,6 +33,9 @@ pub(crate) struct PluginSlot {
 
 pub(crate) struct Strip {
     pub(crate) buf: Vec<Vec<f32>>,
+    /// This block plays the track's live audio input (input monitoring, or record-enabled while
+    /// stopped or recording): Low Latency Monitoring keeps it out of delay compensation.
+    pub(crate) monitoring: bool,
     /// Pre-fader copy for pre-fader sends.
     pub(crate) pre: Vec<Vec<f32>>,
     pub(crate) scratch: Vec<f32>,
@@ -138,6 +141,7 @@ impl DelayLine {
 impl Strip {
     pub(crate) fn new() -> Self {
         Strip {
+            monitoring: false,
             buf: Vec::new(),
             pre: Vec::new(),
             scratch: Vec::new(),
@@ -461,8 +465,11 @@ pub(crate) fn process_strip(s: &Session, t: &Track, strip: &mut Strip, busses: &
     let Block { pos, frames, any_solo } = blk;
     zero_buf(&mut strip.buf, frames);
     let transport = transport_at(s, pos, !live.monitor_only, live.recording);
+    strip.monitoring = t.kind == TrackKind::Audio
+        && !live.input.is_empty()
+        && (t.mixer.input_monitor || (t.mixer.record_arm && (live.monitor_only || live.recording)));
     match t.kind {
-        TrackKind::Audio if !live.input.is_empty() && (t.mixer.input_monitor || (t.mixer.record_arm && (live.monitor_only || live.recording))) => {
+        TrackKind::Audio if strip.monitoring => {
             monitor_input(t, strip, live, frames);
         }
         TrackKind::Audio if live.monitor_only => {}

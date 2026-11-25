@@ -497,13 +497,18 @@ impl MixEngine {
                 }
             }
         }
+        // Low Latency Monitoring: a monitored input is heard as soon as its own inserts let it,
+        // not lined up with the slowest track (Options › Low Latency Monitoring, #1754).
+        let low_latency = s.edit.flag("options.low_latency_monitoring");
         for (i, st) in work.iter_mut() {
             let Some(t) = s.tracks.get(*i) else { continue };
             let ch = st.buf.len();
-            st.align.set(lmax_t.saturating_sub(st.latency), ch);
+            let skip = low_latency && st.monitoring;
+            let align = if skip { 0 } else { lmax_t.saturating_sub(st.latency) };
+            st.align.set(align, ch);
             st.align.process(&mut st.buf, frames);
             if t.mixer.sends.iter().flatten().any(|x| x.pre_fader) {
-                st.align_pre.set(lmax_t.saturating_sub(st.latency), ch);
+                st.align_pre.set(align, ch);
                 st.align_pre.process(&mut st.pre, frames);
             }
             let waits = match &t.mixer.output {
@@ -511,7 +516,7 @@ impl MixEngine {
                 Route::Bus(b) => self.aux_fed.contains(b),
                 _ => false,
             };
-            st.out_extra.set(if waits { lmax_a } else { 0 }, ch);
+            st.out_extra.set(if waits && !skip { lmax_a } else { 0 }, ch);
         }
         for (i, st) in work.iter_mut() {
             if let Some(t) = s.tracks.get(*i) {
