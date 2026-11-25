@@ -135,6 +135,19 @@ impl SoundApp {
         self.store_editor_changes(edits, states);
     }
 
+    /// Drops the edits and state-change notices open editors queued since the last poll.
+    pub(super) fn discard_editor_edits(&mut self) {
+        #[cfg(test)]
+        if let Some(poll) = self.editor_poll_fixture.as_mut() {
+            let _ = poll(&mut Vec::new());
+            return;
+        }
+        if let Some(p) = &self.player {
+            let _ = p.idle();
+            let _ = p.changed_states();
+        }
+    }
+
     pub(crate) fn store_editor_changes(&mut self, edits: Vec<soundcraft_playback::EditorEdit>, states: soundcraft_playback::PluginStates) {
         for (t, slot, param, value) in edits {
             if slot == soundcraft_mix::INSTRUMENT_SLOT {

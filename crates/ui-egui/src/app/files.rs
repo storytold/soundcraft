@@ -12,6 +12,8 @@ impl SoundApp {
         self.midi_moves.clear();
         self.touched_pans.clear();
         self.reset_midi_learn();
+        // Edits an open editor reported before the replacement belong to the old document.
+        self.discard_editor_edits();
         self.editor_states.clear();
         self.instrument_edits.clear();
         // The Output window shows a track of the old session: a track of the new one can have

@@ -1720,6 +1720,37 @@ fn editor_gesture_polling_survives_discarded_and_hidden_host_iterations() {
     assert_history_unchanged(&app, settled_revision, undo, &history, &journal);
 }
 
+/// Logic-only host iterations with one editor poll each.
+fn editor_poll_frame(app: &mut SoundApp, ctx: &egui::Context) {
+    let mut input = egui::RawInput::default();
+    app.raw_input_hook(ctx, &mut input);
+    let _ = ctx.run_logic(&input, |ctx| app.logic(ctx));
+}
+
+fn cutoff(app: &SoundApp, t: soundcraft_model::TrackId) -> f32 {
+    app.engine.session().track(t).unwrap().instrument.as_ref().unwrap().params["cutoff"]
+}
+
+#[test]
+fn an_editor_edit_reported_before_a_document_replacement_stays_out_of_the_new_document() {
+    use std::cell::{Cell, RefCell};
+    use std::rc::Rc;
+    let ctx = egui::Context::default();
+    let mut app = SoundApp::new(soundcraft_engine::demo::demo_engine(), None, Services::default());
+    let keys = app.engine.session().track_by_name("Keys").unwrap().id;
+    app.engine.execute("mix.instrument_param", &json!({"track": keys.0, "param": "cutoff", "value": 500.0})).unwrap();
+    let reports = Rc::new(RefCell::new(Vec::<soundcraft_playback::EditorEdit>::new()));
+    let (latest, polls, captures) = (Rc::new(Cell::new(1u8)), Rc::new(Cell::new(0)), Rc::new(RefCell::new(Vec::new())));
+    app.editor_poll_fixture = Some(poll_fixture(&reports, &latest, &polls, &captures));
+    reports.borrow_mut().push((keys, soundcraft_mix::INSTRUMENT_SLOT, "cutoff".into(), 100.0));
+    // Recover replaces the document with one that has the same instrument on the same track.
+    app.document_replaced();
+    for _ in 0..3 {
+        editor_poll_frame(&mut app, &ctx);
+    }
+    assert_eq!(cutoff(&app, keys), 500.0);
+}
+
 /// The engine's revision, undo history and journal are as they were.
 fn assert_history_unchanged(
     app: &SoundApp,
