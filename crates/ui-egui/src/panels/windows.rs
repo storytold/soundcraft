@@ -795,9 +795,7 @@ fn reported_latency(app: &SoundApp) -> (Option<(u64, f64)>, Option<(u64, f64)>) 
 /// The Playback Engine's latency row: output and input as the audio backend reports them.
 fn latency_line(app: &SoundApp) -> String {
     let show = |m: Option<(u64, f64)>| {
-        m.map_or(crate::localization::text("not reported").to_string(), |(frames, ms)| {
-            crate::localized_format!("{} ms ({} samples)", format!("{ms:.1}"), frames)
-        })
+        m.map_or(crate::localization::text("not reported").to_string(), |(frames, ms)| crate::localized_format!("{:.1} ms ({} samples)", ms, frames))
     };
     let (output, input) = reported_latency(app);
     crate::localized_format!("output {} · input {}", show(output), show(input))
