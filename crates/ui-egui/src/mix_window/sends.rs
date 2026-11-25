@@ -361,13 +361,14 @@ fn header_footer_menu<H, R, F>(
     let footer_id = id.with("footer-height");
     let shown = popup
         .align_alternatives(flipped)
+        .max_height_from_constrain(true)
         .width(field.rect.width())
         .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
         .show(|ui| {
             ui.set_min_width(ui.available_width());
             // egui offers the popup last pass's height; offer the full height so a list that shrank (a search with
             // no matches) grows back.
-            ui.set_max_height(height);
+            ui.set_max_height(height.min(ui.available_height()));
             let header = header(ui);
             // The footer comes after the list; keep the room it took last pass.
             let footer_room = ui.data(|d| d.get_temp::<f32>(footer_id)).unwrap_or(0.0) + ui.spacing().item_spacing.y;
