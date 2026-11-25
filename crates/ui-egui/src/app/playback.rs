@@ -476,9 +476,14 @@ impl SoundApp {
                         p.locate(self.engine.transport.position);
                     }
                     self.sim = None;
-                    // The old capture belongs to the replaced document, never to the new one.
-                    self.recorder = None;
-                    self.recorder_failed = false;
+                    // The old capture belongs to the replaced document, never to the new one. The
+                    // input stream stays open: reopened now it would open after the output and,
+                    // where callbacks run in open order, monitor a device cycle late (see
+                    // `open_audio_devices`).
+                    match &mut self.recorder {
+                        Some(r) => drop(r.finish()),
+                        None => self.recorder_failed = false,
+                    }
                     self.punch = None;
                     self.gesture = None;
                     self.touched.clear();
