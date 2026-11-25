@@ -1,0 +1,251 @@
+name: Nightly build check
+
+# Builds the isolated Nightly flavor on all three platforms without secrets and checks each
+# archive as the Launcher unpacks it. The real feed build and its signing live in the shared
+# producer and release-ref signer (craft-common-actions), which call the same app scripts; this
+# workflow exists so the three packaging paths are exercised on PRs and by hand.
+#
+# macOS runners are shared with release builds: the macOS leg runs only with the `full-ci` label
+# (as ci.yml's Windows legs), never by changed paths.
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, labeled]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# A newer push to a labelled PR cancels its older run. An event that will not build gets a group of
+# its own, so it never cancels a real build.
+concurrency:
+  group: nightly-build-${{ github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'full-ci') && (github.event.action != 'labeled' || github.event.label.name == 'full-ci') && github.ref || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  linux:
+    name: Nightly Linux x86_64 (unsigned)
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (contains(github.event.pull_request.labels.*.name, 'full-ci') &&
+       (github.event.action != 'labeled' || github.event.label.name == 'full-ci'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      CARGO_TERM_COLOR: always
+      CARGO_INCREMENTAL: 0
+      RUST_BACKTRACE: 1
+    steps:
+      - name: Harden runner
+        uses: step-security/harden-runner@1d88384fd173af6ecb012dfd0264a306b711241a # v2.22.4
+        with:
+          egress-policy: audit
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install the desktop build dependencies
+        run: sudo apt-get update -qq && sudo apt-get install -y --no-install-recommends pkg-config libxkbcommon-dev libwayland-dev libx11-dev libxcb1-dev libxcursor-dev libxrandr-dev libxi-dev libfontconfig1-dev libfreetype-dev mesa-vulkan-drivers libgl1-mesa-dev libasound2-dev
+      - name: Prepare a Nightly identity for this commit
+        run: |
+          set -euo pipefail
+          base="$(python3 -c 'import tomllib; print(tomllib.load(open("Cargo.toml", "rb"))["workspace"]["package"]["version"].split("-")[0])')"
+          sha="$(git rev-parse HEAD)"
+          date="$(date -u +%Y-%m-%d)"
+          {
+            echo "SOUNDCRAFT_BUILD_SHA=$sha"
+            echo "SOUNDCRAFT_BUILD_DATE=$date"
+            echo "SOUNDCRAFT_VERSION=$base-nightly.${date//-/}.$GITHUB_RUN_NUMBER.$GITHUB_RUN_ATTEMPT.g${sha:0:12}"
+          } >>"$GITHUB_ENV"
+      - name: Build the GUI-only Nightly tar
+        env:
+          SOUNDCRAFT_BUILD_CHANNEL: nightly-v1
+          CARGO_TARGET_DIR: ${{ runner.temp }}/nightly-targets
+          DIST: ${{ runner.temp }}/nightly-dist
+        run: bash packaging/linux/nightly.sh --arch x86_64
+      - name: Check the archive and the isolated launch protocol
+        env:
+          SOUNDCRAFT_BUILD_CHANNEL: nightly-v1
+        run: |
+          set -euo pipefail
+          tz="$(mktemp -d)"
+          archive="$RUNNER_TEMP/nightly-dist/soundcraft-$SOUNDCRAFT_VERSION-linux-x86_64-nightly.tar.gz"
+          mkdir -p "$tz" && tar -xzf "$archive" -C "$tz"
+          # Flat, allowlisted members only: the launcher, the GUI it starts, the Nightly icon and
+          # the notices.
+          members="$(tar -tzf "$archive" | grep -v '/$' | sort | tr '\n' ' ')"
+          echo "$members"
+          case "$members" in *soundcraft-cli*|*portable.txt*|*.desktop*) echo 'GUI-only tar contains a CLI, marker or desktop entry' >&2; exit 1;; esac
+          test -x "$tz/soundcraft"
+          test -x "$tz/soundcraft-bin"
+          # The entry point is the launcher; the GUI beside it is what a launch starts with the
+          # profile, so an unpacked tar is isolated too.
+          head -n 1 "$tz/soundcraft" | grep -qx '#!/bin/sh' || { echo 'soundcraft is not the launcher' >&2; exit 1; }
+          test -f "$tz/soundcraft-nightly.png"
+          # The version query, plain and in the Launcher's form, with an empty environment (a shell
+          # script needs PATH for dirname/readlink even when everything else is cleared).
+          path=/usr/local/bin:/usr/bin:/bin
+          home="$(mktemp -d)"; profile="$(mktemp -d)"; xdg="$(mktemp -d)"
+          plain="$(env -i PATH="$path" HOME="$home" XDG_CONFIG_HOME="$xdg/c" XDG_DATA_HOME="$xdg/d" XDG_CACHE_HOME="$xdg/k" XDG_STATE_HOME="$xdg/s" "$tz/soundcraft" --version)"
+          test "$plain" = "SoundCraft $SOUNDCRAFT_VERSION (nightly-v1)" || { echo "plain query: $plain" >&2; exit 1; }
+          launcher="$(env -i PATH="$path" HOME="$home" XDG_CONFIG_HOME="$xdg/c" "$tz/soundcraft" --launch-profile nightly-v1 --profile-root "$profile" --version)"
+          test "$launcher" = "SoundCraft $SOUNDCRAFT_VERSION (nightly-v1)" || { echo "launcher query: $launcher" >&2; exit 1; }
+          # A native package refuses a Flatpak instance with exit status 2 (the same status whether or
+          # not a display exists), and no stable folder is created.
+          status=0
+          env -i PATH="$path" HOME="$home" XDG_CONFIG_HOME="$xdg/c" FLATPAK_ID=ai.storyteller.soundcraft "$tz/soundcraft" --launch-profile nightly-v1 --profile-root "$(mktemp -d)/p" -- >/dev/null 2>&1 || status=$?
+          test "$status" -eq 2 || { echo "a Flatpak instance must be refused with exit status 2, got $status" >&2; exit 1; }
+          # Look where the configured XDG folders actually point, not at $xdg/config and $xdg/data.
+          for dir in "$xdg/c" "$xdg/d" "$xdg/k" "$xdg/s"; do test ! -e "$dir/soundcraft" || { echo "stable folder created: $dir/soundcraft" >&2; exit 1; }; done
+      - name: Keep the unsigned archive
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: soundcraft-nightly-linux-x86_64-unsigned
+          path: ${{ runner.temp }}/nightly-dist/soundcraft-${{ env.SOUNDCRAFT_VERSION }}-linux-x86_64-nightly.tar.gz
+          if-no-files-found: error
+          retention-days: 7
+          compression-level: 0
+
+  windows:
+    name: Nightly Windows x86_64 (unsigned)
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (contains(github.event.pull_request.labels.*.name, 'full-ci') &&
+       (github.event.action != 'labeled' || github.event.label.name == 'full-ci'))
+    runs-on: windows-latest
+    timeout-minutes: 90
+    env:
+      CARGO_TERM_COLOR: always
+      CARGO_INCREMENTAL: 0
+      RUST_BACKTRACE: 1
+    steps:
+      - name: Harden runner
+        uses: step-security/harden-runner@1d88384fd173af6ecb012dfd0264a306b711241a # v2.22.4
+        with:
+          egress-policy: audit
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Prepare a Nightly identity for this commit
+        shell: pwsh
+        run: |
+          $inPkg = $false
+          $base = $null
+          foreach ($line in Get-Content Cargo.toml) {
+            if ($line -match '^\s*\[') { $inPkg = ($line.Trim() -eq '[workspace.package]'); continue }
+            if ($inPkg -and $line -match '^\s*version\s*=\s*"([^"]+)"') { $base = $Matches[1].Split('-')[0]; break }
+          }
+          if (-not $base) { throw 'could not read [workspace.package] version from Cargo.toml' }
+          $sha = (git rev-parse HEAD).Trim()
+          $date = (Get-Date).ToUniversalTime().ToString('yyyy-MM-dd')
+          $version = "$base-nightly.$($date.Replace('-','')).$env:GITHUB_RUN_NUMBER.$env:GITHUB_RUN_ATTEMPT.g$($sha.Substring(0,12))"
+          "SOUNDCRAFT_BUILD_SHA=$sha" >> $env:GITHUB_ENV
+          "SOUNDCRAFT_BUILD_DATE=$date" >> $env:GITHUB_ENV
+          "SOUNDCRAFT_VERSION=$version" >> $env:GITHUB_ENV
+      - name: Refuse signing material in the build environment
+        shell: pwsh
+        run: ./packaging/windows/sign.ps1 -CheckBuildEnvironment
+      - name: Build the GUI-only Nightly intermediate
+        shell: pwsh
+        env:
+          SOUNDCRAFT_BUILD_CHANNEL: nightly-v1
+          CARGO_TARGET_DIR: ${{ runner.temp }}/nightly-targets
+          DIST: ${{ runner.temp }}/nightly-dist
+        run: ./packaging/windows/package.ps1 -Arch x64 -Nightly -BuildOnly
+      - name: Check the PE, the version and the archive payload
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $exe = Join-Path $env:RUNNER_TEMP 'nightly-targets/x86_64-pc-windows-msvc/release/soundcraft.exe'
+          $bytes = [IO.File]::ReadAllBytes($exe)
+          $pe = [BitConverter]::ToInt32($bytes, 0x3C)
+          if ([BitConverter]::ToUInt16($bytes, $pe + 4) -ne 0x8664) { throw 'not an x86_64 executable' }
+          if ([BitConverter]::ToUInt16($bytes, $pe + 0x5C) -ne 2) { throw 'not a Windows GUI subsystem executable' }
+          $info = (Get-Item -LiteralPath $exe).VersionInfo
+          if ($info.ProductName -ne 'SoundCraft Nightly') { throw "ProductName: $($info.ProductName)" }
+          if ($info.ProductVersion -cne $env:SOUNDCRAFT_VERSION) { throw "ProductVersion: $($info.ProductVersion)" }
+          $version = (& $exe --version | Out-String).Trim()
+          if ($LASTEXITCODE -ne 0 -or $version -cne "SoundCraft $env:SOUNDCRAFT_VERSION (nightly-v1)") { throw "version query: $version" }
+          $profile = Join-Path $env:RUNNER_TEMP 'nightly-profile'
+          New-Item -ItemType Directory -Force -Path $profile | Out-Null
+          $launcher = (& $exe --launch-profile nightly-v1 --profile-root $profile --version | Out-String).Trim()
+          if ($LASTEXITCODE -ne 0 -or $launcher -cne "SoundCraft $env:SOUNDCRAFT_VERSION (nightly-v1)") { throw "launcher query: $launcher" }
+          # A Nightly build without its profile is refused before any window (exit status 2). The
+          # refusal dialog would need a desktop, so that path is covered by the Rust unit tests.
+          $zip = Join-Path $env:RUNNER_TEMP "nightly-dist/soundcraft-$env:SOUNDCRAFT_VERSION-windows-x86_64-nightly.unsigned.zip"
+          $archive = [IO.Compression.ZipFile]::OpenRead($zip)
+          try {
+            $names = @($archive.Entries | ForEach-Object { $_.FullName })
+            if ('soundcraft.exe' -notin $names) { throw 'no soundcraft.exe in the archive' }
+            foreach ($forbidden in @('soundcraft-cli.exe', 'portable.txt', '.desktop')) {
+              if (@($names | Where-Object { $_ -like "*$forbidden*" }).Count -ne 0) { throw "archive holds $forbidden" }
+            }
+          } finally { $archive.Dispose() }
+      - name: Fixture suites
+        shell: pwsh
+        run: |
+          ./packaging/windows/nightly-package-tests.ps1 -FixtureRoot (Join-Path $env:RUNNER_TEMP 'nightly-fixtures')
+          ./packaging/windows/nightly-signing-tests.ps1 -FixtureRoot (Join-Path $env:RUNNER_TEMP 'nightly-sign-fixtures')
+      - name: Keep the unsigned intermediate
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: soundcraft-nightly-windows-x86_64-unsigned
+          path: ${{ runner.temp }}/nightly-dist/soundcraft-${{ env.SOUNDCRAFT_VERSION }}-windows-x86_64-nightly.unsigned.zip
+          if-no-files-found: error
+          retention-days: 7
+          compression-level: 0
+
+  macos:
+    name: Nightly macOS aarch64 (unsigned)
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (contains(github.event.pull_request.labels.*.name, 'full-ci') &&
+       (github.event.action != 'labeled' || github.event.label.name == 'full-ci'))
+    runs-on: macos-15
+    timeout-minutes: 90
+    env:
+      CARGO_TERM_COLOR: always
+      CARGO_INCREMENTAL: 0
+      RUST_BACKTRACE: 1
+    steps:
+      - name: Harden runner
+        uses: step-security/harden-runner@1d88384fd173af6ecb012dfd0264a306b711241a # v2.22.4
+        with:
+          egress-policy: audit
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - id: rust
+        uses: storytold/craft-common-actions/actions/rust-channel@f5141455aac7b2eb4708aa259d8ffcdf10fde939
+        with:
+          targets: aarch64-apple-darwin
+      - uses: step-security/dtolnay-rust-toolchain@8dd607977d06adf4ed49b190381e74c17a9dd25f # v1.0.0
+        with:
+          toolchain: ${{ steps.rust.outputs.toolchain }}
+          targets: ${{ steps.rust.outputs.targets }}
+          components: ${{ steps.rust.outputs.components }}
+      - name: Prepare a Nightly identity for this commit
+        run: |
+          set -euo pipefail
+          base="$(python3 -c 'import tomllib; print(tomllib.load(open("Cargo.toml", "rb"))["workspace"]["package"]["version"].split("-")[0])')"
+          sha="$(git rev-parse HEAD)"
+          date="$(date -u +%Y-%m-%d)"
+          {
+            echo "SOUNDCRAFT_BUILD_SHA=$sha"
+            echo "SOUNDCRAFT_BUILD_DATE=$date"
+            echo "SOUNDCRAFT_VERSION=$base-nightly.${date//-/}.$GITHUB_RUN_NUMBER.$GITHUB_RUN_ATTEMPT.g${sha:0:12}"
+          } >>"$GITHUB_ENV"
+      - name: Build the unsigned Nightly bundle
+        env:
+          SOUNDCRAFT_BUILD_CHANNEL: nightly-v1
+          CARGO_TARGET_DIR: ${{ runner.temp }}/nightly-targets
+          DIST: ${{ runner.temp }}/nightly-dist
+        run: bash packaging/macos/nightly.sh --arch aarch64
+      - name: Check the archive and the bundle's version
+        run: bash packaging/macos/nightly-verify.sh --expect unsigned --input "$RUNNER_TEMP/nightly-dist/soundcraft-$SOUNDCRAFT_VERSION-macos-aarch64-nightly.zip"
+      - name: Keep the unsigned archive
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: soundcraft-nightly-macos-aarch64-unsigned
+          path: ${{ runner.temp }}/nightly-dist/soundcraft-${{ env.SOUNDCRAFT_VERSION }}-macos-aarch64-nightly.zip
+          if-no-files-found: error
+          retention-days: 7
+          compression-level: 0
