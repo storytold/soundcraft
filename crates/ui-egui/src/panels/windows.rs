@@ -1,7 +1,7 @@
 //! Secondary floating windows (Window menu).
 
-use crate::SoundApp;
 use crate::theme::{Tokens, mono, rgb};
+use crate::{RECORD_OFFSET_LIMIT, SoundApp};
 use egui::{Color32, Sense, vec2};
 use serde_json::{Value, json};
 use soundcraft_model::{AutomationMode, ClipContent, SESSION_EXTENSION};
@@ -794,9 +794,6 @@ pub fn audio_device_command(app: &mut SoundApp, p: &serde_json::Value) -> Result
 
 /// The Playback Engine's warning when the input and output run on different clocks.
 const DIFFERENT_CLOCKS: &str = "Input and output run on different clocks: long takes drift and monitoring may click. On macOS, combine them as an Aggregate Device in Audio MIDI Setup.";
-
-/// The record offset's range in session samples, either way: two seconds at 48 kHz.
-const RECORD_OFFSET_LIMIT: i64 = 96_000;
 
 /// The latency the backend reports for the open output and input, each as (frames at that
 /// device's rate, milliseconds). `None` where nothing is open or nothing was reported yet.

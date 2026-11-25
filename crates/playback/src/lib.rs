@@ -550,6 +550,12 @@ impl Player {
         self.shared.heard.heard_at(sample as f64, rate)
     }
 
+    /// The transport speed the latest output callback rendered at, 1.0 before one ran. It stays
+    /// after a Stop puts the speed back, so a pass's loop rounds are timed at the speed it played.
+    pub fn heard_speed(&self) -> f64 {
+        self.shared.heard.speed()
+    }
+
     /// A copy of the meters accumulated since the last [`Player::take_meters`], leaving them in
     /// place (for inspection; the UI takes them instead).
     pub fn meters(&self) -> MeterSnapshot {

@@ -853,6 +853,10 @@ pub fn run_ui_command(app: &mut SoundApp, id: &str, p: &Value) -> Option<Result<
                         if let Err(error) = crate::docking::validate(&ns.docking).and_then(|()| crate::docking::validate_mix(&ns.mix_docking)) {
                             return Some(Err(error));
                         }
+                        if !(-crate::RECORD_OFFSET_LIMIT..=crate::RECORD_OFFSET_LIMIT).contains(&ns.record_offset) {
+                            let limit = crate::RECORD_OFFSET_LIMIT;
+                            return Some(Err(format!("`record_offset` must be a whole number of samples within ±{limit}")));
+                        }
                         let closed_preferences = app.ui.show_preferences && !ns.show_preferences;
                         crate::docking::cancel_replaced_state(app, &ns);
                         app.ui = ns;

@@ -239,21 +239,24 @@ impl SoundApp {
 
     /// Session samples the take's first sample precedes `start` by: from when the input captured
     /// it to when the output played the sample at `start`, both as the devices report them, less
-    /// the record offset. Without both moments (no device, or nothing reported), or with an
-    /// implausible difference of a second or more, only the record offset applies. In `looped`
+    /// the record offset. Without both moments (no device), without both reported latencies, or
+    /// with an implausible difference of a second or more, only the record offset applies. In `looped`
     /// playback the sample at `start` is heard once a round: the round the take began in counts.
     fn placement_offset(&self, start: Samples, looped: Option<Range>) -> Samples {
         let rate = self.engine.session().sample_rate.as_f64();
         let captured = self.recorder.as_ref().and_then(|r| r.first_capture());
-        let heard = self.player.as_ref().and_then(|p| p.heard_at(start, rate)).map(|heard| {
+        let heard = self.player.as_ref().and_then(|p| p.heard_at(start, rate).map(|heard| (heard, p.heard_speed()))).map(|(heard, speed)| {
+            // A round lasts longer at half speed: the session samples go by at the speed played.
             match (looped.filter(|l| (l.start..l.end).contains(&start)), captured) {
-                (Some(l), Some(captured)) => soundcraft_playback::latency::nearest_round(heard, captured, l.len() as f64 / rate),
+                (Some(l), Some(captured)) => soundcraft_playback::latency::nearest_round(heard, captured, l.len() as f64 / (rate * speed)),
                 _ => heard,
             }
         });
         let output = self.player.as_ref().and_then(|p| p.output_latency());
         let round_trip = output.zip(self.recorder.as_ref().and_then(|r| r.input_latency())).map(|(o, i)| o + i);
-        let measured = match heard.zip(captured) {
+        // Without both latencies the capture moment lacks the input's share, and the punch-out
+        // waits for no round trip (see `punch_tail`): the take is placed without the devices.
+        let measured = match heard.zip(captured).filter(|_| round_trip.is_some()) {
             Some((heard, captured)) => {
                 let offset = soundcraft_playback::latency::placement_offset(heard, captured, rate, round_trip);
                 if offset.unsigned_abs() as f64 >= rate {
@@ -264,7 +267,12 @@ impl SoundApp {
                 }
             }
             None => {
-                log::info!("recording placed without device timing (heard {}, captured {})", heard.is_some(), captured.is_some());
+                log::info!(
+                    "recording placed without device timing (heard {}, captured {}, latencies {})",
+                    heard.is_some(),
+                    captured.is_some(),
+                    round_trip.is_some()
+                );
                 0
             }
         };
@@ -284,7 +292,9 @@ impl SoundApp {
         // reaches the input a round trip later. The take is placed by that round trip, and a
         // negative record offset places it earlier still, so keep taking in until then: the take
         // still covers the whole punch, and the extra input is trimmed off with the punch range.
+        // A MIDI-only pass records no audio take: nothing to wait for.
         if self.punch.is_some()
+            && self.take_plan.as_ref().is_some_and(|p| !p.takes.is_empty())
             && let Some(wait) = punch_tail(
                 self.player.as_ref().and_then(|p| p.output_latency()),
                 self.recorder.as_ref().and_then(|r| r.input_latency()),
