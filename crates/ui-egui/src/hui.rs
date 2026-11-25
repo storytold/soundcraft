@@ -24,7 +24,7 @@ const MIX_GESTURE: &str = "surface:mixer";
 // The Model 12 sends about 50 single steps between the centre and either end.
 const PAN_STEP: f32 = 0.02;
 
-#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct Ports {
     input: String,
     output: String,
@@ -404,6 +404,22 @@ pub(crate) fn document_replaced(app: &mut SoundApp) {
         link.lamps = None;
         // Input received before the replacement belongs to the old document.
         while link.packets.try_recv().is_ok() {}
+    }
+}
+
+/// `ui.set` can replace the surface settings without Apply: drop the link and move the input
+/// reservation so the next poll opens what the settings now name, or nothing.
+pub(crate) fn settings_replaced(app: &mut SoundApp, previous: Option<&Ports>) {
+    if app.ui.hui.as_ref() == previous {
+        return;
+    }
+    app.hui.link = None;
+    app.hui.motion = Motion::default();
+    app.hui.retry_at = None;
+    app.hui.first_track = 0;
+    app.hui.error.clear();
+    if let Some(inputs) = &mut app.midi_inputs {
+        inputs.reserve_for_surface(app.ui.hui.as_ref().map(Ports::input));
     }
 }
 
@@ -1320,6 +1336,21 @@ mod tests {
         assert_eq!(app.hui.first_track, STRIPS);
         let points = &app.engine.session().track(track).unwrap().lane(&AutoParam::Volume).unwrap().points;
         assert!((points.last().unwrap().value + 9.0).abs() < 0.01, "{points:?}");
+    }
+
+    #[test]
+    fn ui_set_reconciles_the_surface_link_and_its_input() {
+        let (mut app, _, _) = test_app();
+        app.midi_inputs = Some(soundcraft_playback::midi::MidiInputs::with_port_names(vec![], vec!["Surface".into(), "Keys".into()]));
+        app.ui.hui.as_mut().unwrap().input = "Surface".into();
+        app.midi_inputs.as_mut().unwrap().reserve_for_surface(Some("Surface"));
+        let listed = |app: &SoundApp| app.midi_inputs.as_ref().unwrap().ports().iter().any(|port| port.name == "Surface");
+        app.run("ui.set", json!({"show_preferences": false})).unwrap();
+        assert!(app.hui.link.is_some(), "an unrelated change keeps the surface connected");
+        assert!(!listed(&app));
+        app.run("ui.set", json!({"hui": null})).unwrap();
+        assert!(app.hui.link.is_none());
+        assert!(listed(&app), "the surface input returns to performance input");
     }
 
     #[test]

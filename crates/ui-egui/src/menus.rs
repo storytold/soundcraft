@@ -866,7 +866,11 @@ pub fn run_ui_command(app: &mut SoundApp, id: &str, p: &Value) -> Option<Result<
                         }
                         let closed_preferences = app.ui.show_preferences && !ns.show_preferences;
                         crate::docking::cancel_replaced_state(app, &ns);
+                        #[cfg(windows)]
+                        let surface = app.ui.hui.clone();
                         app.ui = ns;
+                        #[cfg(windows)]
+                        crate::hui::settings_replaced(app, surface.as_ref());
                         app.ui.undo_levels = app.ui.undo_levels.clamp(1, 64);
                         app.engine.set_history_limit(app.ui.undo_levels);
                         if closed_preferences {
