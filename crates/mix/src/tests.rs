@@ -2325,6 +2325,70 @@ fn an_attack_released_late_by_a_wire_held_backlog_keeps_its_length() {
     assert!(off - on >= 12_000, "a late attack lost {} samples of its length: {events:?}", 12_000 - (off - on));
 }
 
+/// Notes and controllers in the order the strip sends them.
+struct Stream {
+    inner: Box<dyn Plugin>,
+    heard: Arc<std::sync::Mutex<Vec<(usize, [u8; 3])>>>,
+}
+
+impl Plugin for Stream {
+    fn info(&self) -> &'static soundcraft_dsp::PluginInfo {
+        self.inner.info()
+    }
+    fn prepare(&mut self, sr: f32, mb: usize, ch: usize) {
+        self.inner.prepare(sr, mb, ch);
+    }
+    fn reset(&mut self) {}
+    fn set_param(&mut self, id: &str, v: f32) -> bool {
+        self.inner.set_param(id, v)
+    }
+    fn param(&self, id: &str) -> Option<f32> {
+        self.inner.param(id)
+    }
+    fn process(&mut self, io: &mut [Vec<f32>], frames: usize) {
+        self.inner.process(io, frames);
+    }
+    fn note_on(&mut self, offset: usize, note: u8, velocity: u8) {
+        self.heard.lock().unwrap().push((offset, [0x90, note, velocity]));
+    }
+    fn note_off(&mut self, offset: usize, note: u8) {
+        self.heard.lock().unwrap().push((offset, [0x80, note, 0]));
+    }
+    fn midi(&mut self, offset: usize, msg: [u8; 3]) {
+        self.heard.lock().unwrap().push((offset, msg));
+    }
+}
+
+#[test]
+fn an_overdue_backlog_goes_first_at_frame_zero_and_on_time_events_keep_their_offsets() {
+    use soundcraft_midi::{CtrlEvent, Note, Sequence};
+    // One tick is 25 samples. The wire holds the score at 22 976 while the device reaches 24 000.
+    let mut s = Session { sample_rate: soundcraft_time::SampleRate::HZ_48000, ..Session::default() };
+    let t = s.add_track(TrackKind::Instrument, ChannelFormat::Stereo, None);
+    let clip = s.new_clip_id();
+    let tr = s.track_mut(t).unwrap();
+    tr.instrument = Some(Insert::new("clap:test.stream"));
+    let note = |start, pitch| Note { start, length: 960, pitch, channel: 0, velocity: 100, release_velocity: 64 };
+    let mut seq = Sequence::default();
+    // Overdue: a controller at 23 200, then a note at 23 500. On time: notes at 24 000 and 24 250.
+    seq.notes.extend([note(940, 61), note(960, 62), note(970, 63)]);
+    seq.ctrls.push(CtrlEvent { tick: 928, channel: 0, kind: CtrlKind::Cc(7), value: 90 });
+    tr.playlist_mut().unwrap().clips.push(Clip::midi(clip, "m", 0, 96_000, seq));
+    let heard = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let mut eng = MixEngine::new(48_000.0, 512);
+    eng.set_external_instances(true);
+    let plugin = Box::new(Stream { inner: soundcraft_dsp::create("gain").unwrap(), heard: Arc::clone(&heard) });
+    eng.adopt(vec![PreparedInstance { track: t, slot: INSTRUMENT_SLOT, id: "clap:test.stream".into(), ch: 2, plugin }]);
+    let mut out = vec![vec![0.0; 512]; 2];
+    for pos in (0..24_000).step_by(500) {
+        eng.render_with_clock_limit(&s, pos, 500, &mut out, Some(919));
+    }
+    heard.lock().unwrap().clear();
+    eng.render_with_clock_prediction(&s, 24_000, 500, &mut out, 2_000);
+    let heard = heard.lock().unwrap().clone();
+    assert_eq!(heard, [(0, [0xB0, 7, 90]), (0, [0x90, 61, 100]), (0, [0x90, 62, 100]), (250, [0x90, 63, 100])]);
+}
+
 #[test]
 fn a_seek_discards_the_score_range_the_wire_held_back() {
     use soundcraft_midi::{Note, Sequence};

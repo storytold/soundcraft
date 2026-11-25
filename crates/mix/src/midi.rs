@@ -45,13 +45,14 @@ pub(crate) fn schedule_notes(
         return;
     }
     if blk.delivery == super::ClockDelivery::Predicted && blk.score.start < blk.pos && blk.pos < blk.score.end {
-        // Opening the presentation window can release a whole note and its note-off
-        // together. Keep their existing ordered offsets for this strip when the held
-        // interval contains MIDI. Empty backlog leaves new attacks on their samples.
-        let overdue = Block { score: Range { start: blk.score.start, end: blk.pos }, ..blk };
-        if clip_events::<true>(s, t, overdue, inst, held, live, late) {
-            blk.delivery = super::ClockDelivery::Wire;
-        }
+        // MIDI 1.0 (4.2.1) puts timing first and lets a late message move, but drops none and
+        // keeps dependent messages in order. Send the held backlog at frame 0 in score order,
+        // before any on-time event; on-time events keep their device offsets on every strip.
+        // An overdue attack keeps its score duration through its late release.
+        let overdue = Block { score: Range { start: blk.score.start, end: blk.pos }, delivery: super::ClockDelivery::Coalesced, ..blk };
+        clip_events::<true>(s, t, overdue, inst, held, live, late);
+        blk.score.start = blk.pos;
+        blk.note_start = blk.note_start.max(blk.pos);
     }
     if blk.score.start < blk.score.end {
         clip_events::<false>(s, t, blk, inst, held, live, late);
@@ -66,9 +67,9 @@ pub(crate) fn schedule_notes(
     });
 }
 
-// Detection uses the exact same clip boundaries, realtime properties and MIDI offsets
-// as dispatch. The probe returns at the first event without changing voices or controls.
-fn clip_events<const DETECT: bool>(
+// `ORDERED` sends notes and controllers of each clip merged in score order, for a backlog
+// that shares one frame. Otherwise each clip's notes go before its controllers.
+fn clip_events<const ORDERED: bool>(
     s: &Session,
     t: &Track,
     blk: Block,
@@ -76,7 +77,7 @@ fn clip_events<const DETECT: bool>(
     held: &mut Vec<u8>,
     live: &mut LiveNotes,
     late: &mut Vec<LateRelease>,
-) -> bool {
+) {
     let sr = s.sample_rate;
     // MIDI Track Offsets: the track's notes sound `offset` samples later (earlier if negative), so
     // the block looks that far back into the clips.
@@ -114,7 +115,29 @@ fn clip_events<const DETECT: bool>(
             // The block in clip ticks, one tick wider on each side so rounding never drops an event.
             let near = s.tempo.samples_to_ticks(scan_start, sr).saturating_sub(base).saturating_sub(1)
                 ..=s.tempo.samples_to_ticks(end, sr).saturating_sub(base).saturating_add(1);
-            for n0 in &sequence.notes {
+            // Events before tick 0 are what a start trim hid: they don't play.
+            let mut notes = sequence.notes.iter().peekable();
+            let mut ctrls = sequence.ctrls.iter().filter(|c| !boundary && c.tick >= 0).peekable();
+            loop {
+                let note_first = match (notes.peek(), ctrls.peek()) {
+                    (Some(n), Some(c)) => !ORDERED || n.start < c.tick,
+                    (Some(_), None) => true,
+                    (None, Some(_)) => false,
+                    (None, None) => break,
+                };
+                if !note_first {
+                    let Some(c) = ctrls.next() else { break };
+                    let tick = c.tick.saturating_add(delay).max(0);
+                    if !near.contains(&tick) {
+                        continue;
+                    }
+                    let at = s.tempo.tick_to_samples(base.saturating_add(tick), sr);
+                    if at >= pos && at < end && at < clip.end() {
+                        inst.plugin.midi(blk.score_offset(at.saturating_sub(pos)), ctrl_message(c.kind, c.value, dp));
+                    }
+                    continue;
+                }
+                let Some(n0) = notes.next() else { break };
                 let mut n = *n0;
                 n.velocity = (i64::from(n.velocity) + dv).clamp(1, 127) as u8;
                 n.pitch = (i64::from(n.pitch) + dp).clamp(0, 127) as u8;
@@ -134,9 +157,6 @@ fn clip_events<const DETECT: bool>(
                 // Deliver due attacks at frame zero without chasing notes from before the locate.
                 let attack = on >= note_start && on < end && (on == note_start || off >= pos);
                 if attack {
-                    if DETECT {
-                        return true;
-                    }
                     let at = blk.score_offset(on.saturating_sub(pos));
                     let bit = 1u128 << n.pitch;
                     if deferred & bit != 0 {
@@ -163,9 +183,6 @@ fn clip_events<const DETECT: bool>(
                     }
                 }
                 if off < end && (off >= pos || attack) {
-                    if DETECT {
-                        return true;
-                    }
                     if let Some(index) = late.iter().position(|note| note.pitch == n.pitch) {
                         let earliest = late[index].earliest;
                         if earliest >= blk.pos.saturating_add(blk.frames as i64) {
@@ -182,23 +199,6 @@ fn clip_events<const DETECT: bool>(
                     }
                 }
             }
-            if boundary {
-                continue;
-            }
-            // Events before tick 0 are what a start trim hid: they don't play.
-            for c in sequence.ctrls.iter().filter(|c| c.tick >= 0) {
-                let tick = c.tick.saturating_add(delay).max(0);
-                if !near.contains(&tick) {
-                    continue;
-                }
-                let at = s.tempo.tick_to_samples(base.saturating_add(tick), sr);
-                if at >= pos && at < end && at < clip.end() {
-                    if DETECT {
-                        return true;
-                    }
-                    inst.plugin.midi(blk.score_offset(at.saturating_sub(pos)), ctrl_message(c.kind, c.value, dp));
-                }
-            }
         }
     }
     while deferred != 0 {
@@ -206,7 +206,6 @@ fn clip_events<const DETECT: bool>(
         release_clip_note(inst, held, live, pitch, 1.min(blk.frames - 1));
         deferred &= deferred - 1;
     }
-    false
 }
 
 fn release_clip_note(inst: &mut PluginSlot, held: &mut Vec<u8>, live: &mut LiveNotes, pitch: u8, at: usize) {
