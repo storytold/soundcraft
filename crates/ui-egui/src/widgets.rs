@@ -552,6 +552,9 @@ impl<'a> FineSlider<'a> {
         if let (Some(d), Some(x)) = (&mut drag, x) {
             if d.fine != fine || reset {
                 *d = FineDrag { x, value: *value, fine, relative: true, pass };
+            } else if d.relative && x == d.x {
+                // Until the pointer moves, the value stays at the anchor as it was, unrounded.
+                *value = d.value;
             } else if d.relative {
                 let moved = at(along(d.value) + f64::from(x - d.x) / travel * scale);
                 let moved = if show_value || integer { egui::emath::round_to_decimals(moved, decimals) } else { moved };

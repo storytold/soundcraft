@@ -155,6 +155,35 @@ fn a_ctrl_press_on_a_send_options_rail_leaves_the_value_where_it_is() {
     }
 }
 
+/// A Ctrl or Command press and release on the Level or Pan rail of a send's options menu, with
+/// the pointer kept still, leaves a value with more decimal places than the value box shows as it
+/// is.
+#[test]
+fn a_ctrl_press_without_a_move_keeps_an_unrounded_send_value() {
+    let mut h = harness();
+    options_menu(&mut h);
+    let vox = h.state().engine.session().tracks[0].id;
+    let read: [(&str, fn(&Harness<SoundApp>) -> f32); 2] = [("Level", level), ("Pan", pan)];
+    for (label, read) in read {
+        let at = h.get_by_role_and_label(Role::Slider, label).rect().center();
+        for (name, modifiers) in [("Ctrl", Modifiers::CTRL), ("Command", Modifiers::COMMAND)] {
+            h.state_mut().engine.execute("mix.send_level", &json!({"track": vox.0, "slot": 0, "db": -10.123456, "pan": 0.1234564})).unwrap();
+            h.run_steps(2);
+            let start = read(&h);
+            hold(&mut h, modifiers);
+            move_to(&mut h, at);
+            press(&mut h, at, true, modifiers);
+            hold(&mut h, modifiers);
+            press(&mut h, at, false, modifiers);
+            hold(&mut h, Modifiers::NONE);
+            assert_eq!(read(&h), start, "{label}: a {name} press and release without a move changed the value");
+            if h.query_by_role_and_label(Role::CheckBox, "Pre-fader").is_none() {
+                options_menu(&mut h);
+            }
+        }
+    }
+}
+
 fn track_pan(h: &Harness<SoundApp>) -> f32 {
     h.state().engine.session().tracks[0].mixer.pan[0]
 }
