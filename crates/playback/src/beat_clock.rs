@@ -36,6 +36,9 @@ pub(crate) struct Cursor {
 
 impl Cursor {
     fn follow(&mut self, block: Presentation, at: i64, offset: i64, remap: bool, session: &Session, mut send: impl FnMut(&[u8])) {
+        if self.cue_pending(block, at, offset) {
+            return;
+        }
         let previous_pass = self.pass.replace(block.pass);
         let changed = previous_pass != Some(block.pass);
         let (tempo, rate) = (&session.tempo, session.sample_rate);
@@ -76,6 +79,12 @@ impl Cursor {
         }
         let located = changed && (block.playing || stopped_seek);
         self.advance(block.playing, at, (remap || located) && !timely_origin, tempo, rate, send);
+    }
+
+    /// A Clock-follow start can present samples before its musical origin (a positive input
+    /// offset). The new pass is cued at the origin, not before it.
+    fn cue_pending(&self, block: Presentation, at: i64, offset: i64) -> bool {
+        block.playing && self.pass != Some(block.pass) && at < block.origin.saturating_sub(offset)
     }
 
     fn advance(&mut self, playing: bool, at: i64, locate: bool, tempo: &TempoMap, rate: SampleRate, mut send: impl FnMut(&[u8])) {
@@ -240,6 +249,9 @@ impl SyncEncoder for Cursor {
         if !b.playing {
             return None;
         }
+        if self.cue_pending(b, at, 0) {
+            return Some(b.instant_for(b.origin as f64));
+        }
         if self.out_of_range {
             return Some(now + Duration::from_millis(10));
         }
@@ -256,6 +268,37 @@ fn remapped(old: &Session, new: &Session, at: i64) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn a_start_presented_before_its_musical_origin_is_cued_at_the_origin() {
+        let mut song = Session { sample_rate: SampleRate::HZ_48000, ..Session::default() };
+        song.tempo.set_tempo(0, 120.).unwrap();
+        let first = Instant::now();
+        let early = Presentation {
+            generation: 0,
+            sample_rate: song.sample_rate,
+            system_delay_samples: 0,
+            pass: 1,
+            origin: 48_000,
+            playing: true,
+            sample: 45_600.,
+            heard_at: first,
+            samples_per_second: 48_000.,
+            limit: 96_000.,
+            looped: None,
+            end: None,
+            lead: Some(Duration::ZERO),
+        };
+        let origin_at = first + Duration::from_millis(50);
+        let mut cursor = Cursor::default();
+        let mut sent = Vec::new();
+        let wake = cursor.update(early, first, &song, &mut |at, m| sent.push((at, m.to_vec())));
+        assert!(sent.is_empty(), "sent before the origin: {sent:?}");
+        assert_eq!(wake, Some(origin_at));
+        cursor.update(early, origin_at, &song, &mut |at, m| sent.push((at, m.to_vec())));
+        assert_eq!(sent.iter().map(|m| m.1.clone()).collect::<Vec<_>>(), [song_position(8).to_vec(), vec![CONTINUE], vec![CLOCK]]);
+        assert!(sent.iter().all(|m| m.0 >= origin_at - Duration::from_micros(1)), "{sent:?}");
+    }
+
     #[test]
     fn a_prearmed_zero_start_one_pulse_late_does_not_jump_to_the_next_sixteenth() {
         let mut song = Session { sample_rate: SampleRate::HZ_48000, ..Session::default() };
