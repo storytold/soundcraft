@@ -161,6 +161,7 @@ fn recover_sync_settings(fields: &mut serde_json::Map<String, serde_json::Value>
     let mtc_output_port = fields.get("mtc_output_port").and_then(Value::as_str).map(str::to_owned);
     let Some(sync) = fields.get_mut("midi_sync").and_then(Value::as_object_mut) else { return };
     reset_invalid(sync, "enabled", "midi_sync.enabled", Value::is_boolean, resets);
+    reset_invalid(sync, "configured", "midi_sync.configured", Value::is_boolean, resets);
     reset_invalid(sync, "compensation", "midi_sync.compensation", Value::is_object, resets);
     if let Some(compensation) = sync.get_mut("compensation").and_then(Value::as_object_mut) {
         compensation.retain(|key, value| {
@@ -199,19 +200,29 @@ fn recover_sync_settings(fields: &mut serde_json::Map<String, serde_json::Value>
             true
         });
     }
+    // Bindings for retained routes come first, so unused entries cannot crowd out a route's
+    // saved physical identity. Unused bindings keep only the remaining slots.
+    // A zero-offset MTC-only destination has an identity without occupying a calibration slot.
+    let mut routed: std::collections::BTreeSet<String> =
+        sync.get("ports").and_then(Value::as_object).map(|ports| ports.keys().cloned().collect()).unwrap_or_default();
+    routed.extend(mtc_output_port);
     reset_invalid(sync, "port_ids", "midi_sync.port_ids", Value::is_object, resets);
     let binding_limit = sync.get("ports").and_then(Value::as_object).map_or(MAX_SYNC_PORTS, |ports| ports.len().max(MAX_SYNC_PORTS));
     if let Some(ids) = sync.get_mut("port_ids").and_then(Value::as_object_mut) {
-        let mut kept = 0;
+        let valid = |name: &str, value: &Value| valid_port(name) && value.as_str().is_some_and(valid_port);
+        let bound = ids.iter().filter(|(name, value)| routed.contains(*name) && valid(name, value)).count();
+        let mut spare = binding_limit.saturating_sub(bound);
         ids.retain(|name, value| {
-            // A zero-offset MTC-only destination has an identity without occupying a calibration slot.
-            let calibration_slot = mtc_output_port.as_deref() != Some(name.as_str());
-            if !valid_port(name) || (calibration_slot && kept == binding_limit) || !value.as_str().is_some_and(valid_port) {
+            let keep = valid(name, value)
+                && (routed.contains(name) || {
+                    let free = spare > 0;
+                    spare = spare.saturating_sub(1);
+                    free
+                });
+            if !keep {
                 record_reset(resets, &format!("midi_sync.port_ids.{name}"));
-                return false;
             }
-            kept += usize::from(calibration_slot);
-            true
+            keep
         });
     }
 }
@@ -420,6 +431,19 @@ mod config_tests {
         let offset = |name: &str| (sync.ports[name].in_offset_samples, sync.ports[name].out_offset_samples);
         assert_eq!((offset("Stage"), offset("Keys"), offset("Rack")), ((64, -128), (0, -48), (24, -11)));
         assert_eq!(resets.len(), 3);
+    }
+
+    #[test]
+    fn midi_sync_pref_recovery_keeps_a_retained_route_binding_ahead_of_unused_ones() {
+        let unused: serde_json::Map<_, _> = (0..300).map(|i| (format!("A unused {i:03}"), serde_json::json!("spare-id"))).collect();
+        let mut ids = unused;
+        ids.insert("Z".into(), "z-id".into());
+        let mut saved = serde_json::json!({"midi_sync":{"ports":{"Z":{"enabled":true}},"port_ids":ids}});
+        let mut resets = Vec::new();
+        recover_sync_settings(saved.as_object_mut().unwrap(), &mut resets);
+        let kept = saved["midi_sync"]["port_ids"].as_object().unwrap();
+        assert_eq!(kept["Z"], "z-id");
+        assert!(kept.len() <= soundcraft_ui_egui::midi_sync::MAX_SYNC_PORTS);
     }
 
     #[test]

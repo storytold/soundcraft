@@ -377,6 +377,30 @@ fn going_offline_before_ui_observes_roll_stops_chase_and_permits_record() {
 }
 
 #[test]
+fn a_stale_ui_locate_cannot_rewind_a_newer_roll() {
+    let (mut state, tx, _) = callback(session(FrameRate::Fps25), 48000.);
+    let feed = Arc::new(crate::midi::MidiFeed::default());
+    feed.set_mtc_source(Some(0));
+    tx.send(Cmd::Midi(feed.clone())).unwrap();
+    feed.set_clock(0);
+    feed.receive(0, &locate(500, FrameRate::Fps25));
+    state.fill(&mut [0.; 480], 2);
+    let located = state.shared.position.load(Ordering::Acquire);
+    for i in 0..16 {
+        feed.set_clock(100_000 + i * 10000);
+        feed.receive(0, &quarters(600 + i / 8 * 2, FrameRate::Fps25)[(i % 8) as usize]);
+    }
+    state.fill(&mut [0.; 480], 2);
+    assert!(state.shared.playing.load(Ordering::Acquire));
+    let before = state.shared.position.load(Ordering::Acquire);
+    // The UI acts on the locate it observed before the roll began.
+    tx.send(Cmd::Locate(located)).unwrap();
+    state.fill(&mut [0.; 480], 2);
+    assert!(state.shared.playing.load(Ordering::Acquire));
+    assert_eq!(state.shared.position.load(Ordering::Acquire), before + 240);
+}
+
+#[test]
 fn ui_stop_from_an_earlier_lock_cannot_restart_the_new_roll() {
     let (mut state, tx, _) = callback(session(FrameRate::Fps25), 48000.);
     let feed = Arc::new(crate::midi::MidiFeed::default());

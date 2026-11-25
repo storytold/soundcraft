@@ -312,14 +312,18 @@ impl Timeline {
         let Some((index, block)) =
             self.blocks.range(first..).enumerate().rev().find_map(|(i, b)| adjusted(b).filter(|b| b.heard_at <= now).map(|b| (i, b)))
         else {
-            return (None, self.blocks.range(first..).find_map(adjusted).map(|b| b.heard_at));
+            return (None, self.blocks.range(first..).filter_map(adjusted).map(|b| b.heard_at).min());
         };
+        // Each block carries its own output lead, so a later publication can be due first.
+        // Wake for the earliest transition; selection above then takes the latest audible block.
         let future = self
             .blocks
             .range(first + index + 1..)
             .filter_map(adjusted)
-            .find(|b| block.playing || b.playing || block.pass != b.pass || block.sample != b.sample || block.generation != b.generation);
-        (Some(block.current(now)), future.map(|b| b.heard_at))
+            .filter(|b| block.playing || b.playing || block.pass != b.pass || block.sample != b.sample || block.generation != b.generation)
+            .map(|b| b.heard_at)
+            .min();
+        (Some(block.current(now)), future)
     }
 }
 

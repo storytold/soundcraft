@@ -76,7 +76,9 @@ impl SoundApp {
             Some(v) => v.as_bool().ok_or("enabled must be a boolean")?,
         };
         let list = args.get("list_ports").map(|v| v.as_bool().ok_or("list_ports must be a boolean")).transpose()?.unwrap_or(false);
-        if enabled {
+        // A generator suspended by the session rate or by chase keeps its saved settings:
+        // only a request that asks for output checks whether it can run now.
+        if enabled && args.contains_key("enabled") {
             if selected.is_none() {
                 return Err("Choose an MTC output port".into());
             }
@@ -251,6 +253,18 @@ mod tests {
         app.ui.mtc_output_port = Some("Saved output".into());
         app.run("setup.mtc_output", json!({"enabled":false})).unwrap();
         assert_eq!(app.ui.mtc_output_port.as_deref(), Some("Saved output"));
+    }
+
+    #[test]
+    fn a_generator_suspended_by_the_session_rate_still_answers_queries() {
+        let mut app = SoundApp::new(Default::default(), None, crate::Services::default());
+        app.engine.session_mut().frame_rate = FrameRate::Fps25;
+        app.run("setup.mtc_output", json!({"port":"loop","enabled":true,"offset_samples":48})).unwrap();
+        app.engine.session_mut().frame_rate = FrameRate::Fps59_94;
+        let status = app.run("setup.mtc_output", json!({})).unwrap();
+        assert_eq!((status["port"].as_str(), status["enabled"].as_bool(), status["active"].as_bool()), (Some("loop"), Some(true), Some(false)));
+        assert_eq!(app.run("setup.mtc_output", json!({"offset_samples":96})).unwrap()["offset_samples"], 96);
+        assert!(app.run("setup.mtc_output", json!({"enabled":true})).unwrap_err().contains("29.97"));
     }
 
     #[cfg(not(target_arch = "wasm32"))]
