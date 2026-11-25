@@ -1,7 +1,7 @@
 //! The Edit window toolbar.
 
 use crate::theme::{Tokens, bold, mono, regular};
-use crate::widgets::{icon_button, key, key_fill};
+use crate::widgets::{expose_button, expose_menu_button, expose_toggle, icon_action, icon_button, key, key_fill};
 use crate::{SoundApp, icons};
 use egui::{Align2, Color32, CornerRadius, Painter, Rect, Sense, Stroke, StrokeKind, Ui, pos2, vec2};
 use serde_json::json;
@@ -140,16 +140,16 @@ fn zoom_group(app: &mut SoundApp, ui: &mut Ui) {
             ui.spacing_mut().item_spacing = vec2(2.0, 3.0);
             ui.horizontal(|ui| {
                 ui.spacing_mut().item_spacing.x = 2.0;
-                if icon_button(ui, vec2(28.0, 22.0), "minus", false, "Zoom out (Cmd+[)").clicked() {
+                if icon_action(ui, vec2(28.0, 22.0), "minus", "Zoom out (Cmd+[)").clicked() {
                     let _ = app.run("view.zoom_out", json!({}));
                 }
-                if icon_button(ui, vec2(30.0, 22.0), "wave", false, "Waveform zoom in (Cmd+Alt+])").clicked() {
+                if icon_action(ui, vec2(30.0, 22.0), "wave", "Waveform zoom in (Cmd+Alt+])").clicked() {
                     let _ = app.run("view.waveform_zoom", json!({"factor": 2.0}));
                 }
-                if icon_button(ui, vec2(28.0, 22.0), "plus", false, "Zoom in (Cmd+])").clicked() {
+                if icon_action(ui, vec2(28.0, 22.0), "plus", "Zoom in (Cmd+])").clicked() {
                     let _ = app.run("view.zoom_in", json!({}));
                 }
-                if icon_button(ui, vec2(28.0, 22.0), "zoom", false, "Fill window with session (Alt+A)").clicked() {
+                if icon_action(ui, vec2(28.0, 22.0), "zoom", "Fill window with session (Alt+A)").clicked() {
                     let w = ui.ctx().content_rect().width() - 420.0;
                     let _ = app.run("view.zoom_fit", json!({"width_px": w}));
                 }
@@ -165,6 +165,9 @@ fn zoom_group(app: &mut SoundApp, ui: &mut Ui) {
                         Color32::GRAY,
                         crate::localization::text("Zoom preset (click to recall, Cmd-click to store)"),
                     );
+                    // Each preset is named by its number, so the five are told apart; recalling one sets no state.
+                    let r = crate::widgets::as_push_button(r);
+                    expose_button(&r, &format!("{} {i}", crate::localization::text("Zoom Preset")));
                     if r.clicked() {
                         let store = ui.input(|x| x.modifiers.command);
                         let _ = app.run("view.zoom_preset", json!({"preset": i, "store": store}));
@@ -209,6 +212,7 @@ fn tools(app: &mut SoundApp, ui: &mut Ui) {
             let bracket = Rect::from_min_max(pos2(bx0 - 2.0, r.min.y + 1.0), pos2(bx1 + 2.0, r.min.y + 5.0));
             let resp = ui.interact(bracket.expand2(vec2(0.0, 2.0)), ui.scope_id().with("smart"), Sense::click());
             ui.painter().rect_filled(bracket, 1.0, if cur == Tool::Smart { t.accent } else { t.tool_bracket_off });
+            expose_toggle(&resp, crate::localization::text("Smart Tool"), cur == Tool::Smart);
             if resp.on_hover_text(crate::localization::text("Smart Tool (F6+F7 / F7+F8)")).clicked() {
                 let _ = app.run("edit.tool", json!({"tool": "smart"}));
             }
@@ -270,6 +274,7 @@ fn counters(app: &mut SoundApp, ui: &mut Ui) {
     ui.painter().text(pos2(main_r.max.x - 18.0, main_r.center().y), Align2::RIGHT_CENTER, txt, mono(26.0), t.counter_text);
     let resp = ui.interact(main_r, ui.scope_id().with("main_counter"), Sense::click());
     icons::draw(ui.painter(), Rect::from_center_size(pos2(main_r.max.x - 9.0, main_r.center().y), vec2(10.0, 10.0)), "triangle_down", t.text_dim);
+    expose_menu_button(&resp, crate::localization::text("Main Counter"));
     format_menu(app, &resp, main_fmt, "view.main_counter");
     // Start / End / Length.
     let s = app.engine.session();
@@ -291,6 +296,7 @@ fn counters(app: &mut SoundApp, ui: &mut Ui) {
     let sub_r = Rect::from_min_max(pos2(r.min.x + 6.0, r.max.y - 20.0), pos2(r.min.x + 164.0, r.max.y - 2.0));
     let sub_resp = ui.interact(sub_r, ui.scope_id().with("sub_counter"), Sense::click());
     icons::draw(ui.painter(), Rect::from_center_size(pos2(r.min.x + 158.0, y), vec2(8.0, 8.0)), "triangle_down", t.text_dim);
+    expose_menu_button(&sub_resp, crate::localization::text("Sub Counter"));
     format_menu(app, &sub_resp, sub_fmt, "view.sub_counter");
     let st = if app.engine.is_dirty() { "modified" } else { "saved" };
     let dev = app.player.as_ref().map_or("no audio engine", |p| if p.silent { "silent clock" } else { "audio on" });
@@ -326,6 +332,7 @@ fn grid_nudge(app: &mut SoundApp, ui: &mut Ui) {
     ui.painter().rect(r, CornerRadius::same(4), t.counter_bg, Stroke::new(1.0, t.counter_border), StrokeKind::Inside);
     let gl = Rect::from_min_size(pos2(r.min.x + 6.0, r.min.y + 8.0), vec2(48.0, 16.0));
     let resp = ui.interact(gl, ui.scope_id().with("grid_lines"), Sense::click());
+    expose_toggle(&resp, crate::localization::text("Show grid lines"), lines);
     key(ui.painter(), gl, &resp, if lines { t.mode_on } else { t.counter_off });
     ui.painter().text(
         gl.center(),
@@ -344,6 +351,7 @@ fn grid_nudge(app: &mut SoundApp, ui: &mut Ui) {
     }
     ui.painter().text(pos2(gr.max.x - 14.0, gr.center().y), Align2::RIGHT_CENTER, crate::localization::text(&grid_label), mono(11.0), t.counter_text);
     let gresp = ui.interact(gr, ui.scope_id().with("grid_value"), Sense::click());
+    expose_menu_button(&gresp, crate::localization::text("Grid Value"));
     value_menu(app, &gresp, "view.grid", grid, grid_follow, clips_markers, true);
     ui.painter().text(pos2(r.min.x + 10.0, r.min.y + 44.0), Align2::LEFT_CENTER, crate::localization::text("Nudge"), regular(11.0), t.counter_label);
     let nr = Rect::from_min_max(pos2(r.min.x + 60.0, r.min.y + 34.0), pos2(r.max.x - 4.0, r.min.y + 54.0));
@@ -356,6 +364,7 @@ fn grid_nudge(app: &mut SoundApp, ui: &mut Ui) {
         t.counter_text,
     );
     let nresp = ui.interact(nr, ui.scope_id().with("nudge_value"), Sense::click());
+    expose_menu_button(&nresp, crate::localization::text("Nudge Value"));
     value_menu(app, &nresp, "view.nudge", nudge, nudge_follow, false, false);
     for rr in [gr, nr] {
         icons::draw(ui.painter(), Rect::from_center_size(pos2(rr.max.x - 6.0, rr.center().y), vec2(10.0, 10.0)), "triangle_down", t.text_dim);
@@ -594,18 +603,21 @@ fn transport(app: &mut SoundApp, ui: &mut Ui) {
                 let (r, resp) = ui.allocate_exact_size(vec2(38.0, 28.0), Sense::click());
                 key(ui.painter(), r, &resp, key_fill(&resp));
                 icons::draw(ui.painter(), r.shrink(5.0), "stop", if playing { t.text } else { t.accent });
+                expose_button(&resp, crate::localization::text("Stop"));
                 if resp.on_hover_text(crate::localization::text("Stop (Space)")).clicked() {
                     let _ = app.run("transport.stop", json!({}));
                 }
                 let (r, resp) = ui.allocate_exact_size(vec2(38.0, 28.0), Sense::click());
                 key(ui.painter(), r, &resp, if playing { Color32::from_rgb(40, 90, 50) } else { key_fill(&resp) });
                 icons::draw(ui.painter(), r.shrink(5.0), "play", if playing { Color32::from_rgb(120, 255, 140) } else { t.counter_text });
+                expose_toggle(&resp, crate::localization::text("Play"), playing);
                 if resp.on_hover_text(crate::localization::text("Play (Space)")).clicked() {
                     let _ = app.run("transport.play", json!({}));
                 }
                 let (r, resp) = ui.allocate_exact_size(vec2(38.0, 28.0), Sense::click());
                 key(ui.painter(), r, &resp, if recording { Color32::from_rgb(110, 30, 30) } else { key_fill(&resp) });
                 icons::draw(ui.painter(), r.shrink(5.0), "record", t.rec);
+                expose_toggle(&resp, crate::localization::text("Record"), recording);
                 // macOS gives Cmd+Space to Spotlight unless the user frees it, so name F12 first.
                 let resp = resp.on_hover_text(crate::localization::text("Record (F12 or Cmd+Space)"));
                 if let Some(why) = app.record_hint() {
@@ -625,7 +637,7 @@ fn transport(app: &mut SoundApp, ui: &mut Ui) {
                     ("ffwd", "transport.fast_forward", "Fast Forward"),
                     ("end", "transport.go_to_end", "Go to End (End)"),
                 ] {
-                    if icon_button(ui, vec2(38.0, 22.0), icon, false, tip).clicked() {
+                    if icon_action(ui, vec2(38.0, 22.0), icon, tip).clicked() {
                         let _ = app.run(cmd, json!({}));
                     }
                 }
@@ -655,6 +667,7 @@ fn tempo_meter(app: &mut SoundApp, ui: &mut Ui) {
         bold(10.0),
         if countoff { t.mode_on_text } else { t.mode_off_text },
     );
+    expose_toggle(&resp, crate::localization::text("Count Off"), countoff);
     if resp.clicked() {
         let _ = app.run("options.countoff", json!({}));
     }
@@ -672,7 +685,9 @@ fn tempo_meter(app: &mut SoundApp, ui: &mut Ui) {
     tempo_value(app, ui, r.max.x - 8.0, r.min.y + 48.0, bpm);
     let clk = Rect::from_min_size(pos2(r.min.x + 6.0, r.min.y + 40.0), vec2(18.0, 18.0));
     icons::draw(ui.painter(), clk, "click", if click { t.counter_text } else { t.text_dim });
-    if ui.interact(clk, ui.scope_id().with("click"), Sense::click()).on_hover_text(crate::localization::text("Click")).clicked() {
+    let clk_resp = ui.interact(clk, ui.scope_id().with("click"), Sense::click());
+    expose_toggle(&clk_resp, crate::localization::text("Click"), click);
+    if clk_resp.on_hover_text(crate::localization::text("Click")).clicked() {
         let _ = app.run("options.click", json!({}));
     }
 }
