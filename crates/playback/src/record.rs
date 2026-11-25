@@ -145,6 +145,9 @@ pub struct Recorder {
     pub device_name: String,
     pub sample_rate: u32,
     pub channels: usize,
+    /// The names the device gives these channels, read when it opened (see
+    /// [`crate::Player::input_channel_names`]).
+    pub channel_names: Vec<String>,
     /// The take writer, and what each track's take holds so far.
     writer: Option<(std::thread::JoinHandle<Takes>, Vec<(TrackId, Arc<Mutex<LiveTake>>)>)>,
     /// The callback count last seen, and since when.
@@ -289,7 +292,18 @@ impl Recorder {
         };
         stream.play().map_err(|e| e.to_string())?;
         let seen = (0, Instant::now());
-        Ok(Recorder { monitor, shared, _stream: Some(stream), device_name: name, sample_rate: config.sample_rate, channels, writer: None, seen })
+        let channel_names = crate::devices::channel_names(&device, true, channels);
+        Ok(Recorder {
+            monitor,
+            shared,
+            _stream: Some(stream),
+            device_name: name,
+            sample_rate: config.sample_rate,
+            channels,
+            channel_names,
+            writer: None,
+            seen,
+        })
     }
 
     #[cfg(target_os = "freebsd")]
@@ -595,6 +609,7 @@ mod tests {
             device_name: "Mic In".into(),
             sample_rate: 48_000,
             channels: 1,
+            channel_names: Vec::new(),
             writer: None,
             seen: (0, Instant::now()),
         }

@@ -95,8 +95,7 @@ pub(crate) fn route_popup(app: &mut SoundApp, resp: &egui::Response, id: TrackId
         let (inputs, names) = if input {
             let cached = was_open.then(|| ui.data(|data| data.get_temp(width_key))).flatten();
             cached.unwrap_or_else(|| {
-                let names = app.player.as_ref().map(|player| player.input_channel_names(&app.ui.audio)).unwrap_or_default();
-                let found = (app.available_input_channels(), names);
+                let found = (app.available_input_channels(), app.available_input_channel_names());
                 ui.data_mut(|data| data.insert_temp(width_key, found.clone()));
                 found
             })

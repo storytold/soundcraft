@@ -749,7 +749,7 @@ pub fn audio_device_command(app: &mut SoundApp, p: &serde_json::Value) -> Result
     let device = app.player.as_ref().map(|pl| {
         json!({
             "name": pl.device_name, "sample_rate": pl.device_rate, "channels": pl.device_channels, "buffer_size": pl.device_buffer, "silent": pl.silent,
-            "output_channel_names": pl.device_channel_names, "input_channel_names": pl.input_channel_names(&app.ui.audio),
+            "output_channel_names": pl.device_channel_names, "input_channel_names": app.available_input_channel_names(),
         })
     });
     let mut out = json!({"config": app.ui.audio, "device": device});
