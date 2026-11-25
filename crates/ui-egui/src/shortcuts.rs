@@ -73,26 +73,28 @@ pub fn handle(app: &mut SoundApp, ctx: &egui::Context) {
     // an event's `repeat` flag from the physical key state, which says nothing about whether that
     // particular event was injected.
     let scripted = app.scripted_key_press_indices();
-    let events: Vec<(Key, Modifiers, bool)> = ctx.input(|i| {
+    let events: Vec<(Key, Option<Key>, Modifiers, bool)> = ctx.input(|i| {
         i.events
             .iter()
             .enumerate()
             .filter_map(|(index, e)| match e {
-                egui::Event::Key { key, pressed: true, repeat, modifiers, .. } => Some((*key, *modifiers, *repeat && !scripted.contains(&index))),
+                egui::Event::Key { key, physical_key, pressed: true, repeat, modifiers, .. } => {
+                    Some((*key, *physical_key, *modifiers, *repeat && !scripted.contains(&index)))
+                }
                 _ => None,
             })
             .collect()
     });
     // Cmd and Ctrl are separate keys only on macOS (asked at runtime so the web build in a Mac browser agrees).
     let mac = ctx.os() == egui::os::OperatingSystem::Mac;
-    for (key, mods, repeat) in events {
+    for (key, physical, mods, repeat) in events {
         if repeat {
             if let Some((id, params)) = repeating_command(key, mods, mac) {
                 let _ = app.run(id, params);
             }
             continue;
         }
-        if fixed(app, key, mods, mac) {
+        if fixed(app, key, physical, mods, mac) {
             continue;
         }
         if let Some(id) = command_for(key, mods, mac) {
@@ -125,8 +127,9 @@ fn command_for(key: Key, mods: Modifiers, mac: bool) -> Option<&'static str> {
         .map(|c| c.id)
 }
 
-/// Keys with context-dependent meaning. Returns true when handled.
-fn fixed(app: &mut SoundApp, key: Key, m: Modifiers, mac: bool) -> bool {
+/// Keys with context-dependent meaning. Returns true when handled. `physical` is the
+/// [`Event::Key::physical_key`], which keeps the numeric keypad distinct from the main row.
+fn fixed(app: &mut SoundApp, key: Key, physical: Option<Key>, m: Modifiers, mac: bool) -> bool {
     let plain = !m.command && !m.alt && !m.ctrl && !m.shift;
     match key {
         Key::Space if !m.command && !m.alt => {
@@ -146,7 +149,15 @@ fn fixed(app: &mut SoundApp, key: Key, m: Modifiers, mac: bool) -> bool {
             let _ = app.run("window.toggle_mix_edit", json!({}));
             true
         }
+        // Pro Tools: the main Return key returns to the session start while the numeric
+        // keypad's Enter creates a Memory Location. A scripted event without a physical
+        // key reads as the main Return.
         Key::Enter if plain => {
+            let id = if physical == Some(Key::NumpadEnter) { "markers.add" } else { "transport.rtz" };
+            let _ = app.run(id, json!({}));
+            true
+        }
+        Key::NumpadEnter if plain => {
             let _ = app.run("markers.add", json!({}));
             true
         }
@@ -611,6 +622,44 @@ mod tests {
             assert!(!super::fixed_more(&mut app, key, Modifiers::NONE, false));
             assert_eq!(app.engine.session().edit.zoom.scroll, 0);
         }
+    }
+
+    #[test]
+    fn main_enter_returns_to_zero_and_numpad_enter_marks() {
+        for mac in [false, true] {
+            // The main keyboard's Return runs `transport.rtz`, not `markers.add`.
+            let mut app = app_with_selection();
+            let markers = app.engine.session().markers.len();
+            app.run("transport.locate", serde_json::json!({"at": 5000})).unwrap();
+            assert!(super::fixed(&mut app, Key::Enter, Some(Key::Enter), Modifiers::NONE, mac));
+            assert_eq!(app.engine.session().edit.playhead, 0, "main Enter returns to zero");
+            assert_eq!(app.engine.session().markers.len(), markers, "main Enter adds no marker");
+
+            // The numpad's Enter creates the marker Pro Tools' numeric keypad does.
+            let mut app = app_with_selection();
+            app.run("transport.locate", serde_json::json!({"at": 5000})).unwrap();
+            assert!(super::fixed(&mut app, Key::Enter, Some(Key::NumpadEnter), Modifiers::NONE, mac));
+            assert_eq!(app.engine.session().markers.len(), markers + 1, "numpad Enter adds a marker");
+            assert_eq!(app.engine.session().edit.playhead, 5000, "numpad Enter keeps the playhead");
+
+            // A scripted or web event may carry the numpad key logically.
+            let mut app = app_with_selection();
+            assert!(super::fixed(&mut app, Key::NumpadEnter, Some(Key::NumpadEnter), Modifiers::NONE, mac));
+            assert_eq!(app.engine.session().markers.len(), markers + 1);
+
+            // An event with no physical key reads as the main Return.
+            let mut app = app_with_selection();
+            app.run("transport.locate", serde_json::json!({"at": 5000})).unwrap();
+            assert!(super::fixed(&mut app, Key::Enter, None, Modifiers::NONE, mac));
+            assert_eq!(app.engine.session().edit.playhead, 0);
+        }
+    }
+
+    #[test]
+    fn numpad_enter_parses_as_the_marker_shortcut() {
+        assert_eq!(parse("NumpadEnter"), Some((Modifiers::NONE, Key::NumpadEnter)));
+        let markers = soundcraft_engine::command_specs().iter().find(|c| c.id == "markers.add").and_then(|c| c.shortcut.and_then(parse));
+        assert_eq!(markers, Some((Modifiers::NONE, Key::NumpadEnter)));
     }
 
     #[test]

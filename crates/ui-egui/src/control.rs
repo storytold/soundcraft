@@ -8,7 +8,7 @@
 //! - `ui.menu.list`, `ui.menu.invoke {path: "Track > New..." | id}` (menu-style: may open dialogs)
 //! - `ui.click {x,y,button?,count?,mods?}`, `ui.move {x,y}`, `ui.drag {x,y,to_x,to_y,steps?}`
 //! - `ui.scroll {x,y,dx?,dy?,unit?,steps?,mods?}` (trackpad swipe or wheel), `ui.zoom {x,y,factor,steps?}` (pinch)
-//! - `ui.key {key, cmd?, shift?, alt?, ctrl?}`, `ui.text {text}`
+//! - `ui.key {key, physical?, cmd?, shift?, alt?, ctrl?}`, `ui.text {text}`
 //! - `ui.screenshot {path?}` (PNG; base64 when no path), `ui.set {...UiState fields}`
 //! - `app.quit`
 //!
@@ -544,10 +544,17 @@ fn handle(app: &mut SoundApp, ctx: &egui::Context, req: &ControlRequest) -> Opti
         "ui.key" => {
             let name = p.get("key").and_then(Value::as_str).unwrap_or("");
             let Some(key) = key_from(name) else { return Some(err(format!("unknown key `{name}`"))) };
+            let physical = match p.get("physical") {
+                Some(pn) => match pn.as_str().and_then(key_from) {
+                    Some(pk) => Some(pk),
+                    None => return Some(err(format!("unknown physical key `{pn}`"))),
+                },
+                None => None,
+            };
             let m = mods(p);
             let events = vec![
-                egui::Event::Key { key, physical_key: None, pressed: true, repeat: false, modifiers: m },
-                egui::Event::Key { key, physical_key: None, pressed: false, repeat: false, modifiers: m },
+                egui::Event::Key { key, physical_key: physical, pressed: true, repeat: false, modifiers: m },
+                egui::Event::Key { key, physical_key: physical, pressed: false, repeat: false, modifiers: m },
             ];
             return queue_reply(app, req, events, json!({}));
         }
