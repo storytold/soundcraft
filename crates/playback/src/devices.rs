@@ -186,8 +186,9 @@ pub(crate) fn buffer_size(want: Option<u32>, supported: &cpal::SupportedBufferSi
     }
 }
 
-/// Buffer sizes Core Audio devices ran at before SoundCraft first set one, by device id.
-static DEFAULT_BUFFERS: std::sync::Mutex<Vec<(String, u32)>> = std::sync::Mutex::new(Vec::new());
+/// Buffer sizes Core Audio devices ran at before SoundCraft first set one, by device id; `None`
+/// when that size could not be read before the first fixed size.
+static DEFAULT_BUFFERS: std::sync::Mutex<Vec<(String, Option<u32>)>> = std::sync::Mutex::new(Vec::new());
 
 /// The device's own default buffer when SoundCraft has to ask for it by size, so that choosing
 /// the default after a fixed size goes back to it; `None` when cpal's `BufferSize::Default` is
@@ -219,15 +220,16 @@ fn keeps_buffer_size(device: &cpal::Device) -> Option<String> {
 }
 
 /// The default buffer remembered for `key`. Before a fixed size is first set, `probe` reads the
-/// size the device runs at, and that is remembered.
-fn remember_default(known: &mut Vec<(String, u32)>, key: &str, want: cpal::BufferSize, probe: impl FnOnce() -> Option<u32>) -> Option<u32> {
+/// size the device runs at, and that is remembered. A probe that cannot read it is not repeated:
+/// the fixed size is set on the device anyway, so a later probe would read that size instead.
+fn remember_default(known: &mut Vec<(String, Option<u32>)>, key: &str, want: cpal::BufferSize, probe: impl FnOnce() -> Option<u32>) -> Option<u32> {
     if let Some((_, n)) = known.iter().find(|(k, _)| k == key) {
-        return Some(*n);
+        return *n;
     }
     let cpal::BufferSize::Fixed(_) = want else { return None };
-    let n = probe()?;
+    let n = probe();
     known.push((key.to_string(), n));
-    Some(n)
+    n
 }
 
 /// The buffer sizes to open a stream with, in order: the chosen fixed size, then the device
@@ -363,9 +365,17 @@ mod tests {
         assert_eq!(remember_default(&mut known, "a", cpal::BufferSize::Default, || Some(64)), Some(512));
         // Another device has its own.
         assert_eq!(remember_default(&mut known, "b", fixed, || Some(256)), Some(256));
-        // A probe that cannot read it remembers nothing.
+        // A probe that cannot read it is not repeated after the fixed size was set: a later probe
+        // would read that fixed size and restore it as the default.
         assert_eq!(remember_default(&mut known, "c", fixed, || None), None);
-        assert_eq!(remember_default(&mut known, "c", fixed, || Some(1024)), Some(1024));
+        let mut probes = 0;
+        let mut later = || {
+            probes += 1;
+            Some(64)
+        };
+        assert_eq!(remember_default(&mut known, "c", cpal::BufferSize::Fixed(128), &mut later), None);
+        assert_eq!(remember_default(&mut known, "c", cpal::BufferSize::Default, &mut later), None);
+        assert_eq!(probes, 0);
     }
 
     #[test]
