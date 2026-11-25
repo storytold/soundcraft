@@ -42,7 +42,7 @@ impl SoundApp {
         let Some(player) = &self.player else { return };
         match player.open_input(&self.ui.audio) {
             Ok(r) => {
-                player.set_input(std::sync::Arc::clone(&r.monitor));
+                player.set_recorder_input(&r);
                 self.recorder = Some(r);
             }
             Err(e) => {

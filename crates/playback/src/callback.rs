@@ -200,7 +200,10 @@ impl AudioState {
         let mut changed = false;
         while let Ok(c) = self.rx.try_recv() {
             match c {
-                Cmd::Input(r) => self.input = Some(r),
+                Cmd::Input(r, direct) => {
+                    self.input = Some(r);
+                    self.mix.direct_monitor_available = direct;
+                }
                 Cmd::Midi(f) => {
                     self.mix.midi_ports = Some(Arc::clone(f.ports()));
                     self.midi = Some(f);
@@ -240,6 +243,7 @@ impl AudioState {
                     changed = true;
                     if (s.sample_rate.as_f64() - self.session.sample_rate.as_f64()).abs() > 0.5 {
                         let mut old = std::mem::replace(&mut self.mix, new_engine(s.sample_rate.as_f64() as f32));
+                        self.mix.direct_monitor_available = old.direct_monitor_available;
                         let _ = self.garbage.send(old.drain_plugins());
                         self.mix.midi_ports = self.midi.as_ref().map(|f| Arc::clone(f.ports()));
                     }

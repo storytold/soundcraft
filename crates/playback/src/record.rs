@@ -163,6 +163,8 @@ pub struct Recorder {
     writer: Option<(std::thread::JoinHandle<Takes>, Vec<(TrackId, Arc<Mutex<LiveTake>>)>)>,
     /// The callback count last seen, and since when.
     seen: (u64, Instant),
+    /// Capture runs on the open ASIO output device, at its rate and buffer.
+    shares_output: bool,
 }
 
 /// The input stream: device samples are converted to f32 in a scratch buffer allocated here (so
@@ -341,7 +343,18 @@ impl Recorder {
         };
         let stream = start_capture(config, shared_output.is_some(), build, StreamTrait::play)?;
         let seen = (0, Instant::now());
-        Ok(Recorder { monitor, shared, _stream: Some(stream), device_name: name, sample_rate: config.sample_rate, channels, writer: None, seen })
+        let shares_output = shared_output.is_some();
+        Ok(Recorder {
+            monitor,
+            shared,
+            _stream: Some(stream),
+            device_name: name,
+            sample_rate: config.sample_rate,
+            channels,
+            writer: None,
+            seen,
+            shares_output,
+        })
     }
 
     #[cfg(target_os = "freebsd")]
@@ -413,6 +426,11 @@ impl Recorder {
         let slow =
             (lost > 0).then(|| format!("{} ms of input lost: the disk was too slow", lost.saturating_mul(1000) / self.sample_rate.max(1) as usize));
         (takes, problem.or(slow))
+    }
+
+    /// Whether capture runs on the open ASIO output device, so the interface can monitor it.
+    pub fn shares_asio_output(&self) -> bool {
+        self.shares_output
     }
 }
 
@@ -698,6 +716,7 @@ mod tests {
             channels: 1,
             writer: None,
             seen: (0, Instant::now()),
+            shares_output: false,
         }
     }
 

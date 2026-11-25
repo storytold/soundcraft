@@ -713,7 +713,7 @@ fn armed_tracks_are_heard_and_metered_after_playback_stops() {
     let (tx, rx) = channel();
     let mut st = AudioState::new(rx, Arc::clone(&shared), Arc::new(s), 48_000.0, channel().0);
     let ring = record::InputRing::new(1, 48_000);
-    tx.send(Cmd::Input(Arc::clone(&ring))).unwrap();
+    tx.send(Cmd::Input(Arc::clone(&ring), false)).unwrap();
     tx.send(Cmd::Play { from: 0, end: Some(1000), looped: None }).unwrap();
     let mut out = vec![0.0f32; 4096];
     st.fill(&mut out, 2);
