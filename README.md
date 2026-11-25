@@ -356,6 +356,24 @@ RISC-V (riscv64): `soundcraft-<ver>-linux-riscv64.tar.gz`, a tarball only (glibc
 |---|---|---|
 | Static site | `soundcraft-web-<ver>.zip` | Runs in a modern browser; host it on any static server |
 
+### Nightly (ArtCraft Launcher only)
+
+A separate build channel, `nightly-v1`, ships untested previews of main. It is a different app
+with a different identity, installed and updated by ArtCraft Launcher:
+
+| | |
+|---|---|
+| Package, macOS bundle and Linux identity | `ai.storyteller.soundcraft.nightly` |
+| Window app id and Windows taskbar id | `ai.storyteller.soundcraft.nightly-v1` |
+| Data (settings, autosaves, presets, logs) | the Launcher's `profiles/soundcraft` folder, never the stable one |
+| Launch | `soundcraft --launch-profile nightly-v1 --profile-root <dir> -- <files>` |
+| Version | `soundcraft --version` → `SoundCraft <x.y.z>-nightly.<date>.<run>.<attempt>.g<sha12> (nightly-v1)` |
+
+It carries no updater, control server or file associations, and it refuses to start without its
+profile. Build artifacts are `soundcraft-<ver>-{windows-x86_64-nightly.zip,linux-x86_64-nightly.tar.gz,macos-aarch64-nightly.zip}`,
+made by `packaging/windows/nightly.ps1`, `packaging/linux/nightly.sh` and `packaging/macos/nightly.sh`;
+see `docs/nightly-release-preparation.md`. Nothing is enabled yet.
+
 ## The Crafting Apps
 
 SoundCraft is one of the **Crafting Apps**: free, open-source creative tools from the
