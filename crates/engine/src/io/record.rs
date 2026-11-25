@@ -265,6 +265,27 @@ mod record_tests {
     }
 
     #[test]
+    fn named_input_remaps_the_complete_recording_range_and_never_wraps() {
+        let mut e = Engine::default();
+        let dir = Path::new("unused");
+        let track = armed(&mut e, "Keys", "stereo", "In 1-2");
+        e.execute("setup.io", &json!({"action": "create_input", "name": "Keys pair", "format": "stereo", "first_channel": 30})).unwrap();
+        assert!(e.is_dirty());
+        e.execute("track.input", &json!({"track": track.0, "input": "keys pair"})).unwrap();
+        assert_eq!(plan_takes(&e, dir, 32).unwrap()[0].1, [30, 31]);
+        assert!(plan_takes(&e, dir, 31).is_err());
+        e.execute("setup.io", &json!({"action": "rename_input", "name": "Keys pair", "new_name": "Piano"})).unwrap();
+        e.execute("setup.io", &json!({"action": "set_input", "name": "Piano", "first_channel": 62})).unwrap();
+        assert_eq!(e.session().track(track).unwrap().mixer.input, soundcraft_model::Route::Input("Piano".into()));
+        assert_eq!(plan_takes(&e, dir, 64).unwrap()[0].1, [62, 63]);
+        assert!(plan_takes(&e, dir, 32).is_err());
+        e.execute("setup.io", &json!({"action": "delete_input", "name": "Piano"})).unwrap();
+        assert!(plan_takes(&e, dir, 64).is_err());
+        e.execute("edit.undo", &json!({})).unwrap();
+        assert_eq!(plan_takes(&e, dir, 64).unwrap()[0].1, [62, 63]);
+    }
+
+    #[test]
     fn armed_tracks_get_new_take_files_used_in_place() {
         let dir = std::env::temp_dir().join(format!("soundcraft-takes-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
@@ -272,9 +293,9 @@ mod record_tests {
         let vox = armed(&mut e, "Vox", "mono", "In 2");
         let gtr = armed(&mut e, "Gtr", "stereo", "In 3-4");
         write_take(&dir.join("Audio Files/Vox_01.wav"), 10);
-        let plan = plan_takes(&e, &dir, 4);
+        let plan = plan_takes(&e, &dir, 4).unwrap();
         assert_eq!(plan, vec![(vox, vec![1], dir.join("Audio Files/Vox_02.wav")), (gtr, vec![2, 3], dir.join("Audio Files/Gtr_01.wav"))]);
-        assert_eq!(plan_takes(&e, &dir, 2)[1].1, vec![0, 1]);
+        assert_eq!(plan_takes(&e, &dir, 2).unwrap()[1].1, vec![0, 1]);
 
         let session = dir.join("Song.scraft").to_string_lossy().into_owned();
         e.execute("session.save_as", &json!({"path": session})).unwrap();
