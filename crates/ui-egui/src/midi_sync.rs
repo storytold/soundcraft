@@ -33,6 +33,10 @@ pub struct MidiSync {
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     pub port_ids: BTreeMap<String, String>,
     pub compensation: Compensation,
+    /// Routing was configured here or imported from a project. An empty route list then
+    /// means the user cleared it, so an old project must not enable Beat Clock again.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub configured: bool,
 }
 
 pub const MAX_SYNC_PORTS: usize = 256;
@@ -147,6 +151,7 @@ impl SoundApp {
         }) {
             return Err("MIDI port calibration must be within 250 ms at the session sample rate".into());
         }
+        next.configured |= !args.is_empty();
         self.ui.midi_sync = next;
         let config = &self.ui.midi_sync;
         let first = config.ports.iter().find(|(_, p)| p.enabled);
@@ -163,11 +168,12 @@ impl SoundApp {
             && !self.ui.midi_sync.ports.contains_key(name)
             && self.ui.midi_sync.ports.len() < MAX_SYNC_PORTS
         {
-            let first = self.ui.midi_sync.ports.is_empty();
+            let first = self.ui.midi_sync.ports.is_empty() && !self.ui.midi_sync.configured;
             self.ui.midi_sync.ports.insert(name.into(), MidiSyncPort { enabled: first && legacy.enabled, offset_samples: legacy.offset });
             if first {
                 self.ui.midi_sync.enabled = legacy.enabled;
             }
+            self.ui.midi_sync.configured = true;
         }
     }
 
@@ -189,11 +195,17 @@ impl SoundApp {
         self.last_midi_sync_error = error;
     }
 
-    pub(crate) fn service_midi_sync(&mut self) {
-        let error = self.player.as_ref().and_then(|player| player.midi_clock_error());
-        if error != self.last_midi_sync_error {
+    fn show_midi_sync_error(&mut self, error: Option<String>) {
+        // Another message can replace the status line while the same port error persists.
+        let hidden = error.as_ref().is_some_and(|message| !self.ui.status.contains(&crate::localization::error_text(message)));
+        if error != self.last_midi_sync_error || hidden {
             self.update_midi_sync_error(error);
         }
+    }
+
+    pub(crate) fn service_midi_sync(&mut self) {
+        let error = self.player.as_ref().and_then(|player| player.midi_clock_error());
+        self.show_midi_sync_error(error);
         let Some(player) = &self.player else { return };
         if let Some(ids) = player.take_opened_sync_output_ids() {
             self.ui.midi_sync.bind_configured(ids, self.ui.mtc_output_port.as_deref());
@@ -305,6 +317,20 @@ mod tests {
     }
 
     #[test]
+    fn a_persistent_midi_sync_error_returns_after_another_status_message() {
+        let mut app = SoundApp::new(soundcraft_engine::Engine::default(), None, crate::Services::default());
+        let error = "MIDI output DIN unavailable";
+        app.show_midi_sync_error(Some(error.into()));
+        app.ui.status = "Recording stopped".into();
+        app.show_midi_sync_error(Some(error.into()));
+        assert!(app.ui.status.starts_with("Recording stopped"), "{}", app.ui.status);
+        assert!(app.ui.status.contains(error), "{}", app.ui.status);
+        let shown = app.ui.status.clone();
+        app.show_midi_sync_error(Some(error.into()));
+        assert_eq!(app.ui.status, shown);
+    }
+
+    #[test]
     fn unused_destinations_release_their_slots_and_calibration_can_be_removed() {
         let mut app = SoundApp::new(soundcraft_engine::Engine::default(), None, crate::Services::default());
         let mut ports = serde_json::Map::new();
@@ -369,5 +395,22 @@ mod tests {
             assert!(app.ui.midi_sync.enabled);
             assert_eq!(app.ui.midi_sync.ports["DIN"].offset_samples, -99);
         }
+    }
+
+    #[test]
+    fn an_old_project_does_not_enable_routes_the_user_cleared() {
+        let mut app = SoundApp::new(Default::default(), None, crate::Services::default());
+        app.sync_command("setup.midi_beat_clock", &json!({"enabled":true,"destination":"DIN"})).unwrap();
+        app.sync_command("setup.midi_beat_clock", &json!({"enabled":false,"ports":{"DIN":null}})).unwrap();
+        assert!(app.ui.midi_sync.ports.is_empty());
+        let saved: MidiSync = serde_json::from_str(&serde_json::to_string(&app.ui.midi_sync).unwrap()).unwrap();
+        app.ui.midi_sync = saved;
+        let edit = &mut app.engine.session_mut().edit;
+        edit.flags.insert("midi.beat_clock.destination=DIN".into());
+        edit.set_flag("midi.beat_clock", true);
+        app.document_replaced();
+        app.migrate_midi_sync();
+        assert!(!app.ui.midi_sync.enabled);
+        assert!(app.ui.midi_sync.ports.values().all(|port| !port.enabled));
     }
 }
