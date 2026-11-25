@@ -4,7 +4,7 @@
 use std::cell::{Cell, RefCell};
 
 use egui::accesskit::Role;
-use egui::{Event, Id, Key, Modifiers, PointerButton, Pos2, RawInput, Rect, vec2};
+use egui::{Event, Id, Key, Modifiers, PointerButton, Pos2, RawInput, Rect, ViewportId, ViewportInfo, vec2};
 use egui_kittest::{Harness, kittest::Queryable};
 use serde_json::json;
 use soundcraft_model::{ClipId, Tool};
@@ -215,16 +215,23 @@ thread_local! {
     static MIX_FOCUS: Cell<Option<Id>> = const { Cell::new(None) };
 }
 
+/// The open windows, as eframe lists them in the input of each: the runtime drops what it keeps of a window that the
+/// input leaves out.
+fn windows() -> egui::ViewportIdMap<ViewportInfo> {
+    let mix = ViewportInfo { parent: Some(ViewportId::ROOT), ..Default::default() };
+    [(ViewportId::ROOT, ViewportInfo::default()), (ViewportId::from_hash_of("soundcraft.mix"), mix)].into_iter().collect()
+}
+
 /// Draws the Mix window as a native one: its pass runs inside the main window's, as eframe's does.
 fn render_mix(ctx: &egui::Context, viewport: egui::ImmediateViewport<'_>) {
     let mut show = viewport.viewport_ui_cb;
-    let mut input = RawInput {
+    let input = RawInput {
         viewport_id: viewport.ids.this,
+        viewports: windows(),
         screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(1100.0, 720.0))),
         events: MIX_EVENTS.take(),
         ..Default::default()
     };
-    input.viewports.insert(viewport.ids.this, egui::ViewportInfo { parent: Some(viewport.ids.parent), ..Default::default() });
     let mut output = ctx.run_ui(input, |ui| {
         show(ui);
         MIX_FOCUS.set(ui.ctx().memory(|m| m.focused()));
@@ -237,7 +244,7 @@ fn mix_frames(ctx: &egui::Context, app: &mut SoundApp, events: Vec<Event>) -> Op
     MIX_EVENTS.set(events);
     for _ in 0..4 {
         let screen_rect = Some(Rect::from_min_size(Pos2::ZERO, vec2(1600.0, 1000.0)));
-        ctx.run_ui(RawInput { screen_rect, ..Default::default() }, |ui| {
+        ctx.run_ui(RawInput { viewports: windows(), screen_rect, ..Default::default() }, |ui| {
             app.logic(ui.ctx());
             app.ui(ui);
         })
@@ -263,10 +270,10 @@ fn tab_and_shift_tab_leave_the_session_view_of_a_separate_mix_window() {
         [Event::ModifiersChanged(modifiers)].into_iter().chain(key).chain([Event::ModifiersChanged(Modifiers::NONE)]).collect()
     };
     let after = mix_frames(&ctx, &mut app, tab(Modifiers::NONE));
-    assert!(after.is_some() && after != view, "Tab goes on to the strips");
+    assert!(after.is_some() && after != view, "Tab goes on to the strips: {after:?}, the view is {view:?}");
     assert_eq!(mix_frames(&ctx, &mut app, tab(Modifiers::SHIFT)), view, "Shift+Tab walks back");
     let before = mix_frames(&ctx, &mut app, tab(Modifiers::SHIFT));
-    assert!(before.is_some() && before != view, "and past the view");
+    assert!(before.is_some() && before != view, "and past the view: {before:?}");
     assert_eq!(app.engine.session().edit.selection.start, 0);
 }
 
