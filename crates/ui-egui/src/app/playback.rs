@@ -174,10 +174,13 @@ impl SoundApp {
     }
 
     /// Remember where the armed `takes` go (split into passes of `pass` when loop recording) and
-    /// autosave that plan with the session.
+    /// autosave that plan with the session. Its placement offset is the record offset alone until
+    /// the take ends and the device timing is known, so a take recovered after a crash is placed
+    /// by the record offset too.
     fn plan_recording(&mut self, takes: Vec<soundcraft_engine::io::Take>, pass: Option<Samples>) {
         let rate = self.recorder.as_ref().map_or(0, |r| r.sample_rate);
-        self.take_plan = Some(soundcraft_engine::io::Recording { start: self.record_start, pass, punch: self.punch, rate, takes });
+        let placement_offset = Samples::default().saturating_sub(self.ui.record_offset);
+        self.take_plan = Some(soundcraft_engine::io::Recording { start: self.record_start, pass, punch: self.punch, placement_offset, rate, takes });
         if let Some(root) = self.autosave_dir.clone() {
             self.queue_autosave(root);
         }
@@ -234,6 +237,40 @@ impl SoundApp {
         Ok(dir)
     }
 
+    /// Session samples the take's first sample precedes `start` by: from when the input captured
+    /// it to when the output played the sample at `start`, both as the devices report them, less
+    /// the record offset. Without both moments (no device, or nothing reported), or with an
+    /// implausible difference of a second or more, only the record offset applies. In `looped`
+    /// playback the sample at `start` is heard once a round: the round the take began in counts.
+    fn placement_offset(&self, start: Samples, looped: Option<Range>) -> Samples {
+        let rate = self.engine.session().sample_rate.as_f64();
+        let captured = self.recorder.as_ref().and_then(|r| r.first_capture());
+        let heard = self.player.as_ref().and_then(|p| p.heard_at(start, rate)).map(|heard| {
+            match (looped.filter(|l| (l.start..l.end).contains(&start)), captured) {
+                (Some(l), Some(captured)) => soundcraft_playback::latency::nearest_round(heard, captured, l.len() as f64 / rate),
+                _ => heard,
+            }
+        });
+        let output = self.player.as_ref().and_then(|p| p.output_latency());
+        let round_trip = output.zip(self.recorder.as_ref().and_then(|r| r.input_latency())).map(|(o, i)| o + i);
+        let measured = match heard.zip(captured) {
+            Some((heard, captured)) => {
+                let offset = soundcraft_playback::latency::placement_offset(heard, captured, rate, round_trip);
+                if offset.unsigned_abs() as f64 >= rate {
+                    log::warn!("recording placed without the device timing: {offset} samples between capture and playback");
+                    0
+                } else {
+                    offset
+                }
+            }
+            None => {
+                log::info!("recording placed without device timing (heard {}, captured {})", heard.is_some(), captured.is_some());
+                0
+            }
+        };
+        measured.saturating_sub(self.ui.record_offset)
+    }
+
     fn finish_recording(&mut self) {
         self.engine.transport.recording = false;
         let midi_pass = self.end_midi_pass();
@@ -242,6 +279,20 @@ impl SoundApp {
                 Some(pass) => p.end_recording(pass),
                 None => p.set_recording(false),
             }
+        }
+        // A punch stops where the output stopped rendering, but what it played up to the punch-out
+        // reaches the input a round trip later. The take is placed by that round trip, and a
+        // negative record offset places it earlier still, so keep taking in until then: the take
+        // still covers the whole punch, and the extra input is trimmed off with the punch range.
+        if self.punch.is_some()
+            && let Some(wait) = punch_tail(
+                self.player.as_ref().and_then(|p| p.output_latency()),
+                self.recorder.as_ref().and_then(|r| r.input_latency()),
+                self.ui.record_offset,
+                self.engine.session().sample_rate.as_f64(),
+            )
+        {
+            std::thread::sleep(wait);
         }
         // The audio input stops taking in first: waiting for the MIDI below would otherwise add
         // what the input hears meanwhile to the audio takes. No input device is open when the
@@ -254,13 +305,18 @@ impl SoundApp {
         let stopped_at = super::midi::pass_stop(engine_at, self.engine.transport.position);
         let plan = self.take_plan.take();
         let tracks = takes.len().max(1);
-        let plan = plan.unwrap_or_else(|| soundcraft_engine::io::Recording {
+        let mut plan = plan.unwrap_or_else(|| soundcraft_engine::io::Recording {
             start: self.record_start,
             pass: None,
             punch: self.punch,
+            placement_offset: 0,
             rate: 0,
             takes: Vec::new(),
         });
+        // A punch on the fly during loop playback starts mid-loop; a loop recording starts at the
+        // pass start, which is stamped exactly.
+        let looped = if plan.pass.is_none() { self.play_loop } else { None };
+        plan.placement_offset = self.placement_offset(plan.start, looped);
         self.punch = None;
         self.autosaved_rev = 0;
         let ids = soundcraft_engine::io::place_recording(&mut self.engine, &plan, takes);
@@ -549,9 +605,66 @@ impl SoundApp {
     }
 }
 
+/// How long the input keeps recording after a punch-out: the devices' reported round trip, the
+/// time the last punched sample takes from the output back to the input, and a negative
+/// `record_offset` (session samples at `rate`), which places the take earlier by as much again.
+/// The round trip counts only with both latencies (the take is otherwise placed without them) and
+/// under a second, as placement takes it. `None` when there is nothing to wait for.
+fn punch_tail(
+    output: Option<std::time::Duration>,
+    input: Option<std::time::Duration>,
+    record_offset: Samples,
+    rate: f64,
+) -> Option<std::time::Duration> {
+    let round_trip = output.zip(input).map(|(o, i)| o + i).filter(|rt| *rt < std::time::Duration::from_secs(1)).unwrap_or_default();
+    let earlier = std::time::Duration::try_from_secs_f64(record_offset.min(0).unsigned_abs() as f64 / rate.max(1.0)).unwrap_or_default();
+    Some(round_trip + earlier).filter(|wait| !wait.is_zero())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_punch_keeps_recording_for_the_reported_round_trip() {
+        use std::time::Duration;
+        let ms = Duration::from_millis;
+        // An RME UFX on Core Audio at 256 frames: 321 samples out, 302 in, at 48 kHz.
+        let (out, inp) = (Some(ms(6) + Duration::from_micros(687)), Some(ms(6) + Duration::from_micros(292)));
+        assert_eq!(punch_tail(out, inp, 0, 48_000.0), Some(ms(12) + Duration::from_micros(979)));
+        assert_eq!(punch_tail(None, Some(ms(6)), 0, 48_000.0), None);
+        assert_eq!(punch_tail(Some(ms(6)), None, 0, 48_000.0), None);
+        assert_eq!(punch_tail(Some(ms(600)), Some(ms(600)), 0, 48_000.0), None);
+        // A record offset of -4800 places the take 100 ms earlier: the input records that much longer.
+        assert_eq!(punch_tail(out, inp, -4_800, 48_000.0), Some(ms(112) + Duration::from_micros(979)));
+        assert_eq!(punch_tail(None, None, -4_800, 48_000.0), Some(ms(100)));
+        // A positive one places it later; the round trip still covers the punch.
+        assert_eq!(punch_tail(out, inp, 4_800, 48_000.0), Some(ms(12) + Duration::from_micros(979)));
+        assert_eq!(punch_tail(None, None, 4_800, 48_000.0), None);
+    }
+
+    #[test]
+    fn without_device_timing_only_the_record_offset_places_a_take() {
+        let mut app = SoundApp::new(soundcraft_engine::Engine::default(), None, crate::Services::default());
+        assert_eq!(app.placement_offset(48_000, None), 0);
+        // A positive record offset places takes later: their first sample follows the start.
+        app.ui.record_offset = 100;
+        assert_eq!(app.placement_offset(48_000, None), -100);
+        app.ui.record_offset = -64;
+        assert_eq!(app.placement_offset(48_000, None), 64);
+    }
+
+    #[test]
+    fn the_autosaved_take_plan_carries_the_record_offset() {
+        let mut app = SoundApp::new(soundcraft_engine::Engine::default(), None, crate::Services::default());
+        app.ui.record_offset = -128;
+        app.plan_recording(Vec::new(), None);
+        // Recovery after a crash places the take by the plan as autosaved: as the take would be
+        // placed on finishing without device timing.
+        let saved = app.take_plan.as_ref().map(|p| p.placement_offset);
+        assert_eq!(saved, Some(128));
+        assert_eq!(saved, Some(app.placement_offset(app.record_start, None)));
+    }
 
     #[test]
     fn the_fallback_take_folder_is_made_once_under_the_temporary_folder() {

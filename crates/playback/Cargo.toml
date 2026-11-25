@@ -19,6 +19,11 @@ serde.workspace = true
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 cpal.workspace = true
 
+# Core Audio device properties (macOS): the device latency the stream clock needs (latency.rs).
+# Already in the tree through cpal; its property calls are safe.
+[target.'cfg(target_os = "macos")'.dependencies]
+coreaudio-rs = { version = "0.14.2", default-features = false, features = ["core_audio", "audio_toolbox"] }
+
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 cpal = { workspace = true, features = ["wasm-bindgen"] }
 

@@ -80,6 +80,17 @@ pub(crate) struct AudioState {
     pub(crate) pending_len: usize,
     read: f64,
     pub(crate) device_rate: f64,
+    /// When the device callback that is filling now was called, and the frame of its buffer
+    /// this fill starts at (set by the output stream; `None` for the silent clock).
+    pub(crate) callback_at: Option<std::time::Instant>,
+    /// When that callback's first frame is heard, on the stream clock (see
+    /// [`super::latency::clock_seconds`]).
+    pub(crate) playback_clock: Option<f64>,
+    pub(crate) chunk_offset: usize,
+    /// A Play was read since the last fill: this fill starts the pass.
+    pass_started: bool,
+    /// The stamp of the pass's first sample, until the UI's lock lets it be published.
+    pending_pass: Option<super::latency::Heard>,
     input: Option<Arc<record::InputRing>>,
     recording: bool,
     midi: Option<Arc<midi::MidiFeed>>,
@@ -174,6 +185,11 @@ impl AudioState {
             pending_len: 0,
             read: 0.0,
             device_rate,
+            callback_at: None,
+            playback_clock: None,
+            chunk_offset: 0,
+            pass_started: false,
+            pending_pass: None,
             input: None,
             recording: false,
             midi: None,
@@ -268,6 +284,7 @@ impl AudioState {
                     self.pending_len = 0;
                     self.read = 0.0;
                     self.mix.reset();
+                    self.pass_started = true;
                 }
                 Cmd::Stop => {
                     self.midi_stopped = (self.playing && self.recording).then(|| self.midi.as_ref().map_or(i64::MAX, |f| f.clock()));
@@ -620,6 +637,25 @@ impl AudioState {
         }
     }
 
+    /// Note when the first sample this fill outputs is heard: the device callback's time, plus the
+    /// output latency the stream reports, plus where in the device buffer this fill starts; and
+    /// the same on the stream clock, from the callback's playback time.
+    fn stamp_heard(&mut self) {
+        let pass_started = std::mem::take(&mut self.pass_started);
+        let Some(called) = self.callback_at.filter(|_| self.playing) else { return };
+        let into = self.chunk_offset as f64 / self.device_rate.max(1.0);
+        let lead = self.shared.output_latency.get().unwrap_or_default().as_secs_f64() + into;
+        let Some(at) = super::latency::shift(called, lead) else { return };
+        let when = super::latency::Moment { at, clock: self.playback_clock.map(|p| p + into) };
+        // The next output frame: `read` frames into the pending block, which ends at `pos`.
+        let sample = self.pos as f64 - self.pending_len as f64 + self.read;
+        let heard = super::latency::Heard { sample, when };
+        if pass_started {
+            self.pending_pass = Some(heard);
+        }
+        self.shared.heard.record(heard, &mut self.pending_pass);
+    }
+
     /// Fill an interleaved device buffer.
     pub(crate) fn fill(&mut self, out: &mut [f32], channels: usize) {
         let channels = channels.max(1);
@@ -675,6 +711,7 @@ impl AudioState {
             drop(quiet);
         }
         self.midi_started = false;
+        self.stamp_heard();
         // A command may have installed a session at another sample rate: the audio is rendered
         // at the rate that is there now, at the same speed.
         let step = self.step(speed);
