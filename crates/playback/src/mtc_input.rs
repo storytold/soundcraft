@@ -348,6 +348,9 @@ impl Reader {
     fn freewheel(&mut self) {
         if self.locked && !self.coasting {
             self.coasting = true;
+            // A plausible recovery can resume a few quarter frames off the old phase. Measure
+            // the wire rate again from the first group accepted after the dropout.
+            self.speed_anchor = None;
             self.stats.freewheel_entries += 1;
         }
     }
@@ -914,6 +917,34 @@ mod dropout_tests {
             let ppm = warning.speed_deviation_ppm.expect("compatible code has measured speed");
             assert!((750..=1250).contains(&(ppm * sign)), "{source:?} vs {session:?}: {ppm} ppm");
         }
+    }
+
+    #[test]
+    fn a_late_recovery_after_coasting_does_not_report_a_rate_mismatch() {
+        let source = FrameRate::Fps30;
+        let mut reader = Reader::default();
+        reader.reset(Some(1));
+        reader.options.rate = source;
+        reader.options.freewheel = 30;
+        let quarter_us = 1_000_000 / 120;
+        let feed = |reader: &mut Reader, group: i64, late: i64| {
+            for (piece, bytes) in crate::mtc::quarters(group * 2, source).into_iter().enumerate() {
+                reader.read(&bytes, (group * 8 + piece as i64) * quarter_us + late);
+            }
+        };
+        for group in 0..75 {
+            feed(&mut reader, group, 0);
+        }
+        // A dropout of ten groups; the source then resumes two quarter frames late.
+        for group in 75..85 {
+            reader.tracking(group * 8 * quarter_us);
+        }
+        assert_eq!(reader.stats.freewheel_entries, 1);
+        for group in 85..270 {
+            feed(&mut reader, group, 2 * quarter_us);
+        }
+        assert!(reader.locked);
+        assert!(reader.diagnostics().rate_mismatch.is_none(), "{:?}", reader.diagnostics().rate_mismatch);
     }
 
     #[test]
