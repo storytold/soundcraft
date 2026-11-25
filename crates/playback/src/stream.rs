@@ -39,6 +39,15 @@ pub(crate) fn first_started<A: std::fmt::Debug, S, E: std::fmt::Display>(
     None
 }
 
+/// The buffer size `device` runs its output at now, read from a stream that is built at cpal's
+/// default buffer and dropped without starting. `None` when it cannot be read.
+pub(crate) fn buffer_now(device: &cpal::Device, config: cpal::StreamConfig, format: cpal::SampleFormat) -> Option<u32> {
+    use cpal::traits::{DeviceTrait, StreamTrait};
+    let config = cpal::StreamConfig { buffer_size: cpal::BufferSize::Default, ..config };
+    let stream = device.build_output_stream_raw(config, format, |_: &mut cpal::Data, _: &cpal::OutputCallbackInfo| {}, |_| {}, None).ok()?;
+    stream.buffer_size().ok()
+}
+
 /// The output stream: the mix renders f32 into a scratch buffer allocated here (so the callback
 /// never allocates), converted to the device's sample type.
 pub(crate) fn build_output<T>(

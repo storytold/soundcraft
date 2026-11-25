@@ -236,10 +236,9 @@ impl Player {
         match open_device(want, want_ch, cfg) {
             Ok((device, config, format, name)) => {
                 // The chosen buffer size first; if the device refuses it, its default.
-                let mut attempts = vec![config];
-                if config.buffer_size != cpal::BufferSize::Default {
-                    attempts.push(cpal::StreamConfig { buffer_size: cpal::BufferSize::Default, ..config });
-                }
+                let asked = config.buffer_size;
+                let default = devices::default_buffer(&device, asked, || stream::buffer_now(&device, config, format));
+                let attempts = devices::buffer_attempts(asked, default).into_iter().map(|buffer_size| cpal::StreamConfig { buffer_size, ..config });
                 let opened = first_started(
                     attempts,
                     |config: &cpal::StreamConfig| -> Result<Opened, cpal::Error> {
@@ -262,9 +261,10 @@ impl Player {
                     Some((config, Opened { stream, tx, grx, fault })) => {
                         let rate = config.sample_rate;
                         let channels = usize::from(config.channels);
+                        // The default stays reported as the default when it was asked for by size.
                         let buffer = match config.buffer_size {
-                            cpal::BufferSize::Fixed(n) => Some(n),
-                            cpal::BufferSize::Default => None,
+                            cpal::BufferSize::Fixed(n) if config.buffer_size == asked => Some(n),
+                            _ => None,
                         };
                         log::info!(
                             "audio device: {name} @ {rate} Hz, {channels} ch, {format}, buffer {}",
