@@ -421,6 +421,14 @@ fn navigate(app: &mut SoundApp, link: &mut Link, direction: Navigation) {
     if first != app.hui.first_track {
         app.hui.first_track = first;
         link.decoder.coarse.fill(None);
+        // A Touch move not yet sampled still belongs to the track it was made on.
+        for strip in 0..STRIPS {
+            let control = &mut app.hui.motion.strips[strip];
+            if let (Some(track), Some(value)) = (control.track, control.unsampled.take()) {
+                let start = control.touch_start;
+                finish_touch_sample(app, track, value, start);
+            }
+        }
         app.hui.motion.strips[..STRIPS].fill_with(Default::default);
         app.hui.motion.pan_until = None;
         if app.engine.merge_key() == Some(MIX_GESTURE) && !app.hui.motion.strips[STRIPS].active(app.clock_now()) {
@@ -1289,6 +1297,29 @@ mod tests {
         }
         let points = &app.engine.session().track(track).unwrap().lane(&AutoParam::Volume).unwrap().points;
         assert!(points.iter().all(|p| p.at != 3_500), "the ride after the jump replaces the old point");
+    }
+
+    #[test]
+    fn bank_change_writes_the_unsampled_touch_move_to_its_track() {
+        use soundcraft_model::{AutoParam, AutomationMode};
+        let (mut app, track, packets) = test_app();
+        app.run("track.new", json!({"kind":"audio", "count":8})).unwrap();
+        app.engine.session_mut().track_mut(track).unwrap().mixer.automation_mode = AutomationMode::Touch;
+        app.engine.transport.playing = true;
+        app.engine.transport.position = 1_000;
+        let ctx = egui::Context::default();
+        app.hold_automation_pass();
+        packets.send([0x90, 0x68, 127]).unwrap();
+        packets.send(mcu::fader(0, motion::position(0.0)).unwrap()).unwrap();
+        poll(&mut app, &ctx);
+        app.write_automation();
+        app.engine.transport.position = 1_005;
+        packets.send(mcu::fader(0, motion::position(-9.0)).unwrap()).unwrap();
+        packets.send([0x90, 0x2f, 127]).unwrap();
+        poll(&mut app, &ctx);
+        assert_eq!(app.hui.first_track, STRIPS);
+        let points = &app.engine.session().track(track).unwrap().lane(&AutoParam::Volume).unwrap().points;
+        assert!((points.last().unwrap().value + 9.0).abs() < 0.01, "{points:?}");
     }
 
     #[test]
