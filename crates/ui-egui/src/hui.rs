@@ -708,6 +708,13 @@ pub(crate) fn touch_start(app: &SoundApp, track: TrackId) -> Option<i64> {
     app.hui.motion.strips.iter().filter(|strip| strip.track == Some(track)).filter_map(|strip| strip.touch_start).min()
 }
 
+/// After a jump back during playback, a held touch replaces automation from the new playhead.
+pub(crate) fn clamp_touch_starts(app: &mut SoundApp, position: i64) {
+    for start in app.hui.motion.strips.iter_mut().filter_map(|strip| strip.touch_start.as_mut()) {
+        *start = (*start).min(position);
+    }
+}
+
 pub(crate) fn clear_pending_touch_samples(app: &mut SoundApp, playing: bool) {
     for strip in &mut app.hui.motion.strips {
         strip.unsampled = None;
@@ -724,8 +731,9 @@ fn finish_touch_sample(app: &mut SoundApp, track: TrackId, value: u16, start: Op
         return;
     }
     let db = soundcraft_model::fader_pos_to_db(f32::from(value) / FADER_MAX);
-    let mut point = json!({"track": track.0, "param": "volume", "at": app.engine.transport.position, "value": db});
-    let from = app.last_write_at.max(start.unwrap_or(i64::MIN));
+    let at = app.engine.transport.position;
+    let mut point = json!({"track": track.0, "param": "volume", "at": at, "value": db});
+    let from = app.last_write_at.max(start.map_or(i64::MIN, |start| start.min(at)));
     if from != i64::MIN {
         point["from"] = from.into();
     }
@@ -1255,6 +1263,32 @@ mod tests {
         packets.send([0x90, 0x10, 127]).unwrap();
         poll(&mut app, &ctx);
         assert!(app.engine.session().track(track).unwrap().mixer.mute, "the link still takes new input");
+    }
+
+    #[test]
+    fn a_held_touch_replaces_automation_from_where_playback_jumps_back_to() {
+        use soundcraft_model::{AutoParam, AutomationMode};
+        let (mut app, track, packets) = test_app();
+        app.engine.session_mut().track_mut(track).unwrap().mixer.automation_mode = AutomationMode::Touch;
+        app.run("automation.set_point", json!({"track": track.0, "param": "volume", "at": 3_500, "value": -20.0})).unwrap();
+        app.engine.transport.playing = true;
+        let ctx = egui::Context::default();
+        app.hold_automation_pass();
+        packets.send([0x90, 0x68, 127]).unwrap();
+        packets.send(mcu::fader(0, motion::position(0.0)).unwrap()).unwrap();
+        for (at, level) in [(10_000, -3.0), (11_000, -4.0), (2_000, -5.0), (3_000, -6.0), (4_000, -7.0)] {
+            if at == 2_000 {
+                // What a Locate does while playing.
+                app.last_write_at = i64::MIN;
+            }
+            app.engine.transport.position = at;
+            packets.send(mcu::fader(0, motion::position(level)).unwrap()).unwrap();
+            poll(&mut app, &ctx);
+            app.write_automation();
+            app.advance_test_clock(Duration::from_millis(2));
+        }
+        let points = &app.engine.session().track(track).unwrap().lane(&AutoParam::Volume).unwrap().points;
+        assert!(points.iter().all(|p| p.at != 3_500), "the ride after the jump replaces the old point");
     }
 
     #[test]
