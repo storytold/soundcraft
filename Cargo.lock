@@ -1313,6 +1313,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "craft-quit"
+version = "0.1.0"
+source = "git+https://github.com/storytold/craft-libs?rev=33be35625e252cc4f06aa375b3b428521faea37d#33be35625e252cc4f06aa375b3b428521faea37d"
+dependencies = [
+ "dispatch2",
+ "egui",
+ "objc2 0.6.5",
+ "objc2-app-kit 0.3.2",
+]
+
+[[package]]
 name = "craft-score"
 version = "0.1.0"
 source = "git+https://github.com/storytold/craft-libs?rev=a3fca1707941bce4768586661ccbb94c44ee46eb#a3fca1707941bce4768586661ccbb94c44ee46eb"
@@ -4936,6 +4947,7 @@ dependencies = [
  "chrono",
  "clap",
  "craft-audio",
+ "craft-quit",
  "craft-update",
  "eframe",
  "egui",

@@ -74,5 +74,9 @@ sync_github_name = true
 [people.vhhr7]
 display_name = "Vic Herrera (@vhhr)"
 
+[people.dotCooCoo]
+real_name = "Robert Lee"
+sync_github_name = true
+
 [people.ashokram-si]
 real_name = "Ashok Ram"
