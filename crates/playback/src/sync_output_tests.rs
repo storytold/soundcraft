@@ -722,9 +722,24 @@ fn parked_worker_handles_control_and_shutdown_without_a_new_audio_block() {
         assert!(Instant::now() < limit, "input control failed to wake the parked worker");
         std::thread::yield_now();
     }
+    let shutdown = drop_within(output, Duration::from_millis(100));
+    assert!(shutdown < Duration::from_millis(100), "Output::drop took {shutdown:?}");
+}
+
+/// Drop `output` on a helper thread, so a shutdown that never wakes the worker fails
+/// the test at `bound` instead of hanging it in `join`.
+fn drop_within(output: Output, bound: Duration) -> Duration {
+    let (done, finished) = channel();
     let start = Instant::now();
-    drop(output);
-    assert!(start.elapsed() < Duration::from_millis(100));
+    let dropper = std::thread::spawn(move || {
+        drop(output);
+        let _ = done.send(());
+    });
+    let finished = finished.recv_timeout(bound);
+    let elapsed = start.elapsed();
+    assert!(finished.is_ok(), "Output::drop did not return within {bound:?}");
+    dropper.join().unwrap();
+    elapsed
 }
 
 #[test]
@@ -802,7 +817,8 @@ fn a_wrap_at_the_buffer_limit_waits_for_the_next_snapshot() {
         view.lock().unwrap().push(Presentation { pass: 2, playing: roll, ..block(boundary, 0., 480., Duration::ZERO) });
         port.poll("DIN", boundary, &session, &view, &stats, &mut Vec::new());
         let got: Vec<_> = port.link.unwrap().messages.into_iter().map(|(_, msg)| msg[0]).collect();
-        assert_eq!(got, if roll { vec![STOP, START, CLOCK] } else { vec![STOP] });
+        // Stopped at the loop start on a new pass, the receiver is told that position.
+        assert_eq!(got, if roll { vec![STOP, START, CLOCK] } else { vec![STOP, 0xf2] });
     }
 }
 
@@ -875,6 +891,55 @@ fn review_failed_transport_stop_is_retried_before_new_pass_start() {
         port.poll("DIN", t, &s, &view, &stats, &mut vec![]);
     }
     assert_eq!(port.link.unwrap().1, [vec![STOP], vec![START], vec![CLOCK]]);
+}
+
+#[test]
+fn the_transition_wake_is_the_earliest_deadline_when_a_later_block_has_a_shorter_lead() {
+    let base = Instant::now();
+    let view = View::default();
+    let mut timeline = view.lock().unwrap();
+    timeline.push(block(base - Duration::from_millis(10), 0., 480., Duration::ZERO));
+    timeline.push(block(base, 480., 480., Duration::from_millis(30)));
+    timeline.push(block(base + Duration::from_millis(10), 960., 480., Duration::from_millis(5)));
+    let (current, wake) = timeline.read(base, true, 0);
+    assert_eq!(current.unwrap().sample, 0.);
+    let earliest = base + Duration::from_millis(15);
+    assert_eq!(wake, Some(earliest));
+    // At that wake the later publication is the audible block.
+    assert_eq!(timeline.read(earliest, true, 0).0.unwrap().sample, 960.);
+}
+
+#[test]
+fn a_send_failure_retains_an_undelivered_stop_but_not_a_delivered_one() {
+    struct FailsOnClock(bool, Vec<Vec<u8>>);
+    impl SyncPort for FailsOnClock {
+        fn send_at(&mut self, at: Instant, msg: &[u8]) -> Result<Instant, String> {
+            if msg == [CLOCK] && self.0 {
+                return Err("port unavailable".into());
+            }
+            self.1.push(msg.to_vec());
+            Ok(at)
+        }
+    }
+    let now = Instant::now();
+    let view = View::default();
+    view.lock().unwrap().push(block(now, 0., 480., Duration::ZERO));
+    for (batch, retained) in [([CLOCK, STOP], true), ([STOP, CLOCK], false)] {
+        let encoder = Messages(batch.iter().map(|&m| (Duration::ZERO, vec![m])).collect());
+        let mut port = Port {
+            link: Some(FailsOnClock(true, vec![])),
+            retry: now,
+            routes: [Some(Route { map: None, offset: 0, compensate: false, encoder: Box::new(encoder) }), None],
+            future: vec![],
+            stop_pending: false,
+            timing_epochs: [0; 2],
+            waiting_for_timing: false,
+            failure: None,
+        };
+        port.poll("DIN", now, &Session::default(), &view, &Stats::default(), &mut vec![]);
+        assert!(port.link.is_none());
+        assert_eq!(port.stop_pending, retained, "{batch:?}");
+    }
 }
 
 #[test]
@@ -1110,9 +1175,7 @@ fn connected_worker_accepts_control_and_shuts_down_while_a_future_message_is_pen
     let mut output = Output::default();
     let control_tx = WorkerSender { tx, worker: worker.thread().clone() };
     output.worker.replace((control_tx, worker));
-    let elapsed = Instant::now();
-    drop(output);
-    let shutdown = elapsed.elapsed();
+    let shutdown = drop_within(output, bound);
     eprintln!("control={control:?} shutdown={shutdown:?}");
     assert!(shutdown < bound, "Output::drop took {shutdown:?}");
 }
@@ -1200,19 +1263,24 @@ fn a_missed_timing_gap_invalidates_only_the_compensated_route_queue() {
     let song = Session::default();
     let stats = Stats::default();
     let mut port = active_port(0, true);
-    let delay = Duration::from_millis(20);
-    for (index, compensate) in [true, false].into_iter().enumerate() {
+    // The compensated route is offset by 10 ms (480 samples), so a recovered block reaches
+    // it later than its own already-queued event falls due.
+    for (index, (compensate, offset, delay)) in [(true, 480, 5), (false, 0, 20)].into_iter().enumerate() {
+        let message = vec![if compensate { 0xf1 } else { 0xf8 }];
         port.routes[index] =
-            Some(Route { map: None, offset: 0, compensate, encoder: Box::new(Messages(vec![(delay, vec![if compensate { 0xf1 } else { 0xf8 }])])) });
+            Some(Route { map: None, offset, compensate, encoder: Box::new(Messages(vec![(Duration::from_millis(delay), message)])) });
     }
     view.lock().unwrap().push(block(base, 0., 480., Duration::ZERO));
     port.poll("desk", base, &song, &view, &stats, &mut vec![]);
+    let offset_audible = base + Duration::from_millis(10);
+    port.poll("desk", offset_audible, &song, &view, &stats, &mut vec![]);
+    assert_eq!(port.future.len(), 2, "both routes queue their event before the gap");
     // Both callback publications land between two worker polls.
-    let now = base + delay;
+    let now = base + Duration::from_millis(20);
     let mut timeline = view.lock().unwrap();
-    timeline.push(Presentation { lead: None, ..block(base + delay / 2, 480., 480., Duration::ZERO) });
+    timeline.push(Presentation { lead: None, ..block(base + Duration::from_millis(12), 576., 480., Duration::ZERO) });
     timeline.push(block(now, 960., 480., Duration::ZERO));
-    // A positively offset destination must wait for the recovered block to become audible.
+    // The offset route's 0xf1 is due now, but the recovered block is not yet audible to it.
     let (audible, wake) = timeline.read(now, true, 480);
     assert!(audible.is_none());
     assert_eq!(wake, Some(now + Duration::from_millis(10)));
