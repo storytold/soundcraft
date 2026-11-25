@@ -284,6 +284,7 @@ mod tests {
     }
 
     /// Hebrew labels draw in every family, not as boxes; skipped when the system has no Hebrew font.
+    #[cfg(not(target_arch = "wasm32"))]
     #[test]
     fn every_family_draws_hebrew_with_a_system_hebrew_font() {
         assert_family_draws_script("system-hebrew", "Hebrew", HEBREW_REQUIRED_GLYPHS);
