@@ -61,7 +61,13 @@ impl SoundApp {
         if !target.available(self.engine.session()) {
             return Err(text("This control is unavailable").to_owned());
         }
-        self.reset_midi_learn();
+        if self.midi_learn_target.is_some() {
+            // Input queued for the previous learn is stale.
+            self.reset_midi_learn();
+        } else {
+            // Moves of assigned controls queued before Learn still reach the mixer.
+            self.service_midi_learn();
+        }
         self.midi_learn_mode =
             if matches!(target.parameter, Parameter::Mute | Parameter::Solo) { ControlMode::Toggle } else { ControlMode::Absolute };
         self.midi_learn_target = Some(target);
@@ -493,7 +499,7 @@ mod tests {
             )
             .unwrap();
         }
-        let pan_before = app.engine.session().track(id).unwrap().mixer.pan[0];
+        let pan_before = pan_cc(app.engine.session().track(id).unwrap().mixer.pan[0]).round();
         for cc in [22, 23] {
             for value in [127, 127, 0] {
                 feed.receive(port, &[0xb0, cc, value]);
@@ -505,7 +511,7 @@ mod tests {
         app.service_midi_learn();
         let mix = &app.engine.session().track(id).unwrap().mixer;
         assert!(mix.mute && mix.solo);
-        assert!(mix.pan[0] > pan_before);
+        assert_eq!(pan_cc(mix.pan[0]).round(), pan_before + 3.0, "+1, +3 and -1 all apply");
         for cc in [22, 23] {
             feed.receive(port, &[0xb0, cc, 127]);
             feed.receive(port, &[0xb0, cc, 0]);
@@ -833,5 +839,42 @@ mod tests {
             assert_eq!(points(&app, 0) > 0, mode == "write");
             assert_eq!(points(&app, 1) > touched, mode != "touch");
         }
+    }
+
+    #[test]
+    fn midi_learn_start_keeps_an_assigned_move_queued_before_it() {
+        let (mut app, feed, id, port) = controller();
+        let original = app.engine.session().track(id).unwrap().mixer.volume_db;
+        feed.receive(port, &[0xb0, 71, 20]);
+        app.start_midi_learn(Target { track: id, parameter: Parameter::Pan(0) }).unwrap();
+        assert_ne!(app.engine.session().track(id).unwrap().mixer.volume_db, original);
+        feed.receive(port, &[0xb0, 21, 30]);
+        app.service_midi_learn();
+        assert!(midi_learn::bindings(app.engine.session()).any(|b| b.target.parameter == Parameter::Pan(0) && b.source.cc == 21));
+    }
+
+    #[test]
+    fn midi_touch_pan_writes_its_last_point_at_stop() {
+        use soundcraft_model::AutoParam;
+        let (mut app, feed, id, port) = controller();
+        app.run("midi.learn.bind", json!({"target":{"track":id,"parameter":{"pan":0}},"source":{"device":"Keys","channel":1,"cc":75}})).unwrap();
+        app.run("mix.automation_mode", json!({"tracks":[id],"mode":"touch"})).unwrap();
+        app.run("transport.play", json!({})).unwrap();
+        let ctx = egui::Context::default();
+        let frame = |app: &mut SoundApp, ms| {
+            app.advance_test_clock(std::time::Duration::from_millis(ms));
+            let _ = ctx.run_logic(&egui::RawInput::default(), |ctx| app.logic(ctx));
+        };
+        frame(&mut app, 20);
+        feed.receive(port, &[0xb0, 75, 100]);
+        frame(&mut app, 50);
+        feed.receive(port, &[0xb0, 75, 110]);
+        frame(&mut app, 10);
+        let last = |app: &SoundApp| app.engine.session().track(id).unwrap().lane(&AutoParam::Pan(0)).unwrap().points.last().map(|p| p.value);
+        assert_ne!(last(&app), Some(pan(110)), "the second move lands between automation samples");
+        app.run("transport.stop", json!({})).unwrap();
+        frame(&mut app, 10);
+        assert_eq!(last(&app), Some(pan(110)), "Stop writes the pan's final value");
+        assert!(app.touched_pans.is_empty());
     }
 }
