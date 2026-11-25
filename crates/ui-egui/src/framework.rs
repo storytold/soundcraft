@@ -41,12 +41,9 @@ fn ui_fonts() -> UiFonts<'static> {
 }
 
 fn install_with(ctx: &egui::Context, shell: ShellInfo, windows: Arc<dyn WindowSystem>) -> Result<(), String> {
-    let spec = craft_ui::InstallSpec::new(shell, windows).app_id(APP_ID);
+    let spec = craft_ui::InstallSpec::new(shell, windows).app_id(crate::os_window::app_id());
     embed::install(ctx, spec, &ui_fonts()).map(drop).map_err(|error| format!("the UI runtime could not be installed: {error}"))
 }
-
-/// The id every OS window of the app carries, as the main window's builder sets it.
-const APP_ID: &str = "ai.storyteller.soundcraft";
 
 /// Installs the runtime on the desktop window's context, once, before the first pass. `forced_x11` when the app
 /// opens its window through XWayland. SoundCraft keeps the system's title bar on every platform.
