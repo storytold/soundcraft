@@ -479,6 +479,13 @@ pub(crate) fn process_strip(s: &Session, t: &Track, strip: &mut Strip, busses: &
         strip.align_pre.clear();
         strip.out_extra.clear();
     }
+    if !direct_monitor && strip.direct_monitor {
+        // The inserts heard nothing while the interface monitored: start them afresh, so a
+        // lookahead delay does not replay input from before the hand-off.
+        for p in strip.plugins.iter_mut().flatten() {
+            p.plugin.reset();
+        }
+    }
     strip.direct_monitor = direct_monitor;
     if direct_monitor {
         monitor_input(t, strip, live, frames);
