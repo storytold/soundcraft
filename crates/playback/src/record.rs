@@ -115,6 +115,8 @@ struct Shared {
     first_capture: crate::latency::InstantCell,
     /// The same on the stream clock.
     first_capture_clock: crate::latency::ClockCell,
+    /// Whether the input had reported its latency when the take's first sample was latched.
+    first_capture_timed: AtomicBool,
 }
 
 impl Shared {
@@ -130,7 +132,32 @@ impl Shared {
             input_latency: Default::default(),
             first_capture: crate::latency::InstantCell::new(),
             first_capture_clock: Default::default(),
+            first_capture_timed: AtomicBool::new(false),
         }
+    }
+
+    /// Latch the take's first sample, captured `at` and at `clock` on the stream clock, the first
+    /// time only: `timed` says whether the input had reported its latency, which `at` is moved
+    /// back by. Only the input callback latches.
+    #[cfg_attr(target_os = "freebsd", allow(dead_code))]
+    fn latch_first_capture(&self, at: std::time::Instant, clock: f64, timed: bool) {
+        if self.first_capture.get().is_none() {
+            self.first_capture_timed.store(timed, Ordering::Relaxed);
+            self.first_capture_clock.set_if_empty(clock);
+            self.first_capture.set_if_empty(at);
+        }
+    }
+
+    fn clear_first_capture(&self) {
+        self.first_capture.clear();
+        self.first_capture_clock.clear();
+        self.first_capture_timed.store(false, Ordering::Relaxed);
+    }
+
+    /// The latched first sample, when it was latched with the input latency known.
+    fn first_capture(&self) -> Option<crate::latency::Moment> {
+        let at = self.first_capture.get()?;
+        self.first_capture_timed.load(Ordering::Relaxed).then_some(crate::latency::Moment { at, clock: self.first_capture_clock.get() })
     }
 
     /// Run the input callback's `work`. After a panic in it, the input is broken and does
@@ -207,11 +234,11 @@ where
                     if sh.armed.load(Ordering::Acquire) {
                         // The take's first sample: this part's first frame, captured the reported
                         // input latency before the callback, and so on the stream clock.
-                        let latency = sh.input_latency.get().unwrap_or_default().as_secs_f64();
+                        let latency = sh.input_latency.get();
                         let into = (index * chunk / frame) as f64 / rate;
-                        if let Some(at) = crate::latency::shift(called, into - latency) {
-                            sh.first_capture.set_if_empty(at);
-                            sh.first_capture_clock.set_if_empty(captured + into);
+                        let back = latency.unwrap_or_default().as_secs_f64();
+                        if let Some(at) = crate::latency::shift(called, into - back) {
+                            sh.latch_first_capture(at, captured + into, latency.is_some());
                         }
                         sh.capture(s, &mut owed);
                     } else {
@@ -328,10 +355,10 @@ impl Recorder {
 
     /// When the first sample of the armed take was captured: its input callback's time less the
     /// reported input latency, and its capture time on the stream clock. `None` until the first
-    /// armed input callback.
+    /// armed input callback, and for a take whose first callback came before the input reported
+    /// its latency (a later report does not tell when that sample was captured).
     pub fn first_capture(&self) -> Option<crate::latency::Moment> {
-        let at = self.shared.first_capture.get()?;
-        Some(crate::latency::Moment { at, clock: self.shared.first_capture_clock.get() })
+        self.shared.first_capture()
     }
 
     /// Create each take's file and start recording into them: a track's take records the given
@@ -348,8 +375,7 @@ impl Recorder {
         let ring = &self.shared.ring;
         ring.tail.store(ring.head.load(Ordering::Acquire), Ordering::Release);
         *self.shared.failed.lock().unwrap_or_else(PoisonError::into_inner) = None;
-        self.shared.first_capture.clear();
-        self.shared.first_capture_clock.clear();
+        self.shared.clear_first_capture();
         self.shared.armed.store(true, Ordering::Release);
         let (shared, channels) = (Arc::clone(&self.shared), self.channels);
         match std::thread::Builder::new().name("take writer".into()).spawn(move || write_takes(&shared, takes, channels)) {
@@ -592,6 +618,25 @@ mod tests {
         shared.ring.pop_all(&mut out);
         assert_eq!(out, [vec![1.0; 6], vec![2.0; 2], vec![0.0; 2], vec![3.0; 2]].concat());
         assert_eq!((owed, shared.dropped.load(Ordering::Relaxed)), (0, 2));
+    }
+
+    /// A take whose first sample was latched before the input reported its latency gets no
+    /// capture moment, even once a later callback reports one: the latched moment lacks it.
+    #[test]
+    fn a_first_capture_latched_without_the_input_latency_is_not_a_capture_moment() {
+        let shared = Shared::new(CaptureRing::new(8));
+        let t = std::time::Instant::now();
+        shared.latch_first_capture(t, 10.0, false);
+        shared.latch_first_capture(t + std::time::Duration::from_millis(5), 10.005, true);
+        assert_eq!(shared.first_capture(), None);
+        // The next take, latched with the latency known.
+        shared.clear_first_capture();
+        shared.latch_first_capture(t, 10.0, true);
+        shared.latch_first_capture(t + std::time::Duration::from_millis(5), 10.005, false);
+        let moment = shared.first_capture().unwrap();
+        assert_eq!(moment.clock, Some(10.0));
+        let d = moment.at.max(t) - moment.at.min(t);
+        assert!(d < std::time::Duration::from_micros(1), "{d:?}");
     }
 
     #[test]
