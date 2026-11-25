@@ -136,7 +136,11 @@ fn recording_harness() -> (Harness<'static, SoundApp>, u64, u64) {
 /// until this is called the app has no engine, so an audio pass is refused on any machine.
 fn start_engine(h: &mut Harness<'_, SoundApp>) {
     let session = h.state().engine.session_arc();
-    h.state_mut().player = Some(soundcraft_playback::Player::new(session));
+    // Reconnecting an output that does not exist runs the silent clock on every host.
+    let config = soundcraft_playback::AudioConfig::default();
+    let player = soundcraft_playback::Player::reconnect_output(session, &config, "SoundCraft test: no audio output");
+    assert!(player.silent, "the harness must not open a host audio device");
+    h.state_mut().player = Some(player);
     h.run_steps(2);
 }
 

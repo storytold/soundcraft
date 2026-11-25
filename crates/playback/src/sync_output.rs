@@ -616,7 +616,7 @@ impl<C: Destination> Port<C> {
             }
         }
         pending.sort_by_key(|m| m.at);
-        for e in pending.iter() {
+        for (index, e) in pending.iter().enumerate() {
             let bytes = &e.bytes[..e.len];
             let retry = e.route == 0 && bytes == [craft_midi_sync::sync::STOP];
             let result = if e.route == 0 && bytes == [0xf8] && self.routes[0].as_ref().is_some_and(|r| r.offset == 0) {
@@ -625,8 +625,10 @@ impl<C: Destination> Port<C> {
                 port.submit(e.at, bytes, retry, stats)
             };
             if let Err(err) = result {
-                if retry {
-                    self.cleanup.push_back(bytes.to_vec());
+                // Reopening resets the encoders, so a Beat Clock Stop that was not delivered
+                // from the failed packet onward must be sent after reconnecting.
+                if pending[index..].iter().any(|e| e.route == 0 && e.bytes[..e.len] == [craft_midi_sync::sync::STOP]) {
+                    self.cleanup.push_back(vec![craft_midi_sync::sync::STOP]);
                 }
                 self.disconnect(name, err, now, stats);
                 return Some(self.retry);

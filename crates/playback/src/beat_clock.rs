@@ -66,9 +66,14 @@ impl Cursor {
                 return;
             }
         }
-        // Stopping a pass, including at a loop boundary, can publish a new pass
-        // number without seeking. A stopped seek publishes its own origin.
-        let stopped_seek = at == origin && (self.last_position.is_none() || origin_changed) && (previous_pass.is_some() || at != 0);
+        // A stopped seek publishes its own origin, including a locate to the origin of
+        // the pass that was rolling. A new pass at an unchanged stopped origin repeats
+        // the position the receiver already holds; a moved origin is a new locate even
+        // when it encodes the same Song Position Pointer.
+        let stopped_seek = at == origin && (previous_pass.is_some() || at != 0);
+        if !block.playing && origin_changed {
+            self.stopped_spp = None;
+        }
         let located = changed && (block.playing || stopped_seek);
         self.advance(block.playing, at, (remap || located) && !timely_origin, tempo, rate, send);
     }
@@ -172,6 +177,15 @@ impl SyncEncoder for Cursor {
     fn remap(&mut self, old: &Session, new: &Session) {
         if let Some(at) = self.last_position {
             self.remap |= remapped(old, new, at);
+            // A repayment window paces owed pulses on the map it was planned with. An edit
+            // ahead of the current position that moves its end replans it on the new map, so
+            // the window rejoins the live grid instead of relaunching the receiver.
+            if !self.remap
+                && let Some(window) = self.repayment
+                && window.moved(old, new)
+            {
+                self.repayment = Repayment::new(self.next_pulse, at, new);
+            }
         }
     }
     fn update(&mut self, b: Presentation, now: Instant, s: &Session, send: &mut dyn FnMut(Instant, &[u8])) -> Option<Instant> {
@@ -356,6 +370,93 @@ mod tests {
             block.pass += 1;
             cursor.update(block, now, &song, &mut |_, m| panic!("duplicate stopped locate {m:?}"));
         }
+    }
+
+    #[test]
+    fn every_stopped_locate_announces_its_position() {
+        let song = Session::default();
+        let now = Instant::now();
+        let r = song.sample_rate;
+        let sixteenth = |n: i64| song.tempo.tick_to_samples(n * TICKS_PER_QUARTER / 4, r);
+        let rolling = Presentation {
+            generation: 0,
+            sample_rate: r,
+            system_delay_samples: 0,
+            pass: 1,
+            origin: sixteenth(8),
+            playing: true,
+            sample: sixteenth(8) as f64,
+            heard_at: now,
+            samples_per_second: r.as_f64(),
+            limit: sixteenth(8) as f64,
+            looped: None,
+            end: None,
+            lead: Some(Duration::ZERO),
+        };
+        let mut cursor = Cursor::default();
+        cursor.update(rolling, now, &song, &mut |_, _| {});
+        let rolled = Presentation { sample: sixteenth(20) as f64, limit: sixteenth(20) as f64, ..rolling };
+        cursor.update(rolled, now, &song, &mut |_, _| {});
+        // Stop and a locate back to the rolling pass origin, read in one callback.
+        let returned = Presentation { pass: 2, playing: false, ..rolling };
+        let mut batch = Vec::new();
+        cursor.update(returned, now, &song, &mut |_, m| batch.push(m.to_vec()));
+        assert_eq!(batch, [vec![STOP], song_position(8).to_vec()]);
+        // A second locate inside the same sixteenth is still a locate.
+        let nearby = Presentation { pass: 3, origin: sixteenth(8) + 7, sample: (sixteenth(8) + 7) as f64, ..returned };
+        batch.clear();
+        cursor.update(nearby, now, &song, &mut |_, m| batch.push(m.to_vec()));
+        assert_eq!(batch, [song_position(9).to_vec()]);
+        let again = Presentation { pass: 4, origin: sixteenth(8) + 9, sample: (sixteenth(8) + 9) as f64, ..returned };
+        batch.clear();
+        cursor.update(again, now, &song, &mut |_, m| batch.push(m.to_vec()));
+        assert_eq!(batch, [song_position(9).to_vec()]);
+    }
+
+    #[test]
+    fn a_tempo_edit_ahead_during_repayment_rejoins_the_live_grid_without_a_relaunch() {
+        let mut song = Session { sample_rate: SampleRate::HZ_48000, ..Session::default() };
+        song.tempo.set_tempo(0, 120.).unwrap();
+        let base = Instant::now();
+        let roll = Presentation {
+            generation: 0,
+            sample_rate: song.sample_rate,
+            system_delay_samples: 0,
+            pass: 1,
+            origin: 0,
+            playing: true,
+            sample: 0.,
+            heard_at: base,
+            samples_per_second: 48_000.,
+            limit: 1e9,
+            looped: None,
+            end: None,
+            lead: Some(Duration::ZERO),
+        };
+        let mut cursor = Cursor::default();
+        let mut transport = Vec::new();
+        let mut run = |cursor: &mut Cursor, range: std::ops::Range<u64>, session: &Session| {
+            for us in range.step_by(250) {
+                cursor.update(roll, base + Duration::from_micros(us), session, &mut |_, m| {
+                    if m != [CLOCK] {
+                        transport.push((us, m.to_vec()));
+                    }
+                });
+            }
+        };
+        run(&mut cursor, 0..200_000, &song);
+        // Timing is lost for 0.425 s, then a repayment window spreads the owed pulses.
+        cursor.timing_lost();
+        run(&mut cursor, 625_000..626_000, &song);
+        assert!(cursor.repayment.is_some());
+        // Doubling the tempo from 0.75 s on leaves the current position where it was.
+        let mut edited = song.clone();
+        edited.tempo.set_tempo(TICKS_PER_QUARTER * 3 / 2, 240.).unwrap();
+        cursor.remap(&song, &edited);
+        run(&mut cursor, 626_000..1_500_000, &edited);
+        assert_eq!(transport, [(0, vec![START])]);
+        let live = (edited.tempo.samples_to_ticks_f(72_000, edited.sample_rate) / TICKS_PER_CLOCK as f64) as i64;
+        assert!(cursor.next_pulse.abs_diff(live) <= 1, "{} pulses sent, {live} live", cursor.next_pulse);
     }
 
     fn messages(cursor: &mut Cursor, at: i64, locate: bool) -> Vec<Vec<u8>> {
