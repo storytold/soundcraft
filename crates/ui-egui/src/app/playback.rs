@@ -386,7 +386,13 @@ impl SoundApp {
                     || moved_by_midi(t.id, Parameter::Pan(index));
                 let key = (t.id, index);
                 let write = match t.mixer.automation_mode {
-                    M::Touch => moved,
+                    M::Touch => {
+                        // Kept for the Stop pass only; Touch writes while the pan moves.
+                        if moved {
+                            self.touched_pans.insert(key);
+                        }
+                        moved
+                    }
                     M::Write => true,
                     M::Latch | M::TouchLatch => {
                         if moved {
