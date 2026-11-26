@@ -47,7 +47,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Hardware...",
             ["Setup"],
             None,
-            "{device?: output name, buffer_size?: 16..=8192 or null} — output device and buffer. Applied only in the desktop app (Playback Engine window / ui.audio_device), which returns the open device. Headless stores the request and returns applied: false; buffer_size is null when unset. Any integer in range, not rounded to the window's power-of-two sizes. Sample rate is the session's",
+            "{device?: output name, buffer_size?: 16..=8192 or null, record_offset?: whole samples within ±96000} — output device and buffer, and the record offset (desktop app only; no reopen). Applied only in the desktop app (Playback Engine window / ui.audio_device), which returns the open device, its latency and the record offset. Headless stores the request and returns applied: false; buffer_size is null when unset. Any integer in range, not rounded to the window's power-of-two sizes. Sample rate is the session's",
             always,
             |e, p| engine_settings(e, p, "setup.hardware")
         ),
@@ -56,7 +56,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Playback Engine...",
             ["Setup"],
             None,
-            "{device?: output name, buffer_size?: 16..=8192 or null, delay_compensation?: bool} — device and buffer as setup.hardware (applied only in the desktop app, or via ui.audio_device); delay_compensation is applied here too. Headless returns applied: false and does not invent a buffer",
+            "{device?: output name, buffer_size?: 16..=8192 or null, record_offset?: whole samples within ±96000, delay_compensation?: bool} — device, buffer and record offset as setup.hardware (applied only in the desktop app, or via ui.audio_device); delay_compensation is applied here too. Headless returns applied: false and does not invent a buffer",
             always,
             |e, p| engine_settings(e, p, "setup.playback_engine")
         ),

@@ -149,7 +149,7 @@ pub(crate) fn supported_format_config(
 }
 
 /// Whether `cfg`'s audio system calls a device's input and output callbacks one after the other
-/// in each device cycle, in the order the streams opened (ASIO; Core Audio on one device). The
+/// in each device cycle, in the order the streams opened (ASIO, Core Audio). The
 /// input opens first there, so the output callback mixes the input of the same cycle. WASAPI and
 /// the others run the two on their own threads: the order changes nothing but when the input
 /// starts piling up.

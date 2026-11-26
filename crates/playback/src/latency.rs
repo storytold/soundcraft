@@ -1,7 +1,11 @@
-//! The latency the audio backend reports for each open stream: how long after an output callback
-//! its first frame is heard, and how long before an input callback its first frame was captured.
-//! Both come from cpal's callback timestamps (ASIO: the driver's output and input latencies;
-//! WASAPI and Core Audio: the device position and stream latency).
+//! Latency and timing for placing takes. The latency the audio backend reports for each open
+//! stream: how long after an output callback its first frame is heard, and how long before an
+//! input callback its first frame was captured. Both come from cpal's callback timestamps (ASIO:
+//! the driver's output and input latencies; WASAPI and Core Audio: the device position and stream
+//! latency). Also the stamps of when session samples were heard ([`HeardStamps`]) and captured,
+//! told on the stream clock ([`clock_seconds`]; on Core Audio the host time moved by the device
+//! latency), and from them a take's [`placement_offset`], with [`nearest_round`] for loop
+//! recording.
 
 use std::sync::Mutex;
 use std::sync::atomic::{
