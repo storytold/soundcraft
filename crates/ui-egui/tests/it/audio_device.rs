@@ -37,7 +37,7 @@ fn the_reported_latency_is_null_until_an_open_stream_reports_one() {
 }
 
 #[test]
-fn whether_input_and_output_share_a_clock_is_null_until_both_are_open() {
+fn whether_input_and_output_share_a_clock_is_null_until_an_output_is_open_and_an_input_is_known() {
     // Nothing open: whether the two share a clock is not known, so it is null, never a guess.
     let mut app = SoundApp::new(soundcraft_engine::Engine::default(), None, Services::default());
     for command in ["ui.audio_device", "setup.playback_engine"] {
