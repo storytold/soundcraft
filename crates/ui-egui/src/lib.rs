@@ -16,6 +16,7 @@ pub const UPDATE_APP: craft_update::app::App = craft_update::app::App {
 pub mod aaf_import;
 pub mod appearance;
 pub mod bounce;
+pub mod channel_titles;
 pub mod control;
 pub mod credits;
 pub mod dialogs;
@@ -27,6 +28,7 @@ pub mod import;
 pub mod localization;
 pub mod menus;
 pub mod mix_window;
+pub mod os_window;
 pub mod palette;
 pub mod panels;
 pub mod preferences;
@@ -64,9 +66,27 @@ mod services;
 mod state;
 
 #[cfg(test)]
+mod exit_hook_tests;
+
+#[cfg(test)]
 use app::{automation_step_due, editor_changes, editor_states_due, failed_plugin_status};
+pub use channel_titles::{os_title, os_title_with_section};
 pub use services::Services;
 pub use state::{DragSource, MainWindow};
+
+/// The version line this build reports: the app binary sets the compiled identity once at start-up
+/// (a Nightly build's exact feed version), so About and diagnostics never guess it.
+static BUILD_VERSION: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+
+/// Record the compiled version. Later calls are ignored: the first value is the process's build.
+pub fn set_build_version(version: String) {
+    let _ = BUILD_VERSION.set(version);
+}
+
+/// The compiled version, or the crate's own when no binary recorded one (tests, the web build).
+pub fn build_version() -> &'static str {
+    BUILD_VERSION.get().map_or(env!("CARGO_PKG_VERSION"), String::as_str)
+}
 
 /// The record offset's range in session samples, either way: two seconds at 48 kHz.
 pub(crate) const RECORD_OFFSET_LIMIT: i64 = 96_000;
@@ -294,7 +314,8 @@ pub struct SoundApp {
     /// When the recent sessions were last checked for existence, which list, and the result.
     recent_checked: Option<(f64, Vec<String>, Vec<bool>)>,
     pub player: Option<Player>,
-    /// Input capture, opened on first record.
+    /// Input capture: opened with the output where the input and output callbacks run in the
+    /// order the streams opened (ASIO, Core Audio), else on the next record or input monitoring.
     pub recorder: Option<soundcraft_playback::record::Recorder>,
     record_start: Samples,
     /// Punch range to trim the take to (pre/post-roll recordings).
