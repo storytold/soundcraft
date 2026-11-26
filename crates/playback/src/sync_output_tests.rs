@@ -80,6 +80,7 @@ fn active_port(offset: i64, compensate: bool) -> Port<FakePort> {
         waiting_for_timing: false,
         opened: true,
         echo: None,
+        thru_keys: [0; 16],
     }
 }
 fn routes(ports: &[(&str, i64)], compensate: bool) -> Update {
@@ -1011,6 +1012,7 @@ fn a_reopened_port_whose_quieting_fails_is_quieted_at_the_next_open() {
         failure: None,
         opened: true,
         echo: None,
+        thru_keys: [0; 16],
     };
     live.reopened("SYN", &mut port, &stats);
     assert!(port.link.is_none(), "the second send failed and closed the port");
@@ -1072,4 +1074,51 @@ fn a_port_that_loses_its_last_route_ends_what_thru_holds_there_first() {
     drop(tx);
     worker.unpark();
     handle.join().unwrap();
+}
+
+/// The clips and MIDI Thru play the same key on the same port and channel: the device, which ends
+/// notes by key, hears the Note-Off only when the last of the two lets go, in either order.
+#[test]
+fn a_key_the_clips_and_thru_both_hold_ends_with_the_last_of_them() {
+    /// Clip messages handed in by the test, and whether the clips hold key 60 on channel 1.
+    struct Clips(Arc<Mutex<Vec<Vec<u8>>>>, Arc<std::sync::atomic::AtomicBool>);
+    impl SyncEncoder for Clips {
+        fn reset(&mut self) {}
+        fn update(&mut self, _: Presentation, now: Instant, _: &Session, send: &mut dyn FnMut(Instant, &[u8])) -> Option<Instant> {
+            for m in self.0.lock().unwrap().drain(..) {
+                send(now, &m);
+            }
+            None
+        }
+        fn holds(&self, channel: u8, key: u8) -> bool {
+            channel == 1 && key == 60 && self.1.load(Relaxed)
+        }
+    }
+    let now = Instant::now();
+    let view = View::default();
+    view.lock().unwrap().push(block(now, 0., 480., Duration::ZERO));
+    let (s, stats, feed) = (Session::default(), Stats::default(), MidiFeed::default());
+    let (on, off) = ([0x91, 60, 100], [0x81, 60, 0]);
+    for clips_last in [true, false] {
+        let queue = Arc::new(Mutex::new(Vec::new()));
+        let held = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let mut port = active_port(0, false);
+        port.routes[0].as_mut().unwrap().encoder = Box::new(Clips(queue.clone(), held.clone()));
+        let clip = |m: [u8; 3], holds: bool, port: &mut Port<FakePort>| {
+            held.store(holds, Relaxed);
+            queue.lock().unwrap().push(m.to_vec());
+            port.poll("DIN", now, &s, &view, &stats, &mut Vec::new());
+        };
+        clip(on, true, &mut port);
+        send_thru_on("DIN", &mut port, &on, &feed, &stats, None);
+        if clips_last {
+            send_thru_on("DIN", &mut port, &off, &feed, &stats, None);
+            clip(off, false, &mut port);
+        } else {
+            clip(off, false, &mut port);
+            send_thru_on("DIN", &mut port, &off, &feed, &stats, None);
+        }
+        let sent: Vec<_> = port.link.unwrap().messages.into_iter().map(|(_, m)| m).collect();
+        assert_eq!(sent, [on.to_vec(), on.to_vec(), off.to_vec()], "clips last: {clips_last}");
+    }
 }

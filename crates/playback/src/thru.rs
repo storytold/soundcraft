@@ -13,7 +13,8 @@
 //! [`Thru`] keeps the notes it started on each destination, with the input port, channel and key
 //! that hold them (the *owner*), and the sustain pedals it put down. A key's release ends its
 //! note where its note-on went. A destination hears a Note-Off when the last owner of the key
-//! there lets go. Notes and pedals are let go of by Thru itself when their owner no longer
+//! there lets go, and not while the clips also sound that key there (the port's clip encoder ends
+//! it then; the MIDI output worker keeps the two apart, see `sync_output.rs`). Notes and pedals are let go of by Thru itself when their owner no longer
 //! reaches the destination ([`Thru::follow`]: the track was taken out of record, muted, routed
 //! elsewhere, its input changed, MIDI Thru switched off), when their input port lost events
 //! ([`Thru::release_ports`]), when their output port loses its last route and closes

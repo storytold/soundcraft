@@ -410,6 +410,23 @@ struct Port<C> {
     /// The live input, told of what the clips send here for its echo check
     /// ([`MidiFeed::sent`]): a port that is also an input may send it straight back.
     echo: Option<Arc<MidiFeed>>,
+    /// The keys MIDI Thru has sounding here, bit `k` of entry `c` for key `k` on channel `c`.
+    /// The clips and Thru share a key on a channel: the device hears its Note-Off only when the
+    /// last of them lets go, as a device ends notes by key.
+    thru_keys: [u128; 16],
+}
+/// The channel and key of a Note-Off (or Note-On at velocity 0).
+fn note_off(bytes: &[u8]) -> Option<(u8, u8)> {
+    match bytes {
+        [status, key, velocity, ..] if status & 0xf0 == 0x90 && *velocity == 0 => Some((status & 0x0f, key & 0x7f)),
+        [status, key, ..] if status & 0xf0 == 0x80 => Some((status & 0x0f, key & 0x7f)),
+        _ => None,
+    }
+}
+/// Whether MIDI Thru has the key of this clip Note-Off sounding (`keys`, [`Port::thru_keys`]):
+/// the clip's Note-Off is held back, and Thru's own ends the note.
+fn thru_holds(keys: &[u128; 16], bytes: &[u8]) -> bool {
+    note_off(bytes).is_some_and(|(channel, key)| keys[usize::from(channel)] & (1u128 << key) != 0)
 }
 /// Most future events a port holds. When full, an event that is not a release makes room; when
 /// every queued event is a release, an event that is not one is dropped. Releases are always
@@ -541,6 +558,9 @@ impl<C: SyncPort> Port<C> {
         // A stable sort keeps the emission order of equal deadlines.
         pending.sort_by_key(|m| m.at);
         for e in pending.iter() {
+            if thru_holds(&self.thru_keys, &e.bytes[..e.len]) {
+                continue;
+            }
             if let Some(f) = &self.echo {
                 // Before it leaves: its echo may be back before the send returns.
                 f.sent(name, &e.bytes[..e.len], SentBy::Clips);
@@ -568,6 +588,7 @@ fn set_route<C: SyncPort>(map: &mut BTreeMap<String, Port<C>>, index: usize, nam
         failure: None,
         opened: false,
         echo: None,
+        thru_keys: [0; 16],
     });
     port.routes[index] = Some(route);
 }
@@ -575,6 +596,9 @@ fn set_route<C: SyncPort>(map: &mut BTreeMap<String, Port<C>>, index: usize, nam
 /// encoders.
 fn send_now<C: SyncPort>(name: &str, port: &mut Port<C>, msg: &[u8], stats: &Stats) {
     let now = Instant::now();
+    if thru_holds(&port.thru_keys, msg) {
+        return;
+    }
     if let Some(link) = &mut port.link {
         if let Some(f) = &port.echo {
             f.sent(name, msg, SentBy::Clips);
@@ -596,6 +620,20 @@ fn send_thru<C: SyncPort>(ports: &mut BTreeMap<String, Port<C>>, name: &str, msg
 }
 /// [`send_thru`] on the port `p` named `name`.
 fn send_thru_on<C: SyncPort>(name: &str, p: &mut Port<C>, msg: &[u8], feed: &MidiFeed, stats: &Stats, arrived: Option<i64>) {
+    if p.link.is_none() {
+        return;
+    }
+    if let Some((channel, key)) = note_off(msg) {
+        p.thru_keys[usize::from(channel)] &= !(1u128 << key);
+        // The clips still sound this key here: their own Note-Off ends it.
+        if p.routes.iter().flatten().any(|r| r.encoder.holds(channel, key)) {
+            return;
+        }
+    } else if let [status, key, _, ..] = msg
+        && status & 0xf0 == 0x90
+    {
+        p.thru_keys[usize::from(status & 0x0f)] |= 1u128 << (key & 0x7f);
+    }
     let Some(link) = &mut p.link else { return };
     // Before it leaves: its echo may be back before this returns.
     feed.sent(name, msg, SentBy::Thru);
@@ -671,6 +709,7 @@ impl LiveThru {
     /// A send that fails closes the port, and the sends after it go nowhere: then every one of
     /// these channels is quieted again when the port next opens.
     fn reopened<C: SyncPort>(&mut self, name: &str, p: &mut Port<C>, stats: &Stats) {
+        p.thru_keys = [0; 16];
         let channels = self.thru.reopened(name);
         for channel in (0..16u8).filter(|c| channels & (1 << c) != 0) {
             send_now(name, p, &[0xb0 | channel, 64, 0], stats);

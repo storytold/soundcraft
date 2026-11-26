@@ -359,4 +359,9 @@ pub trait SyncEncoder: Send {
     fn error(&self) -> Option<&'static str> {
         None
     }
+    /// Whether this encoder has a note sounding on `channel` and `key` (MIDI Thru then holds back
+    /// its own Note-Off for that key, which would end this one too).
+    fn holds(&self, _channel: u8, _key: u8) -> bool {
+        false
+    }
 }

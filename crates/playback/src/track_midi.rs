@@ -438,6 +438,10 @@ impl SyncEncoder for TrackMidi {
         self.release_all(send);
         self.used = 0;
     }
+
+    fn holds(&self, channel: u8, key: u8) -> bool {
+        self.count.get(usize::from(channel)).and_then(|keys| keys.get(usize::from(key))).is_some_and(|n| *n > 0)
+    }
 }
 
 #[cfg(test)]
