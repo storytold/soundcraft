@@ -2,7 +2,7 @@
 
 `soundcraft-cli` runs SoundCraft without a window: it converts and inspects audio, runs engine
 commands on a session, serves MCP, and calls a running app. Follows
-[RFC-0012](https://github.com/storytold/craft-contrib/pull/18) (command-line conventions for the
+[RFC-0018](https://github.com/storytold/craft-contrib/blob/main/rfcs/0018-cli-conventions.md) (command-line conventions for the
 Craft apps).
 
 `soundcraft-cli --help` and `soundcraft-cli <subcommand> --help` are the source of truth for
@@ -90,7 +90,7 @@ link stays. An existing file that is not an input is replaced without asking.
 `SOUNDCRAFT_CONFIG_DIR`, `SOUNDCRAFT_NO_PREFS`, `SOUNDCRAFT_NO_SYSTEM_FONTS`, `SOUNDCRAFT_WAYLAND`
 (Linux) and `RUST_LOG` configure the desktop app (see the [README](../README.md#logs) and
 [the control protocol](control-protocol.md)), not the CLI. `soundcraft --help` lists them.
-An empty variable counts as unset (RFC-0012 rule 1.7), except `SOUNDCRAFT_CONFIG_DIR`: empty means
+An empty variable counts as unset (RFC-0018 rule 1.7), except `SOUNDCRAFT_CONFIG_DIR`: empty means
 no settings folder.
 
 `SOUNDCRAFT_NO_PREFS`, `SOUNDCRAFT_NO_SYSTEM_FONTS` and `SOUNDCRAFT_WAYLAND` are on/off switches with
@@ -131,12 +131,12 @@ cargo run -p soundcraft-cli --example man-and-completions -- out/
 `soundcraft-cli.fish` into `~/.config/fish/completions/`, `_soundcraft-cli` into a directory on
 zsh's `$fpath`, and read a page with `man -l out/soundcraft-cli.1`.
 
-## RFC-0012
+## RFC-0018
 
-soundcraft-cli follows [RFC-0012](https://github.com/storytold/craft-contrib/pull/18): clap derive
+soundcraft-cli follows [RFC-0018](https://github.com/storytold/craft-contrib/blob/main/rfcs/0018-cli-conventions.md): clap derive
 types, thiserror errors, `run(args, out, err)` behind `main`, environment variables declared on
 their flags, generated completions and man pages, tests that pin help and every usage error, no
-output replacing an input without `--in-place`, and the ast-grep rules in `lint/ast-grep`. The shared automation flags are declared once in
+output replacing an input without `--in-place`, and the shared ast-grep rules of craft-common-actions. The shared automation flags are declared once in
 `crates/automation/src/args.rs`.
 
 Rules not followed yet:
