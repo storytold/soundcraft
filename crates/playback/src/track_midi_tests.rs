@@ -295,9 +295,31 @@ fn a_reopened_port_quiets_the_channels_in_use_and_does_not_replay_old_notes() {
     enc.reset();
     wire.clear();
     run(&mut enc, &s, b, Duration::from_millis(500), Duration::from_millis(1100), &mut wire);
-    assert_eq!(wire[0].1, [0xb3, 123, 0], "{wire:?}");
+    assert_eq!(wire[..2].iter().map(|(_, m)| m.clone()).collect::<Vec<_>>(), [vec![0xb3, 64, 0], vec![0xb3, 123, 0]], "{wire:?}");
     let ons = note_ons(&wire);
     assert_eq!(ons.iter().map(|(_, p)| *p).collect::<Vec<_>>(), [67], "the note held before the unplug is not struck again");
+}
+
+#[test]
+fn a_reopen_after_a_stop_whose_releases_failed_still_quiets_the_channel() {
+    // Windows: the Stop's Note-Off and All Notes Off went to a broken handle. The encoder had
+    // moved on (nothing held, nothing in use), but the reopen still quiets that channel.
+    let base = Instant::now();
+    let mut s = session();
+    add_track(&mut s, TrackKind::Midi, vec![note(60, 100, 0, 9600)], vec![], "DIN", 5);
+    let mut enc = TrackMidi::new("DIN");
+    let mut wire = Wire::new();
+    run(&mut enc, &s, rolling(base, 1, 0), Duration::ZERO, Duration::from_millis(100), &mut wire);
+    enc.update(stopped(base, 1, 4800), base + Duration::from_millis(100), &s, &mut |_, _| {});
+    enc.reset();
+    wire.clear();
+    enc.update(stopped(base, 1, 4800), base + Duration::from_millis(1200), &s, &mut |at, m| wire.push((at, m.to_vec())));
+    assert_eq!(wire.iter().map(|(_, m)| m.clone()).collect::<Vec<_>>(), [vec![0xb5, 64, 0], vec![0xb5, 123, 0]]);
+    // Only once: the next reopen has nothing to make good.
+    enc.reset();
+    wire.clear();
+    enc.update(stopped(base, 1, 4800), base + Duration::from_millis(2400), &s, &mut |at, m| wire.push((at, m.to_vec())));
+    assert!(wire.is_empty(), "{wire:?}");
 }
 
 #[test]
