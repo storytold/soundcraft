@@ -1111,14 +1111,18 @@ fn a_key_the_clips_and_thru_both_hold_ends_with_the_last_of_them() {
         };
         clip(on, true, &mut port);
         send_thru_on("DIN", &mut port, &on, &feed, &stats, None);
+        let sent = |port: &Port<FakePort>| port.link.as_ref().unwrap().messages.iter().map(|(_, m)| m.clone()).collect::<Vec<_>>();
+        // The first to let go sends nothing; the last sends the one Note-Off.
         if clips_last {
             send_thru_on("DIN", &mut port, &off, &feed, &stats, None);
+            assert_eq!(sent(&port), [on.to_vec(), on.to_vec()], "thru let go first");
             clip(off, false, &mut port);
         } else {
             clip(off, false, &mut port);
+            assert_eq!(sent(&port), [on.to_vec(), on.to_vec()], "the clips let go first");
             send_thru_on("DIN", &mut port, &off, &feed, &stats, None);
         }
-        let sent: Vec<_> = port.link.unwrap().messages.into_iter().map(|(_, m)| m).collect();
+        let sent = sent(&port);
         assert_eq!(sent, [on.to_vec(), on.to_vec(), off.to_vec()], "clips last: {clips_last}");
     }
 }
@@ -1201,4 +1205,101 @@ fn the_encoders_hear_of_a_delivery_only_when_every_send_went_out() {
     };
     failing.poll("DIN", now, &Session::default(), &view, &Stats::default(), &mut Vec::new());
     assert_eq!(delivered.load(Relaxed), 1, "a failed send confirms nothing");
+}
+
+/// A clip route replaced while MIDI Thru holds a key on its channel (an offset change): the clips'
+/// notes end one by one, and no All Notes Off cuts the key the player still holds.
+#[test]
+fn replacing_a_clip_route_does_not_silence_a_key_thru_holds() {
+    struct Clips;
+    impl SyncEncoder for Clips {
+        fn reset(&mut self) {}
+        fn update(&mut self, _: Presentation, _: Instant, _: &Session, _: &mut dyn FnMut(Instant, &[u8])) -> Option<Instant> {
+            None
+        }
+        fn stop(&mut self, send: &mut dyn FnMut(&[u8])) {
+            send(&[0x81, 62, 0]);
+            send(&[0xb1, 123, 0]);
+            send(&[0xb2, 123, 0]);
+        }
+    }
+    let (stats, feed) = (Stats::default(), MidiFeed::default());
+    let mut port = active_port(0, false);
+    port.routes[0].as_mut().unwrap().encoder = Box::new(Clips);
+    send_thru_on("DIN", &mut port, &[0x91, 60, 100], &feed, &stats, None);
+    clear_route("DIN", &mut port, 0, &stats);
+    let sent: Vec<_> = port.link.unwrap().messages.into_iter().map(|(_, m)| m).collect();
+    assert_eq!(sent, [vec![0x91, 60, 100], vec![0x81, 62, 0], vec![0xb2, 123, 0]], "channel 3 holds no thru key");
+}
+
+/// A port closed because its label is bound to another port now: what MIDI Thru holds there ends
+/// on the old port first, and the key's own release then sends nothing to the new one.
+#[test]
+fn a_port_closed_because_its_label_moved_ends_what_thru_holds_there_first() {
+    use soundcraft_model::{ChannelFormat, MidiOutput, TrackKind};
+    struct Link(usize, Sender<(usize, Vec<u8>)>);
+    impl SyncPort for Link {
+        fn send_at(&mut self, _at: Instant, b: &[u8]) -> Result<Instant, String> {
+            self.1.send((self.0, b.to_vec())).unwrap();
+            Ok(Instant::now())
+        }
+    }
+    struct Moving {
+        moved: Arc<std::sync::atomic::AtomicBool>,
+        wire: Sender<(usize, Vec<u8>)>,
+        opens: usize,
+    }
+    impl ports::Connect<Link> for Moving {
+        fn open(&mut self, _: &str) -> Result<(Link, Option<String>), String> {
+            self.opens += 1;
+            Ok((Link(self.opens, self.wire.clone()), None))
+        }
+        fn lists(&self) -> bool {
+            true
+        }
+        fn listed(&mut self, labels: &BTreeSet<String>) -> Option<BTreeSet<String>> {
+            Some(if self.moved.load(Relaxed) { BTreeSet::new() } else { labels.clone() })
+        }
+    }
+    let mut s = Session::new("t", soundcraft_time::SampleRate::HZ_48000);
+    let t = s.add_track(TrackKind::Midi, ChannelFormat::Stereo, None);
+    MidiOutput::store(&mut s.edit, t, Some(MidiOutput { device: "DIN", channel: 3 }));
+    s.track_mut(t).unwrap().mixer.record_arm = true;
+    let (tx, rx) = channel();
+    let (wire, got) = channel();
+    let stats = Arc::new(Stats::default());
+    let feed = Arc::new(MidiFeed::default());
+    let moved = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let connect = Moving { moved: moved.clone(), wire, opens: 0 };
+    let (worker_stats, session) = (stats.clone(), Arc::new(s));
+    let handle = std::thread::spawn(move || drive_ports(View::default(), session, rx, Default::default(), worker_stats, connect));
+    let worker = handle.thread().clone();
+    tx.send(routes(&[("DIN", 0)], false)).unwrap();
+    tx.send(Update::Feed(Some(feed.clone()))).unwrap();
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while !(feed.thru_attached() && stats.connected().contains("DIN")) && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    let next = |wait: Duration| loop {
+        let m = got.recv_timeout(wait)?;
+        if m.1.first() != Some(&0xb0) || m.1.get(1) != Some(&1) {
+            return Ok::<_, std::sync::mpsc::RecvTimeoutError>(m);
+        }
+    };
+    feed.receive(0, &[0x90, 60, 100]);
+    feed.receive(0, &[0xB0, 64, 127]);
+    assert_eq!(next(Duration::from_secs(2)).unwrap(), (1, vec![0x93, 60, 100]));
+    assert_eq!(next(Duration::from_secs(2)).unwrap(), (1, vec![0xB3, 64, 127]));
+    moved.store(true, Relaxed);
+    assert_eq!(next(Duration::from_secs(3)).unwrap(), (1, vec![0x83, 60, 0]), "released on the old port");
+    assert_eq!(next(Duration::from_secs(1)).unwrap(), (1, vec![0xB3, 64, 0]));
+    // The port the label is bound to now is quieted as a reopened one, and the key's release
+    // sends nothing more.
+    assert_eq!(next(Duration::from_secs(1)).unwrap(), (2, vec![0xB3, 64, 0]));
+    assert_eq!(next(Duration::from_secs(1)).unwrap(), (2, vec![0xB3, 123, 0]));
+    feed.receive(0, &[0x80, 60, 0]);
+    assert!(next(Duration::from_millis(200)).is_err());
+    drop(tx);
+    worker.unpark();
+    handle.join().unwrap();
 }

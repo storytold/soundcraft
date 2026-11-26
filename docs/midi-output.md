@@ -144,8 +144,12 @@ you play it. This is what Pro Tools calls MIDI Thru (Options › MIDI Thru, on b
 - Notes you hold through thru are ended (Note-Off, then sustain pedal up) when the track is taken
   out of record or its monitor goes off, its output or input is changed, it is made inactive or
   deleted, a MIDI track is muted (or soloed out), MIDI Thru is switched off, the keyboard is
-  unplugged, the transport stops, or with **Event › All MIDI Notes Off**. Letting go of the key
-  afterwards sends nothing more.
+  unplugged, the transport stops, the output port is unplugged or its name is bound to another
+  port, or with **Event › All MIDI Notes Off**. Letting go of the key afterwards sends nothing
+  more.
+- When the clips stop on a port while you hold a key there through thru (their output offset is
+  changed, say), their notes end one by one and no All Notes Off is sent on that channel, so the
+  key you hold keeps sounding.
 - A **mute** on an instrument track acts on its audio only, as for its clips: its MIDI output
   keeps playing what you play.
 - **MIDI loops**: when an output feeds back into an input of the same device (an IAC bus used

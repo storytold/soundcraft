@@ -681,6 +681,15 @@ impl LiveThru {
             }
         }
     }
+    /// The port `name` is about to close as it is no longer listed or its label is bound to
+    /// another port now: end what thru holds there while it is open, so that a device still
+    /// there does not keep it sounding. Sent to a port that is gone, it goes nowhere, so the
+    /// channels are still quieted when the label opens again ([`Self::reopened`]).
+    fn release_leaving<C: SyncPort>(&mut self, name: &str, p: &mut Port<C>, stats: &Stats) {
+        if let Some(f) = &self.feed {
+            self.thru.release_dest(name, &mut |_, msg| send_thru_on(name, p, msg, f, stats, None));
+        }
+    }
     /// Every thru note off and pedal up (All MIDI Notes Off).
     fn release_all<C: SyncPort>(&mut self, ports: &mut BTreeMap<String, Port<C>>, stats: &Stats) {
         if let Some(f) = &self.feed {
@@ -737,10 +746,21 @@ fn same_feed(a: Option<&Arc<MidiFeed>>, b: Option<&Arc<MidiFeed>>) -> bool {
 fn play_position(view: &View, now: Instant) -> i64 {
     view.lock().unwrap_or_else(std::sync::PoisonError::into_inner).read(now, false, 0).0.map_or(0, |b| b.sample_index_at(now))
 }
+/// Stop the route `index` of `port`. Its notes end one by one; its All Notes Off is not sent on
+/// a channel where MIDI Thru holds a key, which the player still holds (a route replaced by an
+/// offset change, say). All MIDI Notes Off, and a port that closes, end Thru's notes too.
 fn clear_route<C: SyncPort>(name: &str, port: &mut Port<C>, index: usize, stats: &Stats) {
     port.future.retain(|event| event.route != index);
     if let Some(mut route) = port.routes[index].take() {
-        route.encoder.stop(&mut |msg| send_now(name, port, msg, stats));
+        route.encoder.stop(&mut |msg| {
+            if let [status, 123, ..] = msg
+                && status & 0xf0 == 0xb0
+                && port.thru_keys[usize::from(status & 0x0f)] != 0
+            {
+                return;
+            }
+            send_now(name, port, msg, stats);
+        });
     }
 }
 /// Below this, the last stretch of a wait is one plain sleep.
@@ -986,8 +1006,14 @@ fn drive_ports<C: SyncPort>(
         let listed = if due.is_empty() { None } else { open.listed(&due) };
         for (name, p) in &mut ports {
             let was_open = p.link.is_some();
+            // Closed below as no longer listed, or as its label is bound to another port now,
+            // which keep_open may open at once.
+            let leaving = was_open && now >= p.retry && listed.as_ref().is_some_and(|l| !l.contains(name));
+            if leaving {
+                live.release_leaving(name, p, &stats);
+            }
             keep_open(name, p, listed.as_ref(), now, &stats, &mut open);
-            if !was_open && p.link.is_some() {
+            if (leaving || !was_open) && p.link.is_some() {
                 live.reopened(name, p, &stats);
             }
             if p.link.is_some() && open.lists() {
