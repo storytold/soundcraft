@@ -82,7 +82,7 @@ pub(super) fn plugin_windows(app: &mut SoundApp, ctx: &egui::Context) {
                                 let mut idx = x.round().max(0.0) as usize;
                                 let selected = p.choices.get(idx).copied().unwrap_or("?");
                                 let selected_text = if localize_params { crate::localization::text(selected) } else { selected };
-                                let r = craft_ui::ComboBox::from_id_salt(("pc", tid.0, slot, p.id)).selected_text(selected_text).show_ui(ui, |ui| {
+                                let r = egui::ComboBox::from_id_salt(("pc", tid.0, slot, p.id)).selected_text(selected_text).show_ui(ui, |ui| {
                                     for (i, c) in p.choices.iter().enumerate() {
                                         let choice_text = if localize_params { crate::localization::text(c) } else { c };
                                         ui.selectable_value(&mut idx, i, choice_text);
