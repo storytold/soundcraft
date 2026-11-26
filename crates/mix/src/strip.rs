@@ -33,6 +33,9 @@ pub(crate) struct PluginSlot {
 
 pub(crate) struct Strip {
     pub(crate) buf: Vec<Vec<f32>>,
+    /// This block plays the track's live audio input (input monitoring, or record-enabled while
+    /// stopped or recording): Low Latency Monitoring keeps it out of delay compensation.
+    pub(crate) monitoring: bool,
     /// Pre-fader copy for pre-fader sends.
     pub(crate) pre: Vec<Vec<f32>>,
     pub(crate) scratch: Vec<f32>,
@@ -69,7 +72,9 @@ pub(crate) struct Strip {
 pub(crate) const MAX_LATENCY: usize = 1 << 20;
 
 /// A multichannel delay line (samples). The rings only grow (keeping their contents), so a delay
-/// change in the callback moves the read offset instead of reallocating and zeroing.
+/// change in the callback moves the read offset instead of reallocating and zeroing. At zero the
+/// line is bypassed; coming back from it, reads give silence until the delay reaches back only to
+/// audio written since, so nothing from before the bypass plays and the rings are not zeroed.
 #[derive(Default)]
 pub(crate) struct DelayLine {
     pub(crate) bufs: Vec<Vec<f32>>,
@@ -77,11 +82,21 @@ pub(crate) struct DelayLine {
     idx: usize,
     /// Current delay (samples).
     pub(crate) len: usize,
+    /// Samples written since the line last came back from zero, up to `MAX_LATENCY + 1`. A read
+    /// further back than this would be audio from before the bypass, so it gives silence instead.
+    fresh: usize,
 }
 
 impl DelayLine {
     pub(crate) fn set(&mut self, len: usize, ch: usize) {
         let len = len.min(MAX_LATENCY);
+        // At zero the line is bypassed and stops taking audio in (`process`): what it holds is
+        // from before, so it starts again from silence rather than replay that. Only the count of
+        // fresh samples is reset; zeroing the rings here would touch up to 2^20 samples per
+        // channel in the audio callback (#889).
+        if self.len == 0 && len > 0 {
+            self.fresh = 0;
+        }
         self.len = len;
         let cap = self.bufs.first().map_or(0, Vec::len);
         if self.bufs.len() != ch {
@@ -107,6 +122,7 @@ impl DelayLine {
         }
         let start = self.idx;
         let mut end = start;
+        let mut fresh_end = self.fresh;
         for (c, ch) in io.iter_mut().enumerate() {
             let Some(ring) = self.bufs.get_mut(c) else { continue };
             let cap = ring.len();
@@ -114,21 +130,23 @@ impl DelayLine {
                 continue;
             }
             let mut i = start % cap;
+            let mut fresh = self.fresh;
             for x in ch.iter_mut().take(frames) {
                 if let Some(w) = ring.get_mut(i) {
                     *w = *x;
                 }
-                if let Some(r) = ring.get((i + cap - self.len) % cap) {
-                    *x = *r;
-                }
+                fresh = (fresh + 1).min(MAX_LATENCY + 1);
+                *x = if fresh > self.len { ring.get((i + cap - self.len) % cap).copied().unwrap_or(0.0) } else { 0.0 };
                 i += 1;
                 if i >= cap {
                     i = 0;
                 }
             }
             end = i;
+            fresh_end = fresh;
         }
         self.idx = end;
+        self.fresh = fresh_end;
     }
     pub(crate) fn clear(&mut self) {
         self.bufs.iter_mut().for_each(|b| b.fill(0.0));
@@ -138,6 +156,7 @@ impl DelayLine {
 impl Strip {
     pub(crate) fn new() -> Self {
         Strip {
+            monitoring: false,
             buf: Vec::new(),
             pre: Vec::new(),
             scratch: Vec::new(),
@@ -461,8 +480,11 @@ pub(crate) fn process_strip(s: &Session, t: &Track, strip: &mut Strip, busses: &
     let Block { pos, frames, any_solo } = blk;
     zero_buf(&mut strip.buf, frames);
     let transport = transport_at(s, pos, !live.monitor_only, live.recording);
+    strip.monitoring = t.kind == TrackKind::Audio
+        && !live.input.is_empty()
+        && (t.mixer.input_monitor || (t.mixer.record_arm && (live.monitor_only || live.recording)));
     match t.kind {
-        TrackKind::Audio if !live.input.is_empty() && (t.mixer.input_monitor || (t.mixer.record_arm && (live.monitor_only || live.recording))) => {
+        TrackKind::Audio if strip.monitoring => {
             monitor_input(t, strip, live, frames);
         }
         TrackKind::Audio if live.monitor_only => {}

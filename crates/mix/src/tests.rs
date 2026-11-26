@@ -24,7 +24,8 @@ fn synth_session(level_db: f32) -> Session {
 
 #[test]
 fn delay_line_change_keeps_buffers_and_history() {
-    // #889: a latency change must not reallocate or zero the delay line in the callback.
+    // #889: a latency change must not reallocate or zero the delay line in the callback (coming
+    // back from zero is covered by `a_delay_line_back_from_zero_touches_no_more_than_its_new_length`).
     let mut d = DelayLine::default();
     d.set(480, 2);
     let ptrs: Vec<_> = d.bufs.iter().map(|b| b.as_ptr()).collect();
@@ -45,6 +46,40 @@ fn delay_line_change_keeps_buffers_and_history() {
     d.set(480, 2);
     let after: Vec<_> = d.bufs.iter().map(|b| b.as_ptr()).collect();
     assert_eq!(ptrs, after, "delay line reallocated going back to its size");
+}
+
+#[test]
+fn a_delay_line_back_from_zero_does_not_replay_old_audio() {
+    // Low Latency Monitoring sets a monitored track's compensation to zero and back (#1754).
+    let mut d = DelayLine::default();
+    d.set(4, 1);
+    let mut io = vec![vec![1.0f32; 8]];
+    d.process(&mut io, 8);
+    d.set(0, 1);
+    let mut io = vec![vec![0.0f32; 8]];
+    d.process(&mut io, 8);
+    d.set(4, 1);
+    let mut io = vec![vec![0.0f32; 8]];
+    d.process(&mut io, 8);
+    assert_eq!(io[0], vec![0.0; 8], "audio from before the bypass came back");
+}
+
+#[test]
+fn a_delay_line_back_from_zero_touches_no_more_than_its_new_length() {
+    // #889: coming back from zero must not zero the whole ring in the audio callback.
+    let mut d = DelayLine::default();
+    d.set(1000, 1);
+    let mut io = vec![vec![1.0f32; 4096]];
+    d.process(&mut io, 4096);
+    d.set(0, 1);
+    let before = d.bufs.clone();
+    d.set(4, 1);
+    let touched = d.bufs[0].iter().zip(&before[0]).filter(|(a, b)| a != b).count();
+    assert!(touched <= 4, "set() touched {touched} samples of the ring for a 4-sample delay");
+    // It still starts from silence and then delays the new input.
+    let mut io = vec![(1..=8).map(|v| v as f32).collect::<Vec<f32>>()];
+    d.process(&mut io, 8);
+    assert_eq!(io[0], vec![0.0, 0.0, 0.0, 0.0, 1.0, 2.0, 3.0, 4.0]);
 }
 
 #[test]
@@ -2134,4 +2169,44 @@ fn a_clip_volume_moved_earlier_by_the_track_delay_counts_as_set_when_a_device_go
     eng.midi_lost = midi_port_bit(0);
     render_block(&mut eng, &s, 1024);
     assert_eq!(std::mem::take(&mut *heard.lock().unwrap()), vec![(0, [0xB0, 121, 0]), (0, [0xB0, 7, 80])], "the clip's volume, not the default");
+}
+
+/// Low Latency Monitoring (#1754): delay compensation lines a monitored input up with the slowest
+/// track, so a latent plugin on *another* track delays what the performer hears. With the option
+/// on, a track that monitors its input takes no compensation delay; with it off, it waits.
+#[test]
+fn low_latency_monitoring_keeps_a_monitored_input_out_of_delay_compensation() {
+    let monitored_delay = |low_latency: bool| {
+        let mut s = Session::default();
+        s.edit.delay_compensation = true;
+        s.edit.set_flag("options.low_latency_monitoring", low_latency);
+        let latent = s.add_track(TrackKind::Audio, ChannelFormat::Mono, None);
+        s.track_mut(latent).unwrap().mixer.inserts[0] = Some(Insert::new("maximizer"));
+        let mon = s.add_track(TrackKind::Audio, ChannelFormat::Mono, None);
+        let t = s.track_mut(mon).unwrap();
+        t.mixer.input = Route::Hardware("In 1".into());
+        t.mixer.input_monitor = true;
+        let mut eng = MixEngine::new(48_000.0, 512);
+        let mut found = None;
+        for b in 0..8 {
+            let mut input = vec![0.0f32; 512];
+            if b == 2 {
+                input[100] = 0.5;
+            }
+            eng.input = vec![input];
+            eng.monitor_only = true;
+            let mut out = vec![vec![0.0f32; 512]; 2];
+            eng.render(&s, b * 512, 512, &mut out);
+            if found.is_none()
+                && let Some(i) = out[0].iter().position(|x| x.abs() > 0.05)
+            {
+                found = Some(b as usize * 512 + i);
+            }
+        }
+        (found.expect("the impulse comes through") as i64 - (2 * 512 + 100), eng.latency)
+    };
+    let (waits, latency) = monitored_delay(false);
+    assert!(latency > 0, "the Maximizer adds latency to compensate");
+    assert_eq!(waits, latency as i64, "without the option the monitored input waits for the latent track");
+    assert_eq!(monitored_delay(true).0, 0, "with the option it does not");
 }
