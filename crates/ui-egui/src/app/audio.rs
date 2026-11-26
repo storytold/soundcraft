@@ -121,7 +121,7 @@ impl SoundApp {
                 if gone {
                     lost.away(name, false);
                 } else {
-                    lost.by_hand = true;
+                    lost.input_by_hand = true;
                 }
                 (what, input_advice(gone))
             }

@@ -25,9 +25,12 @@ pub(crate) struct LostAudio {
     /// The output and input device that went away.
     pub(crate) output: Option<String>,
     pub(crate) input: Option<String>,
-    /// A device is still there but stopped working (stalled, failed, or could not be reopened):
-    /// only Reconnect reopens it, so the offer stays when nothing is waited for.
+    /// The output is still there but stopped working (stalled, failed, or could not be
+    /// reopened): only Reconnect reopens it, so the offer stays when nothing is waited for.
     pub(crate) by_hand: bool,
+    /// The same for the input. Kept until an input opens again (`input_opened`) or Reconnect,
+    /// so that reopening only the output does not take the offer away.
+    pub(crate) input_by_hand: bool,
     /// Readings in a row that listed the output and the input.
     steady: (u32, u32),
     /// What the background thread reads; `None` while nothing is waited for. Dropping it ends
@@ -44,7 +47,7 @@ impl LostAudio {
 
     /// Reads the device list with `probe` every `every`.
     pub(crate) fn with_probe(system: Option<String>, probe: Probe, every: Duration) -> Self {
-        LostAudio { system, output: None, input: None, by_hand: false, steady: (0, 0), list: None, probe, every }
+        LostAudio { system, output: None, input: None, by_hand: false, input_by_hand: false, steady: (0, 0), list: None, probe, every }
     }
 
     /// Wait for the output (or input) device `name`, which went away, to come back.
@@ -63,6 +66,12 @@ impl LostAudio {
         self.watch();
     }
 
+    /// The output opened again: its trouble is settled, not the input's, which stays until an
+    /// input opens (the input is only retried on its next use).
+    fn output_reopened(&mut self) {
+        self.by_hand = false;
+    }
+
     /// Stop waiting for the input device.
     fn input_done(&mut self) {
         self.input = None;
@@ -72,6 +81,11 @@ impl LostAudio {
     /// Whether a device that went away is waited for.
     fn waiting(&self) -> bool {
         self.list.is_some()
+    }
+
+    /// Whether nothing is left to reconnect: no device is waited for and none needs Reconnect.
+    fn settled(&self) -> bool {
+        !self.waiting() && !self.by_hand && !self.input_by_hand
     }
 
     /// (Re)start reading the device list for the devices away; the old reader stops.
@@ -143,7 +157,7 @@ impl SoundApp {
             self.recorder_failed = input_away;
             if self.player.as_ref().is_some_and(|p| !p.silent && p.device_name == name) {
                 if let Some(l) = &mut self.lost_audio {
-                    l.by_hand = false;
+                    l.output_reopened();
                 }
                 self.ui.status = crate::localized_format!("“{name}” is back: SoundCraft reconnected it.", name = name);
             } else {
@@ -164,7 +178,7 @@ impl SoundApp {
             self.recorder_failed = false;
             self.ui.status = crate::localized_format!("“{name}” is back.", name = name);
         }
-        if self.lost_audio.as_ref().is_some_and(|l| !l.waiting() && !l.by_hand) {
+        if self.lost_audio.as_ref().is_some_and(LostAudio::settled) {
             self.lost_audio = None;
         }
     }
@@ -172,10 +186,12 @@ impl SoundApp {
     /// The input device `name` opened: stop waiting for it.
     pub(super) fn input_opened(&mut self, name: &str) {
         let Some(l) = &mut self.lost_audio else { return };
+        // An input that stopped working without going away is settled by any input opening.
+        l.input_by_hand = false;
         if l.input.as_deref() == Some(name) {
             l.input_done();
         }
-        if !l.waiting() && !l.by_hand {
+        if l.settled() {
             self.lost_audio = None;
         }
     }
@@ -196,6 +212,7 @@ impl SoundApp {
         // back stops being waited for when it opens (`input_opened`).
         let still_away = self.lost_audio.as_mut().is_some_and(|l| {
             l.by_hand = false;
+            l.input_by_hand = false;
             if l.output.as_ref().is_some_and(|away| *away == name) {
                 l.output_done();
             }
@@ -410,6 +427,24 @@ mod tests {
         }
         assert!(!app.recorder_failed, "the input may open again");
         assert!(app.offers_reconnect(), "the stalled output still needs Reconnect");
+    }
+
+    /// An input that stopped working without going away keeps the Reconnect offer when only the
+    /// output is reopened: it is settled when an input opens, not before.
+    #[test]
+    fn a_reopened_output_keeps_the_offer_for_a_failed_input() {
+        let devices = Devices::default();
+        let mut app = crate::SoundApp::new(soundcraft_engine::Engine::default(), None, crate::Services::default());
+        app.lost_audio = Some(lost(&devices));
+        app.audio_lost().input_by_hand = true;
+        app.audio_lost().away(AWAY.into(), true);
+        app.audio_lost().output_done();
+        app.audio_lost().output_reopened();
+        assert!(!app.audio_lost().settled(), "the input still needs Reconnect");
+        app.watch_replug();
+        assert!(app.offers_reconnect(), "reopening the output does not take the offer for the input away");
+        app.input_opened("Mic");
+        assert!(!app.offers_reconnect(), "an input opened: nothing is left to reconnect");
     }
 
     /// Reconnect while an input is still away keeps waiting for it, so that it opens again once
