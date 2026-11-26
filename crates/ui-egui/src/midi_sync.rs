@@ -273,6 +273,21 @@ mod tests {
     }
 
     #[test]
+    fn recalling_a_window_configuration_keeps_the_midi_output_settings() {
+        let mut app = SoundApp::new(soundcraft_engine::Engine::default(), None, crate::Services::default());
+        app.ui.midi_sync.port_ids.insert("DIN".into(), "device-a".into());
+        let saved = serde_json::to_value(&app.ui).unwrap();
+        app.ui.midi_sync.compensation.notes = false;
+        app.ui.midi_sync.port_ids.insert("DIN".into(), "device-b".into());
+        crate::windows::recall_configuration(&mut app, &saved).unwrap();
+        assert!(!app.ui.midi_sync.compensation.notes);
+        assert_eq!(app.ui.midi_sync.port_ids["DIN"], "device-b");
+        // A configuration saved before these settings existed leaves them too.
+        crate::windows::recall_configuration(&mut app, &serde_json::to_value(crate::UiState::default()).unwrap()).unwrap();
+        assert_eq!(app.ui.midi_sync.port_ids["DIN"], "device-b");
+    }
+
+    #[test]
     fn the_compensation_command_takes_only_a_boolean() {
         let mut app = SoundApp::new(soundcraft_engine::Engine::default(), None, crate::Services::default());
         assert!(app.ui.midi_sync.compensation.notes, "compensated by default, as Beat Clock is");
