@@ -460,7 +460,10 @@ pub(super) fn header_selector(ui: &Ui, r: Rect, id: egui::Id, text: &str, color:
     });
     raised_key(ui.painter(), r, Tokens::current().slot_face, resp.hovered());
     let tr = if menu { r.with_max_x(r.max.x - 7.0) } else { r };
-    ui.painter().with_clip_rect(tr.shrink(1.0)).text(tr.center(), Align2::CENTER_CENTER, text, bold(10.0), color);
+    // Text wider than the key ends in an ellipsis, as in the Mix window's selectors, instead of
+    // being cut off at both edges.
+    let galley = crate::widgets::one_line(ui.painter(), text, bold(10.0), color, tr.width() - 4.0);
+    ui.painter().with_clip_rect(tr.shrink(1.0)).galley(tr.center() - galley.size() * 0.5, galley, color);
     if menu {
         arrow(ui.painter(), pos2(r.max.x - 5.5, r.min.y + 5.75), true, Tokens::current().text);
     }
