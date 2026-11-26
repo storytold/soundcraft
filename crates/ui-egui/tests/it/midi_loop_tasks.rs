@@ -134,6 +134,19 @@ fn loop_record_shows_on_both_record_buttons() {
     assert!(!mode(&h, "Record"));
 }
 
+#[test]
+fn preferences_show_new_playlists_on_loop_record_as_always_on() {
+    let mut app = SoundApp::new(soundcraft_engine::Engine::default(), None, Services::default());
+    app.ui.show_preferences = true;
+    app.ui.preferences_page = soundcraft_ui_egui::preferences::PreferencesPage::Operation;
+    let mut h = harness(app);
+    let node = h.get_by_label("Create New Playlists when Loop Recording");
+    assert_eq!(node.accesskit_node().toggled(), Some(Toggled::True), "takes after the first always go to new playlists");
+    assert!(node.accesskit_node().is_disabled(), "not an option to switch off");
+    hover(&mut h, "Create New Playlists when Loop Recording");
+    assert!(h.query_by_label("Always on: each take after the first goes to a new playlist.").is_some());
+}
+
 const BAR: i64 = 96_000; // 120 bpm 4/4 at 48 kHz
 
 fn ev(at: i64, status: u8, data1: u8, data2: u8) -> MidiTakeEvent {

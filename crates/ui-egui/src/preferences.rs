@@ -189,6 +189,8 @@ impl PreferencesState {
 #[derive(Clone, Copy)]
 enum Control {
     Check(&'static str),
+    /// A check box shown on and disabled: what SoundCraft always does, with the tooltip saying so.
+    AlwaysOn(&'static str, &'static str),
     Choice(&'static str, &'static str),
     ChoiceOptions(&'static str, &'static str, &'static [&'static str]),
     Value(&'static str, &'static str),
@@ -205,6 +207,7 @@ impl Control {
     const fn label(self) -> &'static str {
         match self {
             Self::Check(label)
+            | Self::AlwaysOn(label, _)
             | Self::Button(label)
             | Self::Choice(label, _)
             | Self::ChoiceOptions(label, _, _)
@@ -329,7 +332,9 @@ const OPERATION: &[Section] = &[
             Control::Check("Enable DSP Mode for Record-Armed or Input-Monitored Tracks"),
             Control::Check("Disable DSP Mode when Disabling Record and Input"),
             Control::Check("Console-Style Input Monitoring Indicators"),
-            Control::Check("Create New Playlists when Loop Recording"),
+            // Pro Tools' option is off by default (Reference Guide p.801); SoundCraft's Loop
+            // Record always puts each take after the first on a new playlist, so it is shown on.
+            Control::AlwaysOn("Create New Playlists when Loop Recording", "Always on: each take after the first goes to a new playlist."),
             Control::Radios("Online Recording Starts", &["At Timecode Lock", "At Insertion or Selection"]),
             Control::Value("Destructive Punch File Length", "25 minutes"),
         ],
@@ -991,6 +996,10 @@ fn control_ui(ui: &mut egui::Ui, page: PreferencesPage, section: &str, index: us
             ui.add_enabled(false, egui::Checkbox::new(&mut value, label(text)))
                 .on_disabled_hover_text(crate::localization::text("This preference is not available yet."));
         }
+        Control::AlwaysOn(text, why) => {
+            let mut value = true;
+            ui.add_enabled(false, egui::Checkbox::new(&mut value, label(text))).on_disabled_hover_text(crate::localization::text(why));
+        }
         Control::Choice(text, value) | Control::ChoiceOptions(text, value, _) => {
             ui.add_enabled_ui(false, |ui| {
                 egui::ComboBox::new(id, label(text)).selected_text(crate::localization::text(value)).show_ui(ui, |_| {});
@@ -1109,6 +1118,7 @@ mod tests {
                             values.iter().for_each(|v| check(v));
                         }
                         Control::Radios(_, values) => values.iter().for_each(|v| check(v)),
+                        Control::AlwaysOn(_, why) => check(why),
                         _ => {}
                     }
                 }
