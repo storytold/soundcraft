@@ -111,7 +111,10 @@ fn populated_mix_instrument_uses_readable_palette_in_real_frames() {
     let session = app.engine.session().clone();
     assert!(!session.pool.is_empty(), "the fixture must include decoded audio");
     let proof_dir = std::env::var_os("SOUNDCRAFT_MIX_PROOF_DIR").map(std::path::PathBuf::from);
-    let mut builder = egui_kittest::Harness::builder().with_size(vec2(1600.0, 1000.0)).with_pixels_per_point(2.0);
+    let mut builder = egui_kittest::Harness::builder()
+        .with_size(vec2(1600.0, 1000.0))
+        .with_pixels_per_point(2.0)
+        .with_context_setup(soundcraft_ui_egui::framework::install_headless);
     if proof_dir.is_some() {
         builder = builder.wgpu();
     }

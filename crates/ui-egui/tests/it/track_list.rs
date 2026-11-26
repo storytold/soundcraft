@@ -16,6 +16,7 @@ impl Rig {
         let mut engine = soundcraft_engine::Engine::default();
         engine.execute("track.new", &json!({"count": 6})).unwrap();
         let mut r = Rig { ctx: egui::Context::default(), app: SoundApp::new(engine, None, Services::default()), shapes: Vec::new() };
+        soundcraft_ui_egui::framework::install_headless(&r.ctx);
         for _ in 0..4 {
             r.frame(vec![]);
         }

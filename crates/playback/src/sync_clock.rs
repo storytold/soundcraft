@@ -1,4 +1,5 @@
-//! Presentation timestamps shared by external MIDI synchronization protocols.
+//! Presentation timestamps shared by every external MIDI output encoder (track notes and the
+//! synchronization protocols).
 use crate::{Range, Session};
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicU64, Ordering::Relaxed};
@@ -136,7 +137,7 @@ pub(crate) fn shift(at: Instant, seconds: f64) -> Instant {
 }
 
 // Keep scheduled buffers until they can actually be heard. Publishing two future
-// callbacks back-to-back must not conceal the first one's start or its final clocks.
+// callbacks back-to-back must not conceal the first one's start or its last events.
 const HISTORY: usize = 2048;
 #[derive(Clone)]
 pub(crate) struct SessionRevision {
@@ -330,10 +331,11 @@ impl Publisher {
         self.origin = Some(at);
     }
 }
-/// An output protocol on the shared worker. Return the next required wake time.
-/// A disconnected port resets its encoders before the next transport snapshot.
-/// Future events are queued per port (up to 256) until their requested deadline;
-/// equal timestamps retain emission order. Emit packets of at most 16 bytes.
+/// An output protocol on the shared worker, such as the track note output or Beat Clock. Return the next
+/// required wake time. A disconnected port resets its encoders before the next transport
+/// snapshot. Future events are queued per port (up to 256) until their requested deadline;
+/// equal timestamps retain emission order, and a full queue never evicts a note release.
+/// Emit packets of at most 16 bytes.
 pub trait SyncEncoder: Send {
     fn update(&mut self, block: Presentation, now: Instant, session: &Session, send: &mut dyn FnMut(Instant, &[u8])) -> Option<Instant>;
     fn reset(&mut self);
@@ -342,6 +344,9 @@ pub trait SyncEncoder: Send {
         self.reset();
     }
     fn stop(&mut self, _send: &mut dyn FnMut(&[u8])) {}
+    /// All MIDI Notes Off: release now whatever this encoder holds on the device. Playback
+    /// continues with the next update.
+    fn panic(&mut self, _send: &mut dyn FnMut(&[u8])) {}
     fn remap(&mut self, _old: &Session, _new: &Session) {}
     fn error(&self) -> Option<&'static str> {
         None

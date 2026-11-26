@@ -29,7 +29,8 @@ pub enum OutputTimingIssue {
     Unknown,
 }
 
-/// Host-side delivery measurements. Time values use microseconds.
+/// Host-side delivery measurements of the shared MIDI output worker. Time values use
+/// microseconds.
 #[derive(Default, Serialize)]
 pub struct MidiSyncStatus {
     pub sent: u64,
@@ -68,6 +69,9 @@ pub struct PortTiming {
     pub effective_total_us: Option<i64>,
     pub requested_offset_samples: i64,
     pub offset_samples: i64,
+    /// MIDI or instrument tracks play their clips to this port.
+    pub notes_enabled: bool,
+    pub notes_total_us: Option<i64>,
     pub beat_clock_enabled: bool,
     pub mtc_enabled: bool,
     pub beat_clock_total_us: Option<i64>,

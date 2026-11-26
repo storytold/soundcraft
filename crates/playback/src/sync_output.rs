@@ -1,9 +1,10 @@
-//! One native worker owns all sync protocols and one connection per destination label,
-//! each bound to the saved native port ID it was opened with.
+//! One native worker owns every external MIDI output route (track notes, MIDI Beat Clock and
+//! MIDI Time Code) and one connection per destination label, each bound to the saved native port ID it was opened
+//! with. A port carries one route of each [`RouteKind`], so several kinds of traffic share one
+//! connection (a WinMM port can usually be opened only once).
 use crate::sync_clock::{SessionRevision, delivery_offset};
 use crate::{
     Cmd, MidiSyncStatus, Session,
-    beat_clock::Cursor,
     sync_clock::{CallbackMetrics, Publisher, SyncEncoder, View},
     sync_status::PortTiming,
 };
@@ -31,6 +32,34 @@ impl SyncPort for MidiOutputConnection {
         let handed = Instant::now();
         self.send(bytes).map_err(|e| e.to_string())?;
         Ok(handed)
+    }
+}
+/// The kinds of traffic a destination port can carry at once, each through its own encoder.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum RouteKind {
+    /// Clip notes and controllers of the MIDI and instrument tracks routed to the port.
+    Notes,
+    /// MIDI Beat Clock with Song Position Pointer, one `beat_clock::Cursor` per port.
+    BeatClock,
+    /// MIDI Time Code, on at most one port, with the encoder its caller supplies.
+    Mtc,
+}
+pub(crate) const ROUTE_KINDS: usize = 3;
+impl RouteKind {
+    const ALL: [RouteKind; ROUTE_KINDS] = [RouteKind::Notes, RouteKind::BeatClock, RouteKind::Mtc];
+    fn index(self) -> usize {
+        self as usize
+    }
+}
+/// A message that ends sound: Note-Off (or Note-On at velocity 0), sustain pedal up, All Sound
+/// Off or All Notes Off. A full queue never evicts one (MIDI 1.0 p24: send each Note-Off).
+fn releases(bytes: &[u8]) -> bool {
+    match bytes {
+        [status, _, velocity, ..] if status & 0xf0 == 0x90 => *velocity == 0,
+        [status, ..] if status & 0xf0 == 0x80 => true,
+        [status, 64, 0, ..] if status & 0xf0 == 0xb0 => true,
+        [status, 120 | 123, ..] if status & 0xf0 == 0xb0 => true,
+        _ => false,
     }
 }
 #[derive(Default)]
@@ -102,6 +131,13 @@ impl WorkerSender {
         Ok(())
     }
 }
+/// The destinations of one [`RouteKind`]: each port label with its signed offset in samples,
+/// and whether the route is delay-compensated.
+#[derive(Clone, Default, PartialEq, Eq)]
+struct Routes {
+    ports: Vec<(String, i64)>,
+    compensate: bool,
+}
 #[derive(Default)]
 pub(crate) struct Output {
     port_registry: Arc<ports::Registry>,
@@ -110,9 +146,7 @@ pub(crate) struct Output {
     metrics: Arc<CallbackMetrics>,
     session: Option<Arc<Session>>,
     generation: u64,
-    beat: Vec<(String, i64)>,
-    compensated: bool,
-    additional: Option<(String, i64, bool)>,
+    routes: [Routes; ROUTE_KINDS],
     stats: Arc<Stats>,
     trouble: Arc<Mutex<Option<String>>>,
     wake_tx: Arc<Mutex<Option<WorkerSender>>>,
@@ -122,8 +156,12 @@ pub(crate) struct Output {
 }
 enum Update {
     Session(Arc<Session>),
-    Beats(Vec<(String, i64)>, bool),
+    /// Replace the ports of one route kind. Each newly routed port gets its own encoder.
+    Routes(RouteKind, Vec<(String, i64)>, bool, fn(&str) -> Box<dyn SyncEncoder>),
+    /// Route MIDI Time Code to at most one port with this encoder.
     Encoder(Option<(String, i64)>, bool, Box<dyn SyncEncoder>),
+    /// Send these messages now on every connected port (All MIDI Notes Off).
+    Panic(fn(&mut dyn FnMut(&[u8]))),
     Wake(Option<(u64, bool)>),
     InputWake(Arc<AtomicBool>),
     TransportWake(Arc<AtomicBool>, Option<(u64, bool)>),
@@ -163,7 +201,7 @@ impl Output {
             let stats = self.stats.clone();
             let registry = self.port_registry.clone();
             match std::thread::Builder::new()
-                .name("MIDI sync output".into())
+                .name("MIDI output".into())
                 .spawn(move || drive(view, s, rx, trouble, stats, |name| registry.connect(name)))
             {
                 Ok(thread) => {
@@ -172,7 +210,8 @@ impl Output {
                     self.worker = Some((tx, thread));
                 }
                 Err(e) => {
-                    *self.trouble.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(format!("MIDI sync worker could not start: {e}"));
+                    *self.trouble.lock().unwrap_or_else(std::sync::PoisonError::into_inner) =
+                        Some(format!("MIDI output worker could not start: {e}"));
                     self.retry_spawn_at = Some(Instant::now() + Duration::from_secs(1));
                     return false;
                 }
@@ -185,24 +224,39 @@ impl Output {
         }
         queued
     }
-    pub(crate) fn beats(&mut self, ports: Vec<(String, i64)>, compensate: bool) -> bool {
-        if self.worker.as_ref().is_some_and(|(_, task)| !task.is_finished()) && self.beat == ports && self.compensated == compensate {
+    /// Route `kind` to these ports, each with its signed offset in samples; `make` builds the
+    /// encoder of a newly routed port from its label. Whether the worker accepted them: a transient startup
+    /// failure can be retried with the same settings.
+    pub(crate) fn set_routes(
+        &mut self,
+        kind: RouteKind,
+        ports: Vec<(String, i64)>,
+        compensate: bool,
+        make: fn(&str) -> Box<dyn SyncEncoder>,
+    ) -> bool {
+        let next = Routes { ports, compensate };
+        let routes = &mut self.routes[kind.index()];
+        if self.worker.as_ref().is_some_and(|(_, task)| !task.is_finished()) && *routes == next {
             return true;
         }
-        self.beat = ports.clone();
-        self.compensated = compensate;
-        (ports.is_empty() && self.worker.is_none()) || self.send(Update::Beats(ports, compensate))
+        *routes = next.clone();
+        (next.ports.is_empty() && self.worker.is_none()) || self.send(Update::Routes(kind, next.ports, compensate, make))
     }
+    /// Route MIDI Time Code to `port` (or to none) through `encoder`. Whether the worker accepted
+    /// it.
     pub(crate) fn encoder(&mut self, port: Option<(String, i64)>, compensate: bool, encoder: Box<dyn SyncEncoder>) -> bool {
-        if port.is_none() && self.additional.is_none() && self.worker.is_none() {
+        let index = RouteKind::Mtc.index();
+        if port.is_none() && self.routes[index].ports.is_empty() && self.worker.is_none() {
             return true;
         }
         let accepted = self.send(Update::Encoder(port.clone(), compensate, encoder));
         if accepted {
-            self.additional = port.map(|(name, offset)| (name, offset, compensate));
+            self.routes[index] = Routes { ports: port.into_iter().collect(), compensate };
         }
         accepted
     }
+    /// A wake for MIDI input threads: the worker rechecks the presentation once. At most one
+    /// wake is queued at a time.
     pub(crate) fn waker(&self) -> Arc<dyn Fn() + Send + Sync> {
         let dest = self.wake_tx.clone();
         let pending = self.pending_wake.clone();
@@ -240,6 +294,14 @@ impl Output {
             }
         })
     }
+    /// Send `messages` at once on every connected port. Returns how many ports are connected.
+    pub(crate) fn panic(&mut self, messages: fn(&mut dyn FnMut(&[u8]))) -> usize {
+        let connected = self.stats.connected().len();
+        if self.worker.is_some() {
+            self.send(Update::Panic(messages));
+        }
+        connected
+    }
     pub(crate) fn send_transport(&self, audio: &Sender<Cmd>, command: Cmd) {
         let Some((tx, _)) = &self.worker else {
             let _ = audio.send(command);
@@ -261,10 +323,8 @@ impl Output {
         self.view.lock().unwrap_or_else(std::sync::PoisonError::into_inner).read(now, true, 0).0.map(|b| b.sample_index_at(now))
     }
     pub(crate) fn timing_issue(&self) -> Option<crate::OutputTimingIssue> {
-        let clock = self.compensated && !self.beat.is_empty();
-        let encoder = self.additional.as_ref().is_some_and(|(_, _, compensated)| *compensated);
         let chasing = self.chase_feed.upgrade().is_some_and(|feed| feed.mtc_online());
-        if !clock && !encoder && !chasing {
+        if !self.routes.iter().any(|r| r.compensate && !r.ports.is_empty()) && !chasing {
             return None;
         }
         match self.metrics.lead() {
@@ -296,29 +356,39 @@ impl Output {
                 system_delay_samples: system_delay as u64,
                 device_lead_us: lead,
                 lead_source,
-                beat_clock_enabled: false,
-                mtc_enabled: false,
+                notes_enabled: false,
                 advance_limited: delay.is_some_and(|(_, limited)| limited),
                 effective_total_us: delay.map(|(total, _)| (total * 1e6).round() as i64),
+                notes_total_us: None,
+                beat_clock_enabled: false,
+                mtc_enabled: false,
                 beat_clock_total_us: None,
                 mtc_total_us: None,
             }
         };
         let mut ports = BTreeMap::new();
-        for (name, offset) in &self.beat {
-            let mut t = timing(name, *offset, self.compensated);
-            t.beat_clock_enabled = true;
-            t.beat_clock_total_us = t.effective_total_us;
-            ports.insert(name.clone(), t);
-        }
-        if let Some((name, offset, compensate)) = &self.additional {
-            let t = timing(name, *offset, *compensate);
-            let total = t.effective_total_us;
-            let limited = t.advance_limited;
-            let entry = ports.entry(name.clone()).or_insert(t);
-            entry.mtc_enabled = true;
-            entry.mtc_total_us = total;
-            entry.advance_limited |= limited;
+        for kind in RouteKind::ALL {
+            let routes = &self.routes[kind.index()];
+            for (name, offset) in &routes.ports {
+                let t = timing(name, *offset, routes.compensate);
+                let (total, limited) = (t.effective_total_us, t.advance_limited);
+                let entry = ports.entry(name.clone()).or_insert(t);
+                entry.advance_limited |= limited;
+                match kind {
+                    RouteKind::Notes => {
+                        entry.notes_enabled = true;
+                        entry.notes_total_us = total;
+                    }
+                    RouteKind::BeatClock => {
+                        entry.beat_clock_enabled = true;
+                        entry.beat_clock_total_us = total;
+                    }
+                    RouteKind::Mtc => {
+                        entry.mtc_enabled = true;
+                        entry.mtc_total_us = total;
+                    }
+                }
+            }
         }
         MidiSyncStatus {
             sent: self.stats.sent.load(Relaxed),
@@ -367,13 +437,17 @@ struct Route {
 struct Port<C> {
     link: Option<C>,
     retry: Instant,
-    routes: [Option<Route>; 2],
+    routes: [Option<Route>; ROUTE_KINDS],
     future: Vec<Event>,
+    /// A Beat Clock Stop that was not delivered; sent first once the port is open again.
     stop_pending: bool,
-    timing_epochs: [u64; 2],
+    timing_epochs: [u64; ROUTE_KINDS],
     waiting_for_timing: bool,
     failure: Option<String>,
 }
+/// Most future events a port holds. When full, an event that is not a release makes room;
+/// releases are always kept.
+const QUEUE: usize = 256;
 #[derive(Clone, Copy)]
 struct Event {
     route: usize,
@@ -491,9 +565,11 @@ impl<C: SyncPort> Port<C> {
                     if at <= now {
                         pending.push(event);
                     } else {
-                        if self.future.len() == 256 {
-                            self.future.remove(0);
-                            self.failure = Some(format!("{name}: MIDI sync deadline queue is full"));
+                        if self.future.len() >= QUEUE {
+                            if let Some(index) = self.future.iter().position(|e| !releases(&e.bytes[..e.len])) {
+                                self.future.remove(index);
+                            }
+                            self.failure = Some(format!("{name}: MIDI output deadline queue is full"));
                         }
                         self.future.push(event);
                         soon(at);
@@ -511,6 +587,7 @@ impl<C: SyncPort> Port<C> {
                 }
             }
         }
+        // A stable sort keeps the emission order of equal deadlines.
         pending.sort_by_key(|m| m.at);
         for (index, e) in pending.iter().enumerate() {
             match port.send_at(e.at, &e.bytes[..e.len]) {
@@ -521,8 +598,9 @@ impl<C: SyncPort> Port<C> {
                     }
                 }
                 Err(err) => {
-                    // Reopening resets the encoders, so a Stop that was not delivered from
-                    // the failed packet onward must be sent after reconnecting.
+                    // Reopening resets the encoders, which release what the device may still hold.
+                    // A Beat Clock Stop that was not delivered from the failed packet onward must
+                    // be sent after reconnecting.
                     self.stop_pending |= pending[index..].iter().any(|e| e.bytes[..e.len] == [craft_midi_sync::sync::STOP]);
                     self.disconnect(name, err, now, stats);
                     return Some(self.retry);
@@ -536,34 +614,58 @@ fn set_route<C: SyncPort>(map: &mut BTreeMap<String, Port<C>>, index: usize, nam
     let port = map.entry(name).or_insert_with(|| Port {
         link: None,
         retry: Instant::now(),
-        routes: [None, None],
+        routes: std::array::from_fn(|_| None),
         future: Vec::new(),
         stop_pending: false,
-        timing_epochs: [0; 2],
+        timing_epochs: [0; ROUTE_KINDS],
         waiting_for_timing: false,
         failure: None,
     });
     port.routes[index] = Some(route);
 }
+/// Send `msg` now on a connected port. A failure disconnects it; the reconnect resets its
+/// encoders.
+fn send_now<C: SyncPort>(name: &str, port: &mut Port<C>, msg: &[u8], stats: &Stats) {
+    let now = Instant::now();
+    if let Some(link) = &mut port.link {
+        match link.send_at(now, msg) {
+            Ok(handed) => stats.record(now, handed),
+            Err(error) => port.disconnect(name, error, now, stats),
+        }
+    }
+}
 fn clear_route<C: SyncPort>(name: &str, port: &mut Port<C>, index: usize, stats: &Stats) {
     port.future.retain(|event| event.route != index);
     if let Some(mut route) = port.routes[index].take() {
         route.encoder.stop(&mut |msg| {
-            let now = Instant::now();
-            if let Some(link) = &mut port.link {
-                match link.send_at(now, msg) {
-                    Ok(handed) => stats.record(now, handed),
-                    Err(error) => {
-                        port.stop_pending = true;
-                        port.disconnect(name, error, now, stats);
-                    }
-                }
-            } else {
-                port.stop_pending = true;
+            // A Beat Clock Stop that cannot be delivered now is sent once the port is open again.
+            let stop = msg == [craft_midi_sync::sync::STOP];
+            if port.link.is_none() {
+                port.stop_pending |= stop;
+                return;
             }
+            send_now(name, port, msg, stats);
+            port.stop_pending |= stop && port.link.is_none();
         });
     }
 }
+/// Below this, the last stretch of a wait is one plain sleep.
+const FINE_SLEEP: Duration = Duration::from_micros(200);
+
+/// Sleep until `at`. A system may wake a sleeping thread late by a share of the time asked
+/// for (on the macOS test machine half of it: a 4 ms sleep took 6 ms), so sleep in halving
+/// steps; the last one is at most [`FINE_SLEEP`] long.
+fn sleep_until(at: Instant) {
+    loop {
+        let left = at.saturating_duration_since(Instant::now());
+        if left <= FINE_SLEEP {
+            std::thread::sleep(left);
+            return;
+        }
+        std::thread::sleep(left / 2);
+    }
+}
+
 /// With a timed-out transport command the worker can be woken by either a control
 /// message or the first changed presentation. The thread park token survives a
 /// publication between reading the channel and entering the wait.
@@ -579,7 +681,7 @@ fn wait_for_update(rx: &Receiver<Update>, next: Option<Instant>, connected: bool
         }
         // Keep native sub-millisecond precision. Check control and shutdown after at
         // most 10 ms of requested sleep; distant events stay queued across checks.
-        std::thread::sleep(delay.min(Duration::from_millis(10)));
+        sleep_until(Instant::now() + delay.min(Duration::from_millis(10)));
     } else if !wait_for_late_block {
         return rx.recv().map(Some).map_err(|_| ());
     }
@@ -615,6 +717,64 @@ fn join_failures<'a, C>(ports: &BTreeMap<String, Port<C>>, buffer: &'a mut Strin
     (!buffer.is_empty()).then_some(buffer.as_str())
 }
 
+/// Apply one control message from the [`Output`] to the worker's ports and state.
+fn apply_update<C: SyncPort>(
+    u: Update,
+    ports: &mut BTreeMap<String, Port<C>>,
+    session: &mut Arc<Session>,
+    transition: &mut Option<(Option<(u64, bool)>, Instant)>,
+    now: Instant,
+    stats: &Stats,
+) {
+    match u {
+        Update::Session(s) => *session = s,
+        Update::Routes(kind, dest, c, make) => {
+            let index = kind.index();
+            for (name, p) in ports.iter_mut() {
+                if !dest.iter().any(|(n, _)| n == name) {
+                    clear_route(name, p, index, stats);
+                }
+            }
+            for (n, o) in dest {
+                if ports.get(&n).and_then(|p| p.routes[index].as_ref()).is_some_and(|r| r.offset == o && r.compensate == c) {
+                    continue;
+                }
+                if let Some(p) = ports.get_mut(&n) {
+                    clear_route(&n, p, index, stats);
+                }
+                let encoder = make(&n);
+                set_route(ports, index, n, Route { map: None, offset: o, compensate: c, encoder });
+            }
+        }
+        Update::Encoder(dest, c, encoder) => {
+            let index = RouteKind::Mtc.index();
+            for (name, p) in ports.iter_mut() {
+                clear_route(name, p, index, stats);
+            }
+            if let Some((n, o)) = dest {
+                set_route(ports, index, n, Route { map: None, offset: o, compensate: c, encoder });
+            }
+        }
+        Update::Panic(messages) => {
+            for (name, p) in ports.iter_mut() {
+                p.future.retain(|e| releases(&e.bytes[..e.len]));
+                let mut routes = std::mem::replace(&mut p.routes, std::array::from_fn(|_| None));
+                for r in routes.iter_mut().flatten() {
+                    r.encoder.panic(&mut |msg| send_now(name, p, msg, stats));
+                }
+                p.routes = routes;
+                messages(&mut |msg| send_now(name, p, msg, stats));
+            }
+        }
+        Update::Wake(before) => *transition = Some((before, now + Duration::from_secs(2))),
+        Update::InputWake(pending) => pending.store(false, Relaxed),
+        Update::TransportWake(pending, before) => {
+            pending.store(false, Relaxed);
+            *transition = Some((before, now + Duration::from_secs(2)));
+        }
+    }
+}
+
 fn drive<C: SyncPort>(
     view: View,
     mut session: Arc<Session>,
@@ -647,39 +807,7 @@ fn drive<C: SyncPort>(
             if !matches!(u, Update::InputWake(_)) {
                 awake = now + Duration::from_millis(150);
             }
-            match u {
-                Update::Session(s) => session = s,
-                Update::Beats(dest, c) => {
-                    for (name, p) in &mut ports {
-                        if !dest.iter().any(|(n, _)| n == name) {
-                            clear_route(name, p, 0, &stats);
-                        }
-                    }
-                    for (n, o) in dest {
-                        if ports.get(&n).and_then(|p| p.routes[0].as_ref()).is_some_and(|r| r.offset == o && r.compensate == c) {
-                            continue;
-                        }
-                        if let Some(p) = ports.get_mut(&n) {
-                            clear_route(&n, p, 0, &stats);
-                        }
-                        set_route(&mut ports, 0, n, Route { map: None, offset: o, compensate: c, encoder: Box::<Cursor>::default() });
-                    }
-                }
-                Update::Encoder(dest, c, encoder) => {
-                    for (name, p) in &mut ports {
-                        clear_route(name, p, 1, &stats);
-                    }
-                    if let Some((n, o)) = dest {
-                        set_route(&mut ports, 1, n, Route { map: None, offset: o, compensate: c, encoder });
-                    }
-                }
-                Update::Wake(before) => transition = Some((before, now + Duration::from_secs(2))),
-                Update::InputWake(pending) => pending.store(false, Relaxed),
-                Update::TransportWake(pending, before) => {
-                    pending.store(false, Relaxed);
-                    transition = Some((before, now + Duration::from_secs(2)));
-                }
-            }
+            apply_update(u, &mut ports, &mut session, &mut transition, now, &stats);
             ports.retain(|_, p| p.stop_pending || p.routes.iter().any(Option::is_some));
             stats.connected().retain(|n| ports.contains_key(n));
         }
@@ -761,8 +889,9 @@ fn drive<C: SyncPort>(
     }
     view.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clear_waiters();
     for (name, p) in &mut ports {
-        clear_route(name, p, 0, &stats);
-        clear_route(name, p, 1, &stats);
+        for index in 0..ROUTE_KINDS {
+            clear_route(name, p, index, &stats);
+        }
     }
 }
 

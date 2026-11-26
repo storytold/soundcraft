@@ -24,7 +24,7 @@ impl MidiBeatClock {
     }
 
     pub(super) fn show(&mut self, ui: &mut egui::Ui, enter: bool, app: &mut crate::SoundApp) -> Option<Value> {
-        if let Some(error) = app.player.as_ref().and_then(soundcraft_playback::Player::midi_clock_error) {
+        if let Some(error) = app.player.as_ref().and_then(soundcraft_playback::Player::midi_output_error) {
             ui.label(crate::localization::error_text(&error));
         }
         crate::widgets::checkbox(ui, &mut self.settings.enabled, crate::localization::text("Enable MIDI Beat Clock"));

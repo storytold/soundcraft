@@ -204,7 +204,7 @@ impl SoundApp {
 
     pub(crate) fn mtc_input_settings(&mut self, ui: &mut egui::Ui) {
         let mut selected = self.ui.mtc_input_port.clone();
-        craft_ui::ComboBox::from_label(crate::localization::text("MTC Reader Port"))
+        egui::ComboBox::from_label(crate::localization::text("MTC Reader Port"))
             .selected_text(selected.as_deref().unwrap_or(crate::localization::text("None")))
             .show_ui(ui, |ui| {
                 ui.selectable_value(&mut selected, None, crate::localization::text("None"));

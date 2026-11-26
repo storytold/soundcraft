@@ -92,6 +92,7 @@ where
     device.build_output_stream(
         config,
         move |data: &mut [T], info: &cpal::OutputCallbackInfo| {
+            // When this buffer is heard, for the external MIDI outputs' presentation timeline.
             #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
             let now = std::time::Instant::now();
             #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]

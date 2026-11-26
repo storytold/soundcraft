@@ -1,7 +1,5 @@
 //! Small custom widgets in the studio style.
 
-use craft_ui::buttons::{ButtonVisuals, IconButton, IconButtonStyle};
-
 use crate::icons;
 use crate::theme::{Tokens, bold, regular};
 use egui::{Align2, Color32, CornerRadius, Mesh, Painter, Rect, Response, Sense, Stroke, StrokeKind, Ui, Vec2, pos2, vec2};
@@ -89,6 +87,110 @@ pub fn key(p: &Painter, r: Rect, resp: &Response, fill: Color32) {
 fn key_light(p: &Painter, face: Rect) {
     vgradient(p, face, Color32::from_white_alpha(26), Color32::from_black_alpha(31));
     p.hline(face.min.x + 1.0..=face.max.x - 1.0, face.min.y + 0.5, Stroke::new(1.0, Color32::from_white_alpha(30)));
+}
+
+/// The background, border and icon colour of an icon button in one interaction state.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct ButtonVisuals {
+    fill: Color32,
+    stroke: Stroke,
+    icon: Color32,
+}
+
+/// The look of an icon button in each state. Selection takes precedence over press and hover.
+#[derive(Clone, Copy, Debug)]
+struct IconButtonStyle {
+    normal: ButtonVisuals,
+    hovered: ButtonVisuals,
+    /// `None` keeps the hover or normal look while pressed.
+    pressed: Option<ButtonVisuals>,
+    selected: ButtonVisuals,
+    corner_radius: CornerRadius,
+    /// An inset outline while the button has keyboard focus.
+    focus_stroke: Stroke,
+}
+
+impl IconButtonStyle {
+    fn visuals(&self, selected: bool, hovered: bool, pressed: bool) -> ButtonVisuals {
+        if selected {
+            self.selected
+        } else if let Some(visuals) = self.pressed.filter(|_| pressed) {
+            visuals
+        } else if hovered {
+            self.hovered
+        } else {
+            self.normal
+        }
+    }
+}
+
+/// An icon-only button painted in SoundCraft's own colours. The label is its accessible name; the caller paints the
+/// icon, attaches a tooltip and dispatches from the response. Selection is the caller's.
+struct IconButton<'a> {
+    label: &'a str,
+    size: Vec2,
+    selected: bool,
+    style: &'a IconButtonStyle,
+    single_shape_frame: bool,
+}
+
+impl<'a> IconButton<'a> {
+    fn new(label: &'a str, size: Vec2, style: &'a IconButtonStyle) -> Self {
+        Self { label, size, selected: false, style, single_shape_frame: false }
+    }
+
+    fn selected(mut self, selected: bool) -> Self {
+        self.selected = selected;
+        self
+    }
+
+    /// Paints fill and border as one rectangle, keeping the edge tessellation of a `Painter::rect`.
+    fn single_shape_frame(mut self) -> Self {
+        self.single_shape_frame = true;
+        self
+    }
+
+    /// Paints the button and returns its response. `paint_icon` gets the button's rect and the icon tint. A
+    /// non-finite, non-positive or oversized (over 4096 points) size gives an inert zero-size response.
+    fn show(self, ui: &mut Ui, paint_icon: impl FnOnce(&Ui, Rect, Color32)) -> Response {
+        let valid = self.size.is_finite() && self.size.x > 0.0 && self.size.y > 0.0 && self.size.x <= 4096.0 && self.size.y <= 4096.0;
+        let (rect, response) =
+            ui.allocate_exact_size(if valid { self.size } else { Vec2::ZERO }, if valid { Sense::click() } else { Sense::hover() });
+        response.widget_info(|| egui::WidgetInfo::selected(egui::Role::Button, valid && ui.is_enabled(), self.selected, self.label));
+        if !valid {
+            return response;
+        }
+        let visuals = self.style.visuals(self.selected, response.hovered(), response.is_pointer_button_down_on());
+        let stroke = bounded_stroke(visuals.stroke, rect);
+        if self.single_shape_frame {
+            ui.painter().rect(rect, self.style.corner_radius, visuals.fill, stroke, StrokeKind::Inside);
+        } else {
+            if visuals.fill != Color32::TRANSPARENT {
+                ui.painter().rect_filled(rect, self.style.corner_radius, visuals.fill);
+            }
+            if !stroke.is_empty() {
+                ui.painter().rect_stroke(rect, self.style.corner_radius, stroke, StrokeKind::Inside);
+            }
+        }
+        paint_icon(ui, rect, visuals.icon);
+        if response.has_focus() && rect.width() > 4.0 && rect.height() > 4.0 {
+            let focus_rect = rect.shrink(2.0);
+            let stroke = bounded_stroke(self.style.focus_stroke, focus_rect);
+            if !stroke.is_empty() {
+                ui.painter().rect_stroke(focus_rect, self.style.corner_radius, stroke, StrokeKind::Inside);
+            }
+        }
+        response
+    }
+}
+
+/// `stroke` no wider than half of `rect`'s smaller side; none when its width is not positive.
+fn bounded_stroke(stroke: Stroke, rect: Rect) -> Stroke {
+    if stroke.width.is_finite() && stroke.width > 0.0 {
+        Stroke::new(stroke.width.min(rect.width().min(rect.height()) * 0.5), stroke.color)
+    } else {
+        Stroke::NONE
+    }
 }
 
 /// Local colors for shared icon-button interaction; transport-specific states stay in the toolbar.
@@ -202,6 +304,15 @@ pub(crate) struct SelectorLabels<'a> {
     pub tooltip: &'a str,
 }
 
+/// `text` laid out on one line at most `width` wide, ending in "…" where it does not fit.
+pub(crate) fn one_line(painter: &egui::Painter, text: &str, font: egui::FontId, color: Color32, width: f32) -> std::sync::Arc<egui::Galley> {
+    let mut job = egui::text::LayoutJob::simple(text.to_owned(), font, color, width.max(1.0));
+    job.wrap.max_rows = 1;
+    job.wrap.break_anywhere = true;
+    job.wrap.overflow_character = Some('…');
+    painter.layout_job(job)
+}
+
 /// A selector whose accessible name is unique (for example per track), with its current value
 /// published separately in the accessibility tree.
 pub(crate) fn selector_box_named(ui: &mut Ui, width: f32, height: f32, text: &str, color: Color32, labels: SelectorLabels<'_>) -> Response {
@@ -221,11 +332,7 @@ pub(crate) fn selector_box_named(ui: &mut Ui, width: f32, height: f32, text: &st
     let tr = Rect::from_min_max(pos2(r.max.x - height * 0.8, r.min.y), r.max);
     icons::draw(ui.painter(), tr.shrink(height * 0.15), "triangle_down", t.text_dim);
     let text_rect = Rect::from_min_max(r.min + vec2(3.0, 1.0), pos2(tr.left() - 2.0, r.bottom() - 1.0));
-    let mut job = egui::text::LayoutJob::simple(text.to_owned(), regular((height * 0.62).clamp(8.0, 12.0)), color, text_rect.width().max(1.0));
-    job.wrap.max_rows = 1;
-    job.wrap.break_anywhere = true;
-    job.wrap.overflow_character = Some('…');
-    let galley = ui.painter().layout_job(job);
+    let galley = one_line(ui.painter(), text, regular((height * 0.62).clamp(8.0, 12.0)), color, text_rect.width());
     let pos = text_rect.center() - galley.size() * 0.5;
     ui.painter().with_clip_rect(r.shrink(1.0)).galley(pos, galley, color);
     resp.on_hover_text(tooltip)
@@ -775,6 +882,23 @@ fn drag_toggle(ui: &Ui, resp: &Response, on: &mut bool) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{clip_gain_from_pos, clip_gain_to_pos};
+
+    /// A selector's text that does not fit ends in an ellipsis within the key, not cut off at both edges.
+    #[test]
+    fn one_line_text_ends_in_an_ellipsis_within_its_width() {
+        let ctx = egui::Context::default();
+        let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
+            let painter = ui.painter();
+            let long = "IAC Driver Bus 1 with a very long name ch 2 (not connected)";
+            let galley = super::one_line(painter, long, crate::theme::bold(10.0), egui::Color32::WHITE, 80.0);
+            assert!(galley.size().x <= 80.0, "{} wide", galley.size().x);
+            assert_eq!(galley.rows.len(), 1);
+            assert!(galley.elided && galley.rows[0].glyphs.last().is_some_and(|g| g.chr == '…'), "no ellipsis");
+            let short = super::one_line(painter, "UM-ONE ch 1", crate::theme::bold(10.0), egui::Color32::WHITE, 80.0);
+            assert!(!short.elided);
+        });
+        output.textures_delta.clear();
+    }
     use egui::{Event, Modifiers, PointerButton, Pos2};
     use egui_kittest::{Harness, kittest::Queryable};
 

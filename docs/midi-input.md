@@ -5,7 +5,9 @@ MIDI clips.
 
 **Where it works.** Linux (ALSA sequencer), macOS (CoreMIDI) and Windows (WinMM). It has been
 played and recorded on Linux only; on macOS and Windows the code builds but has not been tried
-with a device yet. There is no MIDI input on FreeBSD or in the web version. MIDI note output and loop or merge recording remain open (see [gaps.md](gaps.md), G-02).
+with a device yet. There is no MIDI input on FreeBSD or in the web version. To play external
+synths from MIDI and instrument tracks, see [midi-output.md](midi-output.md). MIDI Thru to
+external gear and loop or merge recording are not there yet (see [gaps.md](gaps.md), G-02).
 See [Send MIDI Beat Clock to external hardware](#send-midi-beat-clock-to-external-hardware) for clock output and [Generate or follow MIDI Time Code](#generate-or-follow-midi-time-code) for MTC.
 
 ## 1. Switch a device on
@@ -87,7 +89,7 @@ In **Setup › MIDI › MIDI Beat Clock**, enable the clock and check each desti
 
 At the session origin SoundCraft sends Start. A locate during playback sends Stop, Song Position Pointer and Continue in sequence. The first subsequent clock aligns to the encoded sixteenth. Moving the stopped playhead sends its Song Position Pointer immediately. Clock and Continue wait until playback resumes. Position Pointer covers 0 through 16,383 sixteenths; a continuous pass can run beyond that range. The worker retries unplugged ports. When several outputs fail, the status line and the `output.error` field of `setup.midi_sync_status` name each one, separated by semicolons. Identically named outputs appear as separate destinations (for example, DIN and DIN (2)), each with its own calibration. Existing name-only settings select the first occurrence. Once a device ID is saved, unplugging that device leaves its destination unavailable until the same ID returns.
 
-**Preferences › MIDI › Delay Compensation for External Devices** controls the use of the audio device’s reported output lead and, while Delay Compensation is enabled, the mixer’s compensated plug-in delay for Beat Clock and generated MIDI Time Code. A plug-in delay change during playback takes effect with the audio callback that renders the new session revision. MIDI already delivered to a device keeps its original timing. Per-port calibration applies in addition. The Notes and Controllers preference is saved for external note output. SoundCraft's current MIDI-input instruments render inside the audio engine.
+**Preferences › MIDI › Delay Compensation for External Devices** controls the use of the audio device’s reported output lead and, while Delay Compensation is enabled, the mixer’s compensated plug-in delay for Beat Clock and generated MIDI Time Code. A plug-in delay change during playback takes effect with the audio callback that renders the new session revision. MIDI already delivered to a device keeps its original timing. Per-port calibration applies in addition. **MIDI Notes and Controllers** does the same for the tracks' external note output (see [midi-output.md](midi-output.md)). Beat Clock, MIDI Time Code and the track output share one connection per port.
 
 Use `setup.midi_beat_clock` to read settings or apply a patch, for example `{"enabled":true,"ports":{"USB MIDI":{"enabled":true,"offset_samples":-200}}}`. Supplying `ports` replaces the active Beat Clock destinations. Omitted ports stop sending Beat Clock and retain their saved sample offsets for other sync outputs. Passing `{"ports":{}}` disables every Beat Clock destination and preserves calibrated offsets. Passing `{}` alone reads the settings. Use `{"ports":{"Old name":null}}` to remove a saved port. The desktop control channel’s `setup.midi_sync_status` and the dialog’s **Copy diagnostics** report host-side send timing, callback gaps and port offsets. USB buffering and wire latency require an external measurement.
 

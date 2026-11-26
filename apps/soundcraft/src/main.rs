@@ -71,8 +71,6 @@ impl eframe::App for App {
         }
         if self.0.quit_requested {
             ctx.send_viewport_cmd(egui::ViewportCommand::Close);
-        } else if ctx.input(|i| i.viewport().close_requested()) && dialogs::ask_to_save(&mut self.0, "app.quit", &serde_json::json!({})) {
-            ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
         }
         soundcraft_ui_egui::fit_window_to_screen(ctx);
         let (inner, maximized) = ctx.input(|i| (i.viewport().inner_rect, i.viewport().maximized.unwrap_or(false)));
@@ -96,13 +94,17 @@ impl eframe::App for App {
             soundcraft_ui_egui::os_title(app_name, Some(document.0))
         };
         set_title(ctx, title);
+        // Last: the runtime's close path, which asks about unsaved changes before the window closes.
+        self.0.close_path(ctx);
     }
     /// Forward raw input to the shared app hook so scripted gestures and host-key protection behave like the desktop
     /// shell.
     fn raw_input_hook(&mut self, ctx: &egui::Context, raw: &mut egui::RawInput) {
         self.0.raw_input_hook(ctx, raw);
+        self.0.before_input(ctx);
     }
-    fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+    fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
+        soundcraft_ui_egui::framework::before_ui(ui.ctx(), &*frame);
         self.0.guarded(|app| app.ui(ui));
     }
     fn on_exit(&mut self) {
@@ -331,11 +333,15 @@ fn main() -> eframe::Result {
     // Before eframe creates the wgpu instance: default Windows to DirectX 12 with FXC (see graphics.rs).
     #[cfg(target_os = "windows")]
     graphics::configure(&mut options, eframe::wgpu::Backends::from_env(), eframe::wgpu::Dx12Compiler::from_env());
-    #[cfg(all(unix, not(target_os = "macos")))]
     // winit has no file drag-and-drop on Wayland (only on X11), so dropping files from the file
     // manager showed a "no" cursor. Run through XWayland when it's there; SOUNDCRAFT_WAYLAND=1
     // keeps the native Wayland backend.
-    if env.use_xwayland(std::env::var_os("DISPLAY").as_ref()) {
+    #[cfg(all(unix, not(target_os = "macos")))]
+    let forced_x11 = env.use_xwayland(std::env::var_os("DISPLAY").as_ref());
+    #[cfg(not(all(unix, not(target_os = "macos"))))]
+    let forced_x11 = false;
+    #[cfg(all(unix, not(target_os = "macos")))]
+    if forced_x11 {
         options.event_loop_builder = Some(Box::new(|b| {
             use winit::platform::x11::EventLoopBuilderExtX11;
             b.with_x11();
@@ -369,6 +375,7 @@ fn main() -> eframe::Result {
         os_window::name_for(os_window::identity()),
         options,
         Box::new(move |cc| {
+            soundcraft_ui_egui::framework::install(&cc.egui_ctx, forced_x11)?;
             let player =
                 if no_audio { None } else { Some(soundcraft_playback::Player::with_config(Arc::new(engine.session().clone()), &prefs.audio)) };
             let mut app = SoundApp::new(engine, player, services());

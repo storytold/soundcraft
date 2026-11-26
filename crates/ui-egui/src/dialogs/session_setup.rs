@@ -117,12 +117,12 @@ impl SessionSetup {
                 ui.add(egui::DragValue::new(&mut self.freewheel_frames).range(4..=40)).labelled_by(caption.id);
             }
         });
-        craft_ui::ComboBox::from_label(crate::localization::text("Timecode Rate")).selected_text(text(&self.frame_rate)).show_ui(ui, |ui| {
+        egui::ComboBox::from_label(crate::localization::text("Timecode Rate")).selected_text(text(&self.frame_rate)).show_ui(ui, |ui| {
             for rate in FrameRate::ALL {
                 ui.selectable_value(&mut self.frame_rate, rate.label().to_owned(), text(rate.label()));
             }
         });
-        craft_ui::ComboBox::from_label(crate::localization::text("Bit Depth")).selected_text(text(&self.bit_depth)).show_ui(ui, |ui| {
+        egui::ComboBox::from_label(crate::localization::text("Bit Depth")).selected_text(text(&self.bit_depth)).show_ui(ui, |ui| {
             for value in ["16", "24", "32f"] {
                 ui.selectable_value(&mut self.bit_depth, value.to_string(), text(value));
             }

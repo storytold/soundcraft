@@ -16,14 +16,14 @@ fn an_mtc_route_is_cached_only_after_the_worker_accepts_it() {
     let mut output = Output::default();
     let port = Some(("model".to_owned(), 240));
     assert!(!output.encoder(port.clone(), true, Box::<crate::mtc::Encoder>::default()));
-    assert_eq!(output.additional, None, "no session or worker accepted this route");
+    assert!(output.routes[RouteKind::Mtc.index()].ports.is_empty(), "no session or worker accepted this route");
 
     let (tx, rx) = channel();
     let worker = std::thread::spawn(|| {});
     output.worker = Some((WorkerSender { tx, worker: worker.thread().clone() }, worker));
     assert!(output.encoder(port.clone(), true, Box::<crate::mtc::Encoder>::default()));
     assert!(matches!(rx.try_recv(), Ok(Update::Encoder(name, true, _)) if name == port));
-    assert_eq!(output.additional, Some(("model".to_owned(), 240, true)));
+    assert!(output.routes[RouteKind::Mtc.index()] == Routes { ports: vec![("model".to_owned(), 240)], compensate: true });
 }
 
 #[test]
@@ -64,8 +64,18 @@ fn both_encoders_use_one_connection_and_the_same_offset() {
     let lead = Duration::from_millis(30);
     let due = now + Duration::from_millis(25);
     let mut map = BTreeMap::new();
-    set_route(&mut map, 0, "device".to_owned(), Route { map: None, offset: -240, compensate: true, encoder: Box::<Cursor>::default() });
-    set_route(&mut map, 1, "device".to_owned(), Route { map: None, offset: -240, compensate: true, encoder: Box::<crate::mtc::Encoder>::default() });
+    set_route(
+        &mut map,
+        RouteKind::BeatClock.index(),
+        "device".to_owned(),
+        Route { map: None, offset: -240, compensate: true, encoder: Box::<crate::beat_clock::Cursor>::default() },
+    );
+    set_route(
+        &mut map,
+        RouteKind::Mtc.index(),
+        "device".to_owned(),
+        Route { map: None, offset: -240, compensate: true, encoder: Box::<crate::mtc::Encoder>::default() },
+    );
     assert_eq!(map.len(), 1);
     let messages = Arc::default();
     let p = map.get_mut("device").unwrap();
@@ -107,7 +117,12 @@ fn generator_waits_for_observed_presentation_only_when_compensation_is_enabled()
     song.timecode_start = 0;
     for compensate in [true, false] {
         let mut routes = BTreeMap::new();
-        set_route(&mut routes, 1, "MTC".into(), Route { map: None, offset: 0, compensate, encoder: Box::<crate::mtc::Encoder>::default() });
+        set_route(
+            &mut routes,
+            RouteKind::Mtc.index(),
+            "MTC".into(),
+            Route { map: None, offset: 0, compensate, encoder: Box::<crate::mtc::Encoder>::default() },
+        );
         let port = routes.get_mut("MTC").unwrap();
         let capture = Arc::default();
         port.link = Some(Capture(Arc::clone(&capture)));
@@ -138,7 +153,12 @@ fn mtc_quarters_use_the_mixer_delay_and_report_limited_negative_advances() {
     {
         let cable = View::default();
         let mut routes = BTreeMap::new();
-        set_route(&mut routes, 1, "MTC".into(), Route { map: None, offset, compensate: true, encoder: Box::<crate::mtc::Encoder>::default() });
+        set_route(
+            &mut routes,
+            RouteKind::Mtc.index(),
+            "MTC".into(),
+            Route { map: None, offset, compensate: true, encoder: Box::<crate::mtc::Encoder>::default() },
+        );
         let p = routes.get_mut("MTC").unwrap();
         let packets = Arc::new(Mutex::new(Vec::new()));
         p.link = Some(Capture(packets.clone()));
@@ -171,7 +191,7 @@ fn mtc_quarters_use_the_mixer_delay_and_report_limited_negative_advances() {
             assert!(onset.abs_diff(expected_us + index as i64 * 10000) <= 1, "offset {offset}, delay {delay}, quarter {index}, onset {onset}");
         }
         let mut output = Output::default();
-        output.additional = Some(("MTC".into(), offset, true));
+        output.routes[RouteKind::Mtc.index()] = Routes { ports: vec![("MTC".into(), offset)], compensate: true };
         crate::sync_clock::Publisher::new(output.view.clone(), output.metrics.clone())
             .observe(crate::sync_clock::DeviceTiming::new(base, Some(lead), 0), 0.005);
         output.view = cable.clone();
@@ -196,7 +216,12 @@ fn mtc_rate_and_start_change_at_the_first_rendered_block_of_the_new_generation()
     let view = View::default();
     view.lock().unwrap().register(SessionRevision { generation: 1, doc: first, remap: true }, true);
     let mut routes = BTreeMap::new();
-    set_route(&mut routes, 1, "MTC".into(), Route { map: None, offset: 0, compensate: false, encoder: Box::<crate::mtc::Encoder>::default() });
+    set_route(
+        &mut routes,
+        RouteKind::Mtc.index(),
+        "MTC".into(),
+        Route { map: None, offset: 0, compensate: false, encoder: Box::<crate::mtc::Encoder>::default() },
+    );
     let cable = routes.get_mut("MTC").unwrap();
     let packets = Arc::new(Mutex::new(Vec::new()));
     cable.link = Some(Capture(packets.clone()));
@@ -263,7 +288,12 @@ fn generator_and_slave_agree_on_heard_time_after_acquisition() {
     let now = Instant::now();
     let lead = Duration::from_millis(30);
     let mut routes = BTreeMap::new();
-    set_route(&mut routes, 1, "cable".into(), Route { map: None, offset: 0, compensate: true, encoder: Box::<crate::mtc::Encoder>::default() });
+    set_route(
+        &mut routes,
+        RouteKind::Mtc.index(),
+        "cable".into(),
+        Route { map: None, offset: 0, compensate: true, encoder: Box::<crate::mtc::Encoder>::default() },
+    );
     let port = routes.get_mut("cable").unwrap();
     port.link = Some(Cable { input: input.clone(), epoch: now });
     let master = View::default();
@@ -315,7 +345,12 @@ fn recovered_mtc_locates_live_and_starts_a_complete_quarter_frame_group() {
         song.frame_rate = soundcraft_time::FrameRate::Fps25;
         song.timecode_start = 0;
         let mut routes = BTreeMap::new();
-        set_route(&mut routes, 1, "desk".into(), Route { map: None, offset: 0, compensate: true, encoder: Box::<crate::mtc::Encoder>::default() });
+        set_route(
+            &mut routes,
+            RouteKind::Mtc.index(),
+            "desk".into(),
+            Route { map: None, offset: 0, compensate: true, encoder: Box::<crate::mtc::Encoder>::default() },
+        );
         let capture = Arc::default();
         let port = routes.get_mut("desk").unwrap();
         port.link = Some(Capture(Arc::clone(&capture)));

@@ -6,7 +6,7 @@ impl SoundApp {
     pub(crate) fn mtc_output_settings(&mut self, ui: &mut egui::Ui) {
         let mut chosen = self.ui.mtc_output_port.clone();
         let mut chosen_id = None;
-        craft_ui::ComboBox::from_label(crate::localization::text("MTC Generator Port"))
+        egui::ComboBox::from_label(crate::localization::text("MTC Generator Port"))
             .selected_text(chosen.as_deref().unwrap_or(crate::localization::text("None")))
             .show_ui(ui, |ui| {
                 ui.selectable_value(&mut chosen, None, crate::localization::text("None"));
@@ -114,8 +114,11 @@ impl SoundApp {
                 ports.entry(name.clone()).or_default().offset_samples = offset;
             }
         }
+        // A label stays bound while Beat Clock or MIDI Time Code is configured for it or a track
+        // plays to it.
+        let used = self.midi_output_ports_in_use();
         let config = &mut self.ui.midi_sync;
-        config.port_ids.retain(|name, _| config.ports.contains_key(name) || selected.as_ref() == Some(name));
+        config.port_ids.retain(|name, _| config.ports.contains_key(name) || used.contains(name) || selected.as_ref() == Some(name));
         if let Some(name) = &selected
             && let Some(id) = chosen_id.or_else(|| available.as_ref()?.get(name).cloned()).filter(|id| valid_port(id))
         {

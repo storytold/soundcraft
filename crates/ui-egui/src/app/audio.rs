@@ -43,6 +43,8 @@ impl SoundApp {
         self.service_mtc_output();
         self.applied_midi_sync = None;
         self.service_midi_sync();
+        // The new engine's MIDI output starts with no ports.
+        self.applied_midi_output = None;
         Ok(())
     }
 
@@ -252,6 +254,8 @@ impl SoundApp {
         self.service_mtc_output();
         self.applied_midi_sync = None;
         self.service_midi_sync();
+        // The new engine's MIDI output starts with no ports.
+        self.applied_midi_output = None;
     }
 }
 
@@ -262,7 +266,7 @@ fn output_warning(unavailable: Option<&str>, issue: Option<soundcraft_playback::
     }
     match issue? {
         OutputTimingIssue::Retained { lead_us } => Some(crate::localized_format!(
-            "The audio driver stopped reporting output timing. Compensated MIDI sync uses the last measured lead ({ms} ms).",
+            "The audio driver stopped reporting output timing. Compensated MIDI outputs use the last measured lead ({ms} ms).",
             ms = format!("{:.2}", lead_us as f64 / 1000.)
         )),
         OutputTimingIssue::Unknown => Some(format!(
@@ -472,11 +476,13 @@ mod timing_warning_tests {
         assert!(app.ui.status.contains("Previous USB output"));
         app.ui.status = "Saved".into();
         let ctx = egui::Context::default();
+        crate::framework::install_headless(&ctx);
         let mut found = false;
         app.set_system_fonts(false);
         for _ in 0..4 {
-            let raw =
+            let mut raw =
                 egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1300., 800.))), ..Default::default() };
+            app.raw_input_hook(&ctx, &mut raw);
             let mut output = ctx.run_ui(raw, |ui| {
                 app.logic(ui.ctx());
                 app.ui(ui);
