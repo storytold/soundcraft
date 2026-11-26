@@ -484,7 +484,7 @@ fn chosen_device<'a>(devices: &'a [DeviceInfo], name: Option<&str>) -> Option<&'
 fn device_combo(ui: &mut egui::Ui, id: &str, name: &str, value: &mut Option<String>, devices: &[DeviceInfo]) {
     let default = devices.iter().find(|d| d.is_default).map_or_else(|| crate::localization::text("none").to_string(), |d| d.name.clone());
     let shown = value.clone().unwrap_or_else(|| crate::localized_format!("Default ({default})", default = default));
-    let combo = craft_ui::ComboBox::from_id_salt(id).width(300.0).selected_text(shown).show_ui(ui, |ui| {
+    let combo = egui::ComboBox::from_id_salt(id).width(300.0).selected_text(shown).show_ui(ui, |ui| {
         ui.selectable_value(value, None, crate::localized_format!("Default ({default})", default = default));
         for d in devices {
             ui.selectable_value(value, Some(d.name.clone()), format!("{} ({} ch)", d.name, d.max_channels));
@@ -499,13 +499,97 @@ fn number_combo(ui: &mut egui::Ui, id: &str, name: &str, value: &mut Option<u32>
         || crate::localization::text("Device default").to_string(),
         |v| crate::localized_format!("{v} {unit}", v = v, unit = crate::localization::text(unit)),
     );
-    let combo = craft_ui::ComboBox::from_id_salt(id).width(300.0).selected_text(shown).show_ui(ui, |ui| {
+    let combo = egui::ComboBox::from_id_salt(id).width(300.0).selected_text(shown).show_ui(ui, |ui| {
         ui.selectable_value(value, None, crate::localization::text("Device default"));
         for v in options {
             ui.selectable_value(value, Some(*v), crate::localized_format!("{v} {unit}", v = v, unit = crate::localization::text(unit)));
         }
     });
     combo.response.accessible_name(crate::localization::text(name));
+}
+
+/// What a MIDI message is, for the "last received" readout.
+fn midi_event_text(e: &soundcraft_mix::LiveMidi) -> String {
+    let ch = e.channel() + 1;
+    match e.status & 0xF0 {
+        0x90 if e.data2 > 0 => format!("note {} on, velocity {}, channel {ch}", soundcraft_midi::note_name(e.data1), e.data2),
+        0x80 | 0x90 => format!("note {} off, channel {ch}", soundcraft_midi::note_name(e.data1)),
+        0xA0 => format!("aftertouch {} on note {}, channel {ch}", e.data2, soundcraft_midi::note_name(e.data1)),
+        0xB0 => format!("controller {} = {}, channel {ch}", e.data1, e.data2),
+        0xC0 => format!("program {}, channel {ch}", u16::from(e.data1) + 1),
+        0xD0 => format!("aftertouch {}, channel {ch}", e.data1),
+        0xE0 => format!("pitch bend {}, channel {ch}", (i32::from(e.data2) << 7 | i32::from(e.data1)) - 8192),
+        _ => format!("message {:#04x}", e.status),
+    }
+}
+
+/// The MIDI inputs of Setup › Playback Engine: every input port with a switch, and on request what
+/// arrives from it, to see that a keyboard gets through.
+fn midi_inputs(app: &mut SoundApp, ui: &mut egui::Ui) {
+    ui.strong("MIDI inputs");
+    let Some(m) = &app.midi_inputs else {
+        ui.weak("No audio engine, so MIDI devices are not opened.");
+        return;
+    };
+    if let Some(e) = m.error() {
+        ui.colored_label(ui.visuals().warn_fg_color, e);
+        return;
+    }
+    let ports = m.ports().to_vec();
+    if ports.is_empty() {
+        ui.weak("No MIDI input device found. Plug one in: it shows up here by itself.");
+    }
+    // Per port name: whether its debug readout is shown, and the last message seen from it.
+    let debug_id = egui::Id::unique("playback-engine-midi-debug");
+    let mut debug: std::collections::BTreeMap<String, (bool, Option<String>)> = ui.data(|d| d.get_temp(debug_id)).unwrap_or_default();
+    let (count, last) = m.feed().activity();
+    let dropped = m.feed().dropped();
+    if dropped > 0 {
+        ui.colored_label(
+            ui.visuals().warn_fg_color,
+            format!("{dropped} MIDI event(s) arrived faster than they could be played and were dropped; held notes of that device were released."),
+        );
+    }
+    if let Some(e) = last
+        && let Some(from) = m.feed().ports().name(e.port)
+    {
+        debug.entry(from.to_string()).or_default().1 = Some(format!("{} (message {count} of all devices)", midi_event_text(&e)));
+    }
+    let mut toggle = None;
+    egui::Grid::new("pe-midi").num_columns(3).show(ui, |ui| {
+        for p in &ports {
+            let mut on = p.enabled;
+            if crate::widgets::checkbox(ui, &mut on, &p.name).on_hover_text("Play and record from this device").changed() {
+                toggle = Some((p.name.clone(), on));
+            }
+            match (p.enabled, p.open) {
+                (false, _) => ui.weak("off"),
+                (true, true) => ui.label("connected"),
+                (true, false) => ui.colored_label(ui.visuals().warn_fg_color, "could not be opened"),
+            };
+            let shown = &mut debug.entry(p.name.clone()).or_default().0;
+            if ui.selectable_label(*shown, "Test").on_hover_text("Show what arrives from this device").clicked() {
+                *shown = !*shown;
+            }
+            ui.end_row();
+        }
+    });
+    if let Some((name, on)) = toggle {
+        app.set_midi_input_enabled(&name, on);
+    }
+    for p in &ports {
+        let Some((true, seen)) = debug.get(&p.name) else { continue };
+        ui.separator();
+        ui.label(&p.name);
+        ui.weak(format!("Enabled: {}, open: {}", if p.enabled { "yes" } else { "no" }, if p.open { "yes" } else { "no" }));
+        ui.weak(match seen {
+            Some(text) => format!("Last received: {text}"),
+            None => "Last received: nothing yet".to_string(),
+        });
+        // Keep the readout live while it is shown.
+        ui.ctx().request_repaint_after_secs(0.1);
+    }
+    ui.data_mut(|d| d.insert_temp(debug_id, debug));
 }
 
 /// Setup › Playback Engine / Hardware: choose the audio system, devices, rate and buffer size.
@@ -525,7 +609,7 @@ pub fn playback_engine(app: &mut SoundApp, ctx: &egui::Context) {
             let system_label = ui.label(crate::localization::text("Audio system"));
             let def = systems.iter().find(|s| s.is_default).map_or("none".to_string(), |s| s.name.clone());
             let shown = draft.system.clone().unwrap_or_else(|| crate::localized_format!("Default ({default})", default = def));
-            let system = craft_ui::ComboBox::from_id_salt("pe-system").width(300.0).selected_text(shown).show_ui(ui, |ui| {
+            let system = egui::ComboBox::from_id_salt("pe-system").width(300.0).selected_text(shown).show_ui(ui, |ui| {
                 let before = draft.system.clone();
                 ui.selectable_value(&mut draft.system, None, crate::localized_format!("Default ({default})", default = def));
                 for s in systems.iter() {
@@ -615,6 +699,8 @@ pub fn playback_engine(app: &mut SoundApp, ctx: &egui::Context) {
         if ui.button(crate::localization::text("Reconnect audio device")).clicked() {
             app.reconnect_audio();
         }
+        ui.separator();
+        midi_inputs(app, ui);
     });
     if refresh {
         audio_systems(ctx, true);
@@ -750,7 +836,7 @@ pub fn io_setup(app: &mut SoundApp, ctx: &egui::Context) {
         ui.horizontal(|ui| {
             let main_label = ui.label(crate::localization::text("Main output"));
             let format =
-                craft_ui::ComboBox::from_id_salt("main_output_format").selected_text(crate::localization::text(main.label())).show_ui(ui, |ui| {
+                egui::ComboBox::from_id_salt("main_output_format").selected_text(crate::localization::text(main.label())).show_ui(ui, |ui| {
                     for f in soundcraft_model::ChannelFormat::ALL.into_iter().filter(|f| (2..=16).contains(&f.channels())) {
                         if ui.selectable_label(f == main, crate::localization::text(f.label())).clicked() && f != main {
                             let _ = app.run("setup.main_format", json!({"format": f.label()}));

@@ -14,13 +14,14 @@ fn mix_in_a_separate_window_toggles_and_closing_it_returns_to_the_main_window() 
     app.run("window.toggle_mix_edit", json!({})).unwrap();
     assert_eq!(app.ui.window, MainWindow::Edit, "Mix is already on screen: the main window keeps Edit");
 
-    let mut h = Harness::builder().with_size(vec2(1600.0, 1000.0)).build_ui_state(
-        |ui, app: &mut SoundApp| {
-            app.logic(&ui.ctx().clone());
-            app.ui(ui);
-        },
-        app,
-    );
+    let mut h =
+        Harness::builder().with_context_setup(soundcraft_ui_egui::framework::install_headless).with_size(vec2(1600.0, 1000.0)).build_ui_state(
+            |ui, app: &mut SoundApp| {
+                app.logic(&ui.ctx().clone());
+                app.ui(ui);
+            },
+            app,
+        );
     h.run_steps(3);
     let app = h.state_mut();
     assert!(app.ui.mix_separate, "drawing both windows keeps them both");

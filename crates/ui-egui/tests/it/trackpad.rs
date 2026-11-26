@@ -1,4 +1,4 @@
-use egui::{Pos2, RawInput, Rect, pos2, vec2};
+use egui::{Event, Key, Modifiers, Pos2, RawInput, Rect, pos2, vec2};
 use serde_json::{Value, json};
 use soundcraft_time::to_samples;
 use soundcraft_ui_egui::{ControlRequest, Services, SoundApp};
@@ -18,6 +18,7 @@ impl Rig {
         let (tx, rx) = channel();
         let app = SoundApp::new(soundcraft_engine::demo::demo_engine(), None, Services::default()).with_control(rx);
         let mut r = Rig { ctx: egui::Context::default(), app, tx, width };
+        soundcraft_ui_egui::framework::install_headless(&r.ctx);
         // egui 0.37 scroll areas treat point wheel events as a trackpad: they rubber-band at an
         // edge and can coast after the gesture. These tests assert exact offsets, so the rig uses
         // deterministic scrolling (production keeps the kinetic feel).
@@ -29,19 +30,26 @@ impl Rig {
         r
     }
 
-    /// Run `n` frames through the raw-input hook and the app's logic and UI.
+    /// Run `n` frames as the desktop shell does: the raw-input hook with the runtime's frame input, then the app's
+    /// logic and UI.
     fn frames(&mut self, n: usize) {
         for _ in 0..n {
-            let mut raw = RawInput { screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(self.width, 900.0))), ..Default::default() };
-            self.app.raw_input_hook(&self.ctx, &mut raw);
-            self.ctx
-                .run_ui(raw, |ui| {
-                    self.app.logic(ui.ctx());
-                    self.app.ui(ui);
-                })
-                .textures_delta
-                .clear();
+            self.frame(Vec::new());
         }
+    }
+
+    /// One frame whose raw input carries the host's `events`.
+    fn frame(&mut self, events: Vec<Event>) {
+        let mut raw = RawInput { screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(self.width, 900.0))), events, ..Default::default() };
+        self.app.raw_input_hook(&self.ctx, &mut raw);
+        self.app.before_input(&self.ctx);
+        self.ctx
+            .run_ui(raw, |ui| {
+                self.app.logic(ui.ctx());
+                self.app.ui(ui);
+            })
+            .textures_delta
+            .clear();
     }
 
     fn send(&mut self, method: &str, params: Value) {
@@ -102,4 +110,20 @@ fn pinch_and_cmd_scroll_zoom_around_the_pointer_and_shift_scroll_pans() {
     r.send("ui.scroll", json!({"x": x, "y": y, "dy": -100.0, "shift": true}));
     assert_eq!(r.view(), (spp, scroll + to_samples(100.0 * spp)));
     assert_eq!(r.app.edit_layout.scroll_y, scroll_y);
+}
+
+/// SoundCraft unbinds the runtime's pane keys, so F6 reaches its own shortcuts.
+#[test]
+fn f6_chooses_the_trim_tool_from_the_keyboard_and_from_the_control_channel() {
+    let mut r = Rig::new(1400.0);
+    let tool = |r: &Rig| r.app.engine.session().edit.tool.id().to_owned();
+    let key = |pressed| Event::Key { key: Key::F6, physical_key: Some(Key::F6), pressed, repeat: false, modifiers: Modifiers::NONE };
+    r.app.engine.execute("edit.tool", &json!({"tool": "grabber"})).unwrap();
+    r.frame(vec![key(true)]);
+    r.frame(vec![key(false)]);
+    r.frames(2);
+    assert_eq!(tool(&r), "trim", "F6 from the keyboard");
+    r.app.engine.execute("edit.tool", &json!({"tool": "grabber"})).unwrap();
+    r.send("ui.key", json!({"key": "F6"}));
+    assert_eq!(tool(&r), "trim", "F6 from the control channel");
 }
