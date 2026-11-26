@@ -684,6 +684,33 @@ fn compensation_includes_the_mixer_system_delay_when_delay_compensation_is_on() 
 }
 
 #[test]
+fn the_mixer_delay_passes_at_the_playback_speed() {
+    // 4800 samples of mixer delay at 48 kHz are 100 ms at 1x, 50 ms at 2x: the transport plays
+    // the mixer's output at twice the rate. The device lead (20 ms) is wall-clock time.
+    let base = Instant::now();
+    let session = Session::default();
+    for (samples_per_second, delay_ms) in [(48_000., 120), (96_000., 70)] {
+        let view = View::default();
+        let b = block(base, 0., 480., Duration::from_millis(20));
+        view.lock().unwrap().push(Presentation { system_delay_samples: 4800, samples_per_second, ..b });
+        let mut port = active_port(0, true);
+        let stats = Stats::default();
+        for ms in 0..=120 {
+            port.poll("DIN", base + Duration::from_millis(ms), &session, &view, &stats, &mut Vec::new());
+        }
+        let due = base + Duration::from_millis(delay_ms);
+        assert_eq!(port.link.unwrap().messages.first(), Some(&(due, tick(0).to_vec())), "{samples_per_second}");
+        // The reported total uses the same conversion.
+        let out = &mut Output::default();
+        out.routes[0] = Routes { ports: vec![("DIN".into(), 0)], compensate: true };
+        let mut publisher = Publisher::new(out.view.clone(), out.metrics.clone());
+        publisher.observe(DeviceTiming::new(base, Some(Duration::from_millis(20)), 0), 0.01);
+        publisher.publish(Presentation { system_delay_samples: 4800, samples_per_second, ..block(base, 0., 480., Duration::from_millis(20)) });
+        assert_eq!(out.status().ports["DIN"].effective_total_us, Some(delay_ms as i64 * 1000), "{samples_per_second}");
+    }
+}
+
+#[test]
 fn unavailable_session_generations_are_ineligible_and_report_backlog_drops() {
     use crate::sync_clock::MAX_REVISIONS;
     let (cmd, _rx) = channel();
