@@ -22,6 +22,8 @@ pub fn show(app: &mut SoundApp, ctx: &egui::Context) {
     workspace(app, ctx);
     configurations(app, ctx);
     playback_engine(app, ctx);
+    #[cfg(windows)]
+    crate::hui::show(app, ctx);
     io_setup(app, ctx);
     shortcuts_window(app, ctx);
     clip_effects(app, ctx);
@@ -81,7 +83,7 @@ fn audio_health(app: &mut SoundApp, ctx: &egui::Context) {
     }
 }
 
-fn win(ctx: &egui::Context, open: &mut bool, title: &str, size: egui::Vec2, body: impl FnOnce(&mut egui::Ui)) {
+pub(crate) fn win(ctx: &egui::Context, open: &mut bool, title: &str, size: egui::Vec2, body: impl FnOnce(&mut egui::Ui)) {
     if !*open {
         return;
     }
@@ -523,8 +525,8 @@ fn midi_event_text(e: &soundcraft_mix::LiveMidi) -> String {
     }
 }
 
-/// The MIDI inputs of Setup › Playback Engine: every input port with a switch, and on request what
-/// arrives from it, to see that a keyboard gets through.
+/// The MIDI inputs of Setup › Playback Engine: every input port except a control surface's, with a
+/// switch, and on request what arrives from it, to see that a keyboard gets through.
 fn midi_inputs(app: &mut SoundApp, ui: &mut egui::Ui) {
     ui.strong("MIDI inputs");
     let Some(m) = &app.midi_inputs else {

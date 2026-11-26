@@ -60,6 +60,13 @@ pub use panels::sampler_window;
 pub use panels::score_editor;
 pub use panels::video_window;
 pub use panels::windows;
+#[cfg(windows)]
+mod hui;
+#[cfg(any(windows, test))]
+#[cfg_attr(not(windows), allow(dead_code))]
+mod surface_protocol;
+#[cfg(windows)]
+pub use hui::Ports as HuiPorts;
 
 mod app;
 mod services;
@@ -92,6 +99,8 @@ pub fn build_version() -> &'static str {
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(default)]
 pub struct UiState {
+    #[cfg(windows)]
+    pub hui: Option<HuiPorts>,
     /// File › Open Recent, newest first (see `recent`).
     pub recent_sessions: Vec<String>,
     pub docking: docking::Workspace,
@@ -184,6 +193,8 @@ pub struct UiState {
 impl Default for UiState {
     fn default() -> Self {
         UiState {
+            #[cfg(windows)]
+            hui: None,
             recent_sessions: Vec::new(),
             docking: docking::edit_default(),
             mix_docking: docking::mix_default(),
@@ -298,6 +309,8 @@ pub enum Gesture {
 }
 
 pub struct SoundApp {
+    #[cfg(windows)]
+    hui: hui::Surface,
     pub engine: Engine,
     /// The session path as of the last frame, and whether the recent list changed since the host
     /// last saved it (see `recent`).

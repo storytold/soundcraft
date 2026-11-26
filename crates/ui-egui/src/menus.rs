@@ -70,6 +70,8 @@ pub const UI_COMMANDS: &[(&str, &str, &str, Option<&str>)] = &[
     ("window.rtp", "MIDI Real-Time Properties", "", None),
     ("window.import_aaf", "Import Session Data (AAF)", "", None),
     ("window.playback_engine", "Playback Engine", "", None),
+    #[cfg(windows)]
+    ("ui.hui", "MIDI Controllers", "", None),
     ("ui.audio_device", "Audio Device", "", None),
     ("window.io_setup", "I/O Setup", "", None),
     ("window.shortcuts", "Keyboard Shortcuts", "", None),
@@ -563,6 +565,11 @@ pub fn live_label(app: &SoundApp, id: Option<&str>) -> Option<String> {
 
 /// Menu-style invocation: may open a dialog.
 pub fn invoke_menu(app: &mut SoundApp, id: &str, path: &str) {
+    #[cfg(windows)]
+    if matches!(id, "setup.peripherals" | "ui.hui") {
+        let _ = crate::hui::command(app, "setup.peripherals", &json!({"value": true}));
+        return;
+    }
     if id == "file.import_aaf" || path == "File > Import > Session Data..." {
         let _ = crate::aaf_import::command(app, &json!({}));
         return;
@@ -626,6 +633,10 @@ pub fn run_ui_command(app: &mut SoundApp, id: &str, p: &Value) -> Option<Result<
     }
     if id == "ui.audio_device" {
         return Some(crate::windows::audio_device_command(app, p));
+    }
+    #[cfg(windows)]
+    if id == "ui.hui" {
+        return Some(crate::hui::command(app, id, p));
     }
     // Menu clicks never get here: Setup › Playback Engine / Hardware open the window
     // (`MENU_WINDOWS`). A programmatic call applies the open device instead.
@@ -863,7 +874,11 @@ pub fn run_ui_command(app: &mut SoundApp, id: &str, p: &Value) -> Option<Result<
                         }
                         let closed_preferences = app.ui.show_preferences && !ns.show_preferences;
                         crate::docking::cancel_replaced_state(app, &ns);
+                        #[cfg(windows)]
+                        let surface = app.ui.hui.clone();
                         app.ui = ns;
+                        #[cfg(windows)]
+                        crate::hui::settings_replaced(app, surface.as_ref());
                         app.ui.undo_levels = app.ui.undo_levels.clamp(1, 64);
                         app.engine.set_history_limit(app.ui.undo_levels);
                         if closed_preferences {

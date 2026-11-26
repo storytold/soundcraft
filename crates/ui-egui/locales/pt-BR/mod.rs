@@ -1317,6 +1317,21 @@ fn menu_translate(source: &str) -> Option<&'static str> {
         "Timecode rate" => "Taxa de timecode",
         "Triplet" => "Tercina",
         "Type" => "Tipo",
+        "Channels" => "Canais",
+        "Bank" => "Banco",
+        "Tracks {first} to {last}" => "Faixas {first} a {last}",
+        "HUI connected" => "HUI conectado",
+        "MCU connected" => "MCU conectado",
+        "MIDI Controllers" => "Controladores MIDI",
+        "Faders" => "Faders",
+        "Motorized faders" => "Faders motorizados",
+        "The system's MIDI service failed" => "O serviço MIDI do sistema falhou",
+        "MIDI port not found: {}" => "Porta MIDI não encontrada: {}",
+        "Peripherals" => "Periféricos",
+        "Receive From" => "Receber de",
+        "Send To" => "Enviar para",
+        "Waiting for HUI" => "Aguardando HUI",
+        "Waiting for MCU" => "Aguardando MCU",
         "Use Reconnect audio device in Setup › Playback Engine, or restart SoundCraft." => {
             "Use Reconectar dispositivo de áudio em Configurar › Mecanismo de reprodução, ou reinicie o SoundCraft."
         }
