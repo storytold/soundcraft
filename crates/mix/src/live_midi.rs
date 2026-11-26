@@ -4,7 +4,8 @@
 //! The audio host fills [`crate::MixEngine::midi`] before each block. Notes reach the instrument
 //! at their sample offset; the sustain pedal (CC 64) holds note-offs back until it is released.
 //! Other controllers, pitch bend, aftertouch and program changes go to the instrument as they
-//! are (`Plugin::midi`), without their channel, like the ones in clips. When the track stops
+//! are (`Plugin::midi`). Live input is folded onto the instrument's first MIDI channel, whatever
+//! channel it came in on; clip notes and controllers keep their own channel. When the track stops
 //! playing live input, the instrument's controllers go back to what the clips say.
 //!
 //! Every byte comes from a device and is not trusted: data bytes are masked to 7 bits, an
@@ -13,8 +14,8 @@
 //!
 //! # Who holds a note
 //!
-//! Instruments take notes without a channel, so a track that listens to several devices or
-//! channels sends them all to one instrument. The strip still keeps the keys and the pedal of
+//! Live notes all go to the instrument's first channel, so a track that listens to several
+//! devices or channels sends them all to one instrument part. The strip still keeps the keys and the pedal of
 //! every *owner* (an input port and a channel) apart: a pitch sounds until the last owner that
 //! holds it lets go, and one owner's sustain pedal does not hold another's notes.
 //!
@@ -298,7 +299,8 @@ pub(crate) struct LiveNotes {
     /// Which of [`KEPT_BY_RESET`] a live source that is gone had set: the next reset of the
     /// instrument's controllers does not undo that ([`Self::restore_defaults`]).
     defaults_owed: u8,
-    /// Pitches the track's clips hold on the same instrument right now ([`Self::set_clip_notes`]).
+    /// Pitches the track's clips hold on the instrument's first channel, the one live input plays,
+    /// right now ([`Self::set_clip_notes`]).
     clip: NoteSet,
 }
 
@@ -439,8 +441,9 @@ impl LiveNotes {
         }
     }
 
-    /// After the instrument's controllers were reset and set from the clips (`from_clips`: the
-    /// controllers the clips gave a value, bit `n` for CC `n`): the volume and the pan that a
+    /// After the controllers of the instrument's first channel, where live input plays, were reset
+    /// and set from the clips (`from_clips`: the controllers the clips gave a value, bit `n` for
+    /// CC `n`): the volume and the pan that a
     /// live source which is gone had set go back to MIDI's defaults, unless the clips or a live
     /// source that is still there say otherwise. See "Controllers" in the module text.
     pub(crate) fn restore_defaults(&mut self, from_clips: u128, inst: &mut dyn Plugin) {
@@ -471,14 +474,14 @@ impl LiveNotes {
     }
 
     /// Whether a live owner holds `note` (a key down or the pedal). The clips ask before they end
-    /// a note of the same pitch: instruments release by pitch, so that note-off would silence
-    /// the key that is still down.
+    /// a note of the same pitch: live input shares the instrument's first channel, where a release
+    /// is by pitch, so that note-off would silence the key that is still down.
     pub(crate) fn holds(&self, note: u8) -> bool {
         self.owners.iter().any(|o| o.holds(note))
     }
 
-    /// The pitches the track's clips hold on the instrument, told before each block's live
-    /// events. A live release of such a pitch is not sent on: the clip's note goes on sounding
+    /// The pitches the track's clips hold on the instrument's first channel (the one live input
+    /// plays), told before each block's live events. A live release of such a pitch is not sent on: the clip's note goes on sounding
     /// and ends with its own note-off.
     pub(crate) fn set_clip_notes(&mut self, held: impl IntoIterator<Item = u8>) {
         self.clip = NoteSet::default();

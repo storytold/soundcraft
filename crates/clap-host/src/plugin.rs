@@ -10,9 +10,9 @@ use std::sync::atomic::Ordering;
 const MAX_BLOCK: usize = 1 << 16;
 /// Most channels a host strip may ask for.
 const MAX_CHANNELS: usize = 64;
-/// Queue slots that only releases from `note_off` may take: one per channel/key, so a queue that
-/// parameter changes, note-ons or other MIDI filled still has room to release every held key on
-/// a reset (#1464).
+/// Queue slots that only note releases (from `note_off` or a MIDI note-off) may take: one per
+/// channel/key, so a queue that parameter changes, note-ons or other MIDI filled still has room
+/// to release every held key on a reset (#1464).
 const RELEASE_RESERVE: usize = 16 * 128;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
