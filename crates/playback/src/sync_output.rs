@@ -42,7 +42,7 @@ struct Stats {
     sent: AtomicU64,
     pending_transition_timeouts: AtomicU64,
     oversized_dropped: AtomicU64,
-    relaunches: AtomicU64,
+    position_sends: AtomicU64,
     catch_up_sends: AtomicU64,
     stale_dropped: AtomicU64,
     session_backlog_drops: AtomicU64,
@@ -67,6 +67,8 @@ fn effective_offset(offset: i64, sr: soundcraft_time::SampleRate) -> i64 {
     let max = crate::max_sync_offset_samples(sr);
     offset.clamp(-max, max)
 }
+/// Joins the failures of several destinations in [`MidiSyncStatus::error`].
+const FAILURE_SEPARATOR: &str = "; ";
 const BOUNDS: [u64; 6] = [500, 1000, 2000, 5000, 10_000, 20_000];
 fn percentile(buckets: [u64; 7], p: u64, max: u64) -> u64 {
     let target = buckets.iter().sum::<u64>().saturating_mul(p).div_ceil(100);
@@ -324,7 +326,7 @@ impl Output {
             oversized_dropped: self.stats.oversized_dropped.load(Relaxed),
             error: self.trouble(),
             session_backlog_drops: self.stats.session_backlog_drops.load(Relaxed),
-            relaunches: self.stats.relaunches.load(Relaxed),
+            position_sends: self.stats.position_sends.load(Relaxed),
             catch_up_sends: self.stats.catch_up_sends.load(Relaxed),
             stale_dropped: self.stats.stale_dropped.load(Relaxed),
             lateness_buckets: buckets,
@@ -515,7 +517,7 @@ impl<C: SyncPort> Port<C> {
                 Ok(handed) => {
                     stats.record(e.at, handed);
                     if matches!(e.bytes[0], 0xf0 | 0xf2) {
-                        stats.relaunches.fetch_add(1, Relaxed);
+                        stats.position_sends.fetch_add(1, Relaxed);
                     }
                 }
                 Err(err) => {
@@ -596,6 +598,23 @@ fn wait_for_update(rx: &Receiver<Update>, next: Option<Instant>, connected: bool
     Ok(update)
 }
 
+/// Names every failing destination, not only the first, so several unavailable
+/// ports all appear in the status line and diagnostics. Reuses `buffer` so the
+/// worker loop does not allocate while the failures stay the same.
+fn join_failures<'a, C>(ports: &BTreeMap<String, Port<C>>, buffer: &'a mut String) -> Option<&'a str> {
+    buffer.clear();
+    for p in ports.values() {
+        let Some(err) = p.failure.as_deref().or_else(|| p.routes.iter().flatten().find_map(|r| r.encoder.error())) else { continue };
+        if !buffer.split(FAILURE_SEPARATOR).any(|known| known == err) {
+            if !buffer.is_empty() {
+                buffer.push_str(FAILURE_SEPARATOR);
+            }
+            buffer.push_str(err);
+        }
+    }
+    (!buffer.is_empty()).then_some(buffer.as_str())
+}
+
 fn drive<C: SyncPort>(
     view: View,
     mut session: Arc<Session>,
@@ -617,6 +636,7 @@ fn drive<C: SyncPort>(
     let state = || view.lock().unwrap_or_else(std::sync::PoisonError::into_inner).transport_state();
     let mut update = None;
     let mut pending = Vec::<Event>::new();
+    let mut failures = String::new();
     loop {
         #[cfg(test)]
         stats.iterations.fetch_add(1, Relaxed);
@@ -700,7 +720,7 @@ fn drive<C: SyncPort>(
             view.lock().unwrap_or_else(std::sync::PoisonError::into_inner).retire_before(generation);
         }
         {
-            let err = ports.values().find_map(|p| p.failure.as_deref().or_else(|| p.routes.iter().flatten().find_map(|r| r.encoder.error())));
+            let err = join_failures(&ports, &mut failures);
             let mut old = trouble.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
             if old.as_deref() != err {
                 *old = err.map(str::to_owned);

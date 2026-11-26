@@ -35,8 +35,13 @@ pub struct MidiSyncStatus {
     pub sent: u64,
     pub pending_transition_timeouts: u64,
     pub oversized_dropped: u64,
+    /// The message of every failing destination (for example
+    /// `"MIDI output <port> unavailable"`) joined with `"; "`, or a worker startup
+    /// error. `None` while every destination works.
     pub error: Option<String>,
-    pub relaunches: u64,
+    /// Position messages delivered to a port: Song Position Pointer (F2) and
+    /// System Exclusive (F0, the MTC full-frame message) sends.
+    pub position_sends: u64,
     pub session_backlog_drops: u64,
     pub catch_up_sends: u64,
     pub stale_dropped: u64,
