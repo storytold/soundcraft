@@ -181,6 +181,9 @@ pub struct UiState {
     pub ui_scale: f32,
     /// MIDI input ports switched off in Setup, by name (all others are used).
     pub midi_inputs_off: Vec<String>,
+    /// Preferences › MIDI › MIDI Merge Release Mode (`ui.midi_merge_release`): how controllers
+    /// recorded in MIDI Merge mode are written. Per machine, as in Pro Tools' MIDI preferences.
+    pub midi_merge_release: soundcraft_engine::io::MergeRelease,
 }
 
 impl Default for UiState {
@@ -250,6 +253,7 @@ impl Default for UiState {
             window_maximized: false,
             ui_scale: 1.0,
             midi_inputs_off: Vec::new(),
+            midi_merge_release: soundcraft_engine::io::MergeRelease::default(),
         }
     }
 }
@@ -325,6 +329,11 @@ pub struct SoundApp {
     /// The MIDI input each record-enabled track had when the current pass started: the pass
     /// records from it even if the track is switched to another device meanwhile.
     midi_take_inputs: Vec<(TrackId, soundcraft_model::Route)>,
+    /// MIDI Merge round by round of the current pass, as it stood at the end of each round so far
+    /// (the button may be switched while recording) and the entries of `midi_take` already
+    /// counted for it.
+    midi_take_merge: Vec<bool>,
+    midi_take_counted: usize,
     /// The loop the transport is playing round, when it was started with one.
     play_loop: Option<Range>,
     /// Input this take lost to a slow disk, as last reported (ms).

@@ -160,6 +160,14 @@ impl SoundApp {
             self.punch = None;
             self.start_play(sel.start, None, Some(sel));
             self.plan_recording(takes, Some(sel.len()));
+        } else if let Some(from) = midi_loop_pass(&e, audio_tracks) {
+            // Loop Playback with only MIDI to record: the selection loops, after the pre-roll,
+            // for loop recording in MIDI Merge mode (Reference Guide p.824–825). The MIDI is taken
+            // round by round over the loop that plays (`play_loop`).
+            self.record_start = from;
+            self.punch = None;
+            self.start_play(from, None, Some(sel));
+            self.plan_recording(takes, None);
         } else {
             // Record into the selection when there is one (punch), with pre/post-roll if enabled;
             // the take is trimmed back to the punch range afterwards.
@@ -279,7 +287,7 @@ impl SoundApp {
         // keys still down are held to the end of the loop (the take is reported as incomplete).
         let (midi_range, midi_kind) =
             super::midi::midi_take_span(midi_loop, plan.punch, self.record_start, stopped_at, self.midi_pass_stopped_at(midi_pass));
-        let (midi_clips, midi_problem) = self.finish_midi_take(midi_range, !ids.is_empty(), midi_confirmed, midi_kind);
+        let (midi_clips, midi_problem) = self.finish_midi_take(midi_range, !ids.is_empty(), midi_confirmed, (midi_kind, plan.pass.is_some()));
         self.ui.status = if plan.pass.is_some() && midi_clips == 0 {
             crate::localized_format!("Loop-recorded {} take(s)", ids.len() / tracks)
         } else if ids.is_empty() && midi_clips == 0 {
@@ -549,9 +557,36 @@ impl SoundApp {
     }
 }
 
+/// Where a record pass started from stop plays from when it loops for MIDI: Loop Playback is on,
+/// Loop Record is not, the selection is one the transport loops, and no audio track records
+/// (`audio`). Pro Tools records audio in a line whatever Loop Playback says ("Pro Tools ignores
+/// Loop Playback when recording", Reference Guide p.801), and its MIDI loop recording steps say to
+/// record-enable no audio track (p.825). `None` for a pass in a line.
+fn midi_loop_pass(e: &soundcraft_model::EditState, audio: bool) -> Option<Samples> {
+    let sel = e.selection;
+    let pre = if e.pre_post_roll { e.pre_roll } else { 0 };
+    (e.loop_playback && !e.loop_record && !audio && !sel.is_empty() && soundcraft_playback::loops(sel)).then(|| (sel.start - pre).max(0))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn loop_playback_loops_a_pass_that_records_only_midi() {
+        let mut e = soundcraft_model::EditState { loop_playback: true, ..Default::default() };
+        e.selection = Range::new(96_000, 288_000);
+        assert_eq!(midi_loop_pass(&e, false), Some(96_000));
+        e.pre_post_roll = true;
+        e.pre_roll = 48_000;
+        assert_eq!(midi_loop_pass(&e, false), Some(48_000), "after the pre-roll");
+        assert_eq!(midi_loop_pass(&e, true), None, "an audio track records: in a line");
+        e.loop_playback = false;
+        assert_eq!(midi_loop_pass(&e, false), None);
+        e.loop_playback = true;
+        e.selection = Range::point(96_000);
+        assert_eq!(midi_loop_pass(&e, false), None, "nothing to loop");
+    }
 
     #[test]
     fn the_fallback_take_folder_is_made_once_under_the_temporary_folder() {

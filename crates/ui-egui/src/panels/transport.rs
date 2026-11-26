@@ -85,8 +85,26 @@ pub(super) fn transport_window(app: &mut SoundApp, ctx: &egui::Context) {
                         ("Loop Rec", loop_rec, "options.loop_record"),
                         ("Pre/Post", prepost, "options.pre_post_roll"),
                     ] {
-                        if ui.selectable_label(on, crate::localization::text(label)).clicked() {
+                        // In Loop Record mode MIDI Merge has no effect, and the button is dimmed
+                        // (Reference Guide p.813).
+                        let dimmed = cmd == "options.midi_merge" && loop_rec;
+                        let r = ui.add_enabled(!dimmed, egui::Button::selectable(on, crate::localization::text(label)));
+                        let r = if dimmed { r.on_disabled_hover_text(crate::localization::text("No effect while Loop Record is on")) } else { r };
+                        if r.clicked() {
                             let _ = app.run(cmd, json!({}));
+                        }
+                        if cmd == "options.midi_merge" {
+                            // Right-click: MIDI Merge Release mode (p.814).
+                            let current = app.ui.midi_merge_release;
+                            r.context_menu(|ui| {
+                                ui.label(crate::localization::text("MIDI Merge Release Mode"));
+                                for mode in soundcraft_engine::io::MergeRelease::ALL {
+                                    if ui.radio(current == mode, crate::localization::text(mode.label())).clicked() {
+                                        let _ = app.run("ui.midi_merge_release", json!({"mode": mode.id()}));
+                                        ui.close();
+                                    }
+                                }
+                            });
                         }
                     }
                 });

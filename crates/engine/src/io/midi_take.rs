@@ -330,7 +330,8 @@ pub fn add_midi_recording_from(
 /// p.814, p.176). It applies to the continuous controllers: control changes, pitch bend and
 /// channel (mono) aftertouch, the kinds Pro Tools lists as continuous controller events
 /// (p.1042–1043). Program changes and polyphonic aftertouch are merged as they are.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum MergeRelease {
     /// "Continues writing the last value until the next event even if you are still recording":
     /// the existing events of a controller are replaced from the first to the last value played,
