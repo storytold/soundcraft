@@ -280,7 +280,8 @@ impl Recorder {
             cpal::SampleFormat::I16 => build_input::<i16>(&device, config, &shared, &monitor),
             _ => build_input::<f32>(&device, config, &shared, &monitor),
         };
-        // The chosen buffer size first; if the device refuses it, its default.
+        // Buffer sizes in order: the chosen fixed size, the device's remembered default, then
+        // cpal's default (`devices::buffer_attempts`).
         let asked = config.buffer_size;
         let default = crate::devices::default_buffer(&device, asked, || input_buffer_now(&device, config, format));
         let mut stream = Err("no buffer size to try".to_string());

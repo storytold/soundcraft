@@ -235,7 +235,8 @@ impl Player {
         };
         match open_device(want, want_ch, cfg) {
             Ok((device, config, format, name)) => {
-                // The chosen buffer size first; if the device refuses it, its default.
+                // Buffer sizes in order: the chosen fixed size, the device's remembered default, then
+                // cpal's default (`devices::buffer_attempts`).
                 let asked = config.buffer_size;
                 let default = devices::default_buffer(&device, asked, || stream::buffer_now(&device, config, format));
                 let attempts = devices::buffer_attempts(asked, default).into_iter().map(|buffer_size| cpal::StreamConfig { buffer_size, ..config });
