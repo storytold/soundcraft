@@ -427,20 +427,22 @@ impl MidiFeed {
             return;
         }
         let data = |i: usize| bytes.get(i).copied().unwrap_or(0) & 0x7F;
-        let echo = self.echo_of(port, bytes);
-        if echo == Some(SentBy::Thru) {
-            return;
-        }
-        let clip_echo = echo == Some(SentBy::Clips);
-        let e = pack(&LiveMidi { offset: 0, port, status, data1: data(1), data2: data(2), echo: clip_echo });
         let mut thru = false;
+        let e;
         {
             let mut owed = self.writers.lock().unwrap_or_else(PoisonError::into_inner);
             // Shut off under the same lock that `close_port` holds: a message is either in the
-            // queue before the port's loss is marked, or it is discarded here.
+            // queue before the port's loss is marked, or it is discarded here, before it can use
+            // up the record of an echo that the connection replacing it may still bring.
             if open.is_some_and(|o| !o.load(Ordering::Acquire)) {
                 return;
             }
+            let echo = self.echo_of(port, bytes);
+            if echo == Some(SentBy::Thru) {
+                return;
+            }
+            let clip_echo = echo == Some(SentBy::Clips);
+            e = pack(&LiveMidi { offset: 0, port, status, data1: data(1), data2: data(2), echo: clip_echo });
             let now = self.now();
             // Losses from a full queue go into the queue first, where they happened: ahead of
             // the first event that fits again. Each mark carries the time its port's events
@@ -1470,6 +1472,26 @@ mod tests {
         feed.receive(bus, &[0xC2, 5]);
         assert_eq!(feed.thru_echoes(), 1);
         assert_eq!(std::iter::from_fn(|| feed.next()).count(), 2);
+    }
+
+    #[test]
+    fn a_closed_connection_does_not_use_up_the_echo_the_new_one_brings() {
+        let feed = MidiFeed::default();
+        let bus = feed.ports().assign("IAC Driver Bus 1");
+        feed.attach_thru(std::thread::current());
+        feed.set_clock(1_000_000);
+        feed.sent("IAC Driver Bus 1", &[0x92, 60, 100], SentBy::Thru);
+        feed.set_clock(1_000_500);
+        // The old connection, shut off, still delivers the echo: it is discarded and uses nothing.
+        let (old, new) = (AtomicBool::new(true), AtomicBool::new(true));
+        feed.close_port(&old, bus);
+        feed.receive_while_open(&old, bus, &[0x92, 60, 100]);
+        assert_eq!(feed.thru_echoes(), 0);
+        // The same echo through the connection that replaced it is still known as one.
+        feed.receive_while_open(&new, bus, &[0x92, 60, 100]);
+        assert_eq!(feed.thru_echoes(), 1);
+        assert!(std::iter::from_fn(|| feed.next()).all(|(_, e)| e.status == RecordedMidi::LOST), "nothing played");
+        assert!(feed.next_thru().is_none(), "nothing sent on");
     }
 
     /// Plays `script` (`(ms, bytes)`) from the keyboard KB through thru to the synth SYN on the
