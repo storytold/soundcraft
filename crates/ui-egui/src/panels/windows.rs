@@ -447,6 +447,9 @@ pub fn recall_configuration(app: &mut SoundApp, saved: &Value) -> Result<(), Str
     st.preferences_window_pos = app.ui.preferences_window_pos;
     st.reduce_visual_effects = app.ui.reduce_visual_effects;
     st.undo_levels = app.ui.undo_levels.clamp(1, 64);
+    // The MIDI output ports' bindings and delay compensation belong to this machine, not to a
+    // window layout.
+    st.midi_sync = app.ui.midi_sync.clone();
     st.show_configurations = true;
     crate::docking::cancel_replaced_state(app, &st);
     app.engine.set_history_limit(st.undo_levels);

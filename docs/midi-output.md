@@ -40,9 +40,10 @@ sending. A new track sends nothing until you choose.
 - SoundCraft checks the ports it has open against the port list once a second, so an unplugged
   port is noticed within about a second, playing or stopped (one unplugged and plugged back in
   within that second can go unnoticed). When the port comes back, SoundCraft reconnects within a
-  second or two and sends All Notes Off on the channels in use, in case the device still holds
-  notes it never heard end; while playing, it then carries on from the play position with the
-  controllers and program chased. The log records each port opened, lost and reconnected.
+  second or two and sends sustain pedal up and All Notes Off on the channels played on since the
+  port was last opened, in case the device still holds notes it never heard end (a Stop's
+  Note-Offs sent while the port was failing are lost); while playing, it then carries on from the
+  play position with the controllers and program chased. The log records each port opened, lost and reconnected.
 
 Choosing an output does not change the track's instrument plug-in or audio output. A MIDI track
 with an instrument and an external output plays both, the same notes on each.
@@ -75,8 +76,8 @@ track itself (p740, step 2) is not available.
   latency and the mixer's plug-in delay, so the notes sound with the audio. Off, they leave as soon
   as the audio is rendered, ahead of it by the output latency.
 - If the audio device has reported no output timing since it was opened, the tracks' compensated
-  output cannot be timed, so it is sent uncompensated, as with the preference off, and a warning
-  bar at the top of the window says "MIDI output is not delay-compensated: the audio device
+  output cannot be timed, so it is sent uncompensated, as with the preference off, and while a
+  track plays to an external port a warning bar at the top of the window says "MIDI output is not delay-compensated: the audio device
   reports no output timing." Compensation comes back on its own once the device reports its
   timing. Compensated MIDI Beat Clock waits for the timing instead, and the bar says so. A device
   that stops reporting after it did keeps the last measured latency, and the bar says that.

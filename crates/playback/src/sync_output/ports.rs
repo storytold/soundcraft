@@ -117,14 +117,19 @@ fn selected<'a>(available: &'a Bindings, label: &str) -> Result<&'a str, String>
     available.get(label).map(String::as_str).ok_or_else(|| format!("MIDI output {label} unavailable"))
 }
 
+/// Open the port bound to `label`. midir panics on a few failures of the MIDI system (see
+/// [`Registry::listed`]): that is an error here, so the worker retries a second later.
 fn open(label: &str, saved: &Bindings) -> Result<(MidiOutputConnection, String), String> {
-    let midi = MidiOutput::new("SoundCraft MIDI output").map_err(|e| e.to_string())?;
-    let (ports, names) = enumerate(&midi, saved);
-    let ids = assign(saved, names.iter().cloned());
-    let id = selected(&ids, label)?;
-    let index = names.iter().position(|(_, key)| key == id).ok_or_else(|| format!("MIDI output {label} unavailable"))?;
-    let conn = midi.connect(&ports[index], "SoundCraft MIDI output").map_err(|e| e.to_string())?;
-    Ok((conn, id.to_owned()))
+    std::panic::catch_unwind(|| {
+        let midi = MidiOutput::new("SoundCraft MIDI output").map_err(|e| e.to_string())?;
+        let (ports, names) = enumerate(&midi, saved);
+        let ids = assign(saved, names.iter().cloned());
+        let id = selected(&ids, label)?;
+        let index = names.iter().position(|(_, key)| key == id).ok_or_else(|| format!("MIDI output {label} unavailable"))?;
+        let conn = midi.connect(&ports[index], "SoundCraft MIDI output").map_err(|e| e.to_string())?;
+        Ok((conn, id.to_owned()))
+    })
+    .map_err(|_| format!("MIDI output {label} unavailable"))?
 }
 
 /// The worker also pins a legacy selection on its first successful connection, including
@@ -132,7 +137,15 @@ fn open(label: &str, saved: &Bindings) -> Result<(MidiOutputConnection, String),
 #[derive(Default)]
 pub(super) struct Registry {
     ids: std::sync::Mutex<Bindings>,
+    /// The native port each label's connection was opened with.
+    open_ids: std::sync::Mutex<Bindings>,
     learned: std::sync::atomic::AtomicBool,
+}
+
+/// The labels among `labels` that `current` (the assignment of the listed ports) still binds to
+/// the native port they were opened with (`opened`).
+fn still_bound(current: &Bindings, opened: &Bindings, labels: &BTreeSet<String>) -> BTreeSet<String> {
+    labels.iter().filter(|label| current.get(*label).is_some_and(|id| opened.get(*label) == Some(id))).cloned().collect()
 }
 
 impl Registry {
@@ -153,6 +166,7 @@ impl Registry {
         if ids.get(label) != saved.get(label) {
             return Err(format!("MIDI output {label} changed while connecting"));
         }
+        self.open_ids.lock().unwrap_or_else(std::sync::PoisonError::into_inner).insert(label.to_owned(), id.clone());
         // A new binding, or a saved one that followed its device to a new native ID.
         if saved.get(label) != Some(&id) {
             ids.insert(label.to_owned(), id);
@@ -162,7 +176,9 @@ impl Registry {
     }
 
     /// The labels among `labels` that are still listed and bound to the native port they were
-    /// opened with. `None` when the ports cannot be listed now.
+    /// opened with: a label whose saved binding moved to another port is not, so the worker
+    /// closes it and opens the port it is bound to now. `None` when the ports cannot be listed
+    /// now.
     fn listed(&self, scanner: &mut Option<MidiOutput>, labels: &BTreeSet<String>) -> Option<BTreeSet<String>> {
         let saved = self.ids.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone();
         // midir panics on a few failures of the MIDI system; a new scanner is made next time.
@@ -176,7 +192,8 @@ impl Registry {
             *scanner = None;
             None
         })?;
-        Some(labels.iter().filter(|label| ids.get(*label).is_some_and(|id| saved.get(*label) == Some(id))).cloned().collect())
+        let opened = self.open_ids.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        Some(still_bound(&ids, &opened, labels))
     }
 }
 
@@ -313,6 +330,20 @@ mod tests {
         let saved = Bindings::from([("Synth".into(), "gone".into()), ("Other".into(), "x".into())]);
         assert_eq!(assign(&saved, listed(&[("Synth", "x")])), Bindings::from([("Other".into(), "x".into())]));
         assert!(numbered("DIN (2)", "DIN") && !numbered("DIN (1)", "DIN") && !numbered("DINO (2)", "DIN") && !numbered("DIN", "DIN"));
+    }
+
+    #[test]
+    fn an_open_label_whose_binding_moved_to_another_port_is_no_longer_listed() {
+        let found = || listed(&[("DIN", "a"), ("DIN", "b")]);
+        let opened = Bindings::from([("DIN".into(), "a".into())]);
+        let labels = BTreeSet::from(["DIN".to_owned()]);
+        // Still bound to the port it was opened with.
+        assert_eq!(still_bound(&assign(&opened, found()), &opened, &labels), labels);
+        // The saved binding now names port b, which is listed: close and reopen on b.
+        let moved = Bindings::from([("DIN".into(), "b".into())]);
+        assert!(still_bound(&assign(&moved, found()), &opened, &labels).is_empty());
+        // Port a unplugged while the label is bound to b: the link to a is not kept either.
+        assert!(still_bound(&assign(&moved, listed(&[("DIN", "b")])), &opened, &labels).is_empty());
     }
 
     #[test]

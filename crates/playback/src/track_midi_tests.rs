@@ -295,9 +295,31 @@ fn a_reopened_port_quiets_the_channels_in_use_and_does_not_replay_old_notes() {
     enc.reset();
     wire.clear();
     run(&mut enc, &s, b, Duration::from_millis(500), Duration::from_millis(1100), &mut wire);
-    assert_eq!(wire[0].1, [0xb3, 123, 0], "{wire:?}");
+    assert_eq!(wire[..2].iter().map(|(_, m)| m.clone()).collect::<Vec<_>>(), [vec![0xb3, 64, 0], vec![0xb3, 123, 0]], "{wire:?}");
     let ons = note_ons(&wire);
     assert_eq!(ons.iter().map(|(_, p)| *p).collect::<Vec<_>>(), [67], "the note held before the unplug is not struck again");
+}
+
+#[test]
+fn a_reopen_after_a_stop_whose_releases_failed_still_quiets_the_channel() {
+    // Windows: the Stop's Note-Off and All Notes Off went to a broken handle. The encoder had
+    // moved on (nothing held, nothing in use), but the reopen still quiets that channel.
+    let base = Instant::now();
+    let mut s = session();
+    add_track(&mut s, TrackKind::Midi, vec![note(60, 100, 0, 9600)], vec![], "DIN", 5);
+    let mut enc = TrackMidi::new("DIN");
+    let mut wire = Wire::new();
+    run(&mut enc, &s, rolling(base, 1, 0), Duration::ZERO, Duration::from_millis(100), &mut wire);
+    enc.update(stopped(base, 1, 4800), base + Duration::from_millis(100), &s, &mut |_, _| {});
+    enc.reset();
+    wire.clear();
+    enc.update(stopped(base, 1, 4800), base + Duration::from_millis(1200), &s, &mut |at, m| wire.push((at, m.to_vec())));
+    assert_eq!(wire.iter().map(|(_, m)| m.clone()).collect::<Vec<_>>(), [vec![0xb5, 64, 0], vec![0xb5, 123, 0]]);
+    // Only once: the next reopen has nothing to make good.
+    enc.reset();
+    wire.clear();
+    enc.update(stopped(base, 1, 4800), base + Duration::from_millis(2400), &s, &mut |at, m| wire.push((at, m.to_vec())));
+    assert!(wire.is_empty(), "{wire:?}");
 }
 
 #[test]
@@ -409,4 +431,23 @@ fn a_track_routed_here_while_playing_is_chased_like_a_locate() {
         // The values at the play position (50 ms is past tick 48), not the later one.
         assert_eq!(sent, [vec![0xb2, 7, 70], vec![0xc2, 12]], "{case}");
     }
+}
+
+#[test]
+fn a_timing_loss_before_a_stop_does_not_restart_the_next_pass() {
+    // The timing was lost while playing, then the transport stopped before the next update. The
+    // next pass starts once: its notes are not cut by a second start one update later.
+    let base = Instant::now();
+    let mut s = session();
+    add_track(&mut s, TrackKind::Midi, vec![note(60, 100, 0, 9600)], vec![], "DIN", 0);
+    let mut enc = TrackMidi::new("DIN");
+    let mut wire = Wire::new();
+    run(&mut enc, &s, rolling(base, 1, 0), Duration::ZERO, Duration::from_millis(100), &mut wire);
+    enc.timing_lost();
+    enc.update(stopped(base, 1, 4800), base + Duration::from_millis(100), &s, &mut |_, _| {});
+    wire.clear();
+    let again = base + Duration::from_millis(200);
+    run(&mut enc, &s, rolling(again, 2, 0), Duration::ZERO, Duration::from_millis(100), &mut wire);
+    assert_eq!(note_ons(&wire).iter().map(|(_, p)| *p).collect::<Vec<_>>(), [60]);
+    assert!(!wire.iter().any(|(_, m)| m[0] & 0xf0 == 0x80), "{wire:?}");
 }
