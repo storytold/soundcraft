@@ -78,6 +78,7 @@ pub use instances::{INSTRUMENT_SLOT, InstanceSpec, NewInstance, PluginFailures, 
 pub use live_midi::{LiveMidi, MAX_MIDI_PORTS, MAX_OWNERS, MidiPorts, midi_port_bit, midi_thru};
 pub use meter::StripMeter;
 use midi::sync_sample;
+pub use midi::{ClipEvent, chase_events, clip_events, midi_offset};
 pub use offline::{
     MAX_RENDER_SAMPLES, RangeRender, fold_down_stereo, render_bus, render_clips, render_range, render_track_pre_fader, source_channels,
 };

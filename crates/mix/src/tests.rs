@@ -601,6 +601,107 @@ fn real_time_properties_reach_the_instrument() {
     assert_eq!(*heard.lock().unwrap(), vec![(72, 80)]);
 }
 
+/// Every note on/off and controller an instrument heard, at its timeline sample.
+struct Wire {
+    inner: Box<dyn Plugin>,
+    block: Arc<std::sync::atomic::AtomicI64>,
+    heard: Arc<std::sync::Mutex<Vec<(i64, [u8; 3])>>>,
+}
+
+impl Wire {
+    fn push(&self, offset: usize, msg: [u8; 3]) {
+        let at = self.block.load(std::sync::atomic::Ordering::Relaxed) + offset as i64;
+        self.heard.lock().unwrap().push((at, msg));
+    }
+}
+
+impl Plugin for Wire {
+    fn info(&self) -> &'static soundcraft_dsp::PluginInfo {
+        self.inner.info()
+    }
+    fn prepare(&mut self, sr: f32, mb: usize, ch: usize) {
+        self.inner.prepare(sr, mb, ch);
+    }
+    fn reset(&mut self) {
+        self.inner.reset();
+    }
+    fn set_param(&mut self, id: &str, v: f32) -> bool {
+        self.inner.set_param(id, v)
+    }
+    fn param(&self, id: &str) -> Option<f32> {
+        self.inner.param(id)
+    }
+    fn process(&mut self, io: &mut [Vec<f32>], frames: usize) {
+        self.inner.process(io, frames);
+    }
+    fn note_on(&mut self, offset: usize, note: u8, velocity: u8) {
+        self.push(offset, [0x90, note, velocity]);
+    }
+    fn note_off(&mut self, offset: usize, note: u8) {
+        self.push(offset, [0x80, note, 0]);
+    }
+    fn midi(&mut self, offset: usize, msg: [u8; 3]) {
+        if msg != [0xB0, 121, 0] {
+            self.push(offset, msg);
+        }
+    }
+}
+
+/// The external MIDI output reads clips through `clip_events` in windows of its own size. The
+/// instrument, fed block by block, must hear the same events at the same places, with Real-Time
+/// Properties and the MIDI Track Offset applied, including events on block boundaries, and the
+/// same chased controllers when it starts.
+#[test]
+fn the_shared_clip_walk_matches_what_the_instrument_plays_block_by_block() {
+    for (rtp, offset) in [(false, 0.0), (true, -700.0), (true, 1300.0)] {
+        let mut s = Session::default();
+        let t = s.add_track(TrackKind::Instrument, ChannelFormat::Stereo, None);
+        s.track_mut(t).unwrap().instrument = Some(Insert::new("clap:test.wire"));
+        let note = |pitch, velocity, start, length| soundcraft_midi::Note { pitch, velocity, release_velocity: 64, channel: 0, start, length };
+        let cc = |tick, kind, value| soundcraft_midi::CtrlEvent { tick, channel: 0, kind, value };
+        let mut seq = soundcraft_midi::Sequence::default();
+        // Ticks 64 apart are 512 samples at 120 bpm and 48 kHz: starts on block boundaries.
+        seq.notes.extend([note(60, 30, 0, 64), note(62, 90, 64, 200), note(64, 127, 130, 7), note(60, 60, 64, 64)]);
+        seq.ctrls.extend([cc(10, CtrlKind::Cc(7), 100), cc(128, CtrlKind::Program, 5), cc(300, CtrlKind::PitchBend, 900)]);
+        let cid = s.new_clip_id();
+        s.track_mut(t).unwrap().playlist_mut().unwrap().clips.push(Clip::midi(cid, "m", 0, 48_000, seq));
+        if rtp {
+            s.edit.values.insert(format!("rtp.{}.transpose", t.0), 5.0);
+            s.edit.values.insert(format!("rtp.{}.velocity", t.0), -10.0);
+            s.edit.values.insert(format!("rtp.{}.duration", t.0), 150.0);
+        }
+        s.edit.values.insert(format!("midi.offset.{}", t.0), offset);
+        let block = Arc::new(std::sync::atomic::AtomicI64::new(0));
+        let heard = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let wire = Wire { inner: soundcraft_dsp::create("gain").unwrap(), block: Arc::clone(&block), heard: Arc::clone(&heard) };
+        let mut eng = MixEngine::new(48_000.0, 512);
+        eng.set_external_instances(true);
+        eng.adopt(vec![PreparedInstance { track: t, slot: INSTRUMENT_SLOT, id: "clap:test.wire".into(), ch: 2, plugin: Box::new(wire) }]);
+        for b in 0..24 {
+            block.store(b * 512, std::sync::atomic::Ordering::Relaxed);
+            render_block(&mut eng, &s, b * 512);
+        }
+        let track = s.track(t).unwrap();
+        let shift = midi_offset(&s, track);
+        // Playing from 0 first chases what the offset moved before it.
+        let mut walked = Vec::new();
+        chase_events(&s, track, -shift, |message| walked.push((0, message)));
+        clip_events(&s, track, -shift, 24 * 512 - shift, |event| match event {
+            ClipEvent::Note { on, off, pitch, velocity } => {
+                walked.push((on + shift, [0x90, pitch, velocity]));
+                walked.push((off + shift, [0x80, pitch, 0]));
+            }
+            ClipEvent::Ctrl { at, message } => walked.push((at + shift, message)),
+        });
+        walked.retain(|(at, _)| (0..24 * 512).contains(at));
+        let mut played = heard.lock().unwrap().clone();
+        played.sort();
+        walked.sort();
+        assert!(!walked.is_empty());
+        assert_eq!(played, walked, "rtp {rtp}, offset {offset}");
+    }
+}
+
 fn render_block(eng: &mut MixEngine, s: &Session, pos: i64) -> f32 {
     let mut out = vec![vec![0.0f32; 512]; 2];
     eng.render(s, pos, 512, &mut out);
