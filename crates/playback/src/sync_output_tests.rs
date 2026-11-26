@@ -1,6 +1,6 @@
 use super::*;
-use crate::sync_clock::{DeviceTiming, Presentation};
 use crate::beat_clock::Cursor;
+use crate::sync_clock::{DeviceTiming, Presentation};
 use craft_midi_sync::sync::{CLOCK, CONTINUE, START, STOP};
 use std::sync::atomic::AtomicUsize;
 

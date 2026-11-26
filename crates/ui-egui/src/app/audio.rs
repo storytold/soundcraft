@@ -434,11 +434,13 @@ mod timing_warning_tests {
         assert!(app.ui.status.contains("Previous USB output"));
         app.ui.status = "Saved".into();
         let ctx = egui::Context::default();
+        crate::framework::install_headless(&ctx);
         let mut found = false;
         app.set_system_fonts(false);
         for _ in 0..4 {
-            let raw =
+            let mut raw =
                 egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1300., 800.))), ..Default::default() };
+            app.raw_input_hook(&ctx, &mut raw);
             let mut output = ctx.run_ui(raw, |ui| {
                 app.logic(ui.ctx());
                 app.ui(ui);

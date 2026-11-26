@@ -504,8 +504,11 @@ mod tests {
         let mut app = SoundApp::new(soundcraft_engine::Engine::default(), None, crate::Services::default());
         let keys = app.run("track.new", json!({"name": "Keys", "kind": "midi"})).unwrap()["tracks"][0].clone();
         app.run("track.midi_output", json!({"tracks": [keys], "output": "MIDI:1:UM-ONE"})).unwrap();
-        let ids = json!({"DIN": "device-din", "UM-ONE": "device-um", "Old": "device-old"});
+        // The track's port was bound when it opened; "Old" is used by nothing.
+        app.ui.midi_sync.port_ids = BTreeMap::from([("UM-ONE".into(), "device-um".into()), ("Old".into(), "device-old".into())]);
+        let ids = json!({"DIN": "device-din"});
         app.sync_command("setup.midi_beat_clock", &json!({"enabled": true, "ports": {"DIN": {"enabled": true}}, "port_ids": ids})).unwrap();
+        assert_eq!(app.ui.midi_sync.port_ids.keys().collect::<Vec<_>>(), ["DIN", "UM-ONE"]);
         app.sync_command("setup.midi_beat_clock", &json!({"ports": {"DIN": null}})).unwrap();
         assert_eq!(app.ui.midi_sync.port_ids, BTreeMap::from([("UM-ONE".into(), "device-um".into())]));
     }

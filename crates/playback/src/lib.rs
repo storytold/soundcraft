@@ -597,12 +597,10 @@ impl Player {
     pub fn try_set_beat_clock_outputs(&self, ports: Vec<(String, i64)>, compensate: bool) -> bool {
         #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
         {
-            self.sync_output.lock().unwrap_or_else(PoisonError::into_inner).set_routes(
-                sync_output::RouteKind::BeatClock,
-                ports,
-                compensate,
-                |_| Box::<beat_clock::Cursor>::default(),
-            )
+            self.sync_output
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .set_routes(sync_output::RouteKind::BeatClock, ports, compensate, |_| Box::<beat_clock::Cursor>::default())
         }
         #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
         {

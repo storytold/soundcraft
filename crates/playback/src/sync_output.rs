@@ -680,6 +680,60 @@ fn join_failures<'a, C>(ports: &BTreeMap<String, Port<C>>, buffer: &'a mut Strin
     (!buffer.is_empty()).then_some(buffer.as_str())
 }
 
+/// Apply one control message from the [`Output`] to the worker's ports and state.
+fn apply_update<C: SyncPort>(
+    u: Update,
+    ports: &mut BTreeMap<String, Port<C>>,
+    session: &mut Arc<Session>,
+    transition: &mut Option<(Option<(u64, bool)>, Instant)>,
+    now: Instant,
+    stats: &Stats,
+) {
+    match u {
+        Update::Session(s) => *session = s,
+        Update::Routes(kind, dest, c, make) => {
+            let index = kind.index();
+            for (name, p) in ports.iter_mut() {
+                if !dest.iter().any(|(n, _)| n == name) {
+                    clear_route(name, p, index, stats);
+                }
+            }
+            for (n, o) in dest {
+                if ports.get(&n).and_then(|p| p.routes[index].as_ref()).is_some_and(|r| r.offset == o && r.compensate == c) {
+                    continue;
+                }
+                if let Some(p) = ports.get_mut(&n) {
+                    clear_route(&n, p, index, stats);
+                }
+                let encoder = make(&n);
+                set_route(ports, index, n, Route { map: None, offset: o, compensate: c, encoder });
+            }
+        }
+        Update::Encoder(dest, c, encoder) => {
+            let index = RouteKind::Mtc.index();
+            for (name, p) in ports.iter_mut() {
+                clear_route(name, p, index, stats);
+            }
+            if let Some((n, o)) = dest {
+                set_route(ports, index, n, Route { map: None, offset: o, compensate: c, encoder });
+            }
+        }
+        Update::Panic(messages) => {
+            for (name, p) in ports.iter_mut() {
+                p.future.retain(|e| releases(&e.bytes[..e.len]));
+                let mut routes = std::mem::replace(&mut p.routes, std::array::from_fn(|_| None));
+                for r in routes.iter_mut().flatten() {
+                    r.encoder.panic(&mut |msg| send_now(name, p, msg, stats));
+                }
+                p.routes = routes;
+                messages(&mut |msg| send_now(name, p, msg, stats));
+            }
+        }
+        Update::Wake(before) => *transition = Some((before, now + Duration::from_secs(2))),
+        Update::InputWake(pending) => pending.store(false, Relaxed),
+    }
+}
+
 fn drive<C: SyncPort>(
     view: View,
     mut session: Arc<Session>,
@@ -712,49 +766,7 @@ fn drive<C: SyncPort>(
             if !matches!(u, Update::InputWake(_)) {
                 awake = now + Duration::from_millis(150);
             }
-            match u {
-                Update::Session(s) => session = s,
-                Update::Routes(kind, dest, c, make) => {
-                    let index = kind.index();
-                    for (name, p) in &mut ports {
-                        if !dest.iter().any(|(n, _)| n == name) {
-                            clear_route(name, p, index, &stats);
-                        }
-                    }
-                    for (n, o) in dest {
-                        if ports.get(&n).and_then(|p| p.routes[index].as_ref()).is_some_and(|r| r.offset == o && r.compensate == c) {
-                            continue;
-                        }
-                        if let Some(p) = ports.get_mut(&n) {
-                            clear_route(&n, p, index, &stats);
-                        }
-                        let encoder = make(&n);
-                        set_route(&mut ports, index, n, Route { map: None, offset: o, compensate: c, encoder });
-                    }
-                }
-                Update::Encoder(dest, c, encoder) => {
-                    let index = RouteKind::Mtc.index();
-                    for (name, p) in &mut ports {
-                        clear_route(name, p, index, &stats);
-                    }
-                    if let Some((n, o)) = dest {
-                        set_route(&mut ports, index, n, Route { map: None, offset: o, compensate: c, encoder });
-                    }
-                }
-                Update::Panic(messages) => {
-                    for (name, p) in &mut ports {
-                        p.future.retain(|e| releases(&e.bytes[..e.len]));
-                        let mut routes = std::mem::replace(&mut p.routes, std::array::from_fn(|_| None));
-                        for r in routes.iter_mut().flatten() {
-                            r.encoder.panic(&mut |msg| send_now(name, p, msg, &stats));
-                        }
-                        p.routes = routes;
-                        messages(&mut |msg| send_now(name, p, msg, &stats));
-                    }
-                }
-                Update::Wake(before) => transition = Some((before, now + Duration::from_secs(2))),
-                Update::InputWake(pending) => pending.store(false, Relaxed),
-            }
+            apply_update(u, &mut ports, &mut session, &mut transition, now, &stats);
             ports.retain(|_, p| p.stop_pending || p.routes.iter().any(Option::is_some));
             stats.connected().retain(|n| ports.contains_key(n));
         }
