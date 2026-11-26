@@ -432,3 +432,22 @@ fn a_track_routed_here_while_playing_is_chased_like_a_locate() {
         assert_eq!(sent, [vec![0xb2, 7, 70], vec![0xc2, 12]], "{case}");
     }
 }
+
+#[test]
+fn a_timing_loss_before_a_stop_does_not_restart_the_next_pass() {
+    // The timing was lost while playing, then the transport stopped before the next update. The
+    // next pass starts once: its notes are not cut by a second start one update later.
+    let base = Instant::now();
+    let mut s = session();
+    add_track(&mut s, TrackKind::Midi, vec![note(60, 100, 0, 9600)], vec![], "DIN", 0);
+    let mut enc = TrackMidi::new("DIN");
+    let mut wire = Wire::new();
+    run(&mut enc, &s, rolling(base, 1, 0), Duration::ZERO, Duration::from_millis(100), &mut wire);
+    enc.timing_lost();
+    enc.update(stopped(base, 1, 4800), base + Duration::from_millis(100), &s, &mut |_, _| {});
+    wire.clear();
+    let again = base + Duration::from_millis(200);
+    run(&mut enc, &s, rolling(again, 2, 0), Duration::ZERO, Duration::from_millis(100), &mut wire);
+    assert_eq!(note_ons(&wire).iter().map(|(_, p)| *p).collect::<Vec<_>>(), [60]);
+    assert!(!wire.iter().any(|(_, m)| m[0] & 0xf0 == 0x80), "{wire:?}");
+}
