@@ -180,7 +180,8 @@ pub(crate) fn device(host: &cpal::Host, name: Option<&str>, output: bool) -> Opt
 pub enum BufferNote {
     /// The size is outside the range the driver reports; the device runs at its default buffer.
     OutsideRange { min: u32, max: u32 },
-    /// The driver reports no range and refused the size; the device runs at its default buffer.
+    /// The driver refused the size although it reports no range, or one that holds the size; the
+    /// device runs at its default buffer.
     Refused { want: u32 },
 }
 
@@ -201,7 +202,10 @@ pub fn buffer_note(want: Option<u32>, used: Option<u32>, range: Option<(u32, u32
     if used == Some(want) {
         return None;
     }
-    Some(range.map_or(BufferNote::Refused { want }, |(min, max)| BufferNote::OutsideRange { min, max }))
+    Some(match range {
+        Some((min, max)) if !(min..=max).contains(&want) => BufferNote::OutsideRange { min, max },
+        _ => BufferNote::Refused { want },
+    })
 }
 
 /// The range a driver reports, if it reports one.
@@ -235,6 +239,8 @@ mod tests {
         assert_eq!(BufferNote::OutsideRange { min: 15, max: 3072 }.english(), "The device allows 15–3072 samples; it runs at its default buffer.");
         // The driver gave no range and refused the size.
         assert_eq!(buffer_note(Some(100), None, None), Some(BufferNote::Refused { want: 100 }));
+        // A size within the reported range that still failed is refused, not outside the range.
+        assert_eq!(buffer_note(Some(256), None, Some((15, 3072))), Some(BufferNote::Refused { want: 256 }));
         // Taken as asked, or nothing asked: no note.
         assert_eq!(buffer_note(Some(256), Some(256), Some((15, 3072))), None);
         assert_eq!(buffer_note(None, None, Some((15, 3072))), None);
