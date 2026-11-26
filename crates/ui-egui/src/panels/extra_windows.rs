@@ -35,6 +35,13 @@ impl Default for ExtraState {
     }
 }
 
+impl ExtraState {
+    /// The interface scale applied to the context last; 1 until one is applied.
+    pub(crate) fn applied_scale(&self) -> f32 {
+        self.applied.map_or(1.0, |(scale, _)| scale)
+    }
+}
+
 /// UI commands handled here (`window.renderer`, `window.ui_customization`, `window.config_auto_update`).
 pub fn run(app: &mut SoundApp, id: &str, p: &Value) -> Option<Value> {
     let flag = |v: &mut bool| {
@@ -175,7 +182,7 @@ fn ui_customization(app: &mut SoundApp, ctx: &egui::Context) {
                     .text(crate::localization::text("Interface scale")),
             );
             let mut chosen_effects = None;
-            craft_ui::ComboBox::from_label(crate::localization::text("Reduce visual effects"))
+            egui::ComboBox::from_label(crate::localization::text("Reduce visual effects"))
                 .selected_text(crate::localization::text(app.ui.reduce_visual_effects.label()))
                 .show_ui(ui, |ui| {
                     for mode in crate::preferences::ReduceVisualEffects::ALL {
@@ -188,7 +195,7 @@ fn ui_customization(app: &mut SoundApp, ctx: &egui::Context) {
                 let _ = app.run("ui.reduce_visual_effects", json!({"mode": mode.id()}));
             }
             let mut selected_language = None;
-            craft_ui::ComboBox::from_label(crate::localization::text("Language"))
+            egui::ComboBox::from_label(crate::localization::text("Language"))
                 .selected_text(crate::localization::text(language.native_name()))
                 .show_ui(ui, |ui| {
                     for choice in crate::localization::Language::ALL {
@@ -201,15 +208,16 @@ fn ui_customization(app: &mut SoundApp, ctx: &egui::Context) {
                 let _ = app.run("ui.language", json!({"language": choice.id()}));
             }
             let mut chosen = None;
-            craft_ui::ComboBox::from_label(crate::localization::text("Theme"))
-                .selected_text(crate::localization::text(app.ui.theme.label()))
-                .show_ui(ui, |ui| {
+            egui::ComboBox::from_label(crate::localization::text("Theme")).selected_text(crate::localization::text(app.ui.theme.label())).show_ui(
+                ui,
+                |ui| {
                     for mode in crate::theme::ThemeMode::ALL {
                         if ui.selectable_label(app.ui.theme == mode, crate::localization::text(mode.label())).clicked() {
                             chosen = Some(mode);
                         }
                     }
-                });
+                },
+            );
             if let Some(mode) = chosen {
                 let _ = app.run("ui.theme", json!({"mode": mode.id()}));
             }

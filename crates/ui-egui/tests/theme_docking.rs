@@ -14,13 +14,18 @@ fn shared_panels_and_controls_follow_manual_and_live_system_appearance() {
             app.run(id, json!({})).unwrap();
         }
         let session = app.engine.session().clone();
-        let mut h = Harness::builder().with_size(vec2(1400.0, 1000.0)).with_pixels_per_point(scale).wgpu().build_ui_state(
-            |ui, app: &mut SoundApp| {
-                app.logic(&ui.ctx().clone());
-                app.ui(ui);
-            },
-            app,
-        );
+        let mut h = Harness::builder()
+            .with_context_setup(soundcraft_ui_egui::framework::install_headless)
+            .with_size(vec2(1400.0, 1000.0))
+            .with_pixels_per_point(scale)
+            .wgpu()
+            .build_ui_state(
+                |ui, app: &mut SoundApp| {
+                    app.logic(&ui.ctx().clone());
+                    app.ui(ui);
+                },
+                app,
+            );
         h.input_mut().max_texture_side = Some(8192);
         for (name, mode, system, light) in [
             ("dark", theme::ThemeMode::Dark, egui::Theme::Light, false),
