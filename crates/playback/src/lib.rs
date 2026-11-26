@@ -901,7 +901,8 @@ impl Player {
     pub fn end_mtc_chase(&self) {
         let _ = self.tx.send(Cmd::EndChase(None));
     }
-    /// End only the incoming roll whose stop the UI consumed.
+    /// End only the incoming roll that the event the UI consumed belongs to: a stop, a
+    /// locate, or timecode before the session start.
     pub fn end_observed_mtc_chase(&self, lock: u64) {
         let _ = self.tx.send(Cmd::EndChase(Some(lock)));
     }
