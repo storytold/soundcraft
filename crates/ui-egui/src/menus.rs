@@ -274,7 +274,9 @@ pub fn menu_bar(app: &mut SoundApp, ui: &mut egui::Ui) {
         ui,
         |ui| {
             egui::MenuBar::new().ui(ui, |ui| {
-                ui.with_layout(craft_ui::direction::row(ui), |ui| {
+                let rtl = ui.style().right_to_left;
+                let row = if rtl { egui::Layout::right_to_left(egui::Align::Center) } else { egui::Layout::left_to_right(egui::Align::Center) };
+                ui.with_layout(row, |ui| {
                     ui.menu_button(crate::localization::text("SoundCraft"), |ui| {
                         ui.add_enabled_ui(menu_entries_enabled, |ui| {
                             if ui.button(crate::localization::text("About SoundCraft")).clicked() {
@@ -347,7 +349,9 @@ pub fn menu_bar(app: &mut SoundApp, ui: &mut egui::Ui) {
                             crate::localization::text("Mix")
                         }
                     );
-                    ui.with_layout(craft_ui::direction::trailing(ui), |ui| {
+                    let trailing =
+                        if rtl { egui::Layout::left_to_right(egui::Align::Center) } else { egui::Layout::right_to_left(egui::Align::Center) };
+                    ui.with_layout(trailing, |ui| {
                         ui.label(egui::RichText::new(title).color(t.text_dim));
                     });
                 });

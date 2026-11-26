@@ -21,14 +21,15 @@ fn editing_rtp_velocity_leaves_the_other_properties_alone() {
     app.run("edit.select", json!({"tracks": [t.0], "exact": true})).unwrap();
     menus::invoke_menu(&mut app, "window.rtp", "Event > MIDI Real-Time Properties");
 
-    let mut h = Harness::builder().with_size(vec2(1600.0, 1000.0)).build_ui_state(
-        |ui, app: &mut SoundApp| {
-            let ctx = ui.ctx().clone();
-            app.logic(&ctx);
-            app.ui(ui);
-        },
-        app,
-    );
+    let mut h =
+        Harness::builder().with_context_setup(soundcraft_ui_egui::framework::install_headless).with_size(vec2(1600.0, 1000.0)).build_ui_state(
+            |ui, app: &mut SoundApp| {
+                let ctx = ui.ctx().clone();
+                app.logic(&ctx);
+                app.ui(ui);
+            },
+            app,
+        );
     h.run_steps(3);
     assert!(h.state().ui.show_rtp, "the window did not open");
     let rtp = |h: &Harness<'_, SoundApp>, key: &str, d: f64| h.state().engine.session().edit.value(&format!("rtp.{}.{key}", t.0), d);

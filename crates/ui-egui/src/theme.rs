@@ -618,7 +618,6 @@ mod tests {
         let ctx = egui::Context::default();
         app.logic(&ctx);
         assert_eq!(app.ui.language, crate::localization::Language::English);
-        assert!(!craft_ui::direction::is_rtl(&ctx));
         assert!(!ctx.global_style().right_to_left);
     }
 
@@ -632,12 +631,10 @@ mod tests {
         let ctx = egui::Context::default();
         assert_eq!(app.run("ui.language", json!({"language": "he"})), Ok(json!({"language": "he"})));
         app.logic(&ctx);
-        assert!(craft_ui::direction::is_rtl(&ctx));
         assert!(ctx.global_style().right_to_left);
 
         assert_eq!(app.run("ui.language", json!({"language": "en"})), Ok(json!({"language": "en"})));
         app.logic(&ctx);
-        assert!(!craft_ui::direction::is_rtl(&ctx));
         assert!(!ctx.global_style().right_to_left);
 
         assert!(app.run("ui.set", json!({"language": "he"})).is_ok());
@@ -709,12 +706,14 @@ mod tests {
         let appearances = [Some(egui::Theme::Light), Some(egui::Theme::Dark), Some(egui::Theme::Light), None];
         for initial in [Some(egui::Theme::Light), Some(egui::Theme::Dark), None] {
             let ctx = egui::Context::default();
+            crate::framework::install_headless(&ctx);
             let mut app = SoundApp::new(soundcraft_engine::Engine::default(), None, Services::default());
             app.ui = serde_json::from_value(json!({"theme": "system"})).unwrap();
             frame(&mut app, &ctx, initial, initial == Some(egui::Theme::Light));
         }
 
         let ctx = egui::Context::default();
+        crate::framework::install_headless(&ctx);
         let mut engine = soundcraft_engine::demo::demo_engine();
         let track = engine.session_mut().tracks.first_mut().unwrap();
         track.color = [19, 83, 147];

@@ -103,10 +103,10 @@ impl Language {
     }
 
     /// Writing direction of the language; layouts mirror when this is `Direction::Rtl`.
-    pub const fn direction(self) -> craft_ui::direction::Direction {
+    pub const fn direction(self) -> craft_ui::runtime::env::Direction {
         match self {
-            Self::English | Self::PortugueseBrazil => craft_ui::direction::Direction::Ltr,
-            Self::Hebrew => craft_ui::direction::Direction::Rtl,
+            Self::English | Self::PortugueseBrazil => craft_ui::runtime::env::Direction::Ltr,
+            Self::Hebrew => craft_ui::runtime::env::Direction::Rtl,
         }
     }
 
@@ -444,9 +444,9 @@ mod tests {
 
     #[test]
     fn language_direction_marks_hebrew_as_rtl() {
-        assert_eq!(Language::English.direction(), craft_ui::direction::Direction::Ltr);
-        assert_eq!(Language::PortugueseBrazil.direction(), craft_ui::direction::Direction::Ltr);
-        assert_eq!(Language::Hebrew.direction(), craft_ui::direction::Direction::Rtl);
+        assert_eq!(Language::English.direction(), craft_ui::runtime::env::Direction::Ltr);
+        assert_eq!(Language::PortugueseBrazil.direction(), craft_ui::runtime::env::Direction::Ltr);
+        assert_eq!(Language::Hebrew.direction(), craft_ui::runtime::env::Direction::Rtl);
     }
 
     #[test]

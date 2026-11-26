@@ -1,9 +1,12 @@
-//! Software updates, background check at startup, and startup prompt modal.
+//! Software updates: the background check at startup, the startup prompt, and the outcome of Help ▸ Check for
+//! Updates, as craft-update's dialogs on the app's [`DialogHost`](craft_ui::dialog::DialogHost).
 
 use crate::SoundApp;
 
 #[cfg(not(target_arch = "wasm32"))]
-use craft_update::dialog::{CheckResultDialog, CheckResultResponse};
+use craft_ui::dialog::DialogResult;
+#[cfg(not(target_arch = "wasm32"))]
+use craft_update::stack_dialogs::{CheckChoice, UpdateCheckDialog};
 #[cfg(not(target_arch = "wasm32"))]
 use craft_update::updater::{Action, Status, Updater};
 
@@ -21,8 +24,6 @@ pub(crate) struct Runtime {
     check_requested: bool,
     /// The check-result dialog (native) or the web build's notice is showing.
     manual_window_open: bool,
-    #[cfg(not(target_arch = "wasm32"))]
-    result_dialog: CheckResultDialog,
 }
 
 impl Runtime {
@@ -44,8 +45,6 @@ impl Default for Runtime {
             #[cfg(not(target_arch = "wasm32"))]
             check_requested: false,
             manual_window_open: false,
-            #[cfg(not(target_arch = "wasm32"))]
-            result_dialog: CheckResultDialog::new(&crate::UPDATE_APP, env!("CARGO_PKG_VERSION")),
         }
     }
 }
@@ -109,9 +108,9 @@ pub(crate) fn tick(app: &mut SoundApp, ctx: &egui::Context) {
     {
         let rt = &mut app.updates_rt;
         if std::mem::take(&mut rt.check_requested) {
-            rt.updater.check_now(ctx);
+            rt.updater.check_now();
         } else if rt.startup_check {
-            rt.updater.check_at_start(ctx);
+            rt.updater.check_at_start();
         }
         rt.updater.tick(ctx);
     }
@@ -119,6 +118,9 @@ pub(crate) fn tick(app: &mut SoundApp, ctx: &egui::Context) {
     let _ = (app, ctx);
 }
 
+/// One pass of the update flow, before the dialog host runs ([`SoundApp::run_framework_dialogs`]): answers the check
+/// result dialog closed in the last pass, drives the startup prompt, and keeps the result dialog open and current
+/// while the updater has something to report.
 pub(crate) fn show(app: &mut SoundApp, ctx: &egui::Context) {
     if !app.update_services_allowed() {
         return;
@@ -127,26 +129,44 @@ pub(crate) fn show(app: &mut SoundApp, ctx: &egui::Context) {
     {
         // The restart helper is scheduled before the app closes, so no update starts over unsaved work or a take being recorded.
         let clean = !app.has_unsaved_changes() && !app.engine.transport.recording;
-        match app.updates_rt.updater.show_if(ctx, clean) {
+        // Answered before the dialog is kept open below, so a dismissed result does not open again at once.
+        match app.framework_dialogs.take::<UpdateCheckDialog>() {
+            Some(DialogResult::Ok(CheckChoice::CheckNow | CheckChoice::CheckAgain)) => app.updates_rt.check_requested = true,
+            // The next `run` asks the window to close once nothing is unsaved.
+            Some(DialogResult::Ok(CheckChoice::RestartToUpdate)) => app.updates_rt.updater.restart_to_update(),
+            Some(DialogResult::Ok(CheckChoice::Update)) => {
+                app.updates_rt.updater.request_install(clean);
+            }
+            Some(DialogResult::Ok(CheckChoice::Download)) => ctx.open_url(egui::OpenUrl::new_tab(crate::UPDATE_APP.releases_url())),
+            // OK, Esc and the close box dismiss the outcome it showed.
+            Some(_) => app.updates_rt.updater.dismiss_status(),
+            None => {}
+        }
+        match app.updates_rt.updater.run(&mut app.framework_dialogs, clean) {
             Action::OpenUrl(url) => ctx.open_url(egui::OpenUrl::new_tab(url)),
             Action::Close => ctx.send_viewport_cmd(egui::ViewportCommand::Close),
-            Action::None => {}
+            _ => {}
         }
         // Help ▸ Check for Updates, and the first start after an update, show their outcome in the shared result dialog
         // until the user closes it. A found update goes to the startup prompt, which takes over from the dialog.
         let rt = &mut app.updates_rt;
         rt.manual_window_open = shows_result(rt.updater.status(), rt.updater.prompt_open());
-        if rt.manual_window_open {
-            match rt.result_dialog.show(ctx, rt.updater.status()) {
-                CheckResultResponse::Close => rt.manual_window_open = false,
-                CheckResultResponse::CheckAgain => rt.updater.check_now(ctx),
-                CheckResultResponse::RestartToUpdate => rt.updater.restart_to_update(),
-                CheckResultResponse::None => {}
-            }
+        if rt.manual_window_open && !app.framework_dialogs.is_open::<UpdateCheckDialog>() {
+            app.framework_dialogs.open(UpdateCheckDialog::new(env!("CARGO_PKG_VERSION")));
         }
-        // Closing the dialog, or the prompt taking over, dismisses the outcome it showed.
-        if !rt.manual_window_open {
-            rt.updater.dismiss_status();
+        let updater = &app.updates_rt.updater;
+        let (status, installing, message) = (updater.status().clone(), updater.is_installing(), updater.status_message());
+        if let Some(dialog) = app.framework_dialogs.get_mut::<UpdateCheckDialog>() {
+            dialog.set_status(status);
+            dialog.set_installing(installing);
+            dialog.set_message(message);
+        }
+        // The prompt taking over dismisses the outcome the dialog showed.
+        if !app.updates_rt.manual_window_open {
+            if app.framework_dialogs.is_open::<UpdateCheckDialog>() {
+                app.framework_dialogs.cancel::<UpdateCheckDialog>(ctx);
+            }
+            app.updates_rt.updater.dismiss_status();
         }
     }
 
@@ -180,6 +200,7 @@ mod tests {
         let mut out = ctx.run_ui(raw, |ui| {
             tick(app, ui.ctx());
             show(app, ui.ctx());
+            app.run_framework_dialogs(ui);
         });
         out.textures_delta.clear();
     }
@@ -271,6 +292,7 @@ mod tests {
             Updater::new(&crate::UPDATE_APP, "0.2.0").with_source(Arc::new(|| Ok(None))).with_pins_path(dir.join("pins.json")).with_paths(paths);
         app.set_startup_update_check(true);
         let ctx = egui::Context::default();
+        crate::framework::install_headless(&ctx);
         for _ in 0..3 {
             frame(&mut app, &ctx, Vec::new());
         }
@@ -278,6 +300,8 @@ mod tests {
         assert!(app.updates_rt.manual_window_open);
         let escape = egui::Event::Key { key: egui::Key::Escape, physical_key: None, pressed: true, repeat: false, modifiers: egui::Modifiers::NONE };
         frame(&mut app, &ctx, vec![escape]);
+        // The dialog closes on the Escape; the next pass reads its answer.
+        frame(&mut app, &ctx, Vec::new());
         assert_eq!(app.updates_rt.updater.status(), &Status::Idle);
         assert!(!app.updates_rt.manual_window_open);
         let _ = std::fs::remove_dir_all(dir);
