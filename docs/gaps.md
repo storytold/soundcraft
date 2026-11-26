@@ -15,7 +15,7 @@ When you close a gap, delete its entry (or shrink it) in the same PR, and bump t
 
 | # | Gap | Dimension | Doc | Est. (h) |
 |---|---|---|---|---:|
-| G-01 | **Alpha blocker.** Output routing on Core Audio only; no input mapping or duplex low-latency path (device, rate and buffer choice done; ASIO opt-in) | Hardware | [hardware-parity.md](hardware-parity.md) | 15–25 |
+| G-01 | **Alpha blocker.** Output routing on Core Audio and ASIO (opt-in) only; no input mapping or duplex low-latency path (device, rate and buffer choice done; ASIO opt-in) | Hardware | [hardware-parity.md](hardware-parity.md) | 15–25 |
 | G-02 | **Alpha blocker.** MIDI devices: input works (checked on Linux only); no output, clock or loop/merge recording | Hardware / MIDI | [hardware-parity.md](hardware-parity.md) | 12–22 |
 | G-03 | **Alpha blocker.** Session exchange remains incomplete (strict external-WAV AAF import only; no AAF/OMF export, OMF import or `.ptx`) | File formats | [file-format-parity.md](file-format-parity.md) | 50–90 |
 | G-04 | Open correctness bugs in features counted as done (~25 issues) | Stability | this file | 25–40 |
