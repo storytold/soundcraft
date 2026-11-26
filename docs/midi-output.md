@@ -54,7 +54,8 @@ MIDI output to the synth's port and channel and its audio input to the synth's r
   latency and the mixer's plug-in delay, so the notes sound with the audio. Off, they leave as soon
   as the audio is rendered, ahead of it by the output latency.
 - If the audio driver reports no output timing, compensated output cannot be timed: the status
-  line says so. Switch compensation off or check the audio device.
+  line says so. Switch compensation off or check the audio device. Without an audio device
+  (SoundCraft's silent clock), the output is not delayed.
 
 ## 4. Stop, locate, mute and All MIDI Notes Off
 

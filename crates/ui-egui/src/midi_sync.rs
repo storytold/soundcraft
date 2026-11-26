@@ -139,7 +139,9 @@ impl SoundApp {
                 ),
             })
         });
-        let want = (used.into_iter().collect::<Vec<_>>(), self.ui.midi_sync.compensation.notes);
+        // The silent clock that stands in for a missing audio device has no output latency to
+        // wait for, and no timing for a compensated route.
+        let want = (used.into_iter().collect::<Vec<_>>(), self.ui.midi_sync.compensation.notes && !player.silent);
         if self.applied_midi_output.as_ref() != Some(&want) {
             player.restore_sync_output_ids(&self.ui.midi_sync.port_ids);
             let accepted = player.try_set_midi_note_outputs(want.0.clone(), want.1);
