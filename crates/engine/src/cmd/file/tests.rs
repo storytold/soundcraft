@@ -53,6 +53,23 @@ fn import_audio_places_audio_offered_by_a_worker() {
 }
 
 #[test]
+fn import_audio_refuses_a_non_audio_target() {
+    let dir = std::env::temp_dir().join(format!("sc-import-non-audio-target-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let wav = tone_wav(&dir, "tone.wav");
+
+    let mut e = Engine::default();
+    e.execute("track.new", &json!({"kind": "instrument", "name": "Keys"})).unwrap();
+    let err = e.execute("file.import_audio", &json!({"path": wav, "track": "Keys"})).unwrap_err();
+    assert!(err.to_string().contains("audio track"), "{err}");
+    assert_eq!(e.session().tracks.len(), 1);
+    assert!(e.session().sources.is_empty());
+    assert!(e.session().tracks[0].clips().is_empty());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn export_session_text_needs_replace_to_overwrite() {
     let dir = std::env::temp_dir().join(format!("sc-export-text-replace-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
