@@ -15,7 +15,7 @@ When you close a gap, delete its entry (or shrink it) in the same PR, and bump t
 
 | # | Gap | Dimension | Doc | Est. (h) |
 |---|---|---|---|---:|
-| G-01 | **Alpha blocker.** No channel routing or duplex low-latency path (device, rate and buffer choice done; ASIO opt-in) | Hardware | [hardware-parity.md](hardware-parity.md) | 15–25 |
+| G-01 | **Alpha blocker.** Output routing on Core Audio only; no input mapping or duplex low-latency path (device, rate and buffer choice done; ASIO opt-in) | Hardware | [hardware-parity.md](hardware-parity.md) | 15–25 |
 | G-02 | **Alpha blocker.** MIDI devices: input works (checked on Linux only); no output, clock or loop/merge recording | Hardware / MIDI | [hardware-parity.md](hardware-parity.md) | 12–22 |
 | G-03 | **Alpha blocker.** Session exchange remains incomplete (strict external-WAV AAF import only; no AAF/OMF export, OMF import or `.ptx`) | File formats | [file-format-parity.md](file-format-parity.md) | 50–90 |
 | G-04 | Open correctness bugs in features counted as done (~25 issues) | Stability | this file | 25–40 |
@@ -66,13 +66,13 @@ When you close a gap, delete its entry (or shrink it) in the same PR, and bump t
 - **Missing:** full hardware input mapping in I/O Setup, outputs past the main mix's width outside
   Core Audio, one duplex stream on one clock (input and output are still separate cpal streams),
   latency reporting and record-offset compensation, ASIO in official builds (owner decision:
-  Steinberg's SDK is proprietary or GPLv3), JACK, and verification on macOS and Linux. The mix
+  Steinberg's SDK is proprietary or GPLv3), JACK, and verification on Linux. The mix
   still runs in fixed 512-sample blocks.
 - **Evidence:** code above; Playback Engine window says "Mix block size: 512 samples"; issue #42
   (no input device selection, forced monitoring feedback with virtual routing).
 - **Impact:** blocks tracking with any multichannel interface; latency makes overdubs hard.
 - **Estimate:** ≈ 25–40 h (device enumeration and selection, buffer size, duplex stream with one
-  clock, ASIO feature build, per-channel I/O mapping into I/O Setup, latency reporting and
+  clock, ASIO feature build, per-channel input mapping into I/O Setup, latency reporting and
   record-offset compensation). Needs hands-on hardware testing.
 
 ### G-02. MIDI devices
