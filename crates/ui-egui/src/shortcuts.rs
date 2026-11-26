@@ -83,19 +83,21 @@ pub fn handle(app: &mut SoundApp, ctx: &egui::Context) {
     // an event's `repeat` flag from the physical key state, which says nothing about whether that
     // particular event was injected.
     let scripted = app.scripted_key_press_indices();
-    let events: Vec<(Key, Modifiers, bool)> = ctx.input(|i| {
+    let events: Vec<(Key, Option<Key>, Modifiers, bool)> = ctx.input(|i| {
         i.events
             .iter()
             .enumerate()
             .filter_map(|(index, e)| match e {
-                egui::Event::Key { key, pressed: true, repeat, modifiers, .. } => Some((*key, *modifiers, *repeat && !scripted.contains(&index))),
+                egui::Event::Key { key, physical_key, pressed: true, repeat, modifiers } => {
+                    Some((*key, *physical_key, *modifiers, *repeat && !scripted.contains(&index)))
+                }
                 _ => None,
             })
             .collect()
     });
     // Cmd and Ctrl are separate keys only on macOS (asked at runtime so the web build in a Mac browser agrees).
     let mac = ctx.os() == egui::os::OperatingSystem::Mac;
-    for (key, mods, repeat) in events {
+    for (key, physical, mods, repeat) in events {
         if repeat {
             if let Some((id, params)) = repeating_command(key, mods, mac) {
                 let _ = app.run(id, params);
@@ -105,17 +107,55 @@ pub fn handle(app: &mut SoundApp, ctx: &egui::Context) {
         if fixed(app, key, mods, mac) {
             continue;
         }
-        if let Some(id) = command_for(key, mods, mac) {
-            if crate::menus::invoke_shortcut_dialog(app, id) {
-                continue;
-            }
-            let _ = app.run(id, json!({}));
-        } else if let Some(c) =
-            crate::menus::UI_COMMANDS.iter().find(|c| c.3.and_then(parse).is_some_and(|(m, k)| k == key && mods_match(m, mods, mac)))
+        if !registered(app, key, mods, mac)
+            && let Some(base) = shifted_symbol_base(key, physical, mods)
         {
-            let _ = app.run(c.0, json!({}));
+            registered(app, base, mods, mac);
         }
     }
+}
+
+/// Run the registry or UI command whose shortcut is this chord. Returns whether one matched.
+fn registered(app: &mut SoundApp, key: Key, mods: Modifiers, mac: bool) -> bool {
+    if let Some(id) = command_for(key, mods, mac) {
+        if !crate::menus::invoke_shortcut_dialog(app, id) {
+            let _ = app.run(id, json!({}));
+        }
+        true
+    } else if let Some(c) = crate::menus::UI_COMMANDS.iter().find(|c| c.3.and_then(parse).is_some_and(|(m, k)| k == key && mods_match(m, mods, mac)))
+    {
+        let _ = app.run(c.0, json!({}));
+        true
+    } else {
+        false
+    }
+}
+
+/// The key a shortcut names for a Shift chord the layout reports by its shifted character. With
+/// Shift held the platform reports the `/` key as `?` (and `\` as `|`, `[` as `{`, ...), so
+/// "Shift+/" never matched a real press, only a scripted one built from the shortcut string. The key's
+/// position (`physical_key`, named after the US layout) gives the key back. Only punctuation: a letter
+/// or digit position must not stand in for a symbol another layout types there.
+fn shifted_symbol_base(key: Key, physical: Option<Key>, mods: Modifiers) -> Option<Key> {
+    let shifted = matches!(key, Key::Questionmark | Key::Pipe | Key::OpenCurlyBracket | Key::CloseCurlyBracket | Key::Colon | Key::Plus);
+    physical.filter(|p| {
+        mods.shift
+            && shifted
+            && matches!(
+                p,
+                Key::Slash
+                    | Key::Backslash
+                    | Key::OpenBracket
+                    | Key::CloseBracket
+                    | Key::Semicolon
+                    | Key::Equals
+                    | Key::Comma
+                    | Key::Period
+                    | Key::Quote
+                    | Key::Minus
+                    | Key::Backtick
+            )
+    })
 }
 
 /// The command a host auto-repeat of this chord runs, if it is one of [`REPEATING`]. A repeat
