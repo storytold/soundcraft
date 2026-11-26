@@ -4,8 +4,8 @@ SoundCraft plays MIDI keyboards and pads through its instruments and records wha
 MIDI clips.
 
 **Where it works.** Linux (ALSA sequencer), macOS (CoreMIDI) and Windows (WinMM). It has been
-played and recorded on Linux only; on macOS and Windows the code builds but has not been tried
-with a device yet. There is no MIDI input on FreeBSD or in the web version. MIDI output, MIDI
+played and recorded on Linux only, and MIDI Learn has been tried with devices on Windows; apart
+from that, on macOS and Windows the code builds but has not been tried with a device yet. There is no MIDI input on FreeBSD or in the web version. MIDI output, MIDI
 clock and loop or merge recording are not there yet (see [gaps.md](gaps.md), G-02).
 
 ## 1. Switch a device on
@@ -61,7 +61,7 @@ Record-enable the track (its **R** button) or switch its input monitor on. The k
 the track's instrument, with the transport stopped or running.
 
 - Notes, the sustain pedal, the other controllers, pitch bend, aftertouch and program changes
-  reach the instrument.
+  reach the instrument, except a CC assigned with MIDI Learn, which moves its mixer control instead.
 - Several devices or channels can play one track. A note held on two of them sounds until both
   let go, and each has its own sustain pedal.
 - Taking the track out of record, or switching its monitor off, ends the notes that are held.
