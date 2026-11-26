@@ -1216,6 +1216,12 @@ mod tests {
         assert!(until(&mut || inputs.rescan() || found(&inputs).is_some()), "the device is listed");
         let port = found(&inputs).unwrap();
         assert!(port.enabled && port.open, "{port:?}");
+        // Other devices of the machine may be sending (a keyboard's noisy pitch wheel): only this
+        // one is heard here.
+        let others: Vec<String> = inputs.ports().iter().filter(|p| p.name != port.name).map(|p| p.name.clone()).collect();
+        for other in &others {
+            inputs.set_enabled(other, false);
+        }
         assert!(inputs.feed().connected() >= 1);
         let index = inputs.feed().ports().assign(&port.name);
         // What it sends arrives, tagged with its port; a system message does not.
@@ -1226,6 +1232,9 @@ mod tests {
         assert!(until(&mut || feed.activity().0 > before), "the note arrives");
         let last = feed.activity().1.unwrap();
         assert_eq!((last.port, last.status, last.data1, last.data2), (index, 0x92, 60, 100));
+        for other in &others {
+            inputs.set_enabled(other, true);
+        }
         // Switched off: closed, and what it held is to be released. On again: open.
         feed.take_lost();
         inputs.set_enabled(&port.name, false);
