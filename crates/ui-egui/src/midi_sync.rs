@@ -39,9 +39,11 @@ impl MidiSync {
     /// its device came back under a new native ID (see `soundcraft_playback` port assignment),
     /// and the labels the output worker bound beside it for other ports of the same name ("DIN
     /// (2)" beside "DIN"): saved too, a twin never takes the label of an unplugged port after a
-    /// restart. A label already saved that no track uses is left as it is.
+    /// restart. A label already saved that no track uses is left as it is. The labels in use are
+    /// saved first, so that the others cannot take the last free entries.
     fn bind_used(&mut self, available: BTreeMap<String, String>, used: &BTreeSet<String>) {
-        for (label, id) in available {
+        let (in_use, beside): (Vec<_>, Vec<_>) = available.into_iter().partition(|(label, _)| used.contains(label));
+        for (label, id) in in_use.into_iter().chain(beside) {
             let room = self.port_ids.contains_key(&label) || self.port_ids.len() < MAX_SYNC_PORTS;
             if !valid_port(&id) || !room {
                 continue;
@@ -293,6 +295,18 @@ mod tests {
         // A saved label no track uses is not moved by a later binding.
         sync.bind_used(BTreeMap::from([("DIN (2)".to_string(), "c".to_string())]), &BTreeSet::new());
         assert_eq!(sync.port_ids["DIN (2)"], "b");
+    }
+
+    #[test]
+    fn a_used_label_is_saved_before_unused_ones_take_the_last_free_entries() {
+        let port_ids = (0..MAX_SYNC_PORTS - 1).map(|i| (format!("Old {i:03}"), format!("old-{i}"))).collect();
+        let mut sync = MidiSync { port_ids, ..MidiSync::default() };
+        // "A twin" sorts before "B used": it must not take the one entry left.
+        let opened = BTreeMap::from([("A twin".to_string(), "t".to_string()), ("B used".to_string(), "u".to_string())]);
+        sync.bind_used(opened, &BTreeSet::from(["B used".to_string()]));
+        assert_eq!(sync.port_ids.get("B used").map(String::as_str), Some("u"));
+        assert!(!sync.port_ids.contains_key("A twin"));
+        assert_eq!(sync.port_ids.len(), MAX_SYNC_PORTS);
     }
 
     #[test]
