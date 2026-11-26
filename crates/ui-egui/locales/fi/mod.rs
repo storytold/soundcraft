@@ -291,7 +291,7 @@ pub(super) fn translate(source: &str) -> Option<&'static str> {
         "Workspace" => "Työtila",
         "Write automation for the selected tracks:" => "Kirjoita automaatio valituille raidoille:",
         "Write to Current" => "Kirjoita nykyiseen",
-        "Write to Notes" => "Kirjoita muistiinpanoihin",
+        "Write to Notes" => "Kirjoita nuotteihin",
         "front" => "etu",
         "Sub" => "Sub",
         "Nudge" => "Hienosiirto",
