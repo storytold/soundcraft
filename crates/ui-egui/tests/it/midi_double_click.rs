@@ -15,6 +15,7 @@ impl Rig {
         let mut app = SoundApp::new(soundcraft_engine::demo::demo_engine(), None, Services::default());
         app.engine.execute("edit.tool", &json!({"tool": tool})).unwrap();
         let mut r = Rig { ctx: egui::Context::default(), app };
+        soundcraft_ui_egui::framework::install_headless(&r.ctx);
         for _ in 0..4 {
             r.frame(vec![]);
         }
