@@ -590,7 +590,12 @@ fn send_now<C: SyncPort>(name: &str, port: &mut Port<C>, msg: &[u8], stats: &Sta
 /// ([`MidiFeed::clock`]), for the latency diagnostics; releases thru makes on its own have none.
 /// A failure disconnects the port.
 fn send_thru<C: SyncPort>(ports: &mut BTreeMap<String, Port<C>>, name: &str, msg: &[u8], feed: &MidiFeed, stats: &Stats, arrived: Option<i64>) {
-    let Some(p) = ports.get_mut(name) else { return };
+    if let Some(p) = ports.get_mut(name) {
+        send_thru_on(name, p, msg, feed, stats, arrived);
+    }
+}
+/// [`send_thru`] on the port `p` named `name`.
+fn send_thru_on<C: SyncPort>(name: &str, p: &mut Port<C>, msg: &[u8], feed: &MidiFeed, stats: &Stats, arrived: Option<i64>) {
     let Some(link) = &mut p.link else { return };
     // Before it leaves: its echo may be back before this returns.
     feed.sent(name, msg, SentBy::Thru);
@@ -623,6 +628,15 @@ impl LiveThru {
             f.attach_thru(std::thread::current());
         }
         self.feed = next;
+    }
+    /// The port `p` named `name` loses its last route and is about to close: end what thru holds
+    /// there while it is still open. Once that went out, a later reopen has nothing to quiet.
+    fn release_port<C: SyncPort>(&mut self, name: &str, p: &mut Port<C>, stats: &Stats) {
+        let Some(f) = &self.feed else { return };
+        self.thru.release_dest(name, &mut |_, msg| send_thru_on(name, p, msg, f, stats, None));
+        if p.link.is_some() {
+            self.thru.reopened(name);
+        }
     }
     /// Every thru note off and pedal up (All MIDI Notes Off).
     fn release_all<C: SyncPort>(&mut self, ports: &mut BTreeMap<String, Port<C>>, stats: &Stats) {
@@ -895,6 +909,11 @@ fn drive_ports<C: SyncPort>(
                     }
                 }
                 Update::Wake(before) => transition = Some((before, now + Duration::from_secs(2))),
+            }
+            for (name, p) in &mut ports {
+                if p.routes.iter().all(Option::is_none) {
+                    live.release_port(name, p, &stats);
+                }
             }
             ports.retain(|_, p| p.routes.iter().any(Option::is_some));
             stats.connected().retain(|n| ports.contains_key(n));

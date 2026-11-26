@@ -16,7 +16,8 @@
 //! there lets go. Notes and pedals are let go of by Thru itself when their owner no longer
 //! reaches the destination ([`Thru::follow`]: the track was taken out of record, muted, routed
 //! elsewhere, its input changed, MIDI Thru switched off), when their input port lost events
-//! ([`Thru::release_ports`]), and on Stop and All MIDI Notes Off ([`Thru::release_all`]); a key
+//! ([`Thru::release_ports`]), when their output port loses its last route and closes
+//! ([`Thru::release_dest`]), and on Stop and All MIDI Notes Off ([`Thru::release_all`]); a key
 //! released after that sends nothing more.
 //!
 //! Nothing here allocates per message once the tables have grown; it runs on the MIDI output
@@ -151,6 +152,12 @@ impl Thru {
     pub(crate) fn release_all(&mut self, send: &mut dyn FnMut(&str, &[u8])) {
         self.release_where(|_| true, 0, send);
         self.lift_where(|_| true, send);
+    }
+
+    /// Every note off and pedal up on `dest`, whose port loses its last route and closes.
+    pub(crate) fn release_dest(&mut self, dest: &str, send: &mut dyn FnMut(&str, &[u8])) {
+        self.release_where(|h| h.dest == dest, 0, send);
+        self.lift_where(|p| p.dest == dest, send);
     }
 
     /// Note that a note or pedal went to `dest` on channel `out`.

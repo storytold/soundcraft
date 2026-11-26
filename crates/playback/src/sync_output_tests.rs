@@ -1019,3 +1019,57 @@ fn a_reopened_port_whose_quieting_fails_is_quieted_at_the_next_open() {
     let sent = port.link.unwrap().sent;
     assert_eq!(sent, [vec![0xb0, 64, 0], vec![0xb0, 123, 0], vec![0xb2, 64, 0], vec![0xb2, 123, 0]]);
 }
+
+/// A port that loses its last route is closed; a note or pedal MIDI Thru holds there ends first,
+/// while the port is still open, even before the session says the track plays elsewhere.
+#[test]
+fn a_port_that_loses_its_last_route_ends_what_thru_holds_there_first() {
+    use soundcraft_model::{ChannelFormat, MidiOutput, TrackKind};
+    struct Sink(Sender<Vec<u8>>);
+    impl SyncPort for Sink {
+        fn send_at(&mut self, _at: Instant, b: &[u8]) -> Result<Instant, String> {
+            self.0.send(b.to_vec()).unwrap();
+            Ok(Instant::now())
+        }
+    }
+    let mut s = Session::new("t", soundcraft_time::SampleRate::HZ_48000);
+    let t = s.add_track(TrackKind::Midi, ChannelFormat::Stereo, None);
+    MidiOutput::store(&mut s.edit, t, Some(MidiOutput { device: "DIN", channel: 3 }));
+    s.track_mut(t).unwrap().mixer.record_arm = true;
+    let (tx, rx) = channel();
+    let (evt, got) = channel();
+    let stats = Arc::new(Stats::default());
+    let feed = Arc::new(MidiFeed::default());
+    let (worker_stats, session) = (stats.clone(), Arc::new(s));
+    let handle =
+        std::thread::spawn(move || drive(View::default(), session, rx, Default::default(), worker_stats, move |_| Ok((Sink(evt.clone()), None))));
+    let worker = handle.thread().clone();
+    tx.send(routes(&[("DIN", 0)], false)).unwrap();
+    tx.send(Update::Feed(Some(feed.clone()))).unwrap();
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while !(feed.thru_attached() && stats.connected().contains("DIN")) && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    let next = |wait: Duration| loop {
+        let m = got.recv_timeout(wait)?;
+        if m.first() != Some(&0xb0) || m.get(1) != Some(&1) {
+            return Ok::<_, std::sync::mpsc::RecvTimeoutError>(m);
+        }
+    };
+    feed.receive(0, &[0x90, 60, 100]);
+    feed.receive(0, &[0xB0, 64, 127]);
+    assert_eq!(next(Duration::from_secs(2)).unwrap(), [0x93, 60, 100]);
+    assert_eq!(next(Duration::from_secs(2)).unwrap(), [0xB3, 64, 127]);
+    // The routes go first; the session that routes the track elsewhere has not come yet.
+    tx.send(routes(&[], false)).unwrap();
+    assert_eq!(next(Duration::from_secs(2)).unwrap(), [0x83, 60, 0]);
+    assert_eq!(next(Duration::from_secs(2)).unwrap(), [0xB3, 64, 0]);
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while stats.connected().contains("DIN") && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    assert!(!stats.connected().contains("DIN"), "then the port closes");
+    drop(tx);
+    worker.unpark();
+    handle.join().unwrap();
+}
