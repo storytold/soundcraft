@@ -336,3 +336,77 @@ fn at_one_position_bank_select_precedes_the_program_and_both_precede_the_note() 
     assert!(at(&[0xb0, 0, 1]) < at(&[0xc0, 9]) && at(&[0xb0, 32, 3]) < at(&[0xc0, 9]), "{sent:?}");
     assert!(at(&[0xc0, 9]) < at(&[0x90, 60, 100]), "{sent:?}");
 }
+
+/// Play `s` for 50 ms, apply `change`, play on: what was sent after the change.
+fn after_change(s: &mut Session, change: impl FnOnce(&mut Session)) -> Vec<Vec<u8>> {
+    let base = Instant::now();
+    let b = rolling(base, 1, 0);
+    let mut enc = TrackMidi::new("DIN");
+    let mut wire = Wire::new();
+    run(&mut enc, s, b, Duration::ZERO, Duration::from_millis(50), &mut wire);
+    change(s);
+    wire.clear();
+    run(&mut enc, s, b, Duration::from_millis(50), Duration::from_millis(60), &mut wire);
+    bytes(&wire)
+}
+
+#[test]
+fn a_track_that_leaves_a_channel_while_playing_lifts_the_pedal_it_left_down_there() {
+    let ctrls = || vec![cc(0, CtrlKind::Cc(64), 127), cc(0, CtrlKind::Cc(7), 90), cc(0, CtrlKind::Program, 5)];
+    type Change = fn(&mut Session, TrackId);
+    let cases: [(&str, Change); 6] = [
+        ("another channel", |s, t| MidiOutput::store(&mut s.edit, t, Some(MidiOutput { device: "DIN", channel: 1 }))),
+        ("another port", |s, t| MidiOutput::store(&mut s.edit, t, Some(MidiOutput { device: "Other", channel: 0 }))),
+        ("no output", |s, t| MidiOutput::store(&mut s.edit, t, None)),
+        ("mute", |s, t| s.track_mut(t).unwrap().mixer.mute = true),
+        ("inactive", |s, t| s.track_mut(t).unwrap().inactive = true),
+        ("deleted", |s, t| s.tracks.retain(|track| track.id != t)),
+    ];
+    for (case, change) in cases {
+        let mut s = session();
+        let t = add_track(&mut s, TrackKind::Midi, vec![note(60, 100, 0, 9600)], ctrls(), "DIN", 0);
+        let sent = after_change(&mut s, |s| change(s, t));
+        assert_eq!(sent[..2], [vec![0x80, 60, 0], vec![0xb0, 64, 0]], "{case}: the note, then the pedal: {sent:?}");
+        if case == "another channel" {
+            // The new channel gets the controllers and program at the play position.
+            for m in [vec![0xb1, 64, 127], vec![0xb1, 7, 90], vec![0xc1, 5]] {
+                assert!(sent.contains(&m), "{case}: {m:?} chased: {sent:?}");
+            }
+        } else {
+            assert_eq!(sent.len(), 2, "{case}: {sent:?}");
+        }
+    }
+}
+
+#[test]
+fn the_pedal_stays_down_while_another_track_still_plays_on_that_channel() {
+    let mut s = session();
+    let pedal = vec![cc(0, CtrlKind::Cc(64), 127)];
+    let t = add_track(&mut s, TrackKind::Midi, vec![note(60, 100, 0, 9600)], pedal, "DIN", 0);
+    add_track(&mut s, TrackKind::Instrument, vec![note(48, 100, 0, 9600)], vec![], "DIN", 0);
+    let sent = after_change(&mut s, |s| MidiOutput::store(&mut s.edit, t, Some(MidiOutput { device: "DIN", channel: 1 })));
+    assert!(sent.contains(&vec![0x80, 60, 0]), "{sent:?}");
+    assert!(!sent.contains(&vec![0xb0, 64, 0]), "the other track's notes keep their pedal: {sent:?}");
+}
+
+#[test]
+fn a_track_routed_here_while_playing_is_chased_like_a_locate() {
+    for (case, unmute) in [("routed", false), ("unmuted", true)] {
+        let mut s = session();
+        add_track(&mut s, TrackKind::Midi, vec![note(60, 100, 0, 9600)], vec![], "DIN", 0);
+        let ctrls = vec![cc(0, CtrlKind::Cc(7), 30), cc(48, CtrlKind::Cc(7), 70), cc(0, CtrlKind::Program, 12), cc(9000, CtrlKind::Cc(7), 1)];
+        let late = add_track(&mut s, TrackKind::Midi, vec![], ctrls, if unmute { "DIN" } else { "Other" }, 2);
+        if unmute {
+            s.track_mut(late).unwrap().mixer.mute = true;
+        }
+        let sent = after_change(&mut s, |s| {
+            if unmute {
+                s.track_mut(late).unwrap().mixer.mute = false;
+            } else {
+                MidiOutput::store(&mut s.edit, late, Some(MidiOutput { device: "DIN", channel: 2 }));
+            }
+        });
+        // The values at the play position (50 ms is past tick 48), not the later one.
+        assert_eq!(sent, [vec![0xb2, 7, 70], vec![0xc2, 12]], "{case}");
+    }
+}

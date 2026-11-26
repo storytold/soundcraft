@@ -80,6 +80,11 @@ MIDI output to the synth's port and channel and its audio input to the synth's r
   automation stop the track's output and end its sounding notes. On an instrument track, Mute and
   solo act on the audio only, so its MIDI output keeps playing; set its output to **No MIDI
   output** to silence it.
+- **Changing a track's port or channel while playing**, and muting it, making it inactive or
+  deleting it, ends its sounding notes on the old port and channel; if no other track plays
+  there, the sustain pedal goes up there too. A track that starts playing to a port and channel
+  while playing (routed there, unmuted or made active) first sends its controllers, pitch bend,
+  pressure and program at the play position, as on a locate.
 - **Event › All MIDI Notes Off** (Cmd+Shift+.) sends, on every MIDI output port in use, a Note-Off
   for each sounding note, then sustain pedal up, All Notes Off and All Sound Off on all 16
   channels. Playback carries on.
