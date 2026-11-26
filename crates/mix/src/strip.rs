@@ -2,7 +2,7 @@ use super::automation::{Level, apply_gain, transport_at, volume_level};
 use super::clips::{ClipFx, clip_fx_params, render_clip};
 use super::instances::{INSTRUMENT_SLOT, PluginFailures, PreparedInstance, create_instance_for, is_third_party};
 use super::live_midi::{LiveMidi, LiveNotes, MidiPorts, midi_thru};
-use super::midi::{chase_controllers, schedule_notes};
+use super::midi::{SoundingNotes, chase_controllers, schedule_notes};
 use super::pan::{PanSpec, apply_matrix, build_matrix, identity_matrix};
 use super::routing::solo_muted;
 use super::{
@@ -342,7 +342,7 @@ fn render_instrument(s: &Session, t: &Track, strip: &mut Strip, live: &LiveInput
             chased = true;
         }
         if !live.monitor_only {
-            schedule_notes(s, t, pos, frames, inst, &mut strip.held, strip.chase_notes, &mut strip.live);
+            schedule_notes(s, t, pos, frames, inst, SoundingNotes { held: &mut strip.held, chase: strip.chase_notes, live: &mut strip.live });
             strip.clips_played = true;
             if frames > 0 {
                 strip.chase_notes = false;
