@@ -1122,6 +1122,57 @@ fn a_pass_punched_into_a_loop_that_goes_round_before_the_audio_thread_hears_of_i
 }
 
 #[test]
+fn a_pass_punched_into_a_loop_that_went_round_just_before_record_starts_where_the_playhead_stood() {
+    let (mut st, tx, feed, ..) = keyboard_session();
+    let mut out = vec![0.0f32; 2048];
+    // Playing the loop: one callback takes the playhead round, to 512. The UI has not seen that
+    // yet (it still shows a position near the loop end) when Record is pressed, 206 frames
+    // before the next callback.
+    tx.send(Cmd::Play { from: 3_500, end: None, looped: Some(Range::new(0, 4096)) }).unwrap();
+    feed.set_clock(10_000);
+    st.fill(&mut out, 2);
+    feed.set_clock(10_000 + 12_000);
+    feed.begin_pass();
+    assert_eq!(feed.pass_started_at(), None, "not known before the audio engine has seen the pass");
+    tx.send(Cmd::Recording(true, 0)).unwrap();
+    feed.set_clock(10_000 + 16_300);
+    st.fill(&mut out, 2);
+    assert_eq!(feed.pass_started_at(), Some(512 - 206), "where the pass began, in the round after the wrap");
+}
+
+#[test]
+fn a_pass_begun_while_the_start_command_is_read_starts_where_the_playhead_stands() {
+    let (mut st, tx, feed, ..) = keyboard_session();
+    tx.send(Cmd::Play { from: 1_000, end: None, looped: Some(Range::new(0, 4096)) }).unwrap();
+    let mut out = vec![0.0f32; 2048];
+    st.fill(&mut out, 2);
+    // Record is pressed after this callback took the queue in, before it reads its commands.
+    let (f, tx2) = (Arc::clone(&feed), tx.clone());
+    let mut once = true;
+    st.before_commands = Some(Box::new(move || {
+        if std::mem::take(&mut once) {
+            f.begin_pass();
+            let _ = tx2.send(Cmd::Recording(true, 0));
+        }
+    }));
+    st.fill(&mut out, 2);
+    assert_eq!(feed.pass_started_at(), Some(2_024));
+}
+
+#[test]
+fn a_pass_begun_from_stop_has_no_punch_in_point() {
+    let (mut st, tx, feed, ..) = keyboard_session();
+    let mut out = vec![0.0f32; 2048];
+    st.fill(&mut out, 2);
+    // Record from stop: the pass is begun, then recording and playing are switched on.
+    feed.begin_pass();
+    tx.send(Cmd::Recording(true, 0)).unwrap();
+    tx.send(Cmd::Play { from: 1_000, end: None, looped: Some(Range::new(0, 4096)) }).unwrap();
+    st.fill(&mut out, 2);
+    assert_eq!(feed.pass_started_at(), None);
+}
+
+#[test]
 fn the_late_answer_to_an_earlier_pass_does_not_end_the_wait_for_a_later_one() {
     let (mut st, tx, feed, ..) = keyboard_session();
     let mut out = vec![0.0f32; 2048];

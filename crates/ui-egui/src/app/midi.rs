@@ -87,6 +87,13 @@ impl SoundApp {
         self.midi_inputs.as_ref()?.feed().stopped_at(pass?)
     }
 
+    /// Where the audio engine's playhead stood when the pass last begun during playback began
+    /// (`MidiFeed::pass_started_at`): the punch-in point as the take counts it. `None` when the
+    /// audio engine did not say, or there is no MIDI input.
+    pub(crate) fn midi_pass_started_at(&self) -> Option<Samples> {
+        self.midi_inputs.as_ref()?.feed().pass_started_at()
+    }
+
     /// Turn the MIDI played during the pass into clips on the MIDI and instrument tracks that
     /// were record-enabled when it started, and on those only: the same tracks the end of the
     /// pass waited for ([`Self::end_midi_pass`]). `with_audio`: audio takes of this pass already

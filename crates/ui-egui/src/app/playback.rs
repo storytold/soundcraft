@@ -303,8 +303,11 @@ impl SoundApp {
         // keys still down are held to the end of the loop (the take is reported as incomplete).
         let (midi_range, midi_kind) =
             super::midi::midi_take_span(midi_loop, plan.punch, self.record_start, stopped_at, self.midi_pass_stopped_at(midi_pass));
-        // A pass punched in while a loop played: its first round starts at the punch-in point.
-        let punched_in = (plan.pass.is_none() && midi_loop.is_some()).then_some(self.record_start);
+        // A pass punched in while a loop played: its first round starts at the punch-in point,
+        // where the audio engine's playhead stood when the pass began. The UI's own playhead, read
+        // when Record was pressed, may lag behind it (by a whole round when the loop went round
+        // just before); it is used only when the audio engine did not say.
+        let punched_in = (plan.pass.is_none() && midi_loop.is_some()).then(|| self.midi_pass_started_at().unwrap_or(self.record_start));
         let (midi_clips, midi_problem) =
             self.finish_midi_take(midi_range, !ids.is_empty(), midi_confirmed, (midi_kind, plan.pass.is_some(), punched_in));
         self.ui.status = if plan.pass.is_some() && midi_clips == 0 {

@@ -386,10 +386,11 @@ pub struct MidiRecordStyle {
     pub release: MergeRelease,
     /// The pass also recorded audio, whose takes already made its undo step: the MIDI joins it.
     pub same_pass: bool,
-    /// Where a pass punched in while the loop was playing started: its first round covers only
-    /// from there (or from the first thing it recorded, when that is earlier: the UI reads the
-    /// point a moment before the audio engine begins the pass), so a replacing first round leaves
-    /// what lies before the punch-in point.
+    /// Where a pass punched in while the loop was playing started (where the audio engine's
+    /// playhead stood when it began): its first round covers only from there, so a replacing
+    /// first round leaves what lies before the punch-in point. Should the point be the UI's own
+    /// playhead instead (used when the audio engine did not say), which may lag behind, the round
+    /// starts no later than the first thing it recorded.
     pub punched_in: Option<Samples>,
 }
 
@@ -553,9 +554,10 @@ fn write_rounds(
             // p.823–824). A Loop Record take is the loop's length (p.826).
             let end = if style.loop_record { range.end } else { until };
             // A first round punched in while the loop played covers only from the punch-in
-            // point: what lies before it was not recorded over and stays (p.819). The UI reads
-            // that point a moment before the audio engine begins the pass (the loop may even go
-            // round in between): the round starts no later than the first thing it recorded.
+            // point: what lies before it was not recorded over and stays (p.819). That point is
+            // where the audio engine began the pass; should it be the UI's playhead instead,
+            // which may lag behind (even by a round), the round starts no later than the first
+            // thing it recorded.
             let start = match style.punched_in {
                 Some(at) if i == 0 && !style.loop_record => {
                     let first = r.seq.notes.iter().map(|n| n.start).chain(r.seq.ctrls.iter().map(|c| c.tick)).min();
