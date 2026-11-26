@@ -117,14 +117,19 @@ fn selected<'a>(available: &'a Bindings, label: &str) -> Result<&'a str, String>
     available.get(label).map(String::as_str).ok_or_else(|| format!("MIDI output {label} unavailable"))
 }
 
+/// Open the port bound to `label`. midir panics on a few failures of the MIDI system (see
+/// [`Registry::listed`]): that is an error here, so the worker retries a second later.
 fn open(label: &str, saved: &Bindings) -> Result<(MidiOutputConnection, String), String> {
-    let midi = MidiOutput::new("SoundCraft MIDI output").map_err(|e| e.to_string())?;
-    let (ports, names) = enumerate(&midi, saved);
-    let ids = assign(saved, names.iter().cloned());
-    let id = selected(&ids, label)?;
-    let index = names.iter().position(|(_, key)| key == id).ok_or_else(|| format!("MIDI output {label} unavailable"))?;
-    let conn = midi.connect(&ports[index], "SoundCraft MIDI output").map_err(|e| e.to_string())?;
-    Ok((conn, id.to_owned()))
+    std::panic::catch_unwind(|| {
+        let midi = MidiOutput::new("SoundCraft MIDI output").map_err(|e| e.to_string())?;
+        let (ports, names) = enumerate(&midi, saved);
+        let ids = assign(saved, names.iter().cloned());
+        let id = selected(&ids, label)?;
+        let index = names.iter().position(|(_, key)| key == id).ok_or_else(|| format!("MIDI output {label} unavailable"))?;
+        let conn = midi.connect(&ports[index], "SoundCraft MIDI output").map_err(|e| e.to_string())?;
+        Ok((conn, id.to_owned()))
+    })
+    .map_err(|_| format!("MIDI output {label} unavailable"))?
 }
 
 /// The worker also pins a legacy selection on its first successful connection, including
