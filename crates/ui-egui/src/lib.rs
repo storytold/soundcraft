@@ -314,7 +314,8 @@ pub struct SoundApp {
     /// When the recent sessions were last checked for existence, which list, and the result.
     recent_checked: Option<(f64, Vec<String>, Vec<bool>)>,
     pub player: Option<Player>,
-    /// Input capture, opened on first record.
+    /// Input capture: opened with the output where the input and output callbacks run in the
+    /// order the streams opened (ASIO, Core Audio), else on the next record or input monitoring.
     pub recorder: Option<soundcraft_playback::record::Recorder>,
     record_start: Samples,
     /// Punch range to trim the take to (pre/post-roll recordings).
