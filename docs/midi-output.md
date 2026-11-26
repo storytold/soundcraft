@@ -27,7 +27,9 @@ sending. A new track sends nothing until you choose.
   which physical port each name stood for, the ports of the same name beside a port a track uses
   included (also one connected while that port is open), so the numbers stay with the same ports
   after a restart: with "DIN" unplugged, the other interface stays "DIN (2)" and the tracks on
-  "DIN" read (unavailable) rather than playing to it.
+  "DIN" read (unavailable) rather than playing to it. SoundCraft keeps up to 256 such names: with
+  that many already saved, a name newly used is not saved, so after a restart a port of the same
+  name could take it.
 - A port that comes back with a new system identity (CoreMIDI gives a port that is created again a
   new one) keeps its tracks when no other port has its name. Ports that share a name are told
   apart only by their identity, so one of them back with a new identity is listed as a new
