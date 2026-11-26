@@ -10,8 +10,9 @@ clock and loop or merge recording are not there yet (see [gaps.md](gaps.md), G-0
 
 ## 1. Switch a device on
 
-Plug the device in. SoundCraft opens every MIDI input it finds, and looks for new ones every two
-seconds, so there is usually nothing to do.
+Plug the device in. SoundCraft opens every MIDI input it finds, except the input of a configured
+control surface (HUI/MCU, Windows), and looks for new ones every two seconds, so there is usually
+nothing to do.
 
 To see the devices, or to switch one off, open **Setup › Playback Engine…** and go to the
 **MIDI inputs** section at the bottom. **Setup › MIDI › MIDI Input Devices…** opens the same

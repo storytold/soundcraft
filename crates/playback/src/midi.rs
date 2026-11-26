@@ -1,12 +1,12 @@
 //! MIDI device input (midir: ALSA sequencer on Linux, CoreMIDI on macOS, WinMM on Windows).
 //!
-//! [`MidiInputs`] (UI thread) keeps a connection to every enabled input port and follows devices
-//! being plugged in and removed ([`MidiInputs::rescan`]). Each connection's callback runs on a
-//! thread of the MIDI system and puts channel messages, stamped with their arrival time, into
-//! the [`MidiFeed`]. The audio callback takes them out without locking or allocating
-//! ([`crate::Player::set_midi`]), plays them through the mix engine's MIDI thru and, while
-//! recording, writes them back with their timeline position for the UI thread to collect
-//! ([`MidiFeed::take_recorded`]).
+//! [`MidiInputs`] (UI thread) keeps a connection to every enabled input port except one reserved
+//! by a control surface, and follows devices being plugged in and removed
+//! ([`MidiInputs::rescan`]). Each connection's callback runs on a thread of the MIDI system and
+//! puts channel messages, stamped with their arrival time, into the [`MidiFeed`]. The audio
+//! callback takes them out without locking or allocating ([`crate::Player::set_midi`]), plays
+//! them through the mix engine's MIDI thru and, while recording, writes them back with their
+//! timeline position for the UI thread to collect ([`MidiFeed::take_recorded`]).
 //!
 //! # When a queue is full
 //!
