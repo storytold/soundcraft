@@ -50,8 +50,10 @@ sending. A new track sends nothing until you choose.
 Choosing an output does not change the track's instrument plug-in or audio output. A MIDI track
 with an instrument and an external output plays both, the same notes on each.
 
-For an external synth whose audio comes back into the interface, use an instrument track: set its
-MIDI output to the synth's port and channel and its audio input to the synth's return.
+To hear an external synth whose audio comes back into the interface, add an Aux Input track whose
+input is the synth's return (Pro Tools Reference Guide p740, step 3). An instrument track has no
+audio input in SoundCraft yet, so the Pro Tools way of monitoring the return on the instrument
+track itself (p740, step 2) is not available.
 
 ## 2. What is sent
 
@@ -67,9 +69,10 @@ MIDI output to the synth's port and channel and its audio input to the synth's r
 
 ## 3. Timing
 
-- **MIDI Track Offsets** (Event › MIDI Track Offsets) move a track's notes earlier or later, for
-  the instrument and the external output alike. Use a negative offset for a device that is slow to
-  sound.
+- **MIDI Track Offsets** move a track's notes earlier or later, for the instrument and the
+  external output alike. Use a negative offset for a device that is slow to sound. The offsets are
+  set with the `event.midi_track_offsets` command for now: the Event › MIDI Track Offsets window
+  (Pro Tools p1061) is not there yet, and the menu item opens nothing.
 - **Delay compensation**: Setup › Preferences › MIDI › Delay Compensation for External Devices ›
   **MIDI Notes and Controllers** (on by default) delays what the clips play by the audio
   interface's output latency and the mixer's plug-in delay, so the notes sound with the audio.
@@ -176,6 +179,6 @@ you play it. This is what Pro Tools calls MIDI Thru (Options › MIDI Thru, on b
 ## Not there yet
 
 A default program and bank per track, note chasing, more than one destination per track, a
-separate MIDI mute and solo on instrument tracks, the Global MIDI Playback Offset, device names
-of your own, system exclusive through MIDI Thru, and Real-Time Properties on what MIDI Thru
-plays. See [gaps.md](gaps.md), G-02.
+separate MIDI mute and solo on instrument tracks, the Global MIDI Playback Offset, the MIDI Track
+Offsets window, an audio input on instrument tracks, device names of your own, system exclusive
+through MIDI Thru, and Real-Time Properties on what MIDI Thru plays. See [gaps.md](gaps.md), G-02.
