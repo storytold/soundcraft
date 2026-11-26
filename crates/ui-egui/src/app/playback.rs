@@ -297,20 +297,46 @@ impl SoundApp {
         }
     }
 
+    pub(super) fn prepare_automation_merge(&mut self) {
+        use soundcraft_model::AutomationMode as M;
+        let may_write = self.is_playing()
+            && self.engine.session().tracks.iter().any(|t| matches!(t.mixer.automation_mode, M::Write | M::Touch | M::Latch | M::TouchLatch));
+        self.engine.hold_merge(may_write.then_some("automation_pass"));
+    }
+
+    /// A send retargeted since its touch releases the latch, even if it later returns to that bus.
+    /// So does its MIDI touch: a CC that moved the send to the old bus no longer counts as held.
+    /// Run after every command and before each automation pass, so a send moved away and back
+    /// between two passes is released too.
+    pub(crate) fn release_retargeted_sends(&mut self) {
+        let session = self.engine.session();
+        let send_route = |t, slot: usize| session.track(t).and_then(|tr| tr.mixer.sends.get(slot)?.as_ref()).map(|send| &send.target);
+        self.touched_sends.retain(|&(t, slot), route| send_route(t, slot) == Some(route));
+        self.midi_moves.retain(|(target, _)| match target.parameter {
+            soundcraft_engine::midi_learn::Parameter::SendLevel { slot, bus } | soundcraft_engine::midi_learn::Parameter::SendPan { slot, bus } => {
+                send_route(target.track, slot) == Some(&soundcraft_model::Route::Bus(bus))
+            }
+            _ => true,
+        });
+    }
+
     /// While playing, record volume automation from fader positions for tracks in Write mode, and
-    /// for Touch/Latch tracks whose fader is (or, for Latch, was) being moved. Send levels follow the
-    /// same rules, per send, from its slot or its floating send window. Each point replaces the
+    /// for Touch/Latch tracks whose fader is (or, for Latch, was) being moved by the mouse or a
+    /// learned MIDI CC. Pan (per side) and send levels follow the same rules, sends per send from
+    /// their slot or floating send window. Each point replaces the
     /// automation since the previous one, and Stop writes a last point. A pass and whatever is
     /// dragged during it, its fader included, are one undo step.
     pub(crate) fn write_automation(&mut self) {
         use soundcraft_model::AutomationMode as M;
         const PASS: &str = "automation_pass";
         let playing = self.is_playing();
-        let may_write =
-            playing && self.engine.session().tracks.iter().any(|t| matches!(t.mixer.automation_mode, M::Write | M::Touch | M::Latch | M::TouchLatch));
-        self.engine.hold_merge(may_write.then_some(PASS));
-        if !playing && self.touched.is_empty() && self.touched_sends.is_empty() {
+        self.prepare_automation_merge();
+        self.release_retargeted_sends();
+        if !playing && self.touched.is_empty() && self.touched_sends.is_empty() && self.touched_pans.is_empty() {
             self.last_write_at = i64::MIN;
+            if self.engine.merge_key() == Some(PASS) {
+                self.engine.end_merge();
+            }
             return;
         }
         let pos = self.engine.transport.position;
@@ -329,6 +355,8 @@ impl SoundApp {
             Some(Gesture::SendFader { track, slot }) => Some((*track, *slot)),
             _ => None,
         };
+        use soundcraft_engine::midi_learn::{Parameter, Target};
+        let moved_by_midi = |track, parameter| self.midi_moves.iter().any(|(target, _)| *target == Target { track, parameter });
         let writes: Vec<(TrackId, f32)> = self
             .engine
             .session()
@@ -336,7 +364,7 @@ impl SoundApp {
             .iter()
             .filter_map(|t| {
                 let m = t.mixer.automation_mode;
-                let touched_now = dragging && fader_track == Some(t.id);
+                let touched_now = (dragging && fader_track == Some(t.id)) || moved_by_midi(t.id, Parameter::Volume);
                 let write = match m {
                     M::Write => true,
                     M::Touch => touched_now,
@@ -346,36 +374,68 @@ impl SoundApp {
                 write.then_some((t.id, t.mixer.volume_db))
             })
             .collect();
-        let send_writes: Vec<(TrackId, usize, f32)> = self
+        let send_writes: Vec<_> = self
             .engine
             .session()
             .tracks
             .iter()
             .flat_map(|t| {
                 let m = t.mixer.automation_mode;
-                t.mixer.sends.iter().enumerate().filter_map(move |(slot, s)| s.as_ref().map(|s| (t.id, m, slot, s.level_db)))
+                t.mixer.sends.iter().enumerate().filter_map(move |(slot, s)| s.as_ref().map(|s| (t.id, m, slot, s)))
             })
-            .filter(|&(t, m, slot, _)| {
-                let touched_now = dragging && send_fader == Some((t, slot));
+            .filter(|&(t, m, slot, send)| {
+                let moved = matches!(send.target, soundcraft_model::Route::Bus(bus) if moved_by_midi(t, Parameter::SendLevel { slot, bus }));
+                let touched_now = (dragging && send_fader == Some((t, slot))) || moved;
                 match m {
                     M::Write => true,
                     M::Touch => touched_now,
-                    M::Latch | M::TouchLatch => touched_now || self.touched_sends.contains(&(t, slot)),
+                    M::Latch | M::TouchLatch => touched_now || self.touched_sends.get(&(t, slot)) == Some(&send.target),
                     _ => false,
                 }
             })
-            .map(|(t, _, slot, db)| (t, slot, db))
+            .map(|(t, _, slot, send)| (t, slot, send.target.clone(), send.level_db))
             .collect();
+        // A MIDI encoder has no touch switch. Its final CC keeps Touch active for the
+        // release interval; Latch and TouchLatch keep the individual pan side until Stop.
+        let mut pan_points = Vec::new();
+        for t in self.engine.session().tracks.iter().filter(|t| t.kind != soundcraft_model::TrackKind::Vca) {
+            for (index, &value) in t.mixer.pan.iter().take(2).enumerate() {
+                let moved = (dragging && matches!(self.gesture, Some(Gesture::Pan { track, index: side }) if track == t.id && side == index))
+                    || moved_by_midi(t.id, Parameter::Pan(index));
+                let key = (t.id, index);
+                let write = match t.mixer.automation_mode {
+                    M::Touch => {
+                        // Kept for the Stop pass only; Touch writes while the pan moves.
+                        if moved {
+                            self.touched_pans.insert(key);
+                        }
+                        moved
+                    }
+                    M::Write => true,
+                    M::Latch | M::TouchLatch => {
+                        if moved {
+                            self.touched_pans.insert(key);
+                        }
+                        self.touched_pans.contains(&key)
+                    }
+                    _ => false,
+                };
+                if write {
+                    pan_points.push((t.id, if index == 0 { "pan" } else { "pan2" }.to_owned(), value));
+                }
+            }
+        }
         let points: Vec<(TrackId, String, f32)> = writes
             .iter()
             .map(|&(t, v)| (t, "volume".to_string(), v))
-            .chain(send_writes.iter().map(|&(t, slot, v)| (t, format!("send_{}_level", (b'a' + slot as u8) as char), v)))
+            .chain(pan_points)
+            .chain(send_writes.iter().map(|&(t, slot, _, v)| (t, format!("send_{}_level", (b'a' + slot as u8) as char), v)))
             .collect();
         for &(t, _) in &writes {
             self.touched.insert(t);
         }
-        for &(t, slot, _) in &send_writes {
-            self.touched_sends.insert((t, slot));
+        for (t, slot, route, _) in send_writes {
+            self.touched_sends.insert((t, slot), route);
         }
         for (t, param, v) in points {
             let mut point = serde_json::json!({"track": t.0, "param": param, "at": pos, "value": v});
@@ -387,6 +447,7 @@ impl SoundApp {
         if !playing {
             self.touched.clear();
             self.touched_sends.clear();
+            self.touched_pans.clear();
             self.engine.end_merge();
         }
     }
@@ -427,6 +488,7 @@ impl SoundApp {
                     self.gesture = None;
                     self.touched.clear();
                     self.touched_sends.clear();
+                    self.touched_pans.clear();
                     self.last_write_at = i64::MIN;
                     self.edit_layout.follow_hold = false;
                     self.meters.clear();

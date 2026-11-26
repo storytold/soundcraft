@@ -384,6 +384,10 @@ pub fn fader_slot(r: Rect) -> Rect {
 /// A fader: returns the new dB value when dragged. `db` in -144..12. `name` is its accessible
 /// name; it must be unique enough that a label query picks one strip's control.
 pub fn fader(ui: &mut Ui, r: Rect, db: f32, id: egui::Id, name: &str) -> Option<f32> {
+    fader_response(ui, r, db, id, name).1
+}
+
+pub(crate) fn fader_response(ui: &mut Ui, r: Rect, db: f32, id: egui::Id, name: &str) -> (Response, Option<f32>) {
     let t = Tokens::current();
     let resp = ui.interact(r, id, Sense::click_and_drag());
     resp.widget_info(|| egui::WidgetInfo::slider(ui.is_enabled(), f64::from(db), name));
@@ -418,15 +422,15 @@ pub fn fader(ui: &mut Ui, r: Rect, db: f32, id: egui::Id, name: &str) -> Option<
         p.add(egui::Shape::convex_polygon(vec![pos2(x, y - 3.0), pos2(x + dx, y), pos2(x, y + 3.0)], g(34), Stroke::NONE));
     }
     if resp.double_clicked() || (resp.clicked() && ui.input(|i| i.modifiers.alt)) {
-        return Some(0.0);
+        return (resp, Some(0.0));
     }
     if resp.dragged() {
         let fine = ui.input(|i| i.modifiers.command || i.modifiers.ctrl);
         let dy = resp.drag_delta().y / slot.height() * if fine { 0.1 } else { 1.0 };
         let np = (pos - dy).clamp(0.0, 1.0);
-        return Some(soundcraft_model::fader_pos_to_db(np).clamp(-144.0, 12.0));
+        return (resp, Some(soundcraft_model::fader_pos_to_db(np).clamp(-144.0, 12.0)));
     }
-    None
+    (resp, None)
 }
 
 pub fn db_text(db: f32) -> String {
