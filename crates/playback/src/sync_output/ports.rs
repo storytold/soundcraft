@@ -119,7 +119,7 @@ fn selected<'a>(available: &'a Bindings, label: &str) -> Result<&'a str, String>
 
 /// Open the port bound to `label`. midir panics on a few failures of the MIDI system (see
 /// [`Registry::listed`]): that is an error here, so the worker retries a second later.
-fn open(label: &str, saved: &Bindings) -> Result<(MidiOutputConnection, String), String> {
+fn open(label: &str, saved: &Bindings) -> Result<(MidiOutputConnection, String, PortNames), String> {
     std::panic::catch_unwind(|| {
         let midi = MidiOutput::new("SoundCraft MIDI output").map_err(|e| e.to_string())?;
         let (ports, names) = enumerate(&midi, saved);
@@ -127,7 +127,7 @@ fn open(label: &str, saved: &Bindings) -> Result<(MidiOutputConnection, String),
         let id = selected(&ids, label)?;
         let index = names.iter().position(|(_, key)| key == id).ok_or_else(|| format!("MIDI output {label} unavailable"))?;
         let conn = midi.connect(&ports[index], "SoundCraft MIDI output").map_err(|e| e.to_string())?;
-        Ok((conn, id.to_owned()))
+        Ok((conn, id.to_owned(), names))
     })
     .map_err(|_| format!("MIDI output {label} unavailable"))?
 }
@@ -140,6 +140,29 @@ pub(super) struct Registry {
     /// The native port each label's connection was opened with.
     open_ids: std::sync::Mutex<Bindings>,
     learned: std::sync::atomic::AtomicBool,
+}
+
+/// Bind `label` to the native port `id` it was opened on, in `saved`, together with the labels
+/// of the other listed ports of the same name ("DIN (2)" beside "DIN"), so that the occurrence
+/// labels stay apart after a restart: with A's twin B saved as "DIN (2)", B never takes A's
+/// label when A is unplugged (see [`assign`]). A label or port already saved is left as it is.
+/// Whether `saved` changed.
+fn learn(saved: &mut Bindings, found: &PortNames, label: &str, id: &str) -> bool {
+    let mut changed = false;
+    if saved.get(label).map(String::as_str) != Some(id) {
+        saved.insert(label.to_owned(), id.to_owned());
+        changed = true;
+    }
+    let Some(name) = found.iter().find(|(_, key)| key == id).and_then(|(name, _)| name.clone()) else { return changed };
+    let current = assign(saved, found.iter().cloned());
+    for (sibling, sibling_id) in current {
+        let same_name = found.iter().any(|(n, key)| *key == sibling_id && n.as_deref() == Some(name.as_str()));
+        if same_name && sibling != label && !saved.contains_key(&sibling) && !saved.values().any(|v| *v == sibling_id) {
+            saved.insert(sibling, sibling_id);
+            changed = true;
+        }
+    }
+    changed
 }
 
 /// The labels among `labels` that `current` (the assignment of the listed ports) still binds to
@@ -161,15 +184,15 @@ impl Registry {
 
     pub(super) fn connect(&self, label: &str) -> Result<(MidiOutputConnection, Option<String>), String> {
         let saved = self.ids.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone();
-        let (connection, id) = open(label, &saved)?;
+        let (connection, id, found) = open(label, &saved)?;
         let mut ids = self.ids.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         if ids.get(label) != saved.get(label) {
             return Err(format!("MIDI output {label} changed while connecting"));
         }
         self.open_ids.lock().unwrap_or_else(std::sync::PoisonError::into_inner).insert(label.to_owned(), id.clone());
-        // A new binding, or a saved one that followed its device to a new native ID.
-        if saved.get(label) != Some(&id) {
-            ids.insert(label.to_owned(), id);
+        // A new binding, or a saved one that followed its device to a new native ID, and the
+        // same-name ports beside it.
+        if learn(&mut ids, &found, label, &id) {
             self.learned.store(true, std::sync::atomic::Ordering::Release);
         }
         Ok((connection, None))
@@ -330,6 +353,28 @@ mod tests {
         let saved = Bindings::from([("Synth".into(), "gone".into()), ("Other".into(), "x".into())]);
         assert_eq!(assign(&saved, listed(&[("Synth", "x")])), Bindings::from([("Other".into(), "x".into())]));
         assert!(numbered("DIN (2)", "DIN") && !numbered("DIN (1)", "DIN") && !numbered("DINO (2)", "DIN") && !numbered("DIN", "DIN"));
+    }
+
+    #[test]
+    fn a_saved_port_unplugged_is_not_replaced_by_its_same_name_sibling_after_a_restart() {
+        // Two "DIN" interfaces; a track uses only A. Binding A also saves B's label, so with A
+        // unplugged (after a restart, nothing else in memory) B keeps "DIN (2)" and the route on
+        // "DIN" stays unavailable instead of playing to B.
+        let both = listed(&[("DIN", "a"), ("DIN", "b"), ("IAC", "iac")]);
+        let mut saved = Bindings::new();
+        assert_eq!(learn(&mut saved, &both, "DIN", "a"), true);
+        assert_eq!(saved, Bindings::from([("DIN".into(), "a".into()), ("DIN (2)".into(), "b".into())]), "IAC is no sibling");
+        let restarted: Bindings = serde_json::from_str(&serde_json::to_string(&saved).unwrap()).unwrap();
+        let after = assign(&restarted, listed(&[("DIN", "b"), ("IAC", "iac")]));
+        assert!(selected(&after, "DIN").is_err(), "{after:?}");
+        assert_eq!(selected(&after, "DIN (2)").unwrap(), "b");
+        // A lone port back under a new ID still follows its label.
+        let mut lone = Bindings::new();
+        learn(&mut lone, &listed(&[("UX Synth", "old")]), "UX Synth", "old");
+        assert_eq!(lone, Bindings::from([("UX Synth".into(), "old".into())]));
+        assert_eq!(selected(&assign(&lone, listed(&[("UX Synth", "new")])), "UX Synth").unwrap(), "new");
+        // Learning again changes nothing already saved.
+        assert!(!learn(&mut saved, &both, "DIN", "a"));
     }
 
     #[test]
