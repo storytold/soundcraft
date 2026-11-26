@@ -369,9 +369,15 @@ fn main() -> eframe::Result {
         os_window::name_for(os_window::identity()),
         options,
         Box::new(move |cc| {
-            let player =
-                if no_audio { None } else { Some(soundcraft_playback::Player::with_config(Arc::new(engine.session().clone()), &prefs.audio)) };
+            // The input opens before the output (see `SoundApp::open_audio_devices`).
+            let (player, input) = if no_audio {
+                (None, None)
+            } else {
+                let (player, input) = SoundApp::open_audio_devices(Arc::new(engine.session().clone()), &prefs.audio);
+                (Some(player), input)
+            };
             let mut app = SoundApp::new(engine, player, services());
+            app.set_audio_input(input);
             // Nightly is updated by ArtCraft Launcher only, never from inside the app.
             app.set_startup_update_check(!launch_profile::current().is_nightly());
             app.set_system_fonts(env.system_fonts());

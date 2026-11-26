@@ -148,6 +148,19 @@ pub(crate) fn supported_format_config(
     best.and_then(|(_, c)| c.try_with_sample_rate(sample_rate))
 }
 
+/// Whether `cfg`'s audio system calls a device's input and output callbacks one after the other
+/// in each device cycle, in the order the streams opened (ASIO, Core Audio). The
+/// input opens first there, so the output callback mixes the input of the same cycle. WASAPI and
+/// the others run the two on their own threads: the order changes nothing but when the input
+/// starts piling up.
+pub fn input_opens_first(cfg: &AudioConfig) -> bool {
+    in_open_order(host(cfg).id().name())
+}
+
+fn in_open_order(host: &str) -> bool {
+    matches!(host, "ASIO" | "CoreAudio")
+}
+
 /// The chosen audio system, else the default one.
 pub(crate) fn host(cfg: &AudioConfig) -> cpal::Host {
     cfg.system
@@ -189,6 +202,15 @@ pub(crate) fn buffer_size(want: Option<u32>, supported: &cpal::SupportedBufferSi
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_input_opens_first_where_callbacks_run_in_open_order() {
+        assert!(in_open_order("ASIO"));
+        assert!(in_open_order("CoreAudio"));
+        for separate_threads in ["WASAPI", "ALSA", "JACK", "PulseAudio", "PipeWire"] {
+            assert!(!in_open_order(separate_threads), "{separate_threads}");
+        }
+    }
 
     #[test]
     fn config_round_trips_and_tolerates_missing_fields() {

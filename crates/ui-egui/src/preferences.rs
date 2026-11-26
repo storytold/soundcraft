@@ -1328,6 +1328,33 @@ mod tests {
         }
     }
 
+    /// The record offset calibrates the interface: recalling a layout saved before or without it
+    /// keeps the current one.
+    #[test]
+    fn configuration_recall_keeps_the_record_offset() {
+        let mut older = serde_json::to_value(crate::UiState::default()).unwrap();
+        older.as_object_mut().unwrap().remove("record_offset");
+        let saved = crate::UiState { record_offset: 64, ..crate::UiState::default() };
+        for saved in [older, serde_json::to_value(saved).unwrap()] {
+            let mut app = SoundApp::new(Engine::default(), None, crate::Services::default());
+            app.ui.record_offset = -300;
+            crate::windows::recall_configuration(&mut app, &saved).unwrap();
+            assert_eq!(app.ui.record_offset, -300);
+        }
+    }
+
+    /// `ui.set` holds the record offset to the range Setup > Playback Engine allows: a punch
+    /// waits a negative offset out, so an unbounded one would never finish.
+    #[test]
+    fn ui_set_refuses_a_record_offset_out_of_range() {
+        let mut app = SoundApp::new(Engine::default(), None, crate::Services::default());
+        assert!(app.run("ui.set", json!({"record_offset": i64::MIN})).is_err());
+        assert!(app.run("ui.set", json!({"record_offset": crate::RECORD_OFFSET_LIMIT + 1})).is_err());
+        assert_eq!(app.ui.record_offset, 0);
+        assert!(app.run("ui.set", json!({"record_offset": -crate::RECORD_OFFSET_LIMIT})).is_ok());
+        assert_eq!(app.ui.record_offset, -crate::RECORD_OFFSET_LIMIT);
+    }
+
     /// Enter belongs to the focused search field and must not apply its window.
     #[test]
     fn enter_in_search_does_not_apply_or_close_preferences() {

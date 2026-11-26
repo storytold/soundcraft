@@ -1,7 +1,7 @@
 //! Secondary floating windows (Window menu).
 
-use crate::SoundApp;
 use crate::theme::{Tokens, mono, rgb};
+use crate::{RECORD_OFFSET_LIMIT, SoundApp};
 use egui::{Color32, Sense, vec2};
 use serde_json::{Value, json};
 use soundcraft_model::{AutomationMode, ClipContent, SESSION_EXTENSION};
@@ -447,6 +447,8 @@ pub fn recall_configuration(app: &mut SoundApp, saved: &Value) -> Result<(), Str
     st.preferences_window_pos = app.ui.preferences_window_pos;
     st.reduce_visual_effects = app.ui.reduce_visual_effects;
     st.undo_levels = app.ui.undo_levels.clamp(1, 64);
+    // The record offset calibrates this machine's interface, not a window layout.
+    st.record_offset = app.ui.record_offset;
     st.show_configurations = true;
     crate::docking::cancel_replaced_state(app, &st);
     app.engine.set_history_limit(st.undo_levels);
@@ -677,6 +679,19 @@ pub fn playback_engine(app: &mut SoundApp, ctx: &egui::Context) {
                 crate::localized_format!("{} · {} Hz · {} ch", r.device_name, r.sample_rate, r.channels)
             }));
             ui.end_row();
+            ui.label(crate::localization::text("Latency"));
+            ui.label(latency_line(app));
+            ui.end_row();
+            ui.label(crate::localization::text("Record offset"));
+            ui.horizontal(|ui| {
+                let mut offset = app.ui.record_offset;
+                let field = ui.add(egui::DragValue::new(&mut offset).range(-RECORD_OFFSET_LIMIT..=RECORD_OFFSET_LIMIT));
+                if field.accessible_name(crate::localization::text("Record offset")).changed() {
+                    app.ui.record_offset = offset;
+                }
+                ui.label(crate::localization::text("samples"));
+            });
+            ui.end_row();
             ui.label(crate::localization::text("Session rate"));
             let sr = app.engine.session().sample_rate.hz();
             let note = app
@@ -722,9 +737,20 @@ pub fn playback_engine(app: &mut SoundApp, ctx: &egui::Context) {
 
 /// `ui.audio_device`: `{list?: bool}` returns the audio systems and their devices;
 /// `{system?, output?, input?, sample_rate?, buffer_size?}` (a `null` value means "default") sets
-/// the choice and reopens the devices. Always returns the choice and the open device.
+/// the choice and reopens the devices; `record_offset?` (whole samples within ±96000) sets the
+/// record offset without reopening them. Always returns the choice, the open device, the `latency`
+/// the backend reports for the output and input (`{samples, ms}` each, null when none) and the
+/// `record_offset`.
 pub fn audio_device_command(app: &mut SoundApp, p: &serde_json::Value) -> Result<serde_json::Value, String> {
     use serde_json::Value;
+    let record_offset = match p.get("record_offset") {
+        None => None,
+        Some(v) => Some(
+            v.as_i64()
+                .filter(|n| (-RECORD_OFFSET_LIMIT..=RECORD_OFFSET_LIMIT).contains(n))
+                .ok_or_else(|| format!("`record_offset` must be a whole number of samples within ±{RECORD_OFFSET_LIMIT}"))?,
+        ),
+    };
     let mut changed = false;
     let mut cfg = app.ui.audio.clone();
     for (key, slot) in [("system", &mut cfg.system), ("output", &mut cfg.output), ("input", &mut cfg.input)] {
@@ -748,19 +774,50 @@ pub fn audio_device_command(app: &mut SoundApp, p: &serde_json::Value) -> Result
     let device = app.player.as_ref().map(|pl| {
         json!({"name": pl.device_name, "sample_rate": pl.device_rate, "channels": pl.device_channels, "buffer_size": pl.device_buffer, "silent": pl.silent})
     });
-    let mut out = json!({"config": app.ui.audio, "device": device});
+    if let Some(offset) = record_offset {
+        app.ui.record_offset = offset;
+    }
+    let mut out = json!({"config": app.ui.audio, "device": device, "latency": latency_json(app), "record_offset": app.ui.record_offset});
     if p.get("list").and_then(Value::as_bool).unwrap_or(false) {
         out["systems"] = json!(soundcraft_playback::devices::audio_systems());
     }
     Ok(out)
 }
 
-/// Programmatic `setup.playback_engine` / `setup.hardware`. `device` is the output name and
-/// `buffer_size` is any integer 16..=8192 or null (not rounded to the window's power-of-two list);
-/// both go through [`audio_device_command`]. Delay compensation still goes through the engine
-/// command, and only after the device change has been accepted. The result is the open device:
-/// its name, the buffer actually in use (`device_buffer`, null for the device default), its sample
-/// rate, and delay compensation. `applied` is true only when an audio device is open.
+/// The latency the backend reports for the open output and input, each as (frames at that
+/// device's rate, milliseconds). `None` where nothing is open or nothing was reported yet.
+fn reported_latency(app: &SoundApp) -> (Option<(u64, f64)>, Option<(u64, f64)>) {
+    let measure =
+        |latency: Option<std::time::Duration>, rate: u32| latency.map(|l| (soundcraft_playback::latency::frames(l, rate), l.as_secs_f64() * 1000.0));
+    let output = app.player.as_ref().filter(|p| !p.silent).and_then(|p| measure(p.output_latency(), p.device_rate));
+    let input = app.recorder.as_ref().and_then(|r| measure(r.input_latency(), r.sample_rate));
+    (output, input)
+}
+
+/// The Playback Engine's latency row: output and input as the audio backend reports them.
+fn latency_line(app: &SoundApp) -> String {
+    let show = |m: Option<(u64, f64)>| {
+        m.map_or(crate::localization::text("not reported").to_string(), |(frames, ms)| crate::localized_format!("{:.1} ms ({} samples)", ms, frames))
+    };
+    let (output, input) = reported_latency(app);
+    crate::localized_format!("output {} · input {}", show(output), show(input))
+}
+
+/// The reported latencies for `ui.audio_device` and `setup.playback_engine`.
+fn latency_json(app: &SoundApp) -> serde_json::Value {
+    let (output, input) = reported_latency(app);
+    let part = |m: Option<(u64, f64)>| m.map_or(serde_json::Value::Null, |(frames, ms)| json!({"samples": frames, "ms": ms}));
+    json!({"output": part(output), "input": part(input)})
+}
+
+/// Programmatic `setup.playback_engine` / `setup.hardware`. `device` is the output name,
+/// `buffer_size` is any integer 16..=8192 or null (not rounded to the window's power-of-two list)
+/// and `record_offset` is whole samples within ±96000 (no reopen); all go through
+/// [`audio_device_command`]. Delay compensation still goes through the engine command, and only
+/// after the device change has been accepted. The result is the open device: its name, the buffer
+/// actually in use (`device_buffer`, null for the device default), its sample rate, the reported
+/// output and input `latency`, the `record_offset`, and delay compensation. `applied` is true only
+/// when an audio device is open.
 pub fn setup_audio_command(app: &mut SoundApp, id: &str, p: &serde_json::Value) -> Result<serde_json::Value, String> {
     use serde_json::Value;
     let mut audio = serde_json::Map::new();
@@ -772,6 +829,9 @@ pub fn setup_audio_command(app: &mut SoundApp, id: &str, p: &serde_json::Value) 
     }
     if let Some(buffer) = p.get("buffer_size") {
         audio.insert("buffer_size".to_string(), buffer.clone());
+    }
+    if let Some(offset) = p.get("record_offset") {
+        audio.insert("record_offset".to_string(), offset.clone());
     }
     if !audio.is_empty() {
         audio_device_command(app, &Value::Object(audio))?;
@@ -798,6 +858,8 @@ pub fn setup_audio_command(app: &mut SoundApp, id: &str, p: &serde_json::Value) 
         "buffer_size": buffer_size,
         "sample_rate": sample_rate,
         "bit_depth": app.engine.session().bit_depth,
+        "latency": latency_json(app),
+        "record_offset": app.ui.record_offset,
         "delay_compensation": app.engine.session().edit.delay_compensation,
     }))
 }

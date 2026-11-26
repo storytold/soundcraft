@@ -88,6 +88,9 @@ pub fn build_version() -> &'static str {
     BUILD_VERSION.get().map_or(env!("CARGO_PKG_VERSION"), String::as_str)
 }
 
+/// The record offset's range in session samples, either way: two seconds at 48 kHz.
+pub(crate) const RECORD_OFFSET_LIMIT: i64 = 96_000;
+
 /// UI state (serde, so agents can read and set it).
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(default)]
@@ -149,6 +152,10 @@ pub struct UiState {
     pub undo_levels: usize,
     /// The audio device choice (Setup › Playback Engine), kept with the preferences: per machine.
     pub audio: soundcraft_playback::AudioConfig,
+    /// Record offset in session samples (Setup › Playback Engine): added to where every audio take
+    /// is placed, for a driver whose reported latency is off. Positive places takes later.
+    /// Within ±[`RECORD_OFFSET_LIMIT`].
+    pub record_offset: i64,
     /// The Mix window lives in its own native window (Window › Mix in Separate Window); the main
     /// window then always shows Edit.
     pub mix_separate: bool,
@@ -226,6 +233,7 @@ impl Default for UiState {
             reduce_visual_effects: preferences::ReduceVisualEffects::default(),
             undo_levels: 64,
             audio: soundcraft_playback::AudioConfig::default(),
+            record_offset: 0,
             mix_separate: false,
             show_io_setup: false,
             show_shortcuts: false,
@@ -306,7 +314,8 @@ pub struct SoundApp {
     /// When the recent sessions were last checked for existence, which list, and the result.
     recent_checked: Option<(f64, Vec<String>, Vec<bool>)>,
     pub player: Option<Player>,
-    /// Input capture, opened on first record.
+    /// Input capture: opened with the output where the input and output callbacks run in the
+    /// order the streams opened (ASIO, Core Audio), else on the next record or input monitoring.
     pub recorder: Option<soundcraft_playback::record::Recorder>,
     record_start: Samples,
     /// Punch range to trim the take to (pre/post-roll recordings).

@@ -109,12 +109,55 @@ struct Shared {
     fault: AtomicU8,
     /// The first failure writing a take, until it's reported.
     failed: Mutex<Option<String>>,
+    /// What the input stream's callbacks report (see [`Recorder::input_latency`]).
+    input_latency: crate::latency::ReportedLatency,
+    /// When the first sample of the armed take was captured (see [`Recorder::first_capture`]).
+    first_capture: crate::latency::InstantCell,
+    /// The same on the stream clock.
+    first_capture_clock: crate::latency::ClockCell,
+    /// Whether the input had reported its latency when the take's first sample was latched.
+    first_capture_timed: AtomicBool,
 }
 
 impl Shared {
     fn new(ring: CaptureRing) -> Shared {
         let (beats, fault, failed) = (AtomicU64::new(0), AtomicU8::new(0), Mutex::new(None));
-        Shared { armed: AtomicBool::new(false), ring, dropped: AtomicUsize::new(0), beats, fault, failed }
+        Shared {
+            armed: AtomicBool::new(false),
+            ring,
+            dropped: AtomicUsize::new(0),
+            beats,
+            fault,
+            failed,
+            input_latency: Default::default(),
+            first_capture: crate::latency::InstantCell::new(),
+            first_capture_clock: Default::default(),
+            first_capture_timed: AtomicBool::new(false),
+        }
+    }
+
+    /// Latch the take's first sample, captured `at` and at `clock` on the stream clock, the first
+    /// time only: `timed` says whether the input had reported its latency, which `at` is moved
+    /// back by. Only the input callback latches.
+    #[cfg_attr(target_os = "freebsd", allow(dead_code))]
+    fn latch_first_capture(&self, at: std::time::Instant, clock: f64, timed: bool) {
+        if self.first_capture.get().is_none() {
+            self.first_capture_timed.store(timed, Ordering::Relaxed);
+            self.first_capture_clock.set_if_empty(clock);
+            self.first_capture.set_if_empty(at);
+        }
+    }
+
+    fn clear_first_capture(&self) {
+        self.first_capture.clear();
+        self.first_capture_clock.clear();
+        self.first_capture_timed.store(false, Ordering::Relaxed);
+    }
+
+    /// The latched first sample, when it was latched with the input latency known.
+    fn first_capture(&self) -> Option<crate::latency::Moment> {
+        let at = self.first_capture.get()?;
+        self.first_capture_timed.load(Ordering::Relaxed).then_some(crate::latency::Moment { at, clock: self.first_capture_clock.get() })
     }
 
     /// Run the input callback's `work`. After a panic in it, the input is broken and does
@@ -170,19 +213,33 @@ where
     let mon = Arc::clone(monitor);
     let mut scratch = vec![0.0f32; 8192 * usize::from(config.channels).max(1)];
     let chunk = scratch.len();
+    let frame = usize::from(config.channels).max(1);
+    let rate = f64::from(config.sample_rate).max(1.0);
     let mut owed = 0;
+    let device_latency = crate::latency::coreaudio_device_latency(device, true, config.sample_rate);
     device.build_input_stream(
         config,
-        move |data: &[T], _: &cpal::InputCallbackInfo| {
+        move |data: &[T], info: &cpal::InputCallbackInfo| {
             crate::mark_audio_thread();
+            sh.input_latency.observe(crate::latency::input_report(info));
+            let called = std::time::Instant::now();
+            let captured = crate::latency::capture_clock(info, device_latency);
             sh.guarded(|| {
-                for part in data.chunks(chunk) {
+                for (index, part) in data.chunks(chunk).enumerate() {
                     let Some(s) = scratch.get_mut(..part.len()) else { return };
                     for (o, x) in s.iter_mut().zip(part) {
                         *o = f32::from_sample(*x);
                     }
                     mon.push(s);
                     if sh.armed.load(Ordering::Acquire) {
+                        // The take's first sample: this part's first frame, captured the reported
+                        // input latency before the callback, and so on the stream clock.
+                        let latency = sh.input_latency.get();
+                        let into = (index * chunk / frame) as f64 / rate;
+                        let back = latency.unwrap_or_default().as_secs_f64();
+                        if let Some(at) = crate::latency::shift(called, into - back) {
+                            sh.latch_first_capture(at, captured + into, latency.is_some());
+                        }
                         sh.capture(s, &mut owed);
                     } else {
                         owed = 0;
@@ -290,6 +347,20 @@ impl Recorder {
         Err("recording is not supported on this platform yet".into())
     }
 
+    /// The input latency the audio backend reports: from when an input callback's first frame was
+    /// captured to the callback. `None` before the stream reported one.
+    pub fn input_latency(&self) -> Option<std::time::Duration> {
+        self.shared.input_latency.get()
+    }
+
+    /// When the first sample of the armed take was captured: its input callback's time less the
+    /// reported input latency, and its capture time on the stream clock. `None` until the first
+    /// armed input callback, and for a take whose first callback came before the input reported
+    /// its latency (a later report does not tell when that sample was captured).
+    pub fn first_capture(&self) -> Option<crate::latency::Moment> {
+        self.shared.first_capture()
+    }
+
     /// Create each take's file and start recording into them: a track's take records the given
     /// input channels into a new file, and into further files as `files` says.
     pub fn arm(&mut self, takes: Vec<(TrackId, Vec<usize>, PathBuf)>, files: TakeFiles) -> Result<(), String> {
@@ -304,6 +375,7 @@ impl Recorder {
         let ring = &self.shared.ring;
         ring.tail.store(ring.head.load(Ordering::Acquire), Ordering::Release);
         *self.shared.failed.lock().unwrap_or_else(PoisonError::into_inner) = None;
+        self.shared.clear_first_capture();
         self.shared.armed.store(true, Ordering::Release);
         let (shared, channels) = (Arc::clone(&self.shared), self.channels);
         match std::thread::Builder::new().name("take writer".into()).spawn(move || write_takes(&shared, takes, channels)) {
@@ -546,6 +618,25 @@ mod tests {
         shared.ring.pop_all(&mut out);
         assert_eq!(out, [vec![1.0; 6], vec![2.0; 2], vec![0.0; 2], vec![3.0; 2]].concat());
         assert_eq!((owed, shared.dropped.load(Ordering::Relaxed)), (0, 2));
+    }
+
+    /// A take whose first sample was latched before the input reported its latency gets no
+    /// capture moment, even once a later callback reports one: the latched moment lacks it.
+    #[test]
+    fn a_first_capture_latched_without_the_input_latency_is_not_a_capture_moment() {
+        let shared = Shared::new(CaptureRing::new(8));
+        let t = std::time::Instant::now();
+        shared.latch_first_capture(t, 10.0, false);
+        shared.latch_first_capture(t + std::time::Duration::from_millis(5), 10.005, true);
+        assert_eq!(shared.first_capture(), None);
+        // The next take, latched with the latency known.
+        shared.clear_first_capture();
+        shared.latch_first_capture(t, 10.0, true);
+        shared.latch_first_capture(t + std::time::Duration::from_millis(5), 10.005, false);
+        let moment = shared.first_capture().unwrap();
+        assert_eq!(moment.clock, Some(10.0));
+        let d = moment.at.max(t) - moment.at.min(t);
+        assert!(d < std::time::Duration::from_micros(1), "{d:?}");
     }
 
     #[test]
@@ -817,6 +908,15 @@ impl InputRing {
             s.phase += step;
         }
     }
+
+    /// Drop everything buffered: nothing reads the input now (no track monitors it), and what
+    /// piles up meanwhile would delay the monitor when one does.
+    pub fn clear(&self) {
+        if let Ok(mut s) = self.state.try_lock() {
+            s.data.clear();
+            s.phase = 0.0;
+        }
+    }
 }
 
 #[cfg(test)]
@@ -865,6 +965,54 @@ mod ring_tests {
         assert_eq!(out[0][0], 0.0);
         assert_eq!(out[1][0], 1.0);
         assert_eq!(out[0][49], 98.0);
+    }
+
+    /// Device cycles of `n` frames: the input pushes `pushes[k % len]` frames (numbered from where
+    /// it left off), then the output reads `n`. Returns, per cycle, the newest frame pushed less
+    /// the last frame read: the monitor's latency in frames.
+    fn run_cycles(ring: &InputRing, next: &mut u32, n: usize, pushes: &[usize], cycles: usize) -> Vec<i64> {
+        let mut out = vec![vec![0.0f32; n]];
+        (0..cycles)
+            .map(|k| {
+                let m = pushes[k % pushes.len()];
+                let input: Vec<f32> = (*next..*next + m as u32).map(|i| i as f32).collect();
+                *next += m as u32;
+                ring.push(&input);
+                ring.pop_into(&mut out, n, 48_000);
+                i64::from(*next) - 1 - out[0][n - 1] as i64
+            })
+            .collect()
+    }
+
+    /// When the input runs first in each cycle the ring holds only what the output needs: nothing
+    /// is dropped, the input reads through without a gap, at one frame of latency.
+    #[test]
+    fn input_first_monitoring_keeps_every_frame() {
+        let ring = InputRing::new(1, 48_000);
+        let mut next = 0u32;
+        let mut out = vec![vec![0.0f32; 256]];
+        let mut read = Vec::new();
+        for _ in 0..400 {
+            let input: Vec<f32> = (next..next + 256).map(|i| i as f32).collect();
+            next += 256;
+            ring.push(&input);
+            ring.pop_into(&mut out, 256, 48_000);
+            read.extend_from_slice(&out[0]);
+        }
+        let tail = &read[256..];
+        assert!(tail.windows(2).all(|w| w[1] == w[0] + 1.0), "a frame was dropped or repeated");
+        assert_eq!(f64::from(next - 1) - f64::from(*read.last().unwrap()), 1.0);
+    }
+
+    /// What arrives while nothing monitors is dropped, so it delays no monitor later.
+    #[test]
+    fn clearing_the_ring_drops_what_piled_up() {
+        let ring = InputRing::new(1, 48_000);
+        ring.push(&[1.0; 24_000]);
+        ring.clear();
+        let mut next = 0u32;
+        let late = run_cycles(&ring, &mut next, 256, &[256], 2);
+        assert!(late[1] <= 1, "latency after clearing: {late:?}");
     }
 
     /// Nothing buffered: silence, not stale data.
