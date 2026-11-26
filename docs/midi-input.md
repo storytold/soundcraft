@@ -149,6 +149,6 @@ Desktop control clients can query or change `setup.midi_clock_follow` with `inpu
 
 Tempo-follow response is fixed. In the ±8% ramp test, the largest measured eighth-note onset error was 3.65 ms. With buffers longer than one Clock pulse, a steady, locked source can be predicted up to the device's delivery deadline. A slowdown inside an already queued buffer cannot move that audio. At 300 BPM with 2,048 frames and 50 ms of lead, the first offbeat after a 20% slowdown was up to 86.5 ms late. For live use, try 64–256 frames if the driver can sustain it.
 
-During playback, tempo and phase corrections change the spacing of upcoming beats. Beats that have already played keep their positions. An incoming Song Position Pointer starts a new pass; tempo corrections from the previous pass are discarded.
+During playback, tempo and phase corrections change the spacing of upcoming beats. Beats that have already played keep their positions. A Song Position Pointer received while stopped starts a new pass; tempo corrections from the previous pass are discarded.
 
 Verified with a standard MIDI Clock source (TASCAM Model 12 via Roland UM-ONE); Akai MPC hardware has not been tested.
