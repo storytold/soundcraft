@@ -727,7 +727,9 @@ pub fn playback_engine(app: &mut SoundApp, ctx: &egui::Context) {
 
 /// `ui.audio_device`: `{list?: bool}` returns the audio systems and their devices;
 /// `{system?, output?, input?, sample_rate?, buffer_size?}` (a `null` value means "default") sets
-/// the choice and reopens the devices. Always returns the choice and the open device.
+/// the choice and reopens the devices. Always returns the choice, the open device (with the
+/// driver's `buffer_range`, null when it reports none) and a `buffer_note` when the device does
+/// not run at the chosen buffer size.
 pub fn audio_device_command(app: &mut SoundApp, p: &serde_json::Value) -> Result<serde_json::Value, String> {
     use serde_json::Value;
     let mut changed = false;
@@ -782,8 +784,9 @@ fn buffer_note_text(note: soundcraft_playback::devices::BufferNote) -> String {
 /// `buffer_size` is any integer 16..=8192 or null (not rounded to the window's power-of-two list);
 /// both go through [`audio_device_command`]. Delay compensation still goes through the engine
 /// command, and only after the device change has been accepted. The result is the open device:
-/// its name, the buffer actually in use (`device_buffer`, null for the device default), its sample
-/// rate, and delay compensation. `applied` is true only when an audio device is open.
+/// its name, the buffer actually in use (`buffer_size`, null for the device default), a
+/// `buffer_note` when that is not the chosen size, its sample rate, and delay compensation.
+/// `applied` is true only when an audio device is open.
 pub fn setup_audio_command(app: &mut SoundApp, id: &str, p: &serde_json::Value) -> Result<serde_json::Value, String> {
     use serde_json::Value;
     let mut audio = serde_json::Map::new();
