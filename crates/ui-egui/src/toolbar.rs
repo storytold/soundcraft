@@ -604,10 +604,13 @@ fn transport(app: &mut SoundApp, ui: &mut Ui) {
                     let _ = app.run("transport.play", json!({}));
                 }
                 let (r, resp) = ui.allocate_exact_size(vec2(38.0, 28.0), Sense::click());
+                resp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, crate::localization::text("Record")));
                 key(ui.painter(), r, &resp, if recording { Color32::from_rgb(110, 30, 30) } else { key_fill(&resp) });
-                icons::draw(ui.painter(), r.shrink(5.0), "record", t.rec);
+                // Loop Record shows a loop symbol on the Record button (Reference Guide p.771).
+                let mode = app.record_mode();
+                icons::draw(ui.painter(), r.shrink(5.0), if mode.is_some() { "record_loop" } else { "record" }, t.rec);
                 // macOS gives Cmd+Space to Spotlight unless the user frees it, so name F12 first.
-                let resp = resp.on_hover_text(crate::localization::text("Record (F12 or Cmd+Space)"));
+                let resp = crate::widgets::record_mode_hint(resp.on_hover_text(crate::localization::text("Record (F12 or Cmd+Space)")), mode);
                 if let Some(why) = app.record_hint() {
                     // Below the whole group, so the hint covers none of its buttons.
                     let below = Rect::from_min_max(r.min, pos2(r.max.x, g.max.y));

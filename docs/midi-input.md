@@ -94,6 +94,8 @@ What a pass does with the MIDI already on a track depends on the record mode, as
 | **Loop Playback** on with an audio track record-enabled | The pass runs in a line, as audio recording does. |
 | **Loop Record** | Every round of the loop in which a track received new material (a key pressed or a controller moved) is a take of its own, the length of the loop. The first replaces what the loop covers on the track's playlist; each further one goes on a new playlist named after the track (*Keys.02*, *Keys.03*…), which becomes the track's. Earlier takes stay on their playlists. MIDI Merge has no effect, and its button in the Transport window is dimmed. A last round cut short by Stop is kept when something was played in it. |
 
+- While **Options › Loop Record** is on, the Record buttons (Edit window toolbar and Transport
+  window) show a loop symbol and their tooltip says *Loop Record mode* (p.771, p.826).
 - **MIDI Merge** can be switched during a pass. Each round (the whole pass, when it does not
   loop) follows the button as it is at the end of that round.
 - A key held over the loop point belongs to the round it was pressed in. In Loop Record it also

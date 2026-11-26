@@ -24,6 +24,9 @@ pub(super) fn transport_window(app: &mut SoundApp, ctx: &egui::Context) {
                     ("end", "transport.go_to_end"),
                     ("record", "transport.record"),
                 ] {
+                    let mode = if cmd == "transport.record" { app.record_mode() } else { None };
+                    // Loop Record shows a loop symbol on the Record button (Reference Guide p.771).
+                    let icon = if mode.is_some() { "record_loop" } else { icon };
                     let resp = crate::widgets::icon_button(
                         ui,
                         vec2(34.0, 26.0),
@@ -31,6 +34,7 @@ pub(super) fn transport_window(app: &mut SoundApp, ctx: &egui::Context) {
                         (cmd == "transport.play" && app.is_playing()) || (cmd == "transport.record" && app.engine.transport.recording),
                         cmd,
                     );
+                    let resp = crate::widgets::record_mode_hint(resp, mode);
                     if cmd == "transport.record"
                         && let Some(why) = app.record_hint()
                     {

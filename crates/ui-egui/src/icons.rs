@@ -20,6 +20,15 @@ pub fn draw(painter: &Painter, r: Rect, name: &str, c: Color32) {
         "record" => {
             painter.circle_filled(r.center(), r.width() * 0.27, c);
         }
+        "record_loop" => {
+            // Record in Loop Record mode: the dot inside a loop (Reference Guide p.771), drawn in
+            // a square so a wide button does not stretch the loop over the dot.
+            let q = Rect::from_center_size(r.center(), vec2(r.width().min(r.height()), r.width().min(r.height())));
+            painter.circle_filled(q.center(), q.width() * 0.15, c);
+            let rr = Rect::from_min_max(p(q, 0.0, 0.18), p(q, 1.0, 0.82));
+            painter.rect_stroke(rr, rr.height() * 0.5, s, egui::StrokeKind::Middle);
+            painter.add(Shape::convex_polygon(vec![p(q, 0.52, 0.04), p(q, 0.72, 0.18), p(q, 0.52, 0.32)], c, Stroke::NONE));
+        }
         "rtz" => {
             painter.rect_filled(Rect::from_min_max(p(r, 0.24, 0.26), p(r, 0.34, 0.74)), 0.0, c);
             painter.add(Shape::convex_polygon(vec![p(r, 0.76, 0.26), p(r, 0.76, 0.74), p(r, 0.36, 0.5)], c, Stroke::NONE));

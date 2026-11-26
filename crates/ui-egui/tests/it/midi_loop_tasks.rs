@@ -77,6 +77,35 @@ fn loop_rec_in_the_transport_dims_midi_merge_and_keeps_its_state() {
     assert!(h.state().engine.session().edit.midi_merge, "and is back on when Loop Record is off");
 }
 
+/// Hover `label` until its tooltip has shown.
+fn hover(h: &mut Harness<'static, SoundApp>, label: &str) {
+    h.get_by_label(label).hover();
+    h.run_steps(40);
+}
+
+#[test]
+fn loop_record_shows_on_both_record_buttons() {
+    let mut h = transport();
+    let mode = |h: &Harness<'static, SoundApp>, label: &str| {
+        h.get_by_label(label).accesskit_node().description().is_some_and(|d| d.lines().any(|l| l == "Loop Record mode"))
+    };
+    // Normal mode shows nothing (p.771).
+    assert_eq!((mode(&h, "Record"), mode(&h, "transport.record")), (false, false));
+    h.state_mut().run("options.loop_record", json!({"value": true})).unwrap();
+    h.run_steps(2);
+    // The toolbar's and the Transport window's Record buttons draw the loop symbol and name the mode.
+    assert_eq!((mode(&h, "Record"), mode(&h, "transport.record")), (true, true));
+    for button in ["Record", "transport.record"] {
+        hover(&mut h, button);
+        assert_eq!(h.query_all_by_label("Loop Record mode").count(), 1, "{button}'s tooltip names the mode (p.826 step 2)");
+        h.event(Event::PointerGone);
+        h.run_steps(3);
+    }
+    h.state_mut().run("options.loop_record", json!({"value": false})).unwrap();
+    h.run_steps(2);
+    assert!(!mode(&h, "Record"));
+}
+
 const BAR: i64 = 96_000; // 120 bpm 4/4 at 48 kHz
 
 fn ev(at: i64, status: u8, data1: u8, data2: u8) -> MidiTakeEvent {

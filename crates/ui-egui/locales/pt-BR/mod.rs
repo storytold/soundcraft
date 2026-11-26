@@ -1203,6 +1203,7 @@ fn menu_translate(source: &str) -> Option<&'static str> {
         "Loop Rec" => "Gravação em loop",
         "MIDI Merge" => "Mesclagem MIDI",
         "No effect while Loop Record is on" => "Sem efeito enquanto a gravação em loop estiver ativada",
+        "Loop Record mode" => "Modo de gravação em loop",
         "Pre/Post" => "Pré/Pós",
         "0.5 seconds" => "0,5 segundos",
         "Path" => "Caminho",

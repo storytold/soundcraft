@@ -24,6 +24,12 @@ impl SoundApp {
         (fresh && !self.engine.session().tracks.iter().any(|t| t.mixer.record_arm)).then_some(why)
     }
 
+    /// The record mode the Record buttons show, by its Pro Tools name, or `None` in Normal mode,
+    /// which shows nothing (Reference Guide p.771). Loop Record is the only other mode drawn yet.
+    pub(crate) fn record_mode(&self) -> Option<&'static str> {
+        self.engine.session().edit.loop_record.then_some("Loop Record mode")
+    }
+
     /// Current transport position (playhead while playing, else the edit insertion).
     pub fn position(&self) -> Samples {
         if self.engine.transport.playing { self.engine.transport.position } else { self.engine.session().edit.selection.start }
