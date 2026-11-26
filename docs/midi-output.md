@@ -131,10 +131,21 @@ you play it. This is what Pro Tools calls MIDI Thru (Options › MIDI Thru, on b
   afterwards sends nothing more.
 - A **mute** on an instrument track acts on its audio only, as for its clips: its MIDI output
   keeps playing what you play.
-- **MIDI loops**: when the output feeds back into an input (an IAC bus used as both, or a device
-  that echoes what it receives), each message that comes back within 20 ms of being sent is
-  dropped, so it is neither played again nor recorded twice. `ui.inspect` counts them
+- **MIDI loops**: when an output feeds back into an input of the same device (an IAC bus used
+  as both, or a device that echoes what it receives), a message that comes back on that input
+  within 20 ms of being sent is taken as its echo, once per message sent. What MIDI Thru sent is
+  dropped when it comes back, so it is neither played again nor recorded twice. What the clips
+  sent is not sent on through MIDI Thru, and the track that played it does not play or record it
+  again; another track that takes that input records it as usual, so you can still record one
+  track's output onto another through a loopback. `ui.inspect` counts these echoes
   (`midi_output_status.thru.echoes_dropped`).
+- Input from another device is never taken for an echo: a keyboard on the same channel as the
+  synth it plays can repeat a key, a pad or a controller value as fast as it likes. SoundCraft
+  tells devices apart by name: an input and an output with the same name (apart from a number
+  the list adds, such as `Keys (2)`) are one device.
+- After MIDI Thru ends a note or lifts the pedal itself (Stop, All MIDI Notes Off, a change of
+  channel or device), the key's own release sends nothing more, but the pedal's own release
+  still goes through when you let go of it: a second pedal-up is harmless.
 
 ## 6. Troubleshooting
 

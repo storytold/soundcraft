@@ -144,6 +144,7 @@ impl SoundApp {
                 },
                 data1: e.data1,
                 data2: e.data2,
+                echo: e.echo,
             })
             .collect();
         let devices: Vec<String> = (0..soundcraft_mix::MAX_MIDI_PORTS)

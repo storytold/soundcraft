@@ -24,7 +24,7 @@ fn names() -> MidiPorts {
 }
 
 fn ev(port: u8, status: u8, data1: u8, data2: u8) -> LiveMidi {
-    LiveMidi { offset: 0, port, status, data1, data2 }
+    LiveMidi { offset: 0, port, status, data1, data2, echo: false }
 }
 
 fn play(thru: &mut Thru, s: &Session, names: &MidiPorts, events: &[LiveMidi]) -> Wire {

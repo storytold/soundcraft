@@ -79,6 +79,7 @@ fn active_port(offset: i64, compensate: bool) -> Port<FakePort> {
         timing_epochs: [0; ROUTE_KINDS],
         waiting_for_timing: false,
         opened: true,
+        echo: None,
     }
 }
 fn routes(ports: &[(&str, i64)], compensate: bool) -> Update {
@@ -233,6 +234,27 @@ fn destination_stamp_includes_device_lead_and_signed_port_offset_once() {
         }
         assert_eq!(port.link.unwrap().messages, [(due, tick(0).to_vec())]);
     }
+}
+
+#[test]
+fn what_the_clips_send_to_a_port_that_is_also_an_input_is_known_as_their_echo() {
+    // Windows: a 50-note clip played to SYN, which sends back what it gets, came out 100 times
+    // (thru sent the echo on) and recorded over itself.
+    let base = Instant::now();
+    let view = View::default();
+    view.lock().unwrap().push(block(base, 0., 4096., Duration::ZERO));
+    let feed = Arc::new(MidiFeed::default());
+    let syn = feed.ports().assign("SYN");
+    feed.attach_thru(std::thread::current());
+    feed.set_clock(5_000_000);
+    let mut port = active_port(0, false);
+    port.echo = Some(feed.clone());
+    port.poll("SYN", base, &Session::default(), &view, &Stats::default(), &mut Vec::new());
+    assert_eq!(port.link.as_ref().unwrap().messages.len(), 1);
+    feed.receive(syn, &tick(0));
+    let (_, e) = feed.next().unwrap();
+    assert!(e.echo, "marked as the clips' own");
+    assert!(feed.next_thru().is_none(), "not thru'd again");
 }
 
 #[test]

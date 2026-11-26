@@ -1717,7 +1717,7 @@ fn live_peak(eng: &mut MixEngine, s: &Session, events: &[(u8, u8, u8)], blocks: 
     let mut out = vec![vec![0.0f32; 512]; 2];
     eng.monitor_only = true;
     eng.midi.clear();
-    eng.midi.extend(events.iter().map(|&(status, data1, data2)| LiveMidi { offset: 0, port: 0, status, data1, data2 }));
+    eng.midi.extend(events.iter().map(|&(status, data1, data2)| LiveMidi { offset: 0, port: 0, status, data1, data2, echo: false }));
     for _ in 0..blocks {
         eng.render(s, 0, 512, &mut out);
         eng.midi.clear();
@@ -1794,7 +1794,7 @@ fn live_midi_sounds_on_top_of_the_clips_during_playback() {
         }
         all
     };
-    let (dry, played) = (render(&[]), render(&[LiveMidi { offset: 100, port: 0, status: 0x90, data1: 72, data2: 110 }]));
+    let (dry, played) = (render(&[]), render(&[LiveMidi { offset: 100, port: 0, status: 0x90, data1: 72, data2: 110, echo: false }]));
     // The clip's note ends at 24 000 samples; block 60 starts at 30 720.
     assert_eq!(dry[..30_720 + 100], played[..30_720 + 100], "nothing changes before the key goes down");
     assert!(peak(&played[31_000..]) > peak(&dry[31_000..]) + 0.01);
@@ -1834,7 +1834,7 @@ fn ears_session() -> (Session, TrackId, MixEngine, Arc<std::sync::Mutex<Vec<(usi
 #[test]
 fn live_controllers_bend_aftertouch_and_program_reach_the_instrument_at_their_offsets() {
     let (mut s, t, mut eng, heard) = ears_session();
-    let ev = |offset, status, data1, data2| LiveMidi { offset, port: 0, status, data1, data2 };
+    let ev = |offset, status, data1, data2| LiveMidi { offset, port: 0, status, data1, data2, echo: false };
     eng.midi.extend([
         ev(10, 0xB3, 1, 90),       // mod wheel on channel 4: the channel is dropped
         ev(200, 0xE0, 0x7F, 0x7F), // pitch bend, full up
@@ -1875,7 +1875,7 @@ fn live_block(eng: &mut MixEngine, s: &Session, pos: i64, events: &[(u32, u8, u8
     let mut out = vec![vec![0.0f32; 512]; 2];
     eng.monitor_only = false;
     eng.midi.clear();
-    eng.midi.extend(events.iter().map(|&(offset, status, data1, data2)| LiveMidi { offset, port: 0, status, data1, data2 }));
+    eng.midi.extend(events.iter().map(|&(offset, status, data1, data2)| LiveMidi { offset, port: 0, status, data1, data2, echo: false }));
     eng.render(s, pos, 512, &mut out);
     eng.midi.clear();
     out.swap_remove(0)
@@ -2022,7 +2022,7 @@ fn clip_notes_end_when_playback_runs_out_while_the_track_is_still_monitored() {
     live_levels(&mut eng, &s, 0, 10, 5, &[(0, 0x90, 60, 100)]);
     let held = (0..200).map(|_| stopped(&mut eng, &mut out, &[])).last().unwrap();
     assert!(held > 0.01, "{held}");
-    stopped(&mut eng, &mut out, &[LiveMidi { offset: 0, port: 0, status: 0x80, data1: 60, data2: 0 }]);
+    stopped(&mut eng, &mut out, &[LiveMidi { offset: 0, port: 0, status: 0x80, data1: 60, data2: 0, echo: false }]);
     let released = (0..200).map(|_| stopped(&mut eng, &mut out, &[])).last().unwrap();
     assert!(released < 1e-4, "{released}");
 }
@@ -2055,7 +2055,7 @@ fn the_clips_sustain_pedal_goes_up_when_playback_runs_out_under_monitoring() {
     live_levels(&mut eng, &s, 0, 10, 5, &[(0, 0x90, 60, 100)]);
     let held = (0..200).map(|_| stopped(&mut eng, &mut out, &[])).last().unwrap();
     assert!(held > 0.01, "{held}");
-    stopped(&mut eng, &mut out, &[LiveMidi { offset: 0, port: 0, status: 0x80, data1: 60, data2: 0 }]);
+    stopped(&mut eng, &mut out, &[LiveMidi { offset: 0, port: 0, status: 0x80, data1: 60, data2: 0, echo: false }]);
     let released = (0..200).map(|_| stopped(&mut eng, &mut out, &[])).last().unwrap();
     assert!(released < 1e-4, "{released}");
 }
@@ -2063,7 +2063,7 @@ fn the_clips_sustain_pedal_goes_up_when_playback_runs_out_under_monitoring() {
 #[test]
 fn a_lost_ports_controllers_are_reset_and_the_other_ports_kept() {
     let (s, _, mut eng, heard) = ears_session();
-    let ev = |port, status, data1, data2| LiveMidi { offset: 0, port, status, data1, data2 };
+    let ev = |port, status, data1, data2| LiveMidi { offset: 0, port, status, data1, data2, echo: false };
     // Port 0 bends the pitch; port 1 sets the volume.
     eng.midi.extend([ev(0, 0xE0, 0, 0x7F), ev(1, 0xB0, 7, 100)]);
     render_block(&mut eng, &s, 0);
@@ -2093,7 +2093,7 @@ fn a_clip_controller_at_the_start_of_the_block_a_port_is_lost_in_keeps_its_new_v
     let cid = s.new_clip_id();
     s.track_mut(t).unwrap().playlist_mut().unwrap().clips.push(Clip::midi(cid, "c", 0, 24_000, seq));
     // A device bends the pitch in the block before the one that starts at sample 600.
-    eng.midi.push(LiveMidi { offset: 0, port: 0, status: 0xE0, data1: 0, data2: 0x7F });
+    eng.midi.push(LiveMidi { offset: 0, port: 0, status: 0xE0, data1: 0, data2: 0x7F, echo: false });
     render_block(&mut eng, &s, 88);
     eng.midi.clear();
     heard.lock().unwrap().clear();
@@ -2126,7 +2126,7 @@ fn the_clips_sustain_pedal_is_not_put_down_again_when_a_device_goes_away_while_s
         eng.midi_lost = 0;
         peak(&out[0])
     };
-    let ev = |port, status, data1, data2| LiveMidi { offset: 0, port, status, data1, data2 };
+    let ev = |port, status, data1, data2| LiveMidi { offset: 0, port, status, data1, data2, echo: false };
     // Stopped, two devices play: one bends the pitch and is then unplugged. The controllers are
     // set again from the clips, whose pedal is down at this position and will never come up.
     stopped(&mut eng, 0, &[ev(0, 0xE0, 0, 0x7F)]);
@@ -2143,7 +2143,7 @@ fn the_clips_sustain_pedal_is_not_put_down_again_when_a_device_goes_away_while_s
 #[test]
 fn a_volume_or_pan_left_by_a_device_that_went_away_goes_back_to_the_midi_default() {
     use soundcraft_midi::{CtrlEvent, CtrlKind, Sequence};
-    let ev = |port, status, data1, data2| LiveMidi { offset: 0, port, status, data1, data2 };
+    let ev = |port, status, data1, data2| LiveMidi { offset: 0, port, status, data1, data2, echo: false };
     let lost = |eng: &mut MixEngine, s: &Session, pos: i64, bits: u64| {
         eng.midi.clear();
         eng.midi_lost = bits;
@@ -2197,7 +2197,7 @@ fn a_volume_or_pan_left_by_a_device_that_went_away_goes_back_to_the_midi_default
 
 #[test]
 fn a_volume_the_full_controller_table_forgot_is_reset_only_when_its_own_device_goes() {
-    let ev = |port, status, data1, data2| LiveMidi { offset: 0, port, status, data1, data2 };
+    let ev = |port, status, data1, data2| LiveMidi { offset: 0, port, status, data1, data2, echo: false };
     let (s, _, mut eng, heard) = ears_session();
     // Keys (port 0) sets the volume. A third device then sets so many controllers that the
     // table forgets that value, and Pad (port 1) bends the pitch.
@@ -2232,7 +2232,7 @@ fn a_volume_the_full_controller_table_forgot_is_reset_only_when_its_own_device_g
 #[test]
 fn a_clip_volume_moved_earlier_by_the_track_delay_counts_as_set_when_a_device_goes_away() {
     use soundcraft_midi::{CtrlEvent, CtrlKind, Sequence};
-    let ev = |port, status, data1, data2| LiveMidi { offset: 0, port, status, data1, data2 };
+    let ev = |port, status, data1, data2| LiveMidi { offset: 0, port, status, data1, data2, echo: false };
     // The clip sets the volume at tick 960; the track's MIDI delay of -960 ticks plays it at 0.
     let (mut s, t, mut eng, heard) = ears_session();
     let mut seq = Sequence::default();

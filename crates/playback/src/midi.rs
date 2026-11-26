@@ -35,13 +35,26 @@
 //! Once the MIDI output worker attaches ([`MidiFeed::attach_thru`]), each channel message also
 //! goes into a second queue for it, and the worker is woken: it sends the message on to the MIDI
 //! output of the tracks that play live input without waiting for an audio block
-//! (`crate::thru`). A message that comes back on an input shortly after thru sent the very same
-//! bytes is the echo of a loop (an IAC bus routed to itself, a device with soft thru): it is
-//! dropped before it is played, sent on or recorded ([`ECHO_WINDOW_US`]).
+//! (`crate::thru`).
+//!
+//! # Echoes
+//!
+//! The output worker tells the feed what it sends to each output port ([`MidiFeed::sent`]). The
+//! very same bytes arriving shortly after ([`ECHO_WINDOW_US`]) on an input that is the *same
+//! device* as that output ([`same_midi_device`]: an IAC bus, a virtual port, a device with soft
+//! thru) are its echo, once per message sent. Input from any other device is never one, however
+//! fast it repeats what was just sent: a keyboard striking one key quickly on the synth's channel
+//! plays and records every strike.
+//!
+//! - The echo of thru is dropped before it is played, sent on or recorded.
+//! - The echo of the clips is never thru'd, and is marked ([`LiveMidi::echo`]): the track whose
+//!   MIDI output is that device and channel neither plays nor records it (it is its own
+//!   playback), while another track that takes that input records it as any input.
 //!
 //! On other systems (FreeBSD, the web) there is no MIDI input: the port list stays empty.
 
-use soundcraft_mix::{LiveMidi, MidiPorts, midi_port_bit};
+use soundcraft_mix::{LiveMidi, MAX_MIDI_PORTS, MidiPorts, midi_port_bit};
+use soundcraft_model::same_midi_device;
 use soundcraft_time::Samples;
 use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU32, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
@@ -55,12 +68,14 @@ pub(crate) const INCOMING: usize = 1024;
 const RECORDED: usize = 16_384;
 /// Events waiting for the MIDI output worker (MIDI Thru), which is woken for each.
 const THRU: usize = 1024;
-/// How long after thru sent a message the same bytes arriving on an input count as its echo, in
-/// microseconds. A loop through the system (IAC) takes well under a millisecond, one through
-/// DIN and a USB interface a few.
+/// How long after SoundCraft sent a message to an output the same bytes arriving on an input of
+/// that device count as its echo, in microseconds. A loop through the system (IAC) takes well
+/// under a millisecond, one through DIN and a USB interface a few.
 pub(crate) const ECHO_WINDOW_US: i64 = 20_000;
-/// Messages thru sent lately, kept for the echo check.
-const THRU_SENT: usize = 64;
+/// Messages sent lately, kept for the echo check. Clip output can send a few hundred messages
+/// within the window (a dense passage on several channels); the oldest go first.
+#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+const SENT_KEPT: usize = 512;
 
 /// A fixed-size queue of stamped events for one reader and one writer at a time. Lock-free.
 struct Ring {
@@ -107,13 +122,18 @@ impl Ring {
     }
 }
 
+/// The top bit of the first data byte, which a MIDI data byte never has, carries
+/// [`LiveMidi::echo`] through the queues.
+const ECHO_BIT: u8 = 0x80;
+
 fn pack(e: &LiveMidi) -> u32 {
-    u32::from_be_bytes([e.port, e.status, e.data1, e.data2])
+    let data1 = if e.echo { e.data1 | ECHO_BIT } else { e.data1 & !ECHO_BIT };
+    u32::from_be_bytes([e.port, e.status, data1, e.data2])
 }
 
 fn unpack(v: u32) -> LiveMidi {
     let [port, status, data1, data2] = v.to_be_bytes();
-    LiveMidi { offset: 0, port, status, data1, data2 }
+    LiveMidi { offset: 0, port, status, data1: data1 & !ECHO_BIT, data2, echo: data1 & ECHO_BIT != 0 }
 }
 
 /// A recorded MIDI message at its timeline position, or (status [`RecordedMidi::LOST`]) the point
@@ -126,6 +146,8 @@ pub struct RecordedMidi {
     pub status: u8,
     pub data1: u8,
     pub data2: u8,
+    /// An echo of SoundCraft's own clip output ([`LiveMidi::echo`]).
+    pub echo: bool,
 }
 
 impl RecordedMidi {
@@ -158,7 +180,7 @@ fn lost_bit(port: u8) -> usize {
 
 /// The recorded entry for events dropped on `port`.
 fn lost_entry(port: u8) -> u32 {
-    pack(&LiveMidi { offset: 0, port, status: RecordedMidi::LOST, data1: 0, data2: 0 })
+    pack(&LiveMidi { offset: 0, port, status: RecordedMidi::LOST, data1: 0, data2: 0, echo: false })
 }
 
 /// The path of live input to the MIDI output worker, for MIDI Thru to external gear.
@@ -170,9 +192,9 @@ struct ThruLink {
     waker: Mutex<Option<std::thread::Thread>>,
     /// Ports ([`midi_port_bit`]) whose events did not all reach the worker, until it asks.
     lost: AtomicU64,
-    /// What thru sent lately: when ([`MidiFeed::now`]) and the message ([`echo_key`]).
-    sent: Mutex<std::collections::VecDeque<(i64, u32)>>,
-    /// Echoes dropped so far.
+    /// What was sent lately to outputs that are also inputs, for the echo check.
+    sent: Mutex<Sent>,
+    /// Echoes thru did not send on so far.
     echoes: AtomicU64,
 }
 
@@ -183,7 +205,7 @@ impl Default for ThruLink {
             attached: AtomicBool::new(false),
             waker: Mutex::new(None),
             lost: AtomicU64::new(0),
-            sent: Mutex::new(std::collections::VecDeque::with_capacity(THRU_SENT)),
+            sent: Mutex::new(Sent::default()),
             echoes: AtomicU64::new(0),
         }
     }
@@ -203,6 +225,25 @@ impl ThruLink {
             self.wake();
         }
     }
+}
+
+/// Who sent a message to an output port.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum SentBy {
+    /// MIDI Thru: its echo is dropped altogether.
+    Thru,
+    /// The clips: its echo is not thru'd and is not played or recorded on the track whose own
+    /// output it is ([`LiveMidi::echo`]).
+    Clips,
+}
+
+/// What was sent lately, for the echo check: each message with when ([`MidiFeed::now`]), its
+/// [`echo_key`], the output port (an index into `outputs`) and who sent it.
+#[derive(Default)]
+struct Sent {
+    recent: std::collections::VecDeque<(i64, u32, u16, SentBy)>,
+    /// Output port labels seen, kept (a session routes to a few).
+    outputs: Vec<String>,
 }
 
 /// A channel message as the echo check compares it: status and the data bytes its kind has.
@@ -373,10 +414,12 @@ impl MidiFeed {
             return;
         }
         let data = |i: usize| bytes.get(i).copied().unwrap_or(0) & 0x7F;
-        let e = pack(&LiveMidi { offset: 0, port, status, data1: data(1), data2: data(2) });
-        if self.is_echo(bytes) {
+        let echo = self.echo_of(port, bytes);
+        if echo == Some(SentBy::Thru) {
             return;
         }
+        let clip_echo = echo == Some(SentBy::Clips);
+        let e = pack(&LiveMidi { offset: 0, port, status, data1: data(1), data2: data(2), echo: clip_echo });
         let mut thru = false;
         {
             let mut owed = self.writers.lock().unwrap_or_else(PoisonError::into_inner);
@@ -409,7 +452,9 @@ impl MidiFeed {
                 self.port_lost_at(port, now);
                 *owed |= midi_port_bit(port);
             }
-            if self.thru.attached.load(Ordering::Acquire) {
+            // An echo of the clips is never thru'd: the device already got it, and sending it on
+            // could make it loop.
+            if !clip_echo && self.thru.attached.load(Ordering::Acquire) {
                 if self.thru.events.push(now, e) {
                     thru = true;
                 } else {
@@ -478,33 +523,52 @@ impl MidiFeed {
         self.thru.lost.swap(0, Ordering::AcqRel)
     }
 
-    /// Worker: thru is about to send `bytes`. The same message arriving on an input within
-    /// [`ECHO_WINDOW_US`] is its echo and is dropped, once.
-    pub(crate) fn thru_sent(&self, bytes: &[u8]) {
+    /// Worker: `bytes` is about to go out on the output port `output`, from `sender`. The same
+    /// message arriving within [`ECHO_WINDOW_US`] on an input that is the same device
+    /// ([`same_midi_device`]) is its echo, once. An input of another device is never taken for
+    /// an echo, whatever it sends. Nothing is kept for an output that is no input's device.
+    pub(crate) fn sent(&self, output: &str, bytes: &[u8], sender: SentBy) {
         let Some(key) = echo_key(bytes) else { return };
+        let ports = &self.ports;
+        if !(0..MAX_MIDI_PORTS).filter_map(|i| ports.name(u8::try_from(i).ok()?)).any(|input| same_midi_device(input, output)) {
+            return;
+        }
         let now = self.now();
         let mut sent = self.thru.sent.lock().unwrap_or_else(PoisonError::into_inner);
-        while sent.front().is_some_and(|&(at, _)| now.saturating_sub(at) > ECHO_WINDOW_US) || sent.len() >= THRU_SENT {
-            sent.pop_front();
+        let out = match sent.outputs.iter().position(|o| o == output) {
+            Some(i) => i,
+            None => {
+                sent.outputs.push(output.to_owned());
+                sent.outputs.len() - 1
+            }
+        };
+        let out = u16::try_from(out).unwrap_or(u16::MAX);
+        while sent.recent.front().is_some_and(|&(at, ..)| now.saturating_sub(at) > ECHO_WINDOW_US) || sent.recent.len() >= SENT_KEPT {
+            sent.recent.pop_front();
         }
-        sent.push_back((now, key));
+        sent.recent.push_back((now, key, out, sender));
     }
 
-    /// Whether `bytes`, just arrived, is the echo of a message thru sent lately. An echo found
-    /// is used up: a second copy is not one.
-    fn is_echo(&self, bytes: &[u8]) -> bool {
-        let Some(key) = echo_key(bytes) else { return false };
+    /// Whether `bytes`, just arrived from `port`, is the echo of a message sent lately to an
+    /// output of the same device, and who sent that. An echo found is used up: a second copy is
+    /// not one.
+    fn echo_of(&self, port: u8, bytes: &[u8]) -> Option<SentBy> {
+        let key = echo_key(bytes)?;
+        let input = self.ports.name(port)?;
         let now = self.now();
         let mut sent = self.thru.sent.lock().unwrap_or_else(PoisonError::into_inner);
-        let found = sent.iter().position(|&(at, k)| k == key && (0..=ECHO_WINDOW_US).contains(&now.saturating_sub(at)));
-        if let Some(i) = found {
-            sent.remove(i);
-            self.thru.echoes.fetch_add(1, Ordering::Relaxed);
-        }
-        found.is_some()
+        let Sent { recent, outputs } = &mut *sent;
+        let i = recent.iter().position(|&(at, k, out, _)| {
+            k == key
+                && (0..=ECHO_WINDOW_US).contains(&now.saturating_sub(at))
+                && outputs.get(usize::from(out)).is_some_and(|o| same_midi_device(input, o))
+        })?;
+        let (.., sender) = recent.remove(i)?;
+        self.thru.echoes.fetch_add(1, Ordering::Relaxed);
+        Some(sender)
     }
 
-    /// Echoes of thru dropped so far (a MIDI loop).
+    /// Echoes of SoundCraft's own output that thru did not send on so far (a MIDI loop).
     pub fn thru_echoes(&self) -> u64 {
         self.thru.echoes.load(Ordering::Relaxed)
     }
@@ -598,7 +662,7 @@ impl MidiFeed {
 
     /// Audio thread: loop recording went back to the start of the loop, which ends at `at`.
     pub(crate) fn record_wrap(&self, at: Samples) {
-        self.record_entry(at, pack(&LiveMidi { offset: 0, port: u8::MAX, status: RecordedMidi::WRAP, data1: 0, data2: 0 }));
+        self.record_entry(at, pack(&LiveMidi { offset: 0, port: u8::MAX, status: RecordedMidi::WRAP, data1: 0, data2: 0, echo: false }));
     }
 
     /// Put a recorded entry in the queue to the UI thread. One that does not fit is counted, and
@@ -730,7 +794,7 @@ impl MidiFeed {
     pub fn take_recorded(&self, out: &mut Vec<RecordedMidi>) {
         while let Some((at, e)) = self.recorded.pop() {
             let e = unpack(e);
-            out.push(RecordedMidi { at, port: e.port, status: e.status, data1: e.data1, data2: e.data2 });
+            out.push(RecordedMidi { at, port: e.port, status: e.status, data1: e.data1, data2: e.data2, echo: e.echo });
         }
     }
 }
@@ -1151,7 +1215,7 @@ mod tests {
                 e
             })
             .collect();
-        let ev = |port, status, data1, data2| LiveMidi { offset: 0, port, status, data1, data2 };
+        let ev = |port, status, data1, data2| LiveMidi { offset: 0, port, status, data1, data2, echo: false };
         assert_eq!(got, [ev(3, 0x90, 60, 100), ev(1, 0xC5, 7, 0), ev(3, 0x80, 60, 0x7F)]);
         assert_eq!(f.activity(), (3, Some(ev(3, 0x80, 60, 0x7F))));
     }
@@ -1375,23 +1439,110 @@ mod tests {
     #[test]
     fn an_echo_of_what_thru_sent_is_dropped_once_and_only_while_fresh() {
         let feed = MidiFeed::default();
+        let bus = feed.ports().assign("IAC Driver Bus 1");
         feed.attach_thru(std::thread::current());
         feed.set_clock(1_000_000);
-        feed.thru_sent(&[0x92, 60, 100]);
+        feed.sent("IAC Driver Bus 1", &[0x92, 60, 100], SentBy::Thru);
         feed.set_clock(1_000_500);
-        feed.receive(0, &[0x92, 60, 100]);
+        feed.receive(bus, &[0x92, 60, 100]);
         assert_eq!(feed.thru_echoes(), 1);
         assert!(feed.next().is_none() && feed.next_thru().is_none(), "the echo is not played, sent on or recorded");
         // A second copy is not the echo of that one message.
-        feed.receive(0, &[0x92, 60, 100]);
+        feed.receive(bus, &[0x92, 60, 100]);
         assert!(feed.next().is_some());
         // Other bytes are not an echo, nor the same bytes after the window.
-        feed.thru_sent(&[0xC2, 5]);
-        feed.receive(0, &[0xC2, 6]);
+        feed.sent("IAC Driver Bus 1", &[0xC2, 5], SentBy::Thru);
+        feed.receive(bus, &[0xC2, 6]);
         feed.set_clock(1_000_500 + ECHO_WINDOW_US + 1);
-        feed.receive(0, &[0xC2, 5]);
+        feed.receive(bus, &[0xC2, 5]);
         assert_eq!(feed.thru_echoes(), 1);
         assert_eq!(std::iter::from_fn(|| feed.next()).count(), 2);
+    }
+
+    /// Plays `script` (`(ms, bytes)`) from the keyboard KB through thru to the synth SYN on the
+    /// same channel, as the worker does: each message is sent on 200 µs after it arrives. With
+    /// `echoing`, SYN sends back what it gets 300 µs later, as a soft-thru device or a loop does.
+    /// Returns what reached the audio thread (played and recorded) and what thru got, by port.
+    fn through_syn(script: &[(i64, &[u8])], echoing: bool) -> (MidiFeed, Vec<(u8, u8, u8, u8)>, Vec<(u8, u8, u8, u8)>) {
+        let feed = MidiFeed::default();
+        let (kb, syn) = (feed.ports().assign("KB"), feed.ports().assign("SYN"));
+        feed.attach_thru(std::thread::current());
+        for &(ms, bytes) in script {
+            feed.set_clock(1_000_000 + ms * 1000);
+            feed.receive(kb, bytes);
+            feed.set_clock(1_000_000 + ms * 1000 + 200);
+            feed.sent("SYN", bytes, SentBy::Thru);
+            if echoing {
+                feed.set_clock(1_000_000 + ms * 1000 + 500);
+                feed.receive(syn, bytes);
+            }
+        }
+        let played = std::iter::from_fn(|| feed.next()).map(|(_, e)| (e.port, e.status, e.data1, e.data2)).collect();
+        let thru = std::iter::from_fn(|| feed.next_thru()).map(|(_, e)| (e.port, e.status, e.data1, e.data2)).collect();
+        (feed, played, thru)
+    }
+
+    #[test]
+    fn a_keyboard_repeating_what_thru_just_sent_elsewhere_is_never_taken_for_an_echo() {
+        // The Windows repros (KB channel 1 thru'd to SYN channel 1, no loop): channel pressure
+        // 64 three times 5 ms apart, note 60 on/off/on/off 6 ms apart, mod wheel 20 twice 10 ms
+        // apart: 9 sent, 5 arrived while the guard ignored the port.
+        let script: [(i64, &[u8]); 9] = [
+            (0, &[0xD0, 0x40]),
+            (5, &[0xD0, 0x40]),
+            (10, &[0xD0, 0x40]),
+            (100, &[0x90, 60, 100]),
+            (106, &[0x80, 60, 0]),
+            (112, &[0x90, 60, 100]),
+            (118, &[0x80, 60, 0]),
+            (200, &[0xB0, 1, 20]),
+            (210, &[0xB0, 1, 20]),
+        ];
+        let (feed, played, thru) = through_syn(&script, false);
+        assert_eq!(feed.thru_echoes(), 0);
+        let kb: Vec<(u8, u8, u8, u8)> = script.iter().map(|(_, b)| (0, b[0], b[1], b.get(2).copied().unwrap_or(0))).collect();
+        assert_eq!(played, kb, "everything played is played, and recorded");
+        assert_eq!(thru, kb, "and thru'd");
+        // The same with SYN echoing what it gets: its echoes go, the keyboard's repeats stay.
+        let (feed, played, thru) = through_syn(&script, true);
+        assert_eq!(feed.thru_echoes(), 9);
+        assert_eq!((played, thru), (kb.clone(), kb));
+    }
+
+    #[test]
+    fn ten_quick_strikes_of_one_key_all_reach_the_take() {
+        // Windows: 10 strikes of C4 12 ms apart (on 6 ms, off 6 ms later) recorded a 5-note take.
+        let script: Vec<(i64, &[u8])> = (0..10).flat_map(|i| [(i * 12, &[0x90u8, 60, 100][..]), (i * 12 + 6, &[0x80u8, 60, 0][..])]).collect();
+        for echoing in [false, true] {
+            let (_, played, _) = through_syn(&script, echoing);
+            assert_eq!(played.iter().filter(|e| e.1 == 0x90).count(), 10, "echoing: {echoing}");
+            assert!(played.iter().all(|e| e.0 == 0), "only the keyboard's own");
+        }
+    }
+
+    #[test]
+    fn an_echo_of_the_clip_output_is_marked_and_not_thrud() {
+        let feed = MidiFeed::default();
+        let syn = feed.ports().assign("SYN");
+        feed.attach_thru(std::thread::current());
+        feed.set_clock(1_000_000);
+        feed.sent("SYN", &[0x92, 64, 90], SentBy::Clips);
+        // An output that is no input's device keeps nothing to check against.
+        feed.sent("Synth", &[0x92, 64, 90], SentBy::Clips);
+        assert_eq!(feed.thru.sent.lock().unwrap().recent.len(), 1);
+        feed.set_clock(1_000_400);
+        feed.receive(syn, &[0x92, 64, 90]);
+        let (_, e) = feed.next().unwrap();
+        assert!(e.echo && (e.port, e.status, e.data1, e.data2) == (syn, 0x92, 64, 90), "played, marked as the clips' echo");
+        assert!(feed.next_thru().is_none(), "never thru'd: the device already got it");
+        // The mark goes into the take with it.
+        feed.record(10, &e);
+        let mut out = Vec::new();
+        feed.take_recorded(&mut out);
+        assert_eq!(out, [RecordedMidi { at: 10, port: syn, status: 0x92, data1: 64, data2: 90, echo: true }]);
+        // Used up: a second copy is input.
+        feed.receive(syn, &[0x92, 64, 90]);
+        assert!(!feed.next().unwrap().1.echo && feed.next_thru().is_some());
     }
 
     #[test]
@@ -1429,7 +1580,7 @@ mod tests {
     #[test]
     fn a_full_recorded_queue_is_counted_and_leaves_a_lost_entry() {
         let f = MidiFeed::default();
-        let e = LiveMidi { offset: 0, port: 1, status: 0x90, data1: 60, data2: 100 };
+        let e = LiveMidi { offset: 0, port: 1, status: 0x90, data1: 60, data2: 100, echo: false };
         let capacity = RECORDED.next_power_of_two();
         for at in 0..capacity + 3 {
             f.record(at as i64, &e);
@@ -1455,10 +1606,10 @@ mod tests {
     #[test]
     fn recorded_events_come_back_with_their_position() {
         let f = MidiFeed::default();
-        f.record(48_000, &LiveMidi { offset: 9, port: 2, status: 0x91, data1: 64, data2: 90 });
+        f.record(48_000, &LiveMidi { offset: 9, port: 2, status: 0x91, data1: 64, data2: 90, echo: false });
         let mut out = Vec::new();
         f.take_recorded(&mut out);
         f.take_recorded(&mut out);
-        assert_eq!(out, [RecordedMidi { at: 48_000, port: 2, status: 0x91, data1: 64, data2: 90 }]);
+        assert_eq!(out, [RecordedMidi { at: 48_000, port: 2, status: 0x91, data1: 64, data2: 90, echo: false }]);
     }
 }

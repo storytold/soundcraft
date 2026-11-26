@@ -75,7 +75,7 @@ mod threads;
 
 use automation::{copy_with_gain, pan_at, pan_segment, send_level, transport_at, volume_level};
 pub use instances::{INSTRUMENT_SLOT, InstanceSpec, NewInstance, PluginFailures, PreparedInstance, create_instance, instance_specs, is_third_party};
-pub use live_midi::{LiveMidi, MAX_MIDI_PORTS, MAX_OWNERS, MidiPorts, NO_MIDI_THRU, midi_port_bit, midi_thru, midi_thru_enabled};
+pub use live_midi::{LiveMidi, MAX_MIDI_PORTS, MAX_OWNERS, MidiPorts, NO_MIDI_THRU, midi_port_bit, midi_thru, midi_thru_enabled, own_echo};
 pub use meter::StripMeter;
 use midi::sync_sample;
 pub use midi::{ClipEvent, chase_events, clip_events, midi_offset};

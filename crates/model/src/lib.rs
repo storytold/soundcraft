@@ -10,4 +10,4 @@ mod midi_input;
 mod midi_output;
 
 pub use midi_input::MidiInput;
-pub use midi_output::MidiOutput;
+pub use midi_output::{MidiOutput, same_midi_device};

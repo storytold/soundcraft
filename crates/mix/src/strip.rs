@@ -362,7 +362,7 @@ fn render_instrument(s: &Session, t: &Track, strip: &mut Strip, live: &LiveInput
         }
         strip.live.set_clip_notes(&strip.held);
         if midi_thru(s, t) {
-            strip.live.play(t, inst.plugin.as_mut(), live.midi, live.ports, frames);
+            strip.live.play(t, soundcraft_model::MidiOutput::of(&s.edit, t.id), inst.plugin.as_mut(), live.midi, live.ports, frames);
         } else if strip.live.touched() && strip.live.release(inst.plugin.as_mut()) {
             // Live controllers moved the instrument: the next block sets them from the clips.
             strip.chase = true;

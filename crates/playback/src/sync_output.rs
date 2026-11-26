@@ -7,7 +7,7 @@
 //! [`crate::thru`]). The input threads wake it for each message ([`MidiFeed::attach_thru`]), so
 //! its waits are parks that a message cuts short, and thru goes out as soon as it arrives,
 //! outside the deadline queue.
-use crate::midi::MidiFeed;
+use crate::midi::{MidiFeed, SentBy};
 use crate::sync_clock::{SessionRevision, delivery_offset};
 use crate::thru::Thru;
 use crate::{
@@ -401,6 +401,9 @@ struct Port<C> {
     timing_epochs: [u64; ROUTE_KINDS],
     waiting_for_timing: bool,
     failure: Option<String>,
+    /// The live input, told of what the clips send here for its echo check
+    /// ([`MidiFeed::sent`]): a port that is also an input may send it straight back.
+    echo: Option<Arc<MidiFeed>>,
 }
 /// Most future events a port holds. When full, an event that is not a release makes room;
 /// releases are always kept.
@@ -529,6 +532,10 @@ impl<C: SyncPort> Port<C> {
         // A stable sort keeps the emission order of equal deadlines.
         pending.sort_by_key(|m| m.at);
         for e in pending.iter() {
+            if let Some(f) = &self.echo {
+                // Before it leaves: its echo may be back before the send returns.
+                f.sent(name, &e.bytes[..e.len], SentBy::Clips);
+            }
             match port.send_at(e.at, &e.bytes[..e.len]) {
                 Ok(handed) => stats.record(e.at, handed),
                 Err(err) => {
@@ -551,6 +558,7 @@ fn set_route<C: SyncPort>(map: &mut BTreeMap<String, Port<C>>, index: usize, nam
         waiting_for_timing: false,
         failure: None,
         opened: false,
+        echo: None,
     });
     port.routes[index] = Some(route);
 }
@@ -559,6 +567,9 @@ fn set_route<C: SyncPort>(map: &mut BTreeMap<String, Port<C>>, index: usize, nam
 fn send_now<C: SyncPort>(name: &str, port: &mut Port<C>, msg: &[u8], stats: &Stats) {
     let now = Instant::now();
     if let Some(link) = &mut port.link {
+        if let Some(f) = &port.echo {
+            f.sent(name, msg, SentBy::Clips);
+        }
         match link.send_at(now, msg) {
             Ok(handed) => stats.record(now, handed),
             Err(error) => port.disconnect(name, format!("{name}: {error}"), now, stats),
@@ -573,7 +584,7 @@ fn send_thru<C: SyncPort>(ports: &mut BTreeMap<String, Port<C>>, name: &str, msg
     let Some(p) = ports.get_mut(name) else { return };
     let Some(link) = &mut p.link else { return };
     // Before it leaves: its echo may be back before this returns.
-    feed.thru_sent(msg);
+    feed.sent(name, msg, SentBy::Thru);
     match link.send_at(Instant::now(), msg) {
         Ok(_) => {
             if let Some(at) = arrived {
@@ -640,6 +651,13 @@ impl LiveThru {
             send_now(name, p, &[0xb0 | channel, 64, 0], stats);
             send_now(name, p, &[0xb0 | channel, 123, 0], stats);
         }
+    }
+}
+fn same_feed(a: Option<&Arc<MidiFeed>>, b: Option<&Arc<MidiFeed>>) -> bool {
+    match (a, b) {
+        (Some(a), Some(b)) => Arc::ptr_eq(a, b),
+        (None, None) => true,
+        _ => false,
     }
 }
 /// The play position for MIDI Thru's mute check (mute automation): where the last presented
@@ -866,6 +884,11 @@ fn drive_ports<C: SyncPort>(
             }
             ports.retain(|_, p| p.routes.iter().any(Option::is_some));
             stats.connected().retain(|n| ports.contains_key(n));
+            for p in ports.values_mut() {
+                if !same_feed(p.echo.as_ref(), live.feed.as_ref()) {
+                    p.echo.clone_from(&live.feed);
+                }
+            }
         }
         let mut next = None;
         let mut soon = |at: Instant| next = Some(next.map_or(at, |t: Instant| t.min(at)));
