@@ -44,6 +44,9 @@ struct Host {
     from: i64,
     to: i64,
     span: Range,
+    /// Shorter than a tick (`to` was made a tick past `from`): a note in it would end at its
+    /// start on playback.
+    short: bool,
 }
 
 /// Merge `seq` (in ticks from the start of `range`) into the MIDI clips of `track`'s playlist that
@@ -53,6 +56,8 @@ struct Host {
 ///
 /// - Each note goes into the clip its start is in (the later-starting clip where they overlap: the
 ///   one on top); each controller into the clip its tick is in. Clip boundaries do not change. A
+///   clip shorter than a tick, which would end such a note at its start, takes a note only when no
+///   gap does (a controller there stays in it). A
 ///   note is stored whole even when it runs past the end of its clip (into a clip after it):
 ///   Pro Tools allows notes to "extend beyond the clip boundary" (p.819), but playback and MIDI
 ///   export end every note at its clip's end today, so its tail is not heard.
@@ -121,8 +126,8 @@ pub(super) fn merge_take(
                 .map(|c| {
                     // At least a tick long, as the range is: a clip shorter than a tick still
                     // takes what is played at its start.
-                    let from = ticks(c.start);
-                    Host { id: c.id, from, to: ticks(c.end()).max(from.saturating_add(1)), span: c.range() }
+                    let (from, to) = (ticks(c.start), ticks(c.end()));
+                    Host { id: c.id, from, to: to.max(from.saturating_add(1)), span: c.range(), short: to <= from }
                 })
                 .collect()
         })
@@ -172,11 +177,25 @@ pub(super) fn merge_take(
             note_merged(&mut merged, h.id);
         }
     }
-    // Which clip each event goes into: the latest-starting one that holds its tick.
-    let host_of = |tick: i64| hosts.iter().filter(|h| h.from <= tick && tick < h.to).max_by_key(|h| (h.from, h.span.start)).map(|h| h.id);
+    // The parts of the range no clip merged into covers, and their ticks: what is not merged
+    // goes into new clips there.
+    let gap_ticks: Vec<(Range, i64, i64)> = gaps(range, hosts.iter().map(|h| h.span))
+        .into_iter()
+        .map(|gap| (gap, ticks(gap.start), if gap.end == range.end { range_to } else { ticks(gap.end) }))
+        .collect();
+    let in_gap = |tick: i64| gap_ticks.iter().any(|&(_, from, to)| tick >= from && tick < to);
+    // Which clip each event goes into: the latest-starting one that holds its tick. Playback ends
+    // a note at its clip's end, so a clip shorter than a tick takes a note only when no gap can.
+    let host_of = |tick: i64, note: bool| {
+        hosts
+            .iter()
+            .filter(|h| h.from <= tick && tick < h.to && !(note && h.short && in_gap(tick)))
+            .max_by_key(|h| (h.from, h.span.start))
+            .map(|h| h.id)
+    };
     let mut loose = Sequence::default();
     for n in notes {
-        match host_of(n.start) {
+        match host_of(n.start, true) {
             Some(id) => {
                 if let Some((hs, from)) = host_sequence(s, id).zip(hosts.iter().find(|h| h.id == id).map(|h| h.from)) {
                     hs.notes.push(Note { start: n.start - from, ..n });
@@ -187,7 +206,7 @@ pub(super) fn merge_take(
         }
     }
     for c in ctrls {
-        match host_of(c.tick) {
+        match host_of(c.tick, false) {
             Some(id) => {
                 if let Some((hs, from)) = host_sequence(s, id).zip(hosts.iter().find(|h| h.id == id).map(|h| h.from)) {
                     hs.ctrls.push(CtrlEvent { tick: c.tick - from, ..c });
@@ -202,10 +221,9 @@ pub(super) fn merge_take(
             hs.sort();
         }
     }
-    // The rest goes into new clips over the parts of the range no clip merged into covers.
+    // The rest goes into new clips over the gaps.
     let mut made = Vec::new();
-    for gap in gaps(range, hosts.iter().map(|h| h.span)) {
-        let (from, to) = (ticks(gap.start), if gap.end == range.end { range_to } else { ticks(gap.end) });
+    for &(gap, from, to) in &gap_ticks {
         let inside = |t: i64| t >= from && t < to;
         let mut piece = Sequence::default();
         piece.notes.extend(loose.notes.iter().filter(|n| inside(n.start)).map(|n| Note { start: n.start - from, ..*n }));

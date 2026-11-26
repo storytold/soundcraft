@@ -1440,6 +1440,30 @@ mod tests {
     }
 
     #[test]
+    fn a_note_played_at_the_start_of_a_clip_shorter_than_a_tick_goes_where_it_can_sound_whole() {
+        // Playback ends a note at its clip's end: in a clip shorter than a tick, a note would
+        // hardly sound. The controller stays in that clip; the note goes into the gap after it.
+        let mut e = Engine::default();
+        let t = armed(&mut e, "Keys", "none");
+        let merge = style(false, &[true], MergeRelease::default());
+        record(&mut e, Range::new(0, 1), MidiPass::Linear, &[ev(0, 0, 0xB0, 1, 9)], &merge);
+        let events = [ev(0, 0, 0xB0, 1, 30), ev(0, 0, 0x90, 60, 100), ev(Q / 2, 0, 0x80, 60, 0)];
+        record(&mut e, Range::new(0, Q), MidiPass::Linear, &events, &merge);
+        let clips: Vec<(Samples, Samples, Vec<(u8, i64, i64)>, Vec<i32>)> = e
+            .session()
+            .track(t)
+            .unwrap()
+            .clips()
+            .iter()
+            .map(|c| {
+                let m = midi_of(c);
+                (c.start, c.range().end, m.notes.iter().map(|n| (n.pitch, n.start, n.length)).collect(), m.ctrls.iter().map(|c| c.value).collect())
+            })
+            .collect();
+        assert_eq!(clips, [(0, 1, vec![], vec![30]), (1, Q, vec![(60, 0, 480)], vec![])]);
+    }
+
+    #[test]
     fn a_replacing_pass_punched_into_a_playing_loop_leaves_what_lies_before_the_punch_in() {
         let mut e = Engine::default();
         let t = armed(&mut e, "Keys", "none");
