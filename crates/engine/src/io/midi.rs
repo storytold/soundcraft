@@ -132,7 +132,8 @@ pub fn export_midi(e: &Engine, only: Option<&[TrackId]>) -> Result<Vec<u8>> {
         for c in t.clips() {
             if let ClipContent::Midi { sequence } = &c.content {
                 let base = s.tempo.samples_to_ticks(c.start, s.sample_rate);
-                // Only what plays: notes starting inside the clip, cut at its end.
+                // Only what plays: notes starting inside the clip (cut at its end), and the
+                // controllers and SysEx inside it.
                 let clip_end = s.tempo.samples_to_ticks(c.end(), s.sample_rate);
                 for event in sequence.sysex.iter().filter(|event| event.tick.saturating_add(base) < clip_end) {
                     let mut event = event.clone();

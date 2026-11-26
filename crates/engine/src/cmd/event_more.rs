@@ -349,9 +349,9 @@ fn select_split(e: &mut Engine, p: &Value) -> Result<Value> {
         };
         let mut nc = c.clone();
         nc.id = s.new_clip_id();
-        // Note-split has always copied only the matching notes, not controllers. SysEx is the same
-        // default now that Sequence has that field: packets stay on the source clip. Full SysEx
-        // split/trim/heal is storytold/soundcraft#1618.
+        // Note-split copies only the matching notes, not controllers or SysEx: packets stay on the
+        // source clip. (Split, trim, Merge MIDI and consolidate re-anchor packets to the new clip
+        // start.)
         nc.content = ClipContent::Midi { sequence: soundcraft_midi::Sequence { notes: hit, ctrls: Vec::new(), sysex: Vec::new() } };
         crate::edit::place_clip(s, nt, nc);
     }
@@ -965,7 +965,7 @@ mod tests {
     }
 
     /// Note-split copies only the notes in the pitch range. SysEx already on the clip stays there;
-    /// the new clip's sysex list is empty (storytold/soundcraft#1618 owns split/trim of packets).
+    /// the new clip's sysex list is empty.
     #[test]
     fn note_split_leaves_sysex_on_the_source_clip() {
         let (mut e, t) = midi_engine();
