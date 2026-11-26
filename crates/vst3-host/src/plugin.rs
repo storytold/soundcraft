@@ -50,7 +50,8 @@ pub struct Vst3Plugin {
     program_ids: [Option<u32>; MIDI_CHANNELS],
     program_steps: [i32; MIDI_CHANNELS],
     program_times: Vec<u32>,
-    /// Controller points for the next block: (time, param id, normalized value). Bounded.
+    /// Controller points for the next block: (time, param id, normalized value, arrival order),
+    /// sorted by time and then arrival. Bounded.
     controls: Vec<(u32, u32, f64, usize)>,
     inputs: BusBuffers,
     outputs: BusBuffers,

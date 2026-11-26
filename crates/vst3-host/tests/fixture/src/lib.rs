@@ -10,7 +10,10 @@
 //! - "Fixture Synth" (`Instrument|Synth`): a single-component instrument (the component is also
 //!   its edit controller). No audio input, one stereo output, one event input; every output
 //!   sample is the velocity of the held note (sample-accurate), 0 when none. Poly pressure, and
-//!   MIDI CC 7 through `IMidiMapping` (hidden parameter 1), set it to their value too.
+//!   MIDI CC 7 through `IMidiMapping` (hidden parameter 1), set it to their value too. On channel
+//!   1, Program Change (controller 130) maps to the hidden Program Change parameter 2000 with 8
+//!   programs: each sets the output to 10 + 7 × its normalized value, and the last one outputs the
+//!   project time instead (samples on the left channel, quarter notes on the right).
 //! - "Fixture Wide 16x64", "Fixture Wide 32 buses", "Fixture Wide 65 buses", "Fixture Wide 65
 //!   channels" (`Fx`): effects advertising wide layouts (16 buses of 64 channels, 32 and 65 buses
 //!   of 2 channels, one bus of 65 channels per direction), through `getBusInfo` only. `process` writes 1.0 into every channel
