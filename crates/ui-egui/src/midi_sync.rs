@@ -67,12 +67,20 @@ impl MidiSync {
 
     /// Remember the native port behind each label Beat Clock, MIDI Time Code or a track uses, the
     /// first time it opens and when its device came back under a new native ID (see
-    /// `soundcraft_playback` port assignment).
+    /// `soundcraft_playback` port assignment), and the labels the output worker bound beside it
+    /// for other ports of the same name ("DIN (2)" beside "DIN"): saved too, a twin never takes
+    /// the label of an unplugged port after a restart. A label already saved that nothing uses
+    /// is left as it is.
     fn bind_used(&mut self, available: BTreeMap<String, String>, used: &BTreeSet<String>, mtc: Option<&str>) {
         for (label, id) in available {
-            let wanted = used.contains(&label) || self.ports.contains_key(&label) || mtc == Some(label.as_str());
-            if wanted && valid_port(&id) && (self.port_ids.contains_key(&label) || self.port_ids.len() < MAX_SYNC_PORTS) {
+            let room = self.port_ids.contains_key(&label) || self.port_ids.len() < MAX_SYNC_PORTS;
+            if !valid_port(&id) || !room {
+                continue;
+            }
+            if used.contains(&label) || self.ports.contains_key(&label) || mtc == Some(label.as_str()) {
                 self.port_ids.insert(label, id);
+            } else {
+                self.port_ids.entry(label).or_insert(id);
             }
         }
     }
@@ -464,6 +472,17 @@ mod tests {
         assert_eq!(compensation(true, false, true, false), (false, false), "nothing to say when no track plays to a port");
         let _pt = crate::localization::enter(crate::localization::Language::PortugueseBrazil);
         assert_ne!(crate::localization::text(UNTIMED), UNTIMED, "translated");
+    }
+
+    #[test]
+    fn the_same_name_ports_bound_beside_a_used_one_are_saved_too() {
+        let mut sync = MidiSync::default();
+        let opened = BTreeMap::from([("DIN".to_string(), "a".to_string()), ("DIN (2)".to_string(), "b".to_string())]);
+        sync.bind_used(opened, &BTreeSet::from(["DIN".to_string()]), None);
+        assert_eq!(sync.port_ids.get("DIN (2)").map(String::as_str), Some("b"), "the twin's label is kept apart");
+        // A saved label no track uses is not moved by a later binding.
+        sync.bind_used(BTreeMap::from([("DIN (2)".to_string(), "c".to_string())]), &BTreeSet::new(), None);
+        assert_eq!(sync.port_ids["DIN (2)"], "b");
     }
 
     #[test]
