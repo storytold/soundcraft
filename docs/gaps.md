@@ -55,7 +55,8 @@ When you close a gap, delete its entry (or shrink it) in the same PR, and bump t
 - **Done (2026-11-24):** latency reporting: the Playback Engine, `ui.audio_device` and
   `setup.playback_engine` show the input and output latency cpal reports per stream. ASIO reports
   the driver's figures; WASAPI shared under-reports (an RME UFX reported 49 ms for a measured 79 ms
-  round trip); Core Audio is not yet verified.
+  round trip); Core Audio reports the buffer plus the device latency and safety offset each way (an RME
+  UFX through a cable: 622 samples measured, 623 reported at 256 frames).
 - **Missing:** routing to physical channels (I/O Setup), one duplex stream on one clock (input and
   output are still separate cpal streams), record-offset compensation, ASIO
   in official builds (owner decision: Steinberg's SDK is proprietary or GPLv3), JACK, and
