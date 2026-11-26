@@ -51,6 +51,7 @@ mod save_as_replace;
 mod save_changes;
 mod scroll_into_view;
 mod send_window;
+mod session_view_focus;
 mod shared_controls;
 mod shortcuts;
 mod side_lists_access;
