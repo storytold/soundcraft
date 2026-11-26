@@ -17,7 +17,8 @@
 //! inspect, command or screenshot after the gesture it follows.
 
 use crate::SoundApp;
-use craft_ui::capture::CaptureSlot;
+use crate::capture::CaptureSlot;
+use craft_ui::runtime::windows::WindowHost;
 use serde_json::{Value, json};
 use std::sync::mpsc::{Receiver, Sender, channel};
 use web_time::Instant;
@@ -36,7 +37,7 @@ impl ControlRequest {
 }
 
 /// One admitted `ui.screenshot` request. The app owns the strong completion slot; the callback the
-/// renderer receives holds only a weak reference to it (see `craft_ui::capture`).
+/// renderer receives holds only a weak reference to it (see `crate::capture`).
 pub(crate) struct PendingShot {
     token: u64,
     /// Taken once the single reply (success, timeout, cancellation or failure) was sent.
@@ -278,9 +279,32 @@ pub(crate) struct GestureAck {
     response: Value,
 }
 
+/// A `ui.key` request whose reply waits for the framework's injected input to run: the runtime owns the key's path
+/// (it takes keys such as Escape out of egui's event list), so only its own idle signal says the key was delivered.
+pub(crate) struct InjectedAck {
+    deadline: Instant,
+    reply: Option<Sender<Value>>,
+    response: Value,
+}
+
 /// True while a scripted gesture has events waiting or an applied batch still needs acknowledging.
 pub(crate) fn gesture_pending(app: &SoundApp) -> bool {
-    !app.gesture_acks.is_empty() || !app.synthetic.is_empty() || app.synthetic_batch.is_some()
+    !app.gesture_acks.is_empty() || !app.synthetic.is_empty() || app.synthetic_batch.is_some() || !app.injected_acks.is_empty()
+}
+
+/// Reply to every queued `ui.key` once the framework's injected input has run, asked at the end of the pass that ran
+/// the key (a pass egui repeats does not count).
+pub(crate) fn injected_settled(app: &mut SoundApp, ctx: &egui::Context) {
+    if app.injected_acks.is_empty() || !WindowHost::of(ctx).injected_idle_at_pass_end() {
+        return;
+    }
+    for mut ack in std::mem::take(&mut app.injected_acks) {
+        if let Some(tx) = ack.reply.take() {
+            let _ = tx.send(ack.response);
+        }
+    }
+    // The next request queued behind this key needs a logic tick to be drained now that the barrier is gone.
+    ctx.request_repaint();
 }
 
 /// Count one delivered batch against the front gesture. Batches never straddle requests (a key
@@ -307,8 +331,16 @@ pub(crate) fn synthetic_delivered(app: &mut SoundApp, delivered: usize) {
 /// A gesture that cannot reach a UI pass (a host that never paints) must not wedge every later
 /// control request. Cancel the whole pending gesture chain: FIFO means no later request can run
 /// while an earlier undelivered click is still waiting.
-pub(crate) fn expire_gestures(app: &mut SoundApp) {
+pub(crate) fn expire_gestures(app: &mut SoundApp, ctx: &egui::Context) {
     let now = app.clock_now();
+    if app.injected_acks.iter().any(|ack| now >= ack.deadline) {
+        WindowHost::of(ctx).withdraw_injected(egui::ViewportId::ROOT);
+        for mut ack in std::mem::take(&mut app.injected_acks) {
+            if let Some(tx) = ack.reply.take() {
+                let _ = tx.send(err("synthetic input was not delivered"));
+            }
+        }
+    }
     if !app.gesture_acks.iter().any(|ack| now >= ack.deadline) {
         return;
     }
@@ -544,12 +576,16 @@ fn handle(app: &mut SoundApp, ctx: &egui::Context, req: &ControlRequest) -> Opti
         "ui.key" => {
             let name = p.get("key").and_then(Value::as_str).unwrap_or("");
             let Some(key) = key_from(name) else { return Some(err(format!("unknown key `{name}`"))) };
-            let m = mods(p);
-            let events = vec![
-                egui::Event::Key { key, physical_key: None, pressed: true, repeat: false, modifiers: m },
-                egui::Event::Key { key, physical_key: None, pressed: false, repeat: false, modifiers: m },
-            ];
-            return queue_reply(app, req, events, json!({}));
+            let Some(key) = craft_keymap::Key::from_egui(key) else { return Some(err(format!("key `{name}` has no keymap key"))) };
+            let mods = craft_keymap::Mods::from_egui(&mods(p), craft_keymap::egui::platform(ctx));
+            // The framework's injected input carries the key through its own stages and says when it has run.
+            WindowHost::of(ctx).inject_key(egui::ViewportId::ROOT, key, mods, false);
+            app.injected_acks.push_back(InjectedAck {
+                deadline: app.clock_now() + GESTURE_TIMEOUT,
+                reply: Some(req.reply.clone()),
+                response: ok(json!({})),
+            });
+            return None;
         }
         "ui.text" => {
             let t = p.get("text").and_then(Value::as_str).unwrap_or("");

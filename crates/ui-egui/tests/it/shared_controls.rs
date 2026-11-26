@@ -105,13 +105,14 @@ fn tool_and_record_buttons_handle_keyboard_disabled_state_and_cancelled_clicks()
 #[test]
 fn toolbar_keyboard_activation_changes_tools_without_transport_or_marker_actions() {
     let app = SoundApp::new(soundcraft_engine::Engine::default(), None, Services::default());
-    let mut h = Harness::builder().with_size(vec2(1600.0, 1000.0)).build_ui_state(
-        |ui, app: &mut SoundApp| {
-            app.logic(&ui.ctx().clone());
-            app.ui(ui);
-        },
-        app,
-    );
+    let mut h =
+        Harness::builder().with_context_setup(soundcraft_ui_egui::framework::install_headless).with_size(vec2(1600.0, 1000.0)).build_ui_state(
+            |ui, app: &mut SoundApp| {
+                app.logic(&ui.ctx().clone());
+                app.ui(ui);
+            },
+            app,
+        );
     h.run_steps(5);
     h.get_by_label("Trim (F6)").click();
     h.run_steps(3);
@@ -138,13 +139,14 @@ fn toolbar_keyboard_activation_changes_tools_without_transport_or_marker_actions
 fn track_record_button_arms_the_track_without_starting_transport() {
     let mut app = SoundApp::new(soundcraft_engine::Engine::default(), None, Services::default());
     app.run("track.new", serde_json::json!({"name": "Voice"})).unwrap();
-    let mut h = Harness::builder().with_size(vec2(1600.0, 1000.0)).build_ui_state(
-        |ui, app: &mut SoundApp| {
-            app.logic(&ui.ctx().clone());
-            app.ui(ui);
-        },
-        app,
-    );
+    let mut h =
+        Harness::builder().with_context_setup(soundcraft_ui_egui::framework::install_headless).with_size(vec2(1600.0, 1000.0)).build_ui_state(
+            |ui, app: &mut SoundApp| {
+                app.logic(&ui.ctx().clone());
+                app.ui(ui);
+            },
+            app,
+        );
     h.run_steps(5);
     h.get_by_label_contains("Record enable").click();
     h.run_steps(3);
@@ -167,13 +169,18 @@ fn shared_controls_visuals() {
     std::fs::create_dir_all(&directory).unwrap();
     for scale in [1.0, 2.0] {
         let app = SoundApp::new(soundcraft_engine::demo::demo_engine(), None, Services::default());
-        let mut h = Harness::builder().with_size(vec2(1600.0, 1000.0)).with_pixels_per_point(scale).wgpu().build_ui_state(
-            |ui, app: &mut SoundApp| {
-                app.logic(&ui.ctx().clone());
-                app.ui(ui);
-            },
-            app,
-        );
+        let mut h = Harness::builder()
+            .with_context_setup(soundcraft_ui_egui::framework::install_headless)
+            .with_size(vec2(1600.0, 1000.0))
+            .with_pixels_per_point(scale)
+            .wgpu()
+            .build_ui_state(
+                |ui, app: &mut SoundApp| {
+                    app.logic(&ui.ctx().clone());
+                    app.ui(ui);
+                },
+                app,
+            );
         h.input_mut().max_texture_side = Some(8192);
         for (name, size) in [("normal", vec2(1600.0, 1000.0)), ("narrow", vec2(1000.0, 700.0))] {
             h.set_size(size);

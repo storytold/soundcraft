@@ -17,13 +17,17 @@ fn harness(tracks: usize) -> Harness<'static, SoundApp> {
     // Uneven heights, so an offset counted as "n rows" can't pass for the real one.
     app.run("track.height", json!({"tracks": ["T02"], "height": "large"})).unwrap();
     app.run("track.height", json!({"tracks": ["T04"], "height": "small"})).unwrap();
-    let mut h = Harness::builder().with_size(vec2(SIZE.0, SIZE.1)).with_step_dt(1.0 / 60.0).build_ui_state(
-        |ui, app: &mut SoundApp| {
-            app.logic(&ui.ctx().clone());
-            app.ui(ui);
-        },
-        app,
-    );
+    let mut h = Harness::builder()
+        .with_context_setup(soundcraft_ui_egui::framework::install_headless)
+        .with_size(vec2(SIZE.0, SIZE.1))
+        .with_step_dt(1.0 / 60.0)
+        .build_ui_state(
+            |ui, app: &mut SoundApp| {
+                app.logic(&ui.ctx().clone());
+                app.ui(ui);
+            },
+            app,
+        );
     h.run_steps(4);
     h
 }

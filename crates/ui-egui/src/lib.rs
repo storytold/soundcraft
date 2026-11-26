@@ -13,19 +13,23 @@ pub const UPDATE_APP: craft_update::app::App = craft_update::app::App {
     ..craft_update::suite::SOUNDCRAFT
 };
 
+pub mod aaf_import;
 pub mod appearance;
 pub mod bounce;
+pub mod channel_titles;
 pub mod control;
 pub mod credits;
 pub mod dialogs;
 pub mod docking;
 pub mod edit_window;
 pub mod fonts;
+pub mod framework;
 pub mod icons;
 pub mod import;
 pub mod localization;
 pub mod menus;
 pub mod mix_window;
+pub mod os_window;
 pub mod palette;
 pub mod panels;
 pub mod preferences;
@@ -59,13 +63,32 @@ pub use panels::video_window;
 pub use panels::windows;
 
 mod app;
+mod capture;
 mod services;
 mod state;
 
 #[cfg(test)]
+mod exit_hook_tests;
+
+#[cfg(test)]
 use app::{automation_step_due, editor_changes, editor_states_due, failed_plugin_status};
+pub use channel_titles::{os_title, os_title_with_section};
 pub use services::Services;
 pub use state::{DragSource, MainWindow};
+
+/// The version line this build reports: the app binary sets the compiled identity once at start-up
+/// (a Nightly build's exact feed version), so About and diagnostics never guess it.
+static BUILD_VERSION: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+
+/// Record the compiled version. Later calls are ignored: the first value is the process's build.
+pub fn set_build_version(version: String) {
+    let _ = BUILD_VERSION.set(version);
+}
+
+/// The compiled version, or the crate's own when no binary recorded one (tests, the web build).
+pub fn build_version() -> &'static str {
+    BUILD_VERSION.get().map_or(env!("CARGO_PKG_VERSION"), String::as_str)
+}
 
 /// UI state (serde, so agents can read and set it).
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -156,6 +179,8 @@ pub struct UiState {
     pub window_size: [f32; 2],
     pub window_maximized: bool,
     pub ui_scale: f32,
+    /// MIDI input ports switched off in Setup, by name (all others are used).
+    pub midi_inputs_off: Vec<String>,
 }
 
 impl Default for UiState {
@@ -224,6 +249,7 @@ impl Default for UiState {
             window_size: [1600.0, 1000.0],
             window_maximized: false,
             ui_scale: 1.0,
+            midi_inputs_off: Vec::new(),
         }
     }
 }
@@ -288,6 +314,19 @@ pub struct SoundApp {
     /// Punch range to trim the take to (pre/post-roll recordings).
     punch: Option<Range>,
     recorder_failed: bool,
+    /// MIDI device input, opened on the first frame of an app that has an audio engine.
+    pub midi_inputs: Option<soundcraft_playback::midi::MidiInputs>,
+    /// When the MIDI ports were last looked for (app uptime, seconds).
+    midi_scan_at: f64,
+    /// MIDI played during the current record pass.
+    midi_take: Vec<soundcraft_playback::midi::RecordedMidi>,
+    /// Recorded MIDI events of the current pass that were dropped before they got here.
+    midi_take_lost: u64,
+    /// The MIDI input each record-enabled track had when the current pass started: the pass
+    /// records from it even if the track is switched to another device meanwhile.
+    midi_take_inputs: Vec<(TrackId, soundcraft_model::Route)>,
+    /// The loop the transport is playing round, when it was started with one.
+    play_loop: Option<Range>,
     /// Input this take lost to a slow disk, as last reported (ms).
     lost_shown: u64,
     /// Where the takes being recorded go, autosaved with the session so a crash can't lose them.
@@ -313,6 +352,7 @@ pub struct SoundApp {
     pub preset_dir: Option<std::path::PathBuf>,
     last_autosave: Option<std::time::Instant>,
     pub dialogs: dialogs::Dialogs,
+    pub aaf_import: aaf_import::ImportState,
     pub(crate) updates_rt: updates_ui::Runtime,
     pub meters: HashMap<TrackId, MeterDisplay>,
     pub main_meter: MeterDisplay,
@@ -340,6 +380,8 @@ pub struct SoundApp {
     synthetic_pointer_active: bool,
     /// Cancel that press before the next egui input pass, without a release click/drop.
     cancel_synthetic_pointer: bool,
+    /// `ui.key` requests waiting for the framework's injected input to run.
+    injected_acks: VecDeque<control::InjectedAck>,
     /// A key/text batch crossed its deadline after [`Self::raw_input_hook`] had already appended it
     /// to the pass. Do not dispatch that stale copy through shortcuts or widgets.
     cancel_synthetic_keys: bool,
@@ -409,6 +451,12 @@ pub struct SoundApp {
     theme_applied: Option<bool>,
     /// Last panel host context, used to cancel renderer-owned gestures on explicit replacement.
     pub(crate) docking_context: Option<egui::Context>,
+    /// The workspaces and panel specs the Edit and Mix docks show.
+    pub(crate) docks: docking::LiveDocks,
+    /// The framework dialogs (update check and prompt); they run once per pass after the app's own UI.
+    pub framework_dialogs: craft_ui::dialog::DialogHost,
+    /// Who SoundCraft is to the framework's components.
+    pub(crate) framework_host: std::sync::Arc<craft_host::Host>,
     /// Transport simulation when there is no player (tests, offscreen renders).
     sim: Option<(Samples, Option<Samples>, Option<Range>)>,
     /// When Record last found nothing to record on, and why: the Record buttons show it for a moment.
