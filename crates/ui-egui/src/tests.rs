@@ -1712,3 +1712,22 @@ fn assert_history_unchanged(
     assert_eq!(app.engine.undo_history(), history);
     assert_eq!(&app.engine.journal, journal);
 }
+
+/// A key held in the MIDI Keyboard window is let go when the window is hidden: a hidden tick runs
+/// no UI pass that would see the button come up.
+#[test]
+fn a_hidden_tick_lets_go_of_the_midi_keyboard_key() {
+    let ctx = egui::Context::default();
+    let mut app = super::SoundApp::new(soundcraft_engine::Engine::default(), None, super::Services::default());
+    app.midi_inputs = Some(soundcraft_playback::midi::MidiInputs::with_port_names(Vec::new(), Vec::new()));
+    ctx.data_mut(|d| d.insert_temp(egui::Id::unique("midi-keyboard-held"), Some(48u8)));
+    let rect = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1400.0, 900.0));
+    let hidden = egui::ViewportInfo { minimized: Some(true), ..Default::default() };
+    let raw = egui::RawInput { screen_rect: Some(rect), viewports: [(egui::ViewportId::ROOT, hidden)].into_iter().collect(), ..Default::default() };
+    let _ = ctx.run_logic(&raw, |ctx| app.logic(ctx));
+    let (count, last) = app.midi_inputs.as_ref().unwrap().feed().activity();
+    let last = last.expect("a note off arrived");
+    assert_eq!((count, last.status & 0xF0, last.data1), (1, 0x80, 48));
+    let _ = ctx.run_logic(&raw, |ctx| app.logic(ctx));
+    assert_eq!(app.midi_inputs.as_ref().unwrap().feed().activity().0, 1, "let go once");
+}
