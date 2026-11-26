@@ -80,7 +80,9 @@ When you close a gap, delete its entry (or shrink it) in the same PR, and bump t
   (`crates/playback/src/sync_output.rs`, `track_midi.rs`). MIDI Track Offsets and delay
   compensation apply; start and locate chase controllers and programs; Stop sends Note-Offs,
   pedal up and All Notes Off; MIDI-track mute, solo and mute automation silence the output;
-  All MIDI Notes Off reaches the ports; a missing port reads "unavailable", on the selector and in the status line with the tracks named. User guide:
+  All MIDI Notes Off reaches the ports; routing changes while playing lift a pedal left behind
+  and chase the arriving track; a missing port reads "unavailable" on the selector and in the
+  status line, with its tracks named, and an unplugged port is noticed and reopened. User guide:
   [midi-output.md](midi-output.md). Played on macOS to a Kurzweil PC1X through a Roland UM-ONE and
   to the IAC bus; **not yet on Linux or Windows**.
 - **Missing:** MIDI Thru to external gear, note chasing, a default program and bank per track,
