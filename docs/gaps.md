@@ -59,7 +59,7 @@ When you close a gap, delete its entry (or shrink it) in the same PR, and bump t
 - **Missing:** routing to physical channels (I/O Setup), one duplex stream on one clock (input and
   output are still separate cpal streams), latency reporting and record-offset compensation, ASIO
   in official builds (owner decision: Steinberg's SDK is proprietary or GPLv3), JACK, and
-  verification on macOS and Linux. The mix still runs in fixed 512-sample blocks.
+  verification on Linux. The mix still runs in fixed 512-sample blocks.
 - **Evidence:** code above; Playback Engine window says "Mix block size: 512 samples"; issue #42
   (no input device selection, forced monitoring feedback with virtual routing).
 - **Impact:** blocks tracking with any multichannel interface; latency makes overdubs hard.
