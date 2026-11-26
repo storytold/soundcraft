@@ -270,11 +270,13 @@ pub fn menu_bar(app: &mut SoundApp, ui: &mut egui::Ui) {
     let t = crate::theme::Tokens::current();
     let menu_entries_enabled = !app.ui.show_preferences;
     let preferences_enabled = preferences_menu_enabled(app);
+    // The menu titles, in order, and whether each one's menu is open, for the bar's keyboard (`menu_bar_keys`).
+    let mut titles: Vec<(egui::Response, bool)> = Vec::new();
     egui::Panel::top("menu_bar").exact_size(24.0).frame(egui::Frame::NONE.fill(t.menu_bar).inner_margin(egui::Margin::symmetric(8, 2))).show(
         ui,
         |ui| {
             egui::MenuBar::new().ui(ui, |ui| {
-                ui.menu_button(crate::localization::text("SoundCraft"), |ui| {
+                let app_menu = ui.menu_button(crate::localization::text("SoundCraft"), |ui| {
                     ui.add_enabled_ui(menu_entries_enabled, |ui| {
                         if ui.button(crate::localization::text("About SoundCraft")).clicked() {
                             app.ui.show_about = true;
@@ -298,9 +300,10 @@ pub fn menu_bar(app: &mut SoundApp, ui: &mut egui::Ui) {
                         }
                     });
                 });
+                titles.push((app_menu.response, app_menu.inner.is_some()));
                 let extra = ui_aliases();
                 for root in tree() {
-                    ui.menu_button(crate::localization::text(&root.label), |ui| {
+                    let menu = ui.menu_button(crate::localization::text(&root.label), |ui| {
                         scrolling(ui, |ui| {
                             ui.add_enabled_ui(menu_entries_enabled, |ui| {
                                 for c in &root.children {
@@ -333,6 +336,7 @@ pub fn menu_bar(app: &mut SoundApp, ui: &mut egui::Ui) {
                             })
                         });
                     });
+                    titles.push((menu.response, menu.inner.is_some()));
                 }
                 let title = format!(
                     "{}{}  —  {}",
@@ -350,6 +354,76 @@ pub fn menu_bar(app: &mut SoundApp, ui: &mut egui::Ui) {
             });
         },
     );
+    menu_bar_keys(ui.ctx(), &titles);
+}
+
+/// The menu bar's keyboard, as on Windows and Linux: a lone Alt moves the focus to the first menu title, or back to
+/// where it was while the bar has it; Left and Right move along the titles (egui's arrow focus) and go round at the
+/// ends; Escape closes an open menu back to its title, and on a title gives the focus back, as choosing an item does. The
+/// titles are no Tab stops. F10 stays the Pencil tool (Pro Tools' key), so only Alt reaches the bar. Not on a Mac.
+fn menu_bar_keys(ctx: &egui::Context, titles: &[(egui::Response, bool)]) {
+    use craft_ui::runtime::focus::{FocusTarget, give_back_bar, host_press_only, request, take_for_bar};
+    // A Mac reaches its menus by its own keys, not a lone Option: there the titles stay Tab stops and Option does nothing.
+    if ctx.os().is_mac() {
+        return;
+    }
+    let bar = egui::Id::unique("soundcraft menu bar");
+    let (was_title, was_open, escaped) = (bar.with("focused title"), bar.with("open menu"), bar.with("escaped menu"));
+    for (title, _) in titles {
+        host_press_only(ctx, title.id);
+    }
+    let on_title = titles.iter().position(|(title, _)| title.has_focus());
+    let open = titles.iter().position(|(_, open)| *open);
+    // The title that had the focus, and the menu that was open, at the end of the last pass: egui lets go of the focus
+    // on Escape, and moves it for an arrow, before this runs.
+    let (before, open_before) = ctx.data(|d| (d.get_temp::<usize>(was_title), d.get_temp::<usize>(was_open)));
+    let focus_title = |at: usize| {
+        if let Some((title, _)) = titles.get(at) {
+            // In place of egui's own move for the same key, as egui's menus do.
+            ctx.memory_mut(|m| m.move_focus(egui::FocusDirection::None));
+            request(ctx, FocusTarget::Id(title.id));
+        }
+    };
+    if craft_ui::runtime::keys::take_alt_tap(ctx, bar) {
+        if on_title.is_some() || open.is_some() {
+            give_back_bar(ctx);
+        } else if let Some((first, _)) = titles.first() {
+            take_for_bar(ctx, bar, FocusTarget::Id(first.id));
+        }
+    } else if let Some(closed) = open_before.filter(|_| open.is_none()) {
+        // A menu closed: by Escape (in this pass or the one before, as the menu closes after the key), back to its title;
+        // by a choice, which leaves nothing focused, back to where the keyboard was before the bar took it.
+        if crate::framework::escape_pressed(ctx) || ctx.data(|d| d.get_temp::<bool>(escaped).unwrap_or(false)) {
+            focus_title(closed);
+        } else if ctx.memory(|m| m.focused().is_none()) {
+            give_back_bar(ctx);
+        }
+    } else if open.is_none() {
+        // egui's arrow focus moves to the neighbouring title; from the first or the last one the arrows go round.
+        let (left, right) = ctx.input(|i| (i.key_pressed(egui::Key::ArrowLeft), i.key_pressed(egui::Key::ArrowRight)));
+        let last = titles.len().saturating_sub(1);
+        match before {
+            Some(0) if left => focus_title(last),
+            Some(at) if at == last && right => focus_title(0),
+            Some(_) if crate::framework::escape_pressed(ctx) => {
+                give_back_bar(ctx);
+            }
+            _ => {}
+        }
+    }
+    let now = titles.iter().position(|(title, _)| title.has_focus());
+    let escaping = open.is_some() && crate::framework::escape_pressed(ctx);
+    ctx.data_mut(|d| {
+        d.insert_temp(escaped, escaping);
+        for (key, value) in [(was_title, now), (was_open, open)] {
+            if let Some(at) = value {
+                d.insert_temp(key, at);
+            } else {
+                d.remove::<usize>(key);
+            }
+        }
+    });
+    craft_ui::runtime::keys::claim_alt_tap(ctx, bar);
 }
 
 /// A menu taller than the window scrolls instead of running off its bottom edge (#1482).
