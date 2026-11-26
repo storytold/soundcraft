@@ -1,7 +1,8 @@
 # MIDI output: playing external synths and sound modules
 
 MIDI and instrument tracks can play their MIDI clips to a hardware synth, a sound module or
-another program through a MIDI output port.
+another program through a MIDI output port, and play what you play on a keyboard to it live
+(MIDI Thru, section 5).
 
 **Where it works.** Linux (ALSA sequencer), macOS (CoreMIDI) and Windows (WinMM). It has been
 played on macOS, to a hardware synth through a USB MIDI interface and to the IAC bus; on Linux
@@ -97,25 +98,64 @@ MIDI output to the synth's port and channel and its audio input to the synth's r
   for each sounding note, then sustain pedal up, All Notes Off and All Sound Off on all 16
   channels. Playback carries on.
 
-## 5. Troubleshooting
+## 5. MIDI Thru: playing the synth from a keyboard
+
+Record-enable the track (or switch its input monitor on) and play: what the track's MIDI input
+takes goes out on its MIDI output at once, stopped or playing, so you hear the external synth as
+you play it. This is what Pro Tools calls MIDI Thru (Options › MIDI Thru, on by default).
+
+- Everything goes out on the track's **output channel**, whatever channel the keyboard sends on.
+  The track's MIDI input selector decides which devices and channels it takes (see
+  [midi-input.md](midi-input.md)).
+- Notes, the sustain pedal and other controllers, pitch bend, aftertouch and program changes go
+  through. System exclusive and clock do not.
+- Thru goes out as soon as the message arrives: MIDI Track Offsets and the delay compensation
+  preference do not apply to it (they are for what the clips play), as in Pro Tools.
+- Several record-enabled tracks that take the same input each send it to their own output. Two
+  tracks on the same port and channel send it there once.
+- The track's clips keep playing while you play along (they are merged, as on an instrument track).
+- What you play is recorded as usual whether MIDI Thru is on or off. The MIDI Input Filter acts
+  on the recording only.
+- **Options › MIDI Thru** switches thru off for every track: the keyboard then plays neither the
+  instruments nor the external outputs.
+- Notes you hold through thru are ended (Note-Off, then sustain pedal up) when the track is taken
+  out of record or its monitor goes off, its output or input is changed, it is made inactive or
+  deleted, a MIDI track is muted (or soloed out), MIDI Thru is switched off, the keyboard is
+  unplugged, the transport stops, or with **Event › All MIDI Notes Off**. Letting go of the key
+  afterwards sends nothing more.
+- A **mute** on an instrument track acts on its audio only, as for its clips: its MIDI output
+  keeps playing what you play.
+- **MIDI loops**: when the output feeds back into an input (an IAC bus used as both, or a device
+  that echoes what it receives), each message that comes back within 20 ms of being sent is
+  dropped, so it is neither played again nor recorded twice. `ui.inspect` counts them
+  (`midi_output_status.thru.echoes_dropped`).
+
+## 6. Troubleshooting
 
 - **Doubled or stuck notes on a keyboard synth**: switch its Local Control off if you also play its
-  own keys while SoundCraft plays it.
+  own keys while SoundCraft plays it, and when you play it through MIDI Thru from its own keys
+  (Pro Tools Reference Guide p.811): otherwise each key sounds twice.
 - **Windows**: a WinMM port can usually be opened by one program at a time. Close other programs
   that use the port.
 - **A port is missing from the list**: SoundCraft lists ports every two seconds. A port whose driver
   gives two ports the same identity is not offered, because SoundCraft could not tell them apart.
 
-## 6. Automation interface
+## 7. Automation interface
 
 - `track.midi_output {tracks?, output: "MIDI:<channel 1-16>:<device>" | "none"}` sets a track's
   output; see [control-protocol.md](control-protocol.md).
 - `ui.midi_output_compensation {value?: bool}` reads or sets the delay compensation preference.
+- `options.midi_thru {value?: bool}` sets Options › MIDI Thru, or toggles it without `value`;
+  the answer is the new state. It is on by default.
 - `ui.inspect` reports the ports (`midi_output_ports`), each track's output (`midi_outputs`) and
-  the output worker's diagnostics (`midi_output_status`, `midi_output_error`).
+  the output worker's diagnostics (`midi_output_status`, `midi_output_error`);
+  `midi_output_status.thru` has the messages sent through, the echoes dropped and the time from
+  a message's arrival to its hand-off to the port (`latency_p50_us`, `latency_p95_us`,
+  `latency_max_us`).
 
 ## Not there yet
 
-MIDI Thru to external gear, a default program and bank per track, note chasing, more than one
-destination per track, a separate MIDI mute and solo on instrument tracks, the Global MIDI
-Playback Offset, and device names of your own. See [gaps.md](gaps.md), G-02.
+A default program and bank per track, note chasing, more than one destination per track, a
+separate MIDI mute and solo on instrument tracks, the Global MIDI Playback Offset, device names
+of your own, system exclusive through MIDI Thru, and Real-Time Properties on what MIDI Thru
+plays. See [gaps.md](gaps.md), G-02.
