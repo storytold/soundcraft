@@ -23,7 +23,7 @@ Legend: ✅ works · 🟡 partial · ❌ missing.
 | Hardware I/O mapping (I/O Setup to physical channels) | ✅ | 🟡 multichannel output in order; no per-channel map | 🟡 | 🟡 | 🟡 | ❌ |
 | Low-latency monitoring | ✅ | ❌ (`options.low_latency_monitoring` is a stored flag) | ❌ | ❌ | ❌ | ❌ |
 | Latency reporting and record offset compensation | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ |
-| Sample rate follows the session; resample when it can't | ✅ (switches device) | 🟡 opens at the chosen rate, also on an interface that offers only its full width (RME UFX at 44.1 kHz asked for 48 kHz); resamples when no rate fits (input pitch bug fixed, #28) | 🟡 | 🟡 | 🟡 | 🟡 |
+| Sample rate follows the session; resample when it can't | ✅ (switches device) | 🟡 opens at the chosen rate, also on an interface that offers only its full width (RME UFX at 44.1 kHz asked for 48 kHz); resamples when no rate fits or the device refuses it (input pitch bug fixed, #28) | 🟡 | 🟡 | 🟡 | 🟡 |
 | Avid HDX / HD Native DSP, Hybrid Engine DSP mode | ✅ | ❌ (out of reach: Avid hardware) | ❌ | ❌ | ❌ | ❌ |
 | Disk allocation / record to disk | ✅ | ✅ takes written to disk as they record (#84); a long take goes on in a new file (#888) | 🟡 same recorder (not yet verified on Windows) | 🟡 same recorder (input not yet verified) | ❌ no recording | ❌ |
 

@@ -56,7 +56,9 @@ When you close a gap, delete its entry (or shrink it) in the same PR, and bump t
   with more channels than the mix, instead of the rate the device happens to run at. On macOS an
   RME Fireface UFX lists one 30-channel configuration: asked for 48 kHz while running at 44.1 kHz,
   it opened the output at 44.1 kHz, the input then switched it to 48 kHz and the output stream
-  ended (silent takes, or recording stopped). It now opens at 48 kHz and records.
+  ended (silent takes, or recording stopped). It now opens at 48 kHz and records. When a stream
+  at the chosen rate will not build or start, the device's default configuration is tried before
+  the silent clock, and the mix plays resampled.
 - **Missing:** routing to physical channels (I/O Setup), one duplex stream on one clock (input and
   output are still separate cpal streams), latency reporting and record-offset compensation, ASIO
   in official builds (owner decision: Steinberg's SDK is proprietary or GPLv3), JACK, and
