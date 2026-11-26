@@ -1418,6 +1418,19 @@ mod tests {
     }
 
     #[test]
+    fn a_clip_shorter_than_a_tick_still_receives_what_is_merged_into_it() {
+        let mut e = Engine::default();
+        let t = armed(&mut e, "Keys", "none");
+        let merge = style(false, &[true], MergeRelease::default());
+        record(&mut e, Range::new(0, 1), MidiPass::Linear, &[ev(0, 0, 0xB0, 1, 9)], &merge);
+        let take = record(&mut e, Range::new(0, 1), MidiPass::Linear, &[ev(0, 0, 0xB0, 1, 30)], &merge);
+        assert!(take.clips.is_empty());
+        let clips = e.session().track(t).unwrap().clips();
+        assert_eq!(clips.len(), 1);
+        assert_eq!(midi_of(&clips[0]).ctrls.iter().map(|c| c.value).collect::<Vec<_>>(), [30]);
+    }
+
+    #[test]
     fn a_replacing_pass_punched_into_a_playing_loop_leaves_what_lies_before_the_punch_in() {
         let mut e = Engine::default();
         let t = armed(&mut e, "Keys", "none");

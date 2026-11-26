@@ -116,7 +116,12 @@ pub(super) fn merge_take(
             t.clips()
                 .iter()
                 .filter(|c| matches!(c.content, ClipContent::Midi { .. }) && !c.edit_locked && c.start < range.end && c.end() > range.start)
-                .map(|c| Host { id: c.id, from: ticks(c.start), to: ticks(c.end()), span: c.range() })
+                .map(|c| {
+                    // At least a tick long, as the range is: a clip shorter than a tick still
+                    // takes what is played at its start.
+                    let from = ticks(c.start);
+                    Host { id: c.id, from, to: ticks(c.end()).max(from.saturating_add(1)), span: c.range() }
+                })
                 .collect()
         })
         .unwrap_or_default();
