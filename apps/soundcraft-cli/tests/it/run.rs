@@ -89,6 +89,19 @@ fn version_flags_print_the_long_version_to_stdout() {
     }
 }
 
+/// RFC-0018 rule 1.1: `--version` and `-V` work on every subcommand, print one line on stdout and
+/// return without running it (`mcp` and `app` would otherwise wait on something).
+#[test]
+fn every_subcommand_prints_the_version() {
+    let release = format!("{} ({} {})\n", env!("CARGO_PKG_VERSION"), std::env::consts::OS, std::env::consts::ARCH);
+    for sub in ["info", "convert", "run", "script", "commands", "describe", "app", "mcp", "parity", "plugins"] {
+        for spelling in ["--version", "-V"] {
+            let got = invoke(&[sub, spelling]);
+            assert_eq!((got.code, got.stdout, got.stderr), (0, format!("soundcraft-cli-{sub} {release}"), String::new()), "{sub} {spelling}");
+        }
+    }
+}
+
 #[test]
 fn version_is_not_a_subcommand() {
     assert_usage_error(&invoke(&["version"]), "unrecognized subcommand 'version'");
