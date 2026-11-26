@@ -535,9 +535,16 @@ fn write_rounds(
                 }
             }
         } else if !empty && (r.fresh || !looped) {
+            // A last loop round cut short by Stop replaces only what it covered: the earlier
+            // rounds' material after the stop stays (Replace overwrites "within the record
+            // range", Reference Guide p.823–824).
+            let end = if looped && last { stop } else { range.end };
+            if end <= range.start {
+                continue;
+            }
             latch = merge::Latch::new(style.release);
             let cid = s.new_clip_id();
-            crate::edit::place_clip(s, tid, Clip::midi(cid, name, range.start, range.len(), r.seq.clone()));
+            crate::edit::place_clip(s, tid, Clip::midi(cid, name, range.start, end - range.start, r.seq.clone()));
             out.clips.push(cid);
             changed = true;
         }
@@ -1098,6 +1105,35 @@ mod tests {
         assert_eq!(pitches(&e, a), [vec![62]]);
         assert_eq!(pitches(&e, b), [vec![60]]);
         assert_eq!((e.session().track(a).unwrap().playlists.len(), e.session().track(b).unwrap().playlists.len()), (1, 1));
+    }
+
+    #[test]
+    fn a_replace_round_cut_short_by_stop_keeps_what_the_earlier_round_played_after_the_stop() {
+        let mut e = Engine::default();
+        let t = armed(&mut e, "Keys", "none");
+        let events = [
+            ev(Q / 2, 0, 0x90, 60, 100), // round 1: early and late notes
+            ev(Q, 0, 0x80, 60, 0),
+            ev(3 * Q, 0, 0x90, 72, 100),
+            ev(3 * Q + Q / 4, 0, 0x80, 72, 0),
+            WRAP,
+            ev(Q / 2, 0, 0x90, 62, 100), // round 2, stopped at 1.5 Q: one note
+            ev(Q, 0, 0x80, 62, 0),
+        ];
+        let stop = Q + Q / 2;
+        let pass = MidiPass::Loop { stopped: Some(stop), marked: true };
+        record(&mut e, LOOP, pass, &events, &style(false, &[false], MergeRelease::default()));
+        let track = e.session().track(t).unwrap();
+        let clips: Vec<(Samples, Samples, Vec<u8>)> =
+            track.clips().iter().map(|c| (c.start, c.range().end, midi_of(c).notes.iter().map(|n| n.pitch).collect())).collect();
+        // Round 2 replaces the loop up to the stop; round 1's late note, after the stop, stays.
+        assert_eq!(clips, [(0, stop, vec![62]), (stop, LOOP.end, vec![72])]);
+        // Stopped at the wrap itself: the new round covered nothing and changes nothing.
+        e.run("edit.undo").unwrap();
+        let mut at_wrap = events[..5].to_vec();
+        at_wrap.push(ev(0, 0, 0xB0, 1, 9));
+        record(&mut e, LOOP, MidiPass::Loop { stopped: Some(0), marked: true }, &at_wrap, &style(false, &[false], MergeRelease::default()));
+        assert_eq!(pitches(&e, t), [vec![60, 72]]);
     }
 
     #[test]
