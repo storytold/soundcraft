@@ -4,7 +4,6 @@
 //! ([`catalog::PLACEHOLDERS`]): they are never interactive and say so on hover, as the Preferences
 //! placeholders do.
 
-// Russian translation © 2026 SuperSfera LLC, MIT OR Apache-2.0
 use crate::{MainWindow, SoundApp};
 use serde_json::{Value, json};
 use soundcraft_engine::catalog;

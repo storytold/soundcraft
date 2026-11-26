@@ -1,6 +1,5 @@
 //! Language selection and source-language fallback for UI strings.
 
-// Russian translation © 2026 SuperSfera LLC, MIT OR Apache-2.0
 #[path = "../locales/pt-BR/mod.rs"]
 mod pt_br;
 #[path = "../locales/ru/mod.rs"]
