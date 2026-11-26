@@ -360,17 +360,7 @@ impl TrackMidi {
 
 impl SyncEncoder for TrackMidi {
     fn update(&mut self, b: Presentation, now: Instant, s: &Session, send: &mut dyn FnMut(Instant, &[u8])) -> Option<Instant> {
-        if self.reconnected != 0 {
-            for channel in 0..16u8 {
-                if self.reconnected & (1 << channel) != 0 {
-                    // Pedal up first: All Notes Off leaves notes the pedal holds sounding
-                    // (MIDI 1.0 p.A-5).
-                    send(now, &[0xb0 | channel, 64, 0]);
-                    send(now, &[0xb0 | channel, 123, 0]);
-                }
-            }
-            self.quieting |= std::mem::take(&mut self.reconnected);
-        }
+        self.quiet(&mut |m| send(now, m));
         // Taken on the first update after the loss, whatever it is: a stop or a start in between
         // already restarts the pass, and a later update must not restart it again.
         let relocate = std::mem::take(&mut self.relocate);
@@ -433,6 +423,18 @@ impl SyncEncoder for TrackMidi {
         self.relocate = true;
     }
 
+    /// The quieting after a reopen, sent when the port opens (by the worker) or else at the next
+    /// update: pedal up, then All Notes Off, on each channel to quiet. It counts as sent once
+    /// the worker reports a delivery ([`Self::delivered`]); until then a reset keeps it.
+    fn quiet(&mut self, send: &mut dyn FnMut(&[u8])) {
+        for channel in (0..16u8).filter(|c| self.reconnected & (1 << c) != 0) {
+            // Pedal up first: All Notes Off leaves notes the pedal holds sounding (MIDI 1.0 p.A-5).
+            send(&[0xb0 | channel, 64, 0]);
+            send(&[0xb0 | channel, 123, 0]);
+        }
+        self.quieting |= std::mem::take(&mut self.reconnected);
+    }
+
     /// The quieting after a reopen went out.
     fn delivered(&mut self) {
         self.quieting = 0;
@@ -452,6 +454,10 @@ impl SyncEncoder for TrackMidi {
 
     fn holds(&self, channel: u8, key: u8) -> bool {
         self.count.get(usize::from(channel)).and_then(|keys| keys.get(usize::from(key))).is_some_and(|n| *n > 0)
+    }
+
+    fn holds_pedal(&self, channel: u8) -> bool {
+        self.pedal & (1 << (channel & 0x0f)) != 0
     }
 }
 

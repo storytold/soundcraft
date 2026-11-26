@@ -352,6 +352,9 @@ pub trait SyncEncoder: Send {
         self.reset();
     }
     fn stop(&mut self, _send: &mut dyn FnMut(&[u8])) {}
+    /// The port opened again (after [`Self::reset`]): send now what quiets the device, without
+    /// waiting for a usable presentation, so that it goes out before MIDI Thru plays there.
+    fn quiet(&mut self, _send: &mut dyn FnMut(&[u8])) {}
     /// Everything the last update sent for the present went out to the port: none of it failed.
     fn delivered(&mut self) {}
     /// All MIDI Notes Off: release now whatever this encoder holds on the device. Playback
@@ -364,6 +367,11 @@ pub trait SyncEncoder: Send {
     /// Whether this encoder has a note sounding on `channel` and `key` (MIDI Thru then holds back
     /// its own Note-Off for that key, which would end this one too).
     fn holds(&self, _channel: u8, _key: u8) -> bool {
+        false
+    }
+    /// Whether this encoder left the sustain pedal down on `channel` (MIDI Thru then holds back
+    /// its own pedal up there, which would end this one's notes too).
+    fn holds_pedal(&self, _channel: u8) -> bool {
         false
     }
 }

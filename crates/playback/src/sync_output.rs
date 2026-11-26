@@ -414,6 +414,9 @@ struct Port<C> {
     /// The clips and Thru share a key on a channel: the device hears its Note-Off only when the
     /// last of them lets go, as a device ends notes by key.
     thru_keys: [u128; 16],
+    /// The channels where MIDI Thru has the sustain pedal down, bit `c` for channel `c`. Shared
+    /// with the clips as a key is: the pedal goes up when the last of them lets go of it.
+    thru_pedal: u16,
 }
 /// The channel and key of a Note-Off (or Note-On at velocity 0).
 fn note_off(bytes: &[u8]) -> Option<(u8, u8)> {
@@ -423,9 +426,20 @@ fn note_off(bytes: &[u8]) -> Option<(u8, u8)> {
         _ => None,
     }
 }
-/// Whether MIDI Thru has the key of this clip Note-Off sounding (`keys`, [`Port::thru_keys`]):
-/// the clip's Note-Off is held back, and Thru's own ends the note.
-fn thru_holds(keys: &[u128; 16], bytes: &[u8]) -> bool {
+/// The channel of a sustain pedal message (CC 64) and whether it puts the pedal down (64 or more).
+fn pedal(bytes: &[u8]) -> Option<(u8, bool)> {
+    match bytes {
+        [status, 64, value, ..] if status & 0xf0 == 0xb0 => Some((status & 0x0f, *value >= 64)),
+        _ => None,
+    }
+}
+/// Whether MIDI Thru has the key of this clip Note-Off sounding (`keys`, [`Port::thru_keys`]), or
+/// the pedal of this clip pedal up down (`pedal`, [`Port::thru_pedal`]): the clip's message is
+/// held back, and Thru's own ends the note or lifts the pedal.
+fn thru_holds(keys: &[u128; 16], pedal_down: u16, bytes: &[u8]) -> bool {
+    if let Some((channel, false)) = pedal(bytes) {
+        return pedal_down & (1 << channel) != 0;
+    }
     note_off(bytes).is_some_and(|(channel, key)| keys[usize::from(channel)] & (1u128 << key) != 0)
 }
 /// Most future events a port holds. When full, an event that is not a release makes room; when
@@ -558,7 +572,7 @@ impl<C: SyncPort> Port<C> {
         // A stable sort keeps the emission order of equal deadlines.
         pending.sort_by_key(|m| m.at);
         for e in pending.iter() {
-            if thru_holds(&self.thru_keys, &e.bytes[..e.len]) {
+            if thru_holds(&self.thru_keys, self.thru_pedal, &e.bytes[..e.len]) {
                 continue;
             }
             if let Some(f) = &self.echo {
@@ -592,6 +606,7 @@ fn set_route<C: SyncPort>(map: &mut BTreeMap<String, Port<C>>, index: usize, nam
         opened: false,
         echo: None,
         thru_keys: [0; 16],
+        thru_pedal: 0,
     });
     port.routes[index] = Some(route);
 }
@@ -599,7 +614,7 @@ fn set_route<C: SyncPort>(map: &mut BTreeMap<String, Port<C>>, index: usize, nam
 /// encoders.
 fn send_now<C: SyncPort>(name: &str, port: &mut Port<C>, msg: &[u8], stats: &Stats) {
     let now = Instant::now();
-    if thru_holds(&port.thru_keys, msg) {
+    if thru_holds(&port.thru_keys, port.thru_pedal, msg) {
         return;
     }
     if let Some(link) = &mut port.link {
@@ -636,6 +651,16 @@ fn send_thru_on<C: SyncPort>(name: &str, p: &mut Port<C>, msg: &[u8], feed: &Mid
         && status & 0xf0 == 0x90
     {
         p.thru_keys[usize::from(status & 0x0f)] |= 1u128 << (key & 0x7f);
+    } else if let Some((channel, down)) = pedal(msg) {
+        if down {
+            p.thru_pedal |= 1 << channel;
+        } else {
+            p.thru_pedal &= !(1 << channel);
+            // The clips still hold the pedal here: their own pedal up lifts it.
+            if p.routes.iter().flatten().any(|r| r.encoder.holds_pedal(channel)) {
+                return;
+            }
+        }
     }
     let Some(link) = &mut p.link else { return };
     // Before it leaves: its echo may be back before this returns.
@@ -724,6 +749,7 @@ impl LiveThru {
     /// these channels is quieted again when the port next opens.
     fn reopened<C: SyncPort>(&mut self, name: &str, p: &mut Port<C>, stats: &Stats) {
         p.thru_keys = [0; 16];
+        p.thru_pedal = 0;
         let channels = self.thru.reopened(name);
         for channel in (0..16u8).filter(|c| channels & (1 << c) != 0) {
             send_now(name, p, &[0xb0 | channel, 64, 0], stats);
@@ -746,22 +772,34 @@ fn same_feed(a: Option<&Arc<MidiFeed>>, b: Option<&Arc<MidiFeed>>) -> bool {
 fn play_position(view: &View, now: Instant) -> i64 {
     view.lock().unwrap_or_else(std::sync::PoisonError::into_inner).read(now, false, 0).0.map_or(0, |b| b.sample_index_at(now))
 }
-/// Stop the route `index` of `port`. Its notes end one by one; its All Notes Off is not sent on
-/// a channel where MIDI Thru holds a key, which the player still holds (a route replaced by an
-/// offset change, say). All MIDI Notes Off, and a port that closes, end Thru's notes too.
+/// Stop the route `index` of `port`. Its notes end one by one; its pedal up and All Notes Off are
+/// not sent on a channel where MIDI Thru holds a key or the pedal, which the player still holds
+/// (a route replaced by an offset change, say). All MIDI Notes Off, and a port that closes, end
+/// Thru's notes too.
 fn clear_route<C: SyncPort>(name: &str, port: &mut Port<C>, index: usize, stats: &Stats) {
     port.future.retain(|event| event.route != index);
     if let Some(mut route) = port.routes[index].take() {
         route.encoder.stop(&mut |msg| {
             if let [status, 123, ..] = msg
                 && status & 0xf0 == 0xb0
-                && port.thru_keys[usize::from(status & 0x0f)] != 0
+                && (port.thru_keys[usize::from(status & 0x0f)] != 0 || port.thru_pedal & (1 << (status & 0x0f)) != 0)
             {
                 return;
             }
             send_now(name, port, msg, stats);
         });
     }
+}
+/// The port `name` was opened again: send the clips' quieting now ([`SyncEncoder::quiet`]),
+/// before MIDI Thru plays there. Run after [`LiveThru::reopened`], which lets go of what Thru held.
+/// A send that fails closes the port; the encoders' next [`SyncEncoder::reset`] keeps what was
+/// not delivered to quiet on the next reopen.
+fn quiet_clips<C: SyncPort>(name: &str, p: &mut Port<C>, stats: &Stats) {
+    let mut routes = std::mem::replace(&mut p.routes, std::array::from_fn(|_| None));
+    for r in routes.iter_mut().flatten() {
+        r.encoder.quiet(&mut |msg| send_now(name, p, msg, stats));
+    }
+    p.routes = routes;
 }
 /// Below this, the last stretch of a wait is one plain sleep.
 const FINE_SLEEP: Duration = Duration::from_micros(200);
@@ -1015,6 +1053,7 @@ fn drive_ports<C: SyncPort>(
             keep_open(name, p, listed.as_ref(), now, &stats, &mut open);
             if (leaving || !was_open) && p.link.is_some() {
                 live.reopened(name, p, &stats);
+                quiet_clips(name, p, &stats);
             }
             if p.link.is_some() && open.lists() {
                 soon(p.retry);

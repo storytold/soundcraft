@@ -81,6 +81,7 @@ fn active_port(offset: i64, compensate: bool) -> Port<FakePort> {
         opened: true,
         echo: None,
         thru_keys: [0; 16],
+        thru_pedal: 0,
     }
 }
 fn routes(ports: &[(&str, i64)], compensate: bool) -> Update {
@@ -1013,6 +1014,7 @@ fn a_reopened_port_whose_quieting_fails_is_quieted_at_the_next_open() {
         opened: true,
         echo: None,
         thru_keys: [0; 16],
+        thru_pedal: 0,
     };
     live.reopened("SYN", &mut port, &stats);
     assert!(port.link.is_none(), "the second send failed and closed the port");
@@ -1167,6 +1169,7 @@ fn a_port_closed_because_its_label_moved_gets_the_notes_released_first() {
         opened: true,
         echo: None,
         thru_keys: [0; 16],
+        thru_pedal: 0,
     };
     let mut open = |_: &str| Ok((Link(2, wire.clone()), None));
     // "DIN" is now bound to another port: the worker closes the link to port 1 and opens port 2.
@@ -1202,6 +1205,7 @@ fn the_encoders_hear_of_a_delivery_only_when_every_send_went_out() {
         opened: true,
         echo: None,
         thru_keys: [0; 16],
+        thru_pedal: 0,
     };
     failing.poll("DIN", now, &Session::default(), &view, &Stats::default(), &mut Vec::new());
     assert_eq!(delivered.load(Relaxed), 1, "a failed send confirms nothing");
@@ -1230,6 +1234,117 @@ fn replacing_a_clip_route_does_not_silence_a_key_thru_holds() {
     clear_route("DIN", &mut port, 0, &stats);
     let sent: Vec<_> = port.link.unwrap().messages.into_iter().map(|(_, m)| m).collect();
     assert_eq!(sent, [vec![0x91, 60, 100], vec![0x81, 62, 0], vec![0xb2, 123, 0]], "channel 3 holds no thru key");
+}
+
+/// A clip route replaced while MIDI Thru holds the sustain pedal on its channel: the clips' pedal
+/// up and All Notes Off would end the notes the player's pedal still holds there.
+#[test]
+fn replacing_a_clip_route_does_not_lift_the_pedal_thru_holds() {
+    struct Clips;
+    impl SyncEncoder for Clips {
+        fn reset(&mut self) {}
+        fn update(&mut self, _: Presentation, _: Instant, _: &Session, _: &mut dyn FnMut(Instant, &[u8])) -> Option<Instant> {
+            None
+        }
+        fn stop(&mut self, send: &mut dyn FnMut(&[u8])) {
+            send(&[0xb1, 64, 0]);
+            send(&[0xb1, 123, 0]);
+            send(&[0xb2, 64, 0]);
+            send(&[0xb2, 123, 0]);
+        }
+    }
+    let (stats, feed) = (Stats::default(), MidiFeed::default());
+    let mut port = active_port(0, false);
+    port.routes[0].as_mut().unwrap().encoder = Box::new(Clips);
+    send_thru_on("DIN", &mut port, &[0xb1, 64, 127], &feed, &stats, None);
+    clear_route("DIN", &mut port, 0, &stats);
+    let sent: Vec<_> = port.link.as_ref().unwrap().messages.iter().map(|(_, m)| m.clone()).collect();
+    assert_eq!(sent, [vec![0xb1, 64, 127], vec![0xb2, 64, 0], vec![0xb2, 123, 0]], "channel 3 holds no thru pedal");
+    // The player's own pedal up still goes out.
+    send_thru_on("DIN", &mut port, &[0xb1, 64, 0], &feed, &stats, None);
+    assert_eq!(port.link.unwrap().messages.last().map(|(_, m)| m.clone()), Some(vec![0xb1, 64, 0]));
+}
+
+/// The clips and MIDI Thru both hold the sustain pedal on a channel: the device hears the pedal up
+/// only when the last of them lets go, as it does a shared key's Note-Off.
+#[test]
+fn a_pedal_the_clips_and_thru_both_hold_goes_up_with_the_last_of_them() {
+    /// Clip messages handed in by the test, and whether the clips hold the pedal on channel 1.
+    struct Clips(Arc<Mutex<Vec<Vec<u8>>>>, Arc<std::sync::atomic::AtomicBool>);
+    impl SyncEncoder for Clips {
+        fn reset(&mut self) {}
+        fn update(&mut self, _: Presentation, now: Instant, _: &Session, send: &mut dyn FnMut(Instant, &[u8])) -> Option<Instant> {
+            for m in self.0.lock().unwrap().drain(..) {
+                send(now, &m);
+            }
+            None
+        }
+        fn holds_pedal(&self, channel: u8) -> bool {
+            channel == 1 && self.1.load(Relaxed)
+        }
+    }
+    let now = Instant::now();
+    let view = View::default();
+    view.lock().unwrap().push(block(now, 0., 480., Duration::ZERO));
+    let (s, stats, feed) = (Session::default(), Stats::default(), MidiFeed::default());
+    let (down, up) = ([0xb1, 64, 127], [0xb1, 64, 0]);
+    for clips_last in [true, false] {
+        let queue = Arc::new(Mutex::new(Vec::new()));
+        let held = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let mut port = active_port(0, false);
+        port.routes[0].as_mut().unwrap().encoder = Box::new(Clips(queue.clone(), held.clone()));
+        let clip = |m: [u8; 3], holds: bool, port: &mut Port<FakePort>| {
+            held.store(holds, Relaxed);
+            queue.lock().unwrap().push(m.to_vec());
+            port.poll("DIN", now, &s, &view, &stats, &mut Vec::new());
+        };
+        clip(down, true, &mut port);
+        send_thru_on("DIN", &mut port, &down, &feed, &stats, None);
+        let sent = |port: &Port<FakePort>| port.link.as_ref().unwrap().messages.iter().map(|(_, m)| m.clone()).collect::<Vec<_>>();
+        if clips_last {
+            send_thru_on("DIN", &mut port, &up, &feed, &stats, None);
+            assert_eq!(sent(&port), [down.to_vec(), down.to_vec()], "thru let go first");
+            clip(up, false, &mut port);
+        } else {
+            clip(up, false, &mut port);
+            assert_eq!(sent(&port), [down.to_vec(), down.to_vec()], "the clips let go first");
+            send_thru_on("DIN", &mut port, &up, &feed, &stats, None);
+        }
+        assert_eq!(sent(&port), [down.to_vec(), down.to_vec(), up.to_vec()], "clips last: {clips_last}");
+    }
+}
+
+/// A port opened again before any usable presentation: the clips' quieting goes out at once, so
+/// it does not end a note MIDI Thru plays on that channel before the next presentation.
+#[test]
+fn a_reopened_port_quiets_the_clip_channels_before_thru_plays_there() {
+    struct Clips(bool);
+    impl SyncEncoder for Clips {
+        fn reset(&mut self) {
+            self.0 = true;
+        }
+        fn update(&mut self, _: Presentation, _: Instant, _: &Session, send: &mut dyn FnMut(Instant, &[u8])) -> Option<Instant> {
+            let now = Instant::now();
+            self.quiet(&mut |m| send(now, m));
+            None
+        }
+        fn quiet(&mut self, send: &mut dyn FnMut(&[u8])) {
+            if std::mem::take(&mut self.0) {
+                send(&[0xb1, 123, 0]);
+            }
+        }
+    }
+    let (stats, feed) = (Stats::default(), MidiFeed::default());
+    let mut port = active_port(0, false);
+    port.routes[0].as_mut().unwrap().encoder = Box::new(Clips(true));
+    quiet_clips("DIN", &mut port, &stats);
+    send_thru_on("DIN", &mut port, &[0x91, 60, 100], &feed, &stats, None);
+    let now = Instant::now();
+    let view = View::default();
+    view.lock().unwrap().push(block(now, 0., 480., Duration::ZERO));
+    port.poll("DIN", now, &Session::default(), &view, &stats, &mut Vec::new());
+    let sent: Vec<_> = port.link.unwrap().messages.into_iter().map(|(_, m)| m).collect();
+    assert_eq!(sent, [vec![0xb1, 123, 0], vec![0x91, 60, 100]]);
 }
 
 /// A port closed because its label is bound to another port now: what MIDI Thru holds there ends

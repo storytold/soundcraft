@@ -478,6 +478,31 @@ fn a_reconnect_quieting_that_did_not_go_out_is_sent_again_on_the_next_reopen() {
 }
 
 #[test]
+fn a_reopened_port_is_quieted_at_once_without_waiting_for_a_presentation() {
+    // MIDI Thru may play on the channel before the next usable presentation: the quieting goes
+    // out when the port opens, not later, where it would end a note the player just struck.
+    let base = Instant::now();
+    let mut s = session();
+    add_track(&mut s, TrackKind::Midi, vec![note(60, 100, 0, 9600)], vec![], "DIN", 3);
+    let b = rolling(base, 1, 0);
+    let mut enc = TrackMidi::new("DIN");
+    let mut wire = Wire::new();
+    run(&mut enc, &s, b, Duration::ZERO, Duration::from_millis(100), &mut wire);
+    enc.reset();
+    let mut quiet = Vec::new();
+    enc.quiet(&mut |m| quiet.push(m.to_vec()));
+    assert_eq!(quiet, [vec![0xb3, 64, 0], vec![0xb3, 123, 0]]);
+    wire.clear();
+    run(&mut enc, &s, b, Duration::from_millis(500), Duration::from_millis(1100), &mut wire);
+    assert!(!bytes(&wire).contains(&vec![0xb3, 123, 0]), "not sent again by the update: {wire:?}");
+    // Not delivered (the port failed again): the next reopen quiets the channel again.
+    enc.reset();
+    let mut again = Vec::new();
+    enc.quiet(&mut |m| again.push(m.to_vec()));
+    assert_eq!(again, [vec![0xb3, 64, 0], vec![0xb3, 123, 0]]);
+}
+
+#[test]
 fn a_key_struck_by_more_than_255_overlapping_notes_ends_with_its_last_holder() {
     let base = Instant::now();
     let mut s = session();

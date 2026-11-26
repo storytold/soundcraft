@@ -46,7 +46,8 @@ sending. A new track sends nothing until you choose.
 - SoundCraft checks the ports it has open against the port list once a second, so an unplugged
   port is noticed within about a second, playing or stopped (one unplugged and plugged back in
   within that second can go unnoticed). When the port comes back, SoundCraft reconnects within a
-  second or two and sends sustain pedal up and All Notes Off on the channels played on since the
+  second or two and, as soon as the port is open (before anything you play through MIDI Thru goes
+  out there), sends sustain pedal up and All Notes Off on the channels played on since the
   port was last opened (by the clips or through MIDI Thru), in case the device still holds notes
   it never heard end: on Windows, a device being added or removed can break every open output
   until it is reopened, so the Note-Offs sent meanwhile are lost. If the port fails again before
@@ -133,7 +134,8 @@ you play it. This is what Pro Tools calls MIDI Thru (Options › MIDI Thru, on b
   tracks on the same port and channel send it there once.
 - The track's clips keep playing while you play along (they are merged, as on an instrument track).
   When a clip and your keyboard sound the same key on the same port and channel, the device hears
-  the Note-Off only when the later of the two ends, since a device ends notes by key.
+  the Note-Off only when the later of the two ends, since a device ends notes by key. The
+  sustain pedal is shared the same way: it goes up only when the later of the two lifts it.
 - What you play is recorded as usual whether MIDI Thru is on or off. The MIDI Input Filter acts
   on the recording only.
 - No hardware keyboard: open **Window › MIDI Keyboard** (Shift+K), set the track's MIDI input to
@@ -148,10 +150,11 @@ you play it. This is what Pro Tools calls MIDI Thru (Options › MIDI Thru, on b
   deleted, a MIDI track is muted (or soloed out), MIDI Thru is switched off, the keyboard is
   unplugged, the transport stops, the output port is unplugged or its name is bound to another
   port, or with **Event › All MIDI Notes Off**. Letting go of the key afterwards sends nothing
-  more.
-- When the clips stop on a port while you hold a key there through thru (their output offset is
-  changed, say), their notes end one by one and no All Notes Off is sent on that channel, so the
-  key you hold keeps sounding.
+  more. A port that is unplugged gets none of these: a device that missed the Note-Off can keep
+  the note sounding until the port is back and SoundCraft quiets that channel (see above).
+- When the clips stop on a port while you hold a key or the sustain pedal there through thru
+  (their output offset is changed, say), their notes end one by one and no pedal up or All Notes
+  Off is sent on that channel, so what you hold keeps sounding.
 - A **mute** on an instrument track acts on its audio only, as for its clips: its MIDI output
   keeps playing what you play.
 - **MIDI loops**: when an output feeds back into an input of the same device (an IAC bus used
