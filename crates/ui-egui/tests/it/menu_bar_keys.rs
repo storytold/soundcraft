@@ -1,7 +1,7 @@
 //! The menu bar's keyboard, as on Windows and Linux: a lone Alt reaches the first menu title, Left and Right move along
 //! the titles, Escape gives the focus back, and Tab never stops on a title.
 
-use egui::accesskit::Role;
+use egui::accesskit::Action;
 use egui::{Event, Key, Modifiers, vec2};
 use egui_kittest::{
     Harness,
@@ -64,8 +64,12 @@ fn a_lone_alt_reaches_the_first_menu_title_the_arrows_move_along_and_escape_goes
 #[test]
 fn tab_never_stops_on_a_menu_title() {
     let mut h = harness();
-    let titles: Vec<String> =
-        h.query_all_by_role(Role::Button).filter(|n| n.rect().min.y < 24.0).filter_map(|n| n.accesskit_node().label()).collect();
+    // The titles by place, whatever their role (a button, or a menu item with storytold/egui#63).
+    let titles: Vec<String> = h
+        .query_all(by().predicate(|n| n.data().supports_action(Action::Click)))
+        .filter(|n| n.rect().min.y < 24.0)
+        .filter_map(|n| n.accesskit_node().label())
+        .collect();
     assert!(titles.contains(&"File".to_owned()), "the bar's titles are found: {titles:?}");
     for _ in 0..12 {
         h.key_press(Key::Tab);
