@@ -133,6 +133,24 @@ impl SoundApp {
     }
 }
 
+/// How long the meters keep the last readings while no audio block arrives. Longer than the
+/// longest device buffer (8192 frames at 44.1 kHz, 186 ms) plus the slowest meter poll (50 ms), so
+/// a large buffer never reads as silence between its callbacks; once it has passed, the device has
+/// stopped calling back (switched off, unplugged, stalled) and the meters fall to silence.
+pub(super) const METER_STALE_SECS: f64 = 0.5;
+
+/// After a meter take that `fresh`ly brought new blocks or not, at `now` (uptime, seconds): note
+/// when the last block came in `last_block`, and clear `snap`'s readings once none has come for
+/// [`METER_STALE_SECS`]. Otherwise the last block's levels would be fed to the meters every frame
+/// and never fall.
+pub(super) fn age_meters(snap: &mut soundcraft_playback::MeterSnapshot, fresh: bool, now: f64, last_block: &mut f64) {
+    if fresh {
+        *last_block = now;
+    } else if now - *last_block > METER_STALE_SECS {
+        snap.clear_levels();
+    }
+}
+
 pub(super) fn feed_meter(d: &mut MeterDisplay, peak: [f32; 2], gr: f32, dt: f32) {
     // Instant attack, ~26 dB/s release, 2 s peak hold.
     let fall = 10f32.powf(-26.0 * dt / 20.0);
@@ -187,5 +205,60 @@ mod audio_input_tests {
         s.track_mut(vox).unwrap().mixer.input_monitor = false;
         s.track_mut(vox).unwrap().mixer.record_arm = true;
         assert!(wants_audio_input(&s));
+    }
+}
+
+#[cfg(test)]
+mod meter_tests {
+    use super::{METER_STALE_SECS, MeterDisplay, age_meters, feed_meter};
+    use soundcraft_mix::StripMeter;
+    use soundcraft_model::TrackId;
+    use soundcraft_playback::MeterSnapshot;
+
+    /// Runs the UI's meter loop for `secs` at 60 frames a second, polling at 20 Hz as the Edit
+    /// window does; `blocks(prev, now)` says whether a block (with `peak`) arrived since the
+    /// previous poll.
+    fn run(secs: f64, peak: f32, blocks: impl Fn(f64, f64) -> bool) -> (MeterDisplay, f32) {
+        let t = TrackId(1);
+        let mut snap = MeterSnapshot::default();
+        let mut d = MeterDisplay::default();
+        let (mut last_block, mut last_poll, mut lowest) = (f64::NEG_INFINITY, f64::NEG_INFINITY, f32::INFINITY);
+        let dt = 1.0 / 60.0;
+        let mut now = 0.0;
+        while now < secs {
+            if now - last_poll >= 1.0 / 20.0 {
+                let fresh = blocks(last_poll.max(-1e-9), now);
+                if fresh {
+                    let m = snap.tracks.entry(t).or_insert_with(StripMeter::default);
+                    m.peak = [peak; 2];
+                    m.peaks = vec![peak; 2];
+                }
+                age_meters(&mut snap, fresh, now, &mut last_block);
+                last_poll = now;
+            }
+            let m = snap.tracks.get(&t).map_or([0.0; 2], |m| m.peak);
+            feed_meter(&mut d, m, 0.0, dt as f32);
+            if now > 0.0 {
+                lowest = lowest.min(d.level[0]);
+            }
+            now += dt;
+        }
+        (d, lowest)
+    }
+
+    #[test]
+    fn meters_fall_to_silence_when_the_device_stops_calling_back() {
+        // Blocks come for a second, then the device is switched off: no callback ever again.
+        let (d, _) = run(6.0, 0.4, |_, now| now < 1.0);
+        assert!(d.level == [0.0; 2] && d.hold == [0.0; 2], "the meter still reads {d:?}");
+    }
+
+    #[test]
+    fn a_large_device_buffer_keeps_the_meters_up_between_callbacks() {
+        // 8192 frames at 44.1 kHz: one block every 186 ms, several polls without one.
+        let period = 8192.0 / 44_100.0;
+        assert!(period + 1.0 / 20.0 < METER_STALE_SECS);
+        let (d, lowest) = run(3.0, 0.4, |prev, now| (now / period).floor() > (prev / period).floor());
+        assert!(lowest >= 0.4 && d.level[0] >= 0.4, "the meter dropped to {lowest} between callbacks");
     }
 }
