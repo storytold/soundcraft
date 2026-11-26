@@ -633,3 +633,27 @@ fn concurrent_delivery_stats_keep_every_event_and_the_largest_delay() {
     assert_eq!(stats.max.load(Relaxed), 3999);
     assert_eq!(stats.buckets.iter().map(|value| value.load(Relaxed)).sum::<u64>(), 4000);
 }
+
+#[test]
+fn track_note_offs_survive_a_pass_change_through_the_port() {
+    use soundcraft_model::{ChannelFormat, Clip, MidiOutput, TrackKind};
+    let base = Instant::now();
+    let mut s = Session::new("t", soundcraft_time::SampleRate::HZ_48000);
+    let t = s.add_track(TrackKind::Midi, ChannelFormat::Stereo, None);
+    let note = soundcraft_midi::Note { pitch: 60, velocity: 100, release_velocity: 64, channel: 0, start: 0, length: 9600 };
+    let seq = soundcraft_midi::Sequence { notes: vec![note], ..Default::default() };
+    let id = s.new_clip_id();
+    s.track_mut(t).unwrap().playlist_mut().unwrap().clips.push(Clip::midi(id, "m", 0, 480_000, seq));
+    MidiOutput::store(&mut s.edit, t, Some(MidiOutput { device: "DIN", channel: 0 }));
+    let view = View::default();
+    view.lock().unwrap().push(block(base, 0., 48_000., Duration::ZERO));
+    let mut port = active_port(0, false);
+    port.routes[0].as_mut().unwrap().encoder = crate::track_midi::TrackMidi::boxed("DIN");
+    let stats = Stats::default();
+    port.poll("DIN", base + Duration::from_millis(5), &s, &view, &stats, &mut Vec::new());
+    // A locate starts a new pass while the note sounds; the old pass's queue is discarded.
+    view.lock().unwrap().push(Presentation { pass: 2, origin: 96_000, ..block(base + Duration::from_millis(10), 96_000., 48_000., Duration::ZERO) });
+    port.poll("DIN", base + Duration::from_millis(11), &s, &view, &stats, &mut Vec::new());
+    let sent: Vec<_> = port.link.unwrap().messages.into_iter().map(|(_, m)| m).collect();
+    assert_eq!(sent, [vec![0x90, 60, 100], vec![0x80, 60, 0]]);
+}

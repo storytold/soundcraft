@@ -33,6 +33,8 @@ pub mod sync_clock;
 #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
 mod sync_output;
 mod sync_status;
+#[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+mod track_midi;
 pub use sync_status::{MidiSyncStatus, OutputLeadSource, OutputTimingIssue};
 
 /// Bound per-device compensation in time when a session changes sample rate.
@@ -529,6 +531,42 @@ impl Player {
         return self.sync_output.lock().unwrap_or_else(PoisonError::into_inner).opened_port_ids();
         #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
         None
+    }
+
+    /// The MIDI output ports that MIDI and instrument tracks play their clips to (each track's
+    /// port and channel are in the session, `soundcraft_model::MidiOutput`). `compensate` delays
+    /// them by the audio output latency and the mixer's plug-in delay, so the notes sound with
+    /// the audio. Whether the worker accepted them: a transient startup failure can be retried.
+    pub fn try_set_midi_note_outputs(&self, ports: Vec<String>, compensate: bool) -> bool {
+        #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+        {
+            let ports = ports.into_iter().map(|name| (name, 0)).collect();
+            self.sync_output.lock().unwrap_or_else(PoisonError::into_inner).set_routes(
+                sync_output::RouteKind::Notes,
+                ports,
+                compensate,
+                track_midi::TrackMidi::boxed,
+            )
+        }
+        #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
+        {
+            let _ = compensate;
+            ports.is_empty()
+        }
+    }
+
+    /// All MIDI Notes Off on the MIDI output ports: a Note-Off for every note the tracks hold,
+    /// then, on every channel, sustain pedal up, All Notes Off and All Sound Off. Returns the
+    /// number of connected ports.
+    pub fn midi_output_panic(&self) -> usize {
+        #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+        {
+            self.sync_output.lock().unwrap_or_else(PoisonError::into_inner).panic(track_midi::panic_messages)
+        }
+        #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
+        {
+            0
+        }
     }
 
     pub fn midi_sync_status(&self) -> MidiSyncStatus {

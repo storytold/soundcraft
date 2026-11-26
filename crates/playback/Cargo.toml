@@ -36,6 +36,7 @@ asio = ["cpal/asio"]
 
 [dev-dependencies]
 serde_json.workspace = true
+soundcraft-midi.workspace = true
 
 [lints]
 workspace = true

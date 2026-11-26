@@ -84,8 +84,8 @@ pub use offline::{
 };
 pub use pan::itu_stereo_fold;
 use pan::{PanSpec, apply_matrix, apply_matrix_span, build_matrix};
-pub use routing::solo_mutes;
 use routing::{any_solo, processing_order, structure_fingerprint};
+pub use routing::{midi_output_muted, solo_mutes};
 use strip::{
     Block, BusBuf, LiveInput, SlotCtx, Strip, apply_params, contain_failure, note_insert_latency, process_strip, strip_channels, strip_format,
 };
