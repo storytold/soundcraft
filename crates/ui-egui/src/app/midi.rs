@@ -6,9 +6,39 @@ use soundcraft_engine::io::{MidiPass, MidiTakeEvent};
 use soundcraft_playback::midi::MidiInputs;
 
 impl SoundApp {
-    /// Whether a MIDI input port is open.
+    /// Whether live MIDI can come in: an input port is open, or the MIDI Keyboard window is.
     pub(crate) fn midi_connected(&self) -> bool {
-        self.midi_inputs.as_ref().is_some_and(|m| m.feed().connected() > 0)
+        self.midi_inputs.as_ref().is_some_and(|m| m.feed().connected() > 0) || (self.ui.show_midi_keyboard && self.midi_inputs.is_some())
+    }
+
+    /// Follow the MIDI Keyboard window: `down` is the key the pointer holds down now (`None`
+    /// when none is, or the window is closed), `tapped` a key clicked within one frame (pressed
+    /// and let go before the window saw it held). A key that is let go, or left for another,
+    /// ends with a Note-Off before the next one starts. The notes go into the MIDI input as from
+    /// a port of their own ([`soundcraft_playback::midi::KEYBOARD_PORT`], channel 1): they play
+    /// the instruments, thru to the MIDI outputs and are recorded on the record-enabled and
+    /// input-monitored tracks whose input takes All devices, as from a hardware keyboard (Pro
+    /// Tools Reference Guide p.828).
+    pub(crate) fn play_midi_keyboard(&mut self, down: Option<u8>, tapped: Option<u8>) {
+        let held = self.midi_keyboard_held;
+        if held != down {
+            if let Some(k) = held {
+                self.send_midi_keyboard([0x80, k, 0]);
+            }
+            if let Some(k) = down {
+                self.send_midi_keyboard([0x90, k, MIDI_KEYBOARD_VELOCITY]);
+            }
+            self.midi_keyboard_held = down;
+        } else if let (Some(k), None) = (tapped, held) {
+            self.send_midi_keyboard([0x90, k, MIDI_KEYBOARD_VELOCITY]);
+            self.send_midi_keyboard([0x80, k, 0]);
+        }
+    }
+
+    fn send_midi_keyboard(&self, bytes: [u8; 3]) {
+        if let Some(m) = &self.midi_inputs {
+            m.feed().receive_keyboard(&bytes);
+        }
     }
 
     /// Hand the MIDI inputs to a (new) audio engine.
@@ -165,6 +195,9 @@ impl SoundApp {
         let _ = self.run("setup.midi_input_devices", json!({ if on { "enable" } else { "disable" }: [name] }));
     }
 }
+
+/// The velocity of the notes the MIDI Keyboard window plays.
+const MIDI_KEYBOARD_VELOCITY: u8 = 100;
 
 /// Whether the end of a record pass waits for the audio engine's answer: there is an engine
 /// (without one nothing takes MIDI in), and `tracks` MIDI or instrument tracks were

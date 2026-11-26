@@ -117,6 +117,11 @@ you play it. This is what Pro Tools calls MIDI Thru (Options › MIDI Thru, on b
 - The track's clips keep playing while you play along (they are merged, as on an instrument track).
 - What you play is recorded as usual whether MIDI Thru is on or off. The MIDI Input Filter acts
   on the recording only.
+- No hardware keyboard: open **Window › MIDI Keyboard** (Shift+K), set the track's MIDI input to
+  All devices, record-enable it and click the keys. A key sounds while you hold it down, on
+  channel 1 (thru sends it on the output channel), and is recorded like a hardware key. With
+  no MIDI or instrument track record-enabled, a click step-enters the note into the selected clip
+  instead. The computer keyboard does not play it yet.
 - **Options › MIDI Thru** switches thru off for every track: the keyboard then plays neither the
   instruments nor the external outputs.
 - Notes you hold through thru are ended (Note-Off, then sustain pedal up) when the track is taken

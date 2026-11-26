@@ -202,3 +202,23 @@ fn a_lost_port_stop_and_a_reopened_port_end_what_thru_holds() {
     assert_eq!(thru.reopened("PC1X"), 0);
     assert!(thru.holds(), "the other port still holds its note");
 }
+
+#[test]
+fn the_midi_keyboard_window_thrus_to_tracks_that_take_all_devices() {
+    // Pro Tools Reference Guide p.828: MIDI Input set to All, the track record-enabled, the keys
+    // of the MIDI Keyboard window play the device on its MIDI output.
+    let (mut s, names) = (session(), names());
+    let window = names.assign(crate::midi::KEYBOARD_PORT);
+    track(&mut s, TrackKind::Midi, "PC1X", 2);
+    let keys_only = track(&mut s, TrackKind::Instrument, "Module", 0);
+    s.track_mut(keys_only).unwrap().mixer.input = Route::Hardware("MIDI:*:Keys".into());
+    let mut thru = Thru::default();
+    let wire = play(&mut thru, &s, &names, &[ev(window, 0x90, 60, 100), ev(window, 0x80, 60, 0)]);
+    assert_eq!(wire, [w("PC1X", &[0x92, 60, 100]), w("PC1X", &[0x82, 60, 0])]);
+    // Released on Stop like a hardware key; letting go afterwards sends nothing more.
+    play(&mut thru, &s, &names, &[ev(window, 0x90, 64, 100)]);
+    let mut stop = Wire::new();
+    thru.release_all(&mut |d, m| stop.push((d.to_owned(), m.to_vec())));
+    assert_eq!(stop, [w("PC1X", &[0x82, 64, 0])]);
+    assert!(play(&mut thru, &s, &names, &[ev(window, 0x80, 64, 0)]).is_empty());
+}

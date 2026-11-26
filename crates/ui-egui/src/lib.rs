@@ -322,6 +322,8 @@ pub struct SoundApp {
     pub midi_inputs: Option<soundcraft_playback::midi::MidiInputs>,
     /// When the MIDI ports were last looked for (app uptime, seconds).
     midi_scan_at: f64,
+    /// The key held down in the MIDI Keyboard window, whose Note-Off is still to be sent.
+    midi_keyboard_held: Option<u8>,
     /// The MIDI output ports tracks can play to, once listed (an error where there are none to
     /// list), and when they were last listed (app uptime, seconds).
     pub midi_output_ports: Option<Result<Vec<String>, String>>,

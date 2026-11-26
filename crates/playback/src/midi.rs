@@ -213,6 +213,10 @@ fn echo_key(bytes: &[u8]) -> Option<u32> {
     (bytes.len() >= len).then(|| u32::from_be_bytes([0, status, data(1), data(2)]))
 }
 
+/// The input port the MIDI Keyboard window plays under ([`MidiFeed::receive_keyboard`]). A
+/// track whose MIDI input is set to All devices takes it; one set to a named device does not.
+pub const KEYBOARD_PORT: &str = "MIDI Keyboard window";
+
 /// The path of MIDI events from the device threads to the audio thread, and of recorded events
 /// from the audio thread to the UI.
 pub struct MidiFeed {
@@ -342,6 +346,17 @@ impl MidiFeed {
     /// (the engine, instruments, the recorded take) sees anything else.
     pub fn receive(&self, port: u8, bytes: &[u8]) {
         self.receive_from(None, port, bytes);
+    }
+
+    /// A message played in the MIDI Keyboard window (Window › MIDI Keyboard): it comes in as
+    /// from an input port named [`KEYBOARD_PORT`], so it plays, thrus and records on the tracks
+    /// whose MIDI input takes that port (All devices), like a hardware keyboard (Pro Tools
+    /// Reference Guide p.828). Dropped when every port slot is taken.
+    pub fn receive_keyboard(&self, bytes: &[u8]) {
+        let port = self.ports.assign(KEYBOARD_PORT);
+        if port != u8::MAX {
+            self.receive(port, bytes);
+        }
     }
 
     /// [`Self::receive`] for a connection that can be shut off: once `open` is false
@@ -1322,6 +1337,30 @@ mod tests {
         feed.detach_thru(std::thread::current().id());
         feed.receive(1, &[0x91, 62, 90]);
         assert!(feed.next_thru().is_none());
+    }
+
+    #[test]
+    fn the_midi_keyboard_window_plays_in_as_a_port_of_its_own() {
+        let feed = MidiFeed::default();
+        assert_eq!(feed.ports().assign("Keys"), 0);
+        feed.attach_thru(std::thread::current());
+        feed.receive_keyboard(&[0x90, 60, 100]);
+        feed.receive_keyboard(&[0x80, 60, 0]);
+        let port = feed.ports().assign(KEYBOARD_PORT);
+        assert_eq!(port, 1, "the next free slot, kept for later presses");
+        // The audio thread (instruments, recording) and the thru worker both get it, from that port.
+        let audio: Vec<(u8, u8, u8)> = std::iter::from_fn(|| feed.next()).map(|(_, e)| (e.port, e.status, e.data1)).collect();
+        assert_eq!(audio, [(1, 0x90, 60), (1, 0x80, 60)]);
+        let thru: Vec<(u8, u8)> = std::iter::from_fn(|| feed.next_thru()).map(|(_, e)| (e.port, e.status)).collect();
+        assert_eq!(thru, [(1, 0x90), (1, 0x80)]);
+        assert_eq!(feed.activity().0, 2);
+        // Every slot taken by devices: the window's notes are dropped, not put on another port.
+        let full = MidiFeed::default();
+        for i in 0..soundcraft_mix::MAX_MIDI_PORTS {
+            full.ports().assign(&format!("Device {i}"));
+        }
+        full.receive_keyboard(&[0x90, 60, 100]);
+        assert!(full.next().is_none() && full.activity().0 == 0);
     }
 
     #[test]

@@ -99,7 +99,8 @@ When you close a gap, delete its entry (or shrink it) in the same PR, and bump t
   Monitoring Follows Selected Track, MIDI activity on a MIDI track's meter, note chasing, a default program and bank per track,
   several destinations per track, MIDI mute and solo on instrument tracks, the Global MIDI
   Playback Offset, MIDI clock/MTC out, loop and merge recording (a MIDI take replaces what it covers; a loop pass piles every
-  pass into one clip), audition from the MIDI editor (`midi_editor.rs:288`), MIDI
+  pass into one clip), audition from the MIDI editor (`midi_editor.rs:288`), computer-keyboard
+  keys in the MIDI Keyboard window (clicked keys play live), MIDI
   input on FreeBSD and the web. `setup.midi_input_devices` and `setup.midi_studio` still only
   store names in the session; the real device switches are app preferences.
 - **Impact:** you can play and record a keyboard, play hardware synths from tracks and play them

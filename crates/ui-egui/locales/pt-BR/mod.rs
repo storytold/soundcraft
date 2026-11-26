@@ -74,8 +74,8 @@ pub(super) fn translate(source: &str) -> Option<&'static str> {
         "Click a take (or the selection) to promote it to the main playlist" => {
             "Clique em uma tomada (ou na seleção) para promovê-la à playlist principal"
         }
-        "Click keys to step-enter notes into the selected MIDI clip at the insertion point." => {
-            "Clique nas teclas para inserir notas passo a passo no clipe MIDI selecionado, no ponto de inserção."
+        "Click keys to play the record-enabled and input-monitored tracks whose MIDI input is All devices. With no MIDI or instrument track record-enabled, a click step-enters the note into the selected MIDI clip at the insertion point." => {
+            "Clique nas teclas para tocar as faixas habilitadas para gravação e com monitoração de entrada cuja entrada MIDI é Todos os dispositivos. Sem faixa MIDI ou de instrumento habilitada para gravação, um clique insere a nota passo a passo no clipe MIDI selecionado, no ponto de inserção."
         }
         "Click: open instrument · right-click: change" => "Clique: abrir instrumento · botão direito: alterar",
         "Clip effects gain (dB)" => "Ganho dos efeitos do clipe (dB)",

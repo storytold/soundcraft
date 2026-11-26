@@ -31,6 +31,7 @@ mod midi_double_click;
 mod midi_editor_keys;
 mod midi_front_visibility;
 mod midi_inputs;
+mod midi_keyboard_thru;
 mod midi_output;
 mod midi_output_fallback;
 mod midi_panel;
