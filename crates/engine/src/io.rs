@@ -1096,11 +1096,12 @@ fn read_bundle(bytes: &[u8], limits: BundleLimits) -> Result<(String, std::colle
     .map_err(|error| EngineError::Io(error.to_string()))
 }
 
+/// One planned take: the track, the input channels it records and its new take file.
+pub type PlannedTake = (TrackId, Vec<usize>, PathBuf);
+
 /// The record-enabled audio tracks, each with the input channels it records (those its input
 /// route names, with legacy numbered routes wrapped to the device width) and a new take file
 /// `<track>_<NN>.wav` in the `Audio Files` of the session's folder (`unsaved_dir` until it is saved).
-pub type PlannedTake = (TrackId, Vec<usize>, PathBuf);
-
 /// Fail before opening any take if an armed track's named input cannot be recorded.
 pub fn plan_takes(e: &Engine, unsaved_dir: &Path, input_channels: usize) -> std::result::Result<Vec<PlannedTake>, String> {
     let dir = e.path.as_deref().and_then(|p| Path::new(p).parent()).unwrap_or(unsaved_dir);
