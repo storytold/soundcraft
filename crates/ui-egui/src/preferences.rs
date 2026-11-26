@@ -1372,6 +1372,20 @@ mod tests {
         }
     }
 
+    /// MIDI Merge Release Mode is a per-machine preference: recalling a layout keeps the live one.
+    #[test]
+    fn configuration_recall_keeps_the_midi_merge_release_mode() {
+        use soundcraft_engine::io::MergeRelease;
+        for (saved_mode, live) in [(MergeRelease::Latch, MergeRelease::LatchUntilNextEvent), (MergeRelease::LatchUntilNextEvent, MergeRelease::Latch)]
+        {
+            let saved = serde_json::to_value(crate::UiState { midi_merge_release: saved_mode, ..Default::default() }).unwrap();
+            let mut app = SoundApp::new(Engine::default(), None, crate::Services::default());
+            app.ui.midi_merge_release = live;
+            crate::windows::recall_configuration(&mut app, &saved).unwrap();
+            assert_eq!(app.ui.midi_merge_release, live);
+        }
+    }
+
     /// Enter belongs to the focused search field and must not apply its window.
     #[test]
     fn enter_in_search_does_not_apply_or_close_preferences() {
