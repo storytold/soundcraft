@@ -9,6 +9,9 @@ use soundcraft_model::TrackKind;
 /// How the audio output is doing, for the UI.
 #[derive(Default)]
 pub(crate) struct Fault {
+    /// Callback cycles of an ASIO output, shared with a recorder on the same device.
+    #[cfg(all(windows, feature = "asio"))]
+    pub(crate) record_clock: std::sync::Arc<crate::record_clock::OutputClock>,
     /// A block panicked: output stays silent from then on.
     failed: AtomicBool,
     /// The device went away or the stream was invalidated: only a reconnect can restore audio.
@@ -82,6 +85,8 @@ pub(crate) struct AudioState {
     pub(crate) device_rate: f64,
     input: Option<Arc<record::InputRing>>,
     recording: bool,
+    /// This block is the first of a play that started with recording on.
+    pub(crate) started_now: bool,
     midi: Option<Arc<midi::MidiFeed>>,
     /// Live MIDI events of this callback not played yet: frames (session rate) until each is due.
     midi_pending: Vec<(i64, LiveMidi)>,
@@ -176,6 +181,7 @@ impl AudioState {
             device_rate,
             input: None,
             recording: false,
+            started_now: false,
             midi: None,
             midi_pending: Vec::with_capacity(MIDI_EVENTS),
             midi_delay: 0,
@@ -259,6 +265,7 @@ impl AudioState {
                 }
                 Cmd::OldSessions(tx) => self.old_sessions = Some(tx),
                 Cmd::Play { from, end, looped } => {
+                    self.started_now = self.recording;
                     self.pos = from;
                     self.end = end;
                     self.looped = looped.filter(|r| super::loops(*r));
@@ -622,6 +629,7 @@ impl AudioState {
 
     /// Fill an interleaved device buffer.
     pub(crate) fn fill(&mut self, out: &mut [f32], channels: usize) {
+        self.started_now = false;
         let channels = channels.max(1);
         let callback_frames = out.len() / channels;
         // The speed is read once: the callback renders at the speed it keeps for the ages of

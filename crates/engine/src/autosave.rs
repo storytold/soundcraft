@@ -730,8 +730,15 @@ mod tests {
         std::fs::create_dir_all(take.parent().unwrap()).unwrap();
         let audio: Vec<u8> = (0..480).flat_map(|i| (i as f32 / 1000.0).to_le_bytes()).collect();
         std::fs::write(&take, [craft_audio::wav_float_header(48_000, 1, 100).unwrap(), audio].concat()).unwrap();
-        let plan = Recording { start: 48_000, pass: None, punch: None, rate: 48_000, takes: vec![Take { track, path: take, channels: 1 }] };
-        let clips = |e: &Engine| e.session().track(track).unwrap().clips().iter().map(|c| (c.start, c.length)).collect::<Vec<_>>();
+        let plan = Recording {
+            start: 48_000,
+            pass: None,
+            punch: None,
+            placement_offset: 128,
+            rate: 48_000,
+            takes: vec![Take { track, path: take, channels: 1 }],
+        };
+        let clips = |e: &Engine| e.session().track(track).unwrap().clips().iter().map(|c| (c.start, c.length, c.source_offset())).collect::<Vec<_>>();
         let w = Autosaver::new(root.clone());
         w.write(e.session_arc(), None, Some(plan.clone()));
         drop(w);
@@ -739,14 +746,14 @@ mod tests {
         assert!(left[0].recording);
         let mut r = Engine::default();
         recover(&mut r, &left[0]).unwrap();
-        assert_eq!(clips(&r), [(48_000, 480)], "all of the take, its last second included");
+        assert_eq!(clips(&r), [(48_000, 352, 128)], "keep the corrected origin and all audio after the trim");
         discard(&left[0]);
         let w = Autosaver::new(root.clone());
         w.write(r.session_arc(), None, Some(plan));
         drop(w);
         let mut again = Engine::default();
         recover(&mut again, &leftovers(&root)[0]).unwrap();
-        assert_eq!((clips(&again), again.session().sources.len()), (vec![(48_000, 480)], 1), "placed once");
+        assert_eq!((clips(&again), again.session().sources.len()), (vec![(48_000, 352, 128)], 1), "placed once");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -766,7 +773,14 @@ mod tests {
         std::fs::write(&take, [take_header(1, 48_000, 300).unwrap(), audio(300)].concat()).unwrap();
         std::fs::write(take_part(&take, 2), [take_header(1, 48_000, 300).unwrap(), audio(300)].concat()).unwrap();
         std::fs::write(take_part(&take, 3), [take_header(1, 48_000, 100).unwrap(), audio(250)].concat()).unwrap();
-        let plan = Recording { start: 48_000, pass: None, punch: None, rate: 48_000, takes: vec![Take { track, path: take, channels: 1 }] };
+        let plan = Recording {
+            start: 48_000,
+            pass: None,
+            punch: None,
+            placement_offset: 0,
+            rate: 48_000,
+            takes: vec![Take { track, path: take, channels: 1 }],
+        };
         let w = Autosaver::new(root.clone());
         w.write(e.session_arc(), None, Some(plan));
         drop(w);
@@ -794,7 +808,14 @@ mod tests {
             std::fs::write(&take, [take_header(1, 48_000, 300).unwrap(), audio(300)].concat()).unwrap();
             std::fs::write(take_part(&take, 2), &second).unwrap();
             std::fs::write(take_part(&take, 3), [take_header(1, 48_000, 200).unwrap(), audio(200)].concat()).unwrap();
-            let plan = Recording { start: 0, pass: None, punch: None, rate: 48_000, takes: vec![Take { track, path: take, channels: 1 }] };
+            let plan = Recording {
+                start: 0,
+                pass: None,
+                punch: None,
+                placement_offset: 0,
+                rate: 48_000,
+                takes: vec![Take { track, path: take, channels: 1 }],
+            };
             let w = Autosaver::new(root.clone());
             w.write(e.session_arc(), None, Some(plan));
             drop(w);
@@ -844,6 +865,7 @@ mod tests {
             start: 0,
             pass: None,
             punch: None,
+            placement_offset: 0,
             rate: 48_000,
             takes: paths.iter().map(|p| Take { track, path: p.clone(), channels: 1 }).collect(),
         };

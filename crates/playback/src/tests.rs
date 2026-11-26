@@ -57,6 +57,14 @@ fn range(channels: u16, min: u32, max: u32, format: cpal::SampleFormat) -> cpal:
     cpal::SupportedStreamConfigRange::new(channels, min, max, cpal::SupportedBufferSize::Range { min: 64, max: 1024 }, format)
 }
 
+#[test]
+fn output_config_accepts_packed_pcm() {
+    let configs = [range(2, 44_100, 48_000, cpal::SampleFormat::I24), range(10, 44_100, 48_000, cpal::SampleFormat::I24)];
+    let (config, _, format) = pick_output_config(&configs, &[48_000], 2).unwrap();
+    assert_eq!(config.channels, 2);
+    assert_eq!(format, cpal::SampleFormat::I24);
+}
+
 /// Rates are tried in order, so a stale configured rate falls through to the session rate; when no requested rate
 /// is offered the caller uses the device default and resamples.
 #[test]
@@ -144,6 +152,20 @@ fn spike_session(spike_at: usize) -> (Arc<Shared>, AudioState, std::sync::mpsc::
     let st = AudioState::new(rx, Arc::clone(&shared), Arc::new(s), 48_000.0, channel().0);
     tx.send(Cmd::Play { from: 0, end: None, looped: None }).unwrap();
     (shared, st, tx, t)
+}
+
+#[test]
+fn recording_clock_arms_once_only_when_play_starts_with_recording_on() {
+    let (_, mut audio, tx, _) = spike_session(0);
+    let mut out = [0.0; 64];
+    audio.fill(&mut out, 2);
+    assert!(!audio.started_now);
+    tx.send(Cmd::Recording(true, 0)).unwrap();
+    tx.send(Cmd::Play { from: 0, end: None, looped: None }).unwrap();
+    audio.fill(&mut out, 2);
+    assert!(audio.started_now);
+    audio.fill(&mut out, 2);
+    assert!(!audio.started_now);
 }
 
 #[test]
