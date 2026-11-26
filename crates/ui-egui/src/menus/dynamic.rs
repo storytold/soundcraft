@@ -54,12 +54,18 @@ impl Entry {
 pub enum Action {
     OpenRecent(String),
     ClearRecent,
+    /// `document` is the session the track belongs to (`SoundApp::doc_epoch`): a session opened
+    /// since can reuse the track's id.
     SetInstrument {
+        document: u64,
         track: TrackId,
         plugin: String,
     },
     /// Opens a built-in instrument's parameter window.
-    EditInstrument(TrackId),
+    EditInstrument {
+        document: u64,
+        track: TrackId,
+    },
     ScanClap,
     ScanVst3,
 }
@@ -87,13 +93,18 @@ pub fn submenus(app: &mut SoundApp) -> [Contents; 2] {
 
 /// Carries out a picked entry; a failure goes to the status line, as from the egui menus.
 ///
-/// An instrument entry names the track that was selected when the submenu was built. If the
-/// selection has moved since, the pick is refused rather than applied to a track the user no
-/// longer has selected, and the status line says so.
+/// A host's menu can be up to one refresh behind the app, so the pick is checked against the
+/// app as it is now. While Preferences is open nothing runs, as for every other menu entry then
+/// disabled. An instrument entry names the session and track that were selected when the submenu
+/// was built; if either has changed, the pick is refused rather than applied to a track the user
+/// no longer has selected, and the status line says so.
 pub fn run(app: &mut SoundApp, action: &Action) {
+    if app.ui.show_preferences {
+        return;
+    }
     let _language = crate::localization::enter(app.ui.language);
-    if let Action::SetInstrument { track, .. } | Action::EditInstrument(track) = action
-        && super::instrument_track(app.engine.session()) != Some(*track)
+    if let Action::SetInstrument { document, track, .. } | Action::EditInstrument { document, track } = action
+        && (*document != app.doc_epoch || super::instrument_track(app.engine.session()) != Some(*track))
     {
         app.ui.status = text("The selected track changed: choose the instrument again").to_string();
         return;
@@ -101,12 +112,12 @@ pub fn run(app: &mut SoundApp, action: &Action) {
     match action {
         Action::OpenRecent(path) => crate::recent::open_session(app, path),
         Action::ClearRecent => crate::recent::clear(app),
-        Action::SetInstrument { track, plugin } => {
+        Action::SetInstrument { track, plugin, .. } => {
             if let Err(e) = app.run("mix.instrument", json!({"track": track.0, "plugin": plugin})) {
                 app.ui.status = e;
             }
         }
-        Action::EditInstrument(track) => {
+        Action::EditInstrument { track, .. } => {
             let w = (*track, soundcraft_mix::INSTRUMENT_SLOT);
             if !app.ui.plugin_windows.contains(&w) {
                 app.ui.plugin_windows.push(w);
@@ -128,6 +139,7 @@ fn instrument(app: &SoundApp) -> (bool, Vec<Entry>) {
     let Some(track) = super::instrument_track(app.engine.session()) else {
         return (false, Vec::new());
     };
+    let document = app.doc_epoch;
     let current = app.engine.session().track(track).and_then(|t| t.instrument.as_ref()).map(|i| i.plugin.clone());
     let mut out = Vec::new();
     if let Some(cur) = current.as_deref()
@@ -135,7 +147,7 @@ fn instrument(app: &SoundApp) -> (bool, Vec<Entry>) {
     {
         out.push(Entry::disabled(info.name));
         if !soundcraft_mix::is_third_party(cur) {
-            out.push(Entry::item(text("Edit Parameters…"), Action::EditInstrument(track)));
+            out.push(Entry::item(text("Edit Parameters…"), Action::EditInstrument { document, track }));
         }
         out.push(Entry::Separator);
     }
@@ -143,7 +155,7 @@ fn instrument(app: &SoundApp) -> (bool, Vec<Entry>) {
         label: name.to_string(),
         enabled: true,
         checked: current.as_deref() == Some(id),
-        action: Some(Action::SetInstrument { track, plugin: id.to_string() }),
+        action: Some(Action::SetInstrument { document, track, plugin: id.to_string() }),
     };
     let built_in = soundcraft_dsp::plugins().iter().filter(|p| p.is_instrument).map(|p| pick(p.id, p.name)).collect();
     out.push(Entry::submenu(text("Built-in"), built_in));
@@ -320,6 +332,38 @@ mod tests {
         app.run("edit.select", json!({"tracks": [a]})).unwrap();
         run(&mut app, &sampler);
         assert_eq!(instrument(&app, a).as_deref(), Some("sampler"), "applied while the selection still matches");
+    }
+
+    #[test]
+    fn an_instrument_pick_from_a_replaced_session_is_refused() {
+        let mut app = app();
+        let first = app.run("track.new", json!({"kind": "instrument"})).unwrap()["tracks"][0].as_u64().unwrap();
+        app.run("edit.select", json!({"tracks": [first]})).unwrap();
+        let [_, Contents { entries, .. }] = submenus(&mut app);
+        let sampler = picks(&entries).into_iter().find(|p| p.0 == "Sampler").map(|p| p.2.clone()).unwrap();
+        app.run("session.new", json!({})).unwrap();
+        let second = app.run("track.new", json!({"kind": "instrument"})).unwrap()["tracks"][0].as_u64().unwrap();
+        assert_eq!(second, first, "the new session reuses the id, so only the session tells them apart");
+        app.run("edit.select", json!({"tracks": [second]})).unwrap();
+        let plugin =
+            |app: &SoundApp| app.engine.session().tracks.iter().find(|x| x.id.0 == second).and_then(|x| x.instrument.clone()).map(|i| i.plugin);
+        let before = plugin(&app);
+        app.ui.status.clear();
+        run(&mut app, &sampler);
+        assert_eq!(plugin(&app), before, "the new session's track is untouched");
+        assert!(!app.ui.status.is_empty(), "the refusal is reported");
+    }
+
+    #[test]
+    fn nothing_runs_while_preferences_is_open() {
+        let mut app = app();
+        app.ui.recent_sessions = vec!["/nowhere/Song.scraft".into()];
+        app.ui.show_preferences = true;
+        run(&mut app, &Action::ClearRecent);
+        assert_eq!(app.ui.recent_sessions.len(), 1, "a pick from a menu one refresh behind is ignored");
+        app.ui.show_preferences = false;
+        run(&mut app, &Action::ClearRecent);
+        assert!(app.ui.recent_sessions.is_empty());
     }
 
     #[test]
