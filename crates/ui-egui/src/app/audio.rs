@@ -34,7 +34,9 @@ impl SoundApp {
         Ok(())
     }
 
-    /// Open the input device once (for recording and input monitoring) and feed the player.
+    /// Open the input device once (for recording and input monitoring) and feed the player. When a
+    /// shared ASIO capture fails and takes the output down with it, reopen the output so playback
+    /// goes on.
     pub(super) fn ensure_input(&mut self) {
         if self.recorder.is_some() || self.recorder_failed {
             return;
