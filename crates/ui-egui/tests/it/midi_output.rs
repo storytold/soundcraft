@@ -1,5 +1,6 @@
 //! MIDI and instrument tracks choose a MIDI output (a port and a channel) in the Mix window's I/O
-//! section and the Edit window's I/O column. The selectors are labelled combo boxes, list the
+//! section and the Edit window's I/O column (an instrument track also in the Instruments column).
+//! The selectors are labelled combo boxes, list the
 //! ports (one that is unplugged says so), mark channels other tracks use with text, run
 //! `track.midi_output`, and work from the keyboard.
 use egui::accesskit::Role;
@@ -119,4 +120,25 @@ fn the_mix_window_selector_works_from_the_keyboard() {
     h.key_press(Key::Enter);
     h.run_steps(3);
     assert_eq!(output(&h, "Synth").as_deref(), Some("MIDI:1:UM-ONE"));
+}
+
+/// Pro Tools puts an instrument track's MIDI output selector in the Instruments view too
+/// (Reference Guide p320, p368): with only that view on, the instrument track can be routed there.
+#[test]
+fn the_instruments_view_holds_an_instrument_tracks_midi_output() {
+    let mut h = harness(MainWindow::Edit);
+    {
+        let edit = &mut h.state_mut().engine.session_mut().edit;
+        edit.set_flag("edit_view.io", false);
+        edit.set_flag("edit_view.instruments", true);
+    }
+    h.run_steps(4);
+    assert!(h.query_by_label("MIDI output for Synth").is_none(), "a MIDI track has no instrument, so no Instruments view selector");
+    assert_eq!(selector_value(&h, "Bass"), "No MIDI output");
+    h.get_by_label("MIDI output for Bass").click();
+    h.run_steps(3);
+    h.get_by_label("IAC Bus 1").click();
+    h.run_steps(3);
+    assert_eq!(output(&h, "Bass").as_deref(), Some("MIDI:1:IAC Bus 1"));
+    assert_eq!(selector_value(&h, "Bass"), "IAC Bus 1 ch 1");
 }

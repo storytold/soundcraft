@@ -13,7 +13,9 @@ FreeBSD or in the web version: the selector says so.
 Each MIDI and instrument track has a **MIDI output** selector:
 
 - in the Mix window, at the bottom of the I/O section;
-- in the Edit window's I/O column (**View › Edit Window Views › I/O**), under the audio output.
+- in the Edit window's I/O column (**View › Edit Window Views › I/O**), under the audio output;
+- for an instrument track, also in the Edit window's Instruments column (**View › Edit Window
+  Views › Instruments**), under the instrument, as in Pro Tools.
 
 Click it and choose a port, then a channel from 1 to 16. **No MIDI output** stops the track
 sending. A new track sends nothing until you choose.
