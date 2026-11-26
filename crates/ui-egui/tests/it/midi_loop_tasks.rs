@@ -156,7 +156,7 @@ fn after_loop_record() -> SoundApp {
     for pitch in [60, 64, 67] {
         events.extend([ev(BAR + 10_000, 0x90, pitch, 100), ev(BAR + 40_000, 0x80, pitch, 0), wrap]);
     }
-    let style = MidiRecordStyle { loop_record: true, merge: vec![false], release: MergeRelease::default(), same_pass: false };
+    let style = MidiRecordStyle { loop_record: true, merge: vec![false], release: MergeRelease::default(), same_pass: false, punched_in: None };
     let inputs = midi_record_inputs(&app.engine);
     let pass = MidiPass::Loop { stopped: Some(BAR + BAR / 2), marked: true };
     let take = add_midi_recording_with(&mut app.engine, range, pass, &events, &[], &inputs, &style);

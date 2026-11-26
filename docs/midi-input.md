@@ -93,10 +93,13 @@ What a pass does with the MIDI already on a track depends on the record mode, as
 | **MIDI Merge** on | What was played is merged into the MIDI clips already there. They keep their place and length; new clips are made only for the parts of the range no clip covers. A note may sound past the end of its clip. |
 | **Loop Playback** on, Loop Record off, only MIDI tracks record-enabled | Record (from stop) loops the selection, after the pre-roll. With MIDI Merge each round is merged into what the rounds before it recorded, so you can play the hi-hats in one round and the kick in the next. Without it the last round in which you played something replaces the others; a round in which nothing was played changes nothing, and a round cut short by Stop (the first one too, when you stop before the loop goes round) replaces only up to where it stopped. |
 | **Loop Playback** on with an audio track record-enabled | The pass runs in a line, as audio recording does. |
+| Record pressed while a loop plays (punch-in) | The pass records as a normal pass over the loop, merged or replacing as **MIDI Merge** says, even with Loop Record on ("Looping playback does not enable loop recording", p.753). Its first round starts at the punch-in point: what lies before it stays. |
 | **Loop Record** | Every round of the loop in which a track received new material (a key pressed or a controller moved) is a take of its own, the length of the loop. The first replaces what the loop covers on the track's playlist; each further one goes on a new playlist named after the track (*Keys.02*, *Keys.03*…), which becomes the track's. Earlier takes stay on their playlists. MIDI Merge has no effect, and its button in the Transport window is dimmed. A last round cut short by Stop is kept when something was played in it. |
 
 - While **Options › Loop Record** is on, the Record buttons (Edit window toolbar and Transport
-  window) show a loop symbol and their tooltip says *Loop Record mode* (p.771, p.826).
+  window) show a loop symbol and their tooltip says *Loop Record mode* (p.771, p.826): when
+  stopped, and during a pass started in Loop Record mode. While playing, and during a punch-in
+  pass, they show the normal mode and **MIDI Merge** is not dimmed.
 - The **MIDI Merge** button's tooltip says what Merge and Replace do and that a right-click
   chooses the release mode.
 - **MIDI Merge** can be switched during a pass. Each round (the whole pass, when it does not

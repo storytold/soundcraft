@@ -96,12 +96,14 @@ impl SoundApp {
     /// clips, and what to tell the user when the take is not complete. `loop_record`: the pass
     /// ran in Loop Record mode, which makes a take of every round played in; otherwise MIDI Merge
     /// decides, round by round, whether what was played is merged or replaces the range.
+    /// `punched_in`: where a pass punched in while a loop played started; its first round covers
+    /// only from there.
     pub(crate) fn finish_midi_take(
         &mut self,
         range: Range,
         with_audio: bool,
         confirmed: bool,
-        (pass, loop_record): (MidiPass, bool),
+        (pass, loop_record, punched_in): (MidiPass, bool, Option<Samples>),
     ) -> (usize, Option<String>) {
         let Some(m) = &self.midi_inputs else { return (0, None) };
         let feed = std::sync::Arc::clone(m.feed());
@@ -136,7 +138,7 @@ impl SoundApp {
             .collect();
         let pass = pass_with_known_stop(pass, uncollected);
         let inputs = std::mem::take(&mut self.midi_take_inputs);
-        let style = MidiRecordStyle { loop_record, merge, release: self.ui.midi_merge_release, same_pass: with_audio };
+        let style = MidiRecordStyle { loop_record, merge, release: self.ui.midi_merge_release, same_pass: with_audio, punched_in };
         let take = soundcraft_engine::io::add_midi_recording_with(&mut self.engine, range, pass, &events, &devices, &inputs, &style);
         (take.clips.len() + take.merged.len(), midi_take_problem(take.gaps, uncollected, confirmed))
     }
@@ -307,7 +309,7 @@ mod tests {
             RecordedMidi { at: 36_000, port: 0, status: 0x80, data1: 62, data2: 0 },
         ]);
         app.engine.session_mut().edit.midi_merge = true;
-        app.finish_midi_take(range, false, true, (MidiPass::Linear, false));
+        app.finish_midi_take(range, false, true, (MidiPass::Linear, false, None));
         let track = app.engine.session().track(soundcraft_model::TrackId(t)).unwrap();
         let pitches: Vec<Vec<u8>> = track
             .clips()

@@ -386,6 +386,9 @@ pub struct MidiRecordStyle {
     pub release: MergeRelease,
     /// The pass also recorded audio, whose takes already made its undo step: the MIDI joins it.
     pub same_pass: bool,
+    /// Where a pass punched in while the loop was playing started: its first round covers only
+    /// from there, so a replacing first round leaves what lies before the punch-in point.
+    pub punched_in: Option<Samples>,
 }
 
 impl MidiRecordStyle {
@@ -547,9 +550,28 @@ fn write_rounds(
             // after the stop stays (Replace overwrites "within the record range", Reference Guide
             // p.823–824). A Loop Record take is the loop's length (p.826).
             let end = if style.loop_record { range.end } else { until };
+            // A first round punched in while the loop played covers only from the punch-in
+            // point: what lies before it was not recorded over and stays (p.819).
+            let start = match style.punched_in {
+                Some(at) if i == 0 && !style.loop_record => at.clamp(range.start, end),
+                _ => range.start,
+            };
+            if end <= start {
+                continue;
+            }
+            let shift = s.tempo.samples_to_ticks(start, s.sample_rate) - s.tempo.samples_to_ticks(range.start, s.sample_rate);
+            let mut seq = r.seq.clone();
+            if shift > 0 {
+                for n in &mut seq.notes {
+                    n.start = (n.start - shift).max(0);
+                }
+                for c in &mut seq.ctrls {
+                    c.tick = (c.tick - shift).max(0);
+                }
+            }
             latch = merge::Latch::new(style.release);
             let cid = s.new_clip_id();
-            crate::edit::place_clip(s, tid, Clip::midi(cid, name, range.start, end - range.start, r.seq.clone()));
+            crate::edit::place_clip(s, tid, Clip::midi(cid, name, start, end - start, seq));
             clips.push(cid);
             changed = true;
         }
@@ -1027,7 +1049,7 @@ mod tests {
     }
 
     fn style(loop_record: bool, merge: &[bool], release: MergeRelease) -> MidiRecordStyle {
-        MidiRecordStyle { loop_record, merge: merge.to_vec(), release, same_pass: false }
+        MidiRecordStyle { loop_record, merge: merge.to_vec(), release, same_pass: false, punched_in: None }
     }
 
     /// Record `events` on every record-enabled track as `style` says.
@@ -1393,5 +1415,33 @@ mod tests {
         let take = record(&mut e, Range::new(0, 1), MidiPass::Linear, &[ev(0, 0, 0xB0, 1, 9)], &style(false, &[true], MergeRelease::default()));
         assert_eq!(take.clips.len(), 1);
         assert_eq!(midi_of(&e.session().track(t).unwrap().clips()[0]).ctrls.len(), 1);
+    }
+
+    #[test]
+    fn a_replacing_pass_punched_into_a_playing_loop_leaves_what_lies_before_the_punch_in() {
+        let mut e = Engine::default();
+        let t = armed(&mut e, "Keys", "none");
+        add_midi_recording(
+            &mut e,
+            LOOP,
+            &[ev(Q / 4, 0, 0x90, 50, 100), ev(Q / 2, 0, 0x80, 50, 0), ev(3 * Q, 0, 0x90, 72, 100), ev(3 * Q + Q / 4, 0, 0x80, 72, 0)],
+            &[],
+            false,
+        );
+        // Record pressed at the third quarter of the playing loop; stopped in that round.
+        let events = [ev(2 * Q + Q / 4, 0, 0x90, 74, 100), ev(2 * Q + Q / 2, 0, 0x80, 74, 0)];
+        let stop = 2 * Q + 3 * Q / 4;
+        let style = MidiRecordStyle { punched_in: Some(2 * Q), ..style(false, &[false], MergeRelease::default()) };
+        record(&mut e, LOOP, MidiPass::Loop { stopped: Some(stop), marked: true }, &events, &style);
+        let track = e.session().track(t).unwrap();
+        let clips: Vec<(Samples, Samples, Vec<(u8, i64)>)> =
+            track.clips().iter().map(|c| (c.start, c.range().end, midi_of(c).notes.iter().map(|n| (n.pitch, n.start)).collect())).collect();
+        assert_eq!(clips, [(0, 2 * Q, vec![(50, 240)]), (2 * Q, stop, vec![(74, 240)]), (stop, LOOP.end, vec![(72, 240)])]);
+        // A later round played the whole loop over: it replaces all of it.
+        e.run("edit.undo").unwrap();
+        let events =
+            [ev(2 * Q + Q / 4, 0, 0x90, 74, 100), ev(2 * Q + Q / 2, 0, 0x80, 74, 0), WRAP, ev(Q / 4, 0, 0x90, 76, 100), ev(Q / 2, 0, 0x80, 76, 0)];
+        record(&mut e, LOOP, MidiPass::Loop { stopped: None, marked: true }, &events, &style);
+        assert_eq!(pitches(&e, t), [vec![76]]);
     }
 }

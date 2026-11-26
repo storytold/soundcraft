@@ -77,6 +77,7 @@ pub(super) fn transport_window(app: &mut SoundApp, ctx: &egui::Context) {
                 });
             }
             if flags.contains("view.transport.midi_controls") || expanded {
+                let loop_pass = app.record_mode().is_some();
                 let (click, countoff, merge, loop_rec, prepost) = {
                     let e = &app.engine.session().edit;
                     (e.click, e.countoff, e.midi_merge, e.loop_record, e.pre_post_roll)
@@ -90,8 +91,10 @@ pub(super) fn transport_window(app: &mut SoundApp, ctx: &egui::Context) {
                         ("Pre/Post", prepost, "options.pre_post_roll"),
                     ] {
                         // In Loop Record mode MIDI Merge has no effect, and the button is dimmed
-                        // (Reference Guide p.813).
-                        let dimmed = cmd == "options.midi_merge" && loop_rec;
+                        // (Reference Guide p.813): for a Loop Record pass, and when stopped for
+                        // the pass Record would start. A punch-in while playing records as a
+                        // normal pass, where MIDI Merge counts (`SoundApp::record_mode`).
+                        let dimmed = cmd == "options.midi_merge" && loop_pass;
                         let r = ui.add_enabled(!dimmed, egui::Button::selectable(on, crate::localization::text(label)));
                         let r = if cmd != "options.midi_merge" {
                             r

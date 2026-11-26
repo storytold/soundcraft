@@ -26,8 +26,18 @@ impl SoundApp {
 
     /// The record mode the Record buttons show, by its Pro Tools name, or `None` in Normal mode,
     /// which shows nothing (Reference Guide p.771). Loop Record is the only other mode drawn yet.
+    /// It is shown for a pass that loop-records and, when stopped, for the pass Record would
+    /// start. Record pressed while playing punches in, and a punch-in pass records as a normal
+    /// pass even when Loop Record is on and a loop plays ("Looping playback does not enable loop
+    /// recording", p.753; audio records it in a line too).
     pub(crate) fn record_mode(&self) -> Option<&'static str> {
-        self.engine.session().edit.loop_record.then_some("Loop Record mode")
+        let t = &self.engine.transport;
+        let looping = if t.recording {
+            self.take_plan.as_ref().is_some_and(|p| p.pass.is_some())
+        } else {
+            !t.playing && self.engine.session().edit.loop_record
+        };
+        looping.then_some("Loop Record mode")
     }
 
     /// Current transport position (playhead while playing, else the edit insertion).
@@ -293,7 +303,10 @@ impl SoundApp {
         // keys still down are held to the end of the loop (the take is reported as incomplete).
         let (midi_range, midi_kind) =
             super::midi::midi_take_span(midi_loop, plan.punch, self.record_start, stopped_at, self.midi_pass_stopped_at(midi_pass));
-        let (midi_clips, midi_problem) = self.finish_midi_take(midi_range, !ids.is_empty(), midi_confirmed, (midi_kind, plan.pass.is_some()));
+        // A pass punched in while a loop played: its first round starts at the punch-in point.
+        let punched_in = (plan.pass.is_none() && midi_loop.is_some()).then_some(self.record_start);
+        let (midi_clips, midi_problem) =
+            self.finish_midi_take(midi_range, !ids.is_empty(), midi_confirmed, (midi_kind, plan.pass.is_some(), punched_in));
         self.ui.status = if plan.pass.is_some() && midi_clips == 0 {
             crate::localized_format!("Loop-recorded {} take(s)", ids.len() / tracks)
         } else if ids.is_empty() && midi_clips == 0 {
@@ -592,6 +605,23 @@ mod tests {
         e.loop_playback = true;
         e.selection = Range::point(96_000);
         assert_eq!(midi_loop_pass(&e, false), None, "nothing to loop");
+    }
+
+    #[test]
+    fn the_record_buttons_name_loop_record_only_for_a_pass_that_loop_records() {
+        let mut app = SoundApp::new(soundcraft_engine::Engine::default(), None, crate::Services::default());
+        app.engine.session_mut().edit.loop_record = true;
+        assert_eq!(app.record_mode(), Some("Loop Record mode"), "stopped: Record starts a Loop Record pass");
+        // Playing: Record punches in, which records in Normal mode (Loop Playback does not enable
+        // loop recording, Reference Guide p.753).
+        app.engine.transport.playing = true;
+        assert_eq!(app.record_mode(), None);
+        app.engine.transport.recording = true;
+        let plan = |pass| soundcraft_engine::io::Recording { start: 0, pass, punch: None, rate: 0, takes: Vec::new() };
+        app.take_plan = Some(plan(None));
+        assert_eq!(app.record_mode(), None, "a punch-in pass is not a Loop Record pass");
+        app.take_plan = Some(plan(Some(96_000)));
+        assert_eq!(app.record_mode(), Some("Loop Record mode"));
     }
 
     #[test]
