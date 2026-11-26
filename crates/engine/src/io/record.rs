@@ -12,8 +12,9 @@ pub struct Recording {
     pub pass: Option<Samples>,
     pub punch: Option<Range>,
     /// Session samples the take's first sample precedes `start` by: the time between the first
-    /// captured sample and the moment the sample at `start` was heard, plus the record offset.
-    /// Negative when capture began after that moment. Older plans have none.
+    /// captured sample and the moment the sample at `start` was heard, less the record offset (a
+    /// positive record offset places the take later). Negative when capture began after that
+    /// moment. Older plans have none.
     #[serde(default)]
     pub placement_offset: Samples,
     /// The input's sample rate, which the take files are written at.
@@ -89,7 +90,7 @@ fn add_recording_in(
             None => tracks.push((tid, vec![path])),
         }
     }
-    // Without a loop or a punch every file is placed whole, so each is decoded once, here. With
+    // Without a loop, a punch or a positive shift every file is placed whole, so each is decoded once, here. With
     // one, each file's length is parsed from its header first (the file is read, not decoded); a
     // file is decoded once the take is laid out and it holds a kept span, one file at a time, so
     // a punch on a take of several files decodes no more than the files it keeps.
@@ -260,9 +261,10 @@ fn kept_spans(start: Samples, shift: Samples, len: Samples, pass: Option<Samples
     kept
 }
 
-/// Where a take recording from `start` shows while it holds `len` samples, as it will be placed:
-/// just the pass under way when loop recording in passes of `pass`, within the `punch` range.
-/// Returns the timeline position of its first sample and the span it covers.
+/// Where a take recording from `start` shows while it holds `len` samples, as it would be placed
+/// without device timing or the record offset (the placement offset is applied when the take is
+/// finished): just the pass under way when loop recording in passes of `pass`, within the `punch`
+/// range. Returns the timeline position of its first sample and the span it covers.
 pub fn live_span(start: Samples, pass: Option<Samples>, punch: Option<Range>, len: Samples) -> Option<(Samples, Range)> {
     let origin = start.saturating_sub(pass.filter(|p| *p > 0).map_or(0, |p| len / p * p));
     let span = Range::new(start, origin.saturating_add(len));
