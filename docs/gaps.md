@@ -16,7 +16,7 @@ When you close a gap, delete its entry (or shrink it) in the same PR, and bump t
 | # | Gap | Dimension | Doc | Est. (h) |
 |---|---|---|---|---:|
 | G-01 | **Alpha blocker.** No channel routing or duplex low-latency path (device, rate and buffer choice done; ASIO opt-in) | Hardware | [hardware-parity.md](hardware-parity.md) | 15–25 |
-| G-02 | **Alpha blocker.** MIDI devices: input, loop and merge recording work (checked on Linux only); no output or clock | Hardware / MIDI | [hardware-parity.md](hardware-parity.md) | 6–14 |
+| G-02 | **Alpha blocker.** MIDI devices: input works (checked on Linux); loop and merge recording work (checked on macOS and Windows with scripted MIDI; Linux type-checked only); no output or clock | Hardware / MIDI | [hardware-parity.md](hardware-parity.md) | 6–14 |
 | G-03 | **Alpha blocker.** Session exchange remains incomplete (strict external-WAV AAF import only; no AAF/OMF export, OMF import or `.ptx`) | File formats | [file-format-parity.md](file-format-parity.md) | 50–90 |
 | G-04 | Open correctness bugs in features counted as done (~25 issues) | Stability | this file | 25–40 |
 | G-05 | (Entitlement part: alpha blocker for the mix row) Third-party VST3s blocked in the signed macOS build; AU editors missing | Ecosystem | [plugin-parity.md](plugin-parity.md) | 10–15 |
@@ -78,7 +78,8 @@ When you close a gap, delete its entry (or shrink it) in the same PR, and bump t
   already on the track, Loop Playback loops a MIDI-only pass with each round merged or replacing,
   Loop Record makes a take per round with new material on numbered playlists, and MIDI Merge
   Release Mode (Latch, Latch Until Next Event) is a preference. Guide:
-  [midi-input.md](midi-input.md#5-loop-and-merge-recording). Not yet: Replace that keeps
+  [midi-input.md](midi-input.md#5-loop-and-merge-recording). Checked on macOS and Windows with a
+  scripted virtual MIDI source; Linux type-checked only. Not yet: Replace that keeps
   existing clip boundaries (p.819), barline-snapped clips (p.818), Wait for Note, Input Quantize
   on live takes, record cancel, the Matches menu for takes.
 - **Missing:** MIDI output (external synths, MIDI tracks without an instrument), MIDI clock/MTC
