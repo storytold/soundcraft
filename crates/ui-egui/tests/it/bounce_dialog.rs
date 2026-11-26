@@ -19,13 +19,14 @@ fn bounce_starts_in_the_session_folder_and_browse_picks_the_file_and_format() {
     engine.path = Some("/Songs/Midnight Groove/Midnight Groove.scraft".into());
     let mut app = SoundApp::new(engine, None, Services { pick_save: Some(pick_save), ..Default::default() });
     assert!(app.dialogs.open_for_command(&app.engine, "file.bounce_mix"));
-    let mut h = Harness::builder().with_size(vec2(1600.0, 1000.0)).build_ui_state(
-        |ui, app: &mut SoundApp| {
-            app.logic(&ui.ctx().clone());
-            app.ui(ui);
-        },
-        app,
-    );
+    let mut h =
+        Harness::builder().with_context_setup(soundcraft_ui_egui::framework::install_headless).with_size(vec2(1600.0, 1000.0)).build_ui_state(
+            |ui, app: &mut SoundApp| {
+                app.logic(&ui.ctx().clone());
+                app.ui(ui);
+            },
+            app,
+        );
     h.run_steps(3);
     h.get_by_label("Browse…").click();
     h.run_steps(3);

@@ -282,7 +282,8 @@ pub fn menu_bar(app: &mut SoundApp, ui: &mut egui::Ui) {
                         if ui.add_enabled(preferences_enabled, egui::Button::new(crate::localization::text("Preferences..."))).clicked() {
                             let _ = app.run("setup.preferences", json!({"value": true}));
                         }
-                        if ui.button(crate::localization::text("Check for Updates…")).clicked() {
+                        // Nightly has no in-app updater: ArtCraft Launcher installs and updates it.
+                        if app.update_services_allowed() && ui.button(crate::localization::text("Check for Updates…")).clicked() {
                             let _ = app.run("app.checkForUpdates", json!({}));
                         }
                         if ui.button(crate::localization::text("Session Info")).clicked() {
@@ -647,6 +648,13 @@ pub fn run_ui_command(app: &mut SoundApp, id: &str, p: &Value) -> Option<Result<
             json!({"language": language.id()})
         }
         "app.checkForUpdates" | "help.checkForUpdates" => {
+            // A Nightly launch has no in-app updater, so say where its updates come from instead of
+            // reporting a check that will never run.
+            if !app.update_services_allowed() {
+                let message = "SoundCraft Nightly is updated by ArtCraft Launcher; this build has no update check".to_owned();
+                app.ui.status = message.clone();
+                return Some(Err(message));
+            }
             crate::updates_ui::check(app);
             json!({})
         }
@@ -901,6 +909,22 @@ mod tests {
         assert!(!item_state(&app, "Setup > Preferences...", Some("setup.preferences")).0);
         assert!(!item_state(&app, "Window > About", Some("window.about")).0);
         assert!(!item_state(&app, "File > Save Session", Some("session.save")).0);
+    }
+
+    /// A Nightly launch has no in-app updater: the command says where its updates come from instead
+    /// of reporting a check that can never run, whichever surface (menu, palette, automation) sent it.
+    #[test]
+    fn a_nightly_launch_refuses_the_update_check_command() {
+        let mut app = SoundApp::new(soundcraft_engine::Engine::default(), None, Services::default());
+        // Stable, the tests' launch identity, still queues the check.
+        assert!(app.run("app.checkForUpdates", json!({})).is_ok());
+
+        app.set_update_services_for_test(false);
+        let refused = app.run("app.checkForUpdates", json!({}));
+        let message = refused.unwrap_err();
+        assert!(message.contains("ArtCraft Launcher"), "unexpected refusal: {message}");
+        assert_eq!(app.ui.status, message);
+        assert!(app.run("help.checkForUpdates", json!({})).is_err());
     }
 
     /// Re-selecting Preferences through either menu keeps its modal window open.

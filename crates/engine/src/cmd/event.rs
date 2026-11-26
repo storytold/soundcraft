@@ -313,10 +313,16 @@ fn add_marker(e: &mut Engine, p: &Value) -> Result<Value> {
     let at = position_param(e, "markers.add", p, "at")?;
     let st = position_param(e, "markers.add", p, "start")?;
     let en = position_param(e, "markers.add", p, "end")?;
-    let kind = match str_param(p, "kind") {
-        Some("selection") => MarkerKind::Selection,
-        Some("none") => MarkerKind::None,
-        _ => MarkerKind::Marker,
+    let kind = match p.get("kind") {
+        None | Some(Value::Null) => MarkerKind::Marker,
+        Some(v) => match v.as_str() {
+            Some("marker") => MarkerKind::Marker,
+            Some("selection") => MarkerKind::Selection,
+            Some("none") => MarkerKind::None,
+            Some(other) => return Err(bad("markers.add", format!("unknown kind `{other}`"))),
+            // A present non-string is neither a documented kind nor an omitted one.
+            None => return Err(bad("markers.add", "kind must be a string")),
+        },
     };
     let (a, b) = match (at, st, en) {
         (Some(a), _, _) => (a, a),
@@ -578,6 +584,30 @@ mod tests {
             assert!(e.execute("markers.edit", &json!({"number": n, "color": bad})).is_err());
             assert_eq!(color(&e), None);
         }
+    }
+
+    /// `markers.add` rejects an unknown or non-string `kind` instead of silently adding a plain
+    /// marker; an absent or null one still means a plain marker.
+    #[test]
+    fn markers_add_rejects_an_unknown_kind() {
+        let mut e = crate::Engine::default();
+        let err = e.execute("markers.add", &json!({"name": "x", "kind": "garbage"})).unwrap_err();
+        assert!(err.to_string().contains("kind"), "unexpected error: {err}");
+        assert!(e.session().markers.is_empty());
+        for bad in [json!(123), json!(true), json!(["marker"]), json!({"kind": "marker"}), json!(1.5)] {
+            let err = e.execute("markers.add", &json!({"name": "x", "kind": bad})).unwrap_err();
+            assert!(err.to_string().contains("kind"), "{bad}: unexpected error: {err}");
+            assert!(e.session().markers.is_empty(), "{bad}: a marker was added");
+        }
+        let plain = e.execute("markers.add", &json!({"name": "Plain", "kind": null, "at": 500})).unwrap();
+        assert_eq!(e.session().markers.len(), 1, "null is still an omitted kind");
+        let verse = e.execute("markers.add", &json!({"name": "Verse", "kind": "marker", "at": 1000})).unwrap();
+        let pre = e.execute("markers.add", &json!({"name": "Pre", "kind": "none", "at": 2000})).unwrap();
+        let kind_of =
+            |e: &crate::Engine, r: &serde_json::Value| e.session().markers.iter().find(|m| Some(m.id.0) == r["id"].as_u64()).map(|m| m.kind);
+        assert_eq!(kind_of(&e, &plain), Some(soundcraft_model::MarkerKind::Marker));
+        assert_eq!(kind_of(&e, &verse), Some(soundcraft_model::MarkerKind::Marker));
+        assert_eq!(kind_of(&e, &pre), Some(soundcraft_model::MarkerKind::None));
     }
 
     /// Constant replaces the tempo over [start, end) only; the tempo at the old end tick carries on after it.
