@@ -86,58 +86,106 @@ where
     )
 }
 
-/// Open the output device `cfg` chooses (else the default) at the chosen rate (else the session
-/// rate) if possible, in the best sample format it offers (f32, else 32- or 16-bit integers),
-/// with as many channels as it offers up to `want_ch` (at least stereo when available), and the
-/// chosen buffer size when the device allows it.
-pub(crate) fn open_device(
-    want_rate: u32,
-    want_ch: u16,
-    cfg: &AudioConfig,
-) -> Result<(cpal::Device, cpal::StreamConfig, cpal::SampleFormat, String), String> {
+/// One way to open the output: a stream configuration, the sample format it carries, and whether
+/// it is the device's default configuration rather than one picked for the chosen rate.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct OutputAttempt {
+    pub(crate) config: cpal::StreamConfig,
+    pub(crate) format: cpal::SampleFormat,
+    pub(crate) default: bool,
+}
+
+/// The configurations to try, in order: the one picked for the chosen rate, with the chosen
+/// buffer size and then the device's buffer size; then the device's default configuration the
+/// same two ways. The default comes last so a device that refuses the picked rate (or does not
+/// settle at it in time) still plays, resampled, instead of leaving the player on its silent
+/// clock. A configuration already in the list is not tried twice.
+pub(crate) fn output_attempts(
+    picked: Option<(cpal::StreamConfig, cpal::SampleFormat)>,
+    default: Option<(cpal::StreamConfig, cpal::SampleFormat)>,
+) -> Vec<OutputAttempt> {
+    let mut attempts: Vec<OutputAttempt> = Vec::new();
+    let candidates = picked.map(|p| (p, false)).into_iter().chain(default.map(|d| (d, true)));
+    for ((config, format), default) in candidates {
+        for config in [config, cpal::StreamConfig { buffer_size: cpal::BufferSize::Default, ..config }] {
+            if !attempts.iter().any(|a| a.config == config && a.format == format) {
+                attempts.push(OutputAttempt { config, format, default });
+            }
+        }
+    }
+    attempts
+}
+
+/// Open the output device `cfg` chooses (else the default) and list the configurations to try
+/// ([`output_attempts`]). The first is at the chosen rate (else the session rate) if the device
+/// offers it, in the best sample format it offers (f32, else 32- or 16-bit integers), with as
+/// many channels as it offers up to `want_ch` (at least stereo), or else the fewest channels
+/// above it (the extra channels stay silent), and the chosen buffer size when the device allows
+/// it. The device's default configuration (the mix resamples to it) follows, and is the only
+/// one when the device offers none of the requested rates.
+pub(crate) fn open_device(want_rate: u32, want_ch: u16, cfg: &AudioConfig) -> Result<(cpal::Device, Vec<OutputAttempt>, String), String> {
     use cpal::traits::DeviceTrait;
     let host = devices::host(cfg);
     let device = devices::device(&host, cfg.output.as_deref(), true).ok_or_else(|| "no output device".to_string())?;
     let name = devices::device_name(&device).unwrap_or_else(|| "Audio device".into());
-    // Prefer a config at the chosen (else session) rate: up to the mix's width, else wider; only
-    // then the device default (we resample).
+    // Prefer a config at the chosen (else session) rate: up to the mix's width, else wider; then
+    // the device default (we resample).
     let want_ch = want_ch.max(2);
     let rates: Vec<u32> = cfg.sample_rate.into_iter().chain(Some(want_rate)).collect();
     let configs: Vec<cpal::SupportedStreamConfigRange> = device.supported_output_configs().map(|configs| configs.collect()).unwrap_or_default();
-    let (config, format) = match pick_output_config(&configs, &rates, want_ch).or_else(|| pick_wider_output_config(&configs, &rates)) {
-        Some((mut c, buffers, format)) => {
+    let picked =
+        pick_output_config(&configs, &rates, want_ch).or_else(|| pick_wider_output_config(&configs, &rates)).map(|(mut c, buffers, format)| {
             c.buffer_size = devices::buffer_size(cfg.buffer_size, &buffers);
             (c, format)
-        }
-        None => {
-            let d = device.default_output_config().map_err(|e| e.to_string())?;
-            let format = d.sample_format();
-            // cpal 0.18's default can name a format these callbacks do not decode (I24, F64);
-            // open the same rate and channels in a format they do, rather than lose output.
-            let c = if devices::format_rank(format).is_some() {
-                d
-            } else {
-                // Same rate and channels first; else any usable channel count at the default
-                // rate; else the session rate (the mix resamples and folds channels). A device
-                // whose only decoded format is wider or at another rate would otherwise open no
-                // stream at all.
-                devices::supported_format_config(&configs, d.sample_rate(), d.channels())
-                    .or_else(|| devices::supported_format_config(&configs, want_rate, want_ch))
-                    .ok_or_else(|| format!("unsupported device sample format {format:?}"))?
-            };
-            let mut stream_config = c.config();
-            stream_config.buffer_size = devices::buffer_size(cfg.buffer_size, c.buffer_size());
-            (stream_config, c.sample_format())
+        });
+    let default = match default_output_config(&device, &configs, want_rate, want_ch, cfg) {
+        Ok(d) => Some(d),
+        // Without a picked config the default is all there is, so its error is the device's.
+        Err(e) if picked.is_none() => return Err(e),
+        Err(e) => {
+            log::debug!("no default output configuration to fall back to: {e}");
+            None
         }
     };
-    Ok((device, config, format, name))
+    Ok((device, output_attempts(picked, default), name))
+}
+
+/// The device's default output configuration with the chosen buffer size, in a sample format the
+/// callbacks decode.
+fn default_output_config(
+    device: &cpal::Device,
+    configs: &[cpal::SupportedStreamConfigRange],
+    want_rate: u32,
+    want_ch: u16,
+    cfg: &AudioConfig,
+) -> Result<(cpal::StreamConfig, cpal::SampleFormat), String> {
+    use cpal::traits::DeviceTrait;
+    let d = device.default_output_config().map_err(|e| e.to_string())?;
+    let format = d.sample_format();
+    // cpal 0.18's default can name a format these callbacks do not decode (I24, F64);
+    // open the same rate and channels in a format they do, rather than lose output.
+    let c = if devices::format_rank(format).is_some() {
+        d
+    } else {
+        // Same rate and channels first; else any usable channel count at the default
+        // rate; else the session rate (the mix resamples and folds channels). A device
+        // whose only decoded format is wider or at another rate would otherwise open no
+        // stream at all.
+        devices::supported_format_config(configs, d.sample_rate(), d.channels())
+            .or_else(|| devices::supported_format_config(configs, want_rate, want_ch))
+            .ok_or_else(|| format!("unsupported device sample format {format:?}"))?
+    };
+    let mut stream_config = c.config();
+    stream_config.buffer_size = devices::buffer_size(cfg.buffer_size, c.buffer_size());
+    Ok((stream_config, c.sample_format()))
 }
 
 /// Pick the output configuration for the first requested rate the device offers (the configured
 /// rate first, then the session rate), preferring the best sample format and then the most
 /// channels from stereo up to `want_ch`. `None` when the device offers none of the requested
-/// rates in a usable format; the caller then uses the device's default output configuration,
-/// which the mix resamples to the session rate.
+/// rates in a usable format within that width; the caller then tries a wider configuration
+/// ([`pick_wider_output_config`]), and else the device's default output configuration, which
+/// the mix resamples to the session rate.
 pub(crate) fn pick_output_config(
     configs: &[cpal::SupportedStreamConfigRange],
     rates: &[u32],

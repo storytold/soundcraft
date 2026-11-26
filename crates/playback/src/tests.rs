@@ -102,8 +102,47 @@ fn a_wider_only_device_still_opens_at_the_chosen_rate() {
     assert!(pick_wider_output_config(&ufx, &[22_050]).is_none());
 }
 
+/// When the stream at the picked rate will not build (a device that refuses the rate change or
+/// does not settle in time), the device default is tried last, before the silent clock, with the
+/// chosen buffer size first. A default equal to the picked config is not tried twice.
+#[test]
+fn a_device_that_refuses_the_picked_rate_falls_back_to_its_default_config() {
+    let config = |rate, channels, buffer| cpal::StreamConfig { channels, sample_rate: rate, buffer_size: buffer };
+    let picked = (config(48_000, 30, cpal::BufferSize::Fixed(256)), cpal::SampleFormat::F32);
+    let default = (config(44_100, 30, cpal::BufferSize::Fixed(256)), cpal::SampleFormat::I32);
+    let attempts = output_attempts(Some(picked), Some(default));
+    let summary: Vec<_> = attempts.iter().map(|a| (a.config.sample_rate, a.config.buffer_size, a.default)).collect();
+    assert_eq!(
+        summary,
+        vec![
+            (48_000, cpal::BufferSize::Fixed(256), false),
+            (48_000, cpal::BufferSize::Default, false),
+            (44_100, cpal::BufferSize::Fixed(256), true),
+            (44_100, cpal::BufferSize::Default, true),
+        ]
+    );
+    let mut tried = Vec::new();
+    let won = first_started(
+        attempts,
+        |a: &OutputAttempt| {
+            tried.push(a.config.sample_rate);
+            if a.config.sample_rate == 48_000 { Err("the device did not settle at 48000 Hz".to_string()) } else { Ok(Fake { starts: true }) }
+        },
+        start_stream,
+    );
+    let (won, _) = won.expect("the default config opens");
+    assert_eq!((won.config.sample_rate, won.format, won.default), (44_100, cpal::SampleFormat::I32, true));
+    assert_eq!(won.config.buffer_size, cpal::BufferSize::Fixed(256), "the chosen buffer size still comes first");
+    assert_eq!(tried, vec![48_000, 48_000, 44_100]);
+    // A default that is the picked config adds nothing; without a pick the default is all there is.
+    assert_eq!(output_attempts(Some(picked), Some(picked)).len(), 2);
+    let only_default = output_attempts(None, Some(default));
+    assert!(only_default.iter().all(|a| a.default && a.config.sample_rate == 44_100) && only_default.len() == 2);
+}
+
 /// At a supported rate, a preferred sample format wins over more channels; output stays between stereo and the
-/// requested channel cap, and mono-only or wider devices take the default path.
+/// requested channel cap. A mono-only device takes the default path, and a wider one is left to
+/// `pick_wider_output_config`.
 #[test]
 fn output_config_prefers_format_over_channels_and_needs_stereo_within_the_cap() {
     let configs = [range(8, 44_100, 48_000, cpal::SampleFormat::I16), range(2, 44_100, 48_000, cpal::SampleFormat::F32)];
