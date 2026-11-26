@@ -74,7 +74,9 @@ pub(super) fn merge_take(
     let tempo = s.tempo.clone();
     let ticks = |at: Samples| tempo.samples_to_ticks(at, sr);
     let base = ticks(range.start);
-    let range_to = ticks(range.end);
+    // The end of the range as the take was made: at least a tick past its start, so that what a
+    // pass shorter than a tick took in at its start is kept.
+    let range_to = ticks(range.end).max(base.saturating_add(1));
     let stop = ticks(until.clamp(range.start, range.end));
     // What was played, on the timeline's ticks.
     let mut notes: Vec<Note> = seq.notes.iter().map(|n| Note { start: n.start.saturating_add(base), ..*n }).collect();
@@ -118,9 +120,13 @@ pub(super) fn merge_take(
                 .collect()
         })
         .unwrap_or_default();
+    // The clips merged into: those that received something and those whose own notes or
+    // controllers gave way to it.
+    let mut merged: Vec<ClipId> = Vec::new();
     // Existing notes of the same key give way to the new ones, in every clip merged into.
     for h in &hosts {
         let Some(hs) = host_sequence(s, h.id) else { continue };
+        let mut gave_way = false;
         let mut kept = Vec::with_capacity(hs.notes.len());
         for mut x in hs.notes.drain(..) {
             x.start = x.start.saturating_add(h.from);
@@ -136,8 +142,10 @@ pub(super) fn merge_take(
                         n.length = x.length;
                     }
                     keep = false;
+                    gave_way = true;
                 } else if x.start < n.start {
                     x.length = n.start - x.start;
+                    gave_way = true;
                 } else {
                     n.length = x.start - n.start;
                 }
@@ -148,14 +156,17 @@ pub(super) fn merge_take(
             }
         }
         hs.notes = kept;
+        let ctrls_before = hs.ctrls.len();
         hs.ctrls.retain(|c| {
             let at = c.tick.saturating_add(h.from);
             !controller(c).and_then(|key| spans.get(&key)).is_some_and(|&(a, b)| at >= a && at <= b)
         });
+        if gave_way || hs.ctrls.len() != ctrls_before {
+            note_merged(&mut merged, h.id);
+        }
     }
     // Which clip each event goes into: the latest-starting one that holds its tick.
     let host_of = |tick: i64| hosts.iter().filter(|h| h.from <= tick && tick < h.to).max_by_key(|h| (h.from, h.span.start)).map(|h| h.id);
-    let mut merged: Vec<ClipId> = Vec::new();
     let mut loose = Sequence::default();
     for n in notes {
         match host_of(n.start) {
