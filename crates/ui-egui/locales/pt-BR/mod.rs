@@ -1209,6 +1209,7 @@ fn menu_translate(source: &str) -> Option<&'static str> {
         "Right-click to choose the MIDI Merge Release Mode." => "Clique com o botão direito para escolher o modo de liberação da mesclagem MIDI.",
         "Loop Record mode" => "Modo de gravação em loop",
         "Always on: each take after the first goes to a new playlist." => "Sempre ativado: cada take após o primeiro vai para uma nova playlist.",
+        "MIDI Recording" => "Gravação MIDI",
         "Pre/Post" => "Pré/Pós",
         "0.5 seconds" => "0,5 segundos",
         "Path" => "Caminho",

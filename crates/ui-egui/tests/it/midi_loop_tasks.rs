@@ -2,7 +2,9 @@
 //! choose the MIDI Merge Release Mode from the MIDI Merge button's right-click menu (Reference
 //! Guide p.814), switch MIDI Merge and Loop Record from the Transport window's MIDI controls
 //! (p.813), pick an earlier Loop Record take from the track's playlist selector (p.801, p.826),
-//! and take a loop pass back with one undo (p.820).
+//! and take a loop pass back with one undo, named MIDI Recording (p.820). Loop Record shows on
+//! the Record buttons (p.771), the MIDI Merge button explains itself and keeps its menu while
+//! dimmed, and the Preferences say new playlists are always made when loop recording (p.801).
 
 use egui::accesskit::Toggled;
 use egui::{Event, Modifiers, PointerButton, pos2, vec2};
@@ -192,7 +194,7 @@ fn click_at(h: &mut Harness<'_, SoundApp>, at: egui::Pos2) {
 fn an_earlier_loop_record_take_is_picked_from_the_playlist_selector_and_the_pass_undoes_in_one_step() {
     let mut h = harness(after_loop_record());
     assert_eq!(playlists(&h), (vec!["keys".into(), "keys.02".into(), "keys.03".into()], 2), "the last take is the track's");
-    assert_eq!(menus::live_label(h.state(), Some("edit.undo")).as_deref(), Some("Undo Record"));
+    assert_eq!(menus::live_label(h.state(), Some("edit.undo")).as_deref(), Some("Undo MIDI Recording"));
     // The playlist selector is the small arrow beside the track name.
     let row = h.state().edit_layout.rows[0].1;
     click_at(&mut h, pos2(row[0] + 119.5, row[1] + 8.0));
@@ -206,10 +208,10 @@ fn an_earlier_loop_record_take_is_picked_from_the_playlist_selector_and_the_pass
     assert_eq!(menus::live_label(h.state(), Some("edit.undo")).as_deref(), Some("Undo Select Playlist"));
     // Undo the selection, then the pass: every take and playlist of it goes in one step.
     h.state_mut().run("edit.undo", json!({})).unwrap();
-    assert_eq!(menus::live_label(h.state(), Some("edit.undo")).as_deref(), Some("Undo Record"));
+    assert_eq!(menus::live_label(h.state(), Some("edit.undo")).as_deref(), Some("Undo MIDI Recording"));
     h.state_mut().run("edit.undo", json!({})).unwrap();
     h.run_steps(2);
     assert_eq!(playlists(&h), (vec!["keys".into()], 0));
     assert!(h.state().engine.session().tracks[0].clips().is_empty());
-    assert_eq!(menus::live_label(h.state(), Some("edit.redo")).as_deref(), Some("Redo Record"));
+    assert_eq!(menus::live_label(h.state(), Some("edit.redo")).as_deref(), Some("Redo MIDI Recording"));
 }

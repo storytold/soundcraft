@@ -292,8 +292,9 @@ pub const MAX_MIDI_TAKE_EVENTS: usize = 1 << 20;
 /// Turn the MIDI played during a record pass that went once over `range` into a clip on every
 /// MIDI and instrument track that is record-enabled now, each taking the events of its MIDI input
 /// (device and channel). `devices` names the devices by [`MidiTakeEvent::device`]. A track that
-/// received nothing gets no clip. One undo step ("Record"); with `same_pass` the clips join the
-/// step the audio takes of this pass already made. The result says where input was dropped
+/// received nothing gets no clip. One undo step ("MIDI Recording", as Pro Tools names it, Reference
+/// Guide p.820); with `same_pass` the clips join the step the audio takes of this pass already
+/// made ("Record"). The result says where input was dropped
 /// during the pass.
 pub fn add_midi_recording(e: &mut Engine, range: Range, events: &[MidiTakeEvent], devices: &[String], same_pass: bool) -> MidiTake {
     let inputs = midi_record_inputs(e);
@@ -481,7 +482,7 @@ fn record_midi(
         }
     };
     if changed && !same_pass {
-        e.push_undo("Record", before);
+        e.push_undo("MIDI Recording", before);
     }
     out
 }
@@ -960,10 +961,10 @@ mod tests {
         let range = Range::new(0, 48_000);
         let events = [ev(100, 0, 0x90, 60, 100), ev(200, 0, 0x80, 60, 0)];
         let clips = |e: &Engine| e.session().track(t).unwrap().clips().len();
-        // On its own the take is one undo step called Record.
+        // On its own the take is one undo step called MIDI Recording (p.820).
         let before = e.undo_label().map(str::to_string);
         assert_eq!(add_midi_recording(&mut e, range, &events, &[], false).clips.len(), 1);
-        assert_eq!(e.undo_label(), Some("Record"));
+        assert_eq!(e.undo_label(), Some("MIDI Recording"));
         e.run("edit.undo").unwrap();
         assert_eq!((clips(&e), e.undo_label().map(str::to_string)), (0, before.clone()));
         // With audio takes of the same pass, it adds no step of its own: theirs covers it.
@@ -1070,7 +1071,7 @@ mod tests {
             assert_eq!(notes, [vec![60, 67], vec![64], vec![]]);
             assert_eq!(midi_of(takes[2]).ctrls.len(), 1);
             // One undo step takes back every take and playlist of the pass.
-            assert_eq!(e.undo_label(), Some("Record"));
+            assert_eq!(e.undo_label(), Some("MIDI Recording"));
             e.run("edit.undo").unwrap();
             let track = e.session().track(t).unwrap();
             assert_eq!((track.playlists.len(), track.clips().len()), (1, 0));

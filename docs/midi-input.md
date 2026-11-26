@@ -76,7 +76,8 @@ clip with what its input received: notes with their velocities, controllers, pit
 program changes. What a pass records is settled when it starts: a track put in record while it
 runs is recorded from the next pass, and one taken out of record keeps what it recorded. A track
 that received nothing gets no clip. The clip covers the pass, the punch range, or the loop.
-One **Undo** removes the take.
+One **Undo** removes the take: **Edit › Undo MIDI Recording**, as in Pro Tools (Reference Guide
+p.820). A pass that also recorded audio is one **Undo Record** step for both.
 
 **Setup › MIDI › MIDI Input Filter…** keeps kinds of messages (for example aftertouch) out of
 recordings.
@@ -120,7 +121,8 @@ computer, not in the session.
 | **Latch Until Next Event** (default) | from its first to its last new value; after that the old values play on. |
 | **Latch** | from its first new value until the pass stops: the last value holds. In a loop it goes on over the later rounds. |
 
-One **Undo** takes back the whole pass: every take, playlist and merged note.
+One **Undo** (**Undo MIDI Recording**) takes back the whole pass: every take, playlist and
+merged note.
 
 ## If something is lost
 
