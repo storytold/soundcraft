@@ -171,6 +171,22 @@ fn still_bound(current: &Bindings, opened: &Bindings, labels: &BTreeSet<String>)
     labels.iter().filter(|label| current.get(*label).is_some_and(|id| opened.get(*label) == Some(id))).cloned().collect()
 }
 
+/// The labels among `labels` that the listed ports `found` still bind to the native port they
+/// were opened with (`opened`), and whether `saved` changed.
+/// A port of the same name listed beside a label that is still bound is saved beside it now
+/// ([`learn`]): one connected after the label opened would otherwise take that label once its
+/// port is unplugged.
+fn check_listed(saved: &mut Bindings, found: &PortNames, opened: &Bindings, labels: &BTreeSet<String>) -> (BTreeSet<String>, bool) {
+    let bound = still_bound(&assign(saved, found.iter().cloned()), opened, labels);
+    let mut changed = false;
+    for label in &bound {
+        if let Some(id) = opened.get(label) {
+            changed |= learn(saved, found, label, id);
+        }
+    }
+    (bound, changed)
+}
+
 impl Registry {
     pub(super) fn restore(&self, saved: &Bindings) {
         self.ids.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone_from(saved);
@@ -200,23 +216,29 @@ impl Registry {
 
     /// The labels among `labels` that are still listed and bound to the native port they were
     /// opened with: a label whose saved binding moved to another port is not, so the worker
-    /// closes it and opens the port it is bound to now. `None` when the ports cannot be listed
-    /// now.
+    /// closes it and opens the port it is bound to now. A port of the same name listed beside
+    /// one that is still bound is saved beside it ([`check_listed`]). `None` when the ports
+    /// cannot be listed now.
     fn listed(&self, scanner: &mut Option<MidiOutput>, labels: &BTreeSet<String>) -> Option<BTreeSet<String>> {
         let saved = self.ids.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone();
         // midir panics on a few failures of the MIDI system; a new scanner is made next time.
-        let ids = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let found = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             if scanner.is_none() {
                 *scanner = MidiOutput::new("SoundCraft MIDI output").ok();
             }
-            scanner.as_ref().map(|midi| assign(&saved, enumerate(midi, &saved).1))
+            scanner.as_ref().map(|midi| enumerate(midi, &saved).1)
         }))
         .unwrap_or_else(|_| {
             *scanner = None;
             None
         })?;
-        let opened = self.open_ids.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-        Some(still_bound(&ids, &opened, labels))
+        let opened = self.open_ids.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone();
+        let mut ids = self.ids.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let (bound, learned) = check_listed(&mut ids, &found, &opened, labels);
+        if learned {
+            self.learned.store(true, std::sync::atomic::Ordering::Release);
+        }
+        Some(bound)
     }
 }
 
@@ -375,6 +397,22 @@ mod tests {
         assert_eq!(selected(&assign(&lone, listed(&[("UX Synth", "new")])), "UX Synth").unwrap(), "new");
         // Learning again changes nothing already saved.
         assert!(!learn(&mut saved, &both, "DIN", "a"));
+    }
+
+    #[test]
+    fn a_same_name_port_that_appears_while_a_label_is_open_is_saved_beside_it() {
+        // A opened and saved as "DIN" while B was absent; B is connected later, then A unplugged.
+        let mut saved = Bindings::from([("DIN".into(), "a".into())]);
+        let opened = saved.clone();
+        let labels = BTreeSet::from(["DIN".to_owned()]);
+        let (bound, learned) = check_listed(&mut saved, &listed(&[("DIN", "a"), ("DIN", "b")]), &opened, &labels);
+        assert_eq!(bound, labels);
+        assert!(learned);
+        assert_eq!(saved, Bindings::from([("DIN".into(), "a".into()), ("DIN (2)".into(), "b".into())]));
+        // A gone: B keeps its own label, and "DIN" is unavailable instead of moving to B.
+        let (bound, learned) = check_listed(&mut saved, &listed(&[("DIN", "b")]), &opened, &labels);
+        assert!(bound.is_empty() && !learned);
+        assert!(selected(&assign(&saved, listed(&[("DIN", "b")])), "DIN").is_err());
     }
 
     #[test]

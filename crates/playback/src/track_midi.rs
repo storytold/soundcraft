@@ -80,8 +80,9 @@ pub(crate) struct TrackMidi {
     /// Restart at the play position after a timing gap (as after a locate).
     relocate: bool,
     held: Vec<Held>,
-    /// Holders per channel and key: the device gets one Note-Off, when the last one ends.
-    count: Vec<[u8; 128]>,
+    /// Holders per channel and key: the device gets one Note-Off, when the last one ends. Wide
+    /// enough for every note a clip can overlap on one key.
+    count: Vec<[u32; 128]>,
     /// Channels whose sustain pedal the clips left down.
     pedal: u16,
     /// Channels sent to since the last Stop.
@@ -91,6 +92,9 @@ pub(crate) struct TrackMidi {
     since_open: u16,
     /// Channels to quiet after the port reconnected: the device may still hold their notes.
     reconnected: u16,
+    /// Channels whose quieting went to the port and is not yet known to have gone out
+    /// ([`SyncEncoder::delivered`]): the next reopen quiets them again.
+    quieting: u16,
     /// The routed, unmuted tracks and their channels as of the last update while playing: one
     /// that leaves lets go of its channel's pedal if it was the last there, one that arrives is
     /// chased.
@@ -141,6 +145,7 @@ impl TrackMidi {
             used: 0,
             since_open: 0,
             reconnected: 0,
+            quieting: 0,
             present: Vec::new(),
             arriving: Vec::new(),
             events: Vec::new(),
@@ -364,7 +369,7 @@ impl SyncEncoder for TrackMidi {
                     send(now, &[0xb0 | channel, 123, 0]);
                 }
             }
-            self.reconnected = 0;
+            self.quieting |= std::mem::take(&mut self.reconnected);
         }
         // Taken on the first update after the loss, whatever it is: a stop or a start in between
         // already restarts the pass, and a later update must not restart it again.
@@ -407,11 +412,12 @@ impl SyncEncoder for TrackMidi {
     }
 
     /// The port reopened: the device may hold notes whose Note-Offs were lost. Quiet the
-    /// channels played on since it was last opened (pedal up, All Notes Off) and start again at
-    /// the play position.
+    /// channels played on since it was last opened (pedal up, All Notes Off), and those whose
+    /// quieting after an earlier reopen did not go out, and start again at the play position.
     fn reset(&mut self) {
-        self.reconnected |= self.since_open | self.used | self.held.iter().fold(0, |m, h| m | (1 << h.channel));
+        self.reconnected |= self.since_open | self.quieting | self.used | self.held.iter().fold(0, |m, h| m | (1 << h.channel));
         self.since_open = 0;
+        self.quieting = 0;
         self.held.clear();
         self.count.fill([0; 128]);
         self.pedal = 0;
@@ -425,6 +431,11 @@ impl SyncEncoder for TrackMidi {
     /// Queued deadlines were dropped with the timing: carry on from the play position.
     fn timing_lost(&mut self) {
         self.relocate = true;
+    }
+
+    /// The quieting after a reopen went out.
+    fn delivered(&mut self) {
+        self.quieting = 0;
     }
 
     fn stop(&mut self, send: &mut dyn FnMut(&[u8])) {

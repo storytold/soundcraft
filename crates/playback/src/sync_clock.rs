@@ -357,6 +357,8 @@ pub trait SyncEncoder: Send {
         self.reset();
     }
     fn stop(&mut self, _send: &mut dyn FnMut(&[u8])) {}
+    /// Everything the last update sent for the present went out to the port: none of it failed.
+    fn delivered(&mut self) {}
     /// All MIDI Notes Off: release now whatever this encoder holds on the device. Playback
     /// continues with the next update.
     fn panic(&mut self, _send: &mut dyn FnMut(&[u8])) {}

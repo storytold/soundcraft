@@ -1689,3 +1689,81 @@ fn a_stop_cancels_clock_repayment_and_a_new_pass_starts_normally() {
     }
     assert_eq!(messages, [(300, vec![STOP]), (400, vec![START]), (400, vec![CLOCK])]);
 }
+
+/// An encoder that holds a note: its Stop releases it, and it counts the deliveries the worker
+/// confirms ([`SyncEncoder::delivered`]).
+struct Holding(Arc<AtomicUsize>);
+impl SyncEncoder for Holding {
+    fn reset(&mut self) {}
+    fn update(&mut self, _: Presentation, now: Instant, _: &Session, send: &mut dyn FnMut(Instant, &[u8])) -> Option<Instant> {
+        send(now, &[0xb0, 123, 0]);
+        None
+    }
+    fn stop(&mut self, send: &mut dyn FnMut(&[u8])) {
+        send(&[0x80, 60, 0]);
+    }
+    fn delivered(&mut self) {
+        self.0.fetch_add(1, Relaxed);
+    }
+}
+
+#[test]
+fn a_port_closed_because_its_label_moved_gets_the_notes_released_first() {
+    /// A link to one native port (`.0`), on a wire that every link shares.
+    struct Link(usize, Sender<(usize, Vec<u8>)>);
+    impl SyncPort for Link {
+        fn send_at(&mut self, at: Instant, bytes: &[u8]) -> Result<Instant, String> {
+            let _ = self.1.send((self.0, bytes.to_vec()));
+            Ok(at)
+        }
+    }
+    let (wire, got) = channel();
+    let now = Instant::now();
+    let mut p = Port {
+        link: Some(Link(1, wire.clone())),
+        retry: now,
+        routes: [Some(Route { map: None, offset: 0, compensate: false, encoder: Box::new(Holding(Arc::default())) }), None, None],
+        failure: None,
+        future: Vec::new(),
+        stop_pending: false,
+        timing_epochs: [0; ROUTE_KINDS],
+        waiting_for_timing: false,
+        opened: true,
+    };
+    let mut open = |_: &str| Ok((Link(2, wire.clone()), None));
+    // "DIN" is now bound to another port: the worker closes the link to port 1 and opens port 2.
+    keep_open("DIN", &mut p, Some(&BTreeSet::new()), now, &Stats::default(), &mut open);
+    assert_eq!(got.try_recv().ok(), Some((1, vec![0x80, 60, 0])), "the note is released where it sounds");
+    assert_eq!(p.link.as_ref().map(|l| l.0), Some(2));
+}
+
+#[test]
+fn the_encoders_hear_of_a_delivery_only_when_every_send_went_out() {
+    struct Failing;
+    impl SyncPort for Failing {
+        fn send_at(&mut self, _: Instant, _: &[u8]) -> Result<Instant, String> {
+            Err("gone".into())
+        }
+    }
+    let now = Instant::now();
+    let view = View::default();
+    view.lock().unwrap().push(block(now, 0., 480., Duration::ZERO));
+    let delivered = Arc::new(AtomicUsize::new(0));
+    let mut port = active_port(0, false);
+    port.routes[0].as_mut().unwrap().encoder = Box::new(Holding(delivered.clone()));
+    port.poll("DIN", now, &Session::default(), &view, &Stats::default(), &mut Vec::new());
+    assert_eq!(delivered.load(Relaxed), 1);
+    let mut failing = Port {
+        link: Some(Failing),
+        retry: now,
+        routes: [Some(Route { map: None, offset: 0, compensate: false, encoder: Box::new(Holding(delivered.clone())) }), None, None],
+        failure: None,
+        future: Vec::new(),
+        stop_pending: false,
+        timing_epochs: [0; ROUTE_KINDS],
+        waiting_for_timing: false,
+        opened: true,
+    };
+    failing.poll("DIN", now, &Session::default(), &view, &Stats::default(), &mut Vec::new());
+    assert_eq!(delivered.load(Relaxed), 1, "a failed send confirms nothing");
+}
