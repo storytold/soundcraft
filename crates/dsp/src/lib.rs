@@ -79,8 +79,8 @@ pub struct ParamInfo {
     pub default: f32,
     pub unit: Unit,
     pub taper: Taper,
-    /// Number of intervals in a hosted parameter's normalized grid. Toggle and Choice
-    /// already describe their grid through their integer ranges.
+    /// Number of intervals in a hosted parameter's normalized grid. Toggle, Choice and
+    /// Integer already describe their grid through their integer ranges.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub steps: Option<u32>,
     /// Labels for `Unit::Choice` parameters (value is the index).
@@ -97,7 +97,7 @@ impl ParamInfo {
     }
 
     /// Clamps any value (including NaN/inf) into this parameter's legal range.
-    /// NaN becomes the default; toggles and choices round to whole numbers.
+    /// NaN becomes the default; toggles, choices and integers round to whole numbers.
     pub fn clamp(&self, value: f32) -> f32 {
         let v = if value.is_nan() { self.default } else { value };
         let v = v.clamp(self.min, self.max);
@@ -307,7 +307,8 @@ pub trait PluginEditor: Send {
     fn is_open(&self) -> bool;
     /// Call every UI frame while open: services the plugin's GUI requests, notices a window the
     /// user closed, and returns parameter edits made in the editor as `(param id, value)` in
-    /// SoundCraft units (ids and ranges of [`PluginInfo::params`]).
+    /// SoundCraft units (ids and ranges of [`PluginInfo::params`]). After an instrument changes
+    /// its patch, it returns a snapshot of every parameter instead.
     fn idle(&mut self) -> Vec<(String, f32)>;
     /// True once after the plugin said its state changed in a way its parameters don't show
     /// (CLAP `state.mark_dirty`), so the session stores the new state.

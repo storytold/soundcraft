@@ -31,7 +31,7 @@ fn bind(e: &mut Engine, p: &Value) -> Result<Value> {
         return Err(bad(id, "unsupported MIDI controller mode for this target"));
     }
     if !binding.source.valid() {
-        return Err(bad(id, "expected a device name of up to 256 bytes without control characters, channel 1–16, and an eligible mixer CC"));
+        return Err(bad(id, "expected a device name of up to 256 bytes without control characters, channel 1–16, and an eligible CC"));
     }
     if bindings(e.session()).any(|old| old.source == binding.source && old.target != binding.target) {
         return Err(bad(id, "this MIDI control is already assigned"));
