@@ -3,7 +3,8 @@
 //! [`MidiInputs`] (UI thread) keeps a connection to every enabled input port and follows devices
 //! being plugged in and removed ([`MidiInputs::rescan`]). Each connection's callback runs on a
 //! thread of the MIDI system and puts channel messages, stamped with their arrival time, into
-//! the [`MidiFeed`]. The audio callback takes them out without locking or allocating
+//! the [`MidiFeed`]; control changes assigned (or being learned) with MIDI Learn go to the UI
+//! thread instead. The audio callback takes them out without locking or allocating
 //! ([`crate::Player::set_midi`]), plays them through the mix engine's MIDI thru and, while
 //! recording, writes them back with their timeline position for the UI thread to collect
 //! ([`MidiFeed::take_recorded`]).
@@ -270,7 +271,8 @@ impl MidiFeed {
     }
 
     /// A message arrived from `port` (called on a MIDI system thread). Channel messages go on to
-    /// the audio thread; system messages (clock, SysEx, active sensing) are dropped.
+    /// the audio thread, except control changes assigned (or being learned) with MIDI Learn, which
+    /// go to the UI thread; system messages (clock, SysEx, active sensing) are dropped.
     ///
     /// The bytes come from a device, real or virtual, and are not trusted: a message that does
     /// not start with a channel status byte or is shorter than its kind needs is dropped, data
