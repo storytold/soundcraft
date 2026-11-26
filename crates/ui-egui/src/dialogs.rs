@@ -904,26 +904,23 @@ pub(crate) fn focus_is_on_layer(ctx: &egui::Context, layer: egui::LayerId) -> bo
 /// Makes a shown dialog window behave as a modal dialog for the keyboard and assistive technology. Call it every
 /// frame the window shows, after its contents:
 /// - the window is reported as `role` (`Dialog`, or `AlertDialog` for a question that interrupts) and modal;
-/// - Tab and Shift+Tab stay inside it;
+/// - it is egui's modal layer, so the focus stays inside it;
 /// - while nothing inside it has the focus, the focus moves to its first control, so screen readers announce the
-///   dialog. Dialogs with a default button give it the focus themselves (see `buttons_enabled`).
+///   dialog. Dialogs with a default button give it the focus themselves (see `buttons_with_focus`).
+///
+/// Tab goes round inside the dialog once the runtime keeps Tab in an app's own modal layer (storytold/craft-libs#3721);
+/// until then it stops at the dialog's last control.
 pub(crate) fn modal(ctx: &egui::Context, window: &egui::Response, role: egui::accesskit::Role) {
     ctx.accesskit_node_builder(window.id, |b| {
         b.set_role(role);
         b.set_modal();
     });
     ctx.memory_mut(|m| m.set_modal_layer(window.layer_id));
-    // The title bar is a Tab stop without a name in this egui (storytold/craft-libs#759): pass over it.
-    let on_title = ctx.memory(|m| m.focused()) == Some(window.id.with("__title_click"));
-    if on_title || !focus_is_on_layer(ctx, window.layer_id) {
-        // Shift+Tab onto the title bar goes on backwards, past it.
-        let back = on_title && ctx.input(|i| i.modifiers.shift);
-        ctx.memory_mut(|m| {
-            if let Some(outside) = m.focused() {
-                m.surrender_focus(outside);
-            }
-            m.move_focus(if back { egui::FocusDirection::Previous } else { egui::FocusDirection::Next });
-        });
+    if !focus_is_on_layer(ctx, window.layer_id) {
+        let first = ctx.memory(|m| m.focus_candidates().iter().find(|c| c.layer == window.layer_id).map(|c| c.id));
+        if let Some(first) = first {
+            ctx.memory_mut(|m| m.request_focus(first));
+        }
     }
 }
 
