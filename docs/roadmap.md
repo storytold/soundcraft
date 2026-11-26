@@ -1,6 +1,6 @@
 # SoundCraft roadmap: milestones and what's next
 
-> **Last reviewed:** 2026-11-05 · **Last updated:** 2026-11-20 · **Change:** minor (plug-in parameter MIDI Learn and assignment ranges; previously minor: Mix MIDI Learn for track and send controls; previously minor: MIDI input landed, the gate row needs checking on macOS and Windows; previously trivial: 28 built-in processors with the Frequency Shifter; previously trivial: G-05 estimate after Linux/X11 plugin editors; previously trivial: M15: partial pt-BR catalog in PR #1346) · **Target:** Avid Pro Tools Ultimate 2026.4.1
+> **Last reviewed:** 2026-11-14 · **Last updated:** 2026-11-20 · **Change:** minor (plug-in parameter MIDI Learn and assignment ranges; previously minor: Mix MIDI Learn for track and send controls; previously minor: M6: long takes continue in a new file (#888); previously minor: MIDI input landed, the gate row needs checking on macOS and Windows; strict external-WAV AAF import; previously trivial: 28 built-in processors with the Frequency Shifter; G-05 estimate after Linux/X11 plugin editors; M15: partial pt-BR catalog; readiness estimates unchanged) · **Target:** Avid Pro Tools Ultimate 2026.4.1
 
 Forward-looking plan. Status and numbers: [`../ROADMAP.md`](../ROADMAP.md) and
 [`target-app-parity.md`](target-app-parity.md); the ranked work list: [`gaps.md`](gaps.md).

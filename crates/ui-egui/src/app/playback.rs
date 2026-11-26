@@ -321,8 +321,9 @@ impl SoundApp {
     }
 
     /// While playing, record volume automation from fader positions for tracks in Write mode, and
-    /// for Touch/Latch tracks whose fader is (or, for Latch, was) being moved. Send levels follow the
-    /// same rules, per send, from its slot or its floating send window. Each point replaces the
+    /// for Touch/Latch tracks whose fader is (or, for Latch, was) being moved by the mouse or a
+    /// learned MIDI CC. Pan (per side) and send levels follow the same rules, sends per send from
+    /// their slot or floating send window. Each point replaces the
     /// automation since the previous one, and Stop writes a last point. A pass and whatever is
     /// dragged during it, its fader included, are one undo step.
     pub(crate) fn write_automation(&mut self) {
