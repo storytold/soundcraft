@@ -580,7 +580,8 @@ pub(super) fn header_column(app: &mut SoundApp, ui: &mut Ui, track: &Track, col:
     }
 }
 
-/// The I/O column as Pro Tools draws it: input and output selectors, then volume and pan.
+/// The I/O column as Pro Tools draws it: input and output selectors (and the MIDI output of MIDI
+/// and instrument tracks), then volume and pan.
 fn io_column(app: &mut SoundApp, ui: &mut Ui, track: &Track, r: Rect) {
     let t = Tokens::current();
     let id = track.id;
@@ -622,7 +623,15 @@ fn io_column(app: &mut SoundApp, ui: &mut Ui, track: &Track, r: Rect) {
             crate::mix_window::toggle_output_window(app, id);
         }
     }
-    if let Some(vr) = row(45.0, 30.0).map(|vr| vr.shrink2(vec2(1.0, 0.0))) {
+    // MIDI and instrument tracks show their MIDI output below the audio output.
+    let midi = track.kind.is_midi();
+    if midi && let Some(mo) = row(40.0, 15.0) {
+        let output = crate::mix_window::midi_output_name(app, track);
+        let name = crate::localized_format!("MIDI output for {}", track.name);
+        let resp = header_selector(&ui, mo, ui.scope_id().with(("midi_out", id.0)), &output, t.text, true, &name);
+        crate::mix_window::midi_output_popup(app, &resp.on_hover_text(crate::localization::text("MIDI output")), id);
+    }
+    if let Some(vr) = row(if midi { 57.0 } else { 45.0 }, 30.0).map(|vr| vr.shrink2(vec2(1.0, 0.0))) {
         ui.painter().rect_filled(vr, 2.0, Color32::from_gray(15));
         ui.painter().rect_filled(vr.shrink(1.5), 1.5, Color32::BLACK);
         let m = &track.mixer;

@@ -81,6 +81,7 @@ pub const UI_COMMANDS: &[(&str, &str, &str, Option<&str>)] = &[
     ("ui.language", "Language", "", None),
     ("ui.theme", "Appearance", "", None),
     ("ui.reduce_visual_effects", "Reduce Visual Effects", "", None),
+    ("ui.midi_output_compensation", "Delay Compensation for External MIDI Notes", "", None),
     ("ui.undo_levels", "Levels of Undo", "", None),
 ];
 
@@ -842,6 +843,7 @@ pub fn run_ui_command(app: &mut SoundApp, id: &str, p: &Value) -> Option<Result<
             app.ui.reduce_visual_effects = mode;
             json!({"mode": mode.id()})
         }
+        "ui.midi_output_compensation" => return Some(app.midi_output_compensation_command(p)),
         "ui.undo_levels" => {
             if let Some(levels) = p.get("levels").and_then(Value::as_u64) {
                 app.ui.undo_levels = usize::try_from(levels).unwrap_or(64).clamp(1, 64);
