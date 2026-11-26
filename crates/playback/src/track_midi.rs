@@ -86,6 +86,9 @@ pub(crate) struct TrackMidi {
     pedal: u16,
     /// Channels sent to since the last Stop.
     used: u16,
+    /// Channels sent to since the port was last opened, whatever the clips released since: a
+    /// release whose send failed (the port broke) never reached the device.
+    since_open: u16,
     /// Channels to quiet after the port reconnected: the device may still hold their notes.
     reconnected: u16,
     /// The routed, unmuted tracks and their channels as of the last update while playing: one
@@ -136,6 +139,7 @@ impl TrackMidi {
             count: vec![[0; 128]; 16],
             pedal: 0,
             used: 0,
+            since_open: 0,
             reconnected: 0,
             present: Vec::new(),
             arriving: Vec::new(),
@@ -157,6 +161,7 @@ impl TrackMidi {
             }
         }
         self.used |= 1 << channel;
+        self.since_open |= 1 << channel;
         let bytes = [status, message[1], message[2]];
         send(&bytes[..message_len(status)]);
     }
@@ -353,6 +358,9 @@ impl SyncEncoder for TrackMidi {
         if self.reconnected != 0 {
             for channel in 0..16u8 {
                 if self.reconnected & (1 << channel) != 0 {
+                    // Pedal up first: All Notes Off leaves notes the pedal holds sounding
+                    // (MIDI 1.0 p.A-5).
+                    send(now, &[0xb0 | channel, 64, 0]);
                     send(now, &[0xb0 | channel, 123, 0]);
                 }
             }
@@ -398,7 +406,8 @@ impl SyncEncoder for TrackMidi {
     /// The port reopened: the device may hold notes whose Note-Offs were lost. Quiet the
     /// channels in use and start again at the play position.
     fn reset(&mut self) {
-        self.reconnected |= self.used | self.held.iter().fold(0, |m, h| m | (1 << h.channel));
+        self.reconnected |= self.since_open | self.used | self.held.iter().fold(0, |m, h| m | (1 << h.channel));
+        self.since_open = 0;
         self.held.clear();
         self.count.fill([0; 128]);
         self.pedal = 0;

@@ -50,6 +50,10 @@ struct Pedal {
 pub(crate) struct Thru {
     held: Vec<Held>,
     pedals: Vec<Pedal>,
+    /// The channels (bit `n` for channel `n`) each port got a note or a pedal on since it was
+    /// last opened, released or not: a release whose send failed (a Windows output handle
+    /// broken by a device being added or removed) never reached the device.
+    written: Vec<(String, u16)>,
     /// Scratch: the destinations of the message being routed.
     targets: Vec<(String, u8)>,
 }
@@ -96,6 +100,9 @@ impl Thru {
         destinations(s, names, at, e.port, channel, &mut targets);
         for (dest, out) in &targets {
             let status = kind | out;
+            if kind == 0x90 || (kind == 0xB0 && data1 == 64) {
+                self.wrote(dest, *out);
+            }
             match kind {
                 0x90 => {
                     let owner = Held { port: e.port, channel, key: data1, dest: dest.clone(), out: *out };
@@ -146,11 +153,23 @@ impl Thru {
         self.lift_where(|_| true, send);
     }
 
+    /// Note that a note or pedal went to `dest` on channel `out`.
+    fn wrote(&mut self, dest: &str, out: u8) {
+        match self.written.iter_mut().find(|(d, _)| d == dest) {
+            Some((_, channels)) => *channels |= 1 << out,
+            None => self.written.push((dest.to_owned(), 1 << out)),
+        }
+    }
+
     /// The port `dest` was reopened: the device may hold notes and a pedal Thru can no longer
-    /// end one by one. Forget them, and return the channels (bit `n` for channel `n`) to quiet
-    /// with All Notes Off and the pedal up.
+    /// end one by one, and releases sent while the port was failing may never have arrived.
+    /// Forget the notes, and return the channels (bit `n` for channel `n`) Thru played on since
+    /// the port was last opened, to quiet with the pedal up and All Notes Off.
     pub(crate) fn reopened(&mut self, dest: &str) -> u16 {
         let mut channels = 0u16;
+        if let Some(i) = self.written.iter().position(|(d, _)| d == dest) {
+            channels |= self.written.swap_remove(i).1;
+        }
         self.held.retain(|h| {
             let here = h.dest == dest;
             channels |= u16::from(here) << h.out;

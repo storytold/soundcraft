@@ -222,3 +222,24 @@ fn the_midi_keyboard_window_thrus_to_tracks_that_take_all_devices() {
     assert_eq!(stop, [w("PC1X", &[0x82, 64, 0])]);
     assert!(play(&mut thru, &s, &names, &[ev(window, 0x80, 64, 0)]).is_empty());
 }
+
+#[test]
+fn a_reopened_port_quiets_every_channel_thru_played_on_since_it_was_opened_even_released() {
+    // Windows: a device added or removed breaks every open output handle, so the releases Thru
+    // sends then fail. Thru has let go of the note all the same: the reopen must quiet its
+    // channel. Released notes, pedals let up and notes held all count, until the next reopen.
+    let (mut s, names) = (session(), names());
+    track(&mut s, TrackKind::Midi, "SYN", 0);
+    track(&mut s, TrackKind::Midi, "Other", 5);
+    let mut thru = Thru::default();
+    play(&mut thru, &s, &names, &[ev(0, 0x90, 60, 100), ev(0, 0xB0, 64, 127)]);
+    let mut lost = Wire::new();
+    thru.release_ports(midi_port_bit(0), &mut |d, m| lost.push((d.to_owned(), m.to_vec())));
+    assert!(!thru.holds() && !lost.is_empty(), "released (the sends may have failed)");
+    assert_eq!(thru.reopened("SYN"), 1 << 0);
+    assert_eq!(thru.reopened("Other"), 1 << 5);
+    assert_eq!(thru.reopened("SYN"), 0, "only since the port was last opened");
+    // A controller alone leaves nothing sounding.
+    play(&mut thru, &s, &names, &[ev(0, 0xB0, 1, 20)]);
+    assert_eq!(thru.reopened("SYN"), 0);
+}

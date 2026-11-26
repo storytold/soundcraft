@@ -41,8 +41,10 @@ sending. A new track sends nothing until you choose.
 - SoundCraft checks the ports it has open against the port list once a second, so an unplugged
   port is noticed within about a second, playing or stopped (one unplugged and plugged back in
   within that second can go unnoticed). When the port comes back, SoundCraft reconnects within a
-  second or two and sends All Notes Off on the channels in use, in case the device still holds
-  notes it never heard end; while playing, it then carries on from the play position with the
+  second or two and sends sustain pedal up and All Notes Off on the channels played on since the
+  port was last opened (by the clips or through MIDI Thru), in case the device still holds notes
+  it never heard end: on Windows, a device being added or removed can break every open output
+  until it is reopened, so the Note-Offs sent meanwhile are lost; while playing, it then carries on from the play position with the
   controllers and program chased. The log records each port opened, lost and reconnected.
 
 Choosing an output does not change the track's instrument plug-in or audio output. A MIDI track

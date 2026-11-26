@@ -847,3 +847,66 @@ fn live_input_goes_out_at_once_on_the_track_output_and_stop_or_disarm_end_it() {
     handle.join().unwrap();
     assert!(!feed.thru_attached(), "the worker lets go of the feed when it ends");
 }
+
+/// Windows: a device added or removed breaks every open output handle. A thru note whose release
+/// then fails must not hang: the reopened port gets the pedal up and All Notes Off on the
+/// channel thru played on.
+#[test]
+fn a_thru_release_that_fails_is_made_good_when_the_port_reopens() {
+    use soundcraft_model::{ChannelFormat, MidiOutput, TrackKind};
+    struct Link {
+        broken: Arc<std::sync::atomic::AtomicBool>,
+        wire: Sender<Vec<u8>>,
+    }
+    impl SyncPort for Link {
+        fn send_at(&mut self, _at: Instant, b: &[u8]) -> Result<Instant, String> {
+            if self.broken.load(Relaxed) {
+                return Err("MMSYSERR_NODRIVER".into());
+            }
+            self.wire.send(b.to_vec()).unwrap();
+            Ok(Instant::now())
+        }
+    }
+    let mut s = Session::new("t", soundcraft_time::SampleRate::HZ_48000);
+    let t = s.add_track(TrackKind::Midi, ChannelFormat::Stereo, None);
+    MidiOutput::store(&mut s.edit, t, Some(MidiOutput { device: "SYN", channel: 2 }));
+    s.track_mut(t).unwrap().mixer.record_arm = true;
+    let (tx, rx) = channel();
+    let (evt, got) = channel();
+    let broken = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let opens = Arc::new(AtomicUsize::new(0));
+    let stats = Arc::new(Stats::default());
+    let feed = Arc::new(MidiFeed::default());
+    let kb = feed.ports().assign("KB");
+    let (link_broken, link_opens, worker_stats) = (broken.clone(), opens.clone(), stats.clone());
+    let handle = std::thread::spawn(move || {
+        drive(View::default(), Arc::new(s), rx, Default::default(), worker_stats, move |_| {
+            link_opens.fetch_add(1, Relaxed);
+            // A new handle works again.
+            link_broken.store(false, Relaxed);
+            Ok((Link { broken: link_broken.clone(), wire: evt.clone() }, None))
+        })
+    });
+    let worker = handle.thread().clone();
+    tx.send(routes(&[("SYN", 0)], false)).unwrap();
+    tx.send(Update::Feed(Some(feed.clone()))).unwrap();
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while !(feed.thru_attached() && stats.connected().contains("SYN")) && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    feed.receive(kb, &[0x90, 60, 100]);
+    feed.receive(kb, &[0xB0, 64, 127]);
+    assert_eq!(got.recv_timeout(Duration::from_secs(2)).unwrap(), [0x92, 60, 100]);
+    assert_eq!(got.recv_timeout(Duration::from_secs(2)).unwrap(), [0xB2, 64, 127]);
+    // The keyboard goes away; on Windows that breaks the output handle too, so the release fails.
+    broken.store(true, Relaxed);
+    feed.port_lost(kb);
+    worker.unpark();
+    // About a second later the port is opened again and quieted.
+    let quiet = [got.recv_timeout(Duration::from_secs(4)).unwrap(), got.recv_timeout(Duration::from_secs(1)).unwrap()];
+    assert_eq!(quiet, [vec![0xB2, 64, 0], vec![0xB2, 123, 0]]);
+    assert_eq!(opens.load(Relaxed), 2);
+    drop(tx);
+    worker.unpark();
+    handle.join().unwrap();
+}

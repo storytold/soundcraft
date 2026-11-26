@@ -91,10 +91,13 @@ When you close a gap, delete its entry (or shrink it) in the same PR, and bump t
   compensation, Pro Tools p.810). Options › MIDI Thru (on by default) switches live input on and
   off for instruments and external outputs alike. Thru notes and pedals end on disarm, routing,
   input or mute changes, MIDI Thru off, a lost input port, Stop and All MIDI Notes Off; one
-  message reaches a port and channel once; an echo from a MIDI loop is dropped before it is
-  played or recorded (`crates/playback/src/thru.rs`). User guide:
+  message reaches a port and channel once; an echo from a MIDI loop (the same bytes back on an
+  input of the device they were sent to) is dropped before it is played or recorded, and the
+  clips' own echo is neither thru'd nor recorded on the track that played it; a reopened port
+  is quieted on every channel played on since it was opened (`crates/playback/src/thru.rs`). User guide:
   [midi-output.md](midi-output.md) section 5. Measured on macOS from the IAC bus to a virtual
-  CoreMIDI port; **not yet with hardware, on Linux or on Windows**.
+  CoreMIDI port, and tried on Windows 11 between two virtual ports (the fixes that test called
+  for are not yet re-run there); **not yet with hardware or on Linux**.
 - **Missing:** system exclusive and Real-Time Properties through MIDI Thru, MIDI Input
   Monitoring Follows Selected Track, MIDI activity on a MIDI track's meter, note chasing, a default program and bank per track,
   several destinations per track, MIDI mute and solo on instrument tracks, the Global MIDI
