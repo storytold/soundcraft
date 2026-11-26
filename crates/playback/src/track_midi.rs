@@ -24,6 +24,8 @@ use std::time::{Duration, Instant};
 const LATE_START: f64 = 0.1;
 /// How far ahead the encoder looks for its next event before waking anyway.
 const LOOKAHEAD: f64 = 0.05;
+/// How often a due event past the rendered audio checks for the next block.
+const STALL_POLL: Duration = Duration::from_micros(250);
 
 /// A note the device holds: the track that started it, where it ends (presentation samples),
 /// and its key.
@@ -35,9 +37,29 @@ struct Held {
     off: i64,
 }
 
-/// One event of an update, in presentation samples. Releases sort first at equal positions,
-/// then controllers, then note-ons, so a retriggered key is let go before it is struck again and
-/// a program change reaches the device before its notes.
+/// One event of an update, in presentation samples. At equal positions they go out in rank
+/// order: a retriggered key is let go before it is struck again, bank select (a control change)
+/// comes before its program change (Pro Tools Reference Guide p1052), and controllers and
+/// program reach the device before the notes they shape.
+const RELEASE: u8 = 0;
+const CONTROL: u8 = 1;
+const PROGRAM: u8 = 2;
+const BEND_OR_PRESSURE: u8 = 3;
+const STRIKE: u8 = 4;
+const KEY_PRESSURE: u8 = 5;
+/// The end of a note too short to outlast its own start: right after it.
+const LATE_RELEASE: u8 = 6;
+
+/// The rank of a controller-type message at a position, see [`Pending`].
+fn rank(status: u8) -> u8 {
+    match status & 0xf0 {
+        0xb0 => CONTROL,
+        0xc0 => PROGRAM,
+        0xa0 => KEY_PRESSURE,
+        _ => BEND_OR_PRESSURE,
+    }
+}
+
 #[derive(Clone, Copy, Debug)]
 struct Pending {
     at: i64,
@@ -182,13 +204,19 @@ impl TrackMidi {
                     let at = on.saturating_add(offset);
                     if (from..to).contains(&at) && !midi_output_muted(s, t, at) {
                         let message = [0x90 | channel, pitch, velocity];
-                        events.push(Pending { at, rank: 2, track: t.id, message, off: off.saturating_add(offset) });
+                        events.push(Pending { at, rank: STRIKE, track: t.id, message, off: off.saturating_add(offset) });
                     }
                 }
                 ClipEvent::Ctrl { at, message } => {
                     let at = at.saturating_add(offset);
                     if !midi_output_muted(s, t, at) {
-                        events.push(Pending { at, rank: 1, track: t.id, message: [(message[0] & 0xf0) | channel, message[1], message[2]], off: at });
+                        events.push(Pending {
+                            at,
+                            rank: rank(message[0]),
+                            track: t.id,
+                            message: [(message[0] & 0xf0) | channel, message[1], message[2]],
+                            off: at,
+                        });
                     }
                 }
             });
@@ -235,15 +263,14 @@ impl TrackMidi {
         }
         // The ends that fall in this window: held notes, then notes that start and end in it.
         for h in self.held.iter().filter(|h| h.off < to) {
-            self.events.push(Pending { at: h.off, rank: 0, track: h.track, message: [0x80 | h.channel, h.pitch, 0], off: h.off });
+            self.events.push(Pending { at: h.off, rank: RELEASE, track: h.track, message: [0x80 | h.channel, h.pitch, 0], off: h.off });
         }
         self.held.retain(|h| h.off >= to);
         let starts = self.events.len();
         for i in 0..starts {
             let e = self.events[i];
-            if e.rank == 2 && e.off < to {
-                // A note too short to outlast its own start ends right after it.
-                let rank = if e.off > e.at { 0 } else { 3 };
+            if e.rank == STRIKE && e.off < to {
+                let rank = if e.off > e.at { RELEASE } else { LATE_RELEASE };
                 self.events.push(Pending {
                     at: e.off.max(e.at),
                     rank,
@@ -260,8 +287,8 @@ impl TrackMidi {
             let when = deadline(e.at);
             let channel = e.message[0] & 0x0f;
             match e.rank {
-                0 | 3 => self.release(channel, e.message[1], &mut |m| send(when, m)),
-                2 => {
+                RELEASE | LATE_RELEASE => self.release(channel, e.message[1], &mut |m| send(when, m)),
+                STRIKE => {
                     if let Some(n) = self.count.get_mut(usize::from(channel)).and_then(|keys| keys.get_mut(usize::from(e.message[1]))) {
                         *n = n.saturating_add(1);
                     }
@@ -316,11 +343,14 @@ impl SyncEncoder for TrackMidi {
         let rate = b.sample_rate.as_f64();
         let horizon = at.saturating_add((rate * LOOKAHEAD) as i64);
         let next = self.next_event(s, at, horizon).unwrap_or(horizon);
-        if next as f64 > b.limit {
-            // The next event lies past the rendered audio: wait for the next callback's block.
-            return Some(now + Duration::from_millis(1));
+        let due = b.instant_for(next as f64);
+        if next as f64 > b.limit && due <= now {
+            // The next event lies past the rendered audio and its time has come: poll for the
+            // next callback's block, which follows the audio clock.
+            return Some(now + STALL_POLL);
         }
-        Some(b.instant_for(next as f64).max(now))
+        // A later block normally arrives before an event past this one's end is due.
+        Some(due.max(now))
     }
 
     /// The port reopened: the device may hold notes whose Note-Offs were lost. Quiet the

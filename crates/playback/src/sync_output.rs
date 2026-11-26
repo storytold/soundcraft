@@ -511,6 +511,23 @@ fn clear_route<C: SyncPort>(name: &str, port: &mut Port<C>, index: usize, stats:
         route.encoder.stop(&mut |msg| send_now(name, port, msg, stats));
     }
 }
+/// Below this, the last stretch of a wait is one plain sleep.
+const FINE_SLEEP: Duration = Duration::from_micros(200);
+
+/// Sleep until `at`. A system may wake a sleeping thread late by a share of the time asked
+/// for (on the macOS test machine half of it: a 4 ms sleep took 6 ms), so sleep in halving
+/// steps; the last one is at most [`FINE_SLEEP`] long.
+fn sleep_until(at: Instant) {
+    loop {
+        let left = at.saturating_duration_since(Instant::now());
+        if left <= FINE_SLEEP {
+            std::thread::sleep(left);
+            return;
+        }
+        std::thread::sleep(left / 2);
+    }
+}
+
 /// With a timed-out transport command the worker can be woken by either a control
 /// message or the first changed presentation. The thread park token survives a
 /// publication between reading the channel and entering the wait.
@@ -526,7 +543,7 @@ fn wait_for_update(rx: &Receiver<Update>, next: Option<Instant>, connected: bool
         }
         // Keep native sub-millisecond precision. Check control and shutdown after at
         // most 10 ms of requested sleep; distant events stay queued across checks.
-        std::thread::sleep(delay.min(Duration::from_millis(10)));
+        sleep_until(Instant::now() + delay.min(Duration::from_millis(10)));
     } else if !wait_for_late_block {
         return rx.recv().map(Some).map_err(|_| ());
     }

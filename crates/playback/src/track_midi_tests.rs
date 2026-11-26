@@ -320,3 +320,19 @@ fn all_midi_notes_off_releases_each_held_note_and_playback_continues() {
     assert_eq!(note_ons(&wire).len(), 1, "the next note still plays");
     assert!(!wire.iter().any(|(_, m)| m == &[0x80, 60, 0]), "the released note is not released twice");
 }
+
+#[test]
+fn at_one_position_bank_select_precedes_the_program_and_both_precede_the_note() {
+    let base = Instant::now();
+    let mut s = session();
+    // Stored program first, as a file may hold them.
+    let ctrls = vec![cc(96, CtrlKind::Program, 9), cc(96, CtrlKind::Cc(0), 1), cc(96, CtrlKind::Cc(32), 3)];
+    add_track(&mut s, TrackKind::Midi, vec![note(60, 100, 96, 48)], ctrls, "DIN", 0);
+    let mut enc = TrackMidi::new("DIN");
+    let mut wire = Wire::new();
+    run(&mut enc, &s, rolling(base, 1, 0), Duration::ZERO, Duration::from_millis(100), &mut wire);
+    let sent = bytes(&wire);
+    let at = |m: &[u8]| sent.iter().position(|x| x == m).unwrap();
+    assert!(at(&[0xb0, 0, 1]) < at(&[0xc0, 9]) && at(&[0xb0, 32, 3]) < at(&[0xc0, 9]), "{sent:?}");
+    assert!(at(&[0xc0, 9]) < at(&[0x90, 60, 100]), "{sent:?}");
+}
