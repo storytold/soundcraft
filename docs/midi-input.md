@@ -114,7 +114,8 @@ already there. It applies to control changes (the sustain pedal, the mod wheel�
 channel aftertouch; program changes and polyphonic aftertouch are merged as they are. Set it in
 **Setup › Preferences › MIDI**, or right-click the **MIDI Merge** button in the Transport window
 (View › Transport › MIDI Controls), also while it is dimmed in Loop Record. It is kept on this
-computer, not in the session.
+computer, not in the session. The mode set when a pass stops applies to the whole pass, also to
+the rounds recorded before it was changed.
 
 | Release mode | Old values of a controller you move give way… |
 |---|---|
