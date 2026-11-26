@@ -26,18 +26,21 @@ sending. A new track sends nothing until you choose.
   new one) keeps its tracks when no other port has its name. Ports that share a name are told
   apart only by their identity, so one of them back with a new identity is listed as a new
   port, such as "DIN (3)", and its tracks need choosing again.
-- A port that is unplugged stays chosen and reads **(not connected)** on the selector, in the
+- A port that is unplugged stays chosen and reads **(unavailable)** on the selector, in the
   warning colour (orange) the Playback Engine window uses for a MIDI input that could not be
-  opened. Where the strip is too narrow for the whole text, it ends in "…" and hovering the
-  selector shows the port, channel and **not connected** in full. The status line names the port
-  too, in the current language, and the message goes away when the port is back, or when no active track
-  uses it any more (an inactive track sends nothing, so its port is not opened). SoundCraft checks the ports it has open against the port list once a second, so
-  an unplugged port is noticed within about a second, playing or stopped (one unplugged and
-  plugged back in within that second can go unnoticed). When the port comes
-  back, SoundCraft reconnects within a second or two and sends All Notes Off on the channels in
-  use, in case the device still holds notes it never heard end; while playing, it then carries on
-  from the play position with the controllers and program chased. The log records each port
-  opened, lost and reconnected.
+  opened ("unavailable" is the word Pro Tools uses for missing hardware, and SoundCraft for a
+  missing audio device). Where the strip is too narrow for the whole text, it ends in "…" and
+  hovering the selector shows the port, channel and **unavailable** in full. The status line
+  says the same, in the current language, and names the tracks that play to the port, such as
+  "MIDI output UM-ONE unavailable for Synth 1, Pad". The message goes away when the port is
+  back, or when no active track uses it any more (an inactive track sends nothing, so its port
+  is not opened).
+- SoundCraft checks the ports it has open against the port list once a second, so an unplugged
+  port is noticed within about a second, playing or stopped (one unplugged and plugged back in
+  within that second can go unnoticed). When the port comes back, SoundCraft reconnects within a
+  second or two and sends All Notes Off on the channels in use, in case the device still holds
+  notes it never heard end; while playing, it then carries on from the play position with the
+  controllers and program chased. The log records each port opened, lost and reconnected.
 
 Choosing an output does not change the track's instrument plug-in or audio output. A MIDI track
 with an instrument and an external output plays both, the same notes on each.

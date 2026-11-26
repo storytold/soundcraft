@@ -46,6 +46,26 @@ impl MidiSync {
     }
 }
 
+/// What joins the failures of several MIDI output ports (`MidiSyncStatus::error`).
+const FAILURES: &str = "; ";
+
+/// Name the tracks that play to each port the MIDI output failure says is unavailable: "MIDI
+/// output UM-ONE unavailable for Synth 1, Pad".
+fn name_tracks(error: &str, users: &BTreeMap<String, Vec<String>>) -> String {
+    let named = error.split(FAILURES).map(|failure| {
+        match failure.strip_prefix("MIDI output ").and_then(|rest| rest.strip_suffix(" unavailable")).and_then(|port| users.get(port)) {
+            Some(tracks) => format!("{failure} for {}", tracks.join(", ")),
+            None => failure.to_owned(),
+        }
+    });
+    named.collect::<Vec<_>>().join(FAILURES)
+}
+
+/// A MIDI output failure as the status line shows it, each port's failure translated by itself.
+fn shown(message: &str) -> String {
+    message.split(FAILURES).map(crate::localization::error_text).collect::<Vec<_>>().join(FAILURES)
+}
+
 /// What the status line says when compensated MIDI output is sent uncompensated.
 const UNTIMED: &str = "MIDI output is not delay-compensated: the audio device reports no output timing.";
 
@@ -66,11 +86,19 @@ impl SoundApp {
     /// The MIDI output ports active MIDI and instrument tracks of this session play to. An inactive
     /// track sends nothing, so its port is not opened and not reported missing.
     pub(crate) fn midi_output_ports_in_use(&self) -> BTreeSet<String> {
+        self.midi_output_users().into_keys().collect()
+    }
+
+    /// The names of the active MIDI and instrument tracks that play to each MIDI output port.
+    fn midi_output_users(&self) -> BTreeMap<String, Vec<String>> {
         let s = self.engine.session();
-        soundcraft_model::MidiOutput::all(&s.edit)
-            .filter(|(id, _)| s.track(*id).is_some_and(|t| t.kind.is_midi() && !t.inactive))
-            .map(|(_, out)| out.device.to_string())
-            .collect()
+        let mut users = BTreeMap::<String, Vec<String>>::new();
+        for (id, out) in soundcraft_model::MidiOutput::all(&s.edit) {
+            if let Some(t) = s.track(id).filter(|t| t.kind.is_midi() && !t.inactive) {
+                users.entry(out.device.to_string()).or_default().push(t.name.clone());
+            }
+        }
+        users
     }
 
     /// Whether the port a track plays to is missing: `None` while the port list is not known.
@@ -114,7 +142,7 @@ impl SoundApp {
             }
         }
         self.last_midi_sync_error = error.map(|message| {
-            let shown = crate::localization::error_text(&message);
+            let shown = shown(&message);
             if !self.ui.status.is_empty() {
                 self.ui.status.push_str(" · ");
             }
@@ -126,7 +154,7 @@ impl SoundApp {
     fn show_midi_sync_error(&mut self, error: Option<String>) {
         // Another message can replace the status line while the same port error persists, and a
         // language switch changes the text the error should read.
-        let hidden = error.as_ref().is_some_and(|message| !self.ui.status.contains(&crate::localization::error_text(message)));
+        let hidden = error.as_ref().is_some_and(|message| !self.ui.status.contains(&shown(message)));
         if error.as_ref() != self.last_midi_sync_error.as_ref().map(|(message, _)| message) || hidden {
             self.update_midi_sync_error(error);
         }
@@ -141,12 +169,13 @@ impl SoundApp {
             self.midi_output_ports =
                 Some(soundcraft_playback::midi_sync_output_ids(&self.ui.midi_sync.port_ids).map(|ids| ids.into_keys().collect()));
         }
-        let used = self.midi_output_ports_in_use();
+        let users = self.midi_output_users();
+        let used: BTreeSet<String> = users.keys().cloned().collect();
         if let Some(ids) = player.take_opened_sync_output_ids() {
             self.ui.midi_sync.bind_used(ids, &used);
         }
         let (compensate, untimed) = compensation(self.ui.midi_sync.compensation.notes, player.silent, player.output_timing_unknown());
-        let error = player.midi_output_error().or_else(|| {
+        let error = player.midi_output_error().map(|e| name_tracks(&e, &users)).or_else(|| {
             if untimed {
                 return Some(crate::localization::text(UNTIMED).to_string());
             }
@@ -209,6 +238,17 @@ mod tests {
         }
         app.show_midi_sync_error(None);
         assert_eq!(app.ui.status, "Audio output requires attention");
+    }
+
+    #[test]
+    fn the_status_line_names_the_tracks_of_each_unavailable_port_in_the_current_language() {
+        let users = BTreeMap::from([("Gone A".to_string(), vec!["Synth 1".to_string(), "Pad".to_string()]), ("Gone B".to_string(), vec!["Bass".to_string()])]);
+        let error = name_tracks("MIDI output Gone A unavailable; MIDI output Gone B unavailable; DIN: device error", &users);
+        assert_eq!(error, "MIDI output Gone A unavailable for Synth 1, Pad; MIDI output Gone B unavailable for Bass; DIN: device error");
+        let mut app = SoundApp::new(soundcraft_engine::Engine::default(), None, crate::Services::default());
+        let _pt = crate::localization::enter(crate::localization::Language::PortugueseBrazil);
+        app.show_midi_sync_error(Some(error));
+        assert_eq!(app.ui.status, "Saída MIDI Gone A indisponível para Synth 1, Pad; Saída MIDI Gone B indisponível para Bass; DIN: device error");
     }
 
     #[test]

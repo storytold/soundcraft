@@ -50,7 +50,7 @@ fn a_port_that_leaves_the_list_and_comes_back_keeps_the_route_and_clears_the_war
         assert_eq!(selector_value(&h), "UM-ONE ch 2", "{window:?}");
         h.state_mut().midi_output_ports = Some(Ok(vec!["IAC Bus 1".into()]));
         h.run_steps(3);
-        assert_eq!(selector_value(&h), "UM-ONE ch 2 (not connected)", "{window:?}");
+        assert_eq!(selector_value(&h), "UM-ONE ch 2 (unavailable)", "{window:?}");
         assert_eq!(output(&h).as_deref(), Some("MIDI:2:UM-ONE"), "{window:?}: an unplugged port is not dropped from the track");
         h.state_mut().midi_output_ports = Some(Ok(vec!["IAC Bus 1".into(), "UM-ONE".into()]));
         h.run_steps(3);
@@ -64,11 +64,11 @@ fn a_port_list_failure_is_named_in_the_menu_and_no_midi_output_stays_choosable()
     let mut h = harness(MainWindow::Mix);
     h.state_mut().midi_output_ports = Some(Err("MIDI output enumeration failed".into()));
     h.run_steps(3);
-    assert_eq!(selector_value(&h), "UM-ONE ch 2 (not connected)");
+    assert_eq!(selector_value(&h), "UM-ONE ch 2 (unavailable)");
     h.get_by_label("MIDI output for Synth").click();
     h.run_steps(3);
     h.get_by_label("MIDI output enumeration failed");
-    h.get_by_label("UM-ONE (not connected)");
+    h.get_by_label("UM-ONE (unavailable)");
     h.get_by_label("No MIDI output").click();
     h.run_steps(3);
     assert_eq!(output(&h), None);
