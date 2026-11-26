@@ -84,6 +84,8 @@ pub struct Dialogs {
     strip_rectangles: StripRectangles,
     /// True while a dialog was drawn on the previous frame.
     shown: bool,
+    /// The widget that had the keyboard focus before the first dialog opened; it gets it back when the last closes.
+    return_focus: Option<egui::Id>,
 }
 
 impl Dialogs {
@@ -342,7 +344,13 @@ fn bounce_file_row(app: &mut SoundApp, ui: &mut egui::Ui, path: &mut String, for
 
 /// The path prompt's form; the command to run once it is confirmed.
 fn path_prompt_form(app: &mut SoundApp, ui: &mut egui::Ui, cmd: &str, path: &mut String, key: &str, enter: bool) -> Option<(String, Value)> {
-    crate::widgets::named_text_field(ui.add(egui::TextEdit::singleline(path).desired_width(420.0)), crate::localization::text("Path"));
+    let field = ui.add(egui::TextEdit::singleline(path).desired_width(420.0));
+    // The path takes the focus as the dialog opens: Enter in it follows the dialog's Enter rule (it never replaces
+    // another session), where a focused Replace button would take Enter as a click.
+    if !focus_is_on_layer(ui.ctx(), ui.layer_id()) {
+        field.request_focus();
+    }
+    crate::widgets::named_text_field(field, crate::localization::text("Path"));
     let mut picked = None;
     // Import Audio picks several files at once; every other open dialog takes one.
     let multi = cmd == "file.import_audio" && app.services.pick_open_many.is_some();
@@ -467,13 +475,18 @@ pub fn show(app: &mut SoundApp, ctx: &egui::Context) {
         app.dialogs.strip_rectangles = StripRectangles::default();
     }
     let Some(mut d) = app.dialogs.open.take() else {
-        app.dialogs.shown = false;
+        if std::mem::take(&mut app.dialogs.shown)
+            && let Some(id) = app.dialogs.return_focus.take()
+        {
+            ctx.memory_mut(|m| m.request_focus(id));
+        }
         return;
     };
     // On the first frame a dialog is drawn, clear the keyboard focus a widget outside it may still hold, and ignore Enter:
     // an Enter in that frame is the one that opened the dialog from a menu item or the command palette.
     let first_frame = !std::mem::replace(&mut app.dialogs.shown, true);
     if first_frame {
+        app.dialogs.return_focus = ctx.memory(|m| m.focused());
         ctx.memory_mut(|m| m.stop_text_input());
     }
     let mut keep = true;
@@ -514,7 +527,7 @@ pub fn show(app: &mut SoundApp, ctx: &egui::Context) {
         |i: &egui::InputState| i.events.iter().any(|e| matches!(e, egui::Event::Key { key: egui::Key::Enter, pressed: true, repeat: false, .. }));
     let enter = !first_frame && ctx.input(fresh_enter) && (!crate::framework::widget_has_keyboard(ctx) || ctx.text_edit_focused());
     let esc = crate::framework::escape_pressed(ctx);
-    egui::Window::new(egui::RichText::new(crate::localization::text(&title)).font(bold(13.0)))
+    let window = egui::Window::new(egui::RichText::new(crate::localization::text(&title)).font(bold(13.0)))
         .id(egui::Id::unique(&title))
         .collapsible(false)
         .resizable(false)
@@ -763,7 +776,8 @@ pub fn show(app: &mut SoundApp, ctx: &egui::Context) {
                             (crate::localized_format!("Close “{name}” without saving?", name = name), "Don't Save")
                         };
                         ui.label(crate::localized_format!("{question} Your changes will be lost.", question = question));
-                        if buttons(ui, ok, false) {
+                        // Enter doesn't press a button that throws work away, and the focus starts on Cancel.
+                        if buttons_with_focus(ui, ok, false, true, DialogFocus::Cancel) {
                             action = Some(then.clone());
                         }
                     } else {
@@ -781,6 +795,10 @@ pub fn show(app: &mut SoundApp, ctx: &egui::Context) {
                 }
             }
         });
+    if let Some(window) = &window {
+        // A question about the session's unsaved changes interrupts, so it is an alert; the rest are ordinary dialogs.
+        modal(ctx, &window.response, if confirmed { egui::accesskit::Role::AlertDialog } else { egui::accesskit::Role::Dialog });
+    }
     // Strip Silence keeps the values it shows, however it closes: Escape, Cancel or one of its actions.
     match &d {
         Dialog::StripSilence { threshold, min_ms, pre_ms, post_ms } => {
@@ -878,18 +896,73 @@ fn buttons(ui: &mut egui::Ui, ok: &str, enter: bool) -> bool {
     buttons_enabled(ui, ok, enter, true)
 }
 
+/// True when the widget with the keyboard focus is on `layer`.
+pub(crate) fn focus_is_on_layer(ctx: &egui::Context, layer: egui::LayerId) -> bool {
+    ctx.memory(|m| m.focused()).and_then(|id| ctx.read_response(id)).is_some_and(|r| r.layer_id == layer)
+}
+
+/// Makes a shown dialog window behave as a modal dialog for the keyboard and assistive technology. Call it every
+/// frame the window shows, after its contents:
+/// - the window is reported as `role` (`Dialog`, or `AlertDialog` for a question that interrupts) and modal;
+/// - Tab and Shift+Tab stay inside it;
+/// - while nothing inside it has the focus, the focus moves to its first control, so screen readers announce the
+///   dialog. Dialogs with a default button give it the focus themselves (see `buttons_enabled`).
+pub(crate) fn modal(ctx: &egui::Context, window: &egui::Response, role: egui::accesskit::Role) {
+    ctx.accesskit_node_builder(window.id, |b| {
+        b.set_role(role);
+        b.set_modal();
+    });
+    ctx.memory_mut(|m| m.set_modal_layer(window.layer_id));
+    // The title bar is a Tab stop without a name in this egui (storytold/craft-libs#759): pass over it.
+    let on_title = ctx.memory(|m| m.focused()) == Some(window.id.with("__title_click"));
+    if on_title || !focus_is_on_layer(ctx, window.layer_id) {
+        // Shift+Tab onto the title bar goes on backwards, past it.
+        let back = on_title && ctx.input(|i| i.modifiers.shift);
+        ctx.memory_mut(|m| {
+            if let Some(outside) = m.focused() {
+                m.surrender_focus(outside);
+            }
+            m.move_focus(if back { egui::FocusDirection::Previous } else { egui::FocusDirection::Next });
+        });
+    }
+}
+
 /// `buttons`, but a greyed-out OK when the dialog's values can't be submitted yet. Cancel always works.
 pub(crate) fn buttons_enabled(ui: &mut egui::Ui, ok: &str, enter: bool, ready: bool) -> bool {
+    buttons_with_focus(ui, ok, enter, ready, DialogFocus::Ok)
+}
+
+/// Which of a dialog's buttons takes the focus while nothing in the dialog has it.
+#[derive(Clone, Copy, PartialEq)]
+enum DialogFocus {
+    Ok,
+    Cancel,
+}
+
+fn buttons_with_focus(ui: &mut egui::Ui, ok: &str, enter: bool, ready: bool, focus: DialogFocus) -> bool {
     let mut pressed = enter && ready;
     let mut canceled = false;
     ui.separator();
+    let unfocused = !focus_is_on_layer(ui.ctx(), ui.layer_id());
     ui.horizontal(|ui| {
-        if ui.button(crate::localization::text("Cancel")).clicked() {
+        let cancel = ui.button(crate::localization::text("Cancel"));
+        if unfocused && (focus == DialogFocus::Cancel || !ready) {
+            cancel.request_focus();
+        }
+        if cancel.clicked() {
             canceled = true;
             ui.ctx().memory_mut(|m| m.data.insert_temp(egui::Id::unique("dlg_cancel"), true));
         }
         let b = egui::Button::new(egui::RichText::new(crate::localization::text(ok)).strong()).fill(Tokens::current().accent);
-        if ui.add_enabled(ready, b).clicked() {
+        let ok = ui.add_enabled(ready, b);
+        // The default button takes the focus while nothing in the dialog has it, so a screen reader announces the
+        // dialog and Enter still presses OK, as it did with no focus. While OK is greyed out, Cancel takes it.
+        if unfocused && ready && focus == DialogFocus::Ok {
+            ok.request_focus();
+        }
+        // egui clicks a focused button on Enter, its repeats too; a held Enter must not press OK (see `show`).
+        let enter_repeat = ui.input(|i| i.events.iter().any(|e| matches!(e, egui::Event::Key { key: egui::Key::Enter, repeat: true, .. })));
+        if ok.clicked() && !(ok.has_focus() && enter_repeat) {
             pressed = true;
         }
     });
