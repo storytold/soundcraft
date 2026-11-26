@@ -64,6 +64,24 @@ fn a_delay_line_back_from_zero_does_not_replay_old_audio() {
 }
 
 #[test]
+fn a_delay_line_back_from_zero_touches_no_more_than_its_new_length() {
+    // #889: coming back from zero must not zero the whole ring in the audio callback.
+    let mut d = DelayLine::default();
+    d.set(1000, 1);
+    let mut io = vec![vec![1.0f32; 4096]];
+    d.process(&mut io, 4096);
+    d.set(0, 1);
+    let before = d.bufs.clone();
+    d.set(4, 1);
+    let touched = d.bufs[0].iter().zip(&before[0]).filter(|(a, b)| a != b).count();
+    assert!(touched <= 4, "set() touched {touched} samples of the ring for a 4-sample delay");
+    // It still starts from silence and then delays the new input.
+    let mut io = vec![(1..=8).map(|v| v as f32).collect::<Vec<f32>>()];
+    d.process(&mut io, 8);
+    assert_eq!(io[0], vec![0.0, 0.0, 0.0, 0.0, 1.0, 2.0, 3.0, 4.0]);
+}
+
+#[test]
 fn stored_instrument_params_reach_the_plugin() {
     // #152: a saved instrument level of -12 dB must render quieter than -6 dB.
     // RMS over the held part of the note, past any parameter smoothing.

@@ -80,15 +80,20 @@ pub(crate) struct DelayLine {
     idx: usize,
     /// Current delay (samples).
     pub(crate) len: usize,
+    /// Samples written since the line last came back from zero, up to `MAX_LATENCY + 1`. A read
+    /// further back than this would be audio from before the bypass, so it gives silence instead.
+    fresh: usize,
 }
 
 impl DelayLine {
     pub(crate) fn set(&mut self, len: usize, ch: usize) {
         let len = len.min(MAX_LATENCY);
         // At zero the line is bypassed and stops taking audio in (`process`): what it holds is
-        // from before, so it starts again from silence rather than replay that.
+        // from before, so it starts again from silence rather than replay that. Only the count of
+        // fresh samples is reset; zeroing the rings here would touch up to 2^20 samples per
+        // channel in the audio callback (#889).
         if self.len == 0 && len > 0 {
-            self.clear();
+            self.fresh = 0;
         }
         self.len = len;
         let cap = self.bufs.first().map_or(0, Vec::len);
@@ -115,6 +120,7 @@ impl DelayLine {
         }
         let start = self.idx;
         let mut end = start;
+        let mut fresh_end = self.fresh;
         for (c, ch) in io.iter_mut().enumerate() {
             let Some(ring) = self.bufs.get_mut(c) else { continue };
             let cap = ring.len();
@@ -122,21 +128,23 @@ impl DelayLine {
                 continue;
             }
             let mut i = start % cap;
+            let mut fresh = self.fresh;
             for x in ch.iter_mut().take(frames) {
                 if let Some(w) = ring.get_mut(i) {
                     *w = *x;
                 }
-                if let Some(r) = ring.get((i + cap - self.len) % cap) {
-                    *x = *r;
-                }
+                fresh = (fresh + 1).min(MAX_LATENCY + 1);
+                *x = if fresh > self.len { ring.get((i + cap - self.len) % cap).copied().unwrap_or(0.0) } else { 0.0 };
                 i += 1;
                 if i >= cap {
                     i = 0;
                 }
             }
             end = i;
+            fresh_end = fresh;
         }
         self.idx = end;
+        self.fresh = fresh_end;
     }
     pub(crate) fn clear(&mut self) {
         self.bufs.iter_mut().for_each(|b| b.fill(0.0));
