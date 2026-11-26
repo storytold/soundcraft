@@ -35,14 +35,16 @@ that producer run ID and attempt, by a listed manual actor.
 
 **Signer branch.** The signer runs on `refs/heads/nightly-signer`, not on the stable `release` branch,
 so nightly signer files never need a stable release sync. The policy's `release_branch` names it and
-the signer's guard requires it; this app has no `nightly-dispatch.yml` at all, so nothing transports a
-run automatically. The branch only fast-forwards to reviewed main commits, through the settings
+the signer's guard requires it; this app has no `nightly-dispatch.yml` at all, so nothing transports
+a run automatically. The branch only fast-forwards to reviewed main commits, through the settings
 script's `advance` (no queued signer run, a trust-closure scan, then the full diff of `.github/` and
-`packaging/`), and the existing `release` environment trusts it alongside `release`. Its trust closure
-is all of `.github/` and `packaging/`, including `packaging/env.sh`, which `import-cert.sh` sources with
-the Apple keys. On that branch only the pinned `nightly-sign.yml` caller may reach an environment: no
-app workflow binds one and nothing else calls `nightly-release.yml`. `packaging/nightly-release-tests.py`
-checks that in-repo part on every main PR. Stable releases still come only from `refs/heads/release`.
+`packaging/`), and the existing `release` environment must admit `nightly-signer` alongside
+`release` before the first dispatch (a repository settings change, not a workflow one). Its trust
+closure is all of `.github/` and `packaging/`, including `packaging/env.sh`, which `import-cert.sh`
+sources with the Apple keys. On that branch only the pinned `nightly-sign.yml` caller may reach an
+environment: no app workflow binds one and nothing else calls `nightly-release.yml`.
+`packaging/nightly-release-tests.py` checks that in-repo part on every main PR. Stable releases
+still come only from `refs/heads/release`.
 
 **Manual actors.** `bflatastic`, `dylanmtaylor`, `echelon`, `FredApps` and `skylartaylor`, in the
 producer's `manual-actors` and the policy's `manual_actors`. The list mirrors the `release-managers`
@@ -76,7 +78,7 @@ Read on 2026-11-24; re-read anything that may have moved before `nightly-signer`
 | `platforms` | three rows | Storytold stable signing identities (`windows-x86_64`, `linux-x86_64`, `macos-aarch64`) |
 | `candidate_policy.required_workflows` | CI (`ci.yml`, workflow `380135771`), `gate / gate (ubuntu-24.04)` | Workflow list API and recent `main` push runs |
 | `candidate_policy.sonar` | `storytold` / `storytold_soundcraft`, app `12526` | `sonar-project.properties`; the SonarCloud check on `main` commits |
-| Sonar conditions | `new_security_rating` accepted (max 5); the other five required | Quality gate of `storytold_soundcraft` `main` (all OK) |
+| Sonar conditions | `new_security_rating` accepted (GT 1, maximum 5); the other five required | Quality gate of `storytold_soundcraft` `main`: the same six conditions, and a failing rating is admitted up to the reviewed A..E bound |
 | Sonar `issue_types` / `debt` | `VULNERABILITY`; `[]` (0 unresolved vulnerabilities on `main`) | `api/issues/search` on `main` |
 
 ## Ownership and interface
