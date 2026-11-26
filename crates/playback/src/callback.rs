@@ -882,8 +882,11 @@ impl TakeWriter<'_> {
     }
 }
 
-/// Write one device frame from `nch` rendered channels: fold surround to stereo (a mono device
-/// averages the two sides), or copy the channels straight through. `sample(c)` is channel `c`.
+/// Write one device frame from `nch` rendered main-mix channels placed from device channel
+/// `main_range.start`: fold surround to stereo when `main_range` is narrower (a mono device
+/// averages the two sides), or copy the channels straight through. `sample(c)` is main channel
+/// `c`; `physical(c)`, the named output paths' signal on device channel `c`, is added to every
+/// channel.
 fn write_frame(
     frame: &mut [f32],
     main_range: std::ops::Range<usize>,
