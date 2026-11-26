@@ -172,10 +172,12 @@ fn pause_keeps_the_playhead_and_play_resumes_from_there() {
     assert!(app.is_playing());
     let paused_at = app.position();
     assert!(paused_at > 48_000);
+    app.engine.transport.recording = true;
     app.run("transport.pause", json!({})).unwrap();
     app.handle_transport(0.25);
     assert!(!app.is_playing());
     assert!(app.engine.transport.paused);
+    assert!(!app.engine.transport.recording, "pause finishes an open take");
     assert_eq!(app.position(), paused_at);
     app.handle_transport(0.25);
     assert_eq!(app.position(), paused_at, "pause must not keep the clock running");

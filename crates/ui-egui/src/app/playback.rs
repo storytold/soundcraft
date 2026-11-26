@@ -98,15 +98,23 @@ impl SoundApp {
     }
 
     fn pause_play(&mut self) {
-        if !self.engine.transport.playing {
+        if !self.engine.transport.playing && !self.engine.transport.recording {
             return;
         }
         if let Some(p) = &self.player {
+            // Half-speed must not stick across Pause, matching Stop.
+            p.set_speed(1.0);
             p.stop();
+        }
+        // Space routes to Pause. An open take has to be finished here; leaving
+        // `recording` set would keep the recorder armed after the player stops.
+        if self.engine.transport.recording {
+            self.finish_recording();
         }
         self.sim = None;
         self.engine.transport.playing = false;
         self.engine.transport.paused = true;
+        self.engine.transport.recording = false;
         let pos = self.engine.transport.position;
         self.engine.session_mut().edit.playhead = pos;
     }
