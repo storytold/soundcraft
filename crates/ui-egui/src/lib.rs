@@ -309,7 +309,8 @@ pub struct SoundApp {
     /// Input capture, opened on first record.
     pub recorder: Option<soundcraft_playback::record::Recorder>,
     record_start: Samples,
-    /// Punch range to trim the take to (pre/post-roll recordings).
+    /// Punch range to trim the take to (pre/post-roll recordings), or the loop range the passes
+    /// start at when loop recording.
     punch: Option<Range>,
     recorder_failed: bool,
     /// MIDI device input, opened on the first frame of an app that has an audio engine.

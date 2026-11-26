@@ -60,8 +60,8 @@ pub fn place_recording(e: &mut Engine, plan: &Recording, takes: Vec<(TrackId, Pa
 /// recorder's order: first file, then [`take_part`] 2, 3, …), are one take that went on in a new
 /// file when one was full, and its clips are cut where one file ends and the next begins. A file
 /// that can't be read ends its take there: where the files after it go depends on its length. With
-/// `pass` (loop recording), a take becomes one clip per pass (at most 1000), each pass after the
-/// first on a new playlist.
+/// `pass` (loop recording), a take becomes one clip per complete pass plus a final partial pass
+/// past its midpoint (at most 1000), each pass after the first on a new playlist.
 pub fn add_recording(e: &mut Engine, start: Samples, takes: Vec<(TrackId, PathBuf)>, pass: Option<Samples>) -> Vec<soundcraft_model::ClipId> {
     add_recording_in(e, start, takes, pass, None)
 }
