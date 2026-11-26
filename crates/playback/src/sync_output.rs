@@ -620,6 +620,9 @@ impl<C: SyncPort> Port<C> {
                 }
             }
         }
+        for r in self.routes.iter_mut().flatten() {
+            r.encoder.delivered();
+        }
         next
     }
 }
@@ -790,7 +793,9 @@ fn apply_update<C: SyncPort>(
 }
 
 /// Once a second, close an open port that is no longer `listed` (when the list is known); open a
-/// closed one when its retry is due, resetting its encoders.
+/// closed one when its retry is due, resetting its encoders. A port closed because its label is
+/// now bound to another port may still be there: its encoders release their notes on it first
+/// (sent to a port that is gone, they go nowhere). The reopen still quiets what they played.
 fn keep_open<C: SyncPort>(
     name: &str,
     p: &mut Port<C>,
@@ -801,6 +806,12 @@ fn keep_open<C: SyncPort>(
 ) {
     if p.link.is_some() && now >= p.retry {
         if listed.is_some_and(|listed| !listed.contains(name)) {
+            p.future.clear();
+            let mut routes = std::mem::replace(&mut p.routes, std::array::from_fn(|_| None));
+            for r in routes.iter_mut().flatten() {
+                r.encoder.stop(&mut |msg| send_now(name, p, msg, stats));
+            }
+            p.routes = routes;
             p.disconnect(name, format!("MIDI output {name} unavailable"), now, stats);
             // Try again at once: a port back under a new ID is listed already.
             p.retry = now;
