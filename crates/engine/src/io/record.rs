@@ -11,6 +11,12 @@ pub struct Recording {
     pub start: Samples,
     pub pass: Option<Samples>,
     pub punch: Option<Range>,
+    /// Session samples the take's first sample precedes `start` by: the time between the first
+    /// captured sample and the moment the sample at `start` was heard, less the record offset (a
+    /// positive record offset places the take later). Negative when capture began after that
+    /// moment. Older plans have none.
+    #[serde(default)]
+    pub placement_offset: Samples,
     /// The input's sample rate, which the take files are written at.
     pub rate: u32,
     pub takes: Vec<Take>,
@@ -51,7 +57,7 @@ pub fn take_file_samples(rate: u32, session_rate: u32) -> u64 {
 
 /// Place recorded take files as `plan` says, as one undo step ("Record").
 pub fn place_recording(e: &mut Engine, plan: &Recording, takes: Vec<(TrackId, PathBuf)>) -> Vec<soundcraft_model::ClipId> {
-    add_recording_in(e, plan.start, takes, plan.pass, plan.punch)
+    add_recording_in(e, plan.start, plan.placement_offset, takes, plan.pass, plan.punch)
 }
 
 /// Turn recorded take files into clips at `start`, as one undo step ("Record"); each file is the
@@ -62,7 +68,7 @@ pub fn place_recording(e: &mut Engine, plan: &Recording, takes: Vec<(TrackId, Pa
 /// `pass` (loop recording), a take becomes one clip per pass (at most 1000), each pass after the
 /// first on a new playlist.
 pub fn add_recording(e: &mut Engine, start: Samples, takes: Vec<(TrackId, PathBuf)>, pass: Option<Samples>) -> Vec<soundcraft_model::ClipId> {
-    add_recording_in(e, start, takes, pass, None)
+    add_recording_in(e, start, 0, takes, pass, None)
 }
 
 /// [`add_recording`] limited to the `punch` range: each clip is cut to it before it's placed, so
@@ -70,6 +76,7 @@ pub fn add_recording(e: &mut Engine, start: Samples, takes: Vec<(TrackId, PathBu
 fn add_recording_in(
     e: &mut Engine,
     start: Samples,
+    shift: Samples,
     takes: Vec<(TrackId, PathBuf)>,
     pass: Option<Samples>,
     punch: Option<Range>,
@@ -83,11 +90,11 @@ fn add_recording_in(
             None => tracks.push((tid, vec![path])),
         }
     }
-    // Without a loop or a punch every file is placed whole, so each is decoded once, here. With
+    // Without a loop, a punch or a positive shift every file is placed whole, so each is decoded once, here. With
     // one, each file's length is parsed from its header first (the file is read, not decoded); a
     // file is decoded once the take is laid out and it holds a kept span, one file at a time, so
     // a punch on a take of several files decodes no more than the files it keeps.
-    let every_file_placed = pass.is_none() && punch.is_none();
+    let every_file_placed = pass.is_none() && punch.is_none() && shift <= 0;
     let mut out = Vec::new();
     for (tid, paths) in tracks {
         let mut files = Vec::new();
@@ -97,7 +104,7 @@ fn add_recording_in(
             let Ok(file) = read.inspect_err(|err| e.message(err.to_string())) else { break };
             files.push(file);
         }
-        let (clips, problems) = place_take(e.session_mut(), tid, files, start, pass, punch);
+        let (clips, problems) = place_take(e.session_mut(), tid, files, start, shift, pass, punch);
         for problem in problems {
             e.message(problem);
         }
@@ -155,6 +162,7 @@ fn place_take(
     tid: TrackId,
     files: Vec<TakeFile>,
     start: Samples,
+    shift: Samples,
     pass: Option<Samples>,
     punch: Option<Range>,
 ) -> (Vec<soundcraft_model::ClipId>, Vec<String>) {
@@ -173,24 +181,9 @@ fn place_take(
             (f, Range::new(from, len))
         })
         .collect();
-    let pass = pass.unwrap_or(len).max(1);
-    // Work out what each pass keeps first, so a file nothing is placed from isn't read or registered.
-    let mut kept_passes = Vec::new();
-    for offset in (0..len).step_by(usize::try_from(pass).unwrap_or(usize::MAX)).take(1_000) {
-        let n = pass.min(len - offset);
-        if offset > 0 && n < pass / 8 {
-            break;
-        }
-        let (clip_start, cut, clip_len) = match punch {
-            Some(p) => {
-                let Some(kept) = Range::new(start, start.saturating_add(n)).intersect(&p) else { continue };
-                (kept.start, kept.start.saturating_sub(start), kept.len())
-            }
-            None => (start, 0, n),
-        };
-        // What this pass keeps, as a span of the take, and where that span starts on the timeline.
-        kept_passes.push((offset, Range::new(offset.saturating_add(cut), offset.saturating_add(cut).saturating_add(clip_len)), clip_start));
-    }
+    // Work out what each pass keeps first, so a file nothing is placed from isn't read or registered:
+    // (pass index, the span of the take it keeps, where that span starts on the timeline).
+    let kept_passes = kept_spans(start, shift, len, pass, punch);
     let mut sources = Vec::new();
     for (file, span) in files {
         if !kept_passes.iter().any(|(_, kept, _)| kept.intersect(&span).is_some()) {
@@ -217,8 +210,8 @@ fn place_take(
         sources.push((src, name, span));
     }
     let mut out = Vec::new();
-    for (offset, kept, clip_start) in kept_passes {
-        if offset > 0
+    for (index, kept, clip_start) in kept_passes {
+        if index > 0
             && let Some(t) = s.track_mut(tid)
         {
             t.playlists.push(soundcraft_model::Playlist::new(format!("{}.{:02}", t.name, t.playlists.len() + 1)));
@@ -235,9 +228,43 @@ fn place_take(
     (out, problems)
 }
 
-/// Where a take recording from `start` shows while it holds `len` samples, as it will be placed:
-/// just the pass under way when loop recording in passes of `pass`, within the `punch` range.
-/// Returns the timeline position of its first sample and the span it covers.
+/// What a take of `len` samples keeps, as (pass index, span of the take, timeline start of that
+/// span). The take's first sample belongs `shift` samples before `start` (after it when negative).
+/// Without `pass` the take is one span, cut to `punch`, or to `start` onwards when it began early.
+/// With `pass` (loop recording) pass `i` is the take from `shift + i × pass` on, each starting at
+/// `start`; at most 1000 passes, and a last pass shorter than an eighth of `pass` is dropped.
+fn kept_spans(start: Samples, shift: Samples, len: Samples, pass: Option<Samples>, punch: Option<Range>) -> Vec<(usize, Range, Samples)> {
+    let mut kept = Vec::new();
+    let Some(pass) = pass.filter(|p| *p > 0) else {
+        let origin = start.saturating_sub(shift);
+        let take = Range::new(origin, origin.saturating_add(len));
+        let crop = punch.or_else(|| (shift > 0).then(|| Range::new(start, Samples::MAX)));
+        if let Some(on) = crop.map_or(Some(take), |c| take.intersect(&c)).filter(|r| !r.is_empty()) {
+            kept.push((0, Range::new(on.start - origin, on.end - origin), on.start));
+        }
+        return kept;
+    };
+    for index in 0..1_000_usize {
+        let Some(from) = pass.checked_mul(index as Samples).and_then(|e| e.checked_add(shift)) else { break };
+        if from >= len {
+            break;
+        }
+        if index > 0 && pass.min(len - from) < pass / 8 {
+            break;
+        }
+        let first = from.max(0);
+        let end = from.saturating_add(pass).min(len);
+        if end > first {
+            kept.push((index, Range::new(first, end), start.saturating_add(first - from)));
+        }
+    }
+    kept
+}
+
+/// Where a take recording from `start` shows while it holds `len` samples, as it would be placed
+/// without device timing or the record offset (the placement offset is applied when the take is
+/// finished): just the pass under way when loop recording in passes of `pass`, within the `punch`
+/// range. Returns the timeline position of its first sample and the span it covers.
 pub fn live_span(start: Samples, pass: Option<Samples>, punch: Option<Range>, len: Samples) -> Option<(Samples, Range)> {
     let origin = start.saturating_sub(pass.filter(|p| *p > 0).map_or(0, |p| len / p * p));
     let span = Range::new(start, origin.saturating_add(len));
@@ -249,6 +276,43 @@ mod record_tests {
     use super::super::plan_takes;
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn a_take_that_began_before_playback_is_moved_earlier_and_cut_at_the_start() {
+        // Capture began 128 samples before the sample at 1_000 was heard: the take's sample 128
+        // belongs at 1_000, and what came before the start is not placed.
+        assert_eq!(kept_spans(1_000, 128, 480, None, None), [(0, Range::new(128, 480), 1_000)]);
+        // Without an offset the whole take starts at `start`, as before.
+        assert_eq!(kept_spans(1_000, 0, 480, None, None), [(0, Range::new(0, 480), 1_000)]);
+        // Capture that began after that moment places the whole take later.
+        assert_eq!(kept_spans(1_000, -64, 480, None, None), [(0, Range::new(0, 480), 1_064)]);
+    }
+
+    #[test]
+    fn a_punch_cuts_the_moved_take_on_the_timeline() {
+        // The take covers 872..1_352 on the timeline; the punch keeps 1_100..1_200 of it.
+        let punch = Some(Range::new(1_100, 1_200));
+        assert_eq!(kept_spans(1_000, 128, 480, None, punch), [(0, Range::new(228, 328), 1_100)]);
+        // A punch the moved take does not reach keeps nothing.
+        assert_eq!(kept_spans(1_000, 128, 100, None, punch), []);
+    }
+
+    #[test]
+    fn a_take_may_begin_before_the_session_start_and_is_cut_at_the_record_start() {
+        assert_eq!(kept_spans(50, 128, 480, None, None), [(0, Range::new(128, 480), 50)]);
+    }
+
+    #[test]
+    fn loop_passes_follow_the_moved_take() {
+        // Passes of 400 from 1_000; the take's sample 100 is the loop start.
+        let passes = kept_spans(1_000, 100, 1_300, Some(400), None);
+        assert_eq!(passes, [(0, Range::new(100, 500), 1_000), (1, Range::new(500, 900), 1_000), (2, Range::new(900, 1_300), 1_000)]);
+        // A last pass shorter than an eighth of the loop is dropped, as without an offset.
+        assert_eq!(kept_spans(1_000, 100, 1_349, Some(400), None).len(), 3);
+        assert_eq!(kept_spans(1_000, 100, 1_350, Some(400), None).len(), 4);
+        // Capture that began late leaves the first pass short at its front.
+        assert_eq!(kept_spans(1_000, -40, 800, Some(400), None)[0], (0, Range::new(0, 360), 1_040));
+    }
 
     fn armed(e: &mut Engine, name: &str, format: &str, input: &str) -> TrackId {
         let id = e.execute("track.new", &json!({"name": name, "format": format})).unwrap()["tracks"][0].as_u64().unwrap();
@@ -323,6 +387,7 @@ mod record_tests {
             start: 1_000,
             pass: None,
             punch: Some(Range::new(1_400, 1_600)),
+            placement_offset: 0,
             rate: 48_000,
             takes: vec![Take { track: vox, path: take.clone(), channels: 1 }],
         };
@@ -353,6 +418,7 @@ mod record_tests {
             start: 1_000,
             pass: None,
             punch: Some(Range::new(5_000, 6_000)),
+            placement_offset: 0,
             rate: 48_000,
             takes: vec![Take { track: vox, path: take.clone(), channels: 1 }],
         };
@@ -394,7 +460,8 @@ mod record_tests {
         e.execute("edit.undo", &json!({})).unwrap();
 
         let sources = e.session().sources.len();
-        let plan = Recording { start: 1_000, pass: None, punch: Some(Range::new(1_800, 2_200)), rate: 48_000, takes: Vec::new() };
+        let plan =
+            Recording { start: 1_000, pass: None, punch: Some(Range::new(1_800, 2_200)), placement_offset: 0, rate: 48_000, takes: Vec::new() };
         place_recording(&mut e, &plan, takes);
         assert_eq!(passes(&e, vox), [vec![("Vox_01".into(), 1_800, 200, 800), ("Vox_01-2".into(), 2_000, 200, 0)]]);
         assert_eq!(e.session().sources.len(), sources + 2, "the third file holds nothing inside the punch");
@@ -468,7 +535,7 @@ mod record_tests {
         e.execute("edit.undo", &json!({})).unwrap();
         // a punch over the second and third files: only they are read and placed
         let sources = e.session().sources.len();
-        let plan = Recording { start: 0, pass: None, punch: Some(Range::new(1_500, 1_900)), rate: 48_000, takes: Vec::new() };
+        let plan = Recording { start: 0, pass: None, punch: Some(Range::new(1_500, 1_900)), placement_offset: 0, rate: 48_000, takes: Vec::new() };
         place_recording(&mut e, &plan, takes);
         assert_eq!(heard(&e, vox), [vec![0.2, 0.3]]);
         assert_eq!(passes(&e, vox), [vec![("Vox_01-2".into(), 1_500, 200, 500), ("Vox_01-3".into(), 1_700, 200, 0)]]);
@@ -493,7 +560,7 @@ mod record_tests {
         add_recording(&mut e, 0, takes.clone(), None);
         assert_eq!(heard(&e, vox), [vec![0.1]]);
         e.execute("edit.undo", &json!({})).unwrap();
-        let plan = Recording { start: 0, pass: None, punch: Some(Range::new(500, 5_000)), rate: 48_000, takes: Vec::new() };
+        let plan = Recording { start: 0, pass: None, punch: Some(Range::new(500, 5_000)), placement_offset: 0, rate: 48_000, takes: Vec::new() };
         place_recording(&mut e, &plan, takes);
         assert_eq!(passes(&e, vox), [vec![("Vox_01".into(), 500, 500, 500)]]);
         let _ = std::fs::remove_dir_all(&dir);
@@ -536,7 +603,7 @@ mod record_tests {
         let measured = |f: &PathBuf| measure_take_file(f, 48_000).unwrap();
         let mut take: Vec<_> = files.iter().map(measured).collect();
         std::fs::remove_file(&files[2]).unwrap();
-        let (clips, problems) = place_take(e.session_mut(), vox, std::mem::take(&mut take), 0, None, Some(Range::new(100, 500)));
+        let (clips, problems) = place_take(e.session_mut(), vox, std::mem::take(&mut take), 0, 0, None, Some(Range::new(100, 500)));
         assert_eq!((clips.len(), problems), (2, Vec::<String>::new()), "the third file is outside the punch: never read");
         assert_eq!(heard(&e, vox), [vec![0.1, 0.2]]);
 
@@ -545,7 +612,7 @@ mod record_tests {
         write_take_of(&files[2], 300, 0.3);
         let take: Vec<_> = files.iter().map(measured).collect();
         std::fs::remove_file(&files[1]).unwrap();
-        let (clips, problems) = place_take(e.session_mut(), vox, take, 0, None, Some(Range::new(100, 800)));
+        let (clips, problems) = place_take(e.session_mut(), vox, take, 0, 0, None, Some(Range::new(100, 800)));
         assert_eq!(clips.len(), 1, "the take ends at the file that can't be decoded");
         assert!(problems.len() == 1 && problems[0].contains("Vox_01-2.wav"), "{problems:?}");
         assert_eq!(heard(&e, vox), [vec![0.1]]);

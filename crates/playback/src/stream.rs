@@ -57,11 +57,16 @@ where
     let mut scratch = vec![0.0f32; 8192 * frame];
     let chunk = scratch.len();
     let (failed, guard, gone) = (Arc::clone(fault), Arc::clone(shared), Arc::clone(fault));
+    let device_latency = crate::latency::coreaudio_device_latency(device, false, config.sample_rate);
     device.build_output_stream(
         config,
-        move |data: &mut [T], _: &cpal::OutputCallbackInfo| {
+        move |data: &mut [T], info: &cpal::OutputCallbackInfo| {
             mark_audio_thread();
-            for out in data.chunks_mut(chunk) {
+            guard.output_latency.observe(crate::latency::output_report(info));
+            state.callback_at = Some(std::time::Instant::now());
+            state.playback_clock = Some(crate::latency::playback_clock(info, device_latency));
+            for (index, out) in data.chunks_mut(chunk).enumerate() {
+                state.chunk_offset = index * (chunk / frame);
                 let Some(s) = scratch.get_mut(..out.len()) else { return };
                 guarded_block(&failed, &guard, s, |d| state.fill(d, channels));
                 for (o, x) in out.iter_mut().zip(s.iter()) {

@@ -29,10 +29,11 @@ pub fn loops(range: Range) -> bool {
 }
 
 pub mod devices;
+pub mod latency;
 pub mod midi;
 pub mod record;
 
-pub use devices::AudioConfig;
+pub use devices::{AudioConfig, input_opens_first};
 
 use soundcraft_dsp::{Plugin, PluginEditor, PluginStateReader};
 use soundcraft_mix::{MAX_CHANNELS, MixEngine, PreparedInstance, StripMeter, itu_stereo_fold, main_channels};
@@ -146,6 +147,10 @@ struct Shared {
     /// Speed × 1000.
     speed: AtomicU32,
     meters: Mutex<MeterSnapshot>,
+    /// What the output stream's callbacks report (see [`Player::output_latency`]).
+    output_latency: latency::ReportedLatency,
+    /// When session samples are heard, from the output callbacks (see [`Player::heard_at`]).
+    heard: latency::HeardStamps,
 }
 
 /// What stopped the audio output.
@@ -224,6 +229,8 @@ impl Player {
             playing: AtomicBool::new(false),
             speed: AtomicU32::new(1000),
             meters: Mutex::new(MeterSnapshot::default()),
+            output_latency: latency::ReportedLatency::default(),
+            heard: latency::HeardStamps::default(),
         });
         let want = session.sample_rate.hz();
         let want_ch = u16::try_from(main_channels(&session)).unwrap_or(2);
@@ -491,7 +498,12 @@ impl Player {
         let _ = self.tx.send(Cmd::Midi(feed));
     }
 
+    /// Switch recording on or off. A record pass begun here gets its record stamp from the first
+    /// output callback that plays after it (see [`Player::record_start_heard`]).
     pub fn set_recording(&self, on: bool) {
+        if on {
+            self.shared.heard.begin_record();
+        }
         let _ = self.tx.send(Cmd::Recording(on, 0));
     }
 
@@ -514,7 +526,9 @@ impl Player {
 
     pub fn set_speed(&self, speed: f32) {
         let v = if speed.is_finite() { (speed.clamp(0.1, 4.0) * 1000.0) as u32 } else { 1000 };
-        self.shared.speed.store(v, Ordering::Relaxed);
+        // Release: the callback that renders at this speed also sees what was sent before it,
+        // so a Stop sent first stops that callback before it publishes a stamp at this speed.
+        self.shared.speed.store(v, Ordering::Release);
     }
 
     /// Playback rate last requested, 1.0 at full speed.
@@ -528,6 +542,28 @@ impl Player {
 
     pub fn is_playing(&self) -> bool {
         self.shared.playing.load(Ordering::Relaxed)
+    }
+
+    /// The output latency the audio backend reports: from an output callback to when its first
+    /// frame is heard. `None` for the silent clock, or before the stream reported one.
+    pub fn output_latency(&self) -> Option<std::time::Duration> {
+        self.shared.output_latency.get()
+    }
+
+    /// When the session sample `sample` was (or will be) heard at the output, at the session's
+    /// `rate`: exact for the first sample of the latest Play, projected from the latest output
+    /// callback otherwise. With it, the transport speed of the stamp it comes from, read in the
+    /// same look (stamps are published only while playing, so a Stop that puts the speed back
+    /// leaves the speed a pass played). `None` until an output callback with a device has run.
+    pub fn heard_at(&self, sample: Samples, rate: f64) -> Option<(latency::Moment, f64)> {
+        self.shared.heard.heard_at(sample as f64, rate)
+    }
+
+    /// When the record start `sample` of the latest record pass was heard, at the session's `rate`,
+    /// in the round of `looped` that pass began in, and the speed then: from the moment latched as
+    /// the pass began, not from a later callback. `None` until that moment is published.
+    pub fn record_start_heard(&self, sample: Samples, rate: f64, looped: Option<Range>) -> Option<(latency::Moment, f64)> {
+        self.shared.heard.record_start_heard(sample as f64, rate, looped.map(|l| l.len() as f64))
     }
 
     /// A copy of the meters accumulated since the last [`Player::take_meters`], leaving them in

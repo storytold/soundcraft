@@ -26,6 +26,41 @@ fn the_audio_device_choice_is_kept_only_when_it_is_applied() {
     assert!(r["device"].is_object(), "{r}");
 }
 
+#[test]
+fn the_reported_latency_is_null_until_an_open_stream_reports_one() {
+    // No player and no recorder: nothing is open, so nothing is reported (never a made-up zero).
+    let mut app = SoundApp::new(soundcraft_engine::Engine::default(), None, Services::default());
+    let r = app.run("ui.audio_device", json!({})).unwrap();
+    assert_eq!(r["latency"], json!({"output": null, "input": null}), "{r}");
+    let r = app.run("setup.playback_engine", json!({})).unwrap();
+    assert_eq!(r["latency"], json!({"output": null, "input": null}), "{r}");
+}
+
+#[test]
+fn whether_input_and_output_share_a_clock_is_null_until_an_output_is_open_and_an_input_is_known() {
+    // Nothing open: whether the two share a clock is not known, so it is null, never a guess.
+    let mut app = SoundApp::new(soundcraft_engine::Engine::default(), None, Services::default());
+    for command in ["ui.audio_device", "setup.playback_engine"] {
+        let r = app.run(command, json!({})).unwrap();
+        assert!(r.get("same_clock").is_some_and(serde_json::Value::is_null), "{command}: {r}");
+    }
+}
+
+#[test]
+fn the_record_offset_is_set_by_command_within_its_range_without_reopening_the_device() {
+    let mut app = SoundApp::new(soundcraft_engine::Engine::default(), None, Services::default());
+    let before = app.ui.audio.clone();
+    let r = app.run("ui.audio_device", json!({"record_offset": -42})).unwrap();
+    assert_eq!((r["record_offset"].as_i64(), app.ui.record_offset), (Some(-42), -42));
+    assert_eq!(app.ui.audio, before, "the device choice is untouched");
+    for bad in [json!(96_001), json!(1.5), json!("12")] {
+        assert!(app.run("ui.audio_device", json!({"record_offset": bad})).is_err(), "{bad}");
+    }
+    assert_eq!(app.ui.record_offset, -42, "a refused value changes nothing");
+    let r = app.run("setup.playback_engine", json!({"record_offset": 128})).unwrap();
+    assert_eq!((r["record_offset"].as_i64(), app.ui.record_offset), (Some(128), 128));
+}
+
 fn new_app() -> SoundApp {
     SoundApp::new(soundcraft_engine::Engine::default(), None, Services::default())
 }
