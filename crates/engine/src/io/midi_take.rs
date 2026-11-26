@@ -387,7 +387,9 @@ pub struct MidiRecordStyle {
     /// The pass also recorded audio, whose takes already made its undo step: the MIDI joins it.
     pub same_pass: bool,
     /// Where a pass punched in while the loop was playing started: its first round covers only
-    /// from there, so a replacing first round leaves what lies before the punch-in point.
+    /// from there (or from the first thing it recorded, when that is earlier: the UI reads the
+    /// point a moment before the audio engine begins the pass), so a replacing first round leaves
+    /// what lies before the punch-in point.
     pub punched_in: Option<Samples>,
 }
 
@@ -551,9 +553,16 @@ fn write_rounds(
             // p.823–824). A Loop Record take is the loop's length (p.826).
             let end = if style.loop_record { range.end } else { until };
             // A first round punched in while the loop played covers only from the punch-in
-            // point: what lies before it was not recorded over and stays (p.819).
+            // point: what lies before it was not recorded over and stays (p.819). The UI reads
+            // that point a moment before the audio engine begins the pass (the loop may even go
+            // round in between): the round starts no later than the first thing it recorded.
             let start = match style.punched_in {
-                Some(at) if i == 0 && !style.loop_record => at.clamp(range.start, end),
+                Some(at) if i == 0 && !style.loop_record => {
+                    let first = r.seq.notes.iter().map(|n| n.start).chain(r.seq.ctrls.iter().map(|c| c.tick)).min();
+                    let base = s.tempo.samples_to_ticks(range.start, s.sample_rate);
+                    let first = first.map_or(at, |t| s.tempo.tick_to_samples(base.saturating_add(t), s.sample_rate));
+                    at.min(first).clamp(range.start, end)
+                }
                 _ => range.start,
             };
             if end <= start {
@@ -1456,5 +1465,20 @@ mod tests {
             [ev(2 * Q + Q / 4, 0, 0x90, 74, 100), ev(2 * Q + Q / 2, 0, 0x80, 74, 0), WRAP, ev(Q / 4, 0, 0x90, 76, 100), ev(Q / 2, 0, 0x80, 76, 0)];
         record(&mut e, LOOP, MidiPass::Loop { stopped: None, marked: true }, &events, &style);
         assert_eq!(pitches(&e, t), [vec![76]]);
+    }
+
+    #[test]
+    fn a_punched_in_round_keeps_what_it_recorded_before_the_punch_in_point_the_ui_saw() {
+        // The UI read the playhead a moment before the audio engine began the pass (here: before
+        // the loop went round on it): what the round recorded lies before that point.
+        let mut e = Engine::default();
+        let t = armed(&mut e, "Keys", "none");
+        let events = [ev(Q / 4, 0, 0x90, 74, 100), ev(Q / 2, 0, 0x80, 74, 0)];
+        let style = MidiRecordStyle { punched_in: Some(3 * Q), ..style(false, &[false], MergeRelease::default()) };
+        record(&mut e, LOOP, MidiPass::Loop { stopped: Some(Q), marked: true }, &events, &style);
+        let track = e.session().track(t).unwrap();
+        let clips: Vec<(Samples, Samples, Vec<(u8, i64)>)> =
+            track.clips().iter().map(|c| (c.start, c.range().end, midi_of(c).notes.iter().map(|n| (n.pitch, n.start)).collect())).collect();
+        assert_eq!(clips, [(Q / 4, Q, vec![(74, 0)])]);
     }
 }

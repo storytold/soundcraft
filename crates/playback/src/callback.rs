@@ -333,7 +333,7 @@ impl AudioState {
     /// ([`midi::MidiFeed::record_until`], asked for every entry); the rest is played like any
     /// live input. Of a pass the UI has begun during playback whose command has not been read
     /// yet, what arrived since it began is written down already
-    /// ([`midi::MidiFeed::record_from`]).
+    /// ([`midi::MidiFeed::record_from`]), and so are the rounds a playing loop went since then.
     ///
     /// Recording and playing are separate from here on. While a pass runs, each event is written
     /// to the take now, at the position it arrived at (the position of this callback less the
@@ -422,6 +422,22 @@ impl AudioState {
             until: pass.until,
             stopped: pass.stopped,
         };
+        // A pass begun while the loop plays, whose start command is only read now: the loop may
+        // have gone round since it began, while no rounds were counted for it. Those rounds are
+        // the take's too, so that what was played before them stays in the round it was played
+        // in (and inside the loop) instead of being taken for something played before the loop
+        // start.
+        if pass.begun
+            && !pass.running
+            && feed.begin_pending()
+            && let Some(l) = pass.looped
+        {
+            let began = pass.pos.saturating_sub(take_frames(feed.record_from()));
+            if began < l.start {
+                let rounds = l.start.saturating_sub(began).saturating_add(l.len().max(1) - 1) / l.len().max(1);
+                take.wraps = take.wraps.saturating_add(u8::try_from(rounds).unwrap_or(u8::MAX));
+            }
+        }
         // The lost ports whose mark is not in the take yet. Each goes in where its loss was.
         let mut marks = if record { input_lost } else { 0 };
         let mut unplayed = 0u64;
