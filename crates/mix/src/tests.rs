@@ -1746,6 +1746,20 @@ fn live_midi_plays_record_enabled_instruments_while_stopped() {
 }
 
 #[test]
+fn options_midi_thru_off_silences_live_input_and_releases_held_keys() {
+    let mut s = synth_session(-6.0);
+    let t = s.tracks[0].id;
+    s.track_mut(t).unwrap().mixer.record_arm = true;
+    let mut eng = MixEngine::new(48_000.0, 512);
+    assert!(live_peak(&mut eng, &s, &[(0x90, 60, 100)], 8) > 0.01, "a held key sounds with MIDI Thru on (the default)");
+    s.edit.set_flag(crate::NO_MIDI_THRU, true);
+    assert!(live_peak(&mut eng, &s, &[], 400) < 1e-4, "switching MIDI Thru off releases it");
+    assert_eq!(live_peak(&mut eng, &s, &[(0x90, 62, 100)], 8), 0.0, "and the keyboard is not heard");
+    s.edit.set_flag(crate::NO_MIDI_THRU, false);
+    assert!(live_peak(&mut eng, &s, &[(0x90, 64, 100)], 8) > 0.01);
+}
+
+#[test]
 fn live_midi_honours_the_track_input_device_and_channel() {
     let mut s = synth_session(-6.0);
     let t = s.tracks[0].id;

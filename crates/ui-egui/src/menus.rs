@@ -453,6 +453,7 @@ fn checked_state(app: &SoundApp, path: &str, id: Option<&str>) -> bool {
         Some("options.click") => e.click,
         Some("options.delay_compensation") => e.delay_compensation,
         Some("options.pre_fader_metering") => e.pre_fader_metering,
+        Some("options.midi_thru") => soundcraft_mix::midi_thru_enabled(app.engine.session()),
         Some("view.ruler") => path.rsplit(" > ").next().map(ruler_id).is_some_and(|r| e.rulers.iter().any(|x| x == r)),
         Some("view.main_counter") => path.rsplit(" > ").next().map(ruler_id).is_some_and(|r| e.main_counter.id() == r),
         Some("window.mix") => app.ui.window == MainWindow::Mix,
@@ -911,6 +912,15 @@ mod tests {
         assert!(!item_state(&app, "Setup > Preferences...", Some("setup.preferences")).0);
         assert!(!item_state(&app, "Window > About", Some("window.about")).0);
         assert!(!item_state(&app, "File > Save Session", Some("session.save")).0);
+    }
+
+    /// Options › MIDI Thru is on by default and its check mark follows the option.
+    #[test]
+    fn the_midi_thru_menu_item_shows_whether_thru_is_on() {
+        let mut app = SoundApp::new(soundcraft_engine::Engine::default(), None, Services::default());
+        assert!(item_state(&app, "Options > MIDI Thru", Some("options.midi_thru")).1);
+        app.run("options.midi_thru", json!({})).unwrap();
+        assert!(!item_state(&app, "Options > MIDI Thru", Some("options.midi_thru")).1);
     }
 
     /// A Nightly launch has no in-app updater: the command says where its updates come from instead

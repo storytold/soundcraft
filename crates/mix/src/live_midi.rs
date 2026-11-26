@@ -55,7 +55,7 @@
 //! what was lost. A key that is still down stays silent until it is played again.
 
 use soundcraft_dsp::Plugin;
-use soundcraft_model::{MidiInput, Track};
+use soundcraft_model::{MidiInput, Session, Track};
 use std::sync::OnceLock;
 
 /// Most input ports one engine tells apart; later ones still reach tracks that listen to all.
@@ -110,9 +110,20 @@ impl MidiPorts {
     }
 }
 
-/// Whether a track plays live MIDI input: record-enabled or input-monitored.
-pub fn midi_thru(t: &Track) -> bool {
-    !t.inactive && (t.mixer.record_arm || t.mixer.input_monitor)
+/// The session flag that switches Options › MIDI Thru off. Thru is on unless the flag is there,
+/// so a session made before the option did anything plays as it did.
+pub const NO_MIDI_THRU: &str = "options.no_midi_thru";
+
+/// Whether Options › MIDI Thru is on: live MIDI input plays through the tracks (their instrument
+/// and their MIDI output). Recording does not depend on it (Pro Tools Reference Guide p.810–811).
+pub fn midi_thru_enabled(s: &Session) -> bool {
+    !s.edit.flag(NO_MIDI_THRU)
+}
+
+/// Whether a track plays live MIDI input: Options › MIDI Thru is on and the track is active and
+/// record-enabled or input-monitored.
+pub fn midi_thru(s: &Session, t: &Track) -> bool {
+    midi_thru_enabled(s) && !t.inactive && (t.mixer.record_arm || t.mixer.input_monitor)
 }
 
 /// The bit of `port` in [`crate::MixEngine::midi_lost`]. Ports without an index of their own

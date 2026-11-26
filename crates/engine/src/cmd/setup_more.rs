@@ -15,6 +15,17 @@ macro_rules! option {
     };
 }
 
+/// Options › MIDI Thru: on unless the session holds [`soundcraft_mix::NO_MIDI_THRU`], so it is
+/// on by default (Pro Tools Reference Guide p.810–811).
+fn midi_thru(e: &mut Engine, p: &Value) -> Result<Value> {
+    let s = e.session_mut();
+    let on = p.get("value").and_then(Value::as_bool).unwrap_or(!soundcraft_mix::midi_thru_enabled(s));
+    s.edit.set_flag(soundcraft_mix::NO_MIDI_THRU, !on);
+    // The flag this option was stored as before it did anything.
+    s.edit.set_flag("options.midi_thru", false);
+    Ok(json!({"value": on}))
+}
+
 const MIDI_FILTER_KINDS: [&str; 8] = ["notes", "pitch_bend", "mono_aftertouch", "poly_aftertouch", "program", "cc", "sysex", "realtime"];
 
 pub fn specs() -> Vec<CommandSpec> {
@@ -27,7 +38,15 @@ pub fn specs() -> Vec<CommandSpec> {
             "Marker Target Follows First Selected Track",
             "options.marker_target_follows_first_selected_track"
         ),
-        option!("options.midi_thru", "MIDI Thru", "options.midi_thru"),
+        cmd!(
+            noundo "options.midi_thru",
+            "MIDI Thru",
+            ["Options"],
+            None,
+            "{value?: bool} (toggles when omitted; on by default) — live MIDI input plays through record-enabled and input-monitored MIDI and instrument tracks: their instrument and their MIDI output. Recording does not depend on it",
+            always,
+            midi_thru
+        ),
         option!("options.auto_spot_clips", "Auto-Spot Clips", "options.auto_spot_clips"),
         option!("options.keyboard_lock", "Edit/Tool Mode Keyboard Lock", "options.edit_tool_mode_keyboard_lock"),
         option!("options.calibration_mode", "Calibration Mode", "options.calibration_mode"),
@@ -586,10 +605,14 @@ mod tests {
     #[test]
     fn option_flags_toggle() {
         let mut e = Engine::default();
-        assert_eq!(e.execute("options.midi_thru", &json!({})).unwrap()["value"], true);
-        assert!(e.session().edit.flag("options.midi_thru"));
-        e.execute("options.midi_thru", &json!({"value": false})).unwrap();
-        assert!(!e.session().edit.flag("options.midi_thru"));
+        assert!(soundcraft_mix::midi_thru_enabled(e.session()), "MIDI Thru is on by default");
+        assert_eq!(e.execute("options.midi_thru", &json!({})).unwrap()["value"], false);
+        assert!(!soundcraft_mix::midi_thru_enabled(e.session()));
+        assert_eq!(e.execute("options.midi_thru", &json!({"value": true})).unwrap()["value"], true);
+        assert!(soundcraft_mix::midi_thru_enabled(e.session()));
+        assert_eq!(e.execute("options.midi_thru", &json!({})).unwrap()["value"], false);
+        e.execute("options.calibration_mode", &json!({})).unwrap();
+        assert!(e.session().edit.flag("options.calibration_mode"));
     }
 
     #[test]

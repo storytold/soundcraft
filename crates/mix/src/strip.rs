@@ -333,7 +333,7 @@ fn render_instrument(s: &Session, t: &Track, strip: &mut Strip, live: &LiveInput
         // events of this block come after that, so a controller a clip changes right at the
         // start of the block keeps its new value.
         strip.live.begin_block();
-        if midi_thru(t) && strip.live.reconcile(t, live.midi_lost, live.ports, inst.plugin.as_mut()) {
+        if midi_thru(s, t) && strip.live.reconcile(t, live.midi_lost, live.ports, inst.plugin.as_mut()) {
             let from_clips = chase_controllers(s, t, pos, inst);
             strip.live.restore_defaults(from_clips, inst.plugin.as_mut());
             strip.live.resend_controllers(inst.plugin.as_mut());
@@ -361,7 +361,7 @@ fn render_instrument(s: &Session, t: &Track, strip: &mut Strip, live: &LiveInput
             }
         }
         strip.live.set_clip_notes(&strip.held);
-        if midi_thru(t) {
+        if midi_thru(s, t) {
             strip.live.play(t, inst.plugin.as_mut(), live.midi, live.ports, frames);
         } else if strip.live.touched() && strip.live.release(inst.plugin.as_mut()) {
             // Live controllers moved the instrument: the next block sets them from the clips.
@@ -468,7 +468,7 @@ pub(crate) fn process_strip(s: &Session, t: &Track, strip: &mut Strip, busses: &
         TrackKind::Audio if live.monitor_only => {}
         // Stopped: only a track that plays live MIDI input sounds (and one that just stopped
         // doing so, to release its notes).
-        TrackKind::Instrument | TrackKind::Midi if live.monitor_only && !midi_thru(t) && !strip.live.touched() => {}
+        TrackKind::Instrument | TrackKind::Midi if live.monitor_only && !midi_thru(s, t) && !strip.live.touched() => {}
         TrackKind::Audio => render_audio_clips(s, t, strip, blk),
         TrackKind::Aux | TrackKind::Folder => read_aux_bus(t, strip, busses, frames),
         TrackKind::Instrument | TrackKind::Midi => render_instrument(s, t, strip, live, blk, &transport),

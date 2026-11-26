@@ -5,7 +5,10 @@ impl SoundApp {
     pub(crate) fn meters_live(&self) -> bool {
         self.engine.transport.playing
             || (self.recorder.is_some() && self.engine.session().tracks.iter().any(|t| t.mixer.input_monitor || t.mixer.record_arm))
-            || (self.midi_connected() && self.engine.session().tracks.iter().any(|t| t.kind.is_midi() && soundcraft_mix::midi_thru(t)))
+            || (self.midi_connected() && {
+                let s = self.engine.session();
+                s.tracks.iter().any(|t| t.kind.is_midi() && soundcraft_mix::midi_thru(s, t))
+            })
     }
 
     /// Reopens the audio devices with `cfg` (Setup › Playback Engine › Apply), keeping the
