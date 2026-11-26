@@ -981,8 +981,9 @@ fn control_ui(ui: &mut egui::Ui, page: PreferencesPage, section: &str, index: us
             });
         }
         Control::Check(text @ "MIDI Notes and Controllers") if section == "Delay Compensation for External Devices" => {
-            ui.add_enabled(false, egui::Checkbox::new(&mut draft.compensation.notes, label(text)));
-            ui.label(label("Takes effect once external MIDI track output is available."));
+            ui.checkbox(&mut draft.compensation.notes, label(text)).on_hover_text(crate::localization::text(
+                "Delay MIDI and instrument tracks' external MIDI output by the audio output latency and the mixer's plug-in delay, so it sounds with the audio.",
+            ));
         }
         Control::Check(text) if section == "Delay Compensation for External Devices" => {
             let value = if text == "MIDI Beat Clock" { &mut draft.compensation.beat_clock } else { &mut draft.compensation.mtc };
@@ -1089,6 +1090,23 @@ mod tests {
     use egui_kittest::kittest::{NodeT, Queryable};
     use soundcraft_engine::Engine;
 
+    #[test]
+    fn external_midi_note_compensation_is_a_working_checkbox_on_the_midi_page() {
+        let app = SoundApp::new(Engine::default(), None, crate::Services::default());
+        let draft = PreferencesDraft::from_live(&app);
+        assert!(draft.compensation.notes, "on by default");
+        let mut harness =
+            Harness::builder().with_size(egui::vec2(1000., 1200.)).build_ui_state(|ui, draft| page_body(ui, PreferencesPage::Midi, "", draft), draft);
+        harness.run_steps(2);
+        let node = harness.get_by_label("MIDI Notes and Controllers");
+        assert!(!node.accesskit_node().is_disabled());
+        node.click();
+        harness.run_steps(2);
+        assert!(!harness.state().compensation.notes);
+        assert!(harness.state().compensation.beat_clock, "the Beat Clock choice is separate");
+        assert!(!harness.get_by_label("MIDI Beat Clock").accesskit_node().is_disabled());
+    }
+
     /// Whether a preference value is a plain number or unit amount that needs no translation.
     fn is_numeric(value: &str) -> bool {
         value.chars().next().is_none_or(|c| c.is_ascii_digit() || matches!(c, '−' | '-' | '—' | '.' | ' ' | '|'))
@@ -1144,20 +1162,6 @@ mod tests {
             },
             app,
         )
-    }
-
-    #[test]
-    fn midi_sync_pref_notes_compensation_explains_why_it_cannot_be_edited() {
-        let app = SoundApp::new(Engine::default(), None, crate::Services::default());
-        let mut draft = PreferencesDraft::from_live(&app);
-        draft.compensation.notes = true;
-        let mut harness =
-            Harness::builder().with_size(egui::vec2(1000., 1200.)).build_ui_state(|ui, draft| page_body(ui, PreferencesPage::Midi, "", draft), draft);
-        harness.run_steps(2);
-        assert!(harness.get_by_label("MIDI Notes and Controllers").accesskit_node().is_disabled());
-        harness.get_by_label("Takes effect once external MIDI track output is available.");
-        assert!(harness.state().compensation.notes);
-        assert!(!harness.get_by_label("MIDI Beat Clock").accesskit_node().is_disabled());
     }
 
     /// Search includes page, section, control, choice and value text.

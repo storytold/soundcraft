@@ -44,6 +44,10 @@ impl SoundApp {
             unavailable_output: None,
             midi_inputs: None,
             midi_scan_at: 0.0,
+            midi_output_ports: None,
+            midi_output_scan_at: 0.0,
+            applied_midi_output: None,
+            last_midi_sync_error: None,
             midi_take: Vec::new(),
             midi_take_lost: 0,
             midi_take_inputs: Vec::new(),
@@ -108,7 +112,6 @@ impl SoundApp {
             pending_open: None,
             last_rev: 0,
             applied_midi_sync: None,
-            last_midi_sync_error: None,
             sync_migration_pending: true,
             fonts_ready: false,
             fonts_installed: false,
@@ -223,6 +226,7 @@ impl SoundApp {
         self.write_automation();
         self.autosave();
         self.service_midi(self.uptime);
+        self.service_midi_output(self.uptime);
         if self.recorder.is_none() && !self.recorder_failed && audio::wants_audio_input(self.engine.session()) {
             self.ensure_input();
         }

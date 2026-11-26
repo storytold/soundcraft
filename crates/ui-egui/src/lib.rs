@@ -150,6 +150,8 @@ pub struct UiState {
     pub undo_levels: usize,
     /// The audio device choice (Setup › Playback Engine), kept with the preferences: per machine.
     pub audio: soundcraft_playback::AudioConfig,
+    /// The MIDI output ports' native bindings, the MIDI Beat Clock routing and the delay
+    /// compensation choices, kept per machine.
     pub midi_sync: midi_sync::MidiSync,
     /// The Mix window lives in its own native window (Window › Mix in Separate Window); the main
     /// window then always shows Edit.
@@ -329,6 +331,15 @@ pub struct SoundApp {
     pub midi_inputs: Option<soundcraft_playback::midi::MidiInputs>,
     /// When the MIDI ports were last looked for (app uptime, seconds).
     midi_scan_at: f64,
+    /// The MIDI output ports tracks can play to, once listed (an error where there are none to
+    /// list), and when they were last listed (app uptime, seconds).
+    pub midi_output_ports: Option<Result<Vec<String>, String>>,
+    midi_output_scan_at: f64,
+    /// The ports and compensation the audio engine's MIDI output last accepted.
+    applied_midi_output: Option<(Vec<String>, bool)>,
+    /// The MIDI output failure shown in the status line: the untranslated message, and the
+    /// text inserted for it in the language of that moment, which is what a later update removes.
+    last_midi_sync_error: Option<(String, String)>,
     /// MIDI played during the current record pass.
     midi_take: Vec<soundcraft_playback::midi::RecordedMidi>,
     /// Recorded MIDI events of the current pass that were dropped before they got here.
@@ -452,9 +463,10 @@ pub struct SoundApp {
     /// An insert just picked from its menu, opened once the audio engine has its instance.
     pub(crate) pending_open: Option<(TrackId, usize)>,
     last_rev: u64,
+    /// An old project's Beat Clock routing is still to be imported (once per document).
     sync_migration_pending: bool,
+    /// The Beat Clock routing the audio engine's MIDI output last accepted.
     applied_midi_sync: Option<midi_sync::MidiSync>,
-    last_midi_sync_error: Option<String>,
     fonts_ready: bool,
     fonts_installed: bool,
     /// Whether the system fonts are loaded next to the bundled ones; set before the first frame.

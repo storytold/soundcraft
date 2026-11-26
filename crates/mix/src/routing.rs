@@ -184,6 +184,23 @@ pub fn solo_mutes(s: &Session, t: &Track) -> bool {
     solo_muted(s, t, any_solo(s))
 }
 
+/// Whether `t`'s external MIDI output is silent at `at`. On a MIDI track that is its Mute, the
+/// solo of other tracks (not when Solo Safe) and its mute automation, as for the audio. An
+/// instrument track's Mute and solo act on its audio only, so its MIDI output keeps playing.
+/// An inactive track sends nothing.
+pub fn midi_output_muted(s: &Session, t: &Track, at: soundcraft_time::Samples) -> bool {
+    if t.inactive {
+        return true;
+    }
+    if t.kind != TrackKind::Midi {
+        return false;
+    }
+    t.mixer.mute
+        || solo_mutes(s, t)
+        || (t.mixer.automation_mode.reads()
+            && t.lane(&soundcraft_model::AutoParam::Mute).is_some_and(|lane| !lane.points.is_empty() && lane.value_at(at, 0.0) >= 0.5))
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]
 mod processing_order_tests {

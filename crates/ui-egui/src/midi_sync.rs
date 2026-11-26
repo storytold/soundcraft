@@ -1,7 +1,10 @@
-//! MIDI port calibration and routing belong to the workstation, across sessions.
+//! MIDI output ports belong to the workstation, across sessions: the native port each label was
+//! bound to, the MIDI Beat Clock routing with each port's calibration, and the delay-compensation
+//! choices. Which port and channel a track plays to is in the session
+//! (`soundcraft_model::MidiOutput`, the `track.midi_output` command).
 use crate::{SoundApp, Value, json};
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
@@ -10,17 +13,21 @@ pub struct MidiSyncPort {
     pub offset_samples: i64,
 }
 
+/// Setup › Preferences › MIDI › Delay Compensation for External Devices: which external MIDI
+/// outputs are delayed by the audio output latency and the mixer's plug-in delay, so they sound
+/// with the audio.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Compensation {
     pub beat_clock: bool,
     pub mtc: bool,
+    /// MIDI and instrument tracks' external output.
     pub notes: bool,
 }
 
 impl Default for Compensation {
     fn default() -> Self {
-        Self { beat_clock: true, mtc: true, notes: false }
+        Self { beat_clock: true, mtc: true, notes: true }
     }
 }
 
@@ -48,10 +55,21 @@ pub fn valid_saved_offset(samples: i64) -> bool {
 pub fn valid_port(name: &str) -> bool {
     !name.trim().is_empty() && name.len() <= 1024
 }
+
 impl MidiSync {
     fn bind_configured(&mut self, available: BTreeMap<String, String>) {
         for (label, id) in available {
             if self.ports.contains_key(&label) && valid_port(&id) {
+                self.port_ids.entry(label).or_insert(id);
+            }
+        }
+    }
+
+    /// Remember the native port behind each label Beat Clock or a track uses, the first time it
+    /// opens.
+    fn bind_used(&mut self, available: BTreeMap<String, String>, used: &BTreeSet<String>) {
+        for (label, id) in available {
+            if (used.contains(&label) || self.ports.contains_key(&label)) && valid_port(&id) && self.port_ids.len() < MAX_SYNC_PORTS {
                 self.port_ids.entry(label).or_insert(id);
             }
         }
@@ -64,6 +82,9 @@ impl MidiSync {
         Ok(())
     }
 }
+
+/// How often the list of MIDI output ports is read again, in seconds.
+const RESCAN_SECONDS: f64 = 2.0;
 
 impl SoundApp {
     pub(crate) fn sync_command(&mut self, id: &str, args: &Value) -> Result<Value, String> {
@@ -134,7 +155,9 @@ impl SoundApp {
         {
             next.bind_configured(available);
         }
-        next.port_ids.retain(|name, _| next.ports.contains_key(name));
+        // A label stays bound while Beat Clock is configured for it or a track plays to it.
+        let used = self.midi_output_ports_in_use();
+        next.port_ids.retain(|name, _| next.ports.contains_key(name) || used.contains(name));
         let limit = soundcraft_playback::max_sync_offset_samples(self.engine.session().sample_rate);
         if next.ports.iter().any(|(name, port)| {
             port.offset_samples.unsigned_abs() > limit as u64
@@ -168,44 +191,109 @@ impl SoundApp {
         }
     }
 
-    fn update_midi_sync_error(&mut self, error: Option<String>) {
-        if let Some(previous) = self.last_midi_sync_error.take() {
-            let previous = crate::localization::error_text(&previous);
-            if self.ui.status == previous {
-                self.ui.status.clear();
-            } else if let Some(other) = self.ui.status.strip_suffix(&format!(" · {previous}")) {
-                self.ui.status.truncate(other.len());
-            }
-        }
-        if let Some(message) = &error {
-            if !self.ui.status.is_empty() {
-                self.ui.status.push_str(" · ");
-            }
-            self.ui.status.push_str(&crate::localization::error_text(message));
-        }
-        self.last_midi_sync_error = error;
+    /// The MIDI output ports MIDI and instrument tracks of this session play to.
+    pub(crate) fn midi_output_ports_in_use(&self) -> BTreeSet<String> {
+        let s = self.engine.session();
+        soundcraft_model::MidiOutput::all(&s.edit)
+            .filter(|(id, _)| s.track(*id).is_some_and(|t| t.kind.is_midi()))
+            .map(|(_, out)| out.device.to_string())
+            .collect()
     }
 
-    fn show_midi_sync_error(&mut self, error: Option<String>) {
-        // Another message can replace the status line while the same port error persists.
-        let hidden = error.as_ref().is_some_and(|message| !self.ui.status.contains(&crate::localization::error_text(message)));
-        if error != self.last_midi_sync_error || hidden {
-            self.update_midi_sync_error(error);
+    /// Whether the port a track plays to is missing: `None` while the port list is not known.
+    pub(crate) fn midi_output_missing(&self, device: &str) -> Option<bool> {
+        match self.midi_output_ports.as_ref()? {
+            Ok(ports) => Some(!ports.iter().any(|p| p == device)),
+            Err(_) => Some(true),
         }
     }
 
+    /// Each MIDI or instrument track's MIDI output for `ui.inspect`: the track, its output
+    /// (`MIDI:<channel>:<device>`) and whether that port is listed (`null` while unknown).
+    pub(crate) fn midi_outputs_inspect(&self) -> Value {
+        let s = self.engine.session();
+        let outputs: Vec<Value> = soundcraft_model::MidiOutput::all(&s.edit)
+            .filter_map(|(id, out)| {
+                let t = s.track(id).filter(|t| t.kind.is_midi())?;
+                Some(json!({"track": id, "name": t.name, "output": out.route(), "connected": self.midi_output_missing(out.device).map(|m| !m)}))
+            })
+            .collect();
+        Value::Array(outputs)
+    }
+
+    /// `ui.midi_output_compensation {value?: bool}`: delay-compensate the tracks' external MIDI
+    /// output. Without `value` it reports the setting.
+    pub(crate) fn midi_output_compensation_command(&mut self, args: &Value) -> Result<Value, String> {
+        if let Some(value) = args.get("value") {
+            self.ui.midi_sync.compensation.notes = value.as_bool().ok_or_else(|| format!("value must be true or false, not {value}"))?;
+        }
+        Ok(json!({"value": self.ui.midi_sync.compensation.notes}))
+    }
+
+    /// Hand the Beat Clock routing to the audio engine's MIDI output, again until it accepts it.
     pub(crate) fn service_midi_sync(&mut self) {
-        let error = self.player.as_ref().and_then(|player| player.midi_clock_error());
-        self.show_midi_sync_error(error);
         let Some(player) = &self.player else { return };
-        if let Some(ids) = player.take_opened_sync_output_ids() {
-            self.ui.midi_sync.bind_configured(ids);
-        }
         let ids = &self.ui.midi_sync.port_ids;
         apply_beat_clock_routes(&self.ui.midi_sync, &mut self.applied_midi_sync, |ports, compensate| {
             player.restore_sync_output_ids(ids);
             player.try_set_beat_clock_outputs(ports, compensate)
         });
+    }
+
+    /// Replace the MIDI output failure in the status line. The text removed is the text that was
+    /// inserted, not the message translated again, so a language switch in between can't strand it.
+    fn update_midi_sync_error(&mut self, error: Option<String>) {
+        if let Some((_, shown)) = self.last_midi_sync_error.take() {
+            if self.ui.status == shown {
+                self.ui.status.clear();
+            } else if let Some(other) = self.ui.status.strip_suffix(&format!(" · {shown}")) {
+                self.ui.status.truncate(other.len());
+            }
+        }
+        self.last_midi_sync_error = error.map(|message| {
+            let shown = crate::localization::error_text(&message);
+            if !self.ui.status.is_empty() {
+                self.ui.status.push_str(" · ");
+            }
+            self.ui.status.push_str(&shown);
+            (message, shown)
+        });
+    }
+
+    fn show_midi_sync_error(&mut self, error: Option<String>) {
+        // Another message can replace the status line while the same port error persists, and a
+        // language switch changes the text the error should read.
+        let hidden = error.as_ref().is_some_and(|message| !self.ui.status.contains(&crate::localization::error_text(message)));
+        if error.as_ref() != self.last_midi_sync_error.as_ref().map(|(message, _)| message) || hidden {
+            self.update_midi_sync_error(error);
+        }
+    }
+
+    /// Keep the port list fresh, hand the ports the tracks use to the audio engine, and show
+    /// every MIDI output failure (track output and Beat Clock) in the status line.
+    pub(crate) fn service_midi_output(&mut self, now: f64) {
+        let Some(player) = &self.player else { return };
+        if self.midi_output_ports.is_none() || (now - self.midi_output_scan_at).abs() >= RESCAN_SECONDS {
+            self.midi_output_scan_at = now;
+            self.midi_output_ports =
+                Some(soundcraft_playback::midi_sync_output_ids(&self.ui.midi_sync.port_ids).map(|ids| ids.into_keys().collect()));
+        }
+        let used = self.midi_output_ports_in_use();
+        if let Some(ids) = player.take_opened_sync_output_ids() {
+            self.ui.midi_sync.bind_used(ids, &used);
+        }
+        // Output timing trouble on a compensated route is shown by the output warning bar
+        // (`output_warning`), not here.
+        let error = player.midi_output_error();
+        // The silent clock that stands in for a missing audio device has no output latency to
+        // wait for, and no timing for a compensated route.
+        let want = (used.into_iter().collect::<Vec<_>>(), self.ui.midi_sync.compensation.notes && !player.silent);
+        if self.applied_midi_output.as_ref() != Some(&want) {
+            player.restore_sync_output_ids(&self.ui.midi_sync.port_ids);
+            let accepted = player.try_set_midi_note_outputs(want.0.clone(), want.1);
+            self.applied_midi_output = accepted.then_some(want);
+        }
+        self.show_midi_sync_error(error);
     }
 }
 
@@ -225,6 +313,54 @@ fn apply_beat_clock_routes(config: &MidiSync, applied: &mut Option<MidiSync>, en
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn midi_output_errors_join_the_status_line_and_leave_it_when_fixed() {
+        let mut app = SoundApp::new(soundcraft_engine::Engine::default(), None, crate::Services::default());
+        app.ui.status = "Audio output requires attention".into();
+        let error = "MIDI output UM-ONE unavailable";
+        app.show_midi_sync_error(Some(error.into()));
+        assert!(app.ui.status.starts_with("Audio output requires attention") && app.ui.status.contains(error), "{}", app.ui.status);
+        app.show_midi_sync_error(None);
+        assert_eq!(app.ui.status, "Audio output requires attention");
+        // A persistent error comes back after another message replaced the status line.
+        app.show_midi_sync_error(Some(error.into()));
+        app.ui.status = "Recording stopped".into();
+        app.show_midi_sync_error(Some(error.into()));
+        assert!(app.ui.status.starts_with("Recording stopped") && app.ui.status.contains(error), "{}", app.ui.status);
+    }
+
+    #[test]
+    fn a_language_switch_replaces_the_status_line_error_and_fixing_the_port_clears_it() {
+        use crate::localization::{Language, enter};
+        let mut app = SoundApp::new(soundcraft_engine::Engine::default(), None, crate::Services::default());
+        app.ui.status = "Audio output requires attention".into();
+        let error = "MIDI output Gone Port unavailable";
+        app.show_midi_sync_error(Some(error.into()));
+        {
+            let _pt = enter(Language::PortugueseBrazil);
+            app.show_midi_sync_error(Some(error.into()));
+            assert_eq!(app.ui.status, "Audio output requires attention · Saída MIDI Gone Port indisponível");
+        }
+        app.show_midi_sync_error(Some(error.into()));
+        assert_eq!(app.ui.status, "Audio output requires attention · MIDI output Gone Port unavailable");
+        {
+            let _pt = enter(Language::PortugueseBrazil);
+            app.show_midi_sync_error(Some(error.into()));
+        }
+        app.show_midi_sync_error(None);
+        assert_eq!(app.ui.status, "Audio output requires attention");
+    }
+
+    #[test]
+    fn the_compensation_command_takes_only_a_boolean() {
+        let mut app = SoundApp::new(soundcraft_engine::Engine::default(), None, crate::Services::default());
+        assert!(app.ui.midi_sync.compensation.notes, "compensated by default, as Beat Clock is");
+        assert_eq!(app.run("ui.midi_output_compensation", json!({"value": false})).unwrap()["value"], false);
+        assert!(app.run("ui.midi_output_compensation", json!({"value": "no"})).is_err());
+        assert!(!app.ui.midi_sync.compensation.notes);
+        assert_eq!(app.run("ui.midi_output_compensation", json!({})).unwrap()["value"], false);
+    }
 
     #[test]
     fn duplicate_calibrations_roundtrip_as_independent_enabled_routes() {
@@ -271,42 +407,12 @@ mod tests {
         let until = std::time::Instant::now() + std::time::Duration::from_secs(4);
         while !app.ui.status.contains(port) && std::time::Instant::now() < until {
             app.service_midi_sync();
+            app.service_midi_output(0.0);
             std::thread::sleep(std::time::Duration::from_millis(5));
         }
         assert!(app.ui.status.contains(port), "{}", app.ui.status);
         assert!(app.ui.status.contains("Audio output requires attention"));
         assert!(app.sync_command("setup.midi_sync_status", &json!({})).unwrap()["output"]["error"].as_str().unwrap().contains(port));
-    }
-
-    #[test]
-    fn midi_sync_errors_after_play_update_the_status_line() {
-        let mut app = SoundApp::new(soundcraft_engine::Engine::default(), None, crate::Services::default());
-        app.engine.transport.playing = true;
-        app.ui.status = "Audio output requires attention".into();
-        let error = "MIDI output DIN unavailable";
-        app.update_midi_sync_error(Some(error.into()));
-        assert!(app.ui.status.contains(error));
-        assert!(app.ui.status.starts_with("Audio output requires attention"));
-        app.update_midi_sync_error(None);
-        assert_eq!(app.ui.status, "Audio output requires attention");
-        app.update_midi_sync_error(Some(error.into()));
-        app.ui.status = "Recording stopped".into();
-        app.update_midi_sync_error(None);
-        assert_eq!(app.ui.status, "Recording stopped");
-    }
-
-    #[test]
-    fn a_persistent_midi_sync_error_returns_after_another_status_message() {
-        let mut app = SoundApp::new(soundcraft_engine::Engine::default(), None, crate::Services::default());
-        let error = "MIDI output DIN unavailable";
-        app.show_midi_sync_error(Some(error.into()));
-        app.ui.status = "Recording stopped".into();
-        app.show_midi_sync_error(Some(error.into()));
-        assert!(app.ui.status.starts_with("Recording stopped"), "{}", app.ui.status);
-        assert!(app.ui.status.contains(error), "{}", app.ui.status);
-        let shown = app.ui.status.clone();
-        app.show_midi_sync_error(Some(error.into()));
-        assert_eq!(app.ui.status, shown);
     }
 
     #[test]
@@ -391,5 +497,16 @@ mod tests {
         app.migrate_midi_sync();
         assert!(!app.ui.midi_sync.enabled);
         assert!(app.ui.midi_sync.ports.values().all(|port| !port.enabled));
+    }
+
+    #[test]
+    fn beat_clock_routing_keeps_the_port_bindings_tracks_use() {
+        let mut app = SoundApp::new(soundcraft_engine::Engine::default(), None, crate::Services::default());
+        let keys = app.run("track.new", json!({"name": "Keys", "kind": "midi"})).unwrap()["tracks"][0].clone();
+        app.run("track.midi_output", json!({"tracks": [keys], "output": "MIDI:1:UM-ONE"})).unwrap();
+        let ids = json!({"DIN": "device-din", "UM-ONE": "device-um", "Old": "device-old"});
+        app.sync_command("setup.midi_beat_clock", &json!({"enabled": true, "ports": {"DIN": {"enabled": true}}, "port_ids": ids})).unwrap();
+        app.sync_command("setup.midi_beat_clock", &json!({"ports": {"DIN": null}})).unwrap();
+        assert_eq!(app.ui.midi_sync.port_ids, BTreeMap::from([("UM-ONE".into(), "device-um".into())]));
     }
 }

@@ -41,6 +41,8 @@ impl SoundApp {
         self.player = Some(player);
         self.applied_midi_sync = None;
         self.service_midi_sync();
+        // The new engine's MIDI output starts with no ports.
+        self.applied_midi_output = None;
         Ok(())
     }
 
@@ -247,6 +249,8 @@ impl SoundApp {
         self.player = Some(player);
         self.applied_midi_sync = None;
         self.service_midi_sync();
+        // The new engine's MIDI output starts with no ports.
+        self.applied_midi_output = None;
     }
 }
 
@@ -257,7 +261,7 @@ fn output_warning(unavailable: Option<&str>, issue: Option<soundcraft_playback::
     }
     match issue? {
         OutputTimingIssue::Retained { lead_us } => Some(crate::localized_format!(
-            "The audio driver stopped reporting output timing. Compensated MIDI sync uses the last measured lead ({ms} ms).",
+            "The audio driver stopped reporting output timing. Compensated MIDI outputs use the last measured lead ({ms} ms).",
             ms = format!("{:.2}", lead_us as f64 / 1000.)
         )),
         OutputTimingIssue::Unknown => Some(format!(

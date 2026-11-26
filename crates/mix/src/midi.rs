@@ -5,8 +5,9 @@ use super::{ClipContent, CtrlKind, Range, SampleSource, Samples, Session, Source
 use std::sync::Arc;
 
 /// The track's MIDI Track Offset (`midi.offset.<id>` in the edit values), in samples. Looked up
-/// without formatting the key, since this runs on the audio thread every block.
-fn midi_offset(s: &Session, t: &Track) -> i64 {
+/// without formatting the key, since this runs on the audio thread every block. The plug-in
+/// path and the external MIDI output both shift the track's clip events by it.
+pub fn midi_offset(s: &Session, t: &Track) -> i64 {
     const PREFIX: &str = "midi.offset.";
     s.edit
         .values
@@ -18,25 +19,29 @@ fn midi_offset(s: &Session, t: &Track) -> i64 {
         .map_or(0, |v| v as i64)
 }
 
-/// Send note on/offs and controllers for MIDI clips overlapping the block.
-///
-/// `live` holds the notes played live on the same instrument. Instruments end notes by pitch, so
-/// a clip note-off is not sent while a live key holds that pitch: the key's own release ends it.
-/// A note-off held back that way is told to `live`: when the key goes up earlier in the same
-/// block, the note still lasts until the clip's note-off.
-pub(crate) fn schedule_notes(s: &Session, t: &Track, pos: Samples, frames: usize, inst: &mut PluginSlot, held: &mut Vec<u8>, live: &mut LiveNotes) {
+/// One event a track's MIDI clips play, at clip-time samples: before the track's MIDI Track
+/// Offset ([`midi_offset`]) moves it. Real-Time Properties are already applied.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ClipEvent {
+    /// A note that starts at `on` and ends at `off` (cut at its clip's end).
+    Note { on: Samples, off: Samples, pitch: u8, velocity: u8 },
+    /// A controller, pitch bend, pressure or program change at `at`, as a MIDI 1.0 message on
+    /// channel 1. Program change and channel pressure use only the first two bytes.
+    Ctrl { at: Samples, message: [u8; 3] },
+}
+
+/// Walk the events of `t`'s unmuted MIDI clips that touch the clip-time window `[from, to)`:
+/// every note whose start or end falls inside it (one [`ClipEvent::Note`] each, carrying both
+/// positions) and every controller inside it. The instrument plug-in path and the external MIDI
+/// output both read clips through this, so they play the same notes. Does not allocate.
+pub fn clip_events(s: &Session, t: &Track, from: Samples, to: Samples, mut f: impl FnMut(ClipEvent)) {
     let sr = s.sample_rate;
-    // MIDI Track Offsets: the track's notes sound `offset` samples later (earlier if negative), so
-    // the block looks that far back into the clips.
-    let offset = midi_offset(s, t);
-    let pos = pos.saturating_sub(offset);
-    let end = pos.saturating_add(frames as i64);
     for clip in t.clips() {
         if clip.muted {
             continue;
         }
         let ClipContent::Midi { sequence } = &clip.content else { continue };
-        if !clip.range().overlaps(&Range { start: pos, end }) {
+        if !clip.range().overlaps(&Range { start: from, end: to }) {
             continue;
         }
         let base = s.tempo.samples_to_ticks(clip.start, sr);
@@ -52,16 +57,16 @@ pub(crate) fn schedule_notes(s: &Session, t: &Track, pos: Samples, frames: usize
                 rtp("delay", 0.0).clamp(-1e7, 1e7) as i64,
             )
         };
-        // The block in clip ticks, one tick wider on each side so rounding never drops an event.
-        let near = s.tempo.samples_to_ticks(pos, sr).saturating_sub(base).saturating_sub(1)
-            ..=s.tempo.samples_to_ticks(end, sr).saturating_sub(base).saturating_add(1);
+        // The window in clip ticks, one tick wider on each side so rounding never drops an event.
+        let near = s.tempo.samples_to_ticks(from, sr).saturating_sub(base).saturating_sub(1)
+            ..=s.tempo.samples_to_ticks(to, sr).saturating_sub(base).saturating_add(1);
         for n0 in &sequence.notes {
             let mut n = *n0;
             n.velocity = (i64::from(n.velocity) + dv).clamp(1, 127) as u8;
             n.pitch = (i64::from(n.pitch) + dp).clamp(0, 127) as u8;
             n.length = ((n.length as f64 * dur) as i64).max(1);
             n.start = n.start.saturating_add(delay).max(0);
-            // A note whose on and off both fall outside the block sends nothing: skip it before
+            // A note whose on and off both fall outside the window sends nothing: skip it before
             // converting its positions, so a long sequence costs a comparison per note per block.
             if n.start > *near.end() || n.start.saturating_add(n.length) < *near.start() {
                 continue;
@@ -71,20 +76,8 @@ pub(crate) fn schedule_notes(s: &Session, t: &Track, pos: Samples, frames: usize
             if on >= clip.end() {
                 continue;
             }
-            if on >= pos && on < end {
-                inst.plugin.note_on(usize::try_from(on - pos).unwrap_or(0), n.pitch, n.velocity);
-                if !held.contains(&n.pitch) && held.len() < 128 {
-                    held.push(n.pitch);
-                }
-            }
-            if off >= pos && off < end {
-                let at = usize::try_from(off - pos).unwrap_or(0);
-                if live.holds(n.pitch) {
-                    live.clip_off_held_back(n.pitch, at);
-                } else {
-                    inst.plugin.note_off(at, n.pitch);
-                }
-                held.retain(|p| *p != n.pitch);
+            if (on >= from && on < to) || (off >= from && off < to) {
+                f(ClipEvent::Note { on, off, pitch: n.pitch, velocity: n.velocity });
             }
         }
         // Events before tick 0 are what a start trim hid: they don't play.
@@ -94,11 +87,44 @@ pub(crate) fn schedule_notes(s: &Session, t: &Track, pos: Samples, frames: usize
                 continue;
             }
             let at = s.tempo.tick_to_samples(base.saturating_add(tick), sr);
-            if at >= pos && at < end && at < clip.end() {
-                inst.plugin.midi(usize::try_from(at - pos).unwrap_or(0), ctrl_message(c.kind, c.value, dp));
+            if at >= from && at < to && at < clip.end() {
+                f(ClipEvent::Ctrl { at, message: ctrl_message(c.kind, c.value, dp) });
             }
         }
     }
+}
+
+/// Send note on/offs and controllers for MIDI clips overlapping the block.
+///
+/// `live` holds the notes played live on the same instrument. Instruments end notes by pitch, so
+/// a clip note-off is not sent while a live key holds that pitch: the key's own release ends it.
+/// A note-off held back that way is told to `live`: when the key goes up earlier in the same
+/// block, the note still lasts until the clip's note-off.
+pub(crate) fn schedule_notes(s: &Session, t: &Track, pos: Samples, frames: usize, inst: &mut PluginSlot, held: &mut Vec<u8>, live: &mut LiveNotes) {
+    // MIDI Track Offsets: the track's notes sound `offset` samples later (earlier if negative), so
+    // the block looks that far back into the clips.
+    let pos = pos.saturating_sub(midi_offset(s, t));
+    let end = pos.saturating_add(frames as i64);
+    clip_events(s, t, pos, end, |event| match event {
+        ClipEvent::Note { on, off, pitch, velocity } => {
+            if on >= pos && on < end {
+                inst.plugin.note_on(usize::try_from(on - pos).unwrap_or(0), pitch, velocity);
+                if !held.contains(&pitch) && held.len() < 128 {
+                    held.push(pitch);
+                }
+            }
+            if off >= pos && off < end {
+                let at = usize::try_from(off - pos).unwrap_or(0);
+                if live.holds(pitch) {
+                    live.clip_off_held_back(pitch, at);
+                } else {
+                    inst.plugin.note_off(at, pitch);
+                }
+                held.retain(|p| *p != pitch);
+            }
+        }
+        ClipEvent::Ctrl { at, message } => inst.plugin.midi(usize::try_from(at - pos).unwrap_or(0), message),
+    });
 }
 
 /// A controller event as a MIDI 1.0 message on channel 1 (where the notes go), with `transpose`
@@ -117,17 +143,17 @@ fn ctrl_message(kind: CtrlKind, value: i32, transpose: i64) -> [u8; 3] {
     }
 }
 
-/// Before an instrument plays from `pos`: reset its controllers, then send each one the last value
-/// it had on this track before `pos`. Returns the control changes that were given a value, bit
-/// `n` for CC `n`.
-pub(crate) fn chase_controllers(s: &Session, t: &Track, pos: Samples, inst: &mut PluginSlot) -> u128 {
-    inst.plugin.midi(0, [0xB0, 121, 0]);
-    let pos = pos.saturating_sub(midi_offset(s, t));
+/// The last value each control change, pitch bend, channel pressure and program change had on
+/// `t` before the clip-time position `pos`, as channel-1 messages: control changes in number
+/// order (so bank select, CC 0 and 32, comes before the program), then bend, pressure and
+/// program. A controller with no event before `pos` sends nothing. Returns the control changes
+/// that were given a value, bit `n` for CC `n`.
+pub fn chase_events(s: &Session, t: &Track, pos: Samples, mut f: impl FnMut([u8; 3])) -> u128 {
     const BEND: usize = 128;
     const PRESSURE: usize = 129;
     const PROGRAM: usize = 130;
     // MIDI Real-Time Properties: the delay moves the track's controllers as it does when they
-    // are played (`schedule_notes`), so a value is in the past here when it was already sent.
+    // are played (`clip_events`), so a value is in the past here when it was already sent.
     let delay = if s.edit.values.is_empty() {
         0i64
     } else {
@@ -168,13 +194,21 @@ pub(crate) fn chase_controllers(s: &Session, t: &Track, pos: Samples, inst: &mut
             n => CtrlKind::Cc(u8::try_from(n).unwrap_or(0)),
         };
         if at != i64::MIN {
-            inst.plugin.midi(0, ctrl_message(kind, value, 0));
+            f(ctrl_message(kind, value, 0));
             if slot < 128 {
                 sent |= 1u128 << slot;
             }
         }
     }
     sent
+}
+
+/// Before an instrument plays from `pos`: reset its controllers, then send each one the last value
+/// it had on this track before `pos` ([`chase_events`]). Returns the control changes that were
+/// given a value, bit `n` for CC `n`.
+pub(crate) fn chase_controllers(s: &Session, t: &Track, pos: Samples, inst: &mut PluginSlot) -> u128 {
+    inst.plugin.midi(0, [0xB0, 121, 0]);
+    chase_events(s, t, pos.saturating_sub(midi_offset(s, t)), |message| inst.plugin.midi(0, message))
 }
 
 /// Session audio shared with a sample-playing instrument.
