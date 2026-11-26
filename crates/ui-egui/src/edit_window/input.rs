@@ -120,6 +120,7 @@ struct LaneCtx<'a> {
     eff: Tool,
     fade_corner: Option<bool>,
     selector_press: bool,
+    command_point: bool,
 }
 
 /// The lane's response, with its clip context menu and the drops it accepts.
@@ -160,10 +161,10 @@ fn lane_menu_and_drops(app: &mut SoundApp, ui: &mut Ui, track: &Track, lane: Rec
 }
 
 /// Hit-test the press point against breakpoints, fade handles and clip bodies.
-fn hit_test<'a>(inp: &LaneInput<'a>) -> LaneHits<'a> {
+fn hit_test<'a>(inp: &LaneInput<'a>, command: bool) -> LaneHits<'a> {
     let (track, lane, tl, s, tool, origin, at_origin) = (inp.track, inp.lane, inp.tl, inp.s, inp.tool, inp.origin, inp.at_origin);
     let auto_view = &inp.auto_view;
-    let point_hit = if matches!(tool, Tool::Smart | Tool::Grabber | Tool::Pencil) {
+    let point_hit = if command || matches!(tool, Tool::Smart | Tool::Grabber | Tool::Pencil) {
         shown_automation(track).and_then(|param| breakpoint_at(s, tl, lane, track, &param, origin).map(|at| (param, at)))
     } else {
         None
@@ -337,9 +338,13 @@ fn drag_clip_gain(app: &mut SoundApp, ui: &mut Ui, c: &LaneCtx<'_>, resp: &egui:
 
 /// Click handling for the lane: breakpoints, clip selection, spot dialogs, zoom and pencil points.
 fn lane_click(app: &mut SoundApp, ui: &mut Ui, c: &LaneCtx<'_>, resp: &egui::Response) {
-    let (track, lane, s, auto_view) = (c.inp.track, c.inp.lane, c.inp.s, &c.inp.auto_view);
+    let (track, lane, s) = (c.inp.track, c.inp.lane, c.inp.s);
     let (point_hit, curve_handle, hit) = (&c.hits.point_hit, c.hits.curve_handle, &c.hits.hit);
     let (mods, p, at, eff, selector_press) = (c.mods, c.p, c.at, c.eff, c.selector_press);
+    let command_view = if c.command_point { shown_automation(track) } else { None };
+    let auto_view = command_view.as_ref().or(c.inp.auto_view.as_ref());
+    // Command-click inserts a point like the Pencil without changing the active tool or its drags.
+    let eff = if c.command_point { Tool::Pencil } else { eff };
     if resp.clicked()
         && let Some((param, at)) = &point_hit
     {
@@ -376,7 +381,7 @@ fn lane_click(app: &mut SoundApp, ui: &mut Ui, c: &LaneCtx<'_>, resp: &egui::Res
                 let _ = app.run(if mods.alt { "view.zoom_out" } else { "view.zoom_in" }, json!({}));
             }
             Tool::Pencil => {
-                if let Some(param) = &auto_view {
+                if let Some(param) = auto_view {
                     let (lo, hi, _) = param.range();
                     let (lo, hi) = if matches!(param, AutoParam::Volume | AutoParam::SendLevel(_)) {
                         (-60.0, 12.0)
@@ -429,7 +434,9 @@ pub(super) fn lane_interaction(app: &mut SoundApp, ui: &mut Ui, track: &Track, l
     let at_origin = sample_at(&s, tl, origin.x).max(0);
     let auto_view = AutoParam::parse(&track.view);
     let inp = LaneInput { track, lane, tl, s: &s, tool, origin, at_origin, auto_view };
-    let hits = hit_test(&inp);
+    // Command changes a click's target, while a drag retains the active tool's normal hits.
+    let command_click = mods.command && !resp.drag_started() && !resp.dragged();
+    let hits = hit_test(&inp, command_click);
     let eff = effective_tool(&inp, &hits);
     if resp.hovered() {
         let icon = match eff {
@@ -457,15 +464,31 @@ pub(super) fn lane_interaction(app: &mut SoundApp, ui: &mut Ui, track: &Track, l
     if resp.hovered() && gain_icon_at(p).is_some() {
         ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeVertical);
     }
+    // Existing points and clip controls keep their normal hit priority over modifier insertion.
+    let command_point = mods.command
+        && shown_automation(track).is_some()
+        && hits.point_hit.is_none()
+        && fade_corner.is_none()
+        && curve_handle.is_none()
+        && gain_icon_at(p).is_none();
     let selector_press = eff == Tool::Selector && fade_corner.is_none() && curve_handle.is_none() && gain_icon_at(origin).is_none();
-    if selector_press && resp.is_pointer_button_down_on() && ui.input(|i| i.pointer.primary_pressed()) {
+    // A Command-click keeps the prior selection; real drags still start their normal selection gesture.
+    if selector_press
+        && (!mods.command || shown_automation(track).is_none())
+        && resp.is_pointer_button_down_on()
+        && ui.input(|i| i.pointer.primary_pressed())
+    {
         place_insertion(app, ui, &s, track.id, at, mods.shift);
     }
     let gain_drag = if resp.drag_started() { gain_icon_at(origin) } else { None };
-    let cx = LaneCtx { inp, hits, mods, p, at, eff, fade_corner, selector_press };
+    let cx = LaneCtx { inp, hits, mods, p, at, eff, fade_corner, selector_press, command_point };
     start_gesture(app, ui, &cx, &resp, gain_drag);
     drag_clip_gain(app, ui, &cx, &resp);
     lane_click(app, ui, &cx, &resp);
+    if command_point && resp.hovered() && !resp.dragged() {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::Crosshair);
+        resp.on_hover_text("Click to add an automation point");
+    }
 }
 
 fn place_insertion(app: &mut SoundApp, ui: &Ui, s: &Session, track: TrackId, at: Samples, extend: bool) {

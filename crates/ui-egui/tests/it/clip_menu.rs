@@ -37,14 +37,18 @@ fn kick_clip_count(h: &Harness<'_, SoundApp>) -> usize {
 fn demo() -> Harness<'static, SoundApp> {
     let engine = soundcraft_engine::demo::demo_engine();
     let app = SoundApp::new(engine, None, Services::default());
-    let mut h = Harness::builder().with_size(vec2(1600.0, 1000.0)).with_pixels_per_point(2.0).build_ui_state(
-        |ui, app: &mut SoundApp| {
-            let ctx = ui.ctx().clone();
-            app.logic(&ctx);
-            app.ui(ui);
-        },
-        app,
-    );
+    let mut h = Harness::builder()
+        .with_context_setup(soundcraft_ui_egui::framework::install_headless)
+        .with_size(vec2(1600.0, 1000.0))
+        .with_pixels_per_point(2.0)
+        .build_ui_state(
+            |ui, app: &mut SoundApp| {
+                let ctx = ui.ctx().clone();
+                app.logic(&ctx);
+                app.ui(ui);
+            },
+            app,
+        );
     for _ in 0..6 {
         step(&mut h);
     }
