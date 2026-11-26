@@ -304,7 +304,7 @@ mod tests {
         // Two ports of that name listed, neither saved: no guess either.
         let lone = Bindings::from([("Synth".into(), "old".into())]);
         let two = assign(&lone, listed(&[("Synth", "x"), ("Synth", "y")]));
-        assert!(!two.values().any(|id| id == "old") && two.get("Synth").is_none(), "{two:?}");
+        assert!(!two.values().any(|id| id == "old") && !two.contains_key("Synth"), "{two:?}");
     }
 
     #[test]

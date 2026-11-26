@@ -591,6 +591,56 @@ fn join_failures<'a, C>(ports: &BTreeMap<String, Port<C>>, buffer: &'a mut Strin
     (!buffer.is_empty()).then_some(buffer.as_str())
 }
 
+/// Once a second, close an open port that is no longer `listed` (when the list is known); open a
+/// closed one when its retry is due, resetting its encoders.
+fn keep_open<C: SyncPort>(
+    name: &str,
+    p: &mut Port<C>,
+    listed: Option<&BTreeSet<String>>,
+    now: Instant,
+    stats: &Stats,
+    open: &mut impl ports::Connect<C>,
+) {
+    if p.link.is_some() && now >= p.retry {
+        if listed.is_some_and(|listed| !listed.contains(name)) {
+            p.disconnect(name, format!("MIDI output {name} unavailable"), now, stats);
+            // Try again at once: a port back under a new ID is listed already.
+            p.retry = now;
+        } else {
+            p.retry = now + Duration::from_secs(1);
+        }
+    }
+    if p.link.is_none() && now >= p.retry {
+        match open.open(name) {
+            Ok((out, warn)) => {
+                if p.opened {
+                    log::info!("MIDI output {name}: reconnected");
+                } else {
+                    log::info!("MIDI output: {name}");
+                }
+                stats.connected().insert(name.to_owned());
+                p.link = Some(out);
+                p.opened = true;
+                p.failure = warn;
+                for r in p.routes.iter_mut().flatten() {
+                    r.encoder.reset();
+                }
+            }
+            Err(e) => {
+                if p.failure.as_ref() != Some(&e) {
+                    if e.contains(name) {
+                        log::warn!("{e}");
+                    } else {
+                        log::warn!("MIDI output {name}: {e}");
+                    }
+                }
+                p.failure = Some(e);
+            }
+        }
+        p.retry = now + Duration::from_secs(1);
+    }
+}
+
 /// [`drive_ports`] with ports that are opened by `open` and never checked against a port list.
 #[cfg(test)]
 fn drive<C: SyncPort>(
@@ -685,44 +735,7 @@ fn drive_ports<C: SyncPort>(
         let due: BTreeSet<String> = ports.iter().filter(|(_, p)| p.link.is_some() && now >= p.retry).map(|(name, _)| name.clone()).collect();
         let listed = if due.is_empty() { None } else { open.listed(&due) };
         for (name, p) in &mut ports {
-            if p.link.is_some() && now >= p.retry {
-                if listed.as_ref().is_some_and(|listed| !listed.contains(name)) {
-                    p.disconnect(name, format!("MIDI output {name} unavailable"), now, &stats);
-                    // Try again at once: a port back under a new ID is listed already.
-                    p.retry = now;
-                } else {
-                    p.retry = now + Duration::from_secs(1);
-                }
-            }
-            if p.link.is_none() && now >= p.retry {
-                match open.open(name) {
-                    Ok((out, warn)) => {
-                        if p.opened {
-                            log::info!("MIDI output {name}: reconnected");
-                        } else {
-                            log::info!("MIDI output: {name}");
-                        }
-                        stats.connected().insert(name.clone());
-                        p.link = Some(out);
-                        p.opened = true;
-                        p.failure = warn;
-                        for r in p.routes.iter_mut().flatten() {
-                            r.encoder.reset();
-                        }
-                    }
-                    Err(e) => {
-                        if p.failure.as_ref() != Some(&e) {
-                            if e.contains(name.as_str()) {
-                                log::warn!("{e}");
-                            } else {
-                                log::warn!("MIDI output {name}: {e}");
-                            }
-                        }
-                        p.failure = Some(e);
-                    }
-                }
-                p.retry = now + Duration::from_secs(1);
-            }
+            keep_open(name, p, listed.as_ref(), now, &stats, &mut open);
             if p.link.is_some() && open.lists() {
                 soon(p.retry);
             }

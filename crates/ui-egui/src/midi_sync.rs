@@ -83,13 +83,9 @@ fn compensation(preference: bool, silent: bool, timing_unknown: bool) -> (bool, 
 const RESCAN_SECONDS: f64 = 2.0;
 
 impl SoundApp {
-    /// The MIDI output ports active MIDI and instrument tracks of this session play to. An inactive
-    /// track sends nothing, so its port is not opened and not reported missing.
-    pub(crate) fn midi_output_ports_in_use(&self) -> BTreeSet<String> {
-        self.midi_output_users().into_keys().collect()
-    }
-
-    /// The names of the active MIDI and instrument tracks that play to each MIDI output port.
+    /// The MIDI output ports in use, each with the names of the active MIDI and instrument tracks
+    /// that play to it. An inactive track sends nothing, so its port is not opened and not
+    /// reported missing.
     fn midi_output_users(&self) -> BTreeMap<String, Vec<String>> {
         let s = self.engine.session();
         let mut users = BTreeMap::<String, Vec<String>>::new();
@@ -242,7 +238,10 @@ mod tests {
 
     #[test]
     fn the_status_line_names_the_tracks_of_each_unavailable_port_in_the_current_language() {
-        let users = BTreeMap::from([("Gone A".to_string(), vec!["Synth 1".to_string(), "Pad".to_string()]), ("Gone B".to_string(), vec!["Bass".to_string()])]);
+        let users = BTreeMap::from([
+            ("Gone A".to_string(), vec!["Synth 1".to_string(), "Pad".to_string()]),
+            ("Gone B".to_string(), vec!["Bass".to_string()]),
+        ]);
         let error = name_tracks("MIDI output Gone A unavailable; MIDI output Gone B unavailable; DIN: device error", &users);
         assert_eq!(error, "MIDI output Gone A unavailable for Synth 1, Pad; MIDI output Gone B unavailable for Bass; DIN: device error");
         let mut app = SoundApp::new(soundcraft_engine::Engine::default(), None, crate::Services::default());
@@ -260,7 +259,7 @@ mod tests {
         }
         engine.execute("track.make_inactive", &json!({"tracks": ["B"], "inactive": true})).unwrap();
         let app = SoundApp::new(engine, None, crate::Services::default());
-        assert_eq!(app.midi_output_ports_in_use(), BTreeSet::from(["Gone A".to_string()]));
+        assert_eq!(app.midi_output_users().into_keys().collect::<Vec<_>>(), ["Gone A"]);
     }
 
     #[test]
