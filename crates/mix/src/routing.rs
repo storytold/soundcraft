@@ -197,8 +197,8 @@ pub(crate) fn any_solo(s: &Session) -> bool {
     s.tracks.iter().any(|t| solo_source(s, t))
 }
 
-/// The solo mutes `t`: it is on (`any_solo`, see [`any_solo`]) and `t` is neither soloed, Solo Safe nor fed by a
-/// soloed track. A VCA passes no audio, so the solo never mutes it: its fader still drives the members that sound.
+/// The solo mutes `t`: it is on (`any_solo`, see [`any_solo`]) and `t` is neither soloed, Solo Safe, fed by a
+/// soloed track, nor the instrument a soloed or Solo Safe MIDI track is routed to. A VCA passes no audio, so the solo never mutes it: its fader still drives the members that sound.
 pub(crate) fn solo_muted(s: &Session, t: &Track, any_solo: bool, pos: Samples) -> bool {
     any_solo && t.kind != TrackKind::Vca && !t.mixer.solo_safe && !soloed(s, t) && !midi_receives_solo(s, t, pos) && !receives_solo(s, t, pos)
 }

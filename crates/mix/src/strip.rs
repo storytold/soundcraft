@@ -46,7 +46,8 @@ pub(crate) struct Strip {
     pub(crate) held: HeldNotes,
     /// Notes held by live MIDI input.
     pub(crate) live: LiveNotes,
-    /// MIDI notes currently sounding on the instrument (pitch), for note-offs at stops/seek.
+    /// Active MIDI tracks routed to this instrument (source track, channel and the notes it holds),
+    /// in session track order.
     pub(crate) midi_sources: Vec<RoutedMidi>,
     own_midi_enabled: bool,
     /// The instrument's next block starts somewhere new: send it the controllers in effect there.
