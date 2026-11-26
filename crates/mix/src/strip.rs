@@ -72,7 +72,9 @@ pub(crate) struct Strip {
 pub(crate) const MAX_LATENCY: usize = 1 << 20;
 
 /// A multichannel delay line (samples). The rings only grow (keeping their contents), so a delay
-/// change in the callback moves the read offset instead of reallocating and zeroing.
+/// change in the callback moves the read offset instead of reallocating and zeroing. At zero the
+/// line is bypassed; coming back from it, reads give silence until the delay reaches back only to
+/// audio written since, so nothing from before the bypass plays and the rings are not zeroed.
 #[derive(Default)]
 pub(crate) struct DelayLine {
     pub(crate) bufs: Vec<Vec<f32>>,

@@ -51,7 +51,8 @@ report.
 `soundcraft_mix::MixEngine::render(session, pos, frames, out)` renders one block: clips (gain,
 fades, clip effects) → trim → inserts → pre-fader sends → fader/mute (automation, VCA, trim
 automation) → post-fader sends → pan → busses → aux inputs → master faders. Independent strips
-process in parallel; plugin delay compensation aligns every path, the master faders' inserts included. The same engine renders
+process in parallel; plugin delay compensation aligns every path, the master faders' inserts included, except a monitored input
+under Options › Low Latency Monitoring, which is heard without waiting for the slowest track. The same engine renders
 bounces offline (`RangeRender`, streamed to the file block by block) and realtime playback
 (`soundcraft_playback::Player`, which owns it on the audio thread and receives new session
 snapshots through a channel).

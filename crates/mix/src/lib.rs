@@ -405,8 +405,8 @@ impl MixEngine {
             }
         });
         self.busses = busses;
-        // Delay compensation: align every strip to the slowest. Direct-to-main outputs also wait
-        // for the slowest aux return. Aux latency has to be read before those outputs are routed,
+        // Delay compensation: align every strip to the slowest, except monitored inputs under Low
+        // Latency Monitoring. Direct-to-main outputs also wait for the slowest aux return. Aux latency has to be read before those outputs are routed,
         // or the first block (and a one-block bounce probe) still sees zero.
         self.compensate_delay(s, &mut work, blk);
         self.work = work;

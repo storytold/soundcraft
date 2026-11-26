@@ -24,7 +24,8 @@ fn synth_session(level_db: f32) -> Session {
 
 #[test]
 fn delay_line_change_keeps_buffers_and_history() {
-    // #889: a latency change must not reallocate or zero the delay line in the callback.
+    // #889: a latency change must not reallocate or zero the delay line in the callback (coming
+    // back from zero is covered by `a_delay_line_back_from_zero_touches_no_more_than_its_new_length`).
     let mut d = DelayLine::default();
     d.set(480, 2);
     let ptrs: Vec<_> = d.bufs.iter().map(|b| b.as_ptr()).collect();
