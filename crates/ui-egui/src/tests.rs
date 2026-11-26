@@ -527,6 +527,7 @@ fn ordinary_play_after_stop_is_full_speed() {
 #[test]
 fn one_synthetic_batch_survives_hidden_ticks_and_applies_once() {
     let ctx = egui::Context::default();
+    crate::framework::install_headless(&ctx);
     let mut app = super::SoundApp::new(soundcraft_engine::demo::demo_engine(), None, super::Services::default());
     let raw = |w: f32| {
         let rect = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(w, 900.0));
@@ -588,6 +589,7 @@ impl egui::DroppedFile for TestDrop {
 #[test]
 fn a_drop_before_fonts_are_ready_is_imported_once_after_layout() {
     let ctx = egui::Context::default();
+    crate::framework::install_headless(&ctx);
     let mut app = super::SoundApp::new(soundcraft_engine::Engine::default(), None, super::Services::default());
     let mut first =
         egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1400.0, 900.0))), ..Default::default() };
@@ -617,6 +619,7 @@ fn a_drop_before_fonts_are_ready_is_imported_once_after_layout() {
 #[test]
 fn a_retained_host_input_holds_one_copy_of_a_pending_batch() {
     let ctx = egui::Context::default();
+    crate::framework::install_headless(&ctx);
     let mut app = super::SoundApp::new(soundcraft_engine::demo::demo_engine(), None, super::Services::default());
     let rect = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1400.0, 900.0));
     let hidden = egui::ViewportInfo { minimized: Some(true), ..Default::default() };
@@ -697,6 +700,7 @@ fn a_pending_synthetic_batch_asks_a_hidden_window_for_a_paint() {
 #[test]
 fn frame_time_counts_a_multi_pass_frame_once() {
     let ctx = egui::Context::default();
+    crate::framework::install_headless(&ctx);
     let mut app = super::SoundApp::new(soundcraft_engine::demo::demo_engine(), None, super::Services::default());
     let rect = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1400.0, 900.0));
     let raw = || egui::RawInput { screen_rect: Some(rect), ..Default::default() };
@@ -731,6 +735,7 @@ fn frame_time_counts_a_multi_pass_frame_once() {
 #[test]
 fn a_synthetic_pass_does_not_publish_os_clipboard_commands() {
     let ctx = egui::Context::default();
+    crate::framework::install_headless(&ctx);
     let mut app = super::SoundApp::new(soundcraft_engine::demo::demo_engine(), None, super::Services::default());
     let rect = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1400.0, 900.0));
     let raw = || egui::RawInput { screen_rect: Some(rect), ..Default::default() };
@@ -782,6 +787,7 @@ fn a_synthetic_pass_does_not_publish_os_clipboard_commands() {
 #[test]
 fn a_held_key_does_not_turn_a_scripted_press_into_a_repeat() {
     let ctx = egui::Context::default();
+    crate::framework::install_headless(&ctx);
     let mut app = super::SoundApp::new(soundcraft_engine::demo::demo_engine(), None, super::Services::default());
     let rect = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1400.0, 900.0));
     let raw = || egui::RawInput { screen_rect: Some(rect), ..Default::default() };
@@ -855,6 +861,7 @@ fn key_pass(ctx: &egui::Context, app: &mut SoundApp, events: Vec<egui::Event>) {
 /// The demo app after a few idle passes, ready for keyboard input.
 fn app_for_keys() -> (egui::Context, SoundApp) {
     let ctx = egui::Context::default();
+    crate::framework::install_headless(&ctx);
     let mut app = SoundApp::new(soundcraft_engine::demo::demo_engine(), None, Services::default());
     for _ in 0..4 {
         key_pass(&ctx, &mut app, Vec::new());
@@ -917,6 +924,7 @@ fn holding_cmd_z_or_enter_still_runs_once() {
 #[test]
 fn a_fresh_host_press_and_a_scripted_press_both_run() {
     let ctx = egui::Context::default();
+    crate::framework::install_headless(&ctx);
     let mut app = super::SoundApp::new(soundcraft_engine::demo::demo_engine(), None, super::Services::default());
     let rect = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1400.0, 900.0));
     let raw = || egui::RawInput { screen_rect: Some(rect), ..Default::default() };
@@ -955,6 +963,7 @@ fn a_fresh_host_press_and_a_scripted_press_both_run() {
 #[test]
 fn a_hidden_logic_tick_after_the_hook_keeps_the_held_key_and_pending_batch() {
     let ctx = egui::Context::default();
+    crate::framework::install_headless(&ctx);
     let mut app = super::SoundApp::new(soundcraft_engine::demo::demo_engine(), None, super::Services::default());
     let rect = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1400.0, 900.0));
     let visible = egui::ViewportInfo { inner_rect: Some(rect), ..Default::default() };
@@ -1023,6 +1032,7 @@ fn a_hidden_logic_tick_after_the_hook_keeps_the_held_key_and_pending_batch() {
 #[test]
 fn a_multi_pass_frame_keeps_the_held_key_and_applies_the_scripted_press_once() {
     let ctx = egui::Context::default();
+    crate::framework::install_headless(&ctx);
     let mut app = super::SoundApp::new(soundcraft_engine::demo::demo_engine(), None, super::Services::default());
     let rect = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1400.0, 900.0));
     let raw = || egui::RawInput { screen_rect: Some(rect), ..Default::default() };
@@ -1080,6 +1090,7 @@ fn a_multi_pass_frame_keeps_the_held_key_and_applies_the_scripted_press_once() {
 #[test]
 fn a_focus_loss_clears_a_held_key_with_a_pending_scripted_press() {
     let ctx = egui::Context::default();
+    crate::framework::install_headless(&ctx);
     let mut app = super::SoundApp::new(soundcraft_engine::demo::demo_engine(), None, super::Services::default());
     let rect = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1400.0, 900.0));
     let raw = || egui::RawInput { screen_rect: Some(rect), ..Default::default() };
@@ -1138,6 +1149,7 @@ fn a_focus_loss_clears_a_held_key_with_a_pending_scripted_press() {
 #[test]
 fn a_host_key_with_the_same_signature_does_not_acknowledge_the_batch() {
     let ctx = egui::Context::default();
+    crate::framework::install_headless(&ctx);
     let mut app = super::SoundApp::new(soundcraft_engine::demo::demo_engine(), None, super::Services::default());
     let rect = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1400.0, 900.0));
     let raw = || egui::RawInput { screen_rect: Some(rect), ..Default::default() };
@@ -1223,6 +1235,7 @@ fn synthetic_key_acknowledgement_ignores_only_the_rewritten_repeat_flag() {
 #[test]
 fn a_discarded_pass_acknowledges_the_synthetic_batch_it_received() {
     let ctx = egui::Context::default();
+    crate::framework::install_headless(&ctx);
     let mut app = super::SoundApp::new(soundcraft_engine::demo::demo_engine(), None, super::Services::default());
     let rect = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1400.0, 900.0));
     let raw = || egui::RawInput { screen_rect: Some(rect), ..Default::default() };
@@ -1287,6 +1300,7 @@ fn real_widgets_apply_a_scripted_edit_navigation_and_cut_once_despite_consuming_
             let mut engine = soundcraft_engine::Engine::default();
             engine.execute("track.new", &json!({})).unwrap();
             let mut rig = Self { ctx: egui::Context::default(), app: SoundApp::new(engine, None, Services::default()), shapes: Vec::new() };
+            crate::framework::install_headless(&rig.ctx);
             rig.frames(4);
             rig
         }
@@ -1417,6 +1431,7 @@ fn real_widgets_apply_a_scripted_edit_navigation_and_cut_once_despite_consuming_
 #[test]
 fn a_hidden_tick_does_not_write_automation_from_the_last_pass_pointer() {
     let ctx = egui::Context::default();
+    crate::framework::install_headless(&ctx);
     let mut app = super::SoundApp::new(soundcraft_engine::demo::demo_engine(), None, super::Services::default());
     let kick = app.engine.session().track_by_name("Kick").unwrap().id;
     app.run("mix.automation_mode", json!({"tracks": ["Kick"], "mode": "touch"})).unwrap();
@@ -1459,6 +1474,7 @@ fn a_hidden_tick_does_not_write_automation_from_the_last_pass_pointer() {
 #[test]
 fn a_font_gated_pass_does_not_ack_the_pending_synthetic_batch() {
     let ctx = egui::Context::default();
+    crate::framework::install_headless(&ctx);
     let mut app = SoundApp::new(soundcraft_engine::Engine::default(), None, Services::default());
     let rect = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1400.0, 900.0));
     let raw = || egui::RawInput { screen_rect: Some(rect), ..Default::default() };
@@ -1470,7 +1486,9 @@ fn a_font_gated_pass_does_not_ack_the_pending_synthetic_batch() {
         app.ui(ui);
     });
     out.textures_delta.clear();
-    assert!(!app.fonts_ready, "the first pass installs fonts but does not lay out");
+    // The fonts load in the gated first pass, which asks for a discard pass (`craft_ui::fonts::load`); that pass
+    // lays out with them but gets no input events, so neither pass acknowledges the batch.
+    assert!(app.fonts_installed, "the first pass installs fonts");
     assert!(app.synthetic_batch.is_some(), "the font gate returns before the acknowledgement");
     assert_eq!(app.synthetic_applied_batches, 0);
     // The next hook offers the same batch to the first laid-out pass, which applies it once.
@@ -1500,6 +1518,7 @@ fn a_font_gated_pass_does_not_ack_the_pending_synthetic_batch() {
 #[test]
 fn a_settled_pass_that_did_not_receive_the_batch_does_not_ack_it() {
     let ctx = egui::Context::default();
+    crate::framework::install_headless(&ctx);
     let mut app = super::SoundApp::new(soundcraft_engine::demo::demo_engine(), None, super::Services::default());
     let rect = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1400.0, 900.0));
     let raw = || egui::RawInput { screen_rect: Some(rect), ..Default::default() };
@@ -1611,6 +1630,7 @@ fn editor_gesture_polling_survives_discarded_and_hidden_host_iterations() {
     use std::rc::Rc;
 
     let ctx = egui::Context::default();
+    crate::framework::install_headless(&ctx);
     let mut app = SoundApp::new(soundcraft_engine::demo::demo_engine(), None, Services::default());
     let rect = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1400.0, 900.0));
     let raw = || egui::RawInput { screen_rect: Some(rect), ..Default::default() };

@@ -16,7 +16,7 @@ pub(crate) fn output_window(app: &mut SoundApp, ctx: &egui::Context) {
     // last frame, because egui closes them before this runs.
     let busy_id = egui::Id::unique("output_window_escape");
     let busy = ctx.data(|d| d.get_temp(busy_id)).unwrap_or(false) || app.dialogs.open.is_some() || app.ui.show_search;
-    if !busy && ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+    if !busy && crate::framework::escape_pressed(ctx) {
         app.ui.output_window = None;
     }
     output_window_contents(app, ctx);
@@ -147,7 +147,7 @@ mod tests {
         app.run("view.edit_io", json!({})).unwrap();
         app.run("track.height", json!({"tracks": ["Kick"], "height": "medium"})).unwrap();
         let kick = app.engine.session().track_by_name("Kick").unwrap().id;
-        let mut h = Harness::builder().with_size(egui::vec2(1600.0, 1000.0)).build_ui_state(
+        let mut h = Harness::builder().with_context_setup(crate::framework::install_headless).with_size(egui::vec2(1600.0, 1000.0)).build_ui_state(
             |ui, app: &mut SoundApp| {
                 app.logic(ui.ctx());
                 app.ui(ui);
