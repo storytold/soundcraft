@@ -183,10 +183,16 @@ mod config_tests {
         app.ui = load_ui(&path).unwrap().unwrap();
         assert_eq!(app.ui.theme, soundcraft_ui_egui::theme::ThemeMode::Light);
         assert_eq!(serde_json::to_value(&app.ui.docking).unwrap(), edit);
-        assert_eq!(app.ui.mix_docking.layout.floating.iter().find(|g| g.contains(&Panel::Tracks)).unwrap().rect, [140.0, 150.0, 280.0, 420.0]);
+        assert_eq!(
+            app.ui.mix_docking.layout().floating.iter().find(|g| g.contains(&Panel::Tracks)).unwrap().rect,
+            egui::Rect::from_min_size(egui::pos2(140.0, 150.0), egui::vec2(280.0, 420.0))
+        );
         app.ui.window = MainWindow::Edit;
         app.run("ui.dock", serde_json::json!({"operation":"open","panel":"tracks"})).unwrap();
-        assert_eq!(app.ui.docking.layout.floating.iter().find(|g| g.contains(&Panel::Tracks)).unwrap().rect, [80.0, 90.0, 260.0, 400.0]);
+        assert_eq!(
+            app.ui.docking.layout().floating.iter().find(|g| g.contains(&Panel::Tracks)).unwrap().rect,
+            egui::Rect::from_min_size(egui::pos2(80.0, 90.0), egui::vec2(260.0, 400.0))
+        );
         let mut invalid_mix = app.ui.clone();
         invalid_mix.mix_docking = soundcraft_ui_egui::docking::edit_default();
         let invalid_bytes = serde_json::to_vec(&invalid_mix).unwrap();

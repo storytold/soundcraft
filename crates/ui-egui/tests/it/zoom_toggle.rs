@@ -10,13 +10,17 @@ fn e_fits_the_selection_to_the_edit_window_and_the_button_goes_back() {
         let mut app = SoundApp::new(soundcraft_engine::demo::demo_engine(), None, Services::default());
         let bass = app.engine.session().track_by_name("Bass").unwrap().id.0;
         app.engine.execute("edit.select", &json!({"tracks": [bass], "start": 96_000, "end": 192_000})).unwrap();
-        let mut h = Harness::builder().with_size(vec2(1600.0, 1000.0)).with_os(os).build_ui_state(
-            |ui, app: &mut SoundApp| {
-                app.logic(&ui.ctx().clone());
-                app.ui(ui);
-            },
-            app,
-        );
+        let mut h = Harness::builder()
+            .with_context_setup(soundcraft_ui_egui::framework::install_headless)
+            .with_size(vec2(1600.0, 1000.0))
+            .with_os(os)
+            .build_ui_state(
+                |ui, app: &mut SoundApp| {
+                    app.logic(&ui.ctx().clone());
+                    app.ui(ui);
+                },
+                app,
+            );
         h.run_steps(5);
         let view = |a: &SoundApp| (a.engine.session().edit.zoom, a.edit_layout.rows.clone(), a.edit_layout.scroll_y);
         let before = view(h.state());
@@ -49,13 +53,17 @@ fn alt_shift_e_and_an_alt_click_cancel_zoom_toggle_and_keep_the_zoomed_view() {
             let mut app = SoundApp::new(soundcraft_engine::demo::demo_engine(), None, Services::default());
             let bass = app.engine.session().track_by_name("Bass").unwrap().id.0;
             app.engine.execute("edit.select", &json!({"tracks": [bass], "start": 96_000, "end": 192_000})).unwrap();
-            let mut h = Harness::builder().with_size(vec2(1600.0, 1000.0)).with_os(os).build_ui_state(
-                |ui, app: &mut SoundApp| {
-                    app.logic(&ui.ctx().clone());
-                    app.ui(ui);
-                },
-                app,
-            );
+            let mut h = Harness::builder()
+                .with_context_setup(soundcraft_ui_egui::framework::install_headless)
+                .with_size(vec2(1600.0, 1000.0))
+                .with_os(os)
+                .build_ui_state(
+                    |ui, app: &mut SoundApp| {
+                        app.logic(&ui.ctx().clone());
+                        app.ui(ui);
+                    },
+                    app,
+                );
             h.run_steps(5);
             let view = |a: &SoundApp| (a.engine.session().edit.zoom, a.edit_layout.rows.clone(), a.edit_layout.scroll_y);
             let before = view(h.state());
