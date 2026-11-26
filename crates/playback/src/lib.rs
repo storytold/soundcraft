@@ -661,7 +661,8 @@ impl Player {
         }
         self.position()
     }
-    /// Latest clock destination or synchronization error for the setup dialog.
+    /// Current sync output errors for the setup dialog: every failing destination
+    /// joined with `"; "`, or a worker startup error.
     pub fn midi_clock_error(&self) -> Option<String> {
         #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
         {
