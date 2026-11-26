@@ -667,13 +667,15 @@ impl LiveThru {
         }
         self.feed = next;
     }
-    /// The port `p` named `name` loses its last route and is about to close: end what thru holds
-    /// there while it is still open. Once that went out, a later reopen has nothing to quiet.
-    fn release_port<C: SyncPort>(&mut self, name: &str, p: &mut Port<C>, stats: &Stats) {
+    /// The ports that lost their last route are about to close: end what thru holds there while
+    /// they are still open. Once that went out, a later reopen has nothing to quiet.
+    fn release_closing<C: SyncPort>(&mut self, ports: &mut BTreeMap<String, Port<C>>, stats: &Stats) {
         let Some(f) = &self.feed else { return };
-        self.thru.release_dest(name, &mut |_, msg| send_thru_on(name, p, msg, f, stats, None));
-        if p.link.is_some() {
-            self.thru.reopened(name);
+        for (name, p) in ports.iter_mut().filter(|(_, p)| p.routes.iter().all(Option::is_none)) {
+            self.thru.release_dest(name, &mut |_, msg| send_thru_on(name, p, msg, f, stats, None));
+            if p.link.is_some() {
+                self.thru.reopened(name);
+            }
         }
     }
     /// Every thru note off and pedal up (All MIDI Notes Off).
@@ -949,11 +951,7 @@ fn drive_ports<C: SyncPort>(
                 }
                 Update::Wake(before) => transition = Some((before, now + Duration::from_secs(2))),
             }
-            for (name, p) in &mut ports {
-                if p.routes.iter().all(Option::is_none) {
-                    live.release_port(name, p, &stats);
-                }
-            }
+            live.release_closing(&mut ports, &stats);
             ports.retain(|_, p| p.routes.iter().any(Option::is_some));
             stats.connected().retain(|n| ports.contains_key(n));
             for p in ports.values_mut() {
