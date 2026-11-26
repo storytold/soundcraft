@@ -103,8 +103,9 @@ where
         move |e: cpal::Error| {
             mark_audio_thread();
             // cpal 0.18 uses one error type for every operation. A device that went away, or a
-            // stream that must be rebuilt (`StreamInvalidated`), stops playback until the user
-            // reconnects; a rerouted default device (`DeviceChanged`) keeps playing on the new
+            // stream that must be rebuilt (`StreamInvalidated`), stops playback: a reset on a
+            // device still present is reopened automatically, a lost device waits for Reconnect;
+            // a rerouted default device (`DeviceChanged`) keeps playing on the new
             // route, and an xrun is transient, so neither counts as losing the stream.
             if devices::stream_lost(&e) {
                 // Set before `gone`, so a reader that sees `gone` also sees whether it was a reset.

@@ -11,7 +11,8 @@ use soundcraft_model::TrackKind;
 pub(crate) struct Fault {
     /// A block panicked: output stays silent from then on.
     pub(crate) failed: AtomicBool,
-    /// The device went away or the stream was invalidated: only a reconnect can restore audio.
+    /// The device went away or the stream was invalidated: a reconnect restores audio, and with
+    /// `reset` the UI reopens the device itself.
     pub(crate) gone: AtomicBool,
     /// Set with `gone` when the stream was invalidated on a device that is still present (an
     /// ASIO driver's reset request), so the UI can reopen it without asking the user.

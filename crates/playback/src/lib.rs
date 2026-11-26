@@ -249,8 +249,8 @@ impl Player {
         record::Recorder::open_with(cfg).map_err(Into::into)
     }
 
-    /// What stopped the audio output, once: a bug in the engine, or the device went away or
-    /// stopped asking for audio while playing.
+    /// What stopped the audio output, once: a bug in the engine, the device went away or asked
+    /// for a reset, stopped asking for audio while playing, or (ASIO) fell behind its clock.
     pub fn trouble(&self) -> Option<OutputTrouble> {
         #[cfg(not(target_arch = "wasm32"))]
         let clock = {
