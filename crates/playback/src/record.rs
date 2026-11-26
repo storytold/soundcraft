@@ -109,12 +109,14 @@ struct Shared {
     fault: AtomicU8,
     /// The first failure writing a take, until it's reported.
     failed: Mutex<Option<String>>,
+    /// What the input stream's callbacks report (see [`Recorder::input_latency`]).
+    input_latency: crate::latency::ReportedLatency,
 }
 
 impl Shared {
     fn new(ring: CaptureRing) -> Shared {
         let (beats, fault, failed) = (AtomicU64::new(0), AtomicU8::new(0), Mutex::new(None));
-        Shared { armed: AtomicBool::new(false), ring, dropped: AtomicUsize::new(0), beats, fault, failed }
+        Shared { armed: AtomicBool::new(false), ring, dropped: AtomicUsize::new(0), beats, fault, failed, input_latency: Default::default() }
     }
 
     /// Run the input callback's `work`. After a panic in it, the input is broken and does
@@ -173,8 +175,9 @@ where
     let mut owed = 0;
     device.build_input_stream(
         config,
-        move |data: &[T], _: &cpal::InputCallbackInfo| {
+        move |data: &[T], info: &cpal::InputCallbackInfo| {
             crate::mark_audio_thread();
+            sh.input_latency.observe(crate::latency::input_report(info));
             sh.guarded(|| {
                 for part in data.chunks(chunk) {
                     let Some(s) = scratch.get_mut(..part.len()) else { return };
@@ -288,6 +291,12 @@ impl Recorder {
     #[cfg(target_os = "freebsd")]
     pub fn open_with(_audio: &crate::AudioConfig) -> Result<Recorder, String> {
         Err("recording is not supported on this platform yet".into())
+    }
+
+    /// The input latency the audio backend reports: from when an input callback's first frame was
+    /// captured to the callback. `None` before the stream reported one.
+    pub fn input_latency(&self) -> Option<std::time::Duration> {
+        self.shared.input_latency.get()
     }
 
     /// Create each take's file and start recording into them: a track's take records the given

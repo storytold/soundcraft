@@ -26,6 +26,16 @@ fn the_audio_device_choice_is_kept_only_when_it_is_applied() {
     assert!(r["device"].is_object(), "{r}");
 }
 
+#[test]
+fn the_reported_latency_is_null_until_an_open_stream_reports_one() {
+    // No player and no recorder: nothing is open, so nothing is reported (never a made-up zero).
+    let mut app = SoundApp::new(soundcraft_engine::Engine::default(), None, Services::default());
+    let r = app.run("ui.audio_device", json!({})).unwrap();
+    assert_eq!(r["latency"], json!({"output": null, "input": null}), "{r}");
+    let r = app.run("setup.playback_engine", json!({})).unwrap();
+    assert_eq!(r["latency"], json!({"output": null, "input": null}), "{r}");
+}
+
 fn new_app() -> SoundApp {
     SoundApp::new(soundcraft_engine::Engine::default(), None, Services::default())
 }
