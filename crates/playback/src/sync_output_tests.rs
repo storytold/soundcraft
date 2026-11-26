@@ -650,6 +650,37 @@ fn a_full_deadline_queue_never_evicts_a_release() {
 }
 
 #[test]
+fn every_sustain_off_value_is_a_release_and_pedal_down_is_not() {
+    // MIDI 1.0: CC 64 values 0-63 are off, 64-127 on.
+    for (value, release) in [(0, true), (63, true), (64, false), (127, false)] {
+        assert_eq!(releases(&[0xb3, 64, value]), release, "{value}");
+    }
+}
+
+#[test]
+fn a_deadline_queue_full_of_releases_takes_no_more_than_releases() {
+    let now = Instant::now();
+    let later = Duration::from_secs(1);
+    let view = View::default();
+    view.lock().unwrap().push(block(now, 0., 480., Duration::ZERO));
+    let mut port = active_port(0, false);
+    // A full queue of releases, then a Note-On and a controller: no room for them.
+    let mut events: Vec<_> = (0..QUEUE).map(|i| (later, vec![0x80, (i % 128) as u8, 0])).collect();
+    events.push((later, vec![0x90, 60, 100]));
+    events.push((later, vec![0xb0, 64, 127]));
+    // A release still gets in.
+    events.push((later, vec![0xb0, 64, 10]));
+    port.routes[0].as_mut().unwrap().encoder = Box::new(Messages(events));
+    let stats = Stats::default();
+    port.poll("DIN", now, &Session::default(), &view, &stats, &mut Vec::new());
+    assert_eq!(port.future.len(), QUEUE + 1, "only the release went past the limit");
+    assert_eq!(port.failure.as_deref(), Some("DIN: MIDI output deadline queue is full"));
+    port.poll("DIN", now + later, &Session::default(), &view, &stats, &mut Vec::new());
+    let sent = port.link.unwrap().messages;
+    assert!(sent.iter().all(|(_, m)| releases(m)), "{sent:?}");
+}
+
+#[test]
 fn extended_messages_are_delivered_and_oversized_messages_are_reported() {
     let now = Instant::now();
     let view = View::default();
@@ -683,6 +714,33 @@ fn compensation_includes_the_mixer_system_delay_when_delay_compensation_is_on() 
             port.poll("DIN", base + Duration::from_millis(ms), &session, &view, &stats, &mut Vec::new());
         }
         assert_eq!(port.link.unwrap().messages.first(), Some(&(due, tick(0).to_vec())));
+    }
+}
+
+#[test]
+fn the_mixer_delay_passes_at_the_playback_speed() {
+    // 4800 samples of mixer delay at 48 kHz are 100 ms at 1x, 50 ms at 2x: the transport plays
+    // the mixer's output at twice the rate. The device lead (20 ms) is wall-clock time.
+    let base = Instant::now();
+    let session = Session::default();
+    for (samples_per_second, delay_ms) in [(48_000., 120), (96_000., 70)] {
+        let view = View::default();
+        let b = block(base, 0., 480., Duration::from_millis(20));
+        view.lock().unwrap().push(Presentation { system_delay_samples: 4800, samples_per_second, ..b });
+        let mut port = active_port(0, true);
+        let stats = Stats::default();
+        for ms in 0..=120 {
+            port.poll("DIN", base + Duration::from_millis(ms), &session, &view, &stats, &mut Vec::new());
+        }
+        let due = base + Duration::from_millis(delay_ms);
+        assert_eq!(port.link.unwrap().messages.first(), Some(&(due, tick(0).to_vec())), "{samples_per_second}");
+        // The reported total uses the same conversion.
+        let out = &mut Output::default();
+        out.routes[0] = Routes { ports: vec![("DIN".into(), 0)], compensate: true };
+        let mut publisher = Publisher::new(out.view.clone(), out.metrics.clone());
+        publisher.observe(DeviceTiming::new(base, Some(Duration::from_millis(20)), 0), 0.01);
+        publisher.publish(Presentation { system_delay_samples: 4800, samples_per_second, ..block(base, 0., 480., Duration::from_millis(20)) });
+        assert_eq!(out.status().ports["DIN"].effective_total_us, Some(delay_ms as i64 * 1000), "{samples_per_second}");
     }
 }
 

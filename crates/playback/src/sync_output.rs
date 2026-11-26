@@ -51,13 +51,14 @@ impl RouteKind {
         self as usize
     }
 }
-/// A message that ends sound: Note-Off (or Note-On at velocity 0), sustain pedal up, All Sound
-/// Off or All Notes Off. A full queue never evicts one (MIDI 1.0 p24: send each Note-Off).
+/// A message that ends sound: Note-Off (or Note-On at velocity 0), sustain pedal up (any value
+/// below 64), All Sound Off or All Notes Off. A full queue never evicts one (MIDI 1.0 p24: send
+/// each Note-Off).
 fn releases(bytes: &[u8]) -> bool {
     match bytes {
         [status, _, velocity, ..] if status & 0xf0 == 0x90 => *velocity == 0,
         [status, ..] if status & 0xf0 == 0x80 => true,
-        [status, 64, 0, ..] if status & 0xf0 == 0xb0 => true,
+        [status, 64, value, ..] if status & 0xf0 == 0xb0 => *value < 64,
         [status, 120 | 123, ..] if status & 0xf0 == 0xb0 => true,
         _ => false,
     }
@@ -308,15 +309,14 @@ impl Output {
         let buckets = self.stats.buckets.each_ref().map(|v| v.load(Relaxed));
         let max = self.stats.max.load(Relaxed);
         let (lead, lead_source) = self.metrics.lead();
-        let (sr, system_delay) = self
-            .view
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .mixer_delay()
-            .unwrap_or_else(|| (self.session.as_ref().map_or_else(soundcraft_time::SampleRate::default, |s| s.sample_rate), 0));
+        let (sr, system_delay, system_rate) =
+            self.view.lock().unwrap_or_else(std::sync::PoisonError::into_inner).mixer_delay().unwrap_or_else(|| {
+                let sr = self.session.as_ref().map_or_else(soundcraft_time::SampleRate::default, |s| s.sample_rate);
+                (sr, 0, sr.as_f64())
+            });
         let timing = |name: &str, offset, compensate| {
             let available = if compensate { lead } else { Some(0) };
-            let delay = available.map(|us| delivery_offset(Duration::from_micros(us), system_delay, sr, compensate, offset));
+            let delay = available.map(|us| delivery_offset(Duration::from_micros(us), system_delay, system_rate, sr, compensate, offset));
             PortTiming {
                 connected: self.stats.connected().contains(name),
                 requested_offset_samples: offset,
@@ -416,8 +416,9 @@ struct Port<C> {
     waiting_for_timing: bool,
     failure: Option<String>,
 }
-/// Most future events a port holds. When full, an event that is not a release makes room;
-/// releases are always kept.
+/// Most future events a port holds. When full, an event that is not a release makes room; when
+/// every queued event is a release, an event that is not one is dropped. Releases are always
+/// kept.
 const QUEUE: usize = 256;
 #[derive(Clone, Copy)]
 struct Event {
@@ -539,10 +540,12 @@ impl<C: SyncPort> Port<C> {
                         pending.push(event);
                     } else {
                         if self.future.len() >= QUEUE {
+                            self.failure = Some(format!("{name}: MIDI output deadline queue is full"));
                             if let Some(index) = self.future.iter().position(|e| !releases(&e.bytes[..e.len])) {
                                 self.future.remove(index);
+                            } else if !releases(m) {
+                                return;
                             }
-                            self.failure = Some(format!("{name}: MIDI output deadline queue is full"));
                         }
                         self.future.push(event);
                         soon(at);

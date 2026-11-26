@@ -89,7 +89,7 @@ impl Presentation {
     }
     fn adjusted(mut self, compensate: bool, offset_samples: i64) -> Option<Self> {
         let lead = if compensate { self.lead? } else { self.lead.unwrap_or_default() };
-        let (total, _) = delivery_offset(lead, self.system_delay_samples, self.sample_rate, compensate, offset_samples);
+        let (total, _) = delivery_offset(lead, self.system_delay_samples, self.samples_per_second, self.sample_rate, compensate, offset_samples);
         self.heard_at = shift(self.heard_at, total - lead.as_secs_f64());
         Some(self)
     }
@@ -123,8 +123,19 @@ impl Presentation {
 
 /// Seconds from callback publication. Keep a millisecond of scheduling margin when advancing
 /// a compensated device, but never manufacture lead when the host reported less than that.
-pub(crate) fn delivery_offset(lead: Duration, system_samples: usize, sr: soundcraft_time::SampleRate, compensate: bool, offset: i64) -> (f64, bool) {
-    let available = if compensate { lead.as_secs_f64() + system_samples as f64 / sr.as_f64() } else { 0. };
+/// The mixer delay (`system_samples`) passes at the transport's rate (`system_rate`, session
+/// samples per second at the playback speed: half as long at 2x); the port offset is a time
+/// calibration at the session rate `sr`.
+pub(crate) fn delivery_offset(
+    lead: Duration,
+    system_samples: usize,
+    system_rate: f64,
+    sr: soundcraft_time::SampleRate,
+    compensate: bool,
+    offset: i64,
+) -> (f64, bool) {
+    let system = if system_rate > 0. { system_samples as f64 / system_rate } else { system_samples as f64 / sr.as_f64() };
+    let available = if compensate { lead.as_secs_f64() + system } else { 0. };
     let max = crate::max_sync_offset_samples(sr);
     let requested = available + offset.clamp(-max, max) as f64 / sr.as_f64();
     let floor = available.min(0.001);
@@ -225,8 +236,10 @@ impl Timeline {
         }
         self.blocks.push_back(block);
     }
-    pub(crate) fn mixer_delay(&self) -> Option<(soundcraft_time::SampleRate, usize)> {
-        self.blocks.back().map(|block| (block.sample_rate, block.system_delay_samples))
+    /// The session rate, mixer delay and transport rate (samples per second at the playback
+    /// speed) of the latest block.
+    pub(crate) fn mixer_delay(&self) -> Option<(soundcraft_time::SampleRate, usize, f64)> {
+        self.blocks.back().map(|block| (block.sample_rate, block.system_delay_samples, block.samples_per_second))
     }
     pub(crate) fn transport_state(&self) -> Option<(u64, bool)> {
         self.blocks.back().map(|block| (block.pass, block.playing))
