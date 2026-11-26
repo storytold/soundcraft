@@ -35,7 +35,7 @@ pub(crate) fn midi_input_menu(app: &mut SoundApp, ui: &mut Ui, id: TrackId) {
         pick = Some((None, channel));
     }
     for (name, open) in &devices {
-        let text = if *open { name.clone() } else { crate::localized_format!("{name} (not connected)", name = name) };
+        let text = if *open { name.clone() } else { crate::localized_format!("{name} (unavailable)", name = name) };
         if ui.selectable_label(device.as_deref() == Some(name.as_str()), text).clicked() {
             pick = Some((Some(name.clone()), channel));
         }
@@ -71,13 +71,13 @@ pub(crate) fn midi_input_menu(app: &mut SoundApp, ui: &mut Ui, id: TrackId) {
 /// The MIDI output selector of a MIDI or instrument track, as the Mix strip and the Edit
 /// window's I/O column draw it.
 pub(crate) struct MidiOutputSelector {
-    /// "UM-ONE ch 1", with "(not connected)" when that port is missing, or "No MIDI output".
+    /// "UM-ONE ch 1", with "(unavailable)" when that port is missing, or "No MIDI output".
     pub text: String,
-    /// The chosen port is not connected: the selector takes the warning colour the Playback Engine
+    /// The chosen port is unavailable: the selector takes the warning colour the Playback Engine
     /// window gives a MIDI device that could not be opened, so it shows without opening the menu.
     pub missing: bool,
-    /// The full text on hover, for a strip too narrow to show it: "MIDI output: Gone ch 3 (not
-    /// connected)".
+    /// The full text on hover, for a strip too narrow to show it: "MIDI output: Gone ch 3
+    /// (unavailable)".
     pub tooltip: String,
 }
 
@@ -86,7 +86,7 @@ pub(crate) fn midi_output_selector(app: &SoundApp, track: &Track) -> MidiOutputS
     let missing = out.is_some_and(|out| app.midi_output_missing(out.device) == Some(true));
     let text = match out {
         None => crate::localization::text("No MIDI output").to_string(),
-        Some(out) if missing => crate::localized_format!("{name} (not connected)", name = out.label()),
+        Some(out) if missing => crate::localized_format!("{name} (unavailable)", name = out.label()),
         Some(out) => out.label(),
     };
     let tooltip = if out.is_some() {
@@ -118,7 +118,7 @@ pub(crate) fn midi_output_menu(app: &mut SoundApp, ui: &mut Ui, id: TrackId) {
         pick = Some(None);
     }
     for (name, open) in &ports {
-        let text = if *open { name.clone() } else { crate::localized_format!("{name} (not connected)", name = name) };
+        let text = if *open { name.clone() } else { crate::localized_format!("{name} (unavailable)", name = name) };
         if ui.selectable_label(device.as_deref() == Some(name.as_str()), text).clicked() {
             pick = Some(Some((name.clone(), channel.unwrap_or(0))));
         }

@@ -889,7 +889,7 @@ mod tests {
         let ctx = egui::Context::default();
         let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
             let painter = ui.painter();
-            let long = "IAC Driver Bus 1 with a very long name ch 2 (not connected)";
+            let long = "IAC Driver Bus 1 with a very long name ch 2 (unavailable)";
             let galley = super::one_line(painter, long, crate::theme::bold(10.0), egui::Color32::WHITE, 80.0);
             assert!(galley.size().x <= 80.0, "{} wide", galley.size().x);
             assert_eq!(galley.rows.len(), 1);

@@ -1,5 +1,6 @@
 //! MIDI and instrument tracks choose a MIDI output (a port and a channel) in the Mix window's I/O
-//! section and the Edit window's I/O column. The selectors are labelled combo boxes, list the
+//! section and the Edit window's I/O column (an instrument track also in the Instruments column).
+//! The selectors are labelled combo boxes, list the
 //! ports (one that is unplugged says so), mark channels other tracks use with text, run
 //! `track.midi_output`, and work from the keyboard.
 use egui::accesskit::Role;
@@ -73,19 +74,19 @@ fn choosing_a_port_and_a_channel_in_the_mix_window_routes_the_track() {
 }
 
 #[test]
-fn an_unplugged_port_stays_chosen_and_says_it_is_not_connected() {
+fn an_unplugged_port_stays_chosen_and_says_it_is_unavailable() {
     let mut h = harness(MainWindow::Edit);
     h.state_mut().run("track.midi_output", json!({"tracks": [1], "output": "MIDI:3:Gone"})).unwrap();
     h.run_steps(3);
     // The Edit window's I/O column shows it, with the same name as in the Mix window.
-    assert_eq!(selector_value(&h, "Synth"), "Gone ch 3 (not connected)");
+    assert_eq!(selector_value(&h, "Synth"), "Gone ch 3 (unavailable)");
     h.get_by_label("MIDI output for Synth").click();
     h.run_steps(3);
-    h.get_by_label("Gone (not connected)");
+    h.get_by_label("Gone (unavailable)");
     h.get_by_label("UM-ONE");
 }
 
-/// A narrow selector can't show all of "Gone ch 3 (not connected)", so its tooltip does, in both
+/// A narrow selector can't show all of "Gone ch 3 (unavailable)", so its tooltip does, in both
 /// windows; the selector also takes the warning colour, which a test can't read.
 #[test]
 fn an_unplugged_port_is_named_in_full_on_hover() {
@@ -95,7 +96,7 @@ fn an_unplugged_port_is_named_in_full_on_hover() {
         h.run_steps(3);
         h.get_by_label("MIDI output for Synth").hover();
         h.run_steps(30);
-        assert!(h.query_by_label("MIDI output: Gone ch 3 (not connected)").is_some(), "{window:?}: no tooltip naming the missing port");
+        assert!(h.query_by_label("MIDI output: Gone ch 3 (unavailable)").is_some(), "{window:?}: no tooltip naming the missing port");
     }
 }
 
@@ -119,4 +120,25 @@ fn the_mix_window_selector_works_from_the_keyboard() {
     h.key_press(Key::Enter);
     h.run_steps(3);
     assert_eq!(output(&h, "Synth").as_deref(), Some("MIDI:1:UM-ONE"));
+}
+
+/// Pro Tools puts an instrument track's MIDI output selector in the Instruments view too
+/// (Reference Guide p320, p368): with only that view on, the instrument track can be routed there.
+#[test]
+fn the_instruments_view_holds_an_instrument_tracks_midi_output() {
+    let mut h = harness(MainWindow::Edit);
+    {
+        let edit = &mut h.state_mut().engine.session_mut().edit;
+        edit.set_flag("edit_view.io", false);
+        edit.set_flag("edit_view.instruments", true);
+    }
+    h.run_steps(4);
+    assert!(h.query_by_label("MIDI output for Synth").is_none(), "a MIDI track has no instrument, so no Instruments view selector");
+    assert_eq!(selector_value(&h, "Bass"), "No MIDI output");
+    h.get_by_label("MIDI output for Bass").click();
+    h.run_steps(3);
+    h.get_by_label("IAC Bus 1").click();
+    h.run_steps(3);
+    assert_eq!(output(&h, "Bass").as_deref(), Some("MIDI:1:IAC Bus 1"));
+    assert_eq!(selector_value(&h, "Bass"), "IAC Bus 1 ch 1");
 }

@@ -216,7 +216,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Track MIDI Output",
             [],
             None,
-            "{tracks?, output: MIDI:<channel 1-16>:<device>|none} — MIDI and instrument tracks; a device that is not connected stays chosen",
+            "{tracks?, output: MIDI:<channel 1-16>:<device>|none} — MIDI and instrument tracks; a device that is unavailable (not listed) stays chosen",
             has_selection,
             midi_output
         ),

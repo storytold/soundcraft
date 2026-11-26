@@ -795,6 +795,15 @@ fn plugin_column(app: &mut SoundApp, ui: &mut Ui, track: &Track, col: &str, r: R
         if rows > 0 && track.kind == TrackKind::Instrument {
             crate::mix_window::instrument_slot(app, &mut ui, track, cell(0));
         }
+        // Pro Tools' Instruments view also holds an instrument track's MIDI output selector
+        // (Reference Guide p320, p368); the I/O column keeps its own.
+        if rows > 1 && track.kind == TrackKind::Instrument {
+            let output = crate::mix_window::midi_output_selector(app, track);
+            let name = crate::localized_format!("MIDI output for {}", track.name);
+            let color = if output.missing { ui.visuals().warn_fg_color } else { t.text };
+            let resp = header_selector(&ui, cell(1), ui.scope_id().with(("inst_midi_out", track.id.0)), &output.text, color, true, &name);
+            crate::mix_window::midi_output_popup(app, &resp.on_hover_text(&output.tooltip), track.id);
+        }
         return;
     }
     let off = if col.ends_with("ae") { 0 } else { 5 };

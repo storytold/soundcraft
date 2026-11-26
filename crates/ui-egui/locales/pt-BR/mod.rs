@@ -1589,7 +1589,7 @@ fn menu_translate(source: &str) -> Option<&'static str> {
         "MIDI input" => "Entrada MIDI",
         "All devices" => "Todos os dispositivos",
         "No MIDI input device found" => "Nenhum dispositivo de entrada MIDI encontrado",
-        "{name} (not connected)" => "{name} (não conectado)",
+        "{name} (unavailable)" => "{name} (indisponível)",
         "MIDI output" => "Saída MIDI",
         "No MIDI output" => "Sem saída MIDI",
         "No MIDI output port found" => "Nenhuma porta de saída MIDI encontrada",
@@ -1598,6 +1598,9 @@ fn menu_translate(source: &str) -> Option<&'static str> {
         "MIDI output: {output}" => "Saída MIDI: {output}",
         "Delay MIDI and instrument tracks' external MIDI output by the audio output latency and the mixer's plug-in delay, so it sounds with the audio." => {
             "Atrasa a saída MIDI externa das faixas MIDI e de instrumento pela latência da saída de áudio e pelo atraso dos plug-ins do mixer, para que soe junto com o áudio."
+        }
+        "MIDI output is not delay-compensated: the audio device reports no output timing." => {
+            "A saída MIDI não tem compensação de atraso: o dispositivo de áudio não informa a temporização da saída."
         }
         "The audio driver stopped reporting output timing. Compensated MIDI outputs use the last measured lead ({ms} ms)." => {
             "O driver de áudio parou de informar a temporização da saída. As saídas MIDI compensadas usam a última antecipação medida ({ms} ms)."
@@ -2138,6 +2141,7 @@ macro_rules! error_templates {
 
 error_templates! {
     "MIDI output {name} unavailable" => "Saída MIDI {name} indisponível",
+    "MIDI output {name} unavailable for {tracks}" => "Saída MIDI {name} indisponível para {tracks}",
     "MIDI output is not available on this system" => "A saída MIDI não está disponível neste sistema",
     "{path} is not valid Unicode" => "{path} não é Unicode válido",
     "unknown command `{c}`" => "comando desconhecido `{c}`",

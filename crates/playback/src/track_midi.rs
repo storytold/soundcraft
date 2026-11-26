@@ -12,7 +12,9 @@
 //! (CC 123) on each channel used, as the system is then at rest. A start or locate first sends
 //! the last value of each controller, pitch bend, channel pressure and program change before the
 //! play position (Pro Tools Reference Guide p1059). No Reset All Controllers and no default
-//! values: only real events are chased.
+//! values: only real events are chased. Routing changes while playing are followed the same way:
+//! a track that leaves a channel ends its notes there (and the pedal, if it was the last track
+//! there), and a track that arrives is chased.
 use crate::Session;
 use crate::sync_clock::{Presentation, SyncEncoder};
 use soundcraft_mix::{ClipEvent, chase_events, clip_events, midi_offset, midi_output_muted};
@@ -86,6 +88,12 @@ pub(crate) struct TrackMidi {
     used: u16,
     /// Channels to quiet after the port reconnected: the device may still hold their notes.
     reconnected: u16,
+    /// The routed, unmuted tracks and their channels as of the last update while playing: one
+    /// that leaves lets go of its channel's pedal if it was the last there, one that arrives is
+    /// chased.
+    present: Vec<(TrackId, u8)>,
+    /// Reused for the next update's [`TrackMidi::present`].
+    arriving: Vec<(TrackId, u8)>,
     events: Vec<Pending>,
 }
 
@@ -98,6 +106,12 @@ fn routed<'a>(s: &'a Session, port: &'a str) -> impl Iterator<Item = (&'a Track,
     MidiOutput::all(&s.edit)
         .filter(move |(_, out)| out.device == port)
         .filter_map(|(id, out)| s.track(id).filter(|t| t.kind.is_midi()).map(|t| (t, out.channel)))
+}
+
+/// The routed tracks of `port` that are not muted at `at`, with their channels, into `into`.
+fn unmuted(s: &Session, port: &str, at: i64, into: &mut Vec<(TrackId, u8)>) {
+    into.clear();
+    into.extend(routed(s, port).filter(|(t, _)| !midi_output_muted(s, t, at)).map(|(t, channel)| (t.id, channel)));
 }
 
 /// What All MIDI Notes Off sends on every channel of a port after the held notes' Note-Offs:
@@ -123,6 +137,8 @@ impl TrackMidi {
             pedal: 0,
             used: 0,
             reconnected: 0,
+            present: Vec::new(),
+            arriving: Vec::new(),
             events: Vec::new(),
         }
     }
@@ -189,8 +205,33 @@ impl TrackMidi {
             }
             chase_events(s, t, start.saturating_sub(midi_offset(s, t)), |message| self.send_on(channel, message, send));
         }
+        unmuted(s, &port, start, &mut self.present);
         self.port = port;
         self.cursor = Some(start);
+    }
+
+    /// Follow routing changes made while playing. A destination (this port and a channel) that
+    /// the last routed, unmuted track left gets its sustain pedal up, since the pedal holds notes
+    /// over their Note-Offs (MIDI 1.0 p A-5) and no track there will lift it. A track that newly
+    /// plays here (routed, unmuted or made active) gets its controllers and program at the play
+    /// position, as a locate does (Pro Tools Reference Guide p1059).
+    fn follow_routing(&mut self, s: &Session, at: i64, send: &mut dyn FnMut(&[u8])) {
+        let mut here = std::mem::take(&mut self.arriving);
+        unmuted(s, &self.port, at, &mut here);
+        for channel in 0..16u8 {
+            if self.pedal & (1 << channel) != 0 && !here.iter().any(|&(_, c)| c == channel) {
+                self.send_on(channel, [0xb0, 64, 0], send);
+            }
+        }
+        for &(id, channel) in &here {
+            if self.present.contains(&(id, channel)) {
+                continue;
+            }
+            if let Some(t) = s.track(id) {
+                chase_events(s, t, at.saturating_sub(midi_offset(s, t)), |message| self.send_on(channel, message, send));
+            }
+        }
+        self.arriving = std::mem::replace(&mut self.present, here);
     }
 
     /// Collect the events of `[from, to)` (presentation samples) of every routed, unmuted track.
@@ -257,6 +298,7 @@ impl TrackMidi {
             for h in gone {
                 self.release(h.channel, h.pitch, &mut out);
             }
+            self.follow_routing(s, at, &mut out);
         }
         if from < to {
             self.collect(s, from, to);
@@ -361,6 +403,7 @@ impl SyncEncoder for TrackMidi {
         self.count.fill([0; 128]);
         self.pedal = 0;
         self.used = 0;
+        self.present.clear();
         self.cursor = None;
         self.pass = None;
         self.playing = false;

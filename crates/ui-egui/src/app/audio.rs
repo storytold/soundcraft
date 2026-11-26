@@ -209,7 +209,8 @@ impl SoundApp {
 
     pub(super) fn show_output_warning(&mut self, ui: &mut egui::Ui) {
         let timing = self.player.as_ref().and_then(Player::output_timing_issue);
-        let Some(message) = output_warning(self.unavailable_output.as_ref().map(|o| o.name.as_str()), timing) else { return };
+        let untimed = timing.is_none() && self.midi_output_untimed();
+        let Some(message) = output_warning(self.unavailable_output.as_ref().map(|o| o.name.as_str()), timing, untimed) else { return };
         egui::Panel::top("output_timing_warning").show(ui, |ui| {
             ui.horizontal_wrapped(|ui| {
                 ui.colored_label(ui.visuals().warn_fg_color, message);
@@ -259,10 +260,19 @@ impl SoundApp {
     }
 }
 
-fn output_warning(unavailable: Option<&str>, issue: Option<soundcraft_playback::OutputTimingIssue>) -> Option<String> {
+/// The output warning bar's text. `untimed`: the tracks' MIDI output goes uncompensated because
+/// the audio device reports no output timing (`midi_output_untimed`).
+fn output_warning(unavailable: Option<&str>, issue: Option<soundcraft_playback::OutputTimingIssue>, untimed: bool) -> Option<String> {
     use soundcraft_playback::OutputTimingIssue;
     if let Some(name) = unavailable {
         return Some(crate::localized_format!("Audio output “{name}” is unavailable. Reconnect it in Playback Engine when stopped.", name = name));
+    }
+    if issue.is_none() && untimed {
+        return Some(format!(
+            "{} {}",
+            crate::localization::text(crate::midi_sync::UNTIMED),
+            crate::localization::text("Check the audio device, then use Reconnect audio device in Setup › Playback Engine.")
+        ));
     }
     match issue? {
         OutputTimingIssue::Retained { lead_us } => Some(crate::localized_format!(
@@ -496,15 +506,18 @@ mod timing_warning_tests {
     #[test]
     fn cold_and_cached_timing_have_distinct_warnings_and_recovered_timing_clears_them() {
         use soundcraft_playback::OutputTimingIssue;
-        let unknown = output_warning(None, Some(OutputTimingIssue::Unknown)).unwrap();
+        let unknown = output_warning(None, Some(OutputTimingIssue::Unknown), false).unwrap();
         assert!(unknown.contains("need a valid measurement"));
         assert!(unknown.contains("Reconnect audio device in Setup › Playback Engine"), "{unknown}");
         for (lead_us, ms) in [(0, "0.00 ms"), (75_430, "75.43 ms")] {
-            let cached = output_warning(None, Some(OutputTimingIssue::Retained { lead_us })).unwrap();
+            let cached = output_warning(None, Some(OutputTimingIssue::Retained { lead_us }), false).unwrap();
             assert!(cached.contains("last measured lead") && cached.contains(ms));
         }
-        assert!(output_warning(None, None).is_none());
-        assert!(output_warning(Some("Disconnected"), None).unwrap().contains("Disconnected"));
+        assert!(output_warning(None, None, false).is_none());
+        assert!(output_warning(Some("Disconnected"), None, false).unwrap().contains("Disconnected"));
+        // The tracks' output went uncompensated: the bar says so and how to get timing back.
+        let untimed = output_warning(None, None, true).unwrap();
+        assert!(untimed.contains("not delay-compensated") && untimed.contains("Reconnect audio device"), "{untimed}");
     }
 
     #[test]

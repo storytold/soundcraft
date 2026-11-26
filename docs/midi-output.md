@@ -13,7 +13,9 @@ FreeBSD or in the web version: the selector says so.
 Each MIDI and instrument track has a **MIDI output** selector:
 
 - in the Mix window, at the bottom of the I/O section;
-- in the Edit window's I/O column (**View › Edit Window Views › I/O**), under the audio output.
+- in the Edit window's I/O column (**View › Edit Window Views › I/O**), under the audio output;
+- for an instrument track, also in the Edit window's Instruments column (**View › Edit Window
+  Views › Instruments**), under the instrument, as in Pro Tools.
 
 Click it and choose a port, then a channel from 1 to 16. **No MIDI output** stops the track
 sending. A new track sends nothing until you choose.
@@ -22,13 +24,25 @@ sending. A new track sends nothing until you choose.
 - A channel that another track already plays to on the same port is marked **in use**.
 - Ports with the same name get numbered names, such as "DIN" and "DIN (2)". SoundCraft remembers
   which physical port each name stood for, so the numbers stay with the same ports after a restart.
-- A port that is unplugged stays chosen and reads **(not connected)** on the selector, in the
+- A port that comes back with a new system identity (CoreMIDI gives a port that is created again a
+  new one) keeps its tracks when no other port has its name. Ports that share a name are told
+  apart only by their identity, so one of them back with a new identity is listed as a new
+  port, such as "DIN (3)", and its tracks need choosing again.
+- A port that is unplugged stays chosen and reads **(unavailable)** on the selector, in the
   warning colour (orange) the Playback Engine window uses for a MIDI input that could not be
-  opened. Where the strip is too narrow for the whole text, it ends in "…" and hovering the
-  selector shows the port, channel and **not connected** in full. The status line names the port
-  too, in the current language, and the message goes away when the port is back or the track no
-  longer uses it. When the port comes back, SoundCraft reconnects within a second or two and sends All
-  Notes Off on the channels in use, in case the device still holds notes it never heard end.
+  opened ("unavailable" is the word Pro Tools uses for missing hardware, and SoundCraft for a
+  missing audio device). Where the strip is too narrow for the whole text, it ends in "…" and
+  hovering the selector shows the port, channel and **unavailable** in full. The status line
+  says the same, in the current language, and names the tracks that play to the port, such as
+  "MIDI output UM-ONE unavailable for Synth 1, Pad". The message goes away when the port is
+  back, or when no active track uses it any more (an inactive track sends nothing, so its port
+  is not opened).
+- SoundCraft checks the ports it has open against the port list once a second, so an unplugged
+  port is noticed within about a second, playing or stopped (one unplugged and plugged back in
+  within that second can go unnoticed). When the port comes back, SoundCraft reconnects within a
+  second or two and sends All Notes Off on the channels in use, in case the device still holds
+  notes it never heard end; while playing, it then carries on from the play position with the
+  controllers and program chased. The log records each port opened, lost and reconnected.
 
 Choosing an output does not change the track's instrument plug-in or audio output. A MIDI track
 with an instrument and an external output plays both, the same notes on each.
@@ -57,8 +71,12 @@ MIDI output to the synth's port and channel and its audio input to the synth's r
   **MIDI Notes and Controllers** (on by default) delays the output by the audio interface's output
   latency and the mixer's plug-in delay, so the notes sound with the audio. Off, they leave as soon
   as the audio is rendered, ahead of it by the output latency.
-- If the audio driver reports no output timing, compensated output cannot be timed: a warning
-  bar at the top of the window says so. Switch compensation off or check the audio device.
+- If the audio device has reported no output timing since it was opened, the tracks' compensated
+  output cannot be timed, so it is sent uncompensated, as with the preference off, and a warning
+  bar at the top of the window says "MIDI output is not delay-compensated: the audio device
+  reports no output timing." Compensation comes back on its own once the device reports its
+  timing. Compensated MIDI Beat Clock waits for the timing instead, and the bar says so. A device
+  that stops reporting after it did keeps the last measured latency, and the bar says that.
   Without an audio device (SoundCraft's silent clock), the output is not delayed.
 
 ## 4. Stop, locate, mute and All MIDI Notes Off
@@ -71,6 +89,11 @@ MIDI output to the synth's port and channel and its audio input to the synth's r
   automation stop the track's output and end its sounding notes. On an instrument track, Mute and
   solo act on the audio only, so its MIDI output keeps playing; set its output to **No MIDI
   output** to silence it.
+- **Changing a track's port or channel while playing**, and muting it, making it inactive or
+  deleting it, ends its sounding notes on the old port and channel; if no other track plays
+  there, the sustain pedal goes up there too. A track that starts playing to a port and channel
+  while playing (routed there, unmuted or made active) first sends its controllers, pitch bend,
+  pressure and program at the play position, as on a locate.
 - **Event › All MIDI Notes Off** (Cmd+Shift+.) sends, on every MIDI output port in use, a Note-Off
   for each sounding note, then sustain pedal up, All Notes Off and All Sound Off on all 16
   channels. Playback carries on.
