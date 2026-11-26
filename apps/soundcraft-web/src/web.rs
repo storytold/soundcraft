@@ -49,6 +49,7 @@ pub fn start() {
                     if let Some(rs) = &cc.wgpu_render_state {
                         log::info!("soundcraft-web: wgpu backend {:?}", rs.adapter.get_info().backend);
                     }
+                    soundcraft_ui_egui::framework::install_headless(&cc.egui_ctx);
                     let engine = if query().contains("empty") { Engine::default() } else { soundcraft_engine::demo::demo_engine() };
                     let player = soundcraft_playback::Player::new(Arc::new(engine.session().clone()));
                     let app = SoundApp::new(engine, Some(player), Services::default());
@@ -224,12 +225,14 @@ impl eframe::App for WebShell {
         self.app.logic(ctx);
         // A prompt opened during this frame becomes a picker on the next one.
         self.take_path_prompt(ctx);
+        self.app.close_path(ctx);
     }
 
     /// Forward raw input to the shared app hook so scripted gestures and host-key protection behave like the desktop
     /// shell.
     fn raw_input_hook(&mut self, ctx: &egui::Context, raw: &mut egui::RawInput) {
         self.app.raw_input_hook(ctx, raw);
+        self.app.before_input(ctx);
     }
 
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {

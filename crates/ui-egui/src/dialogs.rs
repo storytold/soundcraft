@@ -512,8 +512,8 @@ pub fn show(app: &mut SoundApp, ctx: &egui::Context) {
     // button only when no widget has the keyboard focus or a text field has it. A held Enter's repeats do not press it.
     let fresh_enter =
         |i: &egui::InputState| i.events.iter().any(|e| matches!(e, egui::Event::Key { key: egui::Key::Enter, pressed: true, repeat: false, .. }));
-    let enter = !first_frame && ctx.input(fresh_enter) && (ctx.memory(|m| m.focused().is_none()) || ctx.text_edit_focused());
-    let esc = ctx.input(|i| i.key_pressed(egui::Key::Escape));
+    let enter = !first_frame && ctx.input(fresh_enter) && (!crate::framework::widget_has_keyboard(ctx) || ctx.text_edit_focused());
+    let esc = crate::framework::escape_pressed(ctx);
     egui::Window::new(egui::RichText::new(crate::localization::text(&title)).font(bold(13.0)))
         .id(egui::Id::unique(&title))
         .collapsible(false)
@@ -536,7 +536,7 @@ pub fn show(app: &mut SoundApp, ctx: &egui::Context) {
                         ui.label(crate::localization::text("Name"));
                         crate::widgets::named_text_field(ui.text_edit_singleline(name), crate::localization::text("Name"));
                     });
-                    craft_ui::ComboBox::from_label(crate::localization::text("Sample Rate")).selected_text(format!("{sample_rate} Hz")).show_ui(ui, |ui| {
+                    egui::ComboBox::from_label(crate::localization::text("Sample Rate")).selected_text(format!("{sample_rate} Hz")).show_ui(ui, |ui| {
                         for r in soundcraft_time::SampleRate::COMMON {
                             ui.selectable_value(sample_rate, r, format!("{r} Hz"));
                         }
@@ -552,12 +552,12 @@ pub fn show(app: &mut SoundApp, ctx: &egui::Context) {
                 Dialog::Bounce { path, format, bit_depth, normalize, dither } => {
                     bounce_file_row(app, ui, path, format);
                     ui.horizontal(|ui| {
-                        craft_ui::ComboBox::from_label(crate::localization::text("Format")).selected_text(format.container().name()).show_ui(ui, |ui| {
+                        egui::ComboBox::from_label(crate::localization::text("Format")).selected_text(format.container().name()).show_ui(ui, |ui| {
                             for &f in EncodeFormat::ALL {
                                 ui.selectable_value(format, f, f.container().name());
                             }
                         });
-                        craft_ui::ComboBox::from_label(crate::localization::text("Bit Depth")).selected_text(format!("{bit_depth}-bit")).show_ui(ui, |ui| {
+                        egui::ComboBox::from_label(crate::localization::text("Bit Depth")).selected_text(format!("{bit_depth}-bit")).show_ui(ui, |ui| {
                             for b in ["16", "24", "32f"] {
                                 ui.selectable_value(bit_depth, b.to_string(), crate::localized_format!("{b}-bit", b = b));
                             }
@@ -701,12 +701,12 @@ pub fn show(app: &mut SoundApp, ctx: &egui::Context) {
                     }
                 }
                 Dialog::Session { frame_rate, bit_depth } => {
-                    craft_ui::ComboBox::from_label(crate::localization::text("Timecode Rate")).selected_text(crate::localization::text(frame_rate.as_str())).show_ui(ui, |ui| {
+                    egui::ComboBox::from_label(crate::localization::text("Timecode Rate")).selected_text(crate::localization::text(frame_rate.as_str())).show_ui(ui, |ui| {
                         for r in soundcraft_time::FrameRate::ALL {
                             ui.selectable_value(frame_rate, r.label().to_string(), crate::localization::text(r.label()));
                         }
                     });
-                    craft_ui::ComboBox::from_label(crate::localization::text("Bit Depth")).selected_text(crate::localization::text(bit_depth.as_str())).show_ui(ui, |ui| {
+                    egui::ComboBox::from_label(crate::localization::text("Bit Depth")).selected_text(crate::localization::text(bit_depth.as_str())).show_ui(ui, |ui| {
                         for b in ["16", "24", "32f"] {
                             ui.selectable_value(bit_depth, b.to_string(), crate::localization::text(b));
                         }
@@ -719,7 +719,7 @@ pub fn show(app: &mut SoundApp, ctx: &egui::Context) {
                     let s = app.engine.session();
                     ui.horizontal(|ui| {
                         let count_label = ui.radio_value(by, LoopBy::Count, crate::localization::text("Number of Loops"));
-                        ui.add_enabled(*by == LoopBy::Count, egui::DragValue::new(count).range(1..=512)).labelled_by(count_label.id);
+                        ui.add_enabled(*by == LoopBy::Count, egui::DragValue::new(count).range(1..=1000)).labelled_by(count_label.id);
                     });
                     ui.horizontal(|ui| {
                         let length_label = ui.radio_value(by, LoopBy::Length, crate::localization::text("Loop Length"));
