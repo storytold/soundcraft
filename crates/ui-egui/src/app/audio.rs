@@ -123,7 +123,7 @@ impl SoundApp {
                 } else {
                     lost.by_hand = true;
                 }
-                (what, crate::localization::text("Reconnect it, then use Reconnect audio device in Setup › Playback Engine."))
+                (what, input_advice(gone))
             }
             Trouble::Disk(what) => (what, crate::localization::text("Check the disk, then record again.")),
         };
@@ -185,9 +185,25 @@ pub(super) fn wants_audio_input(s: &soundcraft_model::Session) -> bool {
     s.tracks.iter().any(|t| !t.kind.is_midi() && (t.mixer.input_monitor || t.mixer.record_arm))
 }
 
+/// What to do about an input device that failed: one that went away is reopened once it is listed
+/// again (see `watch_replug`); one that is still there but failed needs Reconnect.
+fn input_advice(gone: bool) -> &'static str {
+    if gone {
+        crate::localization::text("SoundCraft reconnects it when it is back, or use Reconnect.")
+    } else {
+        crate::localization::text("Reconnect it, then use Reconnect audio device in Setup › Playback Engine.")
+    }
+}
+
 #[cfg(test)]
 mod audio_input_tests {
-    use super::wants_audio_input;
+    use super::{input_advice, wants_audio_input};
+
+    #[test]
+    fn an_input_that_went_away_is_said_to_reconnect_when_it_is_back() {
+        assert_eq!(input_advice(true), "SoundCraft reconnects it when it is back, or use Reconnect.");
+        assert_eq!(input_advice(false), "Reconnect it, then use Reconnect audio device in Setup › Playback Engine.");
+    }
     use soundcraft_model::{ChannelFormat, Session, TrackKind};
 
     #[test]
