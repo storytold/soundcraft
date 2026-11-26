@@ -30,8 +30,8 @@ sending. A new track sends nothing until you choose.
   warning colour (orange) the Playback Engine window uses for a MIDI input that could not be
   opened. Where the strip is too narrow for the whole text, it ends in "…" and hovering the
   selector shows the port, channel and **not connected** in full. The status line names the port
-  too, in the current language, and the message goes away when the port is back or the track no
-  longer uses it. SoundCraft checks the ports it has open against the port list once a second, so
+  too, in the current language, and the message goes away when the port is back, or when no active track
+  uses it any more (an inactive track sends nothing, so its port is not opened). SoundCraft checks the ports it has open against the port list once a second, so
   an unplugged port is noticed within about a second, playing or stopped (one unplugged and
   plugged back in within that second can go unnoticed). When the port comes
   back, SoundCraft reconnects within a second or two and sends All Notes Off on the channels in

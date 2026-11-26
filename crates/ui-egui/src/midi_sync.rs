@@ -63,11 +63,12 @@ fn compensation(preference: bool, silent: bool, timing_unknown: bool) -> (bool, 
 const RESCAN_SECONDS: f64 = 2.0;
 
 impl SoundApp {
-    /// The MIDI output ports MIDI and instrument tracks of this session play to.
+    /// The MIDI output ports active MIDI and instrument tracks of this session play to. An inactive
+    /// track sends nothing, so its port is not opened and not reported missing.
     pub(crate) fn midi_output_ports_in_use(&self) -> BTreeSet<String> {
         let s = self.engine.session();
         soundcraft_model::MidiOutput::all(&s.edit)
-            .filter(|(id, _)| s.track(*id).is_some_and(|t| t.kind.is_midi()))
+            .filter(|(id, _)| s.track(*id).is_some_and(|t| t.kind.is_midi() && !t.inactive))
             .map(|(_, out)| out.device.to_string())
             .collect()
     }
@@ -208,6 +209,18 @@ mod tests {
         }
         app.show_midi_sync_error(None);
         assert_eq!(app.ui.status, "Audio output requires attention");
+    }
+
+    #[test]
+    fn an_inactive_track_does_not_hold_its_port_open() {
+        let mut engine = soundcraft_engine::Engine::default();
+        for (name, port) in [("A", "Gone A"), ("B", "Gone B")] {
+            engine.execute("track.new", &json!({"name": name, "kind": "midi"})).unwrap();
+            engine.execute("track.midi_output", &json!({"tracks": [name], "output": format!("MIDI:1:{port}")})).unwrap();
+        }
+        engine.execute("track.make_inactive", &json!({"tracks": ["B"], "inactive": true})).unwrap();
+        let app = SoundApp::new(engine, None, crate::Services::default());
+        assert_eq!(app.midi_output_ports_in_use(), BTreeSet::from(["Gone A".to_string()]));
     }
 
     #[test]
