@@ -110,17 +110,23 @@ fn effective_offset(offset: i64, sr: soundcraft_time::SampleRate) -> i64 {
 /// Joins the failures of several destinations in [`MidiSyncStatus::error`].
 const FAILURE_SEPARATOR: &str = "; ";
 const BOUNDS: [u64; 6] = [500, 1000, 2000, 5000, 10_000, 20_000];
+/// The `p`th percentile of the values counted in `buckets` ([`BOUNDS`]), the largest being
+/// `max`. Only the buckets are known, so the value is estimated as if a bucket's values were
+/// spread evenly from its lower bound to its upper bound, or to `max` when that is lower: never
+/// above `max`, and not the bucket's ceiling (which read 500 µs for latencies of 0.2 ms).
 fn percentile(buckets: [u64; 7], p: u64, max: u64) -> u64 {
     let target = buckets.iter().sum::<u64>().saturating_mul(p).div_ceil(100);
     if target == 0 {
         return 0;
     }
-    let mut sum = 0;
-    for (i, n) in buckets.iter().enumerate() {
-        sum += n;
-        if sum >= target {
-            return BOUNDS.get(i).copied().unwrap_or(max);
+    let mut before = 0;
+    for (i, &n) in buckets.iter().enumerate() {
+        if n > 0 && before + n >= target {
+            let low = if i == 0 { 0 } else { BOUNDS.get(i - 1).copied().unwrap_or(0) }.min(max);
+            let high = BOUNDS.get(i).copied().unwrap_or(max).min(max);
+            return low + (high - low).saturating_mul(target - before) / n;
         }
+        before += n;
     }
     max
 }

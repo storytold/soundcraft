@@ -433,6 +433,18 @@ fn every_unavailable_output_is_named_in_the_status_error() {
 }
 
 #[test]
+fn percentiles_never_read_above_the_largest_value() {
+    // Windows: 200 thru latencies of 0.15–0.23 ms read p50 = p95 = 500 µs (the first bucket's
+    // ceiling) beside a max of 232 µs.
+    let buckets = [200, 0, 0, 0, 0, 0, 0];
+    assert_eq!((percentile(buckets, 50, 232), percentile(buckets, 95, 232)), (116, 220));
+    // Within a bucket, by rank: 3 of 4 values up to 0.5 ms and 1 between 1 and 2 ms.
+    assert_eq!(percentile([3, 0, 1, 0, 0, 0, 0], 50, 1500), 333);
+    assert_eq!(percentile([3, 0, 1, 0, 0, 0, 0], 95, 1500), 1500);
+    assert_eq!(percentile([0; 7], 50, 0), 0);
+}
+
+#[test]
 fn diagnostics_use_fixed_lateness_buckets_and_ignore_callback_subchunks() {
     let mut out = Output::default();
     let mut publisher = Publisher::new(out.view.clone(), out.metrics.clone());

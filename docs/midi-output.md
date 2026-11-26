@@ -170,7 +170,8 @@ you play it. This is what Pro Tools calls MIDI Thru (Options › MIDI Thru, on b
   the output worker's diagnostics (`midi_output_status`, `midi_output_error`);
   `midi_output_status.thru` has the messages sent through, the echoes dropped and the time from
   a message's arrival to its hand-off to the port (`latency_p50_us`, `latency_p95_us`,
-  `latency_max_us`).
+  `latency_max_us`). The percentiles are estimated within the fixed buckets of
+  `latency_buckets` and never read above the maximum.
 
 ## Not there yet
 
