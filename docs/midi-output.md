@@ -31,8 +31,13 @@ sending. A new track sends nothing until you choose.
   opened. Where the strip is too narrow for the whole text, it ends in "…" and hovering the
   selector shows the port, channel and **not connected** in full. The status line names the port
   too, in the current language, and the message goes away when the port is back or the track no
-  longer uses it. When the port comes back, SoundCraft reconnects within a second or two and sends All
-  Notes Off on the channels in use, in case the device still holds notes it never heard end.
+  longer uses it. SoundCraft checks the ports it has open against the port list once a second, so
+  an unplugged port is noticed within about a second, playing or stopped (one unplugged and
+  plugged back in within that second can go unnoticed). When the port comes
+  back, SoundCraft reconnects within a second or two and sends All Notes Off on the channels in
+  use, in case the device still holds notes it never heard end; while playing, it then carries on
+  from the play position with the controllers and program chased. The log records each port
+  opened, lost and reconnected.
 
 Choosing an output does not change the track's instrument plug-in or audio output. A MIDI track
 with an instrument and an external output plays both, the same notes on each.

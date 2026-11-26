@@ -183,7 +183,7 @@ impl Output {
             let registry = self.port_registry.clone();
             match std::thread::Builder::new()
                 .name("MIDI output".into())
-                .spawn(move || drive(view, s, rx, trouble, stats, |name| registry.connect(name)))
+                .spawn(move || drive_ports(view, s, rx, trouble, stats, ports::Native { registry, scanner: None }))
             {
                 Ok(thread) => {
                     let tx = WorkerSender { tx, worker: thread.thread().clone() };
@@ -339,7 +339,10 @@ struct Route {
 }
 struct Port<C> {
     link: Option<C>,
+    /// When to try to open the port again or, while it is open, to check that it is still listed.
     retry: Instant,
+    /// Whether the port was ever open, to log a reconnection as such.
+    opened: bool,
     routes: [Option<Route>; ROUTE_KINDS],
     future: Vec<Event>,
     timing_epochs: [u64; ROUTE_KINDS],
@@ -365,8 +368,10 @@ impl Event {
     }
 }
 impl<C: SyncPort> Port<C> {
-    fn disconnect(&mut self, name: &str, error: String, now: Instant, stats: &Stats) {
-        self.failure = Some(format!("{name}: {error}"));
+    /// Close the port after `failure`; it is opened again after a second.
+    fn disconnect(&mut self, name: &str, failure: String, now: Instant, stats: &Stats) {
+        log::warn!("{failure}");
+        self.failure = Some(failure);
         stats.connected().remove(name);
         self.link = None;
         self.future.clear();
@@ -475,7 +480,7 @@ impl<C: SyncPort> Port<C> {
                 Ok(handed) => stats.record(e.at, handed),
                 Err(err) => {
                     // Reopening resets the encoders, which release what the device may still hold.
-                    self.disconnect(name, err, now, stats);
+                    self.disconnect(name, format!("{name}: {err}"), now, stats);
                     return Some(self.retry);
                 }
             }
@@ -492,6 +497,7 @@ fn set_route<C: SyncPort>(map: &mut BTreeMap<String, Port<C>>, index: usize, nam
         timing_epochs: [0; ROUTE_KINDS],
         waiting_for_timing: false,
         failure: None,
+        opened: false,
     });
     port.routes[index] = Some(route);
 }
@@ -502,7 +508,7 @@ fn send_now<C: SyncPort>(name: &str, port: &mut Port<C>, msg: &[u8], stats: &Sta
     if let Some(link) = &mut port.link {
         match link.send_at(now, msg) {
             Ok(handed) => stats.record(now, handed),
-            Err(error) => port.disconnect(name, error, now, stats),
+            Err(error) => port.disconnect(name, format!("{name}: {error}"), now, stats),
         }
     }
 }
@@ -580,13 +586,28 @@ fn join_failures<'a, C>(ports: &BTreeMap<String, Port<C>>, buffer: &'a mut Strin
     (!buffer.is_empty()).then_some(buffer.as_str())
 }
 
+/// [`drive_ports`] with ports that are opened by `open` and never checked against a port list.
+#[cfg(test)]
 fn drive<C: SyncPort>(
+    view: View,
+    session: Arc<Session>,
+    rx: Receiver<Update>,
+    trouble: Arc<Mutex<Option<String>>>,
+    stats: Arc<Stats>,
+    open: impl FnMut(&str) -> Result<(C, Option<String>), String>,
+) {
+    drive_ports(view, session, rx, trouble, stats, open);
+}
+
+/// The worker: open each routed port through `open`, keep it open while it is listed, and send
+/// what its encoders produce at their deadlines until the [`Output`] goes away.
+fn drive_ports<C: SyncPort>(
     view: View,
     mut session: Arc<Session>,
     rx: Receiver<Update>,
     trouble: Arc<Mutex<Option<String>>>,
     stats: Arc<Stats>,
-    mut open: impl FnMut(&str) -> Result<(C, Option<String>), String>,
+    mut open: impl ports::Connect<C>,
 ) {
     // Use a safe best-effort API. Hosts that deny a negative nice level keep
     // their normal scheduling policy and expose that in the diagnostics.
@@ -654,20 +675,51 @@ fn drive<C: SyncPort>(
             wait_for_late_block = view.lock().unwrap_or_else(std::sync::PoisonError::into_inner).late_transport_waiter.is_some();
         }
         let observed_state = transition.and_then(|_| state());
+        // A removed device gives no send error (CoreMIDI drops what is sent to a destination
+        // that is gone), so once a second the open ports are checked against the port list.
+        let due: BTreeSet<String> = ports.iter().filter(|(_, p)| p.link.is_some() && now >= p.retry).map(|(name, _)| name.clone()).collect();
+        let listed = if due.is_empty() { None } else { open.listed(&due) };
         for (name, p) in &mut ports {
+            if p.link.is_some() && now >= p.retry {
+                if listed.as_ref().is_some_and(|listed| !listed.contains(name)) {
+                    p.disconnect(name, format!("MIDI output {name} unavailable"), now, &stats);
+                    // Try again at once: a port back under a new ID is listed already.
+                    p.retry = now;
+                } else {
+                    p.retry = now + Duration::from_secs(1);
+                }
+            }
             if p.link.is_none() && now >= p.retry {
-                match open(name) {
+                match open.open(name) {
                     Ok((out, warn)) => {
+                        if p.opened {
+                            log::info!("MIDI output {name}: reconnected");
+                        } else {
+                            log::info!("MIDI output: {name}");
+                        }
                         stats.connected().insert(name.clone());
                         p.link = Some(out);
+                        p.opened = true;
                         p.failure = warn;
                         for r in p.routes.iter_mut().flatten() {
                             r.encoder.reset();
                         }
                     }
-                    Err(e) => p.failure = Some(e),
+                    Err(e) => {
+                        if p.failure.as_ref() != Some(&e) {
+                            if e.contains(name.as_str()) {
+                                log::warn!("{e}");
+                            } else {
+                                log::warn!("MIDI output {name}: {e}");
+                            }
+                        }
+                        p.failure = Some(e);
+                    }
                 }
                 p.retry = now + Duration::from_secs(1);
+            }
+            if p.link.is_some() && open.lists() {
+                soon(p.retry);
             }
             if let Some(at) = p.poll(name, now, &session, &view, &stats, &mut pending) {
                 soon(at);

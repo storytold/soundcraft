@@ -78,6 +78,7 @@ fn active_port(offset: i64, compensate: bool) -> Port<FakePort> {
         future: Vec::new(),
         timing_epochs: [0; ROUTE_KINDS],
         waiting_for_timing: false,
+        opened: true,
     }
 }
 fn routes(ports: &[(&str, i64)], compensate: bool) -> Update {
@@ -288,6 +289,78 @@ fn send_errors_trigger_one_reconnect_and_reset_the_encoder() {
     assert!(stats.connected().contains("DIN"));
     assert_eq!(attempts.load(Relaxed), 2, "one failed connection and one replacement");
     drop(tx);
+    handle.join().unwrap();
+}
+
+#[test]
+fn a_port_that_leaves_the_list_is_named_unavailable_and_reopened_with_a_reset_when_listed_again() {
+    struct Link(Sender<Vec<u8>>);
+    impl SyncPort for Link {
+        fn send_at(&mut self, at: Instant, bytes: &[u8]) -> Result<Instant, String> {
+            // Like CoreMIDI for a removed destination: sending never fails.
+            let _ = self.0.send(bytes.to_vec());
+            Ok(at)
+        }
+    }
+    /// A port list that the test changes, as a device is unplugged and plugged back in.
+    struct Registry {
+        listed: Arc<Mutex<BTreeSet<String>>>,
+        opens: Arc<AtomicUsize>,
+        wire: Sender<Vec<u8>>,
+    }
+    impl ports::Connect<Link> for Registry {
+        fn open(&mut self, label: &str) -> Result<(Link, Option<String>), String> {
+            if !self.listed.lock().unwrap().contains(label) {
+                return Err(format!("MIDI output {label} unavailable"));
+            }
+            self.opens.fetch_add(1, Relaxed);
+            Ok((Link(self.wire.clone()), None))
+        }
+        fn lists(&self) -> bool {
+            true
+        }
+        fn listed(&mut self, labels: &BTreeSet<String>) -> Option<BTreeSet<String>> {
+            Some(self.listed.lock().unwrap().intersection(labels).cloned().collect())
+        }
+    }
+    let view = View::default();
+    view.lock().unwrap().push(block(Instant::now(), 0., 48_000. * 600., Duration::ZERO));
+    let (tx, rx) = channel();
+    let (wire, got) = channel();
+    let listed = Arc::new(Mutex::new(BTreeSet::from(["DIN".to_string()])));
+    let opens = Arc::new(AtomicUsize::new(0));
+    let registry = Registry { listed: listed.clone(), opens: opens.clone(), wire };
+    let trouble = Arc::new(Mutex::new(None));
+    let stats = Arc::new(Stats::default());
+    let handle = {
+        let (trouble, stats) = (trouble.clone(), stats.clone());
+        std::thread::spawn(move || drive_ports(view, Arc::new(Session::default()), rx, trouble, stats, registry))
+    };
+    let wait_for = |what: &dyn Fn() -> bool| {
+        let deadline = Instant::now() + Duration::from_secs(4);
+        while !what() && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        what()
+    };
+    tx.send(routes(&[("DIN", 0)], false)).unwrap();
+    assert_eq!(got.recv_timeout(Duration::from_secs(3)).unwrap(), tick(0));
+    assert!(stats.connected().contains("DIN"));
+    // Unplugged: within a tick of the list it is reported and no longer counted as connected.
+    listed.lock().unwrap().clear();
+    assert!(wait_for(&|| trouble.lock().unwrap().as_deref() == Some("MIDI output DIN unavailable")));
+    assert!(!stats.connected().contains("DIN"));
+    while got.try_recv().is_ok() {}
+    std::thread::sleep(Duration::from_millis(50));
+    assert!(got.try_recv().is_err(), "nothing is sent to a port that is gone");
+    // Plugged back in: reopened, the encoder reset (it starts the pass again), the error gone.
+    listed.lock().unwrap().insert("DIN".into());
+    assert_eq!(got.recv_timeout(Duration::from_secs(3)).unwrap(), tick(0));
+    assert!(wait_for(&|| trouble.lock().unwrap().is_none()));
+    assert!(stats.connected().contains("DIN"));
+    assert_eq!(opens.load(Relaxed), 2);
+    drop(tx);
+    handle.thread().unpark();
     handle.join().unwrap();
 }
 

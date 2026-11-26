@@ -160,6 +160,66 @@ impl Registry {
         }
         Ok((connection, None))
     }
+
+    /// The labels among `labels` that are still listed and bound to the native port they were
+    /// opened with. `None` when the ports cannot be listed now.
+    fn listed(&self, scanner: &mut Option<MidiOutput>, labels: &BTreeSet<String>) -> Option<BTreeSet<String>> {
+        let saved = self.ids.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone();
+        // midir panics on a few failures of the MIDI system; a new scanner is made next time.
+        let ids = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            if scanner.is_none() {
+                *scanner = MidiOutput::new("SoundCraft MIDI output").ok();
+            }
+            scanner.as_ref().map(|midi| assign(&saved, enumerate(midi, &saved).1))
+        }))
+        .unwrap_or_else(|_| {
+            *scanner = None;
+            None
+        })?;
+        Some(labels.iter().filter(|label| ids.get(*label).is_some_and(|id| saved.get(*label) == Some(id))).cloned().collect())
+    }
+}
+
+/// How the output worker opens its ports and finds out which of them are still there.
+pub(super) trait Connect<C> {
+    fn open(&mut self, label: &str) -> Result<(C, Option<String>), String>;
+    /// Whether [`Connect::listed`] can tell: the worker then wakes once a second to check.
+    fn lists(&self) -> bool {
+        false
+    }
+    /// The labels among the connected `labels` that are still listed. `None` when the ports
+    /// cannot be listed, which keeps every connection.
+    fn listed(&mut self, labels: &BTreeSet<String>) -> Option<BTreeSet<String>> {
+        let _ = labels;
+        None
+    }
+}
+
+impl<C, F: FnMut(&str) -> Result<(C, Option<String>), String>> Connect<C> for F {
+    fn open(&mut self, label: &str) -> Result<(C, Option<String>), String> {
+        self(label)
+    }
+}
+
+/// The native ports: opened through the [`Registry`] and listed with one scanner kept for the
+/// worker's life, as the MIDI inputs are.
+pub(super) struct Native {
+    pub(super) registry: std::sync::Arc<Registry>,
+    pub(super) scanner: Option<MidiOutput>,
+}
+
+impl Connect<MidiOutputConnection> for Native {
+    fn open(&mut self, label: &str) -> Result<(MidiOutputConnection, Option<String>), String> {
+        self.registry.connect(label)
+    }
+
+    fn lists(&self) -> bool {
+        true
+    }
+
+    fn listed(&mut self, labels: &BTreeSet<String>) -> Option<BTreeSet<String>> {
+        self.registry.listed(&mut self.scanner, labels)
+    }
 }
 
 #[cfg(test)]
