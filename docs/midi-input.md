@@ -98,3 +98,6 @@ shows how many messages were dropped.
 
 `ui.inspect` reports `midi_inputs` (name, enabled, open), `midi_events` (messages received so far)
 and `midi_events_dropped`. See [control-protocol.md](control-protocol.md).
+
+`setup.midi_input_devices {"enable": [names], "disable": [names]}` switches devices as the
+checkboxes do; the reply lists each device's `name`, `enabled` and `open`.
