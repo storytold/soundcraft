@@ -42,7 +42,7 @@ struct Stats {
     sent: AtomicU64,
     pending_transition_timeouts: AtomicU64,
     oversized_dropped: AtomicU64,
-    relaunches: AtomicU64,
+    position_sends: AtomicU64,
     catch_up_sends: AtomicU64,
     stale_dropped: AtomicU64,
     session_backlog_drops: AtomicU64,
@@ -288,7 +288,7 @@ impl Output {
             oversized_dropped: self.stats.oversized_dropped.load(Relaxed),
             error: self.trouble(),
             session_backlog_drops: self.stats.session_backlog_drops.load(Relaxed),
-            relaunches: self.stats.relaunches.load(Relaxed),
+            position_sends: self.stats.position_sends.load(Relaxed),
             catch_up_sends: self.stats.catch_up_sends.load(Relaxed),
             stale_dropped: self.stats.stale_dropped.load(Relaxed),
             lateness_buckets: buckets,
@@ -479,7 +479,7 @@ impl<C: SyncPort> Port<C> {
                 Ok(handed) => {
                     stats.record(e.at, handed);
                     if matches!(e.bytes[0], 0xf0 | 0xf2) {
-                        stats.relaunches.fetch_add(1, Relaxed);
+                        stats.position_sends.fetch_add(1, Relaxed);
                     }
                 }
                 Err(err) => {

@@ -511,6 +511,8 @@ fn receiver_recovers_grid_through_jitter_quantised_wakes_and_worker_stalls() {
             }
             assert!(recovery_pulses < crate::sync_clock::RELAUNCH_PULSES);
             assert_eq!(relaunches, usize::from(stall_ms >= 200));
+            // Each relaunch resumes the receiver with exactly one Song Position Pointer.
+            assert_eq!(stats.position_sends.load(Relaxed), relaunches as u64);
             if stall_ms < 200 {
                 assert!(i64::abs_diff(clocks, 145) <= 1);
             }
