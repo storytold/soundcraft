@@ -27,14 +27,15 @@ fn unloop_app() -> (SoundApp, TrackId, usize) {
 /// `unloop_app` in a test harness.
 fn unloop_dialog() -> (Harness<'static, SoundApp>, TrackId, usize) {
     let (app, track, looped) = unloop_app();
-    let mut h = Harness::builder().with_size(vec2(1600.0, 1000.0)).build_ui_state(
-        |ui, app: &mut SoundApp| {
-            let ctx = ui.ctx().clone();
-            app.logic(&ctx);
-            app.ui(ui);
-        },
-        app,
-    );
+    let mut h =
+        Harness::builder().with_context_setup(soundcraft_ui_egui::framework::install_headless).with_size(vec2(1600.0, 1000.0)).build_ui_state(
+            |ui, app: &mut SoundApp| {
+                let ctx = ui.ctx().clone();
+                app.logic(&ctx);
+                app.ui(ui);
+            },
+            app,
+        );
     h.run_steps(3);
     (h, track, looped)
 }
@@ -97,6 +98,7 @@ fn a_flatten_click_with_enter_in_the_same_frame_flattens() {
     // The harness sends a pointer release and a key press in separate frames, so the frames are run by hand.
     let (mut app, track, looped) = unloop_app();
     let ctx = egui::Context::default();
+    soundcraft_ui_egui::framework::install_headless(&ctx);
     let button = |pressed| Event::PointerButton { pos, button: PointerButton::Primary, pressed, modifiers: Modifiers::NONE };
     for _ in 0..3 {
         run_frame(&ctx, &mut app, vec![]);
@@ -132,6 +134,7 @@ fn an_unloop_dialog_that_replaces_an_open_dialog_ignores_the_enter_of_its_first_
     let (mut app, track, looped) = looped_app();
     let before = loop_ids(&app, track);
     let ctx = egui::Context::default();
+    soundcraft_ui_egui::framework::install_headless(&ctx);
     menus::invoke_menu(&mut app, "setup.session", "Setup > Session");
     run_frame(&ctx, &mut app, vec![]);
     run_frame(&ctx, &mut app, vec![]);
@@ -150,6 +153,7 @@ fn a_held_enter_does_not_press_remove_until_it_is_pressed_again() {
     let (mut app, track, looped) = looped_app();
     let before = loop_ids(&app, track);
     let ctx = egui::Context::default();
+    soundcraft_ui_egui::framework::install_headless(&ctx);
     run_frame(&ctx, &mut app, vec![]);
     menus::invoke_menu(&mut app, "clip.unloop", "Clip > Unloop...");
     run_frame(&ctx, &mut app, vec![enter_key(false)]);
@@ -167,14 +171,15 @@ fn a_held_enter_does_not_press_remove_until_it_is_pressed_again() {
 fn unloop_dialog_is_shown_in_brazilian_portuguese() {
     let (mut app, track, looped) = unloop_app();
     app.ui.language = soundcraft_ui_egui::localization::Language::PortugueseBrazil;
-    let mut h = Harness::builder().with_size(vec2(1600.0, 1000.0)).build_ui_state(
-        |ui, app: &mut SoundApp| {
-            let ctx = ui.ctx().clone();
-            app.logic(&ctx);
-            app.ui(ui);
-        },
-        app,
-    );
+    let mut h =
+        Harness::builder().with_context_setup(soundcraft_ui_egui::framework::install_headless).with_size(vec2(1600.0, 1000.0)).build_ui_state(
+            |ui, app: &mut SoundApp| {
+                let ctx = ui.ctx().clone();
+                app.logic(&ctx);
+                app.ui(ui);
+            },
+            app,
+        );
     h.run_steps(3);
     h.get_by_label("Desativar loop");
     h.get_by_label("Remover exclui as iterações do loop e mantém o clipe de origem. Consolidar mantém cada iteração do loop como um clipe próprio.");
