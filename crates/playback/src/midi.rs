@@ -46,7 +46,7 @@ pub(crate) const INCOMING: usize = 1024;
 const RECORDED: usize = 16_384;
 
 /// A fixed-size queue of stamped events for one reader and one writer at a time. Lock-free.
-struct Ring {
+pub(crate) struct Ring {
     stamps: Vec<AtomicI64>,
     events: Vec<AtomicU32>,
     write: AtomicUsize,
@@ -54,7 +54,7 @@ struct Ring {
 }
 
 impl Ring {
-    fn new(capacity: usize) -> Ring {
+    pub(crate) fn new(capacity: usize) -> Ring {
         let n = capacity.next_power_of_two();
         Ring {
             stamps: (0..n).map(|_| AtomicI64::new(0)).collect(),
@@ -65,7 +65,7 @@ impl Ring {
     }
 
     /// False when full (the event is dropped).
-    fn push(&self, stamp: i64, event: u32) -> bool {
+    pub(crate) fn push(&self, stamp: i64, event: u32) -> bool {
         let n = self.events.len();
         let w = self.write.load(Ordering::Relaxed);
         if w.wrapping_sub(self.read.load(Ordering::Acquire)) >= n {
@@ -78,10 +78,14 @@ impl Ring {
         true
     }
 
-    fn pop(&self) -> Option<(i64, u32)> {
+    pub(crate) fn pop(&self) -> Option<(i64, u32)> {
+        self.pop_until(self.write.load(Ordering::Acquire))
+    }
+
+    fn pop_until(&self, end: usize) -> Option<(i64, u32)> {
         let n = self.events.len();
         let r = self.read.load(Ordering::Relaxed);
-        if r == self.write.load(Ordering::Acquire) {
+        if r == end {
             return None;
         }
         let out = (self.stamps.get(r % n)?.load(Ordering::Relaxed), self.events.get(r % n)?.load(Ordering::Relaxed));
@@ -144,15 +148,38 @@ fn lost_entry(port: u8) -> u32 {
     pack(&LiveMidi { offset: 0, port, status: RecordedMidi::LOST, data1: 0, data2: 0 })
 }
 
+pub(crate) type TransportWaker = Arc<dyn Fn(crate::mtc_input::ChaseEvent) + Send + Sync>;
+
 /// The path of MIDI events from the device threads to the audio thread, and of recorded events
 /// from the audio thread to the UI.
 pub struct MidiFeed {
+    clock_follow: Mutex<crate::clock_follow::Follower>,
+    pub(crate) clock_audio_pass: AtomicU64,
+    clock_source: AtomicUsize,
+    // A single writer (under clock_follow) publishes an optional period and its matching pulse.
+    // The callback never waits for a writer; a concurrent change disables prediction for that read.
+    clock_render_generation: AtomicU64,
+    clock_render_coalesced: AtomicBool,
+    clock_render_pulse: AtomicI64,
+    clock_render_stamp: AtomicI64,
+    clock_render_period: AtomicU64,
+    mtc: Mutex<crate::mtc_input::Reader>,
+    sync_wake: Mutex<Option<TransportWaker>>,
+    mtc_online: AtomicBool,
+    mtc_relocates: AtomicU64,
+    mtc_lock_generation: AtomicU64,
+    mtc_wake: std::sync::OnceLock<Box<dyn Fn() + Send + Sync>>,
     ports: Arc<MidiPorts>,
     incoming: Ring,
     /// Device threads write one at a time. Holds the ports ([`midi_port_bit`]) whose loss from
     /// a full queue is not written into the queue yet.
     writers: Mutex<u64>,
     recorded: Ring,
+    /// Only accepted takes are visible to the UI. The audio writer may stage a punch-in
+    /// in this same ring while its start command is pending.
+    recorded_visible: AtomicUsize,
+    pending_lost: AtomicU32,
+    pending_gap: AtomicBool,
     /// When the feed was made. Not on the web: there is no MIDI input there, and no clock in std.
     #[cfg(not(target_arch = "wasm32"))]
     epoch: Instant,
@@ -190,17 +217,34 @@ pub struct MidiFeed {
     stop_at: AtomicI64,
     stop_pass: AtomicU64,
     /// A clock set by a test in place of the real one (`i64::MIN`: the real one).
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-input"))]
     test_clock: AtomicI64,
 }
 
 impl Default for MidiFeed {
     fn default() -> Self {
         MidiFeed {
+            clock_follow: Mutex::default(),
+            clock_audio_pass: AtomicU64::new(0),
+            clock_source: AtomicUsize::new(usize::MAX),
+            clock_render_generation: AtomicU64::new(0),
+            clock_render_coalesced: AtomicBool::new(false),
+            clock_render_pulse: AtomicI64::new(i64::MAX),
+            clock_render_stamp: AtomicI64::new(0),
+            clock_render_period: AtomicU64::new(0),
+            mtc: Mutex::default(),
+            mtc_wake: Default::default(),
+            sync_wake: Mutex::default(),
+            mtc_online: false.into(),
+            mtc_relocates: 0.into(),
+            mtc_lock_generation: 0.into(),
             ports: Arc::new(MidiPorts::default()),
             incoming: Ring::new(INCOMING),
             writers: Mutex::new(0),
             recorded: Ring::new(RECORDED),
+            recorded_visible: AtomicUsize::new(0),
+            pending_lost: AtomicU32::new(0),
+            pending_gap: AtomicBool::new(false),
             #[cfg(not(target_arch = "wasm32"))]
             epoch: Instant::now(),
             connected: AtomicUsize::new(0),
@@ -218,7 +262,7 @@ impl Default for MidiFeed {
             overflow_at: (0..64).map(|_| AtomicI64::new(i64::MIN)).collect(),
             stop_at: AtomicI64::new(0),
             stop_pass: AtomicU64::new(0),
-            #[cfg(test)]
+            #[cfg(any(test, feature = "test-input"))]
             test_clock: AtomicI64::new(i64::MIN),
         }
     }
@@ -239,9 +283,16 @@ impl MidiFeed {
         self.connected.store(ports, Ordering::Relaxed);
     }
 
+    /// Convert a device presentation timestamp (on the host monotonic clock) to
+    /// the epoch used by incoming driver timestamps.
+    #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+    pub(crate) fn timestamp_at(&self, instant: Instant) -> i64 {
+        i64::try_from(instant.saturating_duration_since(self.epoch).as_micros()).unwrap_or(i64::MAX)
+    }
+
     /// Microseconds since the feed was made.
     fn now(&self) -> i64 {
-        #[cfg(test)]
+        #[cfg(any(test, feature = "test-input"))]
         {
             let set = self.test_clock.load(Ordering::Relaxed);
             if set != i64::MIN {
@@ -256,8 +307,8 @@ impl MidiFeed {
 
     /// Stop the clock at `micros`, for tests: stamps and ages no longer depend on how fast the
     /// test runs.
-    #[cfg(test)]
-    pub(crate) fn set_clock(&self, micros: i64) {
+    #[cfg(any(test, feature = "test-input"))]
+    pub fn set_clock(&self, micros: i64) {
         self.test_clock.store(micros, Ordering::Relaxed);
     }
 
@@ -269,16 +320,230 @@ impl MidiFeed {
     /// bytes are masked to 7 bits, and bytes past the message are ignored. Nothing downstream
     /// (the engine, instruments, the recorded take) sees anything else.
     pub fn receive(&self, port: u8, bytes: &[u8]) {
-        self.receive_from(None, port, bytes);
+        self.receive_from(None, port, bytes, self.now());
     }
 
     /// [`Self::receive`] for a connection that can be shut off: once `open` is false
     /// ([`Self::close_port`]) the message is discarded.
     pub fn receive_while_open(&self, open: &AtomicBool, port: u8, bytes: &[u8]) {
-        self.receive_from(Some(open), port, bytes);
+        self.receive_from(Some(open), port, bytes, self.now());
     }
 
-    fn receive_from(&self, open: Option<&AtomicBool>, port: u8, bytes: &[u8]) {
+    /// Register the host wakeup once per feed. Idle chase requires no repaint timer.
+    pub fn set_mtc_wakeup(&self, make: impl FnOnce() -> Box<dyn Fn() + Send + Sync>) {
+        self.mtc_wake.get_or_init(make);
+    }
+    #[cfg(any(target_os = "windows", target_os = "macos", target_os = "linux"))]
+    pub(crate) fn set_sync_waker(&self, wake: TransportWaker) {
+        *self.sync_wake.lock().unwrap_or_else(PoisonError::into_inner) = Some(wake);
+    }
+    fn wake_mtc_output(&self, reader: &crate::mtc_input::Reader) {
+        if let Some(event) = reader.pending
+            && let Some(wake) = self.sync_wake.lock().unwrap_or_else(PoisonError::into_inner).as_ref()
+        {
+            wake(event);
+        }
+    }
+    fn wake_mtc_host(&self) {
+        if let Some(wake) = self.mtc_wake.get() {
+            wake();
+        }
+    }
+
+    /// Select one currently open port for chase. Switching it discards queued positions.
+    pub fn set_mtc_source(&self, source: Option<u8>) {
+        let mut reader = self.mtc.lock().unwrap_or_else(PoisonError::into_inner);
+        if reader.source != source {
+            reader.reset(source);
+            self.mtc_online.store(source.is_some(), Ordering::Release);
+        }
+    }
+
+    pub fn set_mtc_options(&self, rate: soundcraft_time::FrameRate, freewheel_frames: u8, jam_sync: bool, external_offset_samples: i64) {
+        let mut r = self.mtc.lock().unwrap_or_else(PoisonError::into_inner);
+        r.set_options(crate::mtc_input::Options {
+            rate,
+            freewheel: if freewheel_frames == 0 { 0 } else { freewheel_frames.clamp(4, 40) },
+            jam: jam_sync,
+            offset: external_offset_samples,
+        });
+    }
+    pub fn mtc_input_status(&self) -> (Option<crate::mtc_input::Position>, Option<crate::mtc_input::RateMismatch>) {
+        self.mtc.lock().unwrap_or_else(PoisonError::into_inner).incoming_status()
+    }
+    pub fn mtc_diagnostics(&self) -> crate::mtc_input::ChaseStats {
+        let mut result = self.mtc.lock().unwrap_or_else(PoisonError::into_inner).diagnostics_at(self.now());
+        result.hard_relocates = self.mtc_relocates.load(Ordering::Relaxed);
+        result
+    }
+    pub(crate) fn mtc_relocated(&self) {
+        self.mtc_relocates.fetch_add(1, Ordering::Relaxed);
+    }
+    pub(crate) fn mtc_online(&self) -> bool {
+        self.mtc_online.load(Ordering::Acquire)
+    }
+    /// True while quarter frames are arriving or the reader is rolling/freewheeling.
+    /// A concurrent input transition also defers device recovery until the next UI poll.
+    pub fn mtc_transport_active(&self) -> bool {
+        self.mtc.try_lock().map_or(true, |reader| reader.transport_in_motion(self.now()))
+    }
+    // A contended MIDI callback leaves the audio transport untouched for one block.
+    pub(crate) fn tracking_mtc(&self) -> Option<(crate::mtc_input::Tracking, i64)> {
+        let mut reader = self.mtc.try_lock().ok()?;
+        Some((reader.tracking(self.now()), reader.options.offset))
+    }
+
+    pub fn take_mtc(&self) -> Option<crate::mtc_input::ChaseEvent> {
+        self.take_mtc_with_lock().map(|(event, _)| event)
+    }
+
+    pub fn take_mtc_with_lock(&self) -> Option<(crate::mtc_input::ChaseEvent, u64)> {
+        let mut reader = self.mtc.lock().unwrap_or_else(PoisonError::into_inner);
+        reader.take(self.now()).map(|event| (event, reader.stats.locks))
+    }
+
+    pub(crate) fn is_mtc_lock(&self, lock: u64) -> bool {
+        self.mtc_lock_generation.load(Ordering::Acquire) == lock
+    }
+
+    #[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
+    pub(crate) fn set_clock_boundary_listener(&self, listener: Option<crate::clock_follow::BoundaryListener>) {
+        let mut input = self.clock_follow.lock().unwrap_or_else(PoisonError::into_inner);
+        self.clock_audio_pass.store(0, Ordering::Release);
+        input.boundary_listener = listener;
+    }
+
+    pub fn set_clock_follow(&self, port: Option<u8>, coast: bool, initial_pulse: i64, waiting_for_output: bool) {
+        let mut input = self.clock_follow.lock().unwrap_or_else(PoisonError::into_inner);
+        if input.source != port {
+            let listener = input.boundary_listener.take();
+            self.clock_audio_pass.store(0, Ordering::Release);
+            *input = Default::default();
+            input.boundary_listener = listener;
+            input.source = port;
+            input.next_pulse = initial_pulse.max(0);
+            self.publish_clock_render(&input);
+            self.clock_source.store(port.map_or(usize::MAX, usize::from), Ordering::Release);
+        }
+        input.coast = coast;
+        input.waiting_for_output = waiting_for_output;
+    }
+
+    /// Includes a Start/Continue received between host frames and its as-yet unacknowledged first pulse.
+    pub fn clock_start_pending(&self) -> bool {
+        self.clock_follow.lock().unwrap_or_else(PoisonError::into_inner).start_pending()
+    }
+
+    /// Called on the host, never the device audio thread. At most 32 transport transitions can wait.
+    pub fn clock_follow_status(&self, actions: &mut Vec<crate::clock_follow::Action>) -> crate::clock_follow::Snapshot {
+        let mut input = self.clock_follow.lock().unwrap_or_else(PoisonError::into_inner);
+        let now = self.now();
+        if input.expire(now) {
+            self.publish_clock_render(&input);
+        }
+        while let Some(action) = input.take() {
+            actions.push(action);
+        }
+        input.snapshot(now)
+    }
+
+    fn publish_clock_render(&self, input: &crate::clock_follow::Follower) {
+        let pulse = input.render_through_pulse().unwrap_or(i64::MAX);
+        let (stamp, period) = input.render_prediction().unwrap_or((0, 0.));
+        self.clock_render_generation.fetch_add(1, Ordering::SeqCst);
+        self.clock_render_pulse.store(pulse, Ordering::SeqCst);
+        self.clock_render_coalesced.store(input.coalesced_render(), Ordering::SeqCst);
+        self.clock_render_stamp.store(stamp, Ordering::SeqCst);
+        self.clock_render_period.store(period.to_bits(), Ordering::SeqCst);
+        self.clock_render_generation.fetch_add(1, Ordering::SeqCst);
+    }
+
+    /// Latest tick that can be scheduled for this immutable device block. Times are
+    /// microseconds in the input feed's epoch. An uncertain lock, stale pulse or
+    /// concurrent source change keeps the ordinary one-pulse wire limit.
+    pub fn clock_render_tick_for_output(&self, callback_us: i64, presentation_end_us: i64) -> Option<i64> {
+        self.clock_output_window(callback_us, presentation_end_us).0
+    }
+
+    pub(crate) fn clock_output_window(&self, callback_us: i64, presentation_end_us: i64) -> (Option<i64>, soundcraft_mix::ClockDelivery) {
+        use soundcraft_mix::ClockDelivery;
+        let generation = self.clock_render_generation.load(Ordering::SeqCst);
+        let Some(hard) = self.clock_render_tick() else {
+            return (None, ClockDelivery::Wire);
+        };
+        let wire = self.clock_delivery();
+        let stamp = self.clock_render_stamp.load(Ordering::SeqCst);
+        let period = f64::from_bits(self.clock_render_period.load(Ordering::SeqCst));
+        if !generation.is_multiple_of(2) || self.clock_render_generation.load(Ordering::SeqCst) != generation {
+            return (self.clock_render_tick(), self.clock_delivery());
+        }
+        let age = callback_us.saturating_sub(stamp);
+        // A buffer shorter than one pulse still projects: with the output lead, the one-pulse
+        // wire limit alone can fall short of the audio the device is about to present.
+        if period == 0. || age < 0 || age > period.ceil() as i64 || presentation_end_us <= callback_us {
+            return (Some(hard), wire);
+        }
+        const TICKS: i64 = soundcraft_time::TICKS_PER_QUARTER / 24;
+        let elapsed = presentation_end_us.saturating_sub(stamp) as f64;
+        let extent = (elapsed * TICKS as f64 / period).ceil() as i64;
+        let projected = hard.saturating_add(extent.saturating_sub(TICKS).max(0));
+        (Some(projected), if projected > hard { ClockDelivery::Predicted } else { wire })
+    }
+
+    /// Event placement for a wire-limited device block, including when latency timing is unavailable.
+    pub fn clock_delivery(&self) -> soundcraft_mix::ClockDelivery {
+        if self.clock_render_coalesced.load(Ordering::Acquire) {
+            soundcraft_mix::ClockDelivery::Coalesced
+        } else {
+            soundcraft_mix::ClockDelivery::Wire
+        }
+    }
+
+    /// Inclusive clip/click event horizon. Coasting has no external render limit.
+    pub fn clock_render_tick(&self) -> Option<i64> {
+        let pulse = self.clock_render_pulse.load(Ordering::Acquire);
+        (pulse != i64::MAX).then(|| pulse.saturating_mul(soundcraft_time::TICKS_PER_QUARTER / 24))
+    }
+
+    pub(crate) fn arm_clock_resume(&self, port: u8, cue: crate::clock_follow::PreparedResume) -> bool {
+        self.clock_follow.lock().unwrap_or_else(PoisonError::into_inner).arm(port, cue)
+    }
+    pub(crate) fn cancel_clock_resume(&self) {
+        self.clock_follow.lock().unwrap_or_else(PoisonError::into_inner).cue = None;
+    }
+
+    fn read_clock(&self, open: Option<&AtomicBool>, port: u8, bytes: &[u8], at: i64) {
+        if self.clock_source.load(Ordering::Acquire) != usize::from(port) {
+            return;
+        }
+        let mut input = self.clock_follow.lock().unwrap_or_else(PoisonError::into_inner);
+        if input.source == Some(port) && open.is_none_or(|g| g.load(Ordering::Acquire)) {
+            let action = input.receive(bytes, at);
+            self.publish_clock_render(&input);
+            if action {
+                input.dispatch_prepared(|| self.now());
+            }
+            drop(input);
+            if action {
+                self.wake_mtc_host();
+            }
+        }
+    }
+
+    fn receive_from(&self, open: Option<&AtomicBool>, port: u8, bytes: &[u8], at_us: i64) {
+        self.read_clock(open, port, bytes, at_us);
+        // The selected MTC reader frames messages across callbacks and ignores interleaved
+        // real-time bytes. Channel recording still handles the original port message below.
+        if self.mtc_online() {
+            let arrival = self.now();
+            let mut reader = self.mtc.lock().unwrap_or_else(PoisonError::into_inner);
+            if reader.source == Some(port) && open.is_none_or(|gate| gate.load(Ordering::Acquire)) && reader.receive(bytes, at_us, arrival) {
+                self.mtc_lock_generation.store(reader.stats.locks, Ordering::Release);
+                self.wake_mtc_output(&reader);
+                drop(reader);
+                self.wake_mtc_host();
+            }
+        }
         let Some(&status) = bytes.first().filter(|s| (0x80..0xF0).contains(*s)) else { return };
         // Program change and channel pressure have one data byte, the rest two.
         let needs = if matches!(status & 0xF0, 0xC0 | 0xD0) { 2 } else { 3 };
@@ -294,6 +559,8 @@ impl MidiFeed {
             if open.is_some_and(|o| !o.load(Ordering::Acquire)) {
                 return;
             }
+            // Synchronization uses the wire timestamp. Recording is ordered against
+            // take boundaries under this writer lock, including a delayed native callback.
             let now = self.now();
             // Losses from a full queue go into the queue first, where they happened: ahead of
             // the first event that fits again. Each mark carries the time its port's events
@@ -329,15 +596,34 @@ impl MidiFeed {
     /// its device thread delivers from now on is discarded. Dropping the connection afterwards
     /// may or may not wait for that thread (the system decides): it no longer matters.
     pub fn close_port(&self, open: &AtomicBool, port: u8) {
-        let _writers = self.writers.lock().unwrap_or_else(PoisonError::into_inner);
-        open.store(false, Ordering::Release);
-        self.port_lost(port);
+        let notify = {
+            let _writers = self.writers.lock().unwrap_or_else(PoisonError::into_inner);
+            open.store(false, Ordering::Release);
+            self.mark_port_lost(port)
+        };
+        if notify {
+            self.wake_mtc_host();
+        }
     }
 
     /// Events of `port` did not (or will not) reach the audio thread: it releases what the port
     /// holds. Called when the queue is full and when a port closes.
     pub fn port_lost(&self, port: u8) {
+        if self.mark_port_lost(port) {
+            self.wake_mtc_host();
+        }
+    }
+
+    fn mark_port_lost(&self, port: u8) -> bool {
         self.port_lost_at(port, self.now());
+        let mut reader = self.mtc.lock().unwrap_or_else(PoisonError::into_inner);
+        if reader.source == Some(port) {
+            reader.loss();
+            self.wake_mtc_output(&reader);
+            true
+        } else {
+            false
+        }
     }
 
     /// [`Self::port_lost`] at the time `now`.
@@ -428,16 +714,21 @@ impl MidiFeed {
     /// Put a recorded entry in the queue to the UI thread. One that does not fit is counted, and
     /// the next that fits is preceded by a [`RecordedMidi::LOST`] for all ports.
     fn record_entry(&self, at: Samples, entry: u32) {
-        if self.record_gap.load(Ordering::Relaxed) {
+        let pending = self.begin_pending();
+        let (gap, losses) = if pending { (&self.pending_gap, &self.pending_lost) } else { (&self.record_gap, &self.recorded_lost) };
+        if gap.load(Ordering::Relaxed) {
             if !self.recorded.push(at, lost_entry(u8::MAX)) {
-                self.recorded_lost.fetch_add(1, Ordering::Relaxed);
+                losses.fetch_add(1, Ordering::Relaxed);
                 return;
             }
-            self.record_gap.store(false, Ordering::Relaxed);
+            gap.store(false, Ordering::Relaxed);
         }
         if !self.recorded.push(at, entry) {
-            self.recorded_lost.fetch_add(1, Ordering::Relaxed);
-            self.record_gap.store(true, Ordering::Relaxed);
+            losses.fetch_add(1, Ordering::Relaxed);
+            gap.store(true, Ordering::Relaxed);
+        }
+        if !pending {
+            self.recorded_visible.store(self.recorded.write.load(Ordering::Relaxed), Ordering::Release);
         }
     }
 
@@ -463,8 +754,22 @@ impl MidiFeed {
     }
 
     /// Audio thread: the command that starts the pass was read.
-    pub(crate) fn pass_begun(&self) {
-        self.begin_pending.store(false, Ordering::Release);
+    pub(crate) fn finish_pending_start(&self, accepted: bool) {
+        if !self.begin_pending.swap(false, Ordering::AcqRel) {
+            return;
+        }
+        let losses = self.pending_lost.swap(0, Ordering::Relaxed);
+        let gap = self.pending_gap.swap(false, Ordering::Relaxed);
+        if accepted {
+            self.recorded_lost.fetch_add(losses, Ordering::Relaxed);
+            // The take starts here: a gap left by the end of the previous take does not belong to
+            // it. Its loss stays counted in `recorded_lost`.
+            self.record_gap.store(gap, Ordering::Relaxed);
+            self.recorded_visible.store(self.recorded.write.load(Ordering::Relaxed), Ordering::Release);
+        } else {
+            // No consumer has seen the tentative suffix. Rewind only the producer cursor.
+            self.recorded.write.store(self.recorded_visible.load(Ordering::Relaxed), Ordering::Relaxed);
+        }
     }
 
     /// UI thread: a record pass ends. Returns its number, to stop the recording with
@@ -552,7 +857,8 @@ impl MidiFeed {
 
     /// UI thread: move the recorded events so far to the end of `out`.
     pub fn take_recorded(&self, out: &mut Vec<RecordedMidi>) {
-        while let Some((at, e)) = self.recorded.pop() {
+        let end = self.recorded_visible.load(Ordering::Acquire);
+        while let Some((at, e)) = self.recorded.pop_until(end) {
             let e = unpack(e);
             out.push(RecordedMidi { at, port: e.port, status: e.status, data1: e.data1, data2: e.data2 });
         }
@@ -888,14 +1194,26 @@ mod backend {
 
     fn connect(name: &str, port: &MidiInputPort, feed: &Arc<MidiFeed>) -> Result<(Gate, MidiInputConnection<()>), String> {
         let mut input = MidiInput::new(CLIENT).map_err(|e| e.to_string())?;
-        // Clock, SysEx and active sensing are not used; do not wake up for them.
-        input.ignore(Ignore::All);
+        // Quarter-frame and full-frame SysEx carry MTC. The feed routes them separately from notes and controllers.
+        input.ignore(Ignore::ActiveSense);
         let index = feed.ports().assign(name);
         let feed = Arc::clone(feed);
         let gate: Gate = Arc::new(AtomicBool::new(true));
         let open = Arc::clone(&gate);
-        let connection =
-            input.connect(port, "in", move |_, bytes, ()| feed.receive_while_open(&open, index, bytes), ()).map_err(|e| e.to_string())?;
+        let connection = input
+            .connect(
+                port,
+                "in",
+                {
+                    let mut timeline = crate::sync_input::DriverTime::default();
+                    move |stamp, bytes, ()| {
+                        let at_us = timeline.map(stamp, feed.now());
+                        feed.receive_from(Some(&open), index, bytes, at_us);
+                    }
+                },
+                (),
+            )
+            .map_err(|e| e.to_string())?;
         Ok((gate, connection))
     }
 }
@@ -920,6 +1238,77 @@ mod backend {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn clock_status_polls_publish_only_when_the_render_horizon_expires() {
+        let feed = MidiFeed::default();
+        feed.set_clock(0);
+        feed.set_clock_follow(Some(0), true, 0, false);
+        feed.receive(0, &[0xfa]);
+        for pulse in 0..32 {
+            feed.set_clock(pulse * 20_833);
+            feed.receive(0, &[0xf8]);
+        }
+        assert!(feed.clock_render_tick().is_some());
+        let generation = || feed.clock_render_generation.load(Ordering::Acquire);
+        let before = generation();
+        let mut actions = Vec::new();
+        for delta in 1..=1_000 {
+            feed.set_clock(31 * 20_833 + delta);
+            feed.clock_follow_status(&mut actions);
+        }
+        assert_eq!(generation(), before, "unchanged host polls republished the audio horizon");
+        feed.set_clock(32 * 20_833 + 300_000);
+        feed.clock_follow_status(&mut actions);
+        assert_eq!(feed.clock_render_tick(), None, "coasting releases the render limit");
+        assert!(generation() > before);
+        let after_loss = generation();
+        feed.clock_follow_status(&mut actions);
+        assert_eq!(generation(), after_loss);
+    }
+
+    #[test]
+    fn observed_stop_identifies_current_lock_while_reader_is_busy() {
+        let feed = MidiFeed::default();
+        feed.set_mtc_source(Some(1));
+        for frame in [0, 2] {
+            for (i, v) in [frame, 0, 0, 0, 0, 0, 0, 6].into_iter().enumerate() {
+                feed.receive(1, &[0xf1, ((i as u8) << 4) | v]);
+            }
+        }
+        feed.receive(1, &[0xfc]);
+        let (event, generation) = feed.take_mtc_with_lock().unwrap();
+        assert_eq!(event, crate::mtc_input::ChaseEvent::Stop);
+        assert!(generation > 0);
+        let _busy = feed.mtc.lock().unwrap();
+        assert!(feed.is_mtc_lock(generation));
+        assert!(!feed.is_mtc_lock(generation - 1));
+    }
+
+    #[test]
+    fn review_channel_event_stamp_follows_the_recording_cutoff() {
+        let feed = MidiFeed::default();
+        feed.set_clock(250);
+        feed.receive_from(None, 0, &[0x90, 64, 100], 90);
+        assert_eq!(feed.next().unwrap().0, 250, "queue publication is after the cutoff even if the driver timestamp is older");
+    }
+
+    #[test]
+    fn review_closing_mtc_port_calls_host_wakeup_outside_the_writer_lock() {
+        let feed = Arc::new(MidiFeed::default());
+        feed.set_mtc_source(Some(2));
+        let weak = Arc::downgrade(&feed);
+        let notified = Arc::new(AtomicBool::new(false));
+        let observed = notified.clone();
+        feed.set_mtc_wakeup(|| {
+            Box::new(move || {
+                assert!(weak.upgrade().unwrap().hold_writers().is_some());
+                observed.store(true, Ordering::Relaxed);
+            })
+        });
+        feed.close_port(&AtomicBool::new(true), 2);
+        assert!(notified.load(Ordering::Relaxed));
+    }
 
     #[test]
     fn port_names_lose_addresses_and_repeated_client_names() {
@@ -1140,6 +1529,15 @@ mod tests {
     }
 
     #[test]
+    fn channel_events_use_admission_time_even_when_the_device_stamp_precedes_stop() {
+        let f = MidiFeed::default();
+        f.set_clock(20_000);
+        f.receive_from(None, 0, &[0x80, 60, 0], 10_000);
+        let (stamp, event) = f.next().unwrap();
+        assert_eq!((stamp, event.status), (20_000, 0x80));
+    }
+
+    #[test]
     fn a_full_ring_drops_new_events_and_recovers() {
         let r = Ring::new(4);
         assert!((0..4).all(|i| r.push(i, 1)));
@@ -1169,6 +1567,26 @@ mod tests {
         assert_eq!(std::iter::from_fn(|| f.next()).count(), INCOMING);
         f.receive(2, &[0x90, 61, 100]);
         assert_eq!((f.dropped(), f.take_lost()), (3, 0), "the queue works again");
+    }
+
+    #[test]
+    fn a_gap_at_the_end_of_one_take_does_not_cut_a_note_in_the_next() {
+        let f = MidiFeed::default();
+        let e = LiveMidi { offset: 0, port: 1, status: 0x90, data1: 60, data2: 100 };
+        for at in 0..RECORDED.next_power_of_two() + 1 {
+            f.record(at as i64, &e);
+        }
+        let mut out = Vec::new();
+        f.take_recorded(&mut out);
+        assert_eq!(f.take_recorded_lost(), 1);
+        // The next take's first note arrives while its start is still tentative.
+        f.begin_pass();
+        f.record(500, &LiveMidi { data1: 64, ..e });
+        f.finish_pending_start(true);
+        f.record(600, &LiveMidi { status: 0x80, data1: 64, ..e });
+        out.clear();
+        f.take_recorded(&mut out);
+        assert_eq!(out.iter().map(|r| (r.at, r.status)).collect::<Vec<_>>(), [(500, 0x90), (600, 0x80)]);
     }
 
     #[test]

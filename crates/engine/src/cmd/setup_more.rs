@@ -20,7 +20,7 @@ const MIDI_FILTER_KINDS: [&str; 8] = ["notes", "pitch_bend", "mono_aftertouch", 
 pub fn specs() -> Vec<CommandSpec> {
     vec![
         option!("options.destructive_punch", "DestructivePunch", "options.destructive_punch"),
-        option!("options.transport_online", "Transport Online", "options.transport_online"),
+        cmd!(noundo "options.transport_online", "Transport Online", ["Options"], Some("Cmd+J"), "{value?: bool} (toggles when omitted)", always, |_, _| Err(EngineError::Unsupported("Transport Online needs a playback host".into()))),
         option!("options.dynamic_transport", "Dynamic Transport", "options.dynamic_transport"),
         option!(
             "options.marker_target_follows_selection",
@@ -81,7 +81,7 @@ pub fn specs() -> Vec<CommandSpec> {
             current_timecode
         ),
         cmd!(noundo "setup.current_feet_frames", "Current Feet+Frames Position...", ["Setup"], None, "{feet_frames: 'F+FF'} — the feet+frames reading at the insertion point", always, current_feet_frames),
-        cmd!(noundo "setup.external_timecode_offset", "External Timecode Offset...", ["Setup"], None, "{frames?: ±, samples?: ±} — offset applied to incoming timecode", always, |e, p| offset_setting(e, p, "sync.external_offset")),
+        cmd!(noundo "setup.external_timecode_offset", "External Timecode Offset...", ["Setup"], None, "{timecode?: signed HH:MM:SS:FF, frames?: ±, samples?: ±} — offset applied to incoming timecode", always, |e, p| offset_setting(e, p, "sync.external_offset")),
         cmd!(noundo "setup.video_sync_offset", "Video Sync Offset...", ["Setup"], None, "{frames?: ±, samples?: ±} — offset between audio and video playback", always, |e, p| offset_setting(e, p, "video.sync_offset")),
         cmd!(noundo "setup.click_countoff", "Click/Countoff...", ["Setup"], None, "{volume_db?: -60..12, accent_note?: 0..127, normal_note?: 0..127, accent_velocity?, normal_velocity?, countoff?: bool, countoff_bars?: 1..16, only_during_record?: bool}", always, click_countoff),
         cmd!(query "setup.keyboard_shortcuts", "Keyboard Shortcuts...", ["Setup"], None, "{filter?} — every command shortcut", always, |_, p| {
@@ -103,17 +103,8 @@ pub fn specs() -> Vec<CommandSpec> {
             let devices: Vec<String> = text(&s.edit, "midi.studio.devices").map(|t| t.split('|').map(str::to_string).collect()).unwrap_or_default();
             Ok(json!({"devices": devices}))
         }),
-        cmd!(noundo "setup.midi_beat_clock", "MIDI Beat Clock...", ["Setup", "MIDI"], None, "{enabled?: bool, offset?: samples, destination?: name}", always, |e, p| {
-            let s = e.session_mut();
-            if let Some(v) = p.get("enabled").and_then(Value::as_bool) {
-                s.edit.set_flag("midi.beat_clock", v);
-            }
-            store_value(&mut s.edit, p, "offset", "midi.beat_clock.offset", -1e7, 1e7);
-            if let Some(d) = str_param(p, "destination") {
-                set_text(&mut s.edit, "midi.beat_clock.destination", Some(d));
-            }
-            Ok(json!({"enabled": s.edit.flag("midi.beat_clock"), "offset": s.edit.value("midi.beat_clock.offset", 0.0), "destination": text(&s.edit, "midi.beat_clock.destination")}))
-        }),
+        cmd!(noundo "setup.midi_beat_clock", "MIDI Beat Clock...", ["Setup", "MIDI"], None, "{enabled?, ports?: {name:{enabled,offset_samples}}, compensation?} (desktop host)", always, |_, _| Err(EngineError::Unsupported("MIDI sync settings require the desktop host".into()))),
+        cmd!(noundo "setup.midi_sync_status", "MIDI Sync Diagnostics", [], None, "{} (desktop host reports port timers)", always, |_, _| Ok(json!({"audio_device_open":false,"output":null}))),
         cmd!(noundo "setup.midi_input_filter", "MIDI Input Filter...", ["Setup", "MIDI"], None, "{filter?: [notes|pitch_bend|mono_aftertouch|poly_aftertouch|program|cc|sysex|realtime], allow?: [...]} — filtered kinds are not recorded", always, midi_filter),
         cmd!(noundo "setup.midi_input_devices", "MIDI Input Devices...", ["Setup", "MIDI"], None, "{enable?: [names], disable?: [names]}", always, midi_inputs),
         cmd!(noundo "setup.transcription_settings", "Transcription Settings...", ["Setup"], None, "{enabled?: bool, language?: 'en'}", always, |e, p| {
@@ -393,18 +384,55 @@ fn current_feet_frames(e: &mut Engine, p: &Value) -> Result<Value> {
     Ok(json!({"feet_frames_start": start}))
 }
 
+pub fn signed_offset(samples: i64, rate: soundcraft_time::FrameRate, sr: soundcraft_time::SampleRate) -> String {
+    let label = Timecode::from_samples(samples.saturating_abs(), rate, sr).format(rate);
+    format!("{}{label}", if samples < 0 { "-" } else { "+" })
+}
+
+pub(super) fn parse_offset(input: &str, rate: soundcraft_time::FrameRate, sr: soundcraft_time::SampleRate) -> std::result::Result<i64, &'static str> {
+    const INVALID: &str = "Offset must be a signed timecode such as -01:00:00:00.";
+    let raw = input.strip_prefix(['+', '-']).ok_or(INVALID)?;
+    let label = Timecode::parse(raw).map_err(|_| INVALID)?;
+    if label.negative || label.hours > 1 || Timecode::from_frames(label.to_frames(rate), rate) != label {
+        return Err(INVALID);
+    }
+    let n = label.to_samples(rate, sr);
+    if n > sr.samples(3600.) {
+        return Err("External timecode offset exceeds one hour of samples");
+    }
+    Ok(if input.starts_with('-') { -n } else { n })
+}
+
 fn offset_setting(e: &mut Engine, p: &Value, key: &str) -> Result<Value> {
     let s = e.session_mut();
     let sr = s.sample_rate;
     let per_frame = s.frame_rate.samples_per_frame(sr);
-    if let Some(f) = p.get("frames").and_then(Value::as_f64).filter(|v| v.is_finite()) {
-        s.edit.values.insert(key.to_string(), (f.clamp(-10_000.0, 10_000.0) * per_frame).round());
+    let edit = if key == "sync.external_offset"
+        && let Some(v) = p.get("timecode")
+    {
+        let label = v.as_str().ok_or_else(|| bad("setup.external_timecode_offset", "Expected a timecode label"))?;
+        let samples = parse_offset(label, s.frame_rate, sr).map_err(|m| bad("setup.external_timecode_offset", m))?;
+        Some(samples as f64)
+    } else if let Some(f) = p.get("frames").and_then(Value::as_f64).filter(|v| v.is_finite()) {
+        Some((f.clamp(-10_000.0, 10_000.0) * per_frame).round())
     } else if let Some(n) = p.get("samples").and_then(Value::as_f64).filter(|v| v.is_finite()) {
         let lim = sr.as_f64() * 3600.0;
-        s.edit.values.insert(key.to_string(), n.clamp(-lim, lim).round());
+        Some(n.clamp(-lim, lim).round())
+    } else {
+        None
+    };
+    if let Some(value) = edit {
+        s.edit.values.insert(key.into(), value);
+        if key == "sync.external_offset" {
+            s.edit.values.remove("midi.mtc.external_offset_frames");
+        }
     }
     let samples = s.edit.value(key, 0.0);
-    Ok(json!({"samples": samples, "frames": samples / per_frame.max(1e-9)}))
+    let mut result = json!({"samples":samples,"frames":samples/per_frame.max(1e-9)});
+    if key == "sync.external_offset" {
+        result["timecode"] = json!(signed_offset(samples as i64, s.frame_rate, sr));
+    }
+    Ok(result)
 }
 
 fn click_countoff(e: &mut Engine, p: &Value) -> Result<Value> {

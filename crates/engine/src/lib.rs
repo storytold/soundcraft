@@ -88,6 +88,16 @@ pub enum TransportRequest {
     Play,
     /// Start playing at this position (or move there if already playing), ignoring the selection.
     PlayFrom(Samples),
+    /// MIDI Clock starts at a musical boundary, while the render cursor includes output latency.
+    PlayFromClock {
+        origin: Samples,
+        render_from: Samples,
+        /// Arrival of the starting pulse (MIDI feed microseconds) and the manual input offset,
+        /// so the audio callback that begins playback can place its first frame itself.
+        arrival: Option<(i64, Samples)>,
+    },
+    /// A prepared external-clock start already reached the device. Adopt it without sending Play again.
+    ClockPlaybackStarted(Samples),
     Stop,
     TogglePlay,
     Record,
@@ -123,6 +133,8 @@ pub struct Clipboard {
     pub grid_offset: Samples,
     /// Original insertion point when the clipboard was populated by Cut.
     pub cut_from: Option<Samples>,
+    /// Timing provenance of the copied material, independent of subsequent edits and Undo.
+    clock_takes: ClockTakes,
     /// Copy Special › Automation: pasting it leaves the clips alone, in Shuffle mode too.
     pub automation_only: bool,
     /// The Auto Rename schemes of the copied clips, keyed as in their `auto_name`.
@@ -170,24 +182,49 @@ impl Clipboard {
     }
 }
 
+#[derive(Clone, Debug, PartialEq)]
+struct ClockTake {
+    capture: Arc<io::ClockTakeProjection>,
+}
+
+type ClockTakes = std::collections::BTreeMap<soundcraft_model::ClipId, ClockTake>;
+
 #[derive(Debug, Clone)]
 struct HistoryEntry {
     label: String,
+    // The matching capture grid for this document, including existing clip IDs changed by trims.
+    clock_takes: Arc<ClockTakes>,
     doc: Arc<Session>,
 }
 
 /// Most decoded imports [`Engine::offer_import`] holds at once (each can be gigabytes).
 const MAX_OFFERED_IMPORTS: usize = 4;
 
+/// Sole owner of a prepared session's start permission. Invalidating the revision
+/// and queueing its transport command are ordered even if the input has upgraded its Weak.
+struct PreparedRevision(Arc<std::sync::Mutex<bool>>);
+
+impl Drop for PreparedRevision {
+    fn drop(&mut self) {
+        *self.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = false;
+    }
+}
+
 /// Engine state: the document, history, clipboard and transport plumbing.
 pub struct Engine {
     doc: Arc<Session>,
+    prepared_revision: std::cell::OnceCell<PreparedRevision>,
     undo: Vec<HistoryEntry>,
     redo: Vec<HistoryEntry>,
     pub history_limit: usize,
     pub clipboard: Clipboard,
     pub transport_requests: Vec<TransportRequest>,
     pub transport: TransportStatus,
+    /// Transient beat grid provided by an external MIDI clock; excluded from save, undo and export.
+    pub playback_tempo: Option<soundcraft_time::TempoMap>,
+    // While following the source, replay each new take in the grid it was played on.
+    // The editable document always stores the same performance in its own score grid.
+    follow_takes: Arc<ClockTakes>,
     /// Command journal (id, params) for macro recording / agents. Ring buffer: capped at
     /// [`MAX_JOURNAL_ENTRIES`] entries of up to [`MAX_JOURNAL_ENTRY_BYTES`] params each.
     pub journal: std::collections::VecDeque<(String, Value)>,
@@ -213,25 +250,127 @@ pub struct Engine {
     imports: Vec<io::DecodedImport>,
 }
 
+/// Create a fresh project at 01:00:00:00. Loaded session documents retain their own start.
+pub(crate) fn new_session(name: impl Into<String>, sr: soundcraft_time::SampleRate) -> Session {
+    let mut session = Session::new(name, sr);
+    let hour = soundcraft_time::Timecode { negative: false, hours: 1, minutes: 0, seconds: 0, frames: 0 };
+    session.timecode_start = hour.to_samples(session.frame_rate, sr);
+    session
+}
+
+const MTC_FREEWHEEL: &str = "midi.mtc.freewheel_mode=";
+
+/// Recover malformed fields independently before accepting the project for chase.
+fn migrate_mtc_settings(s: &mut Session) -> Vec<String> {
+    let mut notes = Vec::new();
+    let frames_key = "midi.mtc.freewheel_frames";
+    if let Some(frames) = s.edit.values.get_mut(frames_key)
+        && (!(4.0..=40.0).contains(frames) || frames.fract() != 0.)
+    {
+        notes.push(format!("The session's Freewheel frames value ({frames_key} = {frames}) was out of range and was reset to 8."));
+        *frames = 8.;
+    }
+
+    let mut modes = s.edit.flags.iter().filter_map(|flag| flag.strip_prefix(MTC_FREEWHEEL));
+    let mode = modes.next();
+    let has_mode = mode.is_some();
+    if let Some(mode) = mode
+        && (!matches!(mode, "none" | "frames" | "jam_sync") || modes.next().is_some())
+    {
+        notes.push(format!("The session's Freewheel mode (midi.mtc.freewheel_mode = {mode:.80}) was invalid or ambiguous and was reset to Frames."));
+        s.edit.flags.retain(|flag| !flag.starts_with(MTC_FREEWHEEL));
+        s.edit.flags.insert(format!("{MTC_FREEWHEEL}frames"));
+    }
+    if s.edit.flags.remove("midi.mtc.jam_sync") && !has_mode {
+        s.edit.flags.insert(format!("{MTC_FREEWHEEL}jam_sync"));
+    }
+
+    let limit = s.sample_rate.samples(3600.);
+    let external_key = "sync.external_offset";
+    if let Some(offset) = s.edit.values.get_mut(external_key)
+        && (!offset.is_finite() || offset.fract() != 0. || offset.abs() > limit as f64)
+    {
+        notes.push(format!("The session's External Timecode Offset ({external_key} = {offset} samples) was invalid and was reset to 0."));
+        *offset = 0.;
+    }
+    let legacy_key = "midi.mtc.external_offset_frames";
+    let Some(&frames) = s.edit.values.get(legacy_key) else { return notes };
+    // Convert only bounded integral frame counts and apply the final limit in samples,
+    // as Session Setup does for fractional frame rates.
+    let samples = (frames.fract() == 0. && frames.abs() <= 5_184_000.)
+        .then(|| s.frame_rate.samples_at_frame(frames as i64, s.sample_rate))
+        .filter(|samples| samples.unsigned_abs() <= limit as u64);
+    let Some(samples) = samples.map(|samples| samples as f64) else {
+        notes.push(format!("The session's legacy reader offset ({legacy_key} = {frames} frames) was invalid and was reset to 0."));
+        s.edit.values.remove(legacy_key);
+        return notes;
+    };
+    let existing = s.edit.value(external_key, 0.);
+    if existing != 0. && samples != 0. && existing != samples {
+        notes.push("The session has conflicting timecode offsets. Chase uses the External Timecode Offset.".into());
+    } else {
+        if existing == 0. {
+            s.edit.values.insert(external_key.into(), samples);
+        }
+        s.edit.values.remove(legacy_key);
+        notes.push("Migrated the MTC reader offset to External Timecode Offset.".into());
+    }
+    notes
+}
+
 impl Default for Engine {
     fn default() -> Self {
-        Engine::new(Session::default())
+        Engine::new(new_session("Untitled", soundcraft_time::SampleRate::HZ_48000))
     }
 }
 
 impl Engine {
-    pub fn new(session: Session) -> Self {
+    /// Number of missing timecode frames tolerated before the chase reader reports loss.
+    pub fn mtc_freewheel_frames(&self) -> u8 {
+        self.session().edit.value("midi.mtc.freewheel_frames", 8.).clamp(4., 40.) as u8
+    }
+
+    /// Keep rolling through timecode loss in this session.
+    pub fn mtc_jam_sync(&self) -> bool {
+        self.mtc_freewheel_mode() == "jam_sync"
+    }
+
+    pub fn has_conflicting_timecode_offsets(&self) -> bool {
+        let s = self.session();
+        let old = s.edit.value("midi.mtc.external_offset_frames", 0.) as i64;
+        let external = s.edit.value("sync.external_offset", 0.) as i64;
+        old != 0 && external != 0 && external != s.frame_rate.samples_at_frame(old, s.sample_rate)
+    }
+
+    pub fn mtc_freewheel_mode(&self) -> &'static str {
+        self.session()
+            .edit
+            .flags
+            .iter()
+            .find_map(|flag| match flag.strip_prefix(MTC_FREEWHEEL) {
+                Some("jam_sync") => Some("jam_sync"),
+                Some("none") => Some("none"),
+                _ => None,
+            })
+            .unwrap_or("frames")
+    }
+
+    pub fn new(mut session: Session) -> Self {
         install_panic_hook();
+        let messages = migrate_mtc_settings(&mut session);
         let doc = Arc::new(session);
         Engine {
             saved: Arc::clone(&doc),
             doc,
+            prepared_revision: Default::default(),
             undo: Vec::new(),
             redo: Vec::new(),
             history_limit: 200,
             clipboard: Clipboard::default(),
             transport_requests: Vec::new(),
             transport: TransportStatus::default(),
+            playback_tempo: None,
+            follow_takes: Default::default(),
             journal: std::collections::VecDeque::new(),
             path: None,
             revision: 1,
@@ -239,7 +378,7 @@ impl Engine {
             dirty_at: Cell::new((0, false)),
             merge_key: None,
             merge_hold: None,
-            messages: Vec::new(),
+            messages,
             last_selection: None,
             imports: Vec::new(),
         }
@@ -272,20 +411,145 @@ impl Engine {
         &self.doc
     }
 
+    pub fn transport_tempo(&self) -> &soundcraft_time::TempoMap {
+        self.playback_tempo.as_ref().unwrap_or(&self.doc.tempo)
+    }
+
+    /// Display the live beat grid while keeping editing and saved tempo events in score time.
+    pub fn format_transport_position(&self, at: Samples, fmt: soundcraft_time::TimeFormat) -> String {
+        let s = self.session();
+        soundcraft_time::format_position(at, fmt, s.sample_rate, self.transport_tempo(), s.frame_rate, s.timecode_start, s.feet_frames_start())
+    }
+
+    /// The normal document is shared. Only external-clock playback needs a private tempo map.
+    pub fn playback_session(&self) -> Arc<Session> {
+        let mut doc = self.session_arc();
+        if let Some(tempo) = &self.playback_tempo {
+            let session = Arc::make_mut(&mut doc);
+            self.prepare_clock_clips(session).apply(session, tempo);
+            session.tempo.clone_from(tempo);
+        }
+        doc
+    }
+
+    /// Paste in score time, retaining the capture grid for every new copy of a followed take.
+    fn paste_clips(
+        &mut self,
+        track: TrackId,
+        at: Samples,
+        clips: &[Clip],
+        length: Samples,
+        shuffle: bool,
+        source_takes: Option<&ClockTakes>,
+    ) -> std::result::Result<Vec<soundcraft_model::ClipId>, &'static str> {
+        let ids = edit::paste(self, track, at, clips, length, shuffle)?;
+        for (source, id) in clips.iter().zip(&ids) {
+            // Clipboard and trimmed material carry their own source snapshot. The document
+            // may already have reused the ID, and a copied range can start inside its take.
+            if let Some(take) = source_takes.unwrap_or(&self.follow_takes).get(&source.id).cloned() {
+                Arc::make_mut(&mut self.follow_takes).insert(*id, take);
+            }
+        }
+        Ok(ids)
+    }
+
+    fn assign_copied_clip_id(&mut self, clip: &mut Clip) {
+        self.clip_edit().assign_copied_id(clip, None);
+    }
+
+    fn copy_clip_range(&self, track: TrackId, range: soundcraft_time::Range, unlocked_only: bool) -> (Vec<Clip>, ClockTakes) {
+        edit::copy_range_with_takes(self.session(), Some(&self.follow_takes), self.playback_tempo.as_ref(), track, range, unlocked_only)
+    }
+
+    /// Project followed takes and cache the other MIDI clip boundaries in musical time.
+    pub fn prepare_clock_clips(&self, doc: &mut Session) -> soundcraft_mix::MidiClipBeatBounds {
+        self.project_clock_takes(doc);
+        // Recorded takes already project their events relative to the captured sample range.
+        soundcraft_mix::MidiClipBeatBounds::from_score(doc, |id| !self.follow_takes.contains_key(&id))
+    }
+
+    /// Keep the beat grid for takes recorded in this pass, including copies using the same audio source.
+    pub fn clock_take_ranges<'a>(
+        &'a self,
+        audio_sources: &'a std::collections::HashSet<soundcraft_model::SourceId>,
+    ) -> impl Iterator<Item = soundcraft_time::Range> + 'a {
+        self.doc
+            .tracks
+            .iter()
+            .flat_map(|t| &t.playlists)
+            .flat_map(|p| &p.clips)
+            .filter(|clip| self.follow_takes.contains_key(&clip.id) || clip.source().is_some_and(|id| audio_sources.contains(&id)))
+            .map(|clip| clip.range())
+            .chain(self.follow_takes.values().map(ClockTake::captured_range))
+    }
+
+    /// Give followed takes their captured beat timing in the external-clock playback snapshot.
+    pub fn project_clock_takes(&self, doc: &mut Session) {
+        if self.follow_takes.is_empty() {
+            return;
+        }
+        let live = self.playback_tempo.clone().unwrap_or_else(|| doc.tempo.clone());
+        for clip in doc.tracks.iter_mut().flat_map(|t| &mut t.playlists).flat_map(|p| &mut p.clips) {
+            if let Some(grid) = self.follow_takes.get(&clip.id)
+                && let soundcraft_model::ClipContent::Midi { sequence } = &mut clip.content
+            {
+                grid.capture.project(sequence, clip.start, &live);
+            }
+        }
+    }
+
+    /// History and the clipboard keep their own snapshots. Only live clips need a live projection.
+    fn prune_clock_takes(&mut self) {
+        if self.follow_takes.is_empty() {
+            return;
+        }
+        let retained: std::collections::HashSet<_> =
+            self.doc.tracks.iter().flat_map(|t| &t.playlists).flat_map(|p| &p.clips).map(|clip| clip.id).collect();
+        if self.follow_takes.keys().any(|id| !retained.contains(id)) {
+            Arc::make_mut(&mut self.follow_takes).retain(|id, _| retained.contains(id));
+        }
+    }
+
+    pub fn clear_follow_grid(&mut self) {
+        self.follow_takes = Arc::default();
+        self.clipboard.clock_takes.clear();
+        for entry in self.undo.iter_mut().chain(&mut self.redo) {
+            entry.clock_takes = Arc::clone(&self.follow_takes);
+        }
+        self.playback_tempo = None;
+    }
+
     pub fn session_arc(&self) -> Arc<Session> {
         Arc::clone(&self.doc)
     }
 
+    /// A prepared external start can use this revision only while its token is live.
+    pub fn prepared_revision(&self) -> std::sync::Weak<std::sync::Mutex<bool>> {
+        Arc::downgrade(&self.prepared_revision.get_or_init(|| PreparedRevision(Arc::new(std::sync::Mutex::new(true)))).0)
+    }
+
     /// Mutable access (copy-on-write). Callers outside commands should prefer `execute`.
     pub fn session_mut(&mut self) -> &mut Session {
+        self.mark_document_edit();
+        Arc::make_mut(&mut self.doc)
+    }
+
+    fn mark_document_edit(&mut self) {
+        self.prepared_revision.take();
         self.revision = self.revision.wrapping_add(1);
         self.dirty = true;
-        Arc::make_mut(&mut self.doc)
+    }
+
+    pub(crate) fn clip_edit(&mut self) -> edit::ClipEdit<'_> {
+        self.mark_document_edit();
+        let takes = self.playback_tempo.as_ref().map(|_| Arc::make_mut(&mut self.follow_takes));
+        edit::ClipEdit { doc: Arc::make_mut(&mut self.doc), takes, follow_grid: self.playback_tempo.as_ref() }
     }
 
     /// Mutable access for live state that redraws and reaches playback but is not part of the
     /// saved document. Callers must also keep the fields out of serialization and Undo/Redo.
     pub(crate) fn runtime_session_mut(&mut self) -> &mut Session {
+        self.prepared_revision.take();
         self.revision = self.revision.wrapping_add(1);
         Arc::make_mut(&mut self.doc)
     }
@@ -297,7 +561,12 @@ impl Engine {
     }
 
     /// Replace the whole document (open / new); clears history.
-    pub fn replace_session(&mut self, s: Session) {
+    pub fn replace_session(&mut self, mut s: Session) {
+        self.prepared_revision.take();
+        for note in migrate_mtc_settings(&mut s) {
+            self.message(note);
+        }
+        self.clear_follow_grid();
         self.transport = TransportStatus { position: s.edit.selection.start.max(0), ..TransportStatus::default() };
         self.transport_requests.clear();
         self.transport_requests.push(TransportRequest::ResetSession);
@@ -358,10 +627,12 @@ impl Engine {
     /// Restore the previous document while retaining current edit mode and live input flags.
     pub fn undo(&mut self) -> bool {
         let Some(h) = self.undo.pop() else { return false };
+        self.prepared_revision.take();
         let cur = std::mem::replace(&mut self.doc, h.doc);
         self.keep_edit_mode(&cur);
         self.keep_runtime_track_states(&cur);
-        self.redo.push(HistoryEntry { label: h.label, doc: cur });
+        let clock_takes = std::mem::replace(&mut self.follow_takes, h.clock_takes);
+        self.redo.push(HistoryEntry { label: h.label, doc: cur, clock_takes });
         self.revision = self.revision.wrapping_add(1);
         self.dirty = true;
         true
@@ -370,10 +641,12 @@ impl Engine {
     /// Restore the next document while retaining current edit mode and live input flags.
     pub fn redo(&mut self) -> bool {
         let Some(h) = self.redo.pop() else { return false };
+        self.prepared_revision.take();
         let cur = std::mem::replace(&mut self.doc, h.doc);
         self.keep_edit_mode(&cur);
         self.keep_runtime_track_states(&cur);
-        self.undo.push(HistoryEntry { label: h.label, doc: cur });
+        let clock_takes = std::mem::replace(&mut self.follow_takes, h.clock_takes);
+        self.undo.push(HistoryEntry { label: h.label, doc: cur, clock_takes });
         self.revision = self.revision.wrapping_add(1);
         self.dirty = true;
         true
@@ -417,7 +690,16 @@ impl Engine {
         if Arc::ptr_eq(&before, &self.doc) {
             return;
         }
-        self.undo.push(HistoryEntry { label: label.to_string(), doc: before });
+        let mut takes = Arc::clone(&self.follow_takes);
+        let first_new_id = soundcraft_model::ClipId(before.next_id);
+        if takes.last_key_value().is_some_and(|(id, _)| *id >= first_new_id) {
+            let _ = Arc::make_mut(&mut takes).split_off(&first_new_id);
+        }
+        self.push_undo_with_takes(label, before, takes);
+    }
+
+    fn push_undo_with_takes(&mut self, label: &str, before: Arc<Session>, clock_takes: Arc<ClockTakes>) {
+        self.undo.push(HistoryEntry { label: label.to_string(), doc: before, clock_takes });
         self.redo.clear();
         if self.undo.len() > self.history_limit {
             let excess = self.undo.len() - self.history_limit;
@@ -450,6 +732,7 @@ impl Engine {
             return self.execute_view(spec, params);
         }
         let before = Arc::clone(&self.doc);
+        let before_takes = Arc::clone(&self.follow_takes);
         let rev = self.revision;
         let dirty = self.dirty;
         let side_effects = (self.clipboard.clone(), self.messages.clone(), self.transport_requests.clone(), self.last_selection.clone());
@@ -457,6 +740,7 @@ impl Engine {
         let result = match result {
             Ok(r) => r,
             Err(p) => {
+                self.follow_takes = before_takes;
                 self.doc = before;
                 self.revision = rev.wrapping_add(1);
                 self.dirty = dirty;
@@ -472,7 +756,7 @@ impl Engine {
             Ok(v) => {
                 cmd::remember_selection(self, &before);
                 if spec.undoable && !Arc::ptr_eq(&before, &self.doc) {
-                    self.push_undo(spec.label, before);
+                    self.push_undo_with_takes(spec.label, before, before_takes);
                 }
                 if spec.journal {
                     self.journal_append(id, params);
@@ -482,6 +766,7 @@ impl Engine {
             Err(e) => {
                 // Commands must not leave half-applied edits behind.
                 if !Arc::ptr_eq(&before, &self.doc) {
+                    self.follow_takes = before_takes;
                     self.doc = before;
                     self.revision = self.revision.wrapping_add(1);
                     self.dirty = dirty;

@@ -146,6 +146,31 @@ fn spike_session(spike_at: usize) -> (Arc<Shared>, AudioState, std::sync::mpsc::
     (shared, st, tx, t)
 }
 
+#[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+#[test]
+fn the_callback_publishes_system_delay_only_while_delay_compensation_is_enabled() {
+    use crate::sync_clock::{CallbackMetrics, DeviceTiming, Publisher, View};
+    use std::time::{Duration, Instant};
+    let (_, mut state, tx, _) = spike_session(0);
+    let view = View::default();
+    let metrics = Arc::new(CallbackMetrics::default());
+    tx.send(Cmd::Clock(Some(Publisher::new(view.clone(), metrics.clone())))).unwrap();
+    tx.send(Cmd::Stop).unwrap();
+    // Between renders the mixer retains its last measured plug-in latency.
+    state.mix.latency = 4800;
+    let start = Instant::now();
+    for (iteration, enabled) in [true, false].into_iter().enumerate() {
+        Arc::make_mut(&mut state.session).edit.delay_compensation = enabled;
+        let now = start + Duration::from_secs(iteration as u64);
+        state.device_timing = Some(DeviceTiming::new(now, Some(Duration::ZERO), 0));
+        state.fill(&mut [0.; 128], 2);
+        let (block, _) = view.lock().unwrap().read(now, false, 0);
+        let expected = if enabled { 4800 } else { 0 };
+        assert_eq!(block.unwrap().system_delay_samples, expected);
+        assert_eq!(view.lock().unwrap().mixer_delay().unwrap().1, expected);
+    }
+}
+
 #[test]
 fn a_spike_in_one_block_among_quiet_ones_reaches_the_ui() {
     // Eight 512-frame blocks per callback, as between two UI polls; the spike is in the 3rd.
@@ -201,7 +226,7 @@ fn stopping_zeroes_meters_in_place_and_removed_tracks_are_pruned() {
     let empty = soundcraft_model::Session::default();
     let gone = side.gone_tracks(&empty);
     assert_eq!(gone, vec![t]);
-    tx.send(Cmd::Session(Arc::new(empty), Vec::new())).unwrap();
+    tx.send(Cmd::Session(0, Arc::new(empty), Vec::new())).unwrap();
     tx.send(Cmd::Forget(gone)).unwrap();
     tx.send(Cmd::Play { from: 0, end: None, looped: None }).unwrap();
     st.fill(&mut out, 2);
@@ -273,7 +298,13 @@ fn a_lost_or_stalled_device_is_reported_once() {
     assert!(!stalled(&mut seen, 6, true), "it asked again");
     ago(&mut seen);
     assert!(!stalled(&mut seen, 6, false), "stopped, so nothing to ask for");
-    assert_eq!(Fault::default().trouble(true), Some(OutputTrouble::Stalled));
+    let transient = Fault::default();
+    assert_eq!(transient.trouble(true), Some(OutputTrouble::Stalled));
+    assert_eq!(transient.trouble(true), None);
+    assert_eq!(transient.trouble(false), None);
+    assert_eq!(transient.trouble(true), Some(OutputTrouble::Stalled));
+    transient.gone.store(true, Ordering::Relaxed);
+    assert_eq!(transient.trouble(false), Some(OutputTrouble::Gone));
     let fault = Fault::default();
     fault.gone.store(true, Ordering::Relaxed);
     assert_eq!((fault.trouble(false), fault.trouble(true)), (Some(OutputTrouble::Gone), None));
@@ -474,16 +505,17 @@ fn instances_arrive_with_the_session_and_leave_through_the_return_channel() {
     let (gtx, grx) = channel();
     let mut st = AudioState::new(rx, Arc::clone(&shared), Arc::new(soundcraft_model::Session::default()), 48_000.0, gtx);
     let plugin = soundcraft_dsp::create("gain").unwrap();
-    tx.send(Cmd::Session(Arc::clone(&s), vec![PreparedInstance { track: t, slot: 1, id: "clap:test.fake".into(), ch: 2, plugin }])).unwrap();
+    tx.send(Cmd::Session(0, Arc::clone(&s), vec![PreparedInstance { track: t, slot: 1, id: "clap:test.fake".into(), ch: 2, plugin }])).unwrap();
     let mut out = vec![0.0f32; 256];
     st.fill(&mut out, 2);
     assert!(grx.try_recv().is_err(), "nothing retired yet");
     // A session without the insert retires the instance to the return channel.
-    tx.send(Cmd::Session(Arc::new(soundcraft_model::Session::default()), Vec::new())).unwrap();
+    tx.send(Cmd::Session(0, Arc::new(soundcraft_model::Session::default()), Vec::new())).unwrap();
     st.fill(&mut out, 2);
     assert_eq!(grx.try_recv().unwrap().len(), 1);
     // A sample-rate change rebuilds the engine without dropping plugins on this thread.
     tx.send(Cmd::Session(
+        0,
         Arc::clone(&s),
         vec![PreparedInstance { track: t, slot: 1, id: "clap:test.fake".into(), ch: 2, plugin: soundcraft_dsp::create("gain").unwrap() }],
     ))
@@ -491,7 +523,7 @@ fn instances_arrive_with_the_session_and_leave_through_the_return_channel() {
     st.fill(&mut out, 2);
     let mut s44 = (*s).clone();
     s44.sample_rate = soundcraft_time::SampleRate::new(44_100).unwrap();
-    tx.send(Cmd::Session(Arc::new(s44), Vec::new())).unwrap();
+    tx.send(Cmd::Session(0, Arc::new(s44), Vec::new())).unwrap();
     st.fill(&mut out, 2);
     assert_eq!(grx.try_recv().unwrap().len(), 1);
 }
@@ -604,6 +636,106 @@ fn side_creates_each_missing_instance_once() {
 }
 
 #[test]
+fn clock_correction_arriving_after_render_keeps_the_active_grid() {
+    let (_, mut callback, tx, _) = spike_session(0);
+    callback.fill(&mut [0.; 128], 2);
+    let active = callback.session.clone();
+    let mut side = Side::new(48_000., channel().1);
+    side.set_follow_base(active.clone(), Default::default());
+    let mut grid = active.tempo.clone();
+    grid.set_tempo(0, 90.).unwrap();
+    let candidate = side.follow_snapshot(&grid).unwrap();
+    tx.send(Cmd::FollowGrid(1, 0, None, candidate, side.grid_return.clone())).unwrap();
+    callback.fill(&mut [0.; 128], 2);
+    assert!(Arc::ptr_eq(&callback.session, &active));
+    side.collect_garbage();
+    let mut grid = side.retry_grid.take().unwrap();
+    assert_eq!(grid, active.tempo);
+    grid.set_tempo(960, 90.).unwrap();
+    let future = grid.tick_to_samples(960, active.sample_rate);
+    let candidate = side.follow_snapshot(&grid).unwrap();
+    tx.send(Cmd::FollowGrid(2, future, None, candidate, side.grid_return.clone())).unwrap();
+    callback.fill(&mut [0.; 128], 2);
+    assert_eq!(callback.session.tempo, grid);
+    side.collect_garbage();
+    assert!(side.retry_grid.is_none());
+}
+
+#[test]
+fn clock_compaction_can_publish_only_in_the_matching_post_join_window() {
+    let sr = soundcraft_time::SampleRate::HZ_48000;
+    let mut old = soundcraft_time::TempoMap::new(120., 4, 4).unwrap();
+    old.set_tempo(480, 60.).unwrap();
+    old.set_tempo(960, 120.).unwrap();
+    let mut compacted = soundcraft_time::TempoMap::new(80., 4, 4).unwrap();
+    compacted.set_tempo(960, 120.).unwrap();
+    compacted.set_tempo(1920, 135.).unwrap();
+    let (boundary, window) = follow_grid_window(&old, &compacted, sr, Some(960));
+    assert_eq!(boundary, 0);
+    let start = old.tick_to_samples(960, sr);
+    let end = old.tick_to_samples(1920, sr);
+    assert_eq!(window, Some((start, end)));
+    for (position, accept) in [(start - 1, false), (start, true), (end, true), (end + 1, false)] {
+        let (_, mut callback, tx, _) = spike_session(0);
+        callback.fill(&mut [0.; 128], 2);
+        tx.send(Cmd::Locate(position)).unwrap();
+        let mut session = (*callback.session).clone();
+        session.tempo.clone_from(&old);
+        callback.session = Arc::new(session);
+        let mut side = Side::new(sr.as_f64() as f32, channel().1);
+        side.set_follow_base(callback.session.clone(), Default::default());
+        let candidate = side.follow_snapshot(&compacted).unwrap();
+        tx.send(Cmd::FollowGrid(1, boundary, window, candidate, side.grid_return.clone())).unwrap();
+        callback.fill(&mut [0.; 128], 2);
+        assert_eq!(callback.session.tempo == compacted, accept, "position {position}");
+    }
+    compacted.set_tempo(0, 82.).unwrap();
+    assert!(follow_grid_window(&old, &compacted, sr, Some(960)).1.is_none(), "misaligned post-compaction origin");
+}
+
+#[test]
+fn external_clock_returns_prior_snapshot_even_with_unavailable_retirement_queue() {
+    for disconnect in [false, true] {
+        let shared = Arc::new(Shared {
+            position: AtomicI64::new(0),
+            playing: AtomicBool::new(false),
+            speed: AtomicU32::new(1000),
+            meters: Mutex::new(MeterSnapshot::default()),
+        });
+        let (tx, rx) = channel();
+        let (garbage, _trash) = channel();
+        let previous = Arc::new(Session::default());
+        let weak = Arc::downgrade(&previous);
+        let mut state = AudioState::new(rx, shared, previous, 48_000.0, garbage);
+        let (retire, receiver) = sync_channel(1);
+        retire.try_send(Arc::new(Session::default())).unwrap();
+        let receiver = (!disconnect).then_some(receiver);
+        tx.send(Cmd::OldSessions(retire)).unwrap();
+        let mut returned = GridReturn::default();
+        #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+        let timeline = {
+            let view = crate::sync_clock::View::default();
+            tx.send(Cmd::Clock(Some(crate::sync_clock::Publisher::new(view.clone(), Default::default())))).unwrap();
+            view
+        };
+        tx.send(Cmd::FollowGrid(7, i64::MAX, None, Arc::new(Session::default()), returned.clone())).unwrap();
+        assert!(Arc::get_mut(&mut returned).is_none());
+        #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+        {
+            state.device_timing = Some(crate::sync_clock::DeviceTiming::new(std::time::Instant::now(), Some(std::time::Duration::ZERO), 0));
+        }
+        state.fill(&mut [0f32; 128], 2);
+        #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+        assert_eq!(timeline.lock().unwrap().read(std::time::Instant::now(), true, 0).0.unwrap().generation, 7);
+        let slot = Arc::get_mut(&mut returned).unwrap();
+        assert_eq!(weak.strong_count(), 1, "the callback returned the snapshot");
+        drop(slot.take());
+        assert_eq!(weak.strong_count(), 0, "the host released it");
+        drop(receiver);
+    }
+}
+
+#[test]
 fn replaced_sessions_are_freed_on_the_ui_thread() {
     let shared = Arc::new(Shared {
         position: AtomicI64::new(0),
@@ -618,12 +750,18 @@ fn replaced_sessions_are_freed_on_the_ui_thread() {
     side.return_old_sessions(&tx);
     let mut out = vec![0.0f32; 256];
     let mut watched = Vec::new();
-    for _ in 0..3 * OLD_SESSIONS {
+    for index in 0..3 * OLD_SESSIONS {
         let s = Arc::new(soundcraft_model::Session::default());
         watched.push(Arc::downgrade(&s));
         side.collect_garbage();
-        tx.send(Cmd::Session(s, Vec::new())).unwrap();
+        if index % 2 == 0 {
+            tx.send(Cmd::Session(0, s, Vec::new())).unwrap();
+        } else {
+            tx.send(Cmd::FollowGrid(0, i64::MAX, None, s, side.grid_return.clone())).unwrap();
+            assert!(Arc::get_mut(&mut side.grid_return).is_none());
+        }
         st.fill(&mut out, 2);
+        assert!(Arc::get_mut(&mut side.grid_return).is_some());
         let replaced = watched.len().checked_sub(2).and_then(|i| watched.get(i));
         assert!(replaced.is_none_or(|w| w.strong_count() == 1), "freed on the audio thread");
     }
@@ -752,11 +890,11 @@ fn a_midi_keyboard_plays_and_records_through_a_record_enabled_instrument() {
     feed.set_clock(1);
     // Not record-enabled: the engine stays idle and the key press is not kept for later.
     s.track_mut(t).unwrap().mixer.record_arm = false;
-    tx.send(Cmd::Session(Arc::new(s.clone()), Vec::new())).unwrap();
+    tx.send(Cmd::Session(0, Arc::new(s.clone()), Vec::new())).unwrap();
     feed.receive(0, &[0x90, 60, 100]);
     assert!(!heard(&mut st, 4));
     s.track_mut(t).unwrap().mixer.record_arm = true;
-    tx.send(Cmd::Session(Arc::new(s), Vec::new())).unwrap();
+    tx.send(Cmd::Session(0, Arc::new(s), Vec::new())).unwrap();
     assert!(!heard(&mut st, 4), "the earlier key press is gone");
     feed.receive(0, &[0x90, 60, 100]);
     assert!(heard(&mut st, 4), "stopped, a record-enabled instrument plays the keyboard");
@@ -827,12 +965,12 @@ fn keys_held_while_nothing_listens_or_the_port_closes_do_not_stay_on() {
     assert!(heard(&mut st, 4));
     // The track leaves record with the key down; its note-off comes while nothing listens.
     s.track_mut(t).unwrap().mixer.record_arm = false;
-    tx.send(Cmd::Session(Arc::new(s.clone()), Vec::new())).unwrap();
+    tx.send(Cmd::Session(0, Arc::new(s.clone()), Vec::new())).unwrap();
     heard(&mut st, 2);
     feed.receive(0, &[0x80, 60, 0]);
     heard(&mut st, 2);
     s.track_mut(t).unwrap().mixer.record_arm = true;
-    tx.send(Cmd::Session(Arc::new(s), Vec::new())).unwrap();
+    tx.send(Cmd::Session(0, Arc::new(s), Vec::new())).unwrap();
     assert!(!heard(&mut st, 60), "the note does not come back");
     // The device is unplugged with a key down: no note-off will come.
     feed.receive(0, &[0x90, 62, 100]);
@@ -1555,7 +1693,7 @@ fn a_session_at_another_sample_rate_is_rendered_at_that_rate_from_the_callback_t
     st.fill(&mut out, 2);
     // The device runs at 48 kHz. A 96 kHz session takes two session frames to a device frame.
     let s = soundcraft_model::Session::new("t", soundcraft_time::SampleRate::new(96_000).unwrap());
-    tx.send(Cmd::Session(Arc::new(s), Vec::new())).unwrap();
+    tx.send(Cmd::Session(0, Arc::new(s), Vec::new())).unwrap();
     tx.send(Cmd::Play { from: 0, end: None, looped: None }).unwrap();
     st.fill(&mut out, 2);
     assert_eq!(st.shared.position.load(Ordering::Relaxed), 2048, "1024 device frames");
@@ -1892,4 +2030,260 @@ fn a_pass_started_and_ended_by_the_commands_of_one_callback_keeps_what_was_playe
     rec.clear();
     feed.take_recorded(&mut rec);
     assert!(rec.is_empty(), "{rec:?}");
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+#[test]
+fn a_slow_sync_route_can_publish_more_than_eight_live_grid_revisions() {
+    let mut side = Side::new(48_000., channel().1);
+    let base = Arc::new(Session::default());
+    side.set_follow_base(base.clone(), Default::default());
+    let mut timeline = crate::sync_clock::Timeline::default();
+    for generation in 1..=(3 * crate::sync_clock::MAX_REVISIONS) as u64 {
+        let doc = side.follow_snapshot(&base.tempo).expect("worker history must leave a slot for the next revision");
+        timeline.register(crate::sync_clock::SessionRevision { generation, doc, remap: false }, true);
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn clock_resume_reuses_the_prepared_session_and_observes_edits() {
+    let (tx, rx) = channel();
+    let (retire, garbage) = channel();
+    let mut doc = Arc::new(Session::default());
+    let shared = Arc::new(Shared { position: 0.into(), playing: false.into(), speed: 1000.into(), meters: Mutex::default() });
+    let side = Mutex::new(Side::new(doc.sample_rate.as_f64() as f32, garbage));
+    let mut player = Player::silent_clock_with(shared, tx, rx, doc.clone(), side, retire);
+    // Advance the callback explicitly to exercise returns on either side of Continue.
+    let (tx, queue) = channel();
+    player.tx = Arc::new(tx);
+    let mut callback = AudioState::new(queue, player.shared.clone(), doc.clone(), 48_000., channel().0);
+    let mut grid = doc.tempo.clone();
+    player.prepare_clock_session(doc.clone(), &grid);
+    let original = player.side().grid_base.clone().unwrap();
+    player.prepare_clock_session(doc.clone(), &grid);
+    assert!(Arc::ptr_eq(player.side().grid_base.as_ref().unwrap(), &original), "Continue rebuilt an unchanged session");
+    grid.set_tempo(0, 90.).unwrap();
+    assert!(player.update_follow_grid(&grid));
+    player.prepare_clock_session(doc.clone(), &grid);
+    assert_eq!(player.side().grid_base.as_ref().unwrap().tempo, grid, "an unconfirmed grid requires a full prepare");
+    let base = player.side().grid_base.clone().unwrap();
+    player.play_from_clock(0, 0);
+    callback.fill(&mut [0.; 128], 2);
+    for (tick, bpm, accepted) in [(960, 95., true), (0, 98., false)] {
+        grid.set_tempo(tick, bpm).unwrap();
+        assert!(player.update_follow_grid(&grid));
+        callback.fill(&mut [0.; 128], 2);
+        assert_eq!(callback.session.tempo == grid, accepted);
+        player.prepare_clock_session(doc.clone(), &grid);
+        assert_eq!(Arc::ptr_eq(player.side().grid_base.as_ref().unwrap(), &base), accepted);
+        callback.fill(&mut [0.; 128], 2);
+        assert_eq!(callback.session.tempo, grid);
+    }
+    grid.set_tempo(0, 100.).unwrap();
+    player.prepare_clock_session(doc.clone(), &grid);
+    assert_eq!(player.side().grid_base.as_ref().unwrap().tempo, grid);
+    Arc::make_mut(&mut doc).add_track(soundcraft_model::TrackKind::Audio, soundcraft_model::ChannelFormat::Mono, None);
+    player.prepare_clock_session(doc.clone(), &grid);
+    assert_eq!(player.side().grid_base.as_ref().unwrap().tracks.len(), doc.tracks.len());
+    player.update_session(original);
+    player.prepare_clock_session(doc.clone(), &grid);
+    assert_eq!(player.side().grid_base.as_ref().unwrap().tracks.len(), doc.tracks.len());
+}
+
+#[test]
+fn clock_grid_pool_projects_both_midi_clip_edges_from_the_original_score() {
+    use soundcraft_model::{ChannelFormat, Clip, TrackKind};
+
+    let mut score = Session::default();
+    let musical = score.add_track(TrackKind::Instrument, ChannelFormat::Stereo, None);
+    let absolute = score.add_track(TrackKind::Midi, ChannelFormat::Stereo, None);
+    for (track, ticks) in [(musical, true), (absolute, false)] {
+        let id = score.new_clip_id();
+        let track = score.track_mut(track).unwrap();
+        track.ticks_timebase = ticks;
+        track.playlist_mut().unwrap().clips.push(Clip::midi(id, "trimmed", 48_001, 48_001, Default::default()));
+    }
+    let (_, garbage) = channel();
+    let mut side = Side::new(48_000., garbage);
+    let bounds = soundcraft_mix::MidiClipBeatBounds::from_score(&score, |_| true);
+    side.set_follow_base(Arc::new(score), bounds);
+    let mut grid = soundcraft_time::TempoMap::default();
+    for (bpm, start, end) in [(60., 96_002, 192_004), (240., 24_001, 48_001), (120., 48_001, 96_002)] {
+        grid.set_tempo(0, bpm).unwrap();
+        let doc = side.follow_snapshot(&grid).unwrap();
+        let clip = &doc.track(musical).unwrap().clips()[0];
+        assert_eq!((clip.start, clip.end()), (start, end));
+        let fixed = &doc.track(absolute).unwrap().clips()[0];
+        assert_eq!((fixed.start, fixed.end()), (48_001, 96_002));
+    }
+}
+#[test]
+fn follow_snapshots_reuse_document_storage_until_an_edit() {
+    use soundcraft_model::{ChannelFormat, TrackKind};
+    let (_, garbage) = channel();
+    let mut side = Side::new(48_000., garbage);
+    let mut doc = Session::default();
+    doc.add_track(TrackKind::Audio, ChannelFormat::Mono, None);
+    side.grid_base = Some(Arc::new(doc));
+    let map = soundcraft_time::TempoMap::default();
+    let first = side.follow_snapshot(&map).unwrap();
+    let second = side.follow_snapshot(&map).unwrap();
+    // A slow device and worker pin every revision. The UI keeps the latest tempo
+    // pending rather than cloning another document, until a slot is released.
+    let _remaining: Vec<_> = (2..crate::callback::FOLLOW_POOL_SLOTS).map(|_| side.follow_snapshot(&map).unwrap()).collect();
+    assert!(side.follow_snapshot(&map).is_none());
+    let tracks = first.tracks.as_ptr();
+    drop(first);
+    let next = side.follow_snapshot(&map).unwrap();
+    assert_eq!(next.tracks.as_ptr(), tracks);
+    assert_ne!(next.tracks.as_ptr(), second.tracks.as_ptr());
+    let mut edited = Session::default();
+    edited.add_track(TrackKind::Audio, ChannelFormat::Mono, None);
+    edited.add_track(TrackKind::Audio, ChannelFormat::Mono, None);
+    side.set_follow_base(Arc::new(edited), Default::default());
+    assert_eq!(side.follow_snapshot(&map).unwrap().tracks.len(), 2);
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+#[test]
+fn retained_audio_keeps_its_session_generation_until_the_first_new_rendered_frame() {
+    use crate::sync_clock::{DeviceTiming, Publisher, View};
+    use std::time::{Duration, Instant};
+    for chunks in [&[600][..], &[128, 472][..]] {
+        let (_, mut state, tx, track) = spike_session(0);
+        let source = state.session.clone();
+        let view = View::default();
+        tx.send(Cmd::Clock(Some(Publisher::new(view.clone(), Arc::default())))).unwrap();
+        tx.send(Cmd::Session(1, source.clone(), vec![])).unwrap();
+        let start = Instant::now();
+        let timing = |frame: usize| DeviceTiming::new(start, Some(Duration::ZERO), frame);
+        state.device_timing = Some(timing(0));
+        state.fill(&mut vec![0.; 1200], 2);
+        let mut next = (*source).clone();
+        next.track_mut(track).unwrap().playlist_mut().unwrap().clips.clear();
+        next.tempo.set_tempo(0, 60.).unwrap();
+        tx.send(Cmd::Session(2, Arc::new(next), vec![])).unwrap();
+        let mut audio = vec![0.; 1200];
+        let mut start = 0;
+        for &frames in chunks {
+            state.device_timing = Some(timing(600 + start));
+            state.fill(&mut audio[start * 2..(start + frames) * 2], 2);
+            start += frames;
+        }
+        assert!(audio[..848].iter().step_by(2).all(|left| left.abs() > 0.001));
+        assert!(audio[848..].iter().all(|sample| sample.abs() < 0.00001));
+        let timeline = view.lock().unwrap();
+        for (frame, generation) in [(600, 1), (1023, 1), (1024, 2), (1199, 2)] {
+            let now = timing(frame).heard_instant(48_000., 0);
+            let block = timeline.read(now, true, 0).0.unwrap();
+            assert_eq!(block.generation, generation, "audible generation at device frame {frame}");
+        }
+    }
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+#[test]
+fn retained_audio_uses_its_render_rate_until_the_generation_boundary() {
+    use crate::sync_clock::{DeviceTiming, Publisher, View};
+    use std::time::{Duration, Instant};
+    let (_, mut state, tx, track) = spike_session(0);
+    let view = View::default();
+    tx.send(Cmd::Clock(Some(Publisher::new(view.clone(), Arc::default())))).unwrap();
+    let start = Instant::now();
+    let timing = |frame| DeviceTiming::new(start, Some(Duration::ZERO), frame);
+    state.device_timing = Some(timing(0));
+    state.fill(&mut [0.; 1200], 2);
+    let mut next = (*state.session).clone();
+    next.sample_rate = soundcraft_time::SampleRate::new(96_000).unwrap();
+    next.track_mut(track).unwrap().playlist_mut().unwrap().clips.clear();
+    tx.send(Cmd::Session(2, Arc::new(next), vec![])).unwrap();
+    let mut audio = [0.; 1200];
+    for (a, b) in [(0, 128), (128, 600)] {
+        state.device_timing = Some(timing(600 + a));
+        state.fill(&mut audio[2 * a..2 * b], 2);
+    }
+    assert!(audio[..848].iter().step_by(2).all(|v| v.abs() > 0.001), "all 424 retained frames must play");
+    assert!(audio[848..].iter().all(|v| v.abs() < 0.00001));
+    for (frame, rate) in [(600, 48_000.), (1023, 48_000.), (1024, 96_000.)] {
+        let b = view.lock().unwrap().read(timing(frame).heard_instant(48_000., 0), true, 0).0.unwrap();
+        assert_eq!(b.samples_per_second, rate);
+    }
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+#[test]
+fn a_stopped_locate_while_monitoring_publishes_the_transport_position() {
+    use crate::sync_clock::{DeviceTiming, Publisher, View};
+    use std::time::{Duration, Instant};
+    let (mut state, tx, _, _, _) = keyboard_session();
+    let view = View::default();
+    tx.send(Cmd::Clock(Some(Publisher::new(view.clone(), Arc::default())))).unwrap();
+    let now = Instant::now();
+    state.device_timing = Some(DeviceTiming::new(now, Some(Duration::ZERO), 0));
+    state.fill(&mut [0.; 1200], 2);
+    tx.send(Cmd::Locate(42_000)).unwrap();
+    state.device_timing = Some(DeviceTiming::new(now, Some(Duration::ZERO), 600));
+    state.fill(&mut [0.; 128], 2);
+    let block = view.lock().unwrap().read(now + Duration::from_millis(13), true, 0).0.unwrap();
+    assert!(!block.playing);
+    assert_eq!((block.sample, block.origin), (42_000., 42_000));
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+#[test]
+fn external_start_publishes_the_wire_cue_separately_from_the_render_head() {
+    use crate::sync_clock::{DeviceTiming, Publisher, View};
+    use std::time::{Duration, Instant};
+    for origin in [0, 390_000] {
+        let (mut state, tx, ..) = keyboard_session();
+        let view = View::default();
+        tx.send(Cmd::Clock(Some(Publisher::new(view.clone(), Arc::default())))).unwrap();
+        let now = Instant::now();
+        state.device_timing = Some(DeviceTiming::new(now, Some(Duration::ZERO), 0));
+        let render_from = origin + 728;
+        tx.send(Cmd::PlayClock { origin, render_from, arrival: None }).unwrap();
+        state.fill(&mut [0.; 512], 2);
+        let block = view.lock().unwrap().read(now, true, 0).0.unwrap();
+        assert_eq!((block.origin, block.sample), (origin, render_from as f64));
+    }
+}
+
+#[test]
+fn rejected_online_recording_cannot_leak_a_tentative_note_into_the_next_take() {
+    let (mut state, tx, feed, ..) = keyboard_session();
+    tx.send(Cmd::Play { from: 0, end: None, looped: None }).unwrap();
+    state.fill(&mut [0.; 128], 2);
+    feed.begin_pass();
+    let reader = Arc::clone(&feed);
+    state.before_commands = Some(Box::new(move || reader.set_mtc_source(Some(1))));
+    feed.receive(0, &[0x90, 60, 100]);
+    tx.send(Cmd::Recording(true, 0)).unwrap();
+    state.fill(&mut [0.; 128], 2);
+    assert!(!feed.begin_pending());
+    feed.set_mtc_source(None);
+    let mut events = Vec::new();
+    feed.take_recorded(&mut events);
+    assert!(events.is_empty(), "{events:?}");
+    state.before_commands = None;
+    feed.begin_pass();
+    feed.receive(0, &[0x90, 67, 100]);
+    tx.send(Cmd::Recording(true, 0)).unwrap();
+    state.fill(&mut [0.; 128], 2);
+    feed.take_recorded(&mut events);
+    assert_eq!(events.iter().map(|e| e.data1).collect::<Vec<_>>(), [67]);
+}
+
+#[test]
+fn a_stopped_locate_keeps_a_held_keyboard_note_sounding() {
+    // Stopped, a record-enabled instrument plays the keyboard. Moving the stopped
+    // transport (which also announces the new Beat Clock position) must not cut it.
+    let (mut st, tx, feed, ..) = keyboard_session();
+    feed.set_clock(1);
+    feed.receive(0, &[0x90, 60, 100]);
+    assert!(heard(&mut st, 4));
+    tx.send(Cmd::Locate(96_000)).unwrap();
+    assert!(heard(&mut st, 1), "a stopped locate cut the held note");
+    feed.receive(0, &[0x80, 60, 0]);
+    assert!(!heard(&mut st, 60));
 }

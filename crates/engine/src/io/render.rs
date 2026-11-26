@@ -25,7 +25,7 @@ pub fn consolidate(e: &mut Engine, cmd: &str, t: TrackId, r: Range) -> Result<bo
     }
     let name = format!("{}_consolidated", tr.name);
     let buf = AudioBuffer { sample_rate: s.sample_rate.hz(), channels: audio };
-    let s = e.session_mut();
+    let s = &mut e.clip_edit();
     let src = add_source(s, &name, buf, None, FileFormat::Wav);
     crate::edit::clear_range(s, t, r, false);
     let cid = s.new_clip_id();

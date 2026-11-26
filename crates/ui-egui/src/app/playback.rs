@@ -2,6 +2,9 @@ use super::audio::feed_meter;
 use super::plugins::failed_plugin_status;
 use super::{Gesture, MainWindow, MeterDisplay, Range, Samples, SoundApp, TrackId, TransportRequest, json};
 
+/// Musical origin of an external Clock start, with its pulse arrival (MIDI feed microseconds) and input offset.
+type ClockOrigin = (Samples, Option<(i64, Samples)>);
+
 /// Whether another automation-write pass is due: the transport moved at least
 /// `step` since `last` in either direction. `last == i64::MIN` marks "never
 /// written", so the first pass after (re)start is always due. Saturating
@@ -30,12 +33,50 @@ impl SoundApp {
     }
 
     fn start_play(&mut self, from: Samples, end: Option<Samples>, looped: Option<Range>) {
+        self.start_play_with_origin(from, end, looped, None);
+    }
+
+    /// `midi_origin`: an external Clock start's musical origin, with its pulse arrival and input offset.
+    fn start_play_with_origin(&mut self, from: Samples, end: Option<Samples>, looped: Option<Range>, midi_origin: Option<ClockOrigin>) {
         if let Some(p) = &self.player {
-            p.update_session(self.engine.session_arc());
-            p.play(from, end, looped);
+            self.refresh_playback_session();
+            if let Some((origin, arrival)) = midi_origin {
+                p.play_from_clock_at(origin, from, arrival);
+            } else if self.mtc_chasing && end.is_none() && looped.is_none() {
+                p.play_chasing_mtc(from);
+            } else {
+                p.play(from, end, looped);
+            }
         } else {
             self.sim = Some((from, end, looped));
         }
+        self.note_play_started(from, looped);
+    }
+
+    fn play_from_position(&mut self, at: Samples, midi_origin: Option<ClockOrigin>) {
+        if !self.is_playing() {
+            self.start_play_with_origin(at, None, None, midi_origin);
+            return;
+        }
+        // Playing on from this position drops the end and loop of the earlier selection.
+        if let Some(p) = &self.player {
+            if let Some((origin, arrival)) = midi_origin {
+                p.play_from_clock_at(origin, at, arrival);
+            } else if self.mtc_chasing {
+                p.play_chasing_mtc(at);
+            } else {
+                p.play(at, None, None);
+            }
+        }
+        if let Some(sim) = &mut self.sim {
+            *sim = (at, None, None);
+        }
+        self.play_loop = None;
+        self.last_write_at = i64::MIN;
+        self.engine.transport.position = at;
+    }
+
+    fn note_play_started(&mut self, from: Samples, looped: Option<Range>) {
         // The loop as the audio engine takes it: a range too short to loop is played once.
         self.play_loop = looped.filter(|l| soundcraft_playback::loops(*l));
         self.engine.transport.playing = true;
@@ -55,6 +96,10 @@ impl SoundApp {
             p.set_speed(1.0);
             p.stop();
         }
+        self.note_play_stopped();
+    }
+
+    fn note_play_stopped(&mut self) {
         if self.engine.transport.recording {
             self.finish_recording();
         }
@@ -92,6 +137,10 @@ impl SoundApp {
     }
 
     fn start_recording(&mut self) {
+        if self.mtc_online {
+            self.ui.status = crate::localization::text("Take MTC chase offline before recording").into();
+            return;
+        }
         let armed = self.engine.session().tracks.iter().any(|t| t.mixer.record_arm);
         if !armed {
             let why = if self.engine.session().tracks.is_empty() {
@@ -130,6 +179,12 @@ impl SoundApp {
                 }
             }
         } else if midi_ready {
+            if self.player.is_none() {
+                self.ui.status =
+                    crate::localization::text("Cannot record MIDI: open an audio output in Setup > Playback Engine to start the audio engine.")
+                        .into();
+                return;
+            }
             // MIDI alone makes a pass.
             Vec::new()
         } else {
@@ -264,6 +319,12 @@ impl SoundApp {
         self.punch = None;
         self.autosaved_rev = 0;
         let ids = soundcraft_engine::io::place_recording(&mut self.engine, &plan, takes);
+        if self.clock_follow.enabled {
+            self.clock_follow.audio_sources.extend(ids.iter().filter_map(|id| self.engine.session().find_clip(*id)?.1.source()));
+            if let Some(grid) = &self.engine.playback_tempo {
+                self.clock_follow.recheck_history(grid);
+            }
+        }
         // The audio engine may have confirmed the pass while the audio takes were finished: the
         // stop position and what the user is told go by one answer.
         let midi_confirmed = midi_confirmed || self.midi_pass_stopped_at(midi_pass).is_some();
@@ -437,22 +498,15 @@ impl SoundApp {
                         self.play_from_selection();
                     }
                 }
-                TransportRequest::PlayFrom(at) => {
-                    if self.is_playing() {
-                        // Playing on from `at` drops the end and loop of the earlier selection.
-                        if let Some(p) = &self.player {
-                            p.play(at, None, None);
-                        }
-                        if let Some(sim) = &mut self.sim {
-                            *sim = (at, None, None);
-                        }
-                        self.play_loop = None;
-                        self.last_write_at = i64::MIN;
-                        self.engine.transport.position = at;
-                    } else {
-                        self.start_play(at, None, None);
+                TransportRequest::ClockPlaybackStarted(from) => self.note_play_started(from, None),
+                TransportRequest::PlayFromClock { origin, render_from, arrival } => {
+                    // Continue re-locks a coasting take on its live beat grid. Seeking would move
+                    // incoming MIDI timestamps relative to the audio already being written.
+                    if !self.engine.transport.recording {
+                        self.play_from_position(render_from, Some((origin, arrival)));
                     }
                 }
+                TransportRequest::PlayFrom(at) => self.play_from_position(at, None),
                 TransportRequest::Stop | TransportRequest::Pause => self.stop_play(),
                 TransportRequest::TogglePlay => {
                     if self.is_playing() {
@@ -469,10 +523,13 @@ impl SoundApp {
                     }
                 }
                 TransportRequest::Locate(at) => {
+                    // A stopped player still owns the Beat Clock and timecode outputs. Move its
+                    // cursor too, so a stopped locate announces the new position (one SPP, one
+                    // MTC full frame) without starting playback.
+                    if let Some(p) = &self.player {
+                        p.locate(at);
+                    }
                     if self.is_playing() {
-                        if let Some(p) = &self.player {
-                            p.locate(at);
-                        }
                         if let Some(sim) = &mut self.sim {
                             sim.0 = at;
                         }
@@ -498,9 +555,6 @@ impl SoundApp {
         if let Some(p) = &self.player {
             let playing = p.is_playing();
             let ended = self.engine.transport.playing && !playing;
-            if ended {
-                p.set_speed(1.0);
-            }
             if self.engine.transport.playing {
                 self.engine.transport.position = p.position();
             }
@@ -524,7 +578,14 @@ impl SoundApp {
             let main = snap.main.peak;
             feed_meter(&mut self.main_meter, main, 0.0, dt);
             if ended {
-                self.stop_play();
+                if self.mtc_online {
+                    // The next input lock can already be rolling by the time a queued Stop reaches the device.
+                    // Half Speed still must not carry over to the next Play; chase runs at normal speed.
+                    p.set_speed(1.0);
+                    self.note_play_stopped();
+                } else {
+                    self.stop_play();
+                }
             }
         } else if let Some((pos, end, looped)) = &mut self.sim {
             let sr = self.engine.session().sample_rate.as_f64();
@@ -561,5 +622,19 @@ mod tests {
         assert!(a.is_dir());
         assert_eq!(app.fallback_take_dir().unwrap(), a, "the same folder for the rest of the run");
         let _ = std::fs::remove_dir_all(&a);
+    }
+
+    #[test]
+    fn stopped_locate_reaches_the_playback_cursor_that_drives_beat_clock() {
+        // Beat Clock announces a stopped locate with one SPP from the player's cursor.
+        let engine = soundcraft_engine::Engine::default();
+        let player = soundcraft_playback::Player::new(engine.session_arc());
+        let mut app = SoundApp::new(engine, Some(player), crate::Services::default());
+        app.run("transport.locate", serde_json::json!({"at": 240_000})).unwrap();
+        app.handle_transport(0.);
+        let player = app.player.as_ref().unwrap();
+        assert!(!player.is_playing());
+        assert_eq!(player.position(), 240_000);
+        assert_eq!(app.position(), 240_000);
     }
 }

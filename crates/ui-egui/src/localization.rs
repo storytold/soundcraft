@@ -381,10 +381,26 @@ mod tests {
 
     #[test]
     fn portuguese_catalog_covers_every_menu_label() {
-        for path in include_str!("../../engine/catalog/menus.txt").lines() {
+        for path in include_str!("../../engine/catalog/menus.txt").lines().chain(crate::menus::MENU_WINDOWS.iter().map(|(p, _)| *p)) {
             for label in path.split(" > ").map(str::trim).filter(|label| !label.is_empty()) {
                 assert!(super::pt_br::translate(label).is_some(), "missing pt-BR menu label: {label}");
             }
+        }
+    }
+
+    #[test]
+    fn clock_follow_dialog_errors_use_the_catalog_or_the_english_source() {
+        let _scope = enter(Language::PortugueseBrazil);
+        for message in [
+            "Select a MIDI clock input",
+            "Take MTC chase offline before following MIDI clock",
+            "The MIDI clock input is also enabled as a clock output",
+            "MIDI input calibration must be within the sync timing horizon",
+            "Disable external MIDI clock follow before going online",
+            "Choose separate MIDI ports for Beat Clock output and external clock follow",
+        ] {
+            let expected = super::pt_br::ERROR_TEMPLATES.iter().find(|(source, _)| *source == message).map_or(message, |(_, translated)| *translated);
+            assert_eq!(error_text(message), expected);
         }
     }
 
@@ -510,6 +526,21 @@ mod tests {
             assert_eq!(placeholders(&source), placeholders(&translation), "placeholders differ for {source:?}");
             assert_eq!(super::pt_br::translate(&source), Some(translation.as_str()), "lookup differs for {source:?}");
         }
+    }
+
+    #[test]
+    fn beat_clock_uses_the_catalog_or_english_with_the_device_name_and_offset() {
+        let _scope = enter(Language::PortugueseBrazil);
+        let label = "Enable MIDI Beat Clock";
+        assert_eq!(text(label), super::pt_br::translate(label).unwrap_or(label));
+
+        let template = "Limited by the audio output lead ({lead} ms)";
+        let expected = super::pt_br::translate(template).unwrap_or(template).replace("{lead}", "12");
+        assert_eq!(format_named(template, &[("lead", Arg::new(&12))]), expected);
+
+        let template = "MIDI output {name} unavailable";
+        let expected = super::pt_br::ERROR_TEMPLATES.iter().find(|(source, _)| *source == template).map_or(template, |(_, target)| *target);
+        assert_eq!(error_text("MIDI output Stage USB unavailable"), expected.replace("{name}", "Stage USB"));
     }
 
     #[test]

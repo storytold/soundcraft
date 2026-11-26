@@ -158,7 +158,7 @@ pub fn specs() -> Vec<CommandSpec> {
                     .source(src)
                     .map(|x| (x.name.clone(), i64::try_from(x.frames).unwrap_or(0), usize::from(x.channels)))
                     .ok_or_else(|| bad("clip.place_source", "no such audio file"))?;
-                let s = e.session_mut();
+                let s = &mut e.clip_edit();
                 let t = match track {
                     Some(t) if s.track(t).is_some_and(|x| x.kind == soundcraft_model::TrackKind::Audio) => t,
                     Some(_) => return Err(bad("clip.place_source", "audio files go on audio tracks")),
@@ -194,7 +194,7 @@ pub fn specs() -> Vec<CommandSpec> {
 fn elastic(e: &mut Engine, p: &Value) -> Result<Value> {
     let ids = clip_ids_param(e, p);
     let ratio = f64_or(p, "ratio", 1.0).clamp(0.05, 20.0);
-    let s = e.session_mut();
+    let s = &mut e.clip_edit();
     let mut rendered = 0;
     for id in &ids {
         let Some((t, c)) = s.find_clip(*id).map(|(t, c)| (t, c.clone())) else { continue };
@@ -302,12 +302,12 @@ const MAX_LOOPS: i64 = 1000;
 fn loop_clips(e: &mut Engine, p: &Value) -> Result<Value> {
     let ids = clip_ids_param(e, p);
     let count = i64_or(p, "count", 4).clamp(1, 512);
-    let total = position_param(e, "clip.loop", p, "length")?;
+    let total = super::duration_param(e, "clip.loop", p, "length")?;
     let fill = p.get("fill").and_then(Value::as_bool).unwrap_or(false);
-    let s = e.session_mut();
-    let session_end = s.content_end();
+    let session_end = e.session().content_end();
     let mut made = 0;
     for id in ids {
+        let s = e.session_mut();
         let Some((tid, mut c)) = s.find_clip(id).map(|(t, c)| (t, c.clone())) else { continue };
         if c.length <= 0 {
             continue;
@@ -355,7 +355,7 @@ fn loop_clips(e: &mut Engine, p: &Value) -> Result<Value> {
         }
         for (at, nc) in copies {
             let length = nc.length;
-            let _ = crate::edit::paste(s, tid, at, &[nc], length, false);
+            let _ = e.paste_clips(tid, at, &[nc], length, false, None);
             made += 1;
         }
     }
@@ -426,7 +426,7 @@ fn quantize_to_grid(e: &mut Engine, p: &Value) -> Result<Value> {
     let s = e.session();
     let moves: Vec<(soundcraft_model::ClipId, i64)> =
         ids.iter().filter_map(|id| s.find_clip(*id).map(|(_, c)| (*id, crate::edit::grid_delta(s, c, 0, false, &ids)))).collect();
-    let s = e.session_mut();
+    let s = &mut e.clip_edit();
     for (id, d) in &moves {
         crate::edit::move_clips(s, &[*id], *d, &[]);
     }

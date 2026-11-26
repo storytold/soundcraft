@@ -189,7 +189,8 @@ pub fn render_stretched(s: &mut Session, cmd: &str, c: &Clip, out_len: Samples) 
 /// Replace clip `old` on track `t` with `new`, overwriting whatever `new` covers, except a clip that
 /// overlapped `old` across one edge that `new` does not reach past: the other half of a crossfade keeps
 /// its overlap and its fade, so processing a clip in place does not turn the crossfade into a dip.
-pub fn replace_clip(s: &mut Session, t: TrackId, old: soundcraft_model::ClipId, new: Clip) {
+pub fn replace_clip(timeline: &mut impl crate::edit::EditTimeline, t: TrackId, old: soundcraft_model::ClipId, new: Clip) {
+    let s = &mut timeline.clip_edit();
     let kept: Vec<Clip> = match s.track_mut(t).and_then(|tr| tr.playlist_mut()) {
         Some(pl) => {
             let was = pl.clips.iter().find(|c| c.id == old).map(Clip::range);

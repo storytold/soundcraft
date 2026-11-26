@@ -453,7 +453,7 @@ fn paste_merge_midi(e: &mut Engine, p: &Value) -> Result<Value> {
     let tracks = tracks_required(e, id, p)?;
     let at = position_param(e, id, p, "at")?.unwrap_or(e.session().edit.selection.start).max(0);
     let cb = super::edit::clipboard_for_paste(e);
-    let s = e.session_mut();
+    let s = &mut e.clip_edit();
     let tempo = s.tempo.clone();
     let sr = s.sample_rate;
     let mut merged = 0;
@@ -473,29 +473,52 @@ fn paste_merge_midi(e: &mut Engine, p: &Value) -> Result<Value> {
             let target = s.track(*t).and_then(|tr| {
                 let host = tr.clips().iter().find(|x| matches!(x.content, ClipContent::Midi { .. }) && x.range().contains(pos))?;
                 let next_start = tr.clips().iter().filter(|x| x.start > host.start && x.id != host.id).map(|x| x.start).min();
-                Some((host.id, host.start, next_start))
+                Some((host, next_start))
             });
             match target {
-                Some((hid, hstart, next_start)) => {
-                    let diff = tempo.samples_to_ticks(pos, sr) - tempo.samples_to_ticks(hstart, sr);
+                Some((host, next_start)) => {
+                    let (hid, hstart) = (host.id, host.start);
                     let want_end = pos.saturating_add(c.length);
-                    let limit = next_start.unwrap_or(Samples::MAX);
+                    let end = host.end().max(want_end.min(next_start.unwrap_or(Samples::MAX)));
+                    let host_take = s.takes.as_deref().and_then(|takes| takes.get(&hid));
+                    let incoming_take = cb.clock_takes.get(&c.id);
+                    let composed = s.follow_grid.filter(|_| host_take.is_some() || incoming_take.is_some()).map(|grid| {
+                        // Clipboard IDs can be reused by the current document after Undo.
+                        // Keep the two source mappings distinct even when their IDs match.
+                        let mut incoming = c.clone();
+                        incoming.start = pos;
+                        ops::compose_clock_midi(s, grid, Range::new(hstart, end), [(host, host_take), (&incoming, incoming_take)])
+                    });
                     if let Some(h) = s.find_clip_mut(hid)
                         && let ClipContent::Midi { sequence: hs } = &mut h.content
                     {
-                        for n in &sequence.notes {
-                            let mut n = *n;
-                            n.start = n.start.saturating_add(diff);
-                            hs.notes.push(n);
+                        let take = if let Some((score, take)) = composed {
+                            // The composed score carries notes and controllers only. Like the
+                            // ordinary merge, keep the host's SysEx packets where they are.
+                            let sysex = std::mem::take(&mut hs.sysex);
+                            *hs = score;
+                            hs.sysex = sysex;
+                            Some(take)
+                        } else {
+                            let diff = tempo.samples_to_ticks(pos, sr) - tempo.samples_to_ticks(hstart, sr);
+                            for n in &sequence.notes {
+                                let mut n = *n;
+                                n.start = n.start.saturating_add(diff);
+                                hs.notes.push(n);
+                            }
+                            for cc in &sequence.ctrls {
+                                let mut cc = *cc;
+                                cc.tick = cc.tick.saturating_add(diff);
+                                hs.ctrls.push(cc);
+                            }
+                            hs.sort();
+                            None
+                        };
+                        if end != h.end() {
+                            h.trim_end_to(end);
                         }
-                        for cc in &sequence.ctrls {
-                            let mut cc = *cc;
-                            cc.tick = cc.tick.saturating_add(diff);
-                            hs.ctrls.push(cc);
-                        }
-                        hs.sort();
-                        if want_end > h.end() {
-                            h.trim_end_to(want_end.min(limit));
+                        if let (Some(take), Some(takes)) = (take, &mut s.takes) {
+                            takes.insert(hid, take);
                         }
                         merged += 1;
                     }
@@ -503,6 +526,11 @@ fn paste_merge_midi(e: &mut Engine, p: &Value) -> Result<Value> {
                 None => {
                     let mut nc = c.clone();
                     nc.id = s.new_clip_id();
+                    if let Some(takes) = &mut s.takes
+                        && let Some(take) = cb.clock_takes.get(&c.id)
+                    {
+                        takes.insert(nc.id, take.clone());
+                    }
                     nc.start = pos;
                     ops::place_clip(s, *t, nc);
                     placed += 1;
@@ -555,12 +583,11 @@ fn duplicate_extend(e: &mut Engine, p: &Value) -> Result<Value> {
     let tracks = tracks_required(e, id, p)?;
     let r = nonempty_range(e, p, id)?;
     let (sh, follow) = (shuffle(e.session()), e.session().edit.automation_follows_edit);
-    let s = e.session_mut();
     let mut n = 0;
     for t in &tracks {
-        let clips = ops::copy_range(s, *t, r);
-        n += ops::paste(s, *t, r.end, &clips, r.len(), sh).map_err(|why| bad(id, why))?.len();
-        if follow && let Some(tr) = s.track_mut(*t) {
+        let (clips, takes) = e.copy_clip_range(*t, r, false);
+        n += e.paste_clips(*t, r.end, &clips, r.len(), sh, Some(&takes)).map_err(|why| bad(id, why))?.len();
+        if follow && let Some(tr) = e.session_mut().track_mut(*t) {
             for l in &mut tr.automation {
                 let pts: Vec<_> = l.points.iter().filter(|pt| r.contains(pt.at)).copied().collect();
                 for pt in pts {
@@ -569,6 +596,7 @@ fn duplicate_extend(e: &mut Engine, p: &Value) -> Result<Value> {
             }
         }
     }
+    let s = e.session_mut();
     s.edit.selection = Range::new(r.start, r.end.saturating_add(r.len()));
     if s.edit.link_timeline_edit {
         s.edit.timeline_selection = s.edit.selection;
@@ -643,7 +671,7 @@ fn space_clips(e: &mut Engine, p: &Value) -> Result<Value> {
     if ids.len() < 2 {
         return Err(bad(id, "select two or more clips"));
     }
-    let s = e.session_mut();
+    let s = &mut e.clip_edit();
     let track_ids: Vec<_> = s.tracks.iter().map(|t| t.id).collect();
     let mut moved = 0;
     for t in track_ids {
@@ -670,7 +698,7 @@ fn space_clips(e: &mut Engine, p: &Value) -> Result<Value> {
 
 fn snap(e: &mut Engine, p: &Value, next: bool) -> Result<Value> {
     let ids = clip_ids_param(e, p);
-    let s = e.session_mut();
+    let s = &mut e.clip_edit();
     let mut order: Vec<(ClipId, Samples)> = ids.iter().filter_map(|id| s.find_clip(*id).map(|(_, c)| (*id, c.start))).collect();
     // Snap the clip nearest the destination first so neighbours stay put.
     order.sort_by_key(|x| if next { -x.1 } else { x.1 });
@@ -697,7 +725,7 @@ fn to_playlist(e: &mut Engine, p: &Value, dest: Dest, mv: bool, id: &str) -> Res
     let tracks = tracks_required(e, id, p)?;
     let r = nonempty_range(e, p, id)?;
     let sh = shuffle(e.session());
-    let s = e.session_mut();
+    let s = &mut e.clip_edit();
     let mut out = Vec::new();
     for t in &tracks {
         if s.track(*t).is_none_or(|tr| !tr.kind.has_playlist()) {
@@ -715,7 +743,7 @@ fn to_playlist(e: &mut Engine, p: &Value, dest: Dest, mv: bool, id: &str) -> Res
                 let mut clips: Vec<Clip> =
                     if dest == Dest::Duplicate { s.track(*t).map(|tr| tr.clips().to_vec()).unwrap_or_default() } else { Vec::new() };
                 for c in &mut clips {
-                    c.id = s.new_clip_id();
+                    s.assign_copied_id(c, None);
                 }
                 let Some(tr) = s.track_mut(*t) else { continue };
                 let name = format!("{}.{:02}", tr.name, tr.playlists.len() + 1);
@@ -724,13 +752,13 @@ fn to_playlist(e: &mut Engine, p: &Value, dest: Dest, mv: bool, id: &str) -> Res
             }
         };
         // A move carries only what it clears from the main playlist; locked clips stay there.
-        let clips = if mv { ops::take_range(s, *t, r) } else { ops::copy_range(s, *t, r) };
+        let (clips, takes) = ops::copy_range_with_takes(s, s.takes.as_deref(), s.follow_grid, *t, r, mv);
         let main = s.track(*t).map_or(0, |tr| tr.active_playlist);
         if let Some(tr) = s.track_mut(*t) {
             tr.active_playlist = idx;
         }
         for mut c in clips {
-            c.id = s.new_clip_id();
+            s.assign_copied_id(&mut c, Some(&takes));
             c.start = c.start.saturating_add(r.start);
             ops::place_clip(s, *t, c);
         }
@@ -765,7 +793,7 @@ fn tce(e: &mut Engine, p: &Value) -> Result<Value> {
     if c.time_locked || c.edit_locked {
         return Err(bad(id, "the clip is locked"));
     }
-    let s = e.session_mut();
+    let s = &mut e.clip_edit();
     let Some(src) = render_stretched(s, id, &c, target.len())? else { return Err(bad(id, "the clip's audio is not loaded")) };
     let ratio = target.len() as f64 / c.length.max(1) as f64;
     let scale = |x: Samples| soundcraft_time::to_samples(x as f64 * ratio);

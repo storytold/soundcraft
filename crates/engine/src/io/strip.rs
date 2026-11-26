@@ -99,7 +99,7 @@ pub fn name_stripped_clips(s: &mut Session, t: TrackId, r: Range, names: &StripN
 /// [`name_stripped_clips`], so those clips do not take Auto Rename names either.
 #[allow(clippy::too_many_arguments)]
 pub fn strip_silence(
-    s: &mut Session,
+    timeline: &mut impl crate::edit::EditTimeline,
     t: TrackId,
     r: Range,
     thr: f32,
@@ -108,6 +108,7 @@ pub fn strip_silence(
     mode: StripMode,
     named: bool,
 ) -> Result<usize> {
+    let s = &mut timeline.clip_edit();
     let r = bounded_to_track(s, t, r);
     let keep = non_silent(s, t, r, thr, min_len, pad, &AtomicBool::new(false))?;
     let mut cut_points = vec![r.start];

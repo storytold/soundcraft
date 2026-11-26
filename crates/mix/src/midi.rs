@@ -1,6 +1,6 @@
 use super::clips::Key;
 use super::live_midi::LiveNotes;
-use super::strip::{PluginSlot, Strip};
+use super::strip::{Block, PluginSlot, Strip};
 use super::{ClipContent, CtrlKind, Range, SampleSource, Samples, Session, SourceAudio, Track};
 use std::sync::Arc;
 
@@ -18,87 +18,203 @@ fn midi_offset(s: &Session, t: &Track) -> i64 {
         .map_or(0, |v| v as i64)
 }
 
+/// A late Clock packet can put an attack and its release less than a millisecond
+/// apart. Preserve the score duration from the delivered attack, after the release arrives.
+pub(crate) struct LateRelease {
+    pitch: u8,
+    earliest: Samples,
+    released: bool,
+}
+
 /// Send note on/offs and controllers for MIDI clips overlapping the block.
 ///
 /// `live` holds the notes played live on the same instrument. Instruments end notes by pitch, so
 /// a clip note-off is not sent while a live key holds that pitch: the key's own release ends it.
 /// A note-off held back that way is told to `live`: when the key goes up earlier in the same
 /// block, the note still lasts until the clip's note-off.
-pub(crate) fn schedule_notes(s: &Session, t: &Track, pos: Samples, frames: usize, inst: &mut PluginSlot, held: &mut Vec<u8>, live: &mut LiveNotes) {
+pub(crate) fn schedule_notes(
+    s: &Session,
+    t: &Track,
+    mut blk: Block,
+    inst: &mut PluginSlot,
+    held: &mut Vec<u8>,
+    live: &mut LiveNotes,
+    late: &mut Vec<LateRelease>,
+) {
+    if blk.frames == 0 {
+        return;
+    }
+    if blk.delivery == super::ClockDelivery::Predicted && blk.score.start < blk.pos && blk.pos < blk.score.end {
+        // MIDI 1.0 (4.2.1) puts timing first and lets a late message move, but drops none and
+        // keeps dependent messages in order. Send the held backlog at frame 0 in score order,
+        // before any on-time event; on-time events keep their device offsets on every strip.
+        // An overdue attack keeps its score duration through its late release.
+        let overdue = Block { score: Range { start: blk.score.start, end: blk.pos }, delivery: super::ClockDelivery::Coalesced, ..blk };
+        clip_events::<true>(s, t, overdue, inst, held, live, late);
+        blk.score.start = blk.pos;
+        blk.note_start = blk.note_start.max(blk.pos);
+    }
+    if blk.score.start < blk.score.end {
+        clip_events::<false>(s, t, blk, inst, held, live, late);
+    }
+    let end = blk.pos.saturating_add(blk.frames as i64);
+    late.retain(|note| {
+        if note.released && note.earliest < end {
+            release_clip_note(inst, held, live, note.pitch, note.earliest.saturating_sub(blk.pos).max(0) as usize);
+            return false;
+        }
+        true
+    });
+}
+
+// `ORDERED` sends notes and controllers of each clip merged in score order, for a backlog
+// that shares one frame. Otherwise each clip's notes go before its controllers.
+fn clip_events<const ORDERED: bool>(
+    s: &Session,
+    t: &Track,
+    blk: Block,
+    inst: &mut PluginSlot,
+    held: &mut Vec<u8>,
+    live: &mut LiveNotes,
+    late: &mut Vec<LateRelease>,
+) {
     let sr = s.sample_rate;
     // MIDI Track Offsets: the track's notes sound `offset` samples later (earlier if negative), so
     // the block looks that far back into the clips.
     let offset = midi_offset(s, t);
-    let pos = pos.saturating_sub(offset);
-    let end = pos.saturating_add(frames as i64);
-    for clip in t.clips() {
-        if clip.muted {
-            continue;
-        }
-        let ClipContent::Midi { sequence } = &clip.content else { continue };
-        if !clip.range().overlaps(&Range { start: pos, end }) {
-            continue;
-        }
-        let base = s.tempo.samples_to_ticks(clip.start, sr);
-        // MIDI Real-Time Properties (non-destructive velocity/transpose/duration/delay).
-        let rtp = |name: &str, d: f64| Key::new(format_args!("rtp.{}.{name}", t.id.0)).map_or(d, |k| s.edit.value(k.as_str(), d));
-        let (dv, dp, dur, delay) = if s.edit.values.is_empty() {
-            (0i64, 0i64, 1.0f64, 0i64)
-        } else {
-            (
-                rtp("velocity", 0.0).clamp(-127.0, 127.0) as i64,
-                rtp("transpose", 0.0).clamp(-127.0, 127.0) as i64,
-                rtp("duration", 100.0).clamp(1.0, 1000.0) / 100.0,
-                rtp("delay", 0.0).clamp(-1e7, 1e7) as i64,
-            )
-        };
-        // The block in clip ticks, one tick wider on each side so rounding never drops an event.
-        let near = s.tempo.samples_to_ticks(pos, sr).saturating_sub(base).saturating_sub(1)
-            ..=s.tempo.samples_to_ticks(end, sr).saturating_sub(base).saturating_add(1);
-        for n0 in &sequence.notes {
-            let mut n = *n0;
-            n.velocity = (i64::from(n.velocity) + dv).clamp(1, 127) as u8;
-            n.pitch = (i64::from(n.pitch) + dp).clamp(0, 127) as u8;
-            n.length = ((n.length as f64 * dur) as i64).max(1);
-            n.start = n.start.saturating_add(delay).max(0);
-            // A note whose on and off both fall outside the block sends nothing: skip it before
-            // converting its positions, so a long sequence costs a comparison per note per block.
-            if n.start > *near.end() || n.start.saturating_add(n.length) < *near.start() {
+    let pos = blk.score.start.saturating_sub(offset);
+    let end = blk.score.end.saturating_sub(offset);
+    let note_start = blk.note_start.saturating_sub(offset);
+    let scan_start = note_start.min(pos);
+    // Process the requested boundary first even when a replacement note is stored
+    // earlier in a different clip. Ordinary blocks need just the main pass.
+    let compensated = note_start < pos;
+    let mut deferred = 0u128;
+    for &boundary in if compensated { &[true, false][..] } else { &[false][..] } {
+        for clip in t.clips() {
+            if clip.muted {
                 continue;
             }
-            let on = s.tempo.tick_to_samples(base.saturating_add(n.start), sr);
-            let off = s.tempo.tick_to_samples(base.saturating_add(n.start).saturating_add(n.length), sr).min(clip.end());
-            if on >= clip.end() {
+            let ClipContent::Midi { sequence } = &clip.content else { continue };
+            if !clip.range().overlaps(&Range { start: scan_start, end }) {
                 continue;
             }
-            if on >= pos && on < end {
-                inst.plugin.note_on(usize::try_from(on - pos).unwrap_or(0), n.pitch, n.velocity);
-                if !held.contains(&n.pitch) && held.len() < 128 {
-                    held.push(n.pitch);
+            let base = s.tempo.samples_to_ticks(clip.start, sr);
+            // MIDI Real-Time Properties (non-destructive velocity/transpose/duration/delay).
+            let rtp = |name: &str, d: f64| Key::new(format_args!("rtp.{}.{name}", t.id.0)).map_or(d, |k| s.edit.value(k.as_str(), d));
+            let (dv, dp, dur, delay) = if s.edit.values.is_empty() {
+                (0i64, 0i64, 1.0f64, 0i64)
+            } else {
+                (
+                    rtp("velocity", 0.0).clamp(-127.0, 127.0) as i64,
+                    rtp("transpose", 0.0).clamp(-127.0, 127.0) as i64,
+                    rtp("duration", 100.0).clamp(1.0, 1000.0) / 100.0,
+                    rtp("delay", 0.0).clamp(-1e7, 1e7) as i64,
+                )
+            };
+            // The block in clip ticks, one tick wider on each side so rounding never drops an event.
+            let near = s.tempo.samples_to_ticks(scan_start, sr).saturating_sub(base).saturating_sub(1)
+                ..=s.tempo.samples_to_ticks(end, sr).saturating_sub(base).saturating_add(1);
+            // Events before tick 0 are what a start trim hid: they don't play.
+            let mut notes = sequence.notes.iter().peekable();
+            let mut ctrls = sequence.ctrls.iter().filter(|c| !boundary && c.tick >= 0).peekable();
+            loop {
+                let note_first = match (notes.peek(), ctrls.peek()) {
+                    (Some(n), Some(c)) => !ORDERED || n.start < c.tick,
+                    (Some(_), None) => true,
+                    (None, Some(_)) => false,
+                    (None, None) => break,
+                };
+                if !note_first {
+                    let Some(c) = ctrls.next() else { break };
+                    let tick = c.tick.saturating_add(delay).max(0);
+                    if !near.contains(&tick) {
+                        continue;
+                    }
+                    let at = s.tempo.tick_to_samples(base.saturating_add(tick), sr);
+                    if at >= pos && at < end && at < clip.end() {
+                        inst.plugin.midi(blk.score_offset(at.saturating_sub(pos)), ctrl_message(c.kind, c.value, dp));
+                    }
+                    continue;
                 }
-            }
-            if off >= pos && off < end {
-                let at = usize::try_from(off - pos).unwrap_or(0);
-                if live.holds(n.pitch) {
-                    live.clip_off_held_back(n.pitch, at);
-                } else {
-                    inst.plugin.note_off(at, n.pitch);
+                let Some(n0) = notes.next() else { break };
+                let mut n = *n0;
+                n.velocity = (i64::from(n.velocity) + dv).clamp(1, 127) as u8;
+                n.pitch = (i64::from(n.pitch) + dp).clamp(0, 127) as u8;
+                n.length = ((n.length as f64 * dur) as i64).max(1);
+                n.start = n.start.saturating_add(delay).max(0);
+                // A note whose on and off both fall outside the block sends nothing: skip it before
+                // converting its positions, so a long sequence costs a comparison per note per block.
+                if n.start > *near.end() || n.start.saturating_add(n.length) < *near.start() {
+                    continue;
                 }
-                held.retain(|p| *p != n.pitch);
-            }
-        }
-        // Events before tick 0 are what a start trim hid: they don't play.
-        for c in sequence.ctrls.iter().filter(|c| c.tick >= 0) {
-            let tick = c.tick.saturating_add(delay).max(0);
-            if !near.contains(&tick) {
-                continue;
-            }
-            let at = s.tempo.tick_to_samples(base.saturating_add(tick), sr);
-            if at >= pos && at < end && at < clip.end() {
-                inst.plugin.midi(usize::try_from(at - pos).unwrap_or(0), ctrl_message(c.kind, c.value, dp));
+                let on = s.tempo.tick_to_samples(base.saturating_add(n.start), sr);
+                let off = s.tempo.tick_to_samples(base.saturating_add(n.start).saturating_add(n.length), sr).min(clip.end());
+                if on >= clip.end() || (compensated && (on == note_start) != boundary) {
+                    continue;
+                }
+                // Clock compensation can put the first device buffer after the requested onset.
+                // Deliver due attacks at frame zero without chasing notes from before the locate.
+                let attack = on >= note_start && on < end && (on == note_start || off >= pos);
+                if attack {
+                    let at = blk.score_offset(on.saturating_sub(pos));
+                    let bit = 1u128 << n.pitch;
+                    if deferred & bit != 0 {
+                        release_clip_note(inst, held, live, n.pitch, at.min(1));
+                        deferred &= !bit;
+                    }
+                    if let Some(index) = late.iter().position(|note| note.pitch == n.pitch) {
+                        let previous = late.swap_remove(index);
+                        if previous.released {
+                            let release = previous.earliest.saturating_sub(blk.pos).max(0) as usize;
+                            release_clip_note(inst, held, live, n.pitch, at.min(release));
+                        }
+                    }
+                    // An attack delivered after its time, from a coalesced packet or from the
+                    // backlog a wire-held block catches up on, keeps its score duration.
+                    let backlog = blk.delivery == super::ClockDelivery::Coalesced || blk.score.start < blk.pos;
+                    if backlog && on.saturating_add(offset) < blk.pos && off > on {
+                        let earliest = blk.pos.saturating_add(at as i64).saturating_add(off.saturating_sub(on));
+                        late.push(LateRelease { pitch: n.pitch, earliest, released: false });
+                    }
+                    inst.plugin.note_on(at, n.pitch, n.velocity);
+                    if !held.contains(&n.pitch) && held.len() < 128 {
+                        held.push(n.pitch);
+                    }
+                }
+                if off < end && (off >= pos || attack) {
+                    if let Some(index) = late.iter().position(|note| note.pitch == n.pitch) {
+                        let earliest = late[index].earliest;
+                        if earliest >= blk.pos.saturating_add(blk.frames as i64) {
+                            late[index].released = true;
+                        } else {
+                            late.swap_remove(index);
+                            let at = blk.score_offset(off.saturating_sub(pos)).max(earliest.saturating_sub(blk.pos).max(0) as usize);
+                            release_clip_note(inst, held, live, n.pitch, at);
+                        }
+                    } else if attack && on < pos && off <= pos {
+                        deferred |= 1u128 << n.pitch;
+                    } else {
+                        release_clip_note(inst, held, live, n.pitch, blk.score_offset(off.saturating_sub(pos)));
+                    }
+                }
             }
         }
     }
+    while deferred != 0 {
+        let pitch = deferred.trailing_zeros() as u8;
+        release_clip_note(inst, held, live, pitch, 1.min(blk.frames - 1));
+        deferred &= deferred - 1;
+    }
+}
+
+fn release_clip_note(inst: &mut PluginSlot, held: &mut Vec<u8>, live: &mut LiveNotes, pitch: u8, at: usize) {
+    if live.holds(pitch) {
+        live.clip_off_held_back(pitch, at);
+    } else {
+        inst.plugin.note_off(at, pitch);
+    }
+    held.retain(|p| *p != pitch);
 }
 
 /// A controller event as a MIDI 1.0 message on channel 1 (where the notes go), with `transpose`

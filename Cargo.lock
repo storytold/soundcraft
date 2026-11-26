@@ -1296,6 +1296,14 @@ dependencies = [
 [[package]]
 name = "craft-midi"
 version = "0.1.0"
+source = "git+https://github.com/storytold/craft-libs?rev=08da5e1486ee640de1d2cccd8fe8dd32b1d3b62c#08da5e1486ee640de1d2cccd8fe8dd32b1d3b62c"
+dependencies = [
+ "thiserror 2.0.21",
+]
+
+[[package]]
+name = "craft-midi"
+version = "0.1.0"
 source = "git+https://github.com/storytold/craft-libs?rev=a3fca1707941bce4768586661ccbb94c44ee46eb#a3fca1707941bce4768586661ccbb94c44ee46eb"
 dependencies = [
  "serde",
@@ -1326,7 +1334,7 @@ version = "0.1.0"
 source = "git+https://github.com/storytold/craft-libs?rev=a3fca1707941bce4768586661ccbb94c44ee46eb#a3fca1707941bce4768586661ccbb94c44ee46eb"
 dependencies = [
  "craft-audio",
- "craft-midi",
+ "craft-midi 0.1.0 (git+https://github.com/storytold/craft-libs?rev=a3fca1707941bce4768586661ccbb94c44ee46eb)",
  "craft-time",
  "craft-zip",
  "serde",
@@ -3769,7 +3777,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7d8fae84b431384b68627d0f9b3b1245fcf9f46f6c0e3dc902e9dce64edd1967"
 dependencies = [
  "libc",
- "windows-sys 0.45.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -5069,7 +5077,7 @@ dependencies = [
 name = "soundcraft-midi"
 version = "0.20.1"
 dependencies = [
- "craft-midi",
+ "craft-midi 0.1.0 (git+https://github.com/storytold/craft-libs?rev=a3fca1707941bce4768586661ccbb94c44ee46eb)",
  "proptest",
 ]
 
@@ -5102,6 +5110,7 @@ version = "0.20.1"
 dependencies = [
  "cpal",
  "craft-audio",
+ "craft-midi 0.1.0 (git+https://github.com/storytold/craft-libs?rev=08da5e1486ee640de1d2cccd8fe8dd32b1d3b62c)",
  "log",
  "midir",
  "serde",
@@ -5110,6 +5119,7 @@ dependencies = [
  "soundcraft-mix",
  "soundcraft-model",
  "soundcraft-time",
+ "thread-priority",
 ]
 
 [[package]]
@@ -5556,6 +5566,20 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 3.0.9",
+]
+
+[[package]]
+name = "thread-priority"
+version = "3.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8d2e834949be5111506bb252643498af1514f600d9e1dceedaa42afae155b67f"
+dependencies = [
+ "bitflags 2.13.2",
+ "cfg-if",
+ "libc",
+ "log",
+ "rustversion",
+ "windows",
 ]
 
 [[package]]

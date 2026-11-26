@@ -121,6 +121,8 @@ struct PreferencesDraft {
     theme: ThemeMode,
     reduce_visual_effects: ReduceVisualEffects,
     undo_levels: usize,
+    compensation: crate::midi_sync::Compensation,
+    compensation_edited: [bool; 3],
     theme_edited: bool,
     reduce_visual_effects_edited: bool,
     undo_levels_edited: bool,
@@ -133,6 +135,8 @@ impl PreferencesDraft {
             theme: app.ui.theme,
             reduce_visual_effects: app.ui.reduce_visual_effects,
             undo_levels: app.ui.undo_levels,
+            compensation: app.ui.midi_sync.compensation,
+            compensation_edited: [false; 3],
             theme_edited: false,
             reduce_visual_effects_edited: false,
             undo_levels_edited: false,
@@ -141,6 +145,16 @@ impl PreferencesDraft {
 
     /// Pulls in scripted setting changes while retaining fields edited in this window.
     fn sync_unedited_from_live(&mut self, app: &SoundApp) {
+        let c = app.ui.midi_sync.compensation;
+        if !self.compensation_edited[0] {
+            self.compensation.beat_clock = c.beat_clock;
+        }
+        if !self.compensation_edited[1] {
+            self.compensation.mtc = c.mtc;
+        }
+        if !self.compensation_edited[2] {
+            self.compensation.notes = c.notes;
+        }
         if !self.theme_edited {
             self.theme = app.ui.theme;
         }
@@ -154,6 +168,9 @@ impl PreferencesDraft {
 
     /// Remembers which values the user changed during the current UI frame.
     fn remember_user_edits(&mut self, before: Self) {
+        self.compensation_edited[0] |= self.compensation.beat_clock != before.compensation.beat_clock;
+        self.compensation_edited[1] |= self.compensation.mtc != before.compensation.mtc;
+        self.compensation_edited[2] |= self.compensation.notes != before.compensation.notes;
         self.theme_edited |= self.theme != before.theme;
         self.reduce_visual_effects_edited |= self.reduce_visual_effects != before.reduce_visual_effects;
         self.undo_levels_edited |= self.undo_levels != before.undo_levels;
@@ -811,6 +828,7 @@ pub fn show(app: &mut SoundApp, ctx: &egui::Context) {
     }
     match action {
         Some(Action::Apply) => {
+            app.ui.midi_sync.compensation = draft.compensation;
             let _ = app.run("ui.theme", json!({"mode": draft.theme.id()}));
             let _ = app.run("ui.reduce_visual_effects", json!({"mode": draft.reduce_visual_effects.id()}));
             let _ = app.run("ui.undo_levels", json!({"levels": draft.undo_levels}));
@@ -961,6 +979,18 @@ fn control_ui(ui: &mut egui::Ui, page: PreferencesPage, section: &str, index: us
                 ui.label(label("Levels of Undo"));
                 ui.add(egui::DragValue::new(&mut draft.undo_levels).range(1..=64));
             });
+        }
+        Control::Check(text @ "MIDI Notes and Controllers") if section == "Delay Compensation for External Devices" => {
+            ui.add_enabled(false, egui::Checkbox::new(&mut draft.compensation.notes, label(text)));
+            ui.label(label("Takes effect once external MIDI track output is available."));
+        }
+        Control::Check(text) if section == "Delay Compensation for External Devices" => {
+            let value = if text == "MIDI Beat Clock" { &mut draft.compensation.beat_clock } else { &mut draft.compensation.mtc };
+            let response = ui.checkbox(value, label(text));
+            if text == "MIDI Beat Clock" {
+                response
+                    .on_hover_text(crate::localization::text("Include the reported audio output lead and the mixer's compensated plug-in delay."));
+            }
         }
         Control::Check(text) => {
             let mut value = false;
@@ -1114,6 +1144,20 @@ mod tests {
             },
             app,
         )
+    }
+
+    #[test]
+    fn midi_sync_pref_notes_compensation_explains_why_it_cannot_be_edited() {
+        let app = SoundApp::new(Engine::default(), None, crate::Services::default());
+        let mut draft = PreferencesDraft::from_live(&app);
+        draft.compensation.notes = true;
+        let mut harness =
+            Harness::builder().with_size(egui::vec2(1000., 1200.)).build_ui_state(|ui, draft| page_body(ui, PreferencesPage::Midi, "", draft), draft);
+        harness.run_steps(2);
+        assert!(harness.get_by_label("MIDI Notes and Controllers").accesskit_node().is_disabled());
+        harness.get_by_label("Takes effect once external MIDI track output is available.");
+        assert!(harness.state().compensation.notes);
+        assert!(!harness.get_by_label("MIDI Beat Clock").accesskit_node().is_disabled());
     }
 
     /// Search includes page, section, control, choice and value text.

@@ -554,7 +554,7 @@ fn controllers_play_at_their_offsets_and_are_chased_after_a_seek() {
 
 struct Keys {
     inner: Box<dyn Plugin>,
-    heard: Arc<std::sync::Mutex<Vec<(u8, u8)>>>,
+    heard: Arc<std::sync::Mutex<Vec<(usize, u8, u8)>>>,
 }
 
 impl Plugin for Keys {
@@ -576,8 +576,56 @@ impl Plugin for Keys {
     fn process(&mut self, io: &mut [Vec<f32>], frames: usize) {
         self.inner.process(io, frames);
     }
-    fn note_on(&mut self, _offset: usize, note: u8, velocity: u8) {
-        self.heard.lock().unwrap().push((note, velocity));
+    fn note_on(&mut self, offset: usize, note: u8, velocity: u8) {
+        self.heard.lock().unwrap().push((offset, note, velocity));
+    }
+    fn note_off(&mut self, offset: usize, note: u8) {
+        self.heard.lock().unwrap().push((offset, note, 0));
+    }
+}
+
+#[test]
+fn compensated_clock_start_keeps_boundary_notes_once_without_replaying_earlier_attacks() {
+    use soundcraft_midi::{Note, Sequence};
+
+    for (bpm, start_tick) in [(120., 15360), (90., 2880)] {
+        for (origin_delta, render_delta, expected) in [(0, 1440, true), (240, 1440, false), (0, -720, true)] {
+            let mut s = Session::default();
+            s.tempo.set_tempo(0, bpm).unwrap();
+            let origin = s.tempo.tick_to_samples(start_tick + origin_delta, s.sample_rate);
+            let t = s.add_track(TrackKind::Instrument, ChannelFormat::Stereo, None);
+            let mut seq = Sequence::default();
+            for (start, pitch, length) in [(start_tick - 1, 59, 960), (start_tick, 60, 960), (start_tick, 61, 1)] {
+                seq.notes.push(Note { start, pitch, velocity: 100, length, channel: 0, release_velocity: 64 });
+            }
+            let cid = s.new_clip_id();
+            let track = s.track_mut(t).unwrap();
+            track.playlist_mut().unwrap().clips.push(Clip::midi(cid, "boundary", 0, origin + 48000, seq));
+            track.instrument = Some(Insert::new("clap:test.keys"));
+            let heard = Arc::new(std::sync::Mutex::new(Vec::new()));
+            let keys = Keys { inner: soundcraft_dsp::create("gain").unwrap(), heard: Arc::clone(&heard) };
+            let mut eng = MixEngine::new(s.sample_rate.hz() as f32, 512);
+            eng.set_external_instances(true);
+            eng.adopt(vec![PreparedInstance { track: t, slot: INSTRUMENT_SLOT, id: "clap:test.keys".into(), ch: 2, plugin: Box::new(keys) }]);
+            eng.start_midi_at(origin);
+            eng.render(&s, origin + render_delta, 0, &mut [Vec::new(), Vec::new()]);
+            assert!(heard.lock().unwrap().is_empty());
+            // The player starts at the compensated render cursor for this clock pulse.
+            let onset = (-render_delta).max(0);
+            let duration = s.tempo.tick_to_samples(start_tick + 1, s.sample_rate) - s.tempo.tick_to_samples(start_tick, s.sample_rate);
+            let release = (duration - render_delta).max(1);
+            for block in 0..4 {
+                render_block(&mut eng, &s, origin + render_delta + block * 512);
+                let mut wanted = Vec::new();
+                if expected && onset / 512 == block {
+                    wanted.extend([(onset as usize % 512, 60, 100), (onset as usize % 512, 61, 100)]);
+                }
+                if expected && release / 512 == block {
+                    wanted.push((release as usize % 512, 61, 0));
+                }
+                assert_eq!(std::mem::take(&mut *heard.lock().unwrap()), wanted, "bpm={bpm} origin={origin} block={block}");
+            }
+        }
     }
 }
 
@@ -598,7 +646,36 @@ fn real_time_properties_reach_the_instrument() {
     eng.set_external_instances(true);
     eng.adopt(vec![PreparedInstance { track: t, slot: INSTRUMENT_SLOT, id: "clap:test.keys".into(), ch: 2, plugin: Box::new(keys) }]);
     render_block(&mut eng, &s, 0);
-    assert_eq!(*heard.lock().unwrap(), vec![(72, 80)]);
+    assert_eq!(*heard.lock().unwrap(), vec![(0, 72, 80)]);
+}
+
+#[test]
+fn same_pitch_replacement_survives_a_compressed_boundary_release() {
+    use soundcraft_midi::{Note, Sequence};
+    for reverse in [false, true] {
+        let mut s = Session::default();
+        s.tempo.set_tempo(0, 120.).unwrap();
+        let t = s.add_track(TrackKind::Instrument, ChannelFormat::Stereo, None);
+        let mut seq = Sequence::default();
+        for (start, length, velocity) in [(0, 1, 60), (40, 960, 90)] {
+            seq.notes.push(Note { start, length, velocity, pitch: 60, channel: 0, release_velocity: 64 });
+        }
+        if reverse {
+            seq.notes.reverse();
+        }
+        let id = s.new_clip_id();
+        let track = s.track_mut(t).unwrap();
+        track.playlist_mut().unwrap().clips.push(Clip::midi(id, "retrigger", 0, 48000, seq));
+        track.instrument = Some(Insert::new("clap:test.keys"));
+        let heard = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let keys = Keys { inner: soundcraft_dsp::create("gain").unwrap(), heard: Arc::clone(&heard) };
+        let mut eng = MixEngine::new(48_000., 512);
+        eng.set_external_instances(true);
+        eng.adopt(vec![PreparedInstance { track: t, slot: INSTRUMENT_SLOT, id: "clap:test.keys".into(), ch: 2, plugin: Box::new(keys) }]);
+        eng.start_midi_at(0);
+        render_block(&mut eng, &s, s.tempo.tick_to_samples(40, s.sample_rate));
+        assert_eq!(*heard.lock().unwrap(), [(0, 60, 60), (0, 60, 0), (0, 60, 90)]);
+    }
 }
 
 fn render_block(eng: &mut MixEngine, s: &Session, pos: i64) -> f32 {
@@ -2134,4 +2211,221 @@ fn a_clip_volume_moved_earlier_by_the_track_delay_counts_as_set_when_a_device_go
     eng.midi_lost = midi_port_bit(0);
     render_block(&mut eng, &s, 1024);
     assert_eq!(std::mem::take(&mut *heard.lock().unwrap()), vec![(0, [0xB0, 121, 0]), (0, [0xB0, 7, 80])], "the clip's volume, not the default");
+}
+
+#[test]
+fn stale_clock_clip_bounds_skip_removed_tracks_and_replaced_clip_ids() {
+    let mut original = synth_session(-12.);
+    let track = original.tracks.iter_mut().find(|t| t.instrument.is_some()).unwrap();
+    track.ticks_timebase = true;
+    let id = track.id;
+    let old_length = track.playlist_mut().unwrap().clips[0].length;
+    let bounds = MidiClipBeatBounds::from_score(&original, |_| true);
+    let tempo = soundcraft_time::TempoMap::new(60., 4, 4).unwrap();
+
+    // First ensure the cached entry really changes a matching clip at this tempo.
+    let mut valid = original.clone();
+    bounds.apply(&mut valid, &tempo);
+    assert_ne!(valid.track_mut(id).unwrap().playlist_mut().unwrap().clips[0].length, old_length);
+
+    let mut replacement = original.clone();
+    let new_id = replacement.new_clip_id();
+    replacement.track_mut(id).unwrap().playlist_mut().unwrap().clips[0].id = new_id;
+    bounds.apply(&mut replacement, &tempo);
+    assert_eq!(replacement.track_mut(id).unwrap().playlist_mut().unwrap().clips[0].length, old_length);
+}
+
+#[test]
+fn stale_clock_clip_bounds_from_a_removed_track_do_not_panic() {
+    let mut original = synth_session(-12.);
+    original.tracks.iter_mut().find(|t| t.instrument.is_some()).unwrap().ticks_timebase = true;
+    let bounds = MidiClipBeatBounds::from_score(&original, |_| true);
+    original.tracks.clear();
+    let tempo = original.tempo.clone();
+    bounds.apply(&mut original, &tempo);
+    assert!(original.tracks.is_empty());
+}
+
+/// Records every note-on and note-off with its absolute sample (block position plus offset).
+struct NoteLog {
+    inner: Box<dyn Plugin>,
+    block: Arc<std::sync::atomic::AtomicI64>,
+    events: Arc<std::sync::Mutex<Vec<(bool, u8, i64)>>>,
+}
+
+impl Plugin for NoteLog {
+    fn info(&self) -> &'static soundcraft_dsp::PluginInfo {
+        self.inner.info()
+    }
+    fn prepare(&mut self, sr: f32, max: usize, ch: usize) {
+        self.inner.prepare(sr, max, ch);
+    }
+    fn reset(&mut self) {}
+    fn process(&mut self, io: &mut [Vec<f32>], frames: usize) {
+        self.inner.process(io, frames);
+    }
+    fn set_param(&mut self, id: &str, v: f32) -> bool {
+        self.inner.set_param(id, v)
+    }
+    fn param(&self, id: &str) -> Option<f32> {
+        self.inner.param(id)
+    }
+    fn note_on(&mut self, offset: usize, n: u8, _: u8) {
+        let at = self.block.load(std::sync::atomic::Ordering::Relaxed) + offset as i64;
+        self.events.lock().unwrap().push((true, n, at));
+    }
+    fn note_off(&mut self, offset: usize, n: u8) {
+        let at = self.block.load(std::sync::atomic::Ordering::Relaxed) + offset as i64;
+        self.events.lock().unwrap().push((false, n, at));
+    }
+}
+
+#[test]
+fn an_attack_released_late_by_a_wire_held_backlog_keeps_its_length() {
+    use soundcraft_midi::{Note, Sequence};
+    use soundcraft_model::{ChannelFormat, Clip, TrackKind};
+    // At 120 BPM and 960 ticks per quarter one tick is 25 samples: the note sounds 24 000..36 000.
+    let mut s = Session { sample_rate: soundcraft_time::SampleRate::HZ_48000, ..Session::default() };
+    let t = s.add_track(TrackKind::Instrument, ChannelFormat::Stereo, None);
+    let clip = s.new_clip_id();
+    let tr = s.track_mut(t).unwrap();
+    tr.instrument = Some(Insert::new("clap:test.notes"));
+    let mut seq = Sequence::default();
+    seq.notes.push(Note { start: 960, length: 480, pitch: 60, channel: 0, velocity: 100, release_velocity: 64 });
+    tr.playlist_mut().unwrap().clips.push(Clip::midi(clip, "note", 0, 96_000, seq));
+    let block = Arc::new(std::sync::atomic::AtomicI64::new(0));
+    let events = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let mut eng = MixEngine::new(48_000.0, 512);
+    eng.set_external_instances(true);
+    eng.adopt(vec![PreparedInstance {
+        track: t,
+        slot: INSTRUMENT_SLOT,
+        id: "clap:test.notes".into(),
+        ch: 2,
+        plugin: Box::new(NoteLog { inner: soundcraft_dsp::create("gain").unwrap(), block: Arc::clone(&block), events: Arc::clone(&events) }),
+    }]);
+    let mut out = vec![vec![0.0; 512]; 2];
+    // The wire holds the score before the attack while the device runs past it.
+    let mut pos = 0;
+    while pos < 28_160 {
+        block.store(pos, std::sync::atomic::Ordering::Relaxed);
+        eng.render_with_clock_limit(&s, pos, 512, &mut out, Some(900));
+        pos += 512;
+    }
+    // Prediction resumes; the held attack is now overdue.
+    while pos < 48_000 {
+        block.store(pos, std::sync::atomic::Ordering::Relaxed);
+        eng.render_with_clock_prediction(&s, pos, 512, &mut out, 2_000);
+        pos += 512;
+    }
+    let events = events.lock().unwrap().clone();
+    let on = events.iter().find(|e| e.0 && e.1 == 60).map(|e| e.2).expect("attack");
+    let off = events.iter().find(|e| !e.0 && e.1 == 60).map(|e| e.2).expect("release");
+    assert!(on > 24_000, "the attack was held: {events:?}");
+    assert!(off - on >= 12_000, "a late attack lost {} samples of its length: {events:?}", 12_000 - (off - on));
+}
+
+/// Notes and controllers in the order the strip sends them.
+struct Stream {
+    inner: Box<dyn Plugin>,
+    heard: Arc<std::sync::Mutex<Vec<(usize, [u8; 3])>>>,
+}
+
+impl Plugin for Stream {
+    fn info(&self) -> &'static soundcraft_dsp::PluginInfo {
+        self.inner.info()
+    }
+    fn prepare(&mut self, sr: f32, mb: usize, ch: usize) {
+        self.inner.prepare(sr, mb, ch);
+    }
+    fn reset(&mut self) {}
+    fn set_param(&mut self, id: &str, v: f32) -> bool {
+        self.inner.set_param(id, v)
+    }
+    fn param(&self, id: &str) -> Option<f32> {
+        self.inner.param(id)
+    }
+    fn process(&mut self, io: &mut [Vec<f32>], frames: usize) {
+        self.inner.process(io, frames);
+    }
+    fn note_on(&mut self, offset: usize, note: u8, velocity: u8) {
+        self.heard.lock().unwrap().push((offset, [0x90, note, velocity]));
+    }
+    fn note_off(&mut self, offset: usize, note: u8) {
+        self.heard.lock().unwrap().push((offset, [0x80, note, 0]));
+    }
+    fn midi(&mut self, offset: usize, msg: [u8; 3]) {
+        self.heard.lock().unwrap().push((offset, msg));
+    }
+}
+
+#[test]
+fn an_overdue_backlog_goes_first_at_frame_zero_and_on_time_events_keep_their_offsets() {
+    use soundcraft_midi::{CtrlEvent, Note, Sequence};
+    // One tick is 25 samples. The wire holds the score at 22 976 while the device reaches 24 000.
+    let mut s = Session { sample_rate: soundcraft_time::SampleRate::HZ_48000, ..Session::default() };
+    let t = s.add_track(TrackKind::Instrument, ChannelFormat::Stereo, None);
+    let clip = s.new_clip_id();
+    let tr = s.track_mut(t).unwrap();
+    tr.instrument = Some(Insert::new("clap:test.stream"));
+    let note = |start, pitch| Note { start, length: 960, pitch, channel: 0, velocity: 100, release_velocity: 64 };
+    let mut seq = Sequence::default();
+    // Overdue: a controller at 23 200, then a note at 23 500. On time: notes at 24 000 and 24 250.
+    seq.notes.extend([note(940, 61), note(960, 62), note(970, 63)]);
+    seq.ctrls.push(CtrlEvent { tick: 928, channel: 0, kind: CtrlKind::Cc(7), value: 90 });
+    tr.playlist_mut().unwrap().clips.push(Clip::midi(clip, "m", 0, 96_000, seq));
+    let heard = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let mut eng = MixEngine::new(48_000.0, 512);
+    eng.set_external_instances(true);
+    let plugin = Box::new(Stream { inner: soundcraft_dsp::create("gain").unwrap(), heard: Arc::clone(&heard) });
+    eng.adopt(vec![PreparedInstance { track: t, slot: INSTRUMENT_SLOT, id: "clap:test.stream".into(), ch: 2, plugin }]);
+    let mut out = vec![vec![0.0; 512]; 2];
+    for pos in (0..24_000).step_by(500) {
+        eng.render_with_clock_limit(&s, pos, 500, &mut out, Some(919));
+    }
+    heard.lock().unwrap().clear();
+    eng.render_with_clock_prediction(&s, 24_000, 500, &mut out, 2_000);
+    let heard = heard.lock().unwrap().clone();
+    assert_eq!(heard, [(0, [0xB0, 7, 90]), (0, [0x90, 61, 100]), (0, [0x90, 62, 100]), (250, [0x90, 63, 100])]);
+}
+
+#[test]
+fn a_seek_discards_the_score_range_the_wire_held_back() {
+    use soundcraft_midi::{Note, Sequence};
+    use soundcraft_model::{ChannelFormat, Clip, TrackKind};
+    // One tick is 25 samples: the note sounds 36 000..42 000, between the held wire and the seek.
+    let mut s = Session { sample_rate: soundcraft_time::SampleRate::HZ_48000, ..Session::default() };
+    let t = s.add_track(TrackKind::Instrument, ChannelFormat::Stereo, None);
+    let clip = s.new_clip_id();
+    let tr = s.track_mut(t).unwrap();
+    tr.instrument = Some(Insert::new("clap:test.notes"));
+    let mut seq = Sequence::default();
+    seq.notes.push(Note { start: 1440, length: 240, pitch: 60, channel: 0, velocity: 100, release_velocity: 64 });
+    tr.playlist_mut().unwrap().clips.push(Clip::midi(clip, "note", 0, 96_000, seq));
+    let block = Arc::new(std::sync::atomic::AtomicI64::new(0));
+    let events = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let mut eng = MixEngine::new(48_000.0, 512);
+    eng.set_external_instances(true);
+    eng.adopt(vec![PreparedInstance {
+        track: t,
+        slot: INSTRUMENT_SLOT,
+        id: "clap:test.notes".into(),
+        ch: 2,
+        plugin: Box::new(NoteLog { inner: soundcraft_dsp::create("gain").unwrap(), block: Arc::clone(&block), events: Arc::clone(&events) }),
+    }]);
+    let mut out = vec![vec![0.0; 512]; 2];
+    // The wire holds the score at 24 001 while the device runs on.
+    let mut pos = 0;
+    while pos < 24_576 {
+        block.store(pos, std::sync::atomic::Ordering::Relaxed);
+        eng.render_with_clock_limit(&s, pos, 512, &mut out, Some(960));
+        pos += 512;
+    }
+    // A seek past the note: the destination block plays only its own range.
+    for pos in [48_000, 48_512] {
+        block.store(pos, std::sync::atomic::Ordering::Relaxed);
+        eng.render_with_clock_limit(&s, pos, 512, &mut out, Some(4_000));
+    }
+    let events = events.lock().unwrap().clone();
+    assert!(events.iter().all(|e| e.1 != 60), "a note from the skipped range played: {events:?}");
 }

@@ -5,8 +5,11 @@ MIDI clips.
 
 **Where it works.** Linux (ALSA sequencer), macOS (CoreMIDI) and Windows (WinMM). It has been
 played and recorded on Linux only; on macOS and Windows the code builds but has not been tried
-with a device yet. There is no MIDI input on FreeBSD or in the web version. MIDI output, MIDI
-clock and loop or merge recording are not there yet (see [gaps.md](gaps.md), G-02).
+with a device yet. There is no MIDI input on FreeBSD or in the web version. MIDI note output and loop or merge
+recording remain on the [G-02 roadmap](gaps.md). For synchronization, see
+[Send MIDI Beat Clock to external hardware](#send-midi-beat-clock-to-external-hardware),
+[Generate or follow MIDI Time Code](#generate-or-follow-midi-time-code), and
+[Follow MIDI Beat Clock](#follow-midi-beat-clock).
 
 ## 1. Switch a device on
 
@@ -81,6 +84,16 @@ One **Undo** removes the take.
 **Setup › MIDI › MIDI Input Filter…** keeps kinds of messages (for example aftertouch) out of
 recordings.
 
+## Send MIDI Beat Clock to external hardware
+
+In **Setup › MIDI › MIDI Beat Clock**, enable the clock and check each destination that should follow session tempo. Each port has a signed offset in samples. To calibrate a device, record its beat into an audio track, measure the first transient’s delay relative to the grid, and enter that sample count with a minus sign to advance the port. A positive offset delays delivery. Port calibration is limited to ±250 ms at the session rate. When a different session rate puts a saved sample offset outside that range, playback caps its effective value and preserves the saved calibration. The audio callback limits how far a message can be advanced. For more advance, increase the audio buffer or delay the other devices. Measure several transients at different beat positions and average their sample offsets to reduce MIDI timing jitter. Settings persist on this computer across projects. Opening an old project imports its offset if the port has no saved calibration.
+
+At the session origin SoundCraft sends Start. A locate during playback sends Stop, Song Position Pointer and Continue in sequence. The first subsequent clock aligns to the encoded sixteenth. Moving the stopped playhead sends its Song Position Pointer immediately. Clock and Continue wait until playback resumes. Position Pointer covers 0 through 16,383 sixteenths; a continuous pass can run beyond that range. The worker retries unplugged ports. When several outputs fail, the status line and the `output.error` field of `setup.midi_sync_status` name each one, separated by semicolons. Identically named outputs appear as separate destinations (for example, DIN and DIN (2)), each with its own calibration. Existing name-only settings select the first occurrence. Once a device ID is saved, unplugging that device leaves its destination unavailable until the same ID returns.
+
+**Preferences › MIDI › Delay Compensation for External Devices** controls the use of the audio device’s reported output lead and, while Delay Compensation is enabled, the mixer’s compensated plug-in delay for Beat Clock and generated MIDI Time Code. A plug-in delay change during playback takes effect with the audio callback that renders the new session revision. MIDI already delivered to a device keeps its original timing. Per-port calibration applies in addition. The Notes and Controllers preference is saved for external note output. SoundCraft's current MIDI-input instruments render inside the audio engine.
+
+Use `setup.midi_beat_clock` to read settings or apply a patch, for example `{"enabled":true,"ports":{"USB MIDI":{"enabled":true,"offset_samples":-200}}}`. Supplying `ports` replaces the active Beat Clock destinations. Omitted ports stop sending Beat Clock and retain their saved sample offsets for other sync outputs. Passing `{"ports":{}}` disables every Beat Clock destination and preserves calibrated offsets. Passing `{}` alone reads the settings. Use `{"ports":{"Old name":null}}` to clear a saved output. A calibrated input with the same name retains its own offset. The desktop control channel’s `setup.midi_sync_status` and the dialog’s **Copy diagnostics** report host-side send timing, callback gaps and port offsets. USB buffering and wire latency require an external measurement.
+
 ## If something is lost
 
 The path from a device to the engine has a fixed size. If a device sends more than it holds
@@ -98,3 +111,44 @@ shows how many messages were dropped.
 
 `ui.inspect` reports `midi_inputs` (name, enabled, open), `midi_events` (messages received so far)
 and `midi_events_dropped`. See [control-protocol.md](control-protocol.md).
+
+
+## Generate or follow MIDI Time Code
+
+Select the **MTC Reader Port** and **MTC Generator Port** in **Setup › Peripherals › Synchronization**. Enable the reader’s input under Playback Engine. **Options › Transport Online** and the transport’s **Online** switch engage chase. The **Gen MTC** switch enables transmission on the selected output. Generator and chase are mutually exclusive.
+
+Set the session start label, timecode rate, signed External Timecode Offset and Freewheel mode under **Setup › Session**. Enter the offset as a signed timecode label at the session frame rate. A new project starts at 01:00:00:00; opening an existing document preserves its stored start. The external offset shifts incoming positions in the session. In **Setup › Peripherals › Synchronization**, the offset beside the MTC Generator Port sets that port’s machine calibration in samples, with its millisecond equivalent. MIDI Beat Clock uses the same calibration for this port.
+
+A stopped full-frame message locates the cursor. Forward quarter frames establish lock. A corroborated stopped locate preserves the first attack, and playback then runs on the device’s sample clock at normal pitch. Persistent drift greater than one frame for one second causes a relocate. A drifting master can therefore cause an audible jump. No continuous speed correction is applied. Session Setup offers three **Freewheel** modes. **None** stops on a discontinuity or after two frames plus a 10% delivery margin without valid quarter frames. **Frames** continues on the sample clock through 4–40 missing frames (default 8). **Jam Sync** continues on the sample clock after lock, including extended timecode loss. A returning source within the tracking tolerance resumes without relocating. If the position jumps during Jam Sync, two consecutive groups must agree before the transport adopts the new position. Press Stop or send MIDI Stop to end playback. Recording is allowed while following MIDI Beat Clock (see below); take MTC chase offline to record. An external sample-clock reference may be appropriate when a production requires continuous, tight synchronization.
+
+The generator sends quarter frames while rolling and full-frame messages on locates with Gen MTC enabled. A quarter frame that is late by up to one group (two frames) is still sent, spaced on the grid; when output falls further behind while rolling, the generator sends a full-frame message for the live frame and rejoins at the next group. Both directions support 23.976, 24, 25, 29.97 non-drop, 29.97 drop-frame and 30 fps. Pull-down sessions interpret the 24/30 wire codes using the corresponding fractional rates. Timecode calculations use the project rate and preserve drop-frame labels.
+
+Session Setup displays the last absolute **Received timecode** before applying Session Start or External Timecode Offset. Click **Use received position**, or press **=** in the Session Start field, to copy it. OK applies the new start. When tracks exist, choose whether clips keep their timecode or their distance from session start. The signed **External Timecode Offset** in Session Setup and in the Setup menu edits one value, stored in samples. MTC chase uses incoming time minus Session Start plus this offset. A positive offset moves the cursor later. A negative result leaves the cursor and selection in place. This also applies to absolute timecode typed in Spot.
+
+The reader accepts wire code 24 for 24/23.976, 25 for 25, 30 drop for 29.97 drop, and 30 for 30/29.97 non-drop. A changed code or a sustained speed discrepancy above 0.05% between the two rates sharing a code displays a warning. The session keeps its chosen rate and can still lock. **Ctrl+J** (Windows/Linux) or **Cmd+J** (macOS) toggles Online. The Online lamp blinks while waiting and stays lit when locked. Gen MTC and Online are mutually exclusive to avoid feeding timecode back into the reader.
+
+**For control clients.** `setup.mtc` reads or sets `input`, `online`, `freewheel` (`none`, `frames` or `jam_sync`) and `freewheel_frames`. Legacy `jam_sync` remains accepted. `setup.mtc_output` reads or sets `port`, `enabled` and `offset_samples` (the selected port's machine calibration, shared with Beat Clock). `list_ports:true` enumerates destinations. Disabling the generator retains its selected port. `setup.session` accepts `start_timecode`, `keep` (`relative` by default, or `timecode`), `external_offset_timecode`, legacy `external_offset_frames` and the same freewheel settings. Changing only the rate preserves a valid start label and the stored offset in samples. `setup.external_timecode_offset` accepts signed `timecode`, `samples` or `frames`. The status returned by `setup.midi_sync_status` includes the incoming position and wire rate, any rate warning, and freewheel state. The engine without a desktop host reports Transport Online as unsupported.
+
+## Follow MIDI Beat Clock
+
+Open **Setup › MIDI › Sync**, choose the enabled input connected to the external sequencer, and switch on **Follow MIDI clock**. The same controls appear under **External MIDI clock** in **Setup › Peripherals › Synchronization**. The transport’s **EXT** button toggles follow for the selected input. It has no default keyboard shortcut. Ctrl+J (Cmd+J on macOS) remains assigned to **Transport Online** for MTC. Set that device to send MIDI Beat Clock and transport. A separate Link-to-MIDI-clock bridge can be used as the master: join the Link session in the bridge and route its MIDI output to the selected SoundCraft input.
+
+Start selects song zero and the next clock starts playback. Continue resumes at the current clock position. A stopped Song Position Pointer selects six clocks per unit (one sixteenth note, in every meter). Stop ends playback and any recording pass. SoundCraft estimates quarter-note tempo from the 24 pulses per quarter note. Live playback and incoming MIDI takes use a transient beat grid. Disabling follow restores the session tempo map; audio continues at the device sample rate during follow.
+
+To record a performance against the external beat, record-enable the audio or MIDI tracks (or both), start the external transport and press Record in SoundCraft. Audio is captured at the device sample rate and MIDI notes follow the live beat grid. The project stores the take against its own tempo so subsequent offline playback and reopening the project preserve its timing against recorded audio. With **Coast**, a clock interruption keeps the same take open at the last tempo. Returning Clock pulses resume tracking without seeking inside the take. With **Stop if MIDI clock is lost**, a timeout stops the transport and commits the take. An explicit MIDI Stop finishes the take under either policy.
+
+At steady tempo with evenly spaced Clock pulses, the loss timeout is three pulse intervals with a 150 ms minimum (150 ms at 120 BPM). During a sustained slowdown the timeout follows the lengthening intervals, up to 1.5 seconds. Batched delivery allows for gaps between groups of up to five pulses. At startup or after a loss, the receiver allows up to 1.5 seconds to measure the new interval. If the source sends MIDI Active Sensing, 300 ms without any MIDI activity on that port also signals a loss. The default response is **Coast**. Select **Stop if MIDI clock is lost** to stop playback on a timeout.
+
+While coasting, returning Clock pulses relock the running transport at the nearest pulse on the coasting grid and update its tempo. Clock pulses carry no song position. During external Clock follow, the master sets the position even when local Loop Playback is enabled. Ableton Live wraps incoming Song Position Pointer into its loop. For an intentional jump to a different part of the song, stop and send Song Position Pointer followed by Continue. After stop-on-loss or an explicit Stop, send Start or Continue followed by Clock to resume playback.
+
+Each input remembers its signed calibration in session samples on this computer. If the SoundCraft click is late by N samples, set the input offset to −N. Input and output calibration are independent even when both directions share a port name. Earlier builds stored input advances as positive values; loading those settings reverses the sign to preserve the timing. The host also accounts for the age of the incoming message and the audio output device’s reported presentation lead.
+
+The setup follows the synchronization-device grouping in Avid’s [Pro Tools Reference Guide 2026.4](https://resources.avid.com/SupportFiles/PT/Pro_Tools_Reference_Guide_2026.4.pdf#page=286), pp. 184–185. SoundCraft applies the guide’s per-port output convention (p. 744) to incoming Beat Clock as well. MTC chase uses the session’s **External Timecode Offset** for incoming positions and ignores the MIDI input port’s Beat Clock calibration. Applying both offsets would compensate the same delay twice.
+
+Desktop control clients can query or change `setup.midi_clock_follow` with `input` (port name), `enabled`, `loss_policy` (`coast` or `stop`), and `input_offset_samples`. The `clock_follow` member of `setup.midi_sync_status` reports estimated BPM, timing jitter and phase residual in microseconds, state and dropout count. Following a clock excludes online MTC chase and sending Beat Clock to the same port. The generic key/value entries in the scripting command `setup.peripherals` do not configure clock follow or MTC.
+
+Tempo-follow response is fixed. In the ±8% ramp test, the largest measured eighth-note onset error was 3.65 ms. With buffers longer than one Clock pulse, a steady, locked source can be predicted up to the device's delivery deadline. A slowdown inside an already queued buffer cannot move that audio. At 300 BPM with 2,048 frames and 50 ms of lead, the first offbeat after a 20% slowdown was up to 86.5 ms late. For live use, try 64–256 frames if the driver can sustain it.
+
+During playback, tempo and phase corrections change the spacing of upcoming beats. Beats that have already played keep their positions. A Song Position Pointer received while stopped starts a new pass; tempo corrections from the previous pass are discarded.
+
+Verified with a standard MIDI Clock source (TASCAM Model 12 via Roland UM-ONE); Akai MPC hardware has not been tested.

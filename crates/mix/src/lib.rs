@@ -67,6 +67,7 @@ mod instances;
 mod live_midi;
 mod meter;
 mod midi;
+mod midi_clip_bounds;
 mod offline;
 mod pan;
 mod routing;
@@ -78,6 +79,7 @@ pub use instances::{INSTRUMENT_SLOT, InstanceSpec, NewInstance, PluginFailures, 
 pub use live_midi::{LiveMidi, MAX_MIDI_PORTS, MAX_OWNERS, MidiPorts, midi_port_bit, midi_thru};
 pub use meter::StripMeter;
 use midi::sync_sample;
+pub use midi_clip_bounds::MidiClipBeatBounds;
 pub use offline::{
     MAX_RENDER_SAMPLES, RangeRender, fold_down_stereo, render_bus, render_clips, render_range, render_track_pre_fader, source_channels,
 };
@@ -107,6 +109,15 @@ pub const MAX_CHANNELS: usize = 16;
 /// Number of channels of a session's main mix.
 pub fn main_channels(s: &Session) -> usize {
     s.main_format().channels().clamp(MAIN_CHANNELS, MAX_CHANNELS)
+}
+
+/// Placement of MIDI and click events inside a device block following an external clock.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ClockDelivery {
+    #[default]
+    Wire,
+    Predicted,
+    Coalesced,
 }
 
 /// Renders sessions. Keep one per playback stream; plugin state persists across blocks.
@@ -149,6 +160,10 @@ pub struct MixEngine {
     pub midi_lost: u64,
     /// Transport stopped: only monitored inputs sound (no clips).
     pub monitor_only: bool,
+    midi_origin: Option<Samples>,
+    held_score_from: Option<Samples>,
+    click_tails: Vec<click::Tail>,
+    clocked_click: bool,
     /// Recording: record-armed tracks hear their input (auto input).
     pub recording: bool,
     /// Mix the metronome (Options > Click) into the output. Playback turns this on; offline renders
@@ -191,6 +206,10 @@ impl MixEngine {
             midi_ports: None,
             midi_lost: 0,
             monitor_only: false,
+            midi_origin: None,
+            held_score_from: None,
+            click_tails: Vec::with_capacity(32),
+            clocked_click: false,
             recording: false,
             metronome: false,
             external: false,
@@ -258,8 +277,17 @@ impl MixEngine {
         self.main.len()
     }
 
+    /// Lower bound for clip notes on the first block of externally clocked playback.
+    pub fn start_midi_at(&mut self, origin: Samples) {
+        self.midi_origin = Some(origin);
+    }
+
     /// Reset all plugin state (on stop / seek).
     pub fn reset(&mut self) {
+        self.held_score_from = None;
+        self.clocked_click = false;
+        self.click_tails.clear();
+        self.midi_origin = None;
         for s in self.strips.values_mut() {
             for p in s.plugins.iter_mut().flatten() {
                 p.plugin.reset();
@@ -271,6 +299,7 @@ impl MixEngine {
                 i.failed = false;
             }
             s.held.clear();
+            s.late_releases.clear();
             s.chase = true;
             s.live.clear();
             s.align.clear();
@@ -379,9 +408,48 @@ impl MixEngine {
 
     /// Render `frames` (≤ max_block) samples starting at `pos` into `out` (≥ 2 channels).
     pub fn render(&mut self, s: &Session, pos: Samples, frames: usize, out: &mut [Vec<f32>]) {
+        self.render_with_clock_limit(s, pos, frames, out, None);
+    }
+
+    /// Render audio and live input continuously, but dispatch score events only through
+    /// the inclusive wire tick. A later block consumes the retained range exactly once.
+    pub fn render_with_clock_limit(&mut self, s: &Session, pos: Samples, frames: usize, out: &mut [Vec<f32>], through_tick: Option<i64>) {
+        self.render_clock_block(s, pos, frames, out, through_tick, ClockDelivery::Wire);
+    }
+
+    /// Schedule the part of this projected block that is still on time at its
+    /// actual sample offset, even if earlier wire-limited blocks held a backlog.
+    pub fn render_with_clock_prediction(&mut self, s: &Session, pos: Samples, frames: usize, out: &mut [Vec<f32>], through_tick: i64) {
+        self.render_clock_block(s, pos, frames, out, Some(through_tick), ClockDelivery::Predicted);
+    }
+
+    /// Render audio continuously and place newly admitted score events according to their Clock delivery.
+    pub fn render_clock_block(
+        &mut self,
+        s: &Session,
+        pos: Samples,
+        frames: usize,
+        out: &mut [Vec<f32>],
+        through_tick: Option<i64>,
+        delivery: ClockDelivery,
+    ) {
         let frames = frames.min(self.max_block);
         self.begin_block(s, pos, frames);
-        let blk = Block { pos, frames, any_solo: any_solo(s) };
+        self.clocked_click |= through_tick.is_some();
+        let physical_end = pos.saturating_add(frames as i64);
+        let limit = through_tick.map_or(physical_end, |t| s.tempo.tick_to_samples(t, s.sample_rate).saturating_add(1));
+        // At a compensated Continue the first callback may already be ahead of
+        // the wire. Preserve the requested boundary attack and its note-off.
+        let start = self.held_score_from.take().unwrap_or_else(|| if self.midi_origin.is_some() { pos.min(limit.saturating_sub(1)) } else { pos });
+        let score = Range { start, end: physical_end.min(limit).max(start) };
+        if !self.monitor_only && score.end < physical_end {
+            self.held_score_from = Some(score.end);
+        }
+        let note_start = self.midi_origin.unwrap_or(start);
+        if frames > 0 && !self.monitor_only && score.start < score.end && note_start < score.end {
+            self.midi_origin = None;
+        }
+        let blk = Block { pos, frames, note_start, score, delivery, any_solo: any_solo(s) };
         let order = std::mem::take(&mut self.order);
         // Phase 1: independent strips (audio, instrument, MIDI) in parallel.
         let mut work = std::mem::take(&mut self.work);
@@ -440,9 +508,14 @@ impl MixEngine {
                         i.plugin.all_notes_off();
                     }
                     st.held.clear();
+                    st.late_releases.clear();
                     st.chase = true;
                     st.live.clear();
                 }
+                // A score range Clock held back belongs to the old position, and so do
+                // ringing clicks. An origin armed by `start_midi_at` is for this block.
+                self.held_score_from = None;
+                self.click_tails.clear();
             }
             self.last_end = pos.saturating_add(frames as i64);
         }
@@ -583,13 +656,15 @@ impl MixEngine {
 
     /// Add the metronome and copy the main mix to `out`.
     fn write_output(&mut self, s: &Session, blk: Block, out: &mut [Vec<f32>]) {
-        let Block { pos, frames, .. } = blk;
+        let frames = blk.frames;
         // Metronome: summed after the master fader, so it reaches the speakers without passing
         // through any track, send or insert. Only the playback engine sets `metronome`.
         // Not while monitoring only (transport stopped): the position does not advance there, so the
         // start of the same beat would repeat every block as a buzz.
         if self.metronome && !self.monitor_only && s.edit.click && (!s.edit.flag("click.only_during_record") || self.recording) {
-            click::render(s, pos, frames, &mut self.main);
+            click::render(s, blk, &mut self.main, &mut self.click_tails, self.clocked_click);
+        } else {
+            self.click_tails.clear();
         }
         // Output: min(out.len(), main channels) channels; any further output channels are silent.
         for (c, o) in out.iter_mut().enumerate() {

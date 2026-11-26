@@ -210,24 +210,23 @@ fn convert_aux(e: &mut Engine, p: &Value) -> Result<Value> {
 
 fn extract_midi(e: &mut Engine, p: &Value) -> Result<Value> {
     let tracks = tracks_required(e, "track.extract_midi", p)?;
-    let s = e.session_mut();
     let mut out = Vec::new();
     for t in &tracks {
+        let s = e.session_mut();
         let Some(src) = s.track(*t).cloned() else { continue };
         if !src.kind.is_midi() {
             continue;
         }
-        let midi: Vec<Clip> = src.clips().iter().filter(|c| matches!(c.content, ClipContent::Midi { .. })).cloned().collect();
+        let mut clips: Vec<Clip> = src.clips().iter().filter(|c| matches!(c.content, ClipContent::Midi { .. })).cloned().collect();
         let nt = s.add_track(TrackKind::Midi, ChannelFormat::Mono, Some(&format!("{} MIDI", src.name)));
         if let (Some(i), Some(ni)) = (s.track_index(*t), s.track_index(nt)) {
             let tr = s.tracks.remove(ni);
             s.tracks.insert((i + 1).min(s.tracks.len()), tr);
         }
-        let mut clips = Vec::new();
-        for mut c in midi {
-            c.id = s.new_clip_id();
-            clips.push(c);
+        for clip in &mut clips {
+            e.assign_copied_clip_id(clip);
         }
+        let s = e.session_mut();
         let n = clips.len();
         if let Some(pl) = s.track_mut(nt).and_then(Track::playlist_mut) {
             pl.clips = clips;
