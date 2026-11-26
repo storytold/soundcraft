@@ -15,14 +15,15 @@ fn auto_rename_dialog() -> (Harness<'static, SoundApp>, TrackId, ClipId) {
     app.run("edit.select", json!({"clips": [clip.0]})).unwrap();
     menus::invoke_menu(&mut app, "clip.auto_rename", "");
     assert_eq!(app.dialogs.open_name(), Some("auto_rename"));
-    let mut h = Harness::builder().with_size(vec2(1600.0, 1000.0)).build_ui_state(
-        |ui, app: &mut SoundApp| {
-            let ctx = ui.ctx().clone();
-            app.logic(&ctx);
-            app.ui(ui);
-        },
-        app,
-    );
+    let mut h =
+        Harness::builder().with_context_setup(soundcraft_ui_egui::framework::install_headless).with_size(vec2(1600.0, 1000.0)).build_ui_state(
+            |ui, app: &mut SoundApp| {
+                let ctx = ui.ctx().clone();
+                app.logic(&ctx);
+                app.ui(ui);
+            },
+            app,
+        );
     h.run_steps(3);
     (h, track, clip)
 }

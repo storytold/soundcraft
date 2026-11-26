@@ -11,4 +11,21 @@ pub struct Services {
     pub pick_save: Option<Box<dyn Fn(&str, &Path) -> Option<PathBuf>>>,
     /// The folder to start in.
     pub pick_folder: Option<Box<dyn Fn(&Path) -> Option<PathBuf>>>,
+    /// The app binary's last step as the app leaves, run once at the end of its `on_exit`. On
+    /// macOS every quit ends the process inside AppKit's terminate, after eframe's `on_exit`, so
+    /// code after `eframe::run_native` never runs there.
+    pub at_exit: Option<AtExitFn>,
+}
+
+/// Runs once when the app leaves ([`Services::at_exit`]).
+pub type AtExitFn = Box<dyn FnOnce()>;
+
+impl Services {
+    /// Run [`Services::at_exit`] at most once: a second exit, or a hook that already ran from the
+    /// app's own exit path, does nothing.
+    pub fn run_exit_hook(&mut self) {
+        if let Some(at_exit) = self.at_exit.take() {
+            at_exit();
+        }
+    }
 }
