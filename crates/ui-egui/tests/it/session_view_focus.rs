@@ -139,9 +139,9 @@ fn a_press_in_the_session_view_takes_the_keyboard_from_a_toolbar_button() {
     let mut h = harness();
     let tool = h.state().engine.session().edit.tool;
     assert_ne!(tool, Tool::Trim);
-    h.get_by_label("Trim (F6)").focus();
+    h.get_by_label("Trim").focus();
     h.run_steps(2);
-    assert!(h.get_by_label("Trim (F6)").is_focused());
+    assert!(h.get_by_label("Trim").is_focused());
     let at = in_timeline(&h);
     h.hover_at(at);
     button(&mut h, at, true);
@@ -156,7 +156,7 @@ fn a_press_in_the_session_view_takes_the_keyboard_from_a_toolbar_button() {
     button(&mut h, at, false);
     assert_eq!(focused(&h), edit_view(), "a press in the focused view");
 
-    h.get_by_label("Trim (F6)").click();
+    h.get_by_label("Trim").click();
     h.run_steps(3);
     assert_eq!(h.state().engine.session().edit.tool, Tool::Trim);
     select(&mut h, json!({"tracks": ["Kick"], "start": 0}));
@@ -196,7 +196,7 @@ fn a_closed_search_gives_the_focus_back_to_the_session_view() {
 #[test]
 fn a_session_made_from_a_dialog_takes_the_focus() {
     let mut h = harness_of(soundcraft_engine::Engine::default());
-    h.get_by_label("Trim (F6)").focus();
+    h.get_by_label("Trim").focus();
     h.run_steps(2);
     assert_ne!(focused(&h), edit_view());
     menus::invoke_menu(h.state_mut(), "session.new", "File > New Session...");
