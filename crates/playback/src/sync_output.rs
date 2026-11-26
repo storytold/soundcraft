@@ -47,13 +47,14 @@ impl RouteKind {
         self as usize
     }
 }
-/// A message that ends sound: Note-Off (or Note-On at velocity 0), sustain pedal up, All Sound
-/// Off or All Notes Off. A full queue never evicts one (MIDI 1.0 p24: send each Note-Off).
+/// A message that ends sound: Note-Off (or Note-On at velocity 0), sustain pedal up (any value
+/// below 64), All Sound Off or All Notes Off. A full queue never evicts one (MIDI 1.0 p24: send
+/// each Note-Off).
 fn releases(bytes: &[u8]) -> bool {
     match bytes {
         [status, _, velocity, ..] if status & 0xf0 == 0x90 => *velocity == 0,
         [status, ..] if status & 0xf0 == 0x80 => true,
-        [status, 64, 0, ..] if status & 0xf0 == 0xb0 => true,
+        [status, 64, value, ..] if status & 0xf0 == 0xb0 => *value < 64,
         [status, 120 | 123, ..] if status & 0xf0 == 0xb0 => true,
         _ => false,
     }
@@ -353,8 +354,9 @@ struct Port<C> {
     waiting_for_timing: bool,
     failure: Option<String>,
 }
-/// Most future events a port holds. When full, an event that is not a release makes room;
-/// releases are always kept.
+/// Most future events a port holds. When full, an event that is not a release makes room; when
+/// every queued event is a release, an event that is not one is dropped. Releases are always
+/// kept.
 const QUEUE: usize = 256;
 #[derive(Clone, Copy)]
 struct Event {
@@ -464,10 +466,12 @@ impl<C: SyncPort> Port<C> {
                         pending.push(event);
                     } else {
                         if self.future.len() >= QUEUE {
+                            self.failure = Some(format!("{name}: MIDI output deadline queue is full"));
                             if let Some(index) = self.future.iter().position(|e| !releases(&e.bytes[..e.len])) {
                                 self.future.remove(index);
+                            } else if !releases(m) {
+                                return;
                             }
-                            self.failure = Some(format!("{name}: MIDI output deadline queue is full"));
                         }
                         self.future.push(event);
                         soon(at);

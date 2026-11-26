@@ -647,6 +647,37 @@ fn a_full_deadline_queue_never_evicts_a_release() {
 }
 
 #[test]
+fn every_sustain_off_value_is_a_release_and_pedal_down_is_not() {
+    // MIDI 1.0: CC 64 values 0-63 are off, 64-127 on.
+    for (value, release) in [(0, true), (63, true), (64, false), (127, false)] {
+        assert_eq!(releases(&[0xb3, 64, value]), release, "{value}");
+    }
+}
+
+#[test]
+fn a_deadline_queue_full_of_releases_takes_no_more_than_releases() {
+    let now = Instant::now();
+    let later = Duration::from_secs(1);
+    let view = View::default();
+    view.lock().unwrap().push(block(now, 0., 480., Duration::ZERO));
+    let mut port = active_port(0, false);
+    // A full queue of releases, then a Note-On and a controller: no room for them.
+    let mut events: Vec<_> = (0..QUEUE).map(|i| (later, vec![0x80, (i % 128) as u8, 0])).collect();
+    events.push((later, vec![0x90, 60, 100]));
+    events.push((later, vec![0xb0, 64, 127]));
+    // A release still gets in.
+    events.push((later, vec![0xb0, 64, 10]));
+    port.routes[0].as_mut().unwrap().encoder = Box::new(Messages(events));
+    let stats = Stats::default();
+    port.poll("DIN", now, &Session::default(), &view, &stats, &mut Vec::new());
+    assert_eq!(port.future.len(), QUEUE + 1, "only the release went past the limit");
+    assert_eq!(port.failure.as_deref(), Some("DIN: MIDI output deadline queue is full"));
+    port.poll("DIN", now + later, &Session::default(), &view, &stats, &mut Vec::new());
+    let sent = port.link.unwrap().messages;
+    assert!(sent.iter().all(|(_, m)| releases(m)), "{sent:?}");
+}
+
+#[test]
 fn extended_messages_are_delivered_and_oversized_messages_are_reported() {
     let now = Instant::now();
     let view = View::default();
