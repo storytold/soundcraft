@@ -26,6 +26,7 @@ fn button(pos: Pos2, pressed: bool) -> Event {
 fn rig() -> (egui::Context, SoundApp) {
     let mut app = SoundApp::new(soundcraft_engine::demo::demo_engine(), None, Services::default());
     let ctx = egui::Context::default();
+    soundcraft_ui_egui::framework::install_headless(&ctx);
     frame(&ctx, &mut app, vec![]);
     frame(&ctx, &mut app, vec![]);
     (ctx, app)

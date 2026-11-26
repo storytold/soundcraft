@@ -1,6 +1,6 @@
 //! Tiny synthetic movies, generated in code (for tests, demos and screenshots; nothing binary is
 //! committed). H.264 pictures are made of I_PCM macroblocks, so their decoded samples are known
-//! exactly; ProRes comes from the bundled encoder and Motion JPEG from the `image` encoder. All
+//! exactly; ProRes comes from the bundled encoder and Motion JPEG from craft-video's `mjpeg` encoder. All
 //! are muxed with the bundled MP4/MOV writer.
 
 use crate::bitstream::{BitWriter, escape_rbsp};
@@ -174,10 +174,10 @@ pub fn mjpeg_mov(n: usize) -> Result<Vec<u8>> {
     let (w, h) = (32u32, 24u32);
     let mut mw = Mp4Writer::new(Cursor::new(Vec::new()), WriterOptions::new(Brand::Mov)).map_err(err)?;
     let t = mw.add_track(TrackConfig::new(SampleEntry::jpeg(w as u16, h as u16), 10)).map_err(err)?;
+    let encoder = craft_video::mjpeg::Encoder::new(craft_video::mjpeg::EncoderConfig { quality: 95, ..Default::default() }).map_err(err)?;
     for i in 0..n.min(10_000) {
-        let img = image::RgbImage::from_pixel(w, h, image::Rgb([(30 * (i % 9)) as u8; 3]));
-        let mut jpg = Vec::new();
-        image::codecs::jpeg::JpegEncoder::new_with_quality(&mut jpg, 95).encode_image(&img).map_err(err)?;
+        let pixels = vec![(30 * (i % 9)) as u8; (w * h * 3) as usize];
+        let jpg = encoder.encode(w, h, 3, &pixels).map_err(err)?;
         mw.write_sample(t, WriteSample { data: &jpg, duration: 1, composition_offset: 0, is_sync: true }).map_err(err)?;
     }
     Ok(mw.finish().map_err(err)?.into_inner())

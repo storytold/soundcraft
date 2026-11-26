@@ -349,7 +349,10 @@ fn select_split(e: &mut Engine, p: &Value) -> Result<Value> {
         };
         let mut nc = c.clone();
         nc.id = s.new_clip_id();
-        nc.content = ClipContent::Midi { sequence: soundcraft_midi::Sequence { notes: hit, ctrls: Vec::new() } };
+        // Note-split has always copied only the matching notes, not controllers. SysEx is the same
+        // default now that Sequence has that field: packets stay on the source clip. Full SysEx
+        // split/trim/heal is storytold/soundcraft#1618.
+        nc.content = ClipContent::Midi { sequence: soundcraft_midi::Sequence { notes: hit, ctrls: Vec::new(), sysex: Vec::new() } };
         crate::edit::place_clip(s, nt, nc);
     }
     Ok(json!({"matched": matched, "split": split, "tracks": new_tracks.values().collect::<Vec<_>>()}))
@@ -957,6 +960,44 @@ mod tests {
         let nt = e.session().tracks.iter().find(|x| x.id != t).unwrap();
         match &nt.clips()[0].content {
             ClipContent::Midi { sequence } => assert_eq!(sequence.notes[0].pitch, 72),
+            _ => panic!(),
+        }
+    }
+
+    /// Note-split copies only the notes in the pitch range. SysEx already on the clip stays there;
+    /// the new clip's sysex list is empty (storytold/soundcraft#1618 owns split/trim of packets).
+    #[test]
+    fn note_split_leaves_sysex_on_the_source_clip() {
+        let (mut e, t) = midi_engine();
+        let r = e
+            .execute(
+                "event.retrospective_record",
+                &json!({"track": t.0, "notes": [{"pitch": 36, "start_ticks": 0}, {"pitch": 72, "start_ticks": 0}]}),
+            )
+            .unwrap();
+        let cid = r["clip"].as_u64().unwrap();
+        let packet = soundcraft_midi::SysExEvent { tick: 0, status: 0xF0, data: vec![0x43, 0x10, 0x4C, 0x00, 0x00, 0x7E, 0x00, 0xF7] };
+        if let Some(c) = e.session_mut().find_clip_mut(ClipId(cid))
+            && let ClipContent::Midi { sequence } = &mut c.content
+        {
+            sequence.sysex.push(packet.clone());
+        }
+        e.execute("edit.select", &json!({"clips": [cid]})).unwrap();
+        e.execute("event.select_split_notes", &json!({"pitch_from": 60, "pitch_to": 127, "action": "split"})).unwrap();
+        let source = e.session().find_clip(ClipId(cid)).map(|(_, c)| c.clone()).unwrap();
+        match &source.content {
+            ClipContent::Midi { sequence } => {
+                assert_eq!(sequence.notes.iter().map(|n| n.pitch).collect::<Vec<_>>(), vec![36]);
+                assert_eq!(sequence.sysex, vec![packet]);
+            }
+            _ => panic!(),
+        }
+        let nt = e.session().tracks.iter().find(|x| x.id != t).unwrap();
+        match &nt.clips()[0].content {
+            ClipContent::Midi { sequence } => {
+                assert_eq!(sequence.notes[0].pitch, 72);
+                assert!(sequence.sysex.is_empty());
+            }
             _ => panic!(),
         }
     }
