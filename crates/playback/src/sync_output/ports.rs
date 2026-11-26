@@ -362,7 +362,7 @@ mod tests {
         // "DIN" stays unavailable instead of playing to B.
         let both = listed(&[("DIN", "a"), ("DIN", "b"), ("IAC", "iac")]);
         let mut saved = Bindings::new();
-        assert_eq!(learn(&mut saved, &both, "DIN", "a"), true);
+        assert!(learn(&mut saved, &both, "DIN", "a"));
         assert_eq!(saved, Bindings::from([("DIN".into(), "a".into()), ("DIN (2)".into(), "b".into())]), "IAC is no sibling");
         let restarted: Bindings = serde_json::from_str(&serde_json::to_string(&saved).unwrap()).unwrap();
         let after = assign(&restarted, listed(&[("DIN", "b"), ("IAC", "iac")]));
