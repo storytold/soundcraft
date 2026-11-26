@@ -84,6 +84,34 @@ fn hover(h: &mut Harness<'static, SoundApp>, label: &str) {
 }
 
 #[test]
+fn the_midi_merge_button_says_what_merge_and_replace_do_and_where_the_release_mode_is() {
+    let mut h = transport();
+    hover(&mut h, "MIDI Merge");
+    assert!(h.query_by_label_contains("On (Merge): recorded MIDI is merged").is_some(), "p.813");
+    assert!(h.query_by_label_contains("Off (Replace): recorded MIDI replaces").is_some());
+    assert!(h.query_by_label_contains("Right-click to choose the MIDI Merge Release Mode.").is_some(), "p.814");
+}
+
+#[test]
+fn the_dimmed_midi_merge_button_keeps_its_release_mode_menu() {
+    let mut h = transport();
+    h.state_mut().run("options.loop_record", json!({"value": true})).unwrap();
+    h.run_steps(2);
+    assert!(h.get_by_label("MIDI Merge").accesskit_node().is_disabled());
+    hover(&mut h, "MIDI Merge");
+    assert!(h.query_by_label_contains("No effect while Loop Record is on").is_some());
+    assert!(h.query_by_label_contains("Right-click to choose the MIDI Merge Release Mode.").is_some());
+    assert_eq!(menu_mode(&mut h), [("Latch", Some(Toggled::False)), ("Latch Until Next Event", Some(Toggled::True))]);
+    h.get_by_label("MIDI Merge").click_secondary();
+    h.run_steps(3);
+    h.get_by_label("Latch").click();
+    h.run_steps(3);
+    assert_eq!(h.state().ui.midi_merge_release, MergeRelease::Latch, "chosen while dimmed");
+    let e = h.state().engine.session().edit.clone();
+    assert!(e.loop_record && !e.midi_merge, "a right-click switches neither mode");
+}
+
+#[test]
 fn loop_record_shows_on_both_record_buttons() {
     let mut h = transport();
     let mode = |h: &Harness<'static, SoundApp>, label: &str| {

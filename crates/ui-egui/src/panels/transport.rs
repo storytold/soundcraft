@@ -93,14 +93,22 @@ pub(super) fn transport_window(app: &mut SoundApp, ctx: &egui::Context) {
                         // (Reference Guide p.813).
                         let dimmed = cmd == "options.midi_merge" && loop_rec;
                         let r = ui.add_enabled(!dimmed, egui::Button::selectable(on, crate::localization::text(label)));
-                        let r = if dimmed { r.on_disabled_hover_text(crate::localization::text("No effect while Loop Record is on")) } else { r };
+                        let r = if cmd != "options.midi_merge" {
+                            r
+                        } else if dimmed {
+                            r.on_disabled_hover_text(merge_tip("No effect while Loop Record is on"))
+                        } else {
+                            r.on_hover_text(merge_tip(MERGE_OR_REPLACE))
+                        };
                         if r.clicked() {
                             let _ = app.run(cmd, json!({}));
                         }
                         if cmd == "options.midi_merge" {
-                            // Right-click: MIDI Merge Release mode (p.814).
+                            // Right-click: MIDI Merge Release mode (p.814). Dimmed too, as the mode
+                            // is a preference for later passes: a container menu opens on a
+                            // right-click over a disabled widget, which a plain one does not see.
                             let current = app.ui.midi_merge_release;
-                            r.context_menu(|ui| {
+                            r.container_context_menu(|ui| {
                                 ui.label(crate::localization::text("MIDI Merge Release Mode"));
                                 for mode in soundcraft_engine::io::MergeRelease::ALL {
                                     if ui.radio(current == mode, crate::localization::text(mode.label())).clicked() {
@@ -143,4 +151,13 @@ pub(super) fn big_counter(app: &mut SoundApp, ctx: &egui::Context) {
             ui.painter().text(r.center(), Align2::CENTER_CENTER, txt, mono((r.height() * 0.6).clamp(20.0, 120.0)), t.counter_text);
         });
     app.ui.show_big_counter = open;
+}
+
+/// What the MIDI Merge button switches (Reference Guide p.813).
+const MERGE_OR_REPLACE: &str =
+    "On (Merge): recorded MIDI is merged with the MIDI already on the track.\nOff (Replace): recorded MIDI replaces the MIDI in the recorded range.";
+
+/// The MIDI Merge button's tooltip: `first`, then where the release mode is chosen (p.814).
+fn merge_tip(first: &str) -> String {
+    format!("{}\n{}", crate::localization::text(first), crate::localization::text("Right-click to choose the MIDI Merge Release Mode."))
 }

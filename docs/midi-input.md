@@ -96,6 +96,8 @@ What a pass does with the MIDI already on a track depends on the record mode, as
 
 - While **Options › Loop Record** is on, the Record buttons (Edit window toolbar and Transport
   window) show a loop symbol and their tooltip says *Loop Record mode* (p.771, p.826).
+- The **MIDI Merge** button's tooltip says what Merge and Replace do and that a right-click
+  chooses the release mode.
 - **MIDI Merge** can be switched during a pass. Each round (the whole pass, when it does not
   loop) follows the button as it is at the end of that round.
 - A key held over the loop point belongs to the round it was pressed in. In Loop Record it also
@@ -110,7 +112,8 @@ What a pass does with the MIDI already on a track depends on the record mode, as
 already there. It applies to control changes (the sustain pedal, the mod wheel…), pitch bend and
 channel aftertouch; program changes and polyphonic aftertouch are merged as they are. Set it in
 **Setup › Preferences › MIDI**, or right-click the **MIDI Merge** button in the Transport window
-(View › Transport › MIDI Controls). It is kept on this computer, not in the session.
+(View › Transport › MIDI Controls), also while it is dimmed in Loop Record. It is kept on this
+computer, not in the session.
 
 | Release mode | Old values of a controller you move give way… |
 |---|---|
