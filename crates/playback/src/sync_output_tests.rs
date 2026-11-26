@@ -745,3 +745,83 @@ fn track_note_offs_survive_a_pass_change_through_the_port() {
     let sent: Vec<_> = port.link.unwrap().messages.into_iter().map(|(_, m)| m).collect();
     assert_eq!(sent, [vec![0x90, 60, 100], vec![0x80, 60, 0]]);
 }
+
+/// MIDI Thru through the worker: a live message goes out on the track's port and channel as soon
+/// as it arrives, with no audio block published at all; a Stop and a track taken out of record
+/// end what it holds, and the key's own release then sends nothing.
+#[test]
+fn live_input_goes_out_at_once_on_the_track_output_and_stop_or_disarm_end_it() {
+    use soundcraft_model::{ChannelFormat, MidiOutput, TrackKind};
+    struct Sink(Sender<(Instant, Vec<u8>)>);
+    impl SyncPort for Sink {
+        fn send_at(&mut self, _at: Instant, b: &[u8]) -> Result<Instant, String> {
+            let now = Instant::now();
+            self.0.send((now, b.to_vec())).unwrap();
+            Ok(now)
+        }
+    }
+    let mut s = Session::new("t", soundcraft_time::SampleRate::HZ_48000);
+    let t = s.add_track(TrackKind::Midi, ChannelFormat::Stereo, None);
+    MidiOutput::store(&mut s.edit, t, Some(MidiOutput { device: "DIN", channel: 3 }));
+    s.track_mut(t).unwrap().mixer.record_arm = true;
+    let view = View::default();
+    let (tx, rx) = channel();
+    let (evt, got) = channel();
+    let stats = Arc::new(Stats::default());
+    let feed = Arc::new(MidiFeed::default());
+    let (worker_view, worker_stats, session) = (view.clone(), stats.clone(), Arc::new(s.clone()));
+    let handle =
+        std::thread::spawn(move || drive(worker_view, session, rx, Default::default(), worker_stats, move |_| Ok((Sink(evt.clone()), None))));
+    let worker = handle.thread().clone();
+    tx.send(routes(&[("DIN", 0)], false)).unwrap();
+    tx.send(Update::Feed(Some(feed.clone()))).unwrap();
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while !(feed.thru_attached() && stats.connected().contains("DIN")) && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    // What thru sends, without the stand-in clip route's pulses.
+    let next = |wait: Duration| loop {
+        let (at, m) = got.recv_timeout(wait)?;
+        if m.first() != Some(&0xb0) || m.get(1) != Some(&1) {
+            return Ok::<_, std::sync::mpsc::RecvTimeoutError>((at, m));
+        }
+    };
+    let mut latency = Vec::new();
+    for key in [60u8, 61, 62] {
+        let played = Instant::now();
+        feed.receive(0, &[0x90, key, 100]);
+        let (at, m) = next(Duration::from_secs(2)).unwrap();
+        assert_eq!(m, [0x93, key, 100], "on the track's channel 4");
+        latency.push(at - played);
+    }
+    // Generous for a loaded test machine; the live test measures the real figure.
+    assert!(latency.iter().all(|l| *l < Duration::from_millis(50)), "{latency:?}");
+    assert_eq!(stats.thru_sent.load(Relaxed), 3);
+    feed.receive(0, &[0x80, 60, 0]);
+    assert_eq!(next(Duration::from_secs(2)).unwrap().1, [0x83, 60, 0]);
+    // A Stop ends keys 61 and 62.
+    let base = Instant::now();
+    view.lock().unwrap().push(block(base, 0., 480., Duration::ZERO));
+    worker.unpark();
+    std::thread::sleep(Duration::from_millis(30));
+    view.lock().unwrap().push(Presentation { playing: false, ..block(base, 480., 480., Duration::ZERO) });
+    worker.unpark();
+    let mut ended = [next(Duration::from_secs(2)).unwrap().1, next(Duration::from_secs(2)).unwrap().1];
+    ended.sort();
+    assert_eq!(ended, [[0x83, 61, 0], [0x83, 62, 0]]);
+    feed.receive(0, &[0x80, 61, 0]);
+    assert!(next(Duration::from_millis(100)).is_err(), "the key's release sends nothing more");
+    // Out of record: a key held then ends.
+    feed.receive(0, &[0x90, 62, 100]);
+    assert_eq!(next(Duration::from_secs(2)).unwrap().1, [0x93, 62, 100]);
+    s.track_mut(t).unwrap().mixer.record_arm = false;
+    tx.send(Update::Session(Arc::new(s))).unwrap();
+    worker.unpark();
+    assert_eq!(next(Duration::from_secs(2)).unwrap().1, [0x83, 62, 0]);
+    feed.receive(0, &[0x90, 63, 100]);
+    assert!(next(Duration::from_millis(100)).is_err(), "nothing thrus now");
+    drop(tx);
+    worker.unpark();
+    handle.join().unwrap();
+    assert!(!feed.thru_attached(), "the worker lets go of the feed when it ends");
+}

@@ -52,6 +52,23 @@ pub struct MidiSyncStatus {
     pub callback_gaps_over_two_buffers: u64,
     pub priority: &'static str,
     pub ports: BTreeMap<String, PortTiming>,
+    /// Live input played through to the tracks' MIDI outputs (MIDI Thru).
+    pub thru: ThruStatus,
+}
+
+/// MIDI Thru to external gear: what was sent and how soon. Time values use microseconds.
+#[derive(Default, Serialize)]
+pub struct ThruStatus {
+    /// Messages handed to an output port.
+    pub sent: u64,
+    /// Messages that came back on an input right after thru sent them (a MIDI loop), dropped.
+    pub echoes_dropped: u64,
+    /// From a message's arrival at the input to its hand-off to the output port, counted in the
+    /// buckets of `lateness_buckets` (up to 0.5, 1, 2, 5, 10, 20 ms, and above).
+    pub latency_buckets: [u64; 7],
+    pub latency_p50_us: u64,
+    pub latency_p95_us: u64,
+    pub latency_max_us: u64,
 }
 
 #[derive(Serialize)]

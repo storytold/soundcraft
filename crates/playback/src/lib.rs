@@ -34,8 +34,10 @@ pub mod sync_clock;
 mod sync_output;
 mod sync_status;
 #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+mod thru;
+#[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
 mod track_midi;
-pub use sync_status::{MidiSyncStatus, OutputLeadSource, OutputTimingIssue};
+pub use sync_status::{MidiSyncStatus, OutputLeadSource, OutputTimingIssue, ThruStatus};
 
 /// Bound per-device compensation in time when a session changes sample rate.
 pub fn max_sync_offset_samples(sr: soundcraft_time::SampleRate) -> i64 {
@@ -639,7 +641,10 @@ impl Player {
     }
 
     /// Play MIDI devices through record-enabled and input-monitored MIDI and instrument tracks.
+    /// Its input also goes out on the MIDI output of those tracks (MIDI Thru).
     pub fn set_midi(&self, feed: Arc<midi::MidiFeed>) {
+        #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+        self.sync_output.lock().unwrap_or_else(PoisonError::into_inner).set_feed(feed.clone());
         let _ = self.tx.send(Cmd::Midi(feed));
     }
 

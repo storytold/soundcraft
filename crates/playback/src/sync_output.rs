@@ -2,7 +2,14 @@
 //! one connection per destination label, each bound to the saved native port ID it was opened
 //! with. A port carries one route of each [`RouteKind`], so several kinds of traffic share one
 //! connection (a WinMM port can usually be opened only once).
+//!
+//! The worker also plays live MIDI input through to the tracks' outputs (MIDI Thru,
+//! [`crate::thru`]). The input threads wake it for each message ([`MidiFeed::attach_thru`]), so
+//! its waits are parks that a message cuts short, and thru goes out as soon as it arrives,
+//! outside the deadline queue.
+use crate::midi::MidiFeed;
 use crate::sync_clock::{SessionRevision, delivery_offset};
+use crate::thru::Thru;
 use crate::{
     Cmd, MidiSyncStatus, Session,
     sync_clock::{CallbackMetrics, Publisher, SyncEncoder, View},
@@ -70,8 +77,19 @@ struct Stats {
     session_backlog_drops: AtomicU64,
     buckets: [AtomicU64; 7],
     max: AtomicU64,
+    /// MIDI Thru: messages handed to a port, and how long after they arrived (same buckets).
+    thru_sent: AtomicU64,
+    thru_buckets: [AtomicU64; 7],
+    thru_max: AtomicU64,
 }
 impl Stats {
+    /// A thru message was handed to its port `us` microseconds after it arrived.
+    fn record_thru(&self, us: u64) {
+        let bucket = BOUNDS.partition_point(|&v| v < us);
+        self.thru_buckets[bucket].fetch_add(1, Relaxed);
+        self.thru_sent.fetch_add(1, Relaxed);
+        self.thru_max.fetch_max(us, Relaxed);
+    }
     fn connected(&self) -> std::sync::MutexGuard<'_, BTreeSet<String>> {
         self.connected.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
     }
@@ -138,8 +156,12 @@ pub(crate) struct Output {
     trouble: Arc<Mutex<Option<String>>>,
     worker: Option<(WorkerSender, std::thread::JoinHandle<()>)>,
     retry_spawn_at: Option<Instant>,
+    /// Live MIDI input, for MIDI Thru.
+    feed: Option<Arc<MidiFeed>>,
 }
 enum Update {
+    /// Live MIDI input to play through to the tracks' outputs (MIDI Thru).
+    Feed(Option<Arc<MidiFeed>>),
     Session(Arc<Session>),
     /// Replace the ports of one route kind. Each newly routed port gets its own encoder.
     Routes(RouteKind, Vec<(String, i64)>, bool, fn(&str) -> Box<dyn SyncEncoder>),
@@ -187,6 +209,9 @@ impl Output {
             {
                 Ok(thread) => {
                     let tx = WorkerSender { tx, worker: thread.thread().clone() };
+                    if self.feed.is_some() {
+                        let _ = tx.send(Update::Feed(self.feed.clone()));
+                    }
                     self.worker = Some((tx, thread));
                 }
                 Err(e) => {
@@ -220,6 +245,17 @@ impl Output {
         }
         *routes = next.clone();
         (next.ports.is_empty() && self.worker.is_none()) || self.send(Update::Routes(kind, next.ports, compensate, make))
+    }
+    /// Play live input from `feed` through to the tracks' MIDI outputs (MIDI Thru), from the
+    /// worker that owns the ports (started with the first route).
+    pub(crate) fn set_feed(&mut self, feed: Arc<MidiFeed>) {
+        if self.feed.as_ref().is_some_and(|f| Arc::ptr_eq(f, &feed)) {
+            return;
+        }
+        self.feed = Some(feed.clone());
+        if let Some((tx, _)) = &self.worker {
+            let _ = tx.send(Update::Feed(Some(feed)));
+        }
     }
     /// Send `messages` at once on every connected port. Returns how many ports are connected.
     pub(crate) fn panic(&mut self, messages: fn(&mut dyn FnMut(&[u8]))) -> usize {
@@ -317,6 +353,18 @@ impl Output {
             callback_gap_max_us: self.metrics.max_gap_us.load(Relaxed),
             callback_gaps_over_two_buffers: self.metrics.late_buffers.load(Relaxed),
             lead_clamps: self.metrics.clamps.load(Relaxed),
+            thru: {
+                let buckets = self.stats.thru_buckets.each_ref().map(|v| v.load(Relaxed));
+                let max = self.stats.thru_max.load(Relaxed);
+                crate::sync_status::ThruStatus {
+                    sent: self.stats.thru_sent.load(Relaxed),
+                    echoes_dropped: self.feed.as_ref().map_or(0, |f| f.thru_echoes()),
+                    latency_buckets: buckets,
+                    latency_p50_us: percentile(buckets, 50, max),
+                    latency_p95_us: percentile(buckets, 95, max),
+                    latency_max_us: max,
+                }
+            },
             priority: match self.stats.priority.load(Relaxed) {
                 1 => "raised",
                 2 => "normal (raise unavailable)",
@@ -517,6 +565,88 @@ fn send_now<C: SyncPort>(name: &str, port: &mut Port<C>, msg: &[u8], stats: &Sta
         }
     }
 }
+/// Send a MIDI Thru message now on the port `name`, if it is open: it is not queued, since a
+/// late note is worse than none when playing live. `arrived` is when its input arrived
+/// ([`MidiFeed::clock`]), for the latency diagnostics; releases thru makes on its own have none.
+/// A failure disconnects the port.
+fn send_thru<C: SyncPort>(ports: &mut BTreeMap<String, Port<C>>, name: &str, msg: &[u8], feed: &MidiFeed, stats: &Stats, arrived: Option<i64>) {
+    let Some(p) = ports.get_mut(name) else { return };
+    let Some(link) = &mut p.link else { return };
+    // Before it leaves: its echo may be back before this returns.
+    feed.thru_sent(msg);
+    match link.send_at(Instant::now(), msg) {
+        Ok(_) => {
+            if let Some(at) = arrived {
+                stats.record_thru(u64::try_from(feed.clock().saturating_sub(at)).unwrap_or(0));
+            }
+        }
+        Err(error) => p.disconnect(name, format!("{name}: {error}"), Instant::now(), stats),
+    }
+}
+/// The worker's MIDI Thru: the live input, what thru holds on the ports, and whether the
+/// transport was playing (a Stop lets go of it).
+#[derive(Default)]
+struct LiveThru {
+    feed: Option<Arc<MidiFeed>>,
+    thru: Thru,
+    was_playing: bool,
+}
+impl LiveThru {
+    /// Take live input from `next` from now on. What the old input held is let go of: its keys'
+    /// releases will not come from the new one.
+    fn set_feed<C: SyncPort>(&mut self, next: Option<Arc<MidiFeed>>, ports: &mut BTreeMap<String, Port<C>>, stats: &Stats) {
+        if let Some(old) = self.feed.take() {
+            old.detach_thru();
+            self.thru.release_all(&mut |name, msg| send_thru(ports, name, msg, &old, stats, None));
+        }
+        if let Some(f) = &next {
+            f.attach_thru(std::thread::current());
+        }
+        self.feed = next;
+    }
+    /// Every thru note off and pedal up (All MIDI Notes Off).
+    fn release_all<C: SyncPort>(&mut self, ports: &mut BTreeMap<String, Port<C>>, stats: &Stats) {
+        if let Some(f) = &self.feed {
+            self.thru.release_all(&mut |name, msg| send_thru(ports, name, msg, f, stats, None));
+        }
+    }
+    /// Send what arrived, and let go of what lost ports, a Stop or a change of the session end.
+    fn service<C: SyncPort>(&mut self, ports: &mut BTreeMap<String, Port<C>>, stats: &Stats, session: &Session, view: &View, now: Instant) {
+        let Some(f) = &self.feed else { return };
+        let thru = &mut self.thru;
+        let lost = f.take_thru_lost();
+        if lost != 0 {
+            thru.release_ports(lost, &mut |name, msg| send_thru(ports, name, msg, f, stats, None));
+        }
+        let mut at = None;
+        while let Some((arrived, e)) = f.next_thru() {
+            let at = *at.get_or_insert_with(|| play_position(view, now));
+            thru.route(session, f.ports(), at, &e, &mut |name, msg| send_thru(ports, name, msg, f, stats, Some(arrived)));
+        }
+        let playing = view.lock().unwrap_or_else(std::sync::PoisonError::into_inner).transport_state().is_some_and(|(_, playing)| playing);
+        if std::mem::replace(&mut self.was_playing, playing) && !playing {
+            thru.release_all(&mut |name, msg| send_thru(ports, name, msg, f, stats, None));
+        }
+        if thru.holds() {
+            let at = at.unwrap_or_else(|| play_position(view, now));
+            thru.follow(session, f.ports(), at, &mut |name, msg| send_thru(ports, name, msg, f, stats, None));
+        }
+    }
+    /// The port `name` was opened again: the device may still hold what thru played before it
+    /// went. Quiet those channels (the clip encoder does the same for its own).
+    fn reopened<C: SyncPort>(&mut self, name: &str, p: &mut Port<C>, stats: &Stats) {
+        let channels = self.thru.reopened(name);
+        for channel in (0..16u8).filter(|c| channels & (1 << c) != 0) {
+            send_now(name, p, &[0xb0 | channel, 64, 0], stats);
+            send_now(name, p, &[0xb0 | channel, 123, 0], stats);
+        }
+    }
+}
+/// The play position for MIDI Thru's mute check (mute automation): where the last presented
+/// block puts `now`, 0 before the first.
+fn play_position(view: &View, now: Instant) -> i64 {
+    view.lock().unwrap_or_else(std::sync::PoisonError::into_inner).read(now, false, 0).0.map_or(0, |b| b.sample_index_at(now))
+}
 fn clear_route<C: SyncPort>(name: &str, port: &mut Port<C>, index: usize, stats: &Stats) {
     port.future.retain(|event| event.route != index);
     if let Some(mut route) = port.routes[index].take() {
@@ -526,24 +656,36 @@ fn clear_route<C: SyncPort>(name: &str, port: &mut Port<C>, index: usize, stats:
 /// Below this, the last stretch of a wait is one plain sleep.
 const FINE_SLEEP: Duration = Duration::from_micros(200);
 
-/// Sleep until `at`. A system may wake a sleeping thread late by a share of the time asked
-/// for (on the macOS test machine half of it: a 4 ms sleep took 6 ms), so sleep in halving
-/// steps; the last one is at most [`FINE_SLEEP`] long.
-fn sleep_until(at: Instant) {
+/// Sleep until `at`, or until live MIDI input is waiting for thru (`thru`): the input threads
+/// unpark the worker. A system may wake a sleeping thread late by a share of the time asked for
+/// (on the macOS test machine half of it: a 4 ms sleep took 6 ms), so sleep in halving steps;
+/// the last one is at most [`FINE_SLEEP`] long.
+fn sleep_until(at: Instant, thru: Option<&MidiFeed>) {
     loop {
-        let left = at.saturating_duration_since(Instant::now());
-        if left <= FINE_SLEEP {
-            std::thread::sleep(left);
+        if thru.is_some_and(MidiFeed::thru_pending) {
             return;
         }
-        std::thread::sleep(left / 2);
+        let left = at.saturating_duration_since(Instant::now());
+        if left.is_zero() {
+            return;
+        }
+        std::thread::park_timeout(if left <= FINE_SLEEP { left } else { left / 2 });
     }
 }
 
 /// With a timed-out transport command the worker can be woken by either a control
 /// message or the first changed presentation. The thread park token survives a
 /// publication between reading the channel and entering the wait.
-fn wait_for_update(rx: &Receiver<Update>, next: Option<Instant>, connected: bool, wait_for_late_block: bool) -> Result<Option<Update>, ()> {
+///
+/// With live input attached for thru (`thru`), the worker never blocks on the channel alone: it
+/// parks, which both a control message and a live message end.
+fn wait_for_update(
+    rx: &Receiver<Update>,
+    next: Option<Instant>,
+    connected: bool,
+    wait_for_late_block: bool,
+    thru: Option<&MidiFeed>,
+) -> Result<Option<Update>, ()> {
     if let Some(at) = next {
         let delay = at.saturating_duration_since(Instant::now());
         if !connected && delay > Duration::from_millis(100) {
@@ -555,8 +697,8 @@ fn wait_for_update(rx: &Receiver<Update>, next: Option<Instant>, connected: bool
         }
         // Keep native sub-millisecond precision. Check control and shutdown after at
         // most 10 ms of requested sleep; distant events stay queued across checks.
-        sleep_until(Instant::now() + delay.min(Duration::from_millis(10)));
-    } else if !wait_for_late_block {
+        sleep_until(Instant::now() + delay.min(Duration::from_millis(10)), thru);
+    } else if !wait_for_late_block && thru.is_none() {
         return rx.recv().map(Some).map_err(|_| ());
     }
     let receive = || match rx.try_recv() {
@@ -565,7 +707,7 @@ fn wait_for_update(rx: &Receiver<Update>, next: Option<Instant>, connected: bool
         Err(_) => Err(()),
     };
     let update = receive()?;
-    if update.is_none() && next.is_none() {
+    if update.is_none() && next.is_none() && !thru.is_some_and(MidiFeed::thru_pending) {
         std::thread::park();
         // A single notification can mean either a published block or a queued
         // command. Consume the command before polling the timeline again.
@@ -678,6 +820,7 @@ fn drive_ports<C: SyncPort>(
     let mut update = None;
     let mut pending = Vec::<Event>::new();
     let mut failures = String::new();
+    let mut live = LiveThru::default();
     loop {
         #[cfg(test)]
         stats.iterations.fetch_add(1, Relaxed);
@@ -688,6 +831,7 @@ fn drive_ports<C: SyncPort>(
             awake = now + Duration::from_millis(150);
             match u {
                 Update::Session(s) => session = s,
+                Update::Feed(next) => live.set_feed(next, &mut ports, &stats),
                 Update::Routes(kind, dest, c, make) => {
                     let index = kind.index();
                     for (name, p) in &mut ports {
@@ -707,6 +851,7 @@ fn drive_ports<C: SyncPort>(
                     }
                 }
                 Update::Panic(messages) => {
+                    live.release_all(&mut ports, &stats);
                     for (name, p) in &mut ports {
                         p.future.retain(|e| releases(&e.bytes[..e.len]));
                         let mut routes = std::mem::replace(&mut p.routes, std::array::from_fn(|_| None));
@@ -730,12 +875,17 @@ fn drive_ports<C: SyncPort>(
             wait_for_late_block = view.lock().unwrap_or_else(std::sync::PoisonError::into_inner).late_transport_waiter.is_some();
         }
         let observed_state = transition.and_then(|_| state());
+        live.service(&mut ports, &stats, &session, &view, now);
         // A removed device gives no send error (CoreMIDI drops what is sent to a destination
         // that is gone), so once a second the open ports are checked against the port list.
         let due: BTreeSet<String> = ports.iter().filter(|(_, p)| p.link.is_some() && now >= p.retry).map(|(name, _)| name.clone()).collect();
         let listed = if due.is_empty() { None } else { open.listed(&due) };
         for (name, p) in &mut ports {
+            let was_open = p.link.is_some();
             keep_open(name, p, listed.as_ref(), now, &stats, &mut open);
+            if !was_open && p.link.is_some() {
+                live.reopened(name, p, &stats);
+            }
             if p.link.is_some() && open.lists() {
                 soon(p.retry);
             }
@@ -787,12 +937,13 @@ fn drive_ports<C: SyncPort>(
             soon(now + Duration::from_millis(1));
         }
         let waiting_for_timing = ports.values().any(|p| p.waiting_for_timing);
-        match wait_for_update(&rx, next, connected, wait_for_late_block || waiting_for_timing) {
+        match wait_for_update(&rx, next, connected, wait_for_late_block || waiting_for_timing, live.feed.as_deref()) {
             Ok(next_update) => update = next_update,
             Err(()) => break,
         }
     }
     view.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clear_waiters();
+    live.set_feed(None, &mut ports, &stats);
     for (name, p) in &mut ports {
         for index in 0..ROUTE_KINDS {
             clear_route(name, p, index, &stats);
