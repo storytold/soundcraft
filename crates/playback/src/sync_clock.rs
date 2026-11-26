@@ -132,7 +132,7 @@ pub(crate) fn shift(at: Instant, seconds: f64) -> Instant {
 }
 
 // Keep scheduled buffers until they can actually be heard. Publishing two future
-// callbacks back-to-back must not conceal the first one's start or its final clocks.
+// callbacks back-to-back must not conceal the first one's start or its last events.
 const HISTORY: usize = 2048;
 #[derive(Clone)]
 pub(crate) struct SessionRevision {

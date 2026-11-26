@@ -80,7 +80,7 @@ fn enumerate(midi: &MidiOutput, saved: &Bindings) -> (Vec<MidiOutputPort>, PortN
 
 pub(super) fn available(saved: &Bindings) -> Result<Bindings, String> {
     std::panic::catch_unwind(|| {
-        let midi = MidiOutput::new("SoundCraft MIDI sync").map_err(|e| e.to_string())?;
+        let midi = MidiOutput::new("SoundCraft MIDI output").map_err(|e| e.to_string())?;
         Ok(assign(saved, enumerate(&midi, saved).1))
     })
     .map_err(|_| "MIDI output enumeration failed".to_owned())?
@@ -91,12 +91,12 @@ fn selected<'a>(available: &'a Bindings, label: &str) -> Result<&'a str, String>
 }
 
 fn open(label: &str, saved: &Bindings) -> Result<(MidiOutputConnection, String), String> {
-    let midi = MidiOutput::new("SoundCraft MIDI sync").map_err(|e| e.to_string())?;
+    let midi = MidiOutput::new("SoundCraft MIDI output").map_err(|e| e.to_string())?;
     let (ports, names) = enumerate(&midi, saved);
     let ids = assign(saved, names.iter().cloned());
     let id = selected(&ids, label)?;
     let index = names.iter().position(|(_, key)| key == id).ok_or_else(|| format!("MIDI output {label} unavailable"))?;
-    let conn = midi.connect(&ports[index], "SoundCraft MIDI sync").map_err(|e| e.to_string())?;
+    let conn = midi.connect(&ports[index], "SoundCraft MIDI output").map_err(|e| e.to_string())?;
     Ok((conn, id.to_owned()))
 }
 

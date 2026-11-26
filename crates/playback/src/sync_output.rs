@@ -1,6 +1,7 @@
-//! One native worker owns every external MIDI output route (track notes; synchronization
-//! protocols) and one connection per destination label, each bound to the saved native port ID
-//! it was opened with. A port carries one route of each [`RouteKind`].
+//! One native worker owns every external MIDI output route (today the track note output) and
+//! one connection per destination label, each bound to the saved native port ID it was opened
+//! with. A port carries one route of each [`RouteKind`], so several kinds of traffic share one
+//! connection (a WinMM port can usually be opened only once).
 use crate::sync_clock::{SessionRevision, delivery_offset};
 use crate::{
     Cmd, MidiSyncStatus, Session,
