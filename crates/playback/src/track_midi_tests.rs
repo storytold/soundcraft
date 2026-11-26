@@ -315,7 +315,8 @@ fn a_reopen_after_a_stop_whose_releases_failed_still_quiets_the_channel() {
     wire.clear();
     enc.update(stopped(base, 1, 4800), base + Duration::from_millis(1200), &s, &mut |at, m| wire.push((at, m.to_vec())));
     assert_eq!(wire.iter().map(|(_, m)| m.clone()).collect::<Vec<_>>(), [vec![0xb5, 64, 0], vec![0xb5, 123, 0]]);
-    // Only once: the next reopen has nothing to make good.
+    // Only once: with the quieting delivered, the next reopen has nothing to make good.
+    enc.delivered();
     enc.reset();
     wire.clear();
     enc.update(stopped(base, 1, 4800), base + Duration::from_millis(2400), &s, &mut |at, m| wire.push((at, m.to_vec())));
@@ -450,4 +451,43 @@ fn a_timing_loss_before_a_stop_does_not_restart_the_next_pass() {
     run(&mut enc, &s, rolling(again, 2, 0), Duration::ZERO, Duration::from_millis(100), &mut wire);
     assert_eq!(note_ons(&wire).iter().map(|(_, p)| *p).collect::<Vec<_>>(), [60]);
     assert!(!wire.iter().any(|(_, m)| m[0] & 0xf0 == 0x80), "{wire:?}");
+}
+
+#[test]
+fn a_reconnect_quieting_that_did_not_go_out_is_sent_again_on_the_next_reopen() {
+    let base = Instant::now();
+    let mut s = session();
+    add_track(&mut s, TrackKind::Midi, vec![note(60, 100, 0, 9600)], vec![], "DIN", 2);
+    let mut enc = TrackMidi::new("DIN");
+    let mut wire = Wire::new();
+    run(&mut enc, &s, rolling(base, 1, 0), Duration::ZERO, Duration::from_millis(100), &mut wire);
+    enc.update(stopped(base, 1, 4800), base + Duration::from_millis(100), &s, &mut |_, _| {});
+    let quieting = || vec![vec![0xb2, 64, 0], vec![0xb2, 123, 0]];
+    let reopen = |enc: &mut TrackMidi, at: u64| {
+        enc.reset();
+        let mut wire = Wire::new();
+        enc.update(stopped(base, 1, 4800), base + Duration::from_millis(at), &s, &mut |at, m| wire.push((at, m.to_vec())));
+        bytes(&wire)
+    };
+    // The port failed again while the quieting went out (the worker reports no delivery).
+    assert_eq!(reopen(&mut enc, 1200), quieting());
+    assert_eq!(reopen(&mut enc, 2400), quieting(), "the next reopen quiets the channel again");
+    // This time the port took it: the reopen after that has nothing to make good.
+    enc.delivered();
+    assert!(reopen(&mut enc, 3600).is_empty());
+}
+
+#[test]
+fn a_key_struck_by_more_than_255_overlapping_notes_ends_with_its_last_holder() {
+    let base = Instant::now();
+    let mut s = session();
+    let notes = (0..300).map(|i| note(60, 100, 0, 100 + i)).collect();
+    add_track(&mut s, TrackKind::Midi, notes, vec![], "DIN", 0);
+    let mut enc = TrackMidi::new("DIN");
+    let mut wire = Wire::new();
+    run(&mut enc, &s, rolling(base, 1, 0), Duration::ZERO, Duration::from_millis(300), &mut wire);
+    let offs: Vec<_> = wire.iter().filter(|(_, m)| m[0] == 0x80 && m[1] == 60).map(|(at, _)| *at).collect();
+    assert_eq!(offs.len(), 1, "one Note-Off, when the last of the 300 notes ends");
+    let last_end = Duration::from_secs_f64((399 * TICK) as f64 / 48_000.);
+    assert!(offs[0] >= base + last_end - Duration::from_millis(1), "{:?}", offs[0] - base);
 }

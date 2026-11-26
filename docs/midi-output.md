@@ -25,9 +25,9 @@ sending. A new track sends nothing until you choose.
 - A channel that another track already plays to on the same port is marked **in use**.
 - Ports with the same name get numbered names, such as "DIN" and "DIN (2)". SoundCraft remembers
   which physical port each name stood for, the ports of the same name beside a port a track uses
-  included, so the numbers stay with the same ports after a restart: with "DIN" unplugged, the
-  other interface stays "DIN (2)" and the tracks on "DIN" read (unavailable) rather than playing
-  to it.
+  included (also one connected while that port is open), so the numbers stay with the same ports
+  after a restart: with "DIN" unplugged, the other interface stays "DIN (2)" and the tracks on
+  "DIN" read (unavailable) rather than playing to it.
 - A port that comes back with a new system identity (CoreMIDI gives a port that is created again a
   new one) keeps its tracks when no other port has its name. Ports that share a name are told
   apart only by their identity, so one of them back with a new identity is listed as a new
@@ -47,8 +47,14 @@ sending. A new track sends nothing until you choose.
   second or two and sends sustain pedal up and All Notes Off on the channels played on since the
   port was last opened (by the clips or through MIDI Thru), in case the device still holds notes
   it never heard end: on Windows, a device being added or removed can break every open output
-  until it is reopened, so the Note-Offs sent meanwhile are lost; while playing, it then carries on from the play position with the
-  controllers and program chased. The log records each port opened, lost and reconnected.
+  until it is reopened, so the Note-Offs sent meanwhile are lost. If the port fails again before
+  that quieting went out, the next reconnect sends it again. While playing, it then carries on
+  from the play position with the controllers and program chased. The log records each port
+  opened, lost and reconnected.
+- When a name is bound to another physical port while it is open (a recalled window
+  configuration can do that), the notes and sustain pedals the old port holds, from the clips and
+  through MIDI Thru, are released on it before it is closed, then the new port is opened and
+  quieted as above.
 
 Choosing an output does not change the track's instrument plug-in or audio output. A MIDI track
 with an instrument and an external output plays both, the same notes on each.
