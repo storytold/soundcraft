@@ -1,4 +1,5 @@
-//! A shared scheduler timestamps sync traffic. Each named native port has one ordered delivery thread.
+//! A shared scheduler timestamps sync traffic. Each destination label, bound to the saved
+//! native port ID it was opened with, has one ordered delivery thread.
 use crate::sync_clock::{SessionRevision, delivery_offset};
 use crate::{
     Cmd, MidiSyncStatus, Session,
