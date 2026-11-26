@@ -385,7 +385,7 @@ mod tests {
         let mut host = app();
         host.mtc_command(&json!({"online":false})).unwrap();
         host.ui.show_transport = true;
-        let mut h = Harness::builder().with_size(egui::vec2(1400., 900.)).build_ui_state(
+        let mut h = Harness::builder().with_context_setup(crate::framework::install_headless).with_size(egui::vec2(1400., 900.)).build_ui_state(
             |ui, app: &mut SoundApp| {
                 app.logic(ui.ctx());
                 app.ui(ui);

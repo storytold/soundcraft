@@ -1054,7 +1054,7 @@ mod tests {
                 app.run("track.new", json!({"name":"Track before capture"})).unwrap();
             }
             assert!(app.dialogs.open_for_command(&app.engine, "setup.session"));
-            let mut h = Harness::builder().with_size(egui::vec2(1400., 850.)).build_ui_state(
+            let mut h = Harness::builder().with_context_setup(crate::framework::install_headless).with_size(egui::vec2(1400., 850.)).build_ui_state(
                 |ui, app: &mut SoundApp| {
                     app.logic(ui.ctx());
                     app.ui(ui);
