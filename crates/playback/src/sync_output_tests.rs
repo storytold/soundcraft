@@ -376,6 +376,37 @@ fn a_single_client_port_is_shared_and_send_errors_trigger_reconnect() {
 }
 
 #[test]
+fn every_unavailable_output_is_named_in_the_status_error() {
+    let now = Instant::now();
+    let view = View::default();
+    view.lock().unwrap().push(block(now, 0., 0., Duration::ZERO));
+    let (tx, rx) = channel();
+    let trouble = Arc::new(Mutex::new(None));
+    let status = trouble.clone();
+    let handle = std::thread::spawn(move || {
+        drive(view, Arc::new(Session::default()), rx, status, Arc::default(), |name| {
+            if name == "Open" { Ok((FakePort::default(), None)) } else { Err(format!("MIDI output {name} unavailable")) }
+        })
+    });
+    tx.send(Update::Beats(vec![("Gone A".into(), 0), ("Open".into(), 0), ("Gone B".into(), 0)], true)).unwrap();
+    let expected = "MIDI output Gone A unavailable; MIDI output Gone B unavailable";
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while trouble.lock().unwrap().as_deref() != Some(expected) && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    assert_eq!(trouble.lock().unwrap().as_deref(), Some(expected));
+    // Clearing one destination leaves only the other one in the message.
+    tx.send(Update::Beats(vec![("Open".into(), 0), ("Gone B".into(), 0)], true)).unwrap();
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while trouble.lock().unwrap().as_deref() != Some("MIDI output Gone B unavailable") && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    assert_eq!(trouble.lock().unwrap().as_deref(), Some("MIDI output Gone B unavailable"));
+    drop(tx);
+    handle.join().unwrap();
+}
+
+#[test]
 fn late_worker_catches_up_with_spaced_clocks_or_resumes_once_at_the_next_spp() {
     let base = Instant::now();
     let view = View::default();
@@ -511,6 +542,8 @@ fn receiver_recovers_grid_through_jitter_quantised_wakes_and_worker_stalls() {
             }
             assert!(recovery_pulses < crate::sync_clock::RELAUNCH_PULSES);
             assert_eq!(relaunches, usize::from(stall_ms >= 200));
+            // Each relaunch resumes the receiver with exactly one Song Position Pointer.
+            assert_eq!(stats.position_sends.load(Relaxed), relaunches as u64);
             if stall_ms < 200 {
                 assert!(i64::abs_diff(clocks, 145) <= 1);
             }
