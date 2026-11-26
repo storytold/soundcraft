@@ -35,11 +35,12 @@ pub fn valid_port(name: &str) -> bool {
 }
 
 impl MidiSync {
-    /// Remember the native port behind each label a track uses, the first time it opens.
+    /// Remember the native port behind each label a track uses, the first time it opens and when
+    /// its device came back under a new native ID (see `soundcraft_playback` port assignment).
     fn bind_used(&mut self, available: BTreeMap<String, String>, used: &BTreeSet<String>) {
         for (label, id) in available {
-            if used.contains(&label) && valid_port(&id) && self.port_ids.len() < MAX_SYNC_PORTS {
-                self.port_ids.entry(label).or_insert(id);
+            if used.contains(&label) && valid_port(&id) && (self.port_ids.contains_key(&label) || self.port_ids.len() < MAX_SYNC_PORTS) {
+                self.port_ids.insert(label, id);
             }
         }
     }

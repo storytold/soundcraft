@@ -22,6 +22,10 @@ sending. A new track sends nothing until you choose.
 - A channel that another track already plays to on the same port is marked **in use**.
 - Ports with the same name get numbered names, such as "DIN" and "DIN (2)". SoundCraft remembers
   which physical port each name stood for, so the numbers stay with the same ports after a restart.
+- A port that comes back with a new system identity (CoreMIDI gives a port that is created again a
+  new one) keeps its tracks when no other port has its name. Ports that share a name are told
+  apart only by their identity, so one of them back with a new identity is listed as a new
+  port, such as "DIN (3)", and its tracks need choosing again.
 - A port that is unplugged stays chosen and reads **(not connected)** on the selector, in the
   warning colour (orange) the Playback Engine window uses for a MIDI input that could not be
   opened. Where the strip is too narrow for the whole text, it ends in "…" and hovering the
