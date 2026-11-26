@@ -1,6 +1,7 @@
 use crate::Session;
 
-/// MIDI Beat Clock output stored by the session's setup.midi_beat_clock command.
+/// Legacy MIDI Beat Clock output settings stored in a session's flags. The desktop host
+/// imports them once into the per-computer MIDI sync preferences.
 pub struct MidiBeatClock<'a> {
     pub enabled: bool,
     pub destination: Option<&'a str>,

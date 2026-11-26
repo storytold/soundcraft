@@ -1,4 +1,5 @@
-//! Redistribute a compensated output's missing ticks while its transport keeps rolling.
+//! Spread owed Beat Clock pulses evenly: after a late first callback on Start, or when a
+//! compensated output loses timing while its transport keeps rolling.
 use super::{Cursor, TICKS_PER_CLOCK};
 use crate::Session;
 use crate::sync_clock::{CATCH_UP_SPACING, Presentation};

@@ -51,6 +51,7 @@ Legend: ✅ works · 🟡 partial · ❌ missing.
 
 | Feature | Pro Tools | SoundCraft |
 |---|---|---|
+| MTC generate | ✅ | ❌ |
 | LTC / MTC chase, 9-pin machine control | ✅ (Ultimate) | ❌ |
 | Word clock / video reference awareness | ✅ via interface | ❌ |
 | Video output to a second display or video card | ✅ | ❌ (video window only) |
