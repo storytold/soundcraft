@@ -3,6 +3,8 @@
 //! [`MixEngine::render`] produces one block of the main output for a session at a timeline
 //! position: clips (with clip gain and fades) → trim/phase → inserts → pre-fader sends → fader and
 //! mute (with automation) → pan → post-fader sends → busses → aux inputs → main → master faders.
+//! During playback it also mixes the session's named output paths into their hardware channels
+//! ([`MixEngine::hardware_output`]).
 //! The same code drives realtime playback and offline bounces, so what you hear is what you get.
 //! Steady-state rendering does not allocate.
 //!
@@ -700,7 +702,6 @@ impl MixEngine {
         }
     }
 
-    /// Send, meter and pan a processed strip into its output path.
     /// Delay that lines a strip routed to a path sharing the main mix's channels up with the main
     /// mix, which the master faders' inserts delay.
     fn master_wait(&self, s: &Session, t: &Track) -> usize {
@@ -710,6 +711,7 @@ impl MixEngine {
         }
     }
 
+    /// Send, meter and pan a processed strip into its output path.
     fn route_strip(&mut self, s: &Session, t: &Track, strip: &mut Strip, pos: Samples, frames: usize) {
         let m = self.meters.entry(t.id).or_default();
         m.measure(&strip.buf, frames, strip.gr);
