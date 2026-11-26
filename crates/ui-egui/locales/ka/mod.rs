@@ -214,6 +214,7 @@ pub(super) fn translate(source: &str) -> Option<&'static str> {
             "რენდერი და AudioSuite-ის დამუშავება ბოლომდე სრულდება, სანამ ბრძანება შედეგს დააბრუნებს."
         }
         "Reopen the audio devices with these settings" => "აუდიომოწყობილობების ხელახლა გახსნა ამ პარამეტრებით",
+        "Report a problem" => "პრობლემის შეტყობინება",
         "Reset" => "ჩამოყრა",
         "Reverse the order" => "რიგის შებრუნება",
         "Revert" => "წინა ვერსიაზე დაბრუნება",
@@ -284,6 +285,7 @@ pub(super) fn translate(source: &str) -> Option<&'static str> {
         "Transpose" => "ტრანსპოზიცია",
         "Unknown label" => "უცნობი იარლიყი",
         "Update check is not supported in the web browser." => "განახლებების შემოწმება ვებბრაუზერში მხარდაჭერილი არ არის.",
+        "Updated by ArtCraft Launcher." => "აპს ArtCraft Launcher აახლებს.",
         "Use" => "გამოყენება",
         "User presets need the desktop app." => "მომხმარებლის პრესეტებს დესკტოპის აპლიკაცია სჭირდება.",
         "Uses the edit selection." => "იყენებს რედაქტირების მონიშნულს.",
