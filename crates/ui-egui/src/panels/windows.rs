@@ -744,8 +744,9 @@ pub fn playback_engine(app: &mut SoundApp, ctx: &egui::Context) {
 /// `{system?, output?, input?, sample_rate?, buffer_size?}` (a `null` value means "default") sets
 /// the choice and reopens the devices; `record_offset?` (whole samples within ±96000) sets the
 /// record offset without reopening them. Always returns the choice, the open device, the `latency`
-/// the backend reports for the output and input (`{samples, ms}` each, null when none) and the
-/// `record_offset`.
+/// the backend reports for the output and input (`{samples, ms}` each, null when none), the
+/// `record_offset`, and `same_clock` (whether input and output share a clock, null until an
+/// output is open and an input is known).
 pub fn audio_device_command(app: &mut SoundApp, p: &serde_json::Value) -> Result<serde_json::Value, String> {
     use serde_json::Value;
     let record_offset = match p.get("record_offset") {
@@ -842,8 +843,8 @@ fn latency_json(app: &SoundApp) -> serde_json::Value {
 /// [`audio_device_command`]. Delay compensation still goes through the engine command, and only
 /// after the device change has been accepted. The result is the open device: its name, the buffer
 /// actually in use (`device_buffer`, null for the device default), its sample rate, the reported
-/// output and input `latency`, the `record_offset`, and delay compensation. `applied` is true only
-/// when an audio device is open.
+/// output and input `latency`, the `record_offset`, `same_clock`, and delay compensation.
+/// `applied` is true only when an audio device is open.
 pub fn setup_audio_command(app: &mut SoundApp, id: &str, p: &serde_json::Value) -> Result<serde_json::Value, String> {
     use serde_json::Value;
     let mut audio = serde_json::Map::new();
