@@ -39,11 +39,16 @@ impl MidiSync {
     /// its device came back under a new native ID (see `soundcraft_playback` port assignment),
     /// and the labels the output worker bound beside it for other ports of the same name ("DIN
     /// (2)" beside "DIN"): saved too, a twin never takes the label of an unplugged port after a
-    /// restart. A label already saved that no track uses is left as it is. The labels in use are
-    /// saved first, so that the others cannot take the last free entries.
+    /// restart. A label already saved that no track uses is left as it is. When few entries are
+    /// left, the same-name labels beside a used one are saved first, then the labels in use, then
+    /// the others: a saved twin is what keeps a used label from moving to that twin (its port
+    /// still gets the label by name when it is listed), and the others cannot take the last free
+    /// entries.
     fn bind_used(&mut self, available: BTreeMap<String, String>, used: &BTreeSet<String>) {
-        let (in_use, beside): (Vec<_>, Vec<_>) = available.into_iter().partition(|(label, _)| used.contains(label));
-        for (label, id) in in_use.into_iter().chain(beside) {
+        let names: BTreeSet<_> = used.iter().map(|label| port_name(label)).collect();
+        let (in_use, rest): (Vec<_>, Vec<_>) = available.into_iter().partition(|(label, _)| used.contains(label));
+        let (twins, beside): (Vec<_>, Vec<_>) = rest.into_iter().partition(|(label, _)| names.contains(port_name(label)));
+        for (label, id) in twins.into_iter().chain(in_use).chain(beside) {
             let room = self.port_ids.contains_key(&label) || self.port_ids.len() < MAX_SYNC_PORTS;
             if !valid_port(&id) || !room {
                 continue;
@@ -55,6 +60,15 @@ impl MidiSync {
             }
         }
     }
+}
+
+/// The port name a selection label numbers: "DIN" for "DIN (2)", the label itself otherwise.
+fn port_name(label: &str) -> &str {
+    label
+        .strip_suffix(')')
+        .and_then(|rest| rest.rsplit_once(" ("))
+        .filter(|(_, n)| n.parse::<usize>().is_ok_and(|n| n >= 2))
+        .map_or(label, |(name, _)| name)
 }
 
 /// What joins the failures of several MIDI output ports (`MidiSyncStatus::error`).
@@ -307,6 +321,25 @@ mod tests {
         assert_eq!(sync.port_ids.get("B used").map(String::as_str), Some("u"));
         assert!(!sync.port_ids.contains_key("A twin"));
         assert_eq!(sync.port_ids.len(), MAX_SYNC_PORTS);
+    }
+
+    #[test]
+    fn the_twin_of_a_used_label_is_saved_before_it_when_one_entry_is_left() {
+        let port_ids = (0..MAX_SYNC_PORTS - 1).map(|i| (format!("Old {i:03}"), format!("old-{i}"))).collect();
+        let mut sync = MidiSync { port_ids, ..MidiSync::default() };
+        let opened = BTreeMap::from([("DIN".to_string(), "a".to_string()), ("DIN (2)".to_string(), "b".to_string())]);
+        sync.bind_used(opened, &BTreeSet::from(["DIN".to_string()]));
+        // Saved, "DIN (2)" keeps B apart: with A unplugged, B does not take "DIN" after a restart.
+        // A, the only other port named "DIN", still gets that name when it is listed.
+        assert_eq!(sync.port_ids.get("DIN (2)").map(String::as_str), Some("b"));
+        assert!(!sync.port_ids.contains_key("DIN"));
+        assert_eq!(sync.port_ids.len(), MAX_SYNC_PORTS);
+        // A label of another name is not a twin: the used one is saved first.
+        let port_ids = (0..MAX_SYNC_PORTS - 1).map(|i| (format!("Old {i:03}"), format!("old-{i}"))).collect();
+        let mut sync = MidiSync { port_ids, ..MidiSync::default() };
+        let opened = BTreeMap::from([("DIN".to_string(), "a".to_string()), ("DINO (2)".to_string(), "b".to_string())]);
+        sync.bind_used(opened, &BTreeSet::from(["DIN".to_string()]));
+        assert_eq!(sync.port_ids.get("DIN").map(String::as_str), Some("a"));
     }
 
     #[test]

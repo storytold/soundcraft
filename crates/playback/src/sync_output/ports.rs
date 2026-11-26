@@ -397,6 +397,13 @@ mod tests {
         assert_eq!(selected(&assign(&lone, listed(&[("UX Synth", "new")])), "UX Synth").unwrap(), "new");
         // Learning again changes nothing already saved.
         assert!(!learn(&mut saved, &both, "DIN", "a"));
+        // Only the twin saved (no room left for "DIN"): B still keeps "DIN (2)", and A, listed
+        // again, gets "DIN" by its name.
+        let twin_only = Bindings::from([("DIN (2)".into(), "b".into())]);
+        let after = assign(&twin_only, listed(&[("DIN", "b"), ("IAC", "iac")]));
+        assert!(selected(&after, "DIN").is_err(), "{after:?}");
+        assert_eq!(selected(&assign(&twin_only, listed(&[("DIN", "a"), ("DIN", "b")])), "DIN").unwrap(), "a");
+        assert_eq!(selected(&assign(&twin_only, listed(&[("DIN", "a")])), "DIN").unwrap(), "a");
     }
 
     #[test]
