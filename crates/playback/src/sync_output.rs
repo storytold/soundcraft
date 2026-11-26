@@ -245,6 +245,11 @@ impl Output {
     pub(crate) fn trouble(&self) -> Option<String> {
         self.trouble.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone()
     }
+    /// The audio device has not reported its output timing since it was opened, so compensated
+    /// output could not be timed.
+    pub(crate) fn timing_unknown(&self) -> bool {
+        self.metrics.lead() == (None, crate::OutputLeadSource::Unknown)
+    }
     pub(crate) fn timing_issue(&self) -> Option<crate::OutputTimingIssue> {
         if !self.routes.iter().any(|r| r.compensate && !r.ports.is_empty()) {
             return None;

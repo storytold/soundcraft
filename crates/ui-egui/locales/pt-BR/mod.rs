@@ -1561,8 +1561,8 @@ fn menu_translate(source: &str) -> Option<&'static str> {
         "Delay MIDI and instrument tracks' external MIDI output by the audio output latency and the mixer's plug-in delay, so it sounds with the audio." => {
             "Atrasa a saída MIDI externa das faixas MIDI e de instrumento pela latência da saída de áudio e pelo atraso dos plug-ins do mixer, para que soe junto com o áudio."
         }
-        "Audio output timing is unavailable. Compensated MIDI outputs need a valid measurement." => {
-            "A temporização da saída de áudio não está disponível. As saídas MIDI compensadas precisam de uma medição válida."
+        "MIDI output is not delay-compensated: the audio device reports no output timing." => {
+            "A saída MIDI não tem compensação de atraso: o dispositivo de áudio não informa a temporização da saída."
         }
         "The audio driver stopped reporting output timing. Compensated MIDI outputs use the last measured lead ({ms} ms)." => {
             "O driver de áudio parou de informar a temporização da saída. As saídas MIDI compensadas usam a última antecipação medida ({ms} ms)."

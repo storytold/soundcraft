@@ -110,6 +110,21 @@ fn timing_warning_follows_the_compensated_destinations() {
 }
 
 #[test]
+fn timing_is_unknown_only_until_the_device_first_reports_it() {
+    let out = Output::default();
+    let mut publisher = Publisher::new(out.view.clone(), out.metrics.clone());
+    let mut stream = crate::sync_clock::StreamLead::default();
+    let base = Instant::now();
+    assert!(!out.timing_unknown(), "no callback yet");
+    publisher.observe(stream.observe(base, None), 0.01);
+    assert!(out.timing_unknown(), "known without any compensated route: the UI then sends uncompensated");
+    publisher.observe(stream.observe(base, Some(Duration::from_millis(5))), 0.01);
+    assert!(!out.timing_unknown());
+    publisher.observe(stream.observe(base, None), 0.01);
+    assert!(!out.timing_unknown(), "a device that stops reporting keeps its last lead");
+}
+
+#[test]
 fn output_stream_lead_is_unknown_for_a_new_output_until_the_first_valid_report() {
     let mut out = Output::default();
     out.routes[0] = Routes { ports: vec![("DIN".into(), 0)], compensate: true };

@@ -46,6 +46,19 @@ impl MidiSync {
     }
 }
 
+/// What the status line says when compensated MIDI output is sent uncompensated.
+const UNTIMED: &str = "MIDI output is not delay-compensated: the audio device reports no output timing.";
+
+/// Whether the tracks' MIDI output is delay-compensated, and whether the preference asks for it
+/// but cannot have it because the audio device reports no output timing. The silent clock that
+/// stands in for a missing audio device has no output latency to wait for. A device that reports
+/// no timing cannot time a compensated route, which would then send nothing; the output goes
+/// uncompensated instead, as with the silent clock, and the status line says so.
+fn compensation(preference: bool, silent: bool, timing_unknown: bool) -> (bool, bool) {
+    let untimed = preference && !silent && timing_unknown;
+    (preference && !silent && !timing_unknown, untimed)
+}
+
 /// How often the list of MIDI output ports is read again, in seconds.
 const RESCAN_SECONDS: f64 = 2.0;
 
@@ -131,21 +144,21 @@ impl SoundApp {
         if let Some(ids) = player.take_opened_sync_output_ids() {
             self.ui.midi_sync.bind_used(ids, &used);
         }
+        let (compensate, untimed) = compensation(self.ui.midi_sync.compensation.notes, player.silent, player.output_timing_unknown());
         let error = player.midi_output_error().or_else(|| {
-            let timing = player.output_timing_issue()?;
-            Some(match timing {
-                soundcraft_playback::OutputTimingIssue::Unknown => {
-                    crate::localization::text("Audio output timing is unavailable. Compensated MIDI outputs need a valid measurement.").to_string()
-                }
+            if untimed {
+                return Some(crate::localization::text(UNTIMED).to_string());
+            }
+            Some(match player.output_timing_issue()? {
+                // Only until the route above is applied: it then sends uncompensated.
+                soundcraft_playback::OutputTimingIssue::Unknown => crate::localization::text(UNTIMED).to_string(),
                 soundcraft_playback::OutputTimingIssue::Retained { lead_us } => crate::localized_format!(
                     "The audio driver stopped reporting output timing. Compensated MIDI outputs use the last measured lead ({ms} ms).",
                     ms = format!("{:.2}", lead_us as f64 / 1000.)
                 ),
             })
         });
-        // The silent clock that stands in for a missing audio device has no output latency to
-        // wait for, and no timing for a compensated route.
-        let want = (used.into_iter().collect::<Vec<_>>(), self.ui.midi_sync.compensation.notes && !player.silent);
+        let want = (used.into_iter().collect::<Vec<_>>(), compensate);
         if self.applied_midi_output.as_ref() != Some(&want) {
             player.restore_sync_output_ids(&self.ui.midi_sync.port_ids);
             let accepted = player.try_set_midi_note_outputs(want.0.clone(), want.1);
@@ -195,6 +208,16 @@ mod tests {
         }
         app.show_midi_sync_error(None);
         assert_eq!(app.ui.status, "Audio output requires attention");
+    }
+
+    #[test]
+    fn output_without_device_timing_goes_uncompensated_and_says_so() {
+        assert_eq!(compensation(true, false, false), (true, false));
+        assert_eq!(compensation(true, false, true), (false, true), "sent uncompensated, with a note");
+        assert_eq!(compensation(false, false, true), (false, false), "nothing to say when compensation is off");
+        assert_eq!(compensation(true, true, true), (false, false), "the silent clock is uncompensated already");
+        let _pt = crate::localization::enter(crate::localization::Language::PortugueseBrazil);
+        assert_ne!(crate::localization::text(UNTIMED), UNTIMED, "translated");
     }
 
     #[test]
