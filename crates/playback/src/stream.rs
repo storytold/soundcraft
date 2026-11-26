@@ -98,8 +98,9 @@ pub(crate) fn output_width(host: &str, main_width: u16) -> u16 {
 
 /// Open the output device `cfg` chooses (else the default) at the chosen rate (else the session
 /// rate) if possible, in the best sample format it offers (f32, else 32- or 16-bit integers),
-/// with as many channels as it offers up to `want_ch` (at least stereo when available), and the
-/// chosen buffer size when the device allows it.
+/// with as many channels as it offers up to [`output_width`] (`want_ch`, the main mix's width,
+/// except every channel up to the hardware path limit on Core Audio; at least stereo when
+/// available), and the chosen buffer size when the device allows it.
 pub(crate) fn open_device(
     want_rate: u32,
     want_ch: u16,
