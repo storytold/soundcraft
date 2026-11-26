@@ -64,18 +64,40 @@ pub enum Action {
     ScanVst3,
 }
 
-/// Each of [`SUBMENUS`]: whether it is enabled, and its entries. `now` is egui's clock, used to
-/// re-check now and then whether recent sessions still exist.
-pub fn submenus(app: &mut SoundApp, now: f64) -> [(bool, Vec<Entry>); 2] {
+/// What one of [`SUBMENUS`] shows: its title in the interface language, whether it is enabled,
+/// and its entries.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Contents {
+    pub title: String,
+    pub enabled: bool,
+    pub entries: Vec<Entry>,
+}
+
+/// Each of [`SUBMENUS`], in the interface language. A host calls this outside
+/// [`SoundApp::logic`], whose language scope has ended by then, so it enters its own.
+pub fn submenus(app: &mut SoundApp) -> [Contents; 2] {
+    let _language = crate::localization::enter(app.ui.language);
     // The egui menu bar disables every entry while Preferences is open; so does this one.
     let open = !app.ui.show_preferences;
-    let recent = crate::recent::entries(app, now);
+    let recent = crate::recent::entries(app);
     let (has_track, instrument) = instrument(app);
-    [(open, recent), (open && has_track, instrument)]
+    let [r, i] = SUBMENUS.map(|d| text(d.label).to_string());
+    [Contents { title: r, enabled: open, entries: recent }, Contents { title: i, enabled: open && has_track, entries: instrument }]
 }
 
 /// Carries out a picked entry; a failure goes to the status line, as from the egui menus.
+///
+/// An instrument entry names the track that was selected when the submenu was built. If the
+/// selection has moved since, the pick is refused rather than applied to a track the user no
+/// longer has selected, and the status line says so.
 pub fn run(app: &mut SoundApp, action: &Action) {
+    let _language = crate::localization::enter(app.ui.language);
+    if let Action::SetInstrument { track, .. } | Action::EditInstrument(track) = action
+        && super::instrument_track(app.engine.session()) != Some(*track)
+    {
+        app.ui.status = text("The selected track changed: choose the instrument again").to_string();
+        return;
+    }
     match action {
         Action::OpenRecent(path) => crate::recent::open_session(app, path),
         Action::ClearRecent => crate::recent::clear(app),
@@ -214,12 +236,12 @@ mod tests {
         let mut app = app();
         let audio = app.run("track.new", json!({"kind": "audio"})).unwrap()["tracks"][0].as_u64().unwrap();
         app.run("edit.select", json!({"tracks": [audio]})).unwrap();
-        let [_, (enabled, entries)] = submenus(&mut app, 0.0);
+        let [_, Contents { enabled, entries, .. }] = submenus(&mut app);
         assert!(!enabled && entries.is_empty());
         app.ui.show_preferences = true;
         let inst = app.run("track.new", json!({"kind": "instrument"})).unwrap()["tracks"][0].as_u64().unwrap();
         app.run("edit.select", json!({"tracks": [inst]})).unwrap();
-        assert!(!submenus(&mut app, 0.0)[1].0, "disabled while Preferences is open, as the egui menu bar is");
+        assert!(!submenus(&mut app)[1].enabled, "disabled while Preferences is open, as the egui menu bar is");
     }
 
     #[test]
@@ -227,7 +249,7 @@ mod tests {
         let mut app = app();
         let inst = app.run("track.new", json!({"kind": "instrument"})).unwrap()["tracks"][0].as_u64().unwrap();
         app.run("edit.select", json!({"tracks": [inst]})).unwrap();
-        let [_, (enabled, entries)] = submenus(&mut app, 0.0);
+        let [_, Contents { enabled, entries, .. }] = submenus(&mut app);
         assert!(enabled);
         let before: Vec<_> = picks(&entries).into_iter().filter(|p| p.1).map(|p| p.0.to_string()).collect();
         assert_eq!(before.len(), 1, "exactly the current instrument is checked");
@@ -236,7 +258,7 @@ mod tests {
         run(&mut app, &sampler);
         let track = app.engine.session().tracks.iter().find(|t| t.id.0 == inst).unwrap();
         assert_eq!(track.instrument.as_ref().map(|i| i.plugin.as_str()), Some("sampler"));
-        let [_, (_, entries)] = submenus(&mut app, 0.0);
+        let [_, Contents { entries, .. }] = submenus(&mut app);
         let now: Vec<_> = picks(&entries).into_iter().filter(|p| p.1).map(|p| p.0).collect();
         assert_eq!(now, ["Sampler"], "the check follows the pick");
     }
@@ -244,11 +266,11 @@ mod tests {
     #[test]
     fn open_recent_lists_sessions_and_clears() {
         let mut app = app();
-        let [(enabled, entries), _] = submenus(&mut app, 0.0);
+        let [Contents { enabled, entries, .. }, _] = submenus(&mut app);
         assert!(enabled);
         assert!(matches!(entries.as_slice(), [Entry::Item { enabled: false, action: None, .. }]), "only a disabled note");
         app.ui.recent_sessions = vec!["/nowhere/Song.scraft".into()];
-        let [(_, entries), _] = submenus(&mut app, 0.0);
+        let [Contents { entries, .. }, _] = submenus(&mut app);
         assert!(
             entries
                 .iter()
@@ -256,5 +278,59 @@ mod tests {
         );
         run(&mut app, &Action::ClearRecent);
         assert!(app.ui.recent_sessions.is_empty());
+    }
+
+    #[test]
+    fn a_session_that_reappears_is_enabled_once_the_check_expires() {
+        let mut app = app();
+        let dir = std::env::temp_dir().join(format!("sc-recent-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("Back.scraft");
+        let _ = std::fs::remove_file(&path);
+        app.ui.recent_sessions = vec![path.to_string_lossy().into_owned()];
+        let enabled = |app: &mut SoundApp| {
+            let [Contents { entries, .. }, _] = submenus(app);
+            entries.iter().any(|e| matches!(e, Entry::Item { action: Some(Action::OpenRecent(_)), enabled: true, .. }))
+        };
+        app.advance_test_clock(std::time::Duration::ZERO);
+        assert!(!enabled(&mut app), "missing, so disabled");
+        std::fs::write(&path, b"").unwrap();
+        // The app's clock moves on its own: egui's input time stands still while the window is hidden.
+        app.advance_test_clock(std::time::Duration::from_secs(60));
+        assert!(enabled(&mut app), "re-checked once the app clock has moved past the check's lifetime");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn an_instrument_pick_for_a_track_no_longer_selected_is_refused() {
+        let mut app = app();
+        let new = |app: &mut SoundApp| app.run("track.new", json!({"kind": "instrument"})).unwrap()["tracks"][0].as_u64().unwrap();
+        let (a, b) = (new(&mut app), new(&mut app));
+        app.run("edit.select", json!({"tracks": [a]})).unwrap();
+        let [_, Contents { entries, .. }] = submenus(&mut app);
+        let sampler = picks(&entries).into_iter().find(|p| p.0 == "Sampler").map(|p| p.2.clone()).unwrap();
+        let instrument =
+            |app: &SoundApp, t: u64| app.engine.session().tracks.iter().find(|x| x.id.0 == t).and_then(|x| x.instrument.clone()).map(|i| i.plugin);
+        let before = (instrument(&app, a), instrument(&app, b));
+        app.run("edit.select", json!({"tracks": [b]})).unwrap();
+        app.ui.status.clear();
+        run(&mut app, &sampler);
+        assert_eq!((instrument(&app, a), instrument(&app, b)), before, "neither track changed");
+        assert!(!app.ui.status.is_empty(), "the refusal is reported");
+        app.run("edit.select", json!({"tracks": [a]})).unwrap();
+        run(&mut app, &sampler);
+        assert_eq!(instrument(&app, a).as_deref(), Some("sampler"), "applied while the selection still matches");
+    }
+
+    #[test]
+    fn submenus_follow_the_interface_language() {
+        let mut app = app();
+        let english = submenus(&mut app);
+        app.ui.language = crate::localization::Language::PortugueseBrazil;
+        let other = submenus(&mut app);
+        for (e, o) in english.iter().zip(&other) {
+            assert_ne!(e.title, o.title, "the title is translated");
+        }
+        assert_ne!(english[0].entries, other[0].entries, "so are the entries (here: No Recent Sessions)");
     }
 }

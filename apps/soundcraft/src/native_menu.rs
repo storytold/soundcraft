@@ -2,7 +2,7 @@
 use muda::{CheckMenuItem, Menu, MenuEvent, MenuId, MenuItem, PredefinedMenuItem, Submenu};
 use objc2::MainThreadMarker;
 use objc2_app_kit::NSApplication;
-use soundcraft_ui_egui::menus::dynamic::{self, Action, Entry};
+use soundcraft_ui_egui::menus::dynamic::{self, Action, Contents, Entry};
 use soundcraft_ui_egui::{SoundApp, menus};
 use std::sync::mpsc::{Receiver, channel};
 
@@ -21,7 +21,7 @@ struct Dynamic {
     index: usize,
     submenu: Submenu,
     /// What it shows now; `None` until first filled, and after a click.
-    shown: Option<(bool, Vec<Entry>)>,
+    shown: Option<Contents>,
     actions: Vec<(MenuId, Action)>,
 }
 
@@ -132,8 +132,7 @@ impl NativeMenu {
     }
 
     /// Refresh after engine/control changes; avoid touching Cocoa items with unchanged state.
-    /// `time` is egui's clock (see `dynamic::submenus`).
-    pub fn sync(&mut self, app: &mut SoundApp, time: f64) {
+    pub fn sync(&mut self, app: &mut SoundApp) {
         let now = std::time::Instant::now();
         if self.last_sync.is_some_and(|t| now.duration_since(t) < SYNC_EVERY) {
             return;
@@ -156,7 +155,7 @@ impl NativeMenu {
                 entry.checked = checked;
             }
         }
-        let wanted = dynamic::submenus(app, time);
+        let wanted = dynamic::submenus(app);
         for d in &mut self.dynamic {
             let Some(want) = wanted.get(d.index) else { continue };
             if d.shown.as_ref() != Some(want)
@@ -169,14 +168,21 @@ impl NativeMenu {
 }
 
 impl Dynamic {
-    fn rebuild(&mut self, (enabled, entries): &(bool, Vec<Entry>)) -> muda::Result<()> {
+    fn rebuild(&mut self, want: &Contents) -> muda::Result<()> {
         while self.submenu.remove_at(0).is_some() {}
         self.actions.clear();
         // Mark it shown first: a failure part way is logged once, not retried every sync.
-        self.shown = Some((*enabled, entries.clone()));
-        self.submenu.set_enabled(*enabled);
-        append(&self.submenu, entries, &mut self.actions)
+        self.shown = Some(want.clone());
+        self.submenu.set_text(literal(&want.title));
+        self.submenu.set_enabled(want.enabled);
+        append(&self.submenu, &want.entries, &mut self.actions)
     }
+}
+
+/// `text` as muda shows it: muda takes `&` as a mnemonic marker and drops it, so a session or
+/// vendor called "R&B" would read "RB"; `&&` shows one `&`.
+fn literal(text: &str) -> String {
+    text.replace('&', "&&")
 }
 
 /// Adds `entries` to `parent`, noting the action of each item that has one.
@@ -184,14 +190,14 @@ fn append(parent: &Submenu, entries: &[Entry], actions: &mut Vec<(MenuId, Action
     for e in entries {
         match e {
             Entry::Item { label, enabled, checked, action } => {
-                let item = CheckMenuItem::new(label, *enabled, *checked, None);
+                let item = CheckMenuItem::new(literal(label), *enabled, *checked, None);
                 parent.append(&item)?;
                 if let Some(a) = action {
                     actions.push((item.id().clone(), a.clone()));
                 }
             }
             Entry::Submenu { label, entries } => {
-                let sub = Submenu::new(label, true);
+                let sub = Submenu::new(literal(label), true);
                 append(&sub, entries, actions)?;
                 parent.append(&sub)?;
             }

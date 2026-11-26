@@ -18,8 +18,8 @@ use std::path::Path;
 
 /// How many sessions the menu keeps.
 pub const MAX_RECENT: usize = 10;
-/// Seconds an existence check stays fresh while the menu is open.
-const EXISTS_TTL: f64 = 3.0;
+/// How long an existence check stays fresh while the menu is open.
+const EXISTS_TTL: std::time::Duration = std::time::Duration::from_secs(3);
 
 /// The same file? On Windows paths are case-insensitive and take either separator.
 fn same(a: &str, b: &str) -> bool {
@@ -72,9 +72,15 @@ impl SoundApp {
         std::mem::take(&mut self.recent_changed)
     }
 
-    /// Whether each recent session still exists, re-checked at most every [`EXISTS_TTL`] seconds.
-    fn recent_exists(&mut self, now: f64) -> Vec<bool> {
-        let stale = self.recent_checked.as_ref().is_none_or(|(at, list, _)| now - at > EXISTS_TTL || *list != self.ui.recent_sessions);
+    /// Whether each recent session still exists, re-checked at most every [`EXISTS_TTL`]. Timed by
+    /// the app's monotonic clock, not egui's input time, which stands still on the logic-only
+    /// ticks of a hidden window, when the macOS menu bar still reads this.
+    fn recent_exists(&mut self) -> Vec<bool> {
+        let now = self.clock_now();
+        let stale = self
+            .recent_checked
+            .as_ref()
+            .is_none_or(|(at, list, _)| now.saturating_duration_since(*at) > EXISTS_TTL || *list != self.ui.recent_sessions);
         if stale {
             let exists = self.ui.recent_sessions.iter().map(|p| Path::new(p).is_file()).collect();
             self.recent_checked = Some((now, self.ui.recent_sessions.clone(), exists));
@@ -90,8 +96,7 @@ pub fn menu(app: &mut SoundApp, ui: &mut egui::Ui) {
             ui.add_enabled(false, egui::Button::new(crate::localization::text("No Recent Sessions")));
             return;
         }
-        let now = ui.ctx().input(|i| i.time);
-        let exists = app.recent_exists(now);
+        let exists = app.recent_exists();
         let mut open = None;
         for (i, path) in app.ui.recent_sessions.iter().enumerate() {
             let here = exists.get(i).copied().unwrap_or(true);
@@ -117,13 +122,13 @@ pub fn menu(app: &mut SoundApp, ui: &mut egui::Ui) {
 }
 
 /// File › Open Recent as data, for a menu bar the host draws (see `menus::dynamic`): the same
-/// entries as [`menu`], with `now` (egui's clock) for re-checking which sessions still exist.
-pub(crate) fn entries(app: &mut SoundApp, now: f64) -> Vec<crate::menus::dynamic::Entry> {
+/// entries as [`menu`].
+pub(crate) fn entries(app: &mut SoundApp) -> Vec<crate::menus::dynamic::Entry> {
     use crate::menus::dynamic::{Action, Entry};
     if app.ui.recent_sessions.is_empty() {
         return vec![Entry::disabled(crate::localization::text("No Recent Sessions"))];
     }
-    let exists = app.recent_exists(now);
+    let exists = app.recent_exists();
     let mut out: Vec<Entry> = app
         .ui
         .recent_sessions
