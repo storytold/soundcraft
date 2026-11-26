@@ -498,6 +498,11 @@ impl SoundApp {
                             sim.0 = at;
                         }
                         self.last_write_at = i64::MIN;
+                    } else if self.resume_at.is_some() {
+                        // Pause stored the old playhead. A locate replaces that resume point,
+                        // including when the selection still contains it, so the next Play
+                        // does not jump back.
+                        self.resume_at = Some(at);
                     }
                     self.engine.transport.position = at;
                 }

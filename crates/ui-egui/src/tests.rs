@@ -197,6 +197,26 @@ fn pause_keeps_the_playhead_and_the_selection_and_resumes_there() {
 }
 
 #[test]
+fn locate_after_pause_replaces_the_resume_point() {
+    let mut app = SoundApp::new(soundcraft_engine::demo::demo_engine(), None, Services::default());
+    app.run("transport.play", json!({"from": 48_000})).unwrap();
+    app.handle_transport(0.25);
+    let paused_at = app.engine.transport.position;
+    app.run("transport.pause", json!({})).unwrap();
+    app.handle_transport(0.0);
+    // The selection contains the located sample, so locate must not be what moves Play.
+    let selection = soundcraft_time::Range::new(0, 200_000);
+    app.engine.session_mut().edit.selection = selection;
+    let at = 12_000;
+    assert!(selection.contains(at) && at != paused_at);
+    app.run("transport.locate", json!({"at": at})).unwrap();
+    app.handle_transport(0.0);
+    app.run("transport.play", json!({})).unwrap();
+    app.handle_transport(0.0);
+    assert_eq!(app.engine.transport.position, at, "play after locate resumes at the located sample, not the pause");
+}
+
+#[test]
 fn session_reset_does_not_apply_old_stop_edits_to_the_new_session() {
     let mut app = SoundApp::new(soundcraft_engine::demo::demo_engine(), None, Services::default());
     app.run("transport.play", json!({"from": 48_000})).unwrap();
