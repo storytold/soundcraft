@@ -8,8 +8,9 @@ use std::collections::{BTreeMap, BTreeSet};
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Compensation {
-    /// Delay MIDI and instrument tracks' external output by the audio output latency and the
-    /// mixer's plug-in delay, so it sounds with the audio.
+    /// Delay what the clips of MIDI and instrument tracks play to external outputs by the audio
+    /// output latency and the mixer's plug-in delay, so it sounds with the audio. MIDI Thru is
+    /// never delayed.
     pub notes: bool,
 }
 

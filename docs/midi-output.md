@@ -69,8 +69,9 @@ MIDI output to the synth's port and channel and its audio input to the synth's r
   the instrument and the external output alike. Use a negative offset for a device that is slow to
   sound.
 - **Delay compensation**: Setup › Preferences › MIDI › Delay Compensation for External Devices ›
-  **MIDI Notes and Controllers** (on by default) delays the output by the audio interface's output
-  latency and the mixer's plug-in delay, so the notes sound with the audio. Off, they leave as soon
+  **MIDI Notes and Controllers** (on by default) delays what the clips play by the audio
+  interface's output latency and the mixer's plug-in delay, so the notes sound with the audio.
+  MIDI Thru is never delayed (section 5). Off, they leave as soon
   as the audio is rendered, ahead of it by the output latency.
 - If the audio device has reported no output timing since it was opened, compensated output
   cannot be timed, so it is sent uncompensated, as with the preference off, and the status line

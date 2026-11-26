@@ -1558,8 +1558,8 @@ fn menu_translate(source: &str) -> Option<&'static str> {
         "{n} (in use)" => "{n} (em uso)",
         "MIDI output for {}" => "Saída MIDI de {}",
         "MIDI output: {output}" => "Saída MIDI: {output}",
-        "Delay MIDI and instrument tracks' external MIDI output by the audio output latency and the mixer's plug-in delay, so it sounds with the audio." => {
-            "Atrasa a saída MIDI externa das faixas MIDI e de instrumento pela latência da saída de áudio e pelo atraso dos plug-ins do mixer, para que soe junto com o áudio."
+        "Delay what the clips of MIDI and instrument tracks play to external MIDI outputs by the audio output latency and the mixer's plug-in delay, so it sounds with the audio. MIDI Thru is never delayed." => {
+            "Atrasa o que os clipes das faixas MIDI e de instrumento tocam nas saídas MIDI externas pela latência da saída de áudio e pelo atraso dos plug-ins do mixer, para que soe junto com o áudio. O MIDI Thru nunca é atrasado."
         }
         "MIDI output is not delay-compensated: the audio device reports no output timing." => {
             "A saída MIDI não tem compensação de atraso: o dispositivo de áudio não informa a temporização da saída."

@@ -35,6 +35,7 @@ mod midi_output;
 mod midi_output_fallback;
 mod midi_panel;
 mod midi_quantize;
+mod midi_thru_menu;
 mod mix_narrow_headers;
 mod mix_separate;
 mod new_midi_clip;

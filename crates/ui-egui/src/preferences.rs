@@ -973,7 +973,7 @@ fn control_ui(ui: &mut egui::Ui, page: PreferencesPage, section: &str, index: us
         }
         Control::Check(text @ "MIDI Notes and Controllers") if section == "Delay Compensation for External Devices" => {
             ui.checkbox(&mut draft.midi_note_compensation, label(text)).on_hover_text(crate::localization::text(
-                "Delay MIDI and instrument tracks' external MIDI output by the audio output latency and the mixer's plug-in delay, so it sounds with the audio.",
+                "Delay what the clips of MIDI and instrument tracks play to external MIDI outputs by the audio output latency and the mixer's plug-in delay, so it sounds with the audio. MIDI Thru is never delayed.",
             ));
         }
         Control::Check(text) => {
