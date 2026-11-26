@@ -88,28 +88,31 @@ impl SoundApp {
         Ok(json!({"value": self.ui.midi_sync.compensation.notes}))
     }
 
+    /// Replace the MIDI output failure in the status line. The text removed is the text that was
+    /// inserted, not the message translated again, so a language switch in between can't strand it.
     fn update_midi_sync_error(&mut self, error: Option<String>) {
-        if let Some(previous) = self.last_midi_sync_error.take() {
-            let previous = crate::localization::error_text(&previous);
-            if self.ui.status == previous {
+        if let Some((_, shown)) = self.last_midi_sync_error.take() {
+            if self.ui.status == shown {
                 self.ui.status.clear();
-            } else if let Some(other) = self.ui.status.strip_suffix(&format!(" · {previous}")) {
+            } else if let Some(other) = self.ui.status.strip_suffix(&format!(" · {shown}")) {
                 self.ui.status.truncate(other.len());
             }
         }
-        if let Some(message) = &error {
+        self.last_midi_sync_error = error.map(|message| {
+            let shown = crate::localization::error_text(&message);
             if !self.ui.status.is_empty() {
                 self.ui.status.push_str(" · ");
             }
-            self.ui.status.push_str(&crate::localization::error_text(message));
-        }
-        self.last_midi_sync_error = error;
+            self.ui.status.push_str(&shown);
+            (message, shown)
+        });
     }
 
     fn show_midi_sync_error(&mut self, error: Option<String>) {
-        // Another message can replace the status line while the same port error persists.
+        // Another message can replace the status line while the same port error persists, and a
+        // language switch changes the text the error should read.
         let hidden = error.as_ref().is_some_and(|message| !self.ui.status.contains(&crate::localization::error_text(message)));
-        if error != self.last_midi_sync_error || hidden {
+        if error.as_ref() != self.last_midi_sync_error.as_ref().map(|(message, _)| message) || hidden {
             self.update_midi_sync_error(error);
         }
     }
@@ -169,6 +172,28 @@ mod tests {
         app.ui.status = "Recording stopped".into();
         app.show_midi_sync_error(Some(error.into()));
         assert!(app.ui.status.starts_with("Recording stopped") && app.ui.status.contains(error), "{}", app.ui.status);
+    }
+
+    #[test]
+    fn a_language_switch_replaces_the_status_line_error_and_fixing_the_port_clears_it() {
+        use crate::localization::{Language, enter};
+        let mut app = SoundApp::new(soundcraft_engine::Engine::default(), None, crate::Services::default());
+        app.ui.status = "Audio output requires attention".into();
+        let error = "MIDI output Gone Port unavailable";
+        app.show_midi_sync_error(Some(error.into()));
+        {
+            let _pt = enter(Language::PortugueseBrazil);
+            app.show_midi_sync_error(Some(error.into()));
+            assert_eq!(app.ui.status, "Audio output requires attention · Saída MIDI Gone Port indisponível");
+        }
+        app.show_midi_sync_error(Some(error.into()));
+        assert_eq!(app.ui.status, "Audio output requires attention · MIDI output Gone Port unavailable");
+        {
+            let _pt = enter(Language::PortugueseBrazil);
+            app.show_midi_sync_error(Some(error.into()));
+        }
+        app.show_midi_sync_error(None);
+        assert_eq!(app.ui.status, "Audio output requires attention");
     }
 
     #[test]

@@ -326,8 +326,9 @@ pub struct SoundApp {
     midi_output_scan_at: f64,
     /// The ports and compensation the audio engine's MIDI output last accepted.
     applied_midi_output: Option<(Vec<String>, bool)>,
-    /// The MIDI output failure shown in the status line.
-    last_midi_sync_error: Option<String>,
+    /// The MIDI output failure shown in the status line: the untranslated message, and the
+    /// text inserted for it in the language of that moment, which is what a later update removes.
+    last_midi_sync_error: Option<(String, String)>,
     /// MIDI played during the current record pass.
     midi_take: Vec<soundcraft_playback::midi::RecordedMidi>,
     /// Recorded MIDI events of the current pass that were dropped before they got here.
