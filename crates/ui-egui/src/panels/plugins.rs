@@ -1,6 +1,21 @@
 use super::{Color32, Sense, SoundApp, Stroke, Tokens, Ui, json, mono, pos2, vec2};
 use std::io::Write as _;
 
+fn parameter_filter(ui: &mut Ui, plugin: &str, param_count: usize) -> String {
+    if param_count <= 32 {
+        return String::new();
+    }
+    let key = ui.scope_id().with(("parameter filter", plugin));
+    let mut filter: String = ui.data(|d| d.get_temp(key)).unwrap_or_default();
+    ui.horizontal(|ui| {
+        ui.label(crate::localization::text("Find parameter"));
+        if ui.text_edit_singleline(&mut filter).changed() {
+            ui.data_mut(|d| d.insert_temp(key, filter.clone()));
+        }
+    });
+    filter
+}
+
 /// Draw plugin windows for instrument and insert slots that still exist, removing closed ones from the list.
 pub(super) fn plugin_windows(app: &mut SoundApp, ctx: &egui::Context) {
     let wins = app.ui.plugin_windows.clone();
@@ -54,14 +69,6 @@ pub(super) fn plugin_windows(app: &mut SoundApp, ctx: &egui::Context) {
                         }
                     }
                 });
-                if instrument && soundcraft_mix::is_third_party(&ins.plugin) {
-                    // A hosted instrument keeps its sounds and settings in its own editor.
-                    ui.label(
-                        egui::RichText::new(crate::localization::text("Load and edit sounds in the plugin's own editor."))
-                            .color(Tokens::current().text_dim),
-                    );
-                    return;
-                }
                 if instrument && ins.plugin == crate::sampler_window::SAMPLER {
                     crate::sampler_window::sample_strip(app, ui, tid, &ins);
                     ui.add_space(4.0);
@@ -69,11 +76,13 @@ pub(super) fn plugin_windows(app: &mut SoundApp, ctx: &egui::Context) {
                 if info.id == "eq_7band" || info.id == "eq_1band" {
                     eq_curve(ui, info.id, &ins);
                 }
-                egui::ScrollArea::vertical().show(ui, |ui| {
+                let filter = parameter_filter(ui, &ins.plugin, info.params.len());
+                let words: Vec<_> = filter.split_whitespace().map(str::to_lowercase).collect();
+                egui::ScrollArea::vertical().max_height(440.0).show(ui, |ui| {
                     egui::Grid::new(("pg", tid.0, slot)).num_columns(3).show(ui, |ui| {
                         // Built-in parameters are translated; a third-party plugin supplies its own names.
                         let localize_params = !soundcraft_mix::is_third_party(&ins.plugin);
-                        for p in info.params {
+                        for p in info.params.iter().filter(|p| words.iter().all(|w| p.name.to_lowercase().contains(w) || p.id.contains(w))) {
                             let v = ins.params.get(p.id).copied().unwrap_or(p.default);
                             let label_text = if localize_params { crate::localization::text(p.name) } else { p.name };
                             let label = ui.label(label_text);
@@ -113,6 +122,21 @@ pub(super) fn plugin_windows(app: &mut SoundApp, ctx: &egui::Context) {
                             // The grid cell's painted label is not an accesskit name; tie the
                             // combo box or slider to it so screen readers and label queries find it.
                             let resp = resp.labelled_by(label.id);
+                            if !cfg!(target_arch = "wasm32") {
+                                resp.context_menu(|ui| {
+                                    app.midi_learn_options(
+                                        ui,
+                                        soundcraft_engine::midi_learn::Target {
+                                            track: tid,
+                                            parameter: soundcraft_engine::midi_learn::Parameter::Plugin {
+                                                slot: (!instrument).then_some(slot),
+                                                plugin: ins.plugin.clone(),
+                                                id: p.id.to_owned(),
+                                            },
+                                        },
+                                    )
+                                });
+                            }
                             if (x - v).abs() > f32::EPSILON && instrument {
                                 let _ = app.engine.execute_merged(
                                     "mix.instrument_param",
@@ -274,4 +298,23 @@ fn preset_menu(
         }
     });
     ui.ctx().memory_mut(|m| m.data.insert_temp(key, name));
+}
+
+#[cfg(test)]
+mod parameter_filter_tests {
+    use super::*;
+
+    #[test]
+    fn midi_learn_parameter_filter_follows_its_plugin_and_only_applies_when_visible() {
+        let ctx = egui::Context::default();
+        let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
+            let key = ui.scope_id().with(("parameter filter", "synth"));
+            ui.data_mut(|d| d.insert_temp(key, String::from("cutoff")));
+            assert_eq!(parameter_filter(ui, "synth", 128), "cutoff");
+            assert!(parameter_filter(ui, "gain", 1).is_empty());
+            assert!(parameter_filter(ui, "other synth", 128).is_empty());
+            assert!(parameter_filter(ui, "synth", 32).is_empty());
+        });
+        output.textures_delta.clear();
+    }
 }

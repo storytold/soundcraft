@@ -41,12 +41,16 @@ fn info_exposes_visible_params_with_plain_ranges() {
     assert_eq!(info.id, gain);
     assert_eq!(info.short_name, "Fixture ");
     let ids: Vec<&str> = info.params.iter().map(|p| p.id).collect();
-    assert_eq!(ids, vec!["7", "3", "12", "13", "14"], "hidden 9 and bypass 11 are skipped");
+    assert_eq!(ids, vec!["7", "3", "12", "13", "14", "15"], "hidden 9 and bypass 11 are skipped");
     let g = info.param("7").unwrap();
     assert_eq!((g.name, g.min, g.max, g.default, g.unit, g.taper), ("Gain", 0.0, 2.0, 1.0, Unit::Db, Taper::Linear));
     let mode = info.param("3").unwrap();
     assert_eq!((mode.unit, mode.min, mode.max), (Unit::Choice, 0.0, 2.0));
     assert_eq!(mode.choices, &["A", "B", "C"]);
+    let delay = info.param("15").unwrap();
+    assert_eq!((delay.min, delay.max, delay.unit), (8.0, 264.0, Unit::Ms));
+    assert_eq!(delay.from_normalized(63.0 / 127.0), 135.0);
+    assert_eq!(delay.from_normalized(1.0 / 512.0), 8.5);
     let f = info.param("12").unwrap();
     assert_eq!((f.unit, f.taper), (Unit::Hz, Taper::Log));
     assert!((f.min - 20.0).abs() < 1e-3 && (f.max - 20_000.0).abs() < 1e-1, "{f:?}");

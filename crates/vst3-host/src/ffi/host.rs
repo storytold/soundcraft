@@ -12,6 +12,7 @@ use super::{
 pub(crate) struct HostContext {
     pub latency_changed: AtomicBool,
     pub restart_requested: AtomicBool,
+    pub parameter_values_changed: AtomicBool,
     /// `performEdit` values (normalized), bounded by `EDIT_CAP`.
     pub edits: Mutex<Vec<(u32, f64)>>,
 }
@@ -21,6 +22,7 @@ impl Default for HostContext {
         HostContext {
             latency_changed: AtomicBool::new(false),
             restart_requested: AtomicBool::new(false),
+            parameter_values_changed: AtomicBool::new(false),
             edits: Mutex::new(Vec::with_capacity(EDIT_CAP)),
         }
     }
@@ -103,6 +105,9 @@ impl IComponentHandlerTrait for HostContext {
     unsafe fn restartComponent(&self, flags: sb::int32) -> sb::tresult {
         if flags as u32 & sv::RestartFlags_::kLatencyChanged as u32 != 0 {
             self.latency_changed.store(true, Ordering::Relaxed);
+        }
+        if flags as u32 & sv::RestartFlags_::kParamValuesChanged as u32 != 0 {
+            self.parameter_values_changed.store(true, Ordering::Relaxed);
         }
         self.restart_requested.store(true, Ordering::Relaxed);
         sb::kResultOk

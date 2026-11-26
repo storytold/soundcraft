@@ -14,7 +14,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Set Instrument",
             [],
             None,
-            "{track?, plugin: id, params?: {id: value}} — an instrument track's instrument: built-in, `clap:`, `vst3:` or `au:` id; `params` sets built-in parameters (clamped into range; unknown ids and other fields are errors)",
+            "{track?, plugin: id, params?: {id: value}} — an instrument track's instrument: built-in, `clap:`, `vst3:` or `au:` id; `params` sets explicit parameters (clamped into range; unknown ids and other fields are errors)",
             has_selection,
             set_instrument
         ),
@@ -23,7 +23,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Set Instrument Parameter",
             [],
             None,
-            "{track?, param, value}: one parameter of an instrument track's built-in instrument (clamped into range)",
+            "{track?, param, value}: one parameter of an instrument track's plugin (clamped into range)",
             has_selection,
             set_instrument_param
         ),
@@ -61,14 +61,18 @@ fn set_instrument(e: &mut Engine, p: &Value) -> Result<Value> {
         }
     }
     let mut ins = Insert::new(info.id);
-    for pi in info.params {
-        ins.params.insert(pi.id.to_string(), pi.default);
+    // A hosted instrument supplies its own patch. Only explicit host values override its state.
+    if !soundcraft_mix::is_third_party(info.id) {
+        for pi in info.params {
+            ins.params.insert(pi.id.to_string(), pi.default);
+        }
     }
     for (k, v) in values {
         ins.params.insert(k, v);
     }
     if let Some(tr) = e.session_mut().track_mut(t) {
         tr.instrument = Some(ins);
+        super::midi_learn::slot_changed(e, t, None, None);
     }
     Ok(json!({"track": t, "plugin": info.id}))
 }
@@ -79,8 +83,7 @@ fn set_instrument_param(e: &mut Engine, p: &Value) -> Result<Value> {
     let value = p.get("value").and_then(Value::as_f64).filter(|v| v.is_finite()).ok_or_else(|| bad(id, "`value` must be a number"))? as f32;
     let t = tracks_required(e, id, p)?.first().copied().ok_or_else(|| bad(id, "no track"))?;
     let ins = e.session_mut().track_mut(t).and_then(|tr| tr.instrument.as_mut()).ok_or_else(|| bad(id, "the track has no instrument"))?;
-    // Hosted instruments keep their parameters in their own state.
-    let info = soundcraft_dsp::plugin_info(&ins.plugin).ok_or_else(|| bad(id, format!("`{}` is not a built-in instrument", ins.plugin)))?;
+    let info = super::clap::plugin_info(&ins.plugin).ok_or_else(|| bad(id, format!("unknown instrument `{}`", ins.plugin)))?;
     let pi = info.param(&param).ok_or_else(|| bad(id, format!("`{}` has no parameter `{param}`", info.id)))?;
     let v = pi.clamp(value);
     ins.params.insert(param.clone(), v);

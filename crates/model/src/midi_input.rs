@@ -49,6 +49,12 @@ impl<'a> MidiInput<'a> {
     }
 }
 
+/// An independent seven-bit CC suitable for a mixer knob. Bank selection, parameter
+/// addressing/data entry, switch pedals, and channel-mode messages must stay on the performance path.
+pub fn is_mixer_cc(cc: u8) -> bool {
+    cc < 120 && !matches!(cc, 0 | 6 | 32 | 38 | 64..=69 | 96..=101)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

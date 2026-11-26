@@ -12,6 +12,7 @@ use soundcraft_engine::catalog;
 pub const UI_COMMANDS: &[(&str, &str, &str, Option<&str>)] = &[
     ("app.checkForUpdates", "Check for Updates…", "", None),
     ("ui.dock", "Arrange Panel", "", None),
+    ("ui.midi_learn", "MIDI Learn", "", None),
     ("ui.dock.reset", "Reset Panel Layout", "Window > Reset Panel Layout", None),
     ("window.mix", "Mix", "Window > Mix", Some("Cmd+=")),
     ("window.edit", "Edit", "Window > Edit", Some("Cmd+=")),
@@ -637,6 +638,7 @@ pub fn run_ui_command(app: &mut SoundApp, id: &str, p: &Value) -> Option<Result<
         json!({"value": *v})
     };
     let r = match id {
+        "ui.midi_learn" => return Some(app.midi_learn_command(p)),
         "ui.language" => {
             let Some(tag) = p.get("language").and_then(Value::as_str) else {
                 return Some(Ok(json!({"language": app.ui.language.id()})));

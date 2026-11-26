@@ -1,10 +1,12 @@
 //! Test-only CLAP plugins for soundcraft-clap-host: a gain effect and a "DC synth".
 //!
 //! - `org.soundcraft.test.gain`: stereo in/out, param 7 "Gain" (0..2, default 1), param 3 "Mode"
-//!   (stepped enum A/B/C), hidden param 9, latency 3 samples.
+//!   (stepped enum A/B/C), hidden param 9, param 15 "Transpose" (stepped, -12..12), latency 3
+//!   samples.
 //! - `org.soundcraft.test.synth`: instrument, stereo out, CLAP note port; outputs a constant equal
 //!   to the velocity of the held note (0 when none), switching at the event's sample offset. A
 //!   MIDI CC 7 (volume) sets the constant to its value / 127. `reset` leaves the note sounding.
+//!   Exposes one parameter, param 7 "Gain".
 //!
 //! - `org.soundcraft.test.wide16`, `.wide17ports`, `.wide65ch`: effects advertising wide layouts
 //!   (16 ports of 64 channels, 17 ports of 2 channels, one port of 65 channels per direction).
@@ -316,7 +318,7 @@ unsafe extern "C" fn process(p: *const clap_plugin, pr: *const clap_process) -> 
 // ---- extensions ----
 
 unsafe extern "C" fn params_count(p: *const clap_plugin) -> u32 {
-    if unsafe { fx(p) }.synth { 0 } else { 3 }
+    if unsafe { fx(p) }.synth { 1 } else { 4 }
 }
 
 fn write_name(dst: &mut [c_char], s: &CStr) {
@@ -331,6 +333,7 @@ unsafe extern "C" fn params_get_info(_p: *const clap_plugin, index: u32, info: *
         0 => (7, c"Gain", CLAP_PARAM_IS_AUTOMATABLE, 0.0, 2.0, 1.0),
         1 => (3, c"Mode", CLAP_PARAM_IS_STEPPED | CLAP_PARAM_IS_ENUM, 0.0, 2.0, 0.0),
         2 => (9, c"Secret", CLAP_PARAM_IS_HIDDEN, 0.0, 1.0, 0.0),
+        3 => (15, c"Transpose", CLAP_PARAM_IS_STEPPED, -12.0, 12.0, 0.0),
         _ => return false,
     };
     info.id = id;

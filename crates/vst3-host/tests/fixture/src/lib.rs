@@ -3,10 +3,10 @@
 //! - "Fixture Gain" (`Fx`): stereo or mono in → out × gain, with a separate edit controller
 //!   (connected through IConnectionPoint, synced through the component state). Params: 7 "Gain"
 //!   (plain 0..2, linear, units dB), 3 "Mode" (3 steps: A/B/C), 12 "Freq" (20..20000 Hz, log),
-//!   9 hidden, 11 bypass. Starts at gain 0.5 (its state) although the declared default is 1.0.
-//!   Reports 3 samples of latency. State: the component stores the gain (one LE f64), the
-//!   controller the Freq value (one LE f64). Its controller has an editor view (`IPlugView`,
-//!   320×240, no real drawing) supporting NSView/HWND/X11.
+//!   15 "Delay" (8..264 ms, 512 steps), 9 hidden, 11 bypass. Starts at gain 0.5 (its state)
+//!   although the declared default is 1.0. Reports 3 samples of latency. State: the component
+//!   stores the gain (one LE f64), the controller the Freq value (one LE f64). Its controller has
+//!   an editor view (`IPlugView`, 320×240, no real drawing) supporting NSView/HWND/X11.
 //! - "Fixture Synth" (`Instrument|Synth`): a single-component instrument (the component is also
 //!   its edit controller). No audio input, one stereo output, one event input; every output
 //!   sample is the velocity of the held note (sample-accurate), 0 when none. Poly pressure, and
@@ -308,7 +308,7 @@ impl IConnectionPointTrait for GainController {
     }
 }
 
-const GAIN_PARAMS: [(u32, &str, &str, i32, f64, i32); 7] = [
+const GAIN_PARAMS: [(u32, &str, &str, i32, f64, i32); 8] = [
     (7, "Gain", "dB", 0, 0.5, ParameterInfo_::ParameterFlags_::kCanAutomate),
     (9, "Secret", "", 0, 0.0, ParameterInfo_::ParameterFlags_::kIsHidden),
     (3, "Mode", "", 2, 0.0, ParameterInfo_::ParameterFlags_::kIsList),
@@ -319,6 +319,7 @@ const GAIN_PARAMS: [(u32, &str, &str, i32, f64, i32); 7] = [
     (13, "Level", "dB", 0, 0.375, ParameterInfo_::ParameterFlags_::kCanAutomate),
     // Identity too, but its text already carries the units (0..12 dB).
     (14, "Drive", "dB", 0, 0.0, ParameterInfo_::ParameterFlags_::kCanAutomate),
+    (15, "Delay", "ms", 512, 0.5, ParameterInfo_::ParameterFlags_::kCanAutomate),
 ];
 
 impl IEditControllerTrait for GainController {
@@ -381,6 +382,7 @@ impl IEditControllerTrait for GainController {
             7 => 2.0 * n,
             3 => (n * 2.0).round(),
             12 => 20.0 * 1000f64.powf(n),
+            15 => 8.0 + n * 256.0,
             _ => n,
         }
     }
@@ -389,6 +391,7 @@ impl IEditControllerTrait for GainController {
             7 => v / 2.0,
             3 => v / 2.0,
             12 => (v / 20.0).ln() / 1000f64.ln(),
+            15 => (v - 8.0) / 256.0,
             _ => v,
         }
     }

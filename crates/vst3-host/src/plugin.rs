@@ -140,7 +140,7 @@ impl Vst3Plugin {
             Mapping::Plain => self.inst.to_normalized(id, f64::from(v)).unwrap_or(linear),
             Mapping::Linear => linear,
         };
-        n.is_finite().then(|| n.clamp(0.0, 1.0))
+        n.is_finite().then(|| pi.snap_normalized(n.clamp(0.0, 1.0)))
     }
 
     /// The editor's size in pixels without opening it (creates and releases a view). For
@@ -501,7 +501,7 @@ impl Vst3Editor {
             Mapping::Plain => self.link.to_normalized(id, f64::from(v)).unwrap_or(linear),
             Mapping::Linear => linear,
         };
-        n.is_finite().then(|| n.clamp(0.0, 1.0))
+        n.is_finite().then(|| pi.snap_normalized(n.clamp(0.0, 1.0)))
     }
 }
 
@@ -521,9 +521,26 @@ impl PluginEditor for Vst3Editor {
     }
 
     fn idle(&mut self) -> Vec<(String, f32)> {
+        let was_open = self.link.is_open();
         self.link.idle();
+        let edits = self.host.take_edits();
+        let refreshed = self.host.parameter_values_changed.swap(false, Ordering::Relaxed);
+        if self.info.is_instrument && was_open && refreshed {
+            // After kParamValuesChanged the controller holds the current values; a queued edit
+            // only stands in when it cannot be read.
+            let latest: HashMap<_, _> = edits.into_iter().collect();
+            return self
+                .ids
+                .iter()
+                .enumerate()
+                .filter_map(|(i, &id)| {
+                    let n = self.link.normalized_value(id).or_else(|| latest.get(&id).copied())?;
+                    Some((self.info.params.get(i)?.id.to_string(), self.plain(i, n)?))
+                })
+                .collect();
+        }
         let mut out = Vec::new();
-        for (vid, n) in self.host.take_edits() {
+        for (vid, n) in edits {
             let Some(i) = self.ids.iter().position(|&x| x == vid) else { continue };
             if let (Some(p), Some(v)) = (self.info.params.get(i), self.plain(i, n)) {
                 out.push((p.id.to_string(), v));

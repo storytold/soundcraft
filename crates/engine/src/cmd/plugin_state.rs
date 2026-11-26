@@ -13,7 +13,7 @@ pub fn specs() -> Vec<CommandSpec> {
         label: "Store Plugin State",
         menu: &[],
         shortcut: None,
-        params: "{track, slot: 0..9 | \"a\"..\"j\" | \"instrument\", state: base64 | null} → {bytes}. Not undoable and not journaled (states can be large).",
+        params: "{track, slot: 0..9 | \"a\"..\"j\" | \"instrument\", state?: base64 | null, params?: instrument parameter values} → {bytes}. Not undoable and not journaled (states can be large).",
         enabled: has_tracks,
         run: insert_state,
         journal: false,
@@ -54,7 +54,27 @@ fn insert_state(e: &mut Engine, p: &Value) -> Result<Value> {
         Some(i) => tr.mixer.inserts.get(i).and_then(Option::as_ref),
         None => tr.instrument.as_ref(),
     });
-    if stored.is_some_and(|ins| ins.state_bytes().as_deref() == state.as_deref().filter(|b| !b.is_empty())) {
+    let ins = stored.ok_or_else(|| bad(CMD, "empty slot"))?;
+    let mut values = Vec::new();
+    if let Some(params) = p.get("params") {
+        if slot.is_some() {
+            return Err(bad(CMD, "editor parameter snapshots require the instrument slot"));
+        }
+        let obj = params.as_object().ok_or_else(|| bad(CMD, "`params` must be an object"))?;
+        let info = super::clap::plugin_info(&ins.plugin).ok_or_else(|| bad(CMD, "unknown instrument"))?;
+        for pi in info.params {
+            if let Some(v) = obj.get(pi.id) {
+                let value = v.as_f64().filter(|v| v.is_finite()).ok_or_else(|| bad(CMD, "expected a numeric parameter value"))?;
+                values.push((pi.id.to_string(), pi.clamp(value as f32)));
+            }
+        }
+        if values.len() != obj.len() {
+            return Err(bad(CMD, "snapshot contains an unknown instrument parameter"));
+        }
+    }
+    let write_state = p.get("state").is_some() || p.get("params").is_none();
+    let state_changed = write_state && ins.state_bytes().as_deref() != state.as_deref().filter(|b| !b.is_empty());
+    if !state_changed && values.iter().all(|(id, v)| ins.params.get(id) == Some(v)) {
         return Ok(json!({"bytes": n}));
     }
     let s = e.session_mut();
@@ -64,10 +84,13 @@ fn insert_state(e: &mut Engine, p: &Value) -> Result<Value> {
         None => tr.instrument.as_mut(),
     }
     .ok_or_else(|| bad(CMD, "empty slot"))?;
-    match state {
-        Some(bytes) => ins.set_state_bytes(&bytes),
-        None => ins.state = None,
+    if state_changed {
+        match state {
+            Some(bytes) => ins.set_state_bytes(&bytes),
+            None => ins.state = None,
+        }
     }
+    ins.params.extend(values);
     Ok(json!({"bytes": n}))
 }
 
@@ -103,6 +126,29 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         e.execute("mix.insert_state", &json!({"track": t, "slot": 2, "state": null})).unwrap();
         assert_eq!(e.session().tracks[0].mixer.inserts[2].as_ref().unwrap().state, None);
+    }
+
+    #[test]
+    fn native_instrument_values_roundtrip_with_the_patch_and_without_a_state_reader() {
+        let mut e = Engine::default();
+        e.execute("track.new", &json!({"kind": "instrument"})).unwrap();
+        let t = e.session().tracks[0].id;
+        let state = soundcraft_model::b64::encode(b"native patch");
+        e.execute("mix.instrument_param", &json!({"track": t.0, "param": "cutoff", "value": 500.0})).unwrap();
+        let snapshot = json!({"track": t.0, "slot": "instrument", "state": state, "params": {"cutoff": 200.0}});
+        e.execute("mix.insert_state", &snapshot).unwrap();
+        let rev = e.revision;
+        e.execute("mix.insert_state", &snapshot).unwrap();
+        assert_eq!(e.revision, rev, "an identical capture does not dirty the session");
+        e.execute("mix.insert_state", &json!({"track": t.0, "slot": "instrument", "params": {"cutoff": 300.0}})).unwrap();
+        let path = std::env::temp_dir().join(format!("soundcraft-instrument-snapshot-{}.scraft", std::process::id()));
+        e.execute("session.save", &json!({"path": path})).unwrap();
+        let mut reopened = Engine::default();
+        reopened.execute("session.open", &json!({"path": path})).unwrap();
+        std::fs::remove_file(&path).unwrap();
+        let instrument = reopened.session().track(t).unwrap().instrument.as_ref().unwrap();
+        assert_eq!(instrument.params["cutoff"], 300.0, "host values seen by the first block and subsequent relative edits");
+        assert_eq!(instrument.state_bytes().as_deref(), Some(&b"native patch"[..]));
     }
 
     #[test]

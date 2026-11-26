@@ -762,7 +762,10 @@ fn pan_sliders(app: &mut SoundApp, ui: &mut Ui, track: &Track) {
             .text(if stereo { side } else { "Pan" })
             .custom_formatter(|v, _| crate::widgets::pan_text(v as f32))
             .custom_parser(|s| crate::mix_window::parse_pan(s).map(f64::from));
-        ui.add(slider);
+        let resp = ui.add(slider);
+        if resp.dragged() {
+            app.gesture = Some(crate::Gesture::Pan { track: track.id, index: i });
+        }
         if (pan - before).abs() > f32::EPSILON {
             let _ = app.engine.execute_merged("mix.pan", &json!({"track": track.id.0, "pan": pan, "index": i}), &format!("pan:{}:{i}", track.id.0));
         }

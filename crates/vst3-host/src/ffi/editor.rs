@@ -292,6 +292,18 @@ impl EditorLink {
         v.is_finite().then_some(v)
     }
 
+    /// Current value after a native preset change, on the main thread.
+    pub fn normalized_value(&self, id: u32) -> Option<f64> {
+        if !window::on_main_thread() {
+            return None;
+        }
+        let g = self.lock();
+        let c = g.controller.as_ref()?;
+        // SAFETY: valid controller (cleared under this lock before termination).
+        let v = unsafe { c.getParamNormalized(id) };
+        v.is_finite().then(|| v.clamp(0.0, 1.0))
+    }
+
     /// Plain → normalized through the controller (main thread).
     pub fn to_normalized(&self, id: u32, plain: f64) -> Option<f64> {
         let g = self.lock();

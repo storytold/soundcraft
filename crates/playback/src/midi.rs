@@ -3,7 +3,8 @@
 //! [`MidiInputs`] (UI thread) keeps a connection to every enabled input port and follows devices
 //! being plugged in and removed ([`MidiInputs::rescan`]). Each connection's callback runs on a
 //! thread of the MIDI system and puts channel messages, stamped with their arrival time, into
-//! the [`MidiFeed`]. The audio callback takes them out without locking or allocating
+//! the [`MidiFeed`]; control changes assigned (or being learned) with MIDI Learn go to the UI
+//! thread instead. The audio callback takes them out without locking or allocating
 //! ([`crate::Player::set_midi`]), plays them through the mix engine's MIDI thru and, while
 //! recording, writes them back with their timeline position for the UI thread to collect
 //! ([`MidiFeed::take_recorded`]).
@@ -32,6 +33,10 @@
 //!
 //! On other systems (FreeBSD, the web) there is no MIDI input: the port list stays empty.
 
+mod controls;
+
+pub use controls::ControlChange;
+use controls::ControlTap;
 use soundcraft_mix::{LiveMidi, MidiPorts, midi_port_bit};
 use soundcraft_time::Samples;
 use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU32, AtomicU64, AtomicUsize, Ordering};
@@ -153,6 +158,8 @@ pub struct MidiFeed {
     /// a full queue is not written into the queue yet.
     writers: Mutex<u64>,
     recorded: Ring,
+    controls: Mutex<ControlTap>,
+    control_wake: std::sync::OnceLock<Box<dyn Fn() + Send + Sync>>,
     /// When the feed was made. Not on the web: there is no MIDI input there, and no clock in std.
     #[cfg(not(target_arch = "wasm32"))]
     epoch: Instant,
@@ -201,6 +208,8 @@ impl Default for MidiFeed {
             incoming: Ring::new(INCOMING),
             writers: Mutex::new(0),
             recorded: Ring::new(RECORDED),
+            controls: Mutex::default(),
+            control_wake: std::sync::OnceLock::new(),
             #[cfg(not(target_arch = "wasm32"))]
             epoch: Instant::now(),
             connected: AtomicUsize::new(0),
@@ -262,7 +271,8 @@ impl MidiFeed {
     }
 
     /// A message arrived from `port` (called on a MIDI system thread). Channel messages go on to
-    /// the audio thread; system messages (clock, SysEx, active sensing) are dropped.
+    /// the audio thread, except control changes assigned (or being learned) with MIDI Learn, which
+    /// go to the UI thread; system messages (clock, SysEx, active sensing) are dropped.
     ///
     /// The bytes come from a device, real or virtual, and are not trusted: a message that does
     /// not start with a channel status byte or is shorter than its kind needs is dropped, data
@@ -294,6 +304,21 @@ impl MidiFeed {
             if open.is_some_and(|o| !o.load(Ordering::Acquire)) {
                 return;
             }
+            let count = (self.activity.load(Ordering::Relaxed) >> 32).wrapping_add(1) & 0xFFFF_FFFF;
+            self.activity.store(count << 32 | u64::from(e), Ordering::Relaxed);
+            if status & 0xf0 == 0xb0
+                && soundcraft_model::is_mixer_cc(data(1))
+                && let Some(device) = self.ports.name(port)
+            {
+                let captured = self.controls.lock().unwrap_or_else(PoisonError::into_inner).capture(device, unpack(e));
+                if let Some(wake) = captured {
+                    drop(owed);
+                    if wake && let Some(notify) = self.control_wake.get() {
+                        notify();
+                    }
+                    return;
+                }
+            }
             let now = self.now();
             // Losses from a full queue go into the queue first, where they happened: ahead of
             // the first event that fits again. Each mark carries the time its port's events
@@ -319,8 +344,6 @@ impl MidiFeed {
                 *owed |= midi_port_bit(port);
             }
         }
-        let count = (self.activity.load(Ordering::Relaxed) >> 32).wrapping_add(1) & 0xFFFF_FFFF;
-        self.activity.store(count << 32 | u64::from(e), Ordering::Relaxed);
     }
 
     /// The connection of `port` that delivers through `open` ([`Self::receive_while_open`]) is
@@ -331,6 +354,7 @@ impl MidiFeed {
     pub fn close_port(&self, open: &AtomicBool, port: u8) {
         let _writers = self.writers.lock().unwrap_or_else(PoisonError::into_inner);
         open.store(false, Ordering::Release);
+        self.controls.lock().unwrap_or_else(PoisonError::into_inner).disconnect(port);
         self.port_lost(port);
     }
 
@@ -584,14 +608,12 @@ pub struct MidiInputs {
 impl MidiInputs {
     /// Connects to every input port except the `disabled` ones.
     pub fn open(disabled: Vec<String>) -> MidiInputs {
-        let mut m = MidiInputs {
-            feed: Arc::new(MidiFeed::default()),
-            disabled,
-            ports: Vec::new(),
-            error: None,
-            backend: backend::Backend::default(),
-            stand_in: None,
-        };
+        Self::open_with_feed(disabled, Arc::new(MidiFeed::default()))
+    }
+
+    /// Install mixer routes before opening ports, including the first callback on startup.
+    pub fn open_with_feed(disabled: Vec<String>, feed: Arc<MidiFeed>) -> MidiInputs {
+        let mut m = MidiInputs { feed, disabled, ports: Vec::new(), error: None, backend: backend::Backend::default(), stand_in: None };
         m.rescan();
         m
     }

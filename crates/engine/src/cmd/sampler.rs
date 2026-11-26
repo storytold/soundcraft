@@ -95,6 +95,9 @@ pub(crate) fn attach(e: &mut Engine, t: TrackId, name: &str, bytes: &[u8], path:
             ins.params.insert(k, v);
         }
     }
+    if !keep {
+        super::midi_learn::slot_changed(e, t, None, None);
+    }
     Ok(json!({"track": t, "source": src, "name": stem, "frames": frames, "channels": channels, "sample_rate": rate}))
 }
 
@@ -161,6 +164,22 @@ mod tests {
 
     fn crossings(x: &[f32]) -> usize {
         x.windows(2).filter(|w| w[0] < 0.0 && w[1] >= 0.0).count()
+    }
+
+    #[test]
+    fn midi_learn_sampler_load_releases_replaced_synth_assignment_until_undo() {
+        let d = dir("midi-learn");
+        let wav = d.join("tone.wav");
+        tone_wav(&wav, 440.0, 48_000, 0.01, 1);
+        let mut e = Engine::default();
+        let t = instrument_track(&mut e);
+        e.execute("midi.learn.bind", &json!({"target":{"track":t,"parameter":{"plugin":{"slot":null,"plugin":"subtractive_synth","id":"cutoff"}}},"source":{"device":"Keys","channel":1,"cc":75}})).unwrap();
+        e.execute("mix.sampler_load", &json!({"track":t,"path":wav})).unwrap();
+        assert_eq!(crate::midi_learn::stored(e.session()).count(), 0);
+        assert!(e.undo());
+        assert_eq!(crate::midi_learn::bindings(e.session()).count(), 1);
+        std::fs::remove_file(wav).unwrap();
+        std::fs::remove_dir(d).unwrap();
     }
 
     #[test]

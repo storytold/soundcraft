@@ -134,7 +134,6 @@ pub(super) fn translate(source: &str) -> Option<&'static str> {
         "Legato" => "Legato",
         "Length ratio" => "Proporção de duração",
         "Level" => "Nível",
-        "Load and edit sounds in the plugin's own editor." => "Carregue e edite sons no editor próprio do plugin.",
         "Load Sample…" => "Carregar amostra…",
         "Loop Length" => "Duração do loop",
         "Loop Until End of Session or Next Clip" => "Repetir até o fim da sessão ou o próximo clipe",
@@ -838,6 +837,7 @@ fn menu_translate(source: &str) -> Option<&'static str> {
         "Input trim (dB)" => "Trim de entrada (dB)",
         "Score composer" => "Compositor da partitura",
         "Score title" => "Título da partitura",
+        "Send pan" => "Pan do envio",
         "Send level" => "Nível do envio",
         "Surround pan: drag the puck · double-click: front centre · Alt-drag: divergence" => {
             "Panorama surround: arraste o controle · clique duplo: centro frontal · Alt+arraste: divergência"
@@ -1026,6 +1026,32 @@ fn menu_translate(source: &str) -> Option<&'static str> {
         "Add MIDI Note" => "Adicionar nota MIDI",
         "Add Note" => "Adicionar nota",
         "Arrange Panel" => "Organizar painel",
+        "Find parameter" => "Buscar parâmetro",
+        "Assign MIDI CC" => "Atribuir CC MIDI",
+        "Assign" => "Atribuir",
+        "Set Min" => "Definir mínimo",
+        "Set Max" => "Definir máximo",
+        "Invert Range" => "Inverter intervalo",
+        "MIDI Learn" => "Aprender MIDI",
+        "Cancel MIDI Learn" => "Cancelar aprendizado MIDI",
+        "Assign MIDI Controller" => "Atribuir controlador MIDI",
+        "Forget MIDI Assignment" => "Remover atribuição MIDI",
+        "This control is unavailable" => "Este controle está indisponível",
+        "(inverted)" => "(invertido)",
+        "MIDI Learn: move a control that sends a CC. Bank, parameter, switch pedal and channel-mode messages pass through." => {
+            "Aprender MIDI: mova um controle que envie CC. Mensagens de banco, parâmetro, pedal de chave e modo de canal passam para o instrumento."
+        }
+        "Toggle requires a press and release. For a latching button, choose hold mode." => {
+            "O modo de alternância requer pressionar e soltar. Para um botão com trava, escolha o modo de manter pressionado."
+        }
+        "Unsupported control mode" => "Modo de controle incompatível",
+        "MIDI Learn (hold button)" => "Aprender MIDI (manter o botão pressionado)",
+        "MIDI Learn (relative, center 64)" => "Aprender MIDI (relativo, centro em 64)",
+        "MIDI Learn: this control is already assigned. Turn another control." => {
+            "Aprender MIDI: este controle já está atribuído. Gire outro controle."
+        }
+        "MIDI Learn: assigned {} · Ch {} · CC {}" => "MIDI atribuído: {} · Canal {} · CC {}",
+        "{} · Ch {} · CC {}" => "{} · Canal {} · CC {}",
         "Assign Send" => "Atribuir envio",
         "Assign to VCA" => "Atribuir ao VCA",
         "Audio Device" => "Dispositivo de áudio",

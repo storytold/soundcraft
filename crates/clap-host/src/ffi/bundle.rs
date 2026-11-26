@@ -226,6 +226,7 @@ impl Bundle {
                 plugin,
                 gui,
                 state: inst.state_ext,
+                params: inst.params,
                 alive: true,
                 created: false,
                 visible: false,

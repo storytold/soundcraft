@@ -335,6 +335,44 @@ fn a_dragged_send_level_writes_send_automation() {
     }
 }
 
+/// A latched send stops writing once it is retargeted, and returning it to the touched bus
+/// does not resume the latch without a new touch.
+#[test]
+fn a_send_retargeted_away_and_back_stays_released() {
+    use soundcraft_model::AutoParam;
+    let mut app = SoundApp::new(soundcraft_engine::demo::demo_engine(), None, Services::default());
+    let lead = app.engine.session().track_by_name("Lead").unwrap().id;
+    let points = |app: &SoundApp| app.engine.session().track(lead).unwrap().lane(&AutoParam::SendLevel(0)).map_or(0, |l| l.points.len());
+    let pass = |app: &mut SoundApp| {
+        app.handle_transport(0.1);
+        app.write_automation();
+    };
+    let original = {
+        let s = app.engine.session();
+        let soundcraft_model::Route::Bus(bus) = &s.track(lead).unwrap().mixer.sends[0].as_ref().unwrap().target else { panic!("a bus send") };
+        s.bus(*bus).unwrap().name.clone()
+    };
+    app.run("mix.new_bus", json!({"name": "Other"})).unwrap();
+    app.run("mix.automation_mode", json!({"tracks": ["Lead"], "mode": "latch"})).unwrap();
+    app.run("transport.play", json!({})).unwrap();
+    pass(&mut app);
+    app.pointer_down = true;
+    app.gesture = Some(super::Gesture::SendFader { track: lead, slot: 0 });
+    pass(&mut app);
+    app.pointer_down = false;
+    app.gesture = None;
+    pass(&mut app);
+    assert!(points(&app) > 0, "the touch latched the send");
+    app.run("mix.send", json!({"track": lead.0, "slot": 0, "bus": "Other"})).unwrap();
+    pass(&mut app);
+    app.run("mix.send", json!({"track": lead.0, "slot": 0, "bus": original})).unwrap();
+    let returned = points(&app);
+    for _ in 0..3 {
+        pass(&mut app);
+    }
+    assert_eq!(points(&app), returned, "the latch stays released after the send returns");
+}
+
 #[test]
 fn plugin_states_read_during_a_drag_keep_it_one_undo_step() {
     let mut app = SoundApp::new(soundcraft_engine::demo::demo_engine(), None, Services::default());
@@ -1618,6 +1656,8 @@ fn editor_gesture_polling_survives_discarded_and_hidden_host_iterations() {
         run_host_frame(&mut app, &ctx, raw());
     }
     let keys = app.engine.session().track_by_name("Keys").unwrap().id;
+    app.engine.execute("mix.instrument_param", &json!({"track": keys.0, "param": "cutoff", "value": 500.0})).unwrap();
+    app.engine.mark_clean();
     let original = instrument_state(&app, keys);
     let revision = app.engine.revision;
     let undo = app.engine.undo_history().len();
@@ -1631,7 +1671,7 @@ fn editor_gesture_polling_survives_discarded_and_hidden_host_iterations() {
     let polls = Rc::new(Cell::new(0));
     let captures = Rc::new(RefCell::new(Vec::new()));
     app.editor_poll_fixture = Some(poll_fixture(&reports, &latest, &polls, &captures));
-    reports.borrow_mut().push((keys, soundcraft_mix::INSTRUMENT_SLOT, "cutoff".into(), 1.0));
+    reports.borrow_mut().push((keys, soundcraft_mix::INSTRUMENT_SLOT, "cutoff".into(), 100.0));
     let mut input = raw();
     app.raw_input_hook(&ctx, &mut input);
     let passes = run_host_frame_discarding_first_pass(&mut app, &ctx, input);
@@ -1647,7 +1687,7 @@ fn editor_gesture_polling_survives_discarded_and_hidden_host_iterations() {
     // The next host hook is hidden: it still polls the continuing gesture despite a stale
     // discarded-pass index and without drawing any UI.
     latest.set(2);
-    reports.borrow_mut().push((keys, soundcraft_mix::INSTRUMENT_SLOT, "cutoff".into(), 2.0));
+    reports.borrow_mut().push((keys, soundcraft_mix::INSTRUMENT_SLOT, "cutoff".into(), 200.0));
     let mut hidden = raw();
     hidden.viewports.get_mut(&egui::ViewportId::ROOT).unwrap().minimized = Some(true);
     app.raw_input_hook(&ctx, &mut hidden);
@@ -1666,6 +1706,7 @@ fn editor_gesture_polling_survives_discarded_and_hidden_host_iterations() {
     assert_eq!(*captures.borrow(), [(keys, soundcraft_mix::INSTRUMENT_SLOT)]);
     assert!(app.editor_states.is_empty());
     assert_eq!(instrument_state(&app, keys), Some(vec![2, 1]));
+    assert_eq!(app.engine.session().track(keys).unwrap().instrument.as_ref().unwrap().params["cutoff"], 200.0);
     assert_eq!(app.engine.revision, revision.wrapping_add(1), "the completed gesture persists exactly one document revision");
     assert!(app.engine.is_dirty(), "captured instrument state is unsaved document work");
     assert_eq!(app.engine.undo_history().len(), undo, "state-only instrument persistence does not create an undo step");
@@ -1677,6 +1718,66 @@ fn editor_gesture_polling_survives_discarded_and_hidden_host_iterations() {
     assert_eq!(polls.get(), 4, "a fresh empty host iteration is still live");
     assert_eq!(captures.borrow().len(), 1, "the completed gesture is captured once");
     assert_history_unchanged(&app, settled_revision, undo, &history, &journal);
+}
+
+/// Logic-only host iterations with one editor poll each.
+fn editor_poll_frame(app: &mut SoundApp, ctx: &egui::Context) {
+    let mut input = egui::RawInput::default();
+    app.raw_input_hook(ctx, &mut input);
+    let _ = ctx.run_logic(&input, |ctx| app.logic(ctx));
+}
+
+fn cutoff(app: &SoundApp, t: soundcraft_model::TrackId) -> f32 {
+    app.engine.session().track(t).unwrap().instrument.as_ref().unwrap().params["cutoff"]
+}
+
+#[test]
+fn an_editor_edit_reported_before_a_document_replacement_stays_out_of_the_new_document() {
+    use std::cell::{Cell, RefCell};
+    use std::rc::Rc;
+    let ctx = egui::Context::default();
+    let mut app = SoundApp::new(soundcraft_engine::demo::demo_engine(), None, Services::default());
+    let keys = app.engine.session().track_by_name("Keys").unwrap().id;
+    app.engine.execute("mix.instrument_param", &json!({"track": keys.0, "param": "cutoff", "value": 500.0})).unwrap();
+    let reports = Rc::new(RefCell::new(Vec::<soundcraft_playback::EditorEdit>::new()));
+    let (latest, polls, captures) = (Rc::new(Cell::new(1u8)), Rc::new(Cell::new(0)), Rc::new(RefCell::new(Vec::new())));
+    app.editor_poll_fixture = Some(poll_fixture(&reports, &latest, &polls, &captures));
+    reports.borrow_mut().push((keys, soundcraft_mix::INSTRUMENT_SLOT, "cutoff".into(), 100.0));
+    // Recover replaces the document with one that has the same instrument on the same track.
+    app.document_replaced();
+    for _ in 0..3 {
+        editor_poll_frame(&mut app, &ctx);
+    }
+    assert_eq!(cutoff(&app, keys), 500.0);
+}
+
+#[test]
+fn a_midi_move_during_a_native_instrument_gesture_survives_the_gesture_end() {
+    use std::cell::{Cell, RefCell};
+    use std::rc::Rc;
+    let ctx = egui::Context::default();
+    let mut app = SoundApp::new(soundcraft_engine::demo::demo_engine(), None, Services::default());
+    let keys = app.engine.session().track_by_name("Keys").unwrap().id;
+    let inputs = soundcraft_playback::midi::MidiInputs::with_port_names(vec![], vec!["Controller".into()]);
+    let feed = std::sync::Arc::clone(inputs.feed());
+    let port = feed.ports().assign("Controller");
+    app.midi_inputs = Some(inputs);
+    let target = json!({"track": keys, "parameter": {"plugin": {"slot": null, "plugin": "subtractive_synth", "id": "cutoff"}}});
+    app.run("midi.learn.bind", json!({"target": target, "source": {"device": "Controller", "channel": 1, "cc": 20}})).unwrap();
+    let reports = Rc::new(RefCell::new(Vec::<soundcraft_playback::EditorEdit>::new()));
+    let (latest, polls, captures) = (Rc::new(Cell::new(1u8)), Rc::new(Cell::new(0)), Rc::new(RefCell::new(Vec::new())));
+    app.editor_poll_fixture = Some(poll_fixture(&reports, &latest, &polls, &captures));
+    reports.borrow_mut().push((keys, soundcraft_mix::INSTRUMENT_SLOT, "cutoff".into(), 100.0));
+    editor_poll_frame(&mut app, &ctx);
+    // The native gesture goes on with another parameter while the knob moves the cutoff.
+    reports.borrow_mut().push((keys, soundcraft_mix::INSTRUMENT_SLOT, "resonance".into(), 30.0));
+    feed.receive(port, &[0xb0, 20, 127]);
+    editor_poll_frame(&mut app, &ctx);
+    let moved = cutoff(&app, keys);
+    assert_ne!(moved, 100.0);
+    editor_poll_frame(&mut app, &ctx);
+    assert!(app.editor_states.is_empty(), "the native gesture ended");
+    assert_eq!(cutoff(&app, keys), moved);
 }
 
 /// The engine's revision, undo history and journal are as they were.
