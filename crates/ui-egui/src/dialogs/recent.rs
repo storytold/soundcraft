@@ -106,19 +106,52 @@ pub fn menu(app: &mut SoundApp, ui: &mut egui::Ui) {
         }
         ui.separator();
         if ui.button(crate::localization::text("Clear Recent")).clicked() {
-            app.ui.recent_sessions.clear();
-            app.recent_changed = true;
+            clear(app);
             ui.close();
         }
         if let Some(path) = open {
             ui.close();
-            // Through the dialog layer, so unsaved changes are asked about first.
-            if let Err(e) = crate::dialogs::run_or_ask(app, "session.open", json!({"path": path})) {
-                log::warn!("{path}: {e}");
-                app.ui.status = crate::localized_format!("Could not open {path}: {e}", path = path, e = e);
-            }
+            open_session(app, &path);
         }
     });
+}
+
+/// File › Open Recent as data, for a menu bar the host draws (see `menus::dynamic`): the same
+/// entries as [`menu`], with `now` (egui's clock) for re-checking which sessions still exist.
+pub(crate) fn entries(app: &mut SoundApp, now: f64) -> Vec<crate::menus::dynamic::Entry> {
+    use crate::menus::dynamic::{Action, Entry};
+    if app.ui.recent_sessions.is_empty() {
+        return vec![Entry::disabled(crate::localization::text("No Recent Sessions"))];
+    }
+    let exists = app.recent_exists(now);
+    let mut out: Vec<Entry> = app
+        .ui
+        .recent_sessions
+        .iter()
+        .enumerate()
+        .map(|(i, path)| {
+            let here = exists.get(i).copied().unwrap_or(true);
+            let text = if here { label(path) } else { crate::localized_format!("{}  (missing)", label(path)) };
+            Entry::Item { label: text, enabled: here, checked: false, action: Some(Action::OpenRecent(path.clone())) }
+        })
+        .collect();
+    out.push(Entry::Separator);
+    out.push(Entry::item(crate::localization::text("Clear Recent"), Action::ClearRecent));
+    out
+}
+
+/// Empties the recent-sessions list.
+pub(crate) fn clear(app: &mut SoundApp) {
+    app.ui.recent_sessions.clear();
+    app.recent_changed = true;
+}
+
+/// Opens a recent session through the dialog layer, so unsaved changes are asked about first.
+pub(crate) fn open_session(app: &mut SoundApp, path: &str) {
+    if let Err(e) = crate::dialogs::run_or_ask(app, "session.open", json!({"path": path})) {
+        log::warn!("{path}: {e}");
+        app.ui.status = crate::localized_format!("Could not open {path}: {e}", path = path, e = e);
+    }
 }
 
 #[cfg(test)]

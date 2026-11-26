@@ -8,6 +8,8 @@ use crate::{MainWindow, SoundApp};
 use serde_json::{Value, json};
 use soundcraft_engine::catalog;
 
+pub mod dynamic;
+
 /// UI-layer commands: (id, label, catalog path or "", shortcut).
 pub const UI_COMMANDS: &[(&str, &str, &str, Option<&str>)] = &[
     ("app.checkForUpdates", "Check for Updates…", "", None),
