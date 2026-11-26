@@ -1,4 +1,4 @@
-//! Per-session assignments from MIDI CC to existing mixer controls.
+//! Per-session assignments from MIDI CC to mixer controls and plug-in parameters.
 
 use serde::{Deserialize, Serialize};
 use soundcraft_model::{Session, TrackId, TrackKind};

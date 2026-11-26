@@ -3,10 +3,10 @@
 //! - "Fixture Gain" (`Fx`): stereo or mono in → out × gain, with a separate edit controller
 //!   (connected through IConnectionPoint, synced through the component state). Params: 7 "Gain"
 //!   (plain 0..2, linear, units dB), 3 "Mode" (3 steps: A/B/C), 12 "Freq" (20..20000 Hz, log),
-//!   9 hidden, 11 bypass. Starts at gain 0.5 (its state) although the declared default is 1.0.
-//!   Reports 3 samples of latency. State: the component stores the gain (one LE f64), the
-//!   controller the Freq value (one LE f64). Its controller has an editor view (`IPlugView`,
-//!   320×240, no real drawing) supporting NSView/HWND/X11.
+//!   15 "Delay" (8..264 ms, 512 steps), 9 hidden, 11 bypass. Starts at gain 0.5 (its state)
+//!   although the declared default is 1.0. Reports 3 samples of latency. State: the component
+//!   stores the gain (one LE f64), the controller the Freq value (one LE f64). Its controller has
+//!   an editor view (`IPlugView`, 320×240, no real drawing) supporting NSView/HWND/X11.
 //! - "Fixture Synth" (`Instrument|Synth`): a single-component instrument (the component is also
 //!   its edit controller). No audio input, one stereo output, one event input; every output
 //!   sample is the velocity of the held note (sample-accurate), 0 when none. Poly pressure, and

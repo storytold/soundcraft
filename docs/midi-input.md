@@ -61,7 +61,8 @@ Record-enable the track (its **R** button) or switch its input monitor on. The k
 the track's instrument, with the transport stopped or running.
 
 - Notes, the sustain pedal, the other controllers, pitch bend, aftertouch and program changes
-  reach the instrument, except a CC assigned with MIDI Learn, which moves its mixer control instead.
+  reach the instrument, except a CC assigned with MIDI Learn, which moves its mixer control or
+  plug-in parameter instead.
 - Several devices or channels can play one track. A note held on two of them sounds until both
   let go, and each has its own sustain pedal.
 - Taking the track out of record, or switching its monitor off, ends the notes that are held.
@@ -81,7 +82,7 @@ One **Undo** removes the take.
 **Setup › MIDI › MIDI Input Filter…** keeps kinds of messages (for example aftertouch) out of
 recordings.
 
-## Learn a mixer control
+## Learn a mixer or plug-in control
 
 In the Mix window, right-click a track's Volume, Pan, Mute or Solo. For a bus send, right-click its fader or pan knob in the Send window, or right-click the send slot in Mix and open **Send level** or **Send pan**. Choose **MIDI Learn**, then move the hardware control. A continuous control accepts an absolute 7-bit CC by default. For an encoder that sends 64 at rest and signed increments around 64, choose **MIDI Learn (relative, center 64)**. Relative mixer moves start from the nearest position on the 128-step CC scale. For Mute and Solo, a momentary button must send both a press and a release to toggle once per press. Choose **MIDI Learn (hold button)** for a controller that alternates on and off values on successive presses, or to engage a momentary switch only while held. Configure a press-only pad to send a release to use Toggle.
 
@@ -89,9 +90,9 @@ The menu shows the input port, MIDI channel and CC number. Choose **Forget MIDI 
 
 Choose **Edit Parameters…** from the instrument or insert menu. In the SoundCraft parameter window, right-click a parameter and choose **MIDI Learn**. For large parameter lists, use **Find parameter**. The menu also offers **Assign MIDI CC** to enter an input, channel and CC directly. Move the parameter to a desired endpoint and choose **Set Min** or **Set Max**, or choose **Invert Range** to reverse the direction. **Forget MIDI Assignment** releases the control. Assignments and ranges travel with the session. Moving an insert carries its bindings, and replacing it releases them. The host maps the CC over the exposed parameter range using its linear or logarithmic scale. A VST3 editor can display a different taper. Descending endpoints reverse travel and show **(inverted)**.
 
-The assigned CC goes to the mixer. Notes, other channels and unassigned controls still reach monitored instruments and MIDI takes. During Learn, the first eligible unassigned knob is reserved immediately. Switch pedals (64–69), bank select (0/32), data entry (6/38), RPN/NRPN (98–101), increment/decrement (96/97) and channel-mode messages (120–127) stay on the performance path. An instrument keeps the last value it received from a newly assigned CC. Before learning a modulation wheel or expression pedal, return it to the value you want the instrument to keep.
+The assigned CC goes to its mixer control or plug-in parameter. Notes, other channels and unassigned controls still reach monitored instruments and MIDI takes. During Learn, the first eligible unassigned knob is reserved immediately. Switch pedals (64–69), bank select (0/32), data entry (6/38), RPN/NRPN (98–101), increment/decrement (96/97) and channel-mode messages (120–127) stay on the performance path. An instrument keeps the last value it received from a newly assigned CC. Before learning a modulation wheel or expression pedal, return it to the value you want the instrument to keep.
 
-A knob turn ends after 300 ms after its last value change. A repeated absolute value leaves the timeout unchanged. Overlapping turns share one undo step. Volume reaches unity at 95 and pan centers at 64. During playback, track Volume, track Pan and Send Level write automation on tracks in Touch, Latch, Touch/Latch or Write mode; in Off, Read or Trim mode they change the live mix only. Touch ends at release. Latch and Touch/Latch continue a ride until Stop. Write records throughout the pass. MIDI moves of Send Pan, Mute and Solo change the live mix without writing automation points.
+A knob turn ends after 300 ms after its last value change. A repeated absolute value leaves the timeout unchanged. Overlapping turns share one undo step. Volume reaches unity at 95 and pan centers at 64. During playback, track Volume, track Pan and Send Level write automation on tracks in Touch, Latch, Touch/Latch or Write mode; in Off, Read or Trim mode they change the live mix only. Touch ends at release. Latch and Touch/Latch continue a ride until Stop. Write records throughout the pass. MIDI moves of Send Pan, Mute, Solo and plug-in parameters change the live mix without writing automation points.
 
 ## If something is lost
 
