@@ -744,8 +744,9 @@ impl AudioState {
                 lead,
             }
         });
-        // A keyboard plays through record-enabled and input-monitored MIDI and instrument tracks.
-        let midi_live = self.midi.as_ref().is_some_and(|f| f.connected() > 0)
+        // A keyboard (a device, or the MIDI Keyboard window) plays through record-enabled and
+        // input-monitored MIDI and instrument tracks.
+        let midi_live = self.midi.as_ref().is_some_and(|f| f.live())
             && self.session.tracks.iter().any(|t| matches!(t.kind, TrackKind::Instrument | TrackKind::Midi) && midi_thru(&self.session, t));
         let monitoring = midi_live || (self.input.is_some() && self.session.tracks.iter().any(|t| t.mixer.input_monitor || t.mixer.record_arm));
         if !self.playing && !monitoring {

@@ -772,6 +772,23 @@ fn heard(st: &mut AudioState, callbacks: usize) -> bool {
 }
 
 #[test]
+fn the_midi_keyboard_window_plays_a_stopped_instrument_with_no_device_connected() {
+    // Issue #1752: a user without a hardware keyboard auditions through the MIDI Keyboard window.
+    let (mut st, _tx, feed, ..) = keyboard_session();
+    feed.set_clock(1);
+    feed.set_connected(0);
+    feed.set_keyboard_open(true);
+    feed.receive_keyboard(&[0x90, 60, 100]);
+    assert!(heard(&mut st, 4), "stopped, the window's key plays the record-enabled instrument");
+    // Window closed and no device: nothing comes in live, so nothing is kept for later.
+    feed.receive_keyboard(&[0x80, 60, 0]);
+    feed.set_keyboard_open(false);
+    heard(&mut st, 40);
+    feed.receive_keyboard(&[0x90, 64, 100]);
+    assert!(!heard(&mut st, 4));
+}
+
+#[test]
 fn a_midi_keyboard_plays_and_records_through_a_record_enabled_instrument() {
     let (mut st, tx, feed, mut s, t) = keyboard_session();
     // The feed's clock stands still: an event's place does not depend on how fast the test runs.

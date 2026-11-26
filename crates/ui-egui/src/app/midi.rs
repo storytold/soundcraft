@@ -168,6 +168,8 @@ impl SoundApp {
                 self.midi_scan_at = now;
             }
             Some(m) => {
+                // The window's keys play live while it is open, with or without a device.
+                m.feed().set_keyboard_open(self.ui.show_midi_keyboard);
                 if (now - self.midi_scan_at).abs() >= 2.0 {
                     self.midi_scan_at = now;
                     m.rescan();

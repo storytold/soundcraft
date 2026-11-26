@@ -272,6 +272,8 @@ pub struct MidiFeed {
     epoch: Instant,
     /// Open input ports.
     connected: AtomicUsize,
+    /// The MIDI Keyboard window is open: it plays in like a connected port.
+    keyboard: AtomicBool,
     /// Events received so far (low 32 bits: the last one), for the "is my keyboard seen" readout.
     activity: AtomicU64,
     /// Ports ([`midi_port_bit`]) whose events did not all reach the audio thread, until it asks.
@@ -320,6 +322,7 @@ impl Default for MidiFeed {
             #[cfg(not(target_arch = "wasm32"))]
             epoch: Instant::now(),
             connected: AtomicUsize::new(0),
+            keyboard: AtomicBool::new(false),
             activity: AtomicU64::new(0),
             lost: AtomicU64::new(0),
             lost_at: (0..64).map(|_| AtomicI64::new(i64::MIN)).collect(),
@@ -354,6 +357,16 @@ impl MidiFeed {
 
     pub(crate) fn set_connected(&self, ports: usize) {
         self.connected.store(ports, Ordering::Relaxed);
+    }
+
+    /// Say whether the MIDI Keyboard window is open ([`Self::receive_keyboard`]).
+    pub fn set_keyboard_open(&self, open: bool) {
+        self.keyboard.store(open, Ordering::Relaxed);
+    }
+
+    /// Whether live MIDI can come in: an input port is open, or the MIDI Keyboard window is.
+    pub fn live(&self) -> bool {
+        self.connected() > 0 || self.keyboard.load(Ordering::Relaxed)
     }
 
     /// Microseconds since the feed was made.
