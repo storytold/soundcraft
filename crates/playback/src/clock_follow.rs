@@ -311,7 +311,7 @@ impl Follower {
             // While braking or consuming one USB batch, the wire does not yet
             // establish the next pulse's time.
             // A phase excursion first holds the score at the wire, since the source may be
-            // slowing. One beat later the excursion is the long fit catching up with a held
+            // slowing. Half a beat (12 pulses) later the excursion is the long fit catching up with a held
             // nudge, and holding the wire would only delay every note by up to a buffer.
             State::Locked
                 if self.brake_pulses_left > 0 || self.packed_delivery || (self.phase_tracking() && self.phase_tracked_pulses < PHASE_HOLD_PULSES) =>
