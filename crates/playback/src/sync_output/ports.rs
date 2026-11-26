@@ -11,7 +11,25 @@ fn assign(saved: &Bindings, found: impl IntoIterator<Item = (Option<String>, Str
     let mut seen_ids = BTreeSet::new();
     let ambiguous_ids: BTreeSet<_> = found.iter().filter_map(|(_, id)| (!seen_ids.insert(id)).then_some(id)).collect();
     let raw_names: BTreeSet<_> = found.iter().filter_map(|(name, _)| name.as_deref()).collect();
-    let known: BTreeMap<_, _> = saved.iter().map(|(label, id)| (id, label)).collect();
+    let mut known: BTreeMap<_, _> = saved.iter().map(|(label, id)| (id, label)).collect();
+    // A device can come back under a new native ID (CoreMIDI gives a re-created port a new
+    // unique ID). A port whose name was its own when it was saved follows it, as long as no
+    // other port or saved label has that name: then it can only be the same device. Ports that
+    // share a name keep strict ID matching, which is what tells two identical interfaces apart.
+    for (label, id) in saved {
+        // A WinMM binding saved by interface ID alone is still there inside the connector keys of
+        // [`winmm_names`]; such a binding is chosen again by hand, not moved.
+        let winmm = format!("winmm-port:{}:{id}", id.len());
+        if found.iter().any(|(_, listed)| listed == id || listed.starts_with(&winmm)) {
+            continue;
+        }
+        let mut named = found.iter().filter(|(name, _)| name.as_deref() == Some(label.as_str()));
+        let (Some((_, new_id)), None) = (named.next(), named.next()) else { continue };
+        let others = saved.keys().filter(|other| *other != label && numbered(other, label)).count();
+        if others == 0 && !ambiguous_ids.contains(new_id) && !known.contains_key(new_id) {
+            known.insert(new_id, label);
+        }
+    }
     let mut available = Bindings::new();
     for (name, id) in &found {
         let Some(name) = name else { continue };
@@ -36,6 +54,15 @@ fn assign(saved: &Bindings, found: impl IntoIterator<Item = (Option<String>, Str
         available.insert(label, id.clone());
     }
     available
+}
+
+/// Whether `label` is a numbered label of the port name `name`, such as "DIN (2)" for "DIN".
+fn numbered(label: &str, name: &str) -> bool {
+    label
+        .strip_prefix(name)
+        .and_then(|rest| rest.strip_prefix(" ("))
+        .and_then(|rest| rest.strip_suffix(')'))
+        .is_some_and(|n| n.parse::<usize>().is_ok_and(|n| n >= 2))
 }
 
 type PortNames = Vec<(Option<String>, String)>;
@@ -123,15 +150,75 @@ impl Registry {
         let saved = self.ids.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone();
         let (connection, id) = open(label, &saved)?;
         let mut ids = self.ids.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-        if let Some(existing) = ids.get(label) {
-            if existing != &id {
-                return Err(format!("MIDI output {label} changed while connecting"));
-            }
-        } else {
+        if ids.get(label) != saved.get(label) {
+            return Err(format!("MIDI output {label} changed while connecting"));
+        }
+        // A new binding, or a saved one that followed its device to a new native ID.
+        if saved.get(label) != Some(&id) {
             ids.insert(label.to_owned(), id);
             self.learned.store(true, std::sync::atomic::Ordering::Release);
         }
         Ok((connection, None))
+    }
+
+    /// The labels among `labels` that are still listed and bound to the native port they were
+    /// opened with. `None` when the ports cannot be listed now.
+    fn listed(&self, scanner: &mut Option<MidiOutput>, labels: &BTreeSet<String>) -> Option<BTreeSet<String>> {
+        let saved = self.ids.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone();
+        // midir panics on a few failures of the MIDI system; a new scanner is made next time.
+        let ids = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            if scanner.is_none() {
+                *scanner = MidiOutput::new("SoundCraft MIDI output").ok();
+            }
+            scanner.as_ref().map(|midi| assign(&saved, enumerate(midi, &saved).1))
+        }))
+        .unwrap_or_else(|_| {
+            *scanner = None;
+            None
+        })?;
+        Some(labels.iter().filter(|label| ids.get(*label).is_some_and(|id| saved.get(*label) == Some(id))).cloned().collect())
+    }
+}
+
+/// How the output worker opens its ports and finds out which of them are still there.
+pub(super) trait Connect<C> {
+    fn open(&mut self, label: &str) -> Result<(C, Option<String>), String>;
+    /// Whether [`Connect::listed`] can tell: the worker then wakes once a second to check.
+    fn lists(&self) -> bool {
+        false
+    }
+    /// The labels among the connected `labels` that are still listed. `None` when the ports
+    /// cannot be listed, which keeps every connection.
+    fn listed(&mut self, labels: &BTreeSet<String>) -> Option<BTreeSet<String>> {
+        let _ = labels;
+        None
+    }
+}
+
+impl<C, F: FnMut(&str) -> Result<(C, Option<String>), String>> Connect<C> for F {
+    fn open(&mut self, label: &str) -> Result<(C, Option<String>), String> {
+        self(label)
+    }
+}
+
+/// The native ports: opened through the [`Registry`] and listed with one scanner kept for the
+/// worker's life, as the MIDI inputs are.
+pub(super) struct Native {
+    pub(super) registry: std::sync::Arc<Registry>,
+    pub(super) scanner: Option<MidiOutput>,
+}
+
+impl Connect<MidiOutputConnection> for Native {
+    fn open(&mut self, label: &str) -> Result<(MidiOutputConnection, Option<String>), String> {
+        self.registry.connect(label)
+    }
+
+    fn lists(&self) -> bool {
+        true
+    }
+
+    fn listed(&mut self, labels: &BTreeSet<String>) -> Option<BTreeSet<String>> {
+        self.registry.listed(&mut self.scanner, labels)
     }
 }
 
@@ -193,6 +280,39 @@ mod tests {
         let found = listed(&[("DIN", "a"), ("DIN", "b"), ("DIN (2)", "c"), ("unstable", "d"), ("unstable", "d")]);
         let available = assign(&Bindings::new(), found);
         assert_eq!(available, Bindings::from([("DIN".into(), "a".into()), ("DIN (2)".into(), "c".into()), ("DIN (3)".into(), "b".into())]));
+    }
+
+    #[test]
+    fn a_port_back_under_a_new_id_keeps_its_label_when_its_name_is_its_own() {
+        let saved = assign(&Bindings::new(), listed(&[("UX Synth", "old"), ("IAC", "iac")]));
+        let back = assign(&saved, listed(&[("UX Synth", "new"), ("IAC", "iac")]));
+        assert_eq!(back, Bindings::from([("UX Synth".into(), "new".into()), ("IAC".into(), "iac".into())]));
+        // Gone again: nothing else takes the label.
+        assert_eq!(assign(&saved, listed(&[("IAC", "iac")])), Bindings::from([("IAC".into(), "iac".into())]));
+    }
+
+    #[test]
+    fn a_port_back_under_a_new_id_is_not_rebound_when_names_repeat() {
+        let saved = assign(&Bindings::new(), listed(&[("DIN", "a"), ("DIN", "b")]));
+        assert_eq!(saved, Bindings::from([("DIN".into(), "a".into()), ("DIN (2)".into(), "b".into())]));
+        // One of two identical interfaces back with a new ID: it could be either.
+        let one = assign(&saved, listed(&[("DIN", "c")]));
+        assert_eq!(one, Bindings::from([("DIN (3)".into(), "c".into())]));
+        // Its twin still there under its saved ID: the newcomer is another device.
+        let twin = assign(&saved, listed(&[("DIN", "b"), ("DIN", "c")]));
+        assert_eq!(twin, Bindings::from([("DIN (2)".into(), "b".into()), ("DIN (3)".into(), "c".into())]));
+        // Two ports of that name listed, neither saved: no guess either.
+        let lone = Bindings::from([("Synth".into(), "old".into())]);
+        let two = assign(&lone, listed(&[("Synth", "x"), ("Synth", "y")]));
+        assert!(!two.values().any(|id| id == "old") && !two.contains_key("Synth"), "{two:?}");
+    }
+
+    #[test]
+    fn a_rebound_port_is_not_taken_from_a_label_that_still_holds_its_id() {
+        // "Synth" saved with an ID that another saved label now owns: strict matching wins.
+        let saved = Bindings::from([("Synth".into(), "gone".into()), ("Other".into(), "x".into())]);
+        assert_eq!(assign(&saved, listed(&[("Synth", "x")])), Bindings::from([("Other".into(), "x".into())]));
+        assert!(numbered("DIN (2)", "DIN") && !numbered("DIN (1)", "DIN") && !numbered("DINO (2)", "DIN") && !numbered("DIN", "DIN"));
     }
 
     #[test]

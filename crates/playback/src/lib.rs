@@ -688,6 +688,20 @@ impl Player {
         }
     }
 
+    /// Whether the audio device has reported no output timing since it was opened. Compensated
+    /// MIDI output cannot be timed then; the UI sends it uncompensated instead, as with the silent
+    /// clock.
+    pub fn output_timing_unknown(&self) -> bool {
+        #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+        {
+            self.sync_output.lock().unwrap_or_else(PoisonError::into_inner).timing_unknown()
+        }
+        #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
+        {
+            false
+        }
+    }
+
     /// An unusable output timestamp affecting a configured, latency-compensated MIDI destination.
     pub fn output_timing_issue(&self) -> Option<OutputTimingIssue> {
         #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]

@@ -107,8 +107,8 @@ MIDI and instrument tracks play their clips to one MIDI output port and channel 
 
 `output` is `MIDI:<channel 1-16>:<port>` or `none`. A missing `output`, channel 0 or 17, `*`, an
 empty port name, or a track that is not a MIDI or instrument track is an error that names the
-value, and nothing changes. A port that is not connected is accepted: the track keeps it and the
-selector reads "(not connected)". Port names are the labels `ui.inspect` lists in
+value, and nothing changes. A port that is unavailable (not listed) is accepted: the track keeps it and
+the selector reads "(unavailable)". Port names are the labels `ui.inspect` lists in
 `midi_output_ports`; two ports with one name are "DIN" and "DIN (2)".
 
 - `ui.midi_output_compensation {value?: bool}` reads or sets the app preference that delays the
