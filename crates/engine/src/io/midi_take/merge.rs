@@ -52,8 +52,10 @@ struct Host {
 /// Returns the clips made and the clips merged into.
 ///
 /// - Each note goes into the clip its start is in (the later-starting clip where they overlap: the
-///   one on top); each controller into the clip its tick is in. Clip boundaries do not change, and
-///   a note may sound past the end of its clip (p.819).
+///   one on top); each controller into the clip its tick is in. Clip boundaries do not change. A
+///   note is stored whole even when it runs past the end of its clip (into a clip after it):
+///   Pro Tools allows notes to "extend beyond the clip boundary" (p.819), but playback and MIDI
+///   export end every note at its clip's end today, so its tail is not heard.
 /// - An edit-locked clip is not merged into: "Clips that are Edit-locked cannot be edited"
 ///   (p.1237). What was played over it goes into a new clip laid over it, as a replacing take
 ///   does.
