@@ -96,7 +96,7 @@ When you close a gap, delete its entry (or shrink it) in the same PR, and bump t
   [midi-output.md](midi-output.md) section 5. Measured on macOS from the IAC bus to a virtual
   CoreMIDI port; **not yet with hardware, on Linux or on Windows**.
 - **Missing:** system exclusive and Real-Time Properties through MIDI Thru, MIDI Input
-  Monitoring Follows Selected Track, note chasing, a default program and bank per track,
+  Monitoring Follows Selected Track, MIDI activity on a MIDI track's meter, note chasing, a default program and bank per track,
   several destinations per track, MIDI mute and solo on instrument tracks, the Global MIDI
   Playback Offset, MIDI clock/MTC out, loop and merge recording (a MIDI take replaces what it covers; a loop pass piles every
   pass into one clip), audition from the MIDI editor (`midi_editor.rs:288`), MIDI

@@ -434,11 +434,16 @@ impl MidiFeed {
         self.thru.attached.load(Ordering::Acquire)
     }
 
-    /// The worker that took live input went away.
-    pub(crate) fn detach_thru(&self) {
-        self.thru.attached.store(false, Ordering::Release);
-        *self.thru.waker.lock().unwrap_or_else(PoisonError::into_inner) = None;
-        while self.thru.events.pop().is_some() {}
+    /// The worker on `worker` stops taking live input. Nothing changes when another worker has
+    /// attached since (a new audio device brings a new worker, which may attach before the old
+    /// one has ended).
+    pub(crate) fn detach_thru(&self, worker: std::thread::ThreadId) {
+        let mut waker = self.thru.waker.lock().unwrap_or_else(PoisonError::into_inner);
+        if waker.as_ref().is_some_and(|t| t.id() == worker) {
+            self.thru.attached.store(false, Ordering::Release);
+            *waker = None;
+            while self.thru.events.pop().is_some() {}
+        }
     }
 
     /// Worker: the next live event for MIDI Thru and when it arrived ([`Self::clock`]).
@@ -1310,7 +1315,11 @@ mod tests {
         assert_eq!(std::iter::from_fn(|| feed.next()).count(), 2);
         feed.port_lost(1);
         assert_eq!(feed.take_thru_lost(), midi_port_bit(1));
-        feed.detach_thru();
+        // A worker that is not the one attached does not detach it.
+        let other = std::thread::spawn(|| {}).thread().id();
+        feed.detach_thru(other);
+        assert!(feed.thru_attached());
+        feed.detach_thru(std::thread::current().id());
         feed.receive(1, &[0x91, 62, 90]);
         assert!(feed.next_thru().is_none());
     }

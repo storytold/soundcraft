@@ -596,7 +596,7 @@ impl LiveThru {
     /// releases will not come from the new one.
     fn set_feed<C: SyncPort>(&mut self, next: Option<Arc<MidiFeed>>, ports: &mut BTreeMap<String, Port<C>>, stats: &Stats) {
         if let Some(old) = self.feed.take() {
-            old.detach_thru();
+            old.detach_thru(std::thread::current().id());
             self.thru.release_all(&mut |name, msg| send_thru(ports, name, msg, &old, stats, None));
         }
         if let Some(f) = &next {
