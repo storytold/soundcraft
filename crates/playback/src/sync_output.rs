@@ -1,4 +1,5 @@
-//! One native worker owns all sync protocols and one connection per exact port name.
+//! One native worker owns all sync protocols and one connection per destination label,
+//! each bound to the saved native port ID it was opened with.
 use crate::sync_clock::{SessionRevision, delivery_offset};
 use crate::{
     Cmd, MidiSyncStatus, Session,
