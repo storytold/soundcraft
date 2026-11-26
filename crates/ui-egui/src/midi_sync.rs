@@ -73,9 +73,10 @@ const UNTIMED: &str = "MIDI output is not delay-compensated: the audio device re
 /// but cannot have it because the audio device reports no output timing. The silent clock that
 /// stands in for a missing audio device has no output latency to wait for. A device that reports
 /// no timing cannot time a compensated route, which would then send nothing; the output goes
-/// uncompensated instead, as with the silent clock, and the status line says so.
-fn compensation(preference: bool, silent: bool, timing_unknown: bool) -> (bool, bool) {
-    let untimed = preference && !silent && timing_unknown;
+/// uncompensated instead, as with the silent clock, and the status line says so while a track
+/// plays to an external port (`routed`).
+fn compensation(preference: bool, silent: bool, timing_unknown: bool, routed: bool) -> (bool, bool) {
+    let untimed = preference && !silent && timing_unknown && routed;
     (preference && !silent && !timing_unknown, untimed)
 }
 
@@ -170,7 +171,8 @@ impl SoundApp {
         if let Some(ids) = player.take_opened_sync_output_ids() {
             self.ui.midi_sync.bind_used(ids, &used);
         }
-        let (compensate, untimed) = compensation(self.ui.midi_sync.compensation.notes, player.silent, player.output_timing_unknown());
+        let (compensate, untimed) =
+            compensation(self.ui.midi_sync.compensation.notes, player.silent, player.output_timing_unknown(), !users.is_empty());
         let error = player.midi_output_error().map(|e| name_tracks(&e, &users)).or_else(|| {
             if untimed {
                 return Some(crate::localization::text(UNTIMED).to_string());
@@ -264,10 +266,11 @@ mod tests {
 
     #[test]
     fn output_without_device_timing_goes_uncompensated_and_says_so() {
-        assert_eq!(compensation(true, false, false), (true, false));
-        assert_eq!(compensation(true, false, true), (false, true), "sent uncompensated, with a note");
-        assert_eq!(compensation(false, false, true), (false, false), "nothing to say when compensation is off");
-        assert_eq!(compensation(true, true, true), (false, false), "the silent clock is uncompensated already");
+        assert_eq!(compensation(true, false, false, true), (true, false));
+        assert_eq!(compensation(true, false, true, true), (false, true), "sent uncompensated, with a note");
+        assert_eq!(compensation(false, false, true, true), (false, false), "nothing to say when compensation is off");
+        assert_eq!(compensation(true, true, true, true), (false, false), "the silent clock is uncompensated already");
+        assert_eq!(compensation(true, false, true, false), (false, false), "nothing to say when no track plays to a port");
         let _pt = crate::localization::enter(crate::localization::Language::PortugueseBrazil);
         assert_ne!(crate::localization::text(UNTIMED), UNTIMED, "translated");
     }
