@@ -629,10 +629,11 @@ fn io_column(app: &mut SoundApp, ui: &mut Ui, track: &Track, r: Rect) {
     // MIDI and instrument tracks show their MIDI output below the audio output.
     let midi = track.kind.is_midi();
     if midi && let Some(mo) = row(40.0, 15.0) {
-        let output = crate::mix_window::midi_output_name(app, track);
+        let output = crate::mix_window::midi_output_selector(app, track);
         let name = crate::localized_format!("MIDI output for {}", track.name);
-        let resp = header_selector(&ui, mo, ui.scope_id().with(("midi_out", id.0)), &output, t.text, true, &name);
-        crate::mix_window::midi_output_popup(app, &resp.on_hover_text(crate::localization::text("MIDI output")), id);
+        let color = if output.missing { ui.visuals().warn_fg_color } else { t.text };
+        let resp = header_selector(&ui, mo, ui.scope_id().with(("midi_out", id.0)), &output.text, color, true, &name);
+        crate::mix_window::midi_output_popup(app, &resp.on_hover_text(&output.tooltip), id);
     }
     if let Some(vr) = row(if midi { 57.0 } else { 45.0 }, 30.0).map(|vr| vr.shrink2(vec2(1.0, 0.0))) {
         ui.painter().rect_filled(vr, 2.0, Color32::from_gray(15));

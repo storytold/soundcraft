@@ -19,7 +19,7 @@ mod slots;
 
 pub(crate) use output::{output_window, toggle_output_window};
 pub use plugin_menu::{instrument_menu, plugin_info, plugin_menu};
-pub(crate) use routing::{input_name, midi_output_name, midi_output_popup, route_name, route_popup};
+pub(crate) use routing::{input_name, midi_output_popup, midi_output_selector, route_name, route_popup};
 #[cfg(test)]
 use sends::dragged_send_db;
 pub(crate) use sends::{Readout, editable_readout, parse_db, parse_pan};
@@ -476,18 +476,15 @@ fn io_section(app: &mut SoundApp, ui: &mut Ui, cx: &StripCtx<'_>, mut y: f32) ->
         if track.kind.is_midi() {
             let mo_r = Rect::from_min_size(pos2(x0 + 2.0, sec.min.y + 15.0 + 3.0 * 18.0), vec2(inner_w - 4.0, 16.0));
             let mut c = ui.new_child(egui::UiBuilder::new().id_salt(("mix-midi-output", id.0)).max_rect(mo_r));
-            let output = midi_output_name(app, track);
+            let output = midi_output_selector(app, track);
+            let color = if output.missing { c.visuals().warn_fg_color } else { t.text };
             let resp = selector_box_named(
                 &mut c,
                 mo_r.width(),
                 mo_r.height(),
-                &output,
-                t.text,
-                SelectorLabels {
-                    name: &crate::localized_format!("MIDI output for {}", track.name),
-                    value: &output,
-                    tooltip: crate::localization::text("MIDI output"),
-                },
+                &output.text,
+                color,
+                SelectorLabels { name: &crate::localized_format!("MIDI output for {}", track.name), value: &output.text, tooltip: &output.tooltip },
             );
             midi_output_popup(app, &resp, id);
         }

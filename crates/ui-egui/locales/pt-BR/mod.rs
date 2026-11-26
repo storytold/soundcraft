@@ -1557,6 +1557,7 @@ fn menu_translate(source: &str) -> Option<&'static str> {
         "No MIDI output port found" => "Nenhuma porta de saída MIDI encontrada",
         "{n} (in use)" => "{n} (em uso)",
         "MIDI output for {}" => "Saída MIDI de {}",
+        "MIDI output: {output}" => "Saída MIDI: {output}",
         "Delay MIDI and instrument tracks' external MIDI output by the audio output latency and the mixer's plug-in delay, so it sounds with the audio." => {
             "Atrasa a saída MIDI externa das faixas MIDI e de instrumento pela latência da saída de áudio e pelo atraso dos plug-ins do mixer, para que soe junto com o áudio."
         }

@@ -22,8 +22,12 @@ sending. A new track sends nothing until you choose.
 - A channel that another track already plays to on the same port is marked **in use**.
 - Ports with the same name get numbered names, such as "DIN" and "DIN (2)". SoundCraft remembers
   which physical port each name stood for, so the numbers stay with the same ports after a restart.
-- A port that is unplugged stays chosen and reads **(not connected)** on the selector; the status
-  line names it. When it comes back, SoundCraft reconnects within a second or two and sends All
+- A port that is unplugged stays chosen and reads **(not connected)** on the selector, in the
+  warning colour (orange) the Playback Engine window uses for a MIDI input that could not be
+  opened. Where the strip is too narrow for the whole text, it ends in "…" and hovering the
+  selector shows the port, channel and **not connected** in full. The status line names the port
+  too, in the current language, and the message goes away when the port is back or the track no
+  longer uses it. When the port comes back, SoundCraft reconnects within a second or two and sends All
   Notes Off on the channels in use, in case the device still holds notes it never heard end.
 
 Choosing an output does not change the track's instrument plug-in or audio output. A MIDI track

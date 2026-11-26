@@ -84,6 +84,20 @@ fn an_unplugged_port_stays_chosen_and_says_it_is_not_connected() {
     h.get_by_label("UM-ONE");
 }
 
+/// A narrow selector can't show all of "Gone ch 3 (not connected)", so its tooltip does, in both
+/// windows; the selector also takes the warning colour, which a test can't read.
+#[test]
+fn an_unplugged_port_is_named_in_full_on_hover() {
+    for window in [MainWindow::Mix, MainWindow::Edit] {
+        let mut h = harness(window);
+        h.state_mut().run("track.midi_output", json!({"tracks": [1], "output": "MIDI:3:Gone"})).unwrap();
+        h.run_steps(3);
+        h.get_by_label("MIDI output for Synth").hover();
+        h.run_steps(30);
+        assert!(h.query_by_label("MIDI output: Gone ch 3 (not connected)").is_some(), "{window:?}: no tooltip naming the missing port");
+    }
+}
+
 #[test]
 fn the_mix_window_selector_works_from_the_keyboard() {
     let mut h = harness(MainWindow::Mix);
