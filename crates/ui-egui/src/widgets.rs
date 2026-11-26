@@ -167,6 +167,13 @@ pub fn expose_menu_button(resp: &Response, name: &str) {
     resp.ctx.accesskit_node_builder(resp.id, |b| b.set_has_popup(egui::accesskit::HasPopup::Menu));
 }
 
+/// Reports a pointer-only click or drag area as a plain container, so screen readers pass over it.
+/// For areas that repeat a named control nearby or have a menu equivalent; register them with
+/// `Sense::CLICK` or `Sense::DRAG` (not `click()`/`drag()`) so they aren't Tab stops either.
+pub fn expose_as_container(resp: &Response) {
+    resp.ctx.accesskit_node_builder(resp.id, |b| b.set_role(egui::accesskit::Role::GenericContainer));
+}
+
 /// Reports a button that runs an action (and stays up) as a push button. The shared icon and text
 /// buttons always report a pressed state, which screen readers announce as a toggle button.
 pub fn as_push_button(resp: Response) -> Response {

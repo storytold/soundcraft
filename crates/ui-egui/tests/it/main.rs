@@ -62,6 +62,7 @@ mod sub_counter;
 mod toolbar_access;
 mod toolbar_scroll;
 mod toolbar_tempo;
+mod track_header_access;
 mod track_height;
 mod track_list;
 mod track_name_menu;
