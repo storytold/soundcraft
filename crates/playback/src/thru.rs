@@ -161,6 +161,16 @@ impl Thru {
         }
     }
 
+    /// The quieting of `channels` on `dest` ([`Self::reopened`]) did not all go out: the port
+    /// failed again. They are quieted when it next reopens.
+    pub(crate) fn unquieted(&mut self, dest: &str, channels: u16) {
+        match self.written.iter_mut().find(|(d, _)| d == dest) {
+            Some((_, written)) => *written |= channels,
+            None if channels != 0 => self.written.push((dest.to_owned(), channels)),
+            None => {}
+        }
+    }
+
     /// The port `dest` was reopened: the device may hold notes and a pedal Thru can no longer
     /// end one by one, and releases sent while the port was failing may never have arrived.
     /// Forget the notes, and return the channels (bit `n` for channel `n`) Thru played on since

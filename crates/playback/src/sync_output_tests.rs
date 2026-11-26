@@ -980,3 +980,42 @@ fn a_thru_release_that_fails_is_made_good_when_the_port_reopens() {
     worker.unpark();
     handle.join().unwrap();
 }
+
+/// The quieting of a reopened port fails part way (the port breaks again): every channel it was
+/// for, the failing one and those after it, is quieted when the port opens next.
+#[test]
+fn a_reopened_port_whose_quieting_fails_is_quieted_at_the_next_open() {
+    struct Flaky {
+        fail_after: usize,
+        sent: Vec<Vec<u8>>,
+    }
+    impl SyncPort for Flaky {
+        fn send_at(&mut self, _at: Instant, b: &[u8]) -> Result<Instant, String> {
+            if self.sent.len() == self.fail_after {
+                return Err("MMSYSERR_NODRIVER".into());
+            }
+            self.sent.push(b.to_vec());
+            Ok(Instant::now())
+        }
+    }
+    let stats = Stats::default();
+    let mut live = LiveThru::default();
+    live.thru.unquieted("SYN", 1 << 0 | 1 << 2);
+    let mut port = Port {
+        link: Some(Flaky { fail_after: 1, sent: Vec::new() }),
+        retry: Instant::now(),
+        routes: std::array::from_fn(|_| None),
+        future: Vec::new(),
+        timing_epochs: [0; ROUTE_KINDS],
+        waiting_for_timing: false,
+        failure: None,
+        opened: true,
+        echo: None,
+    };
+    live.reopened("SYN", &mut port, &stats);
+    assert!(port.link.is_none(), "the second send failed and closed the port");
+    port.link = Some(Flaky { fail_after: usize::MAX, sent: Vec::new() });
+    live.reopened("SYN", &mut port, &stats);
+    let sent = port.link.unwrap().sent;
+    assert_eq!(sent, [vec![0xb0, 64, 0], vec![0xb0, 123, 0], vec![0xb2, 64, 0], vec![0xb2, 123, 0]]);
+}

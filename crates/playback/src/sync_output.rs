@@ -654,11 +654,16 @@ impl LiveThru {
     }
     /// The port `name` was opened again: the device may still hold what thru played before it
     /// went. Quiet those channels (the clip encoder does the same for its own).
+    /// A send that fails closes the port, and the sends after it go nowhere: then every one of
+    /// these channels is quieted again when the port next opens.
     fn reopened<C: SyncPort>(&mut self, name: &str, p: &mut Port<C>, stats: &Stats) {
         let channels = self.thru.reopened(name);
         for channel in (0..16u8).filter(|c| channels & (1 << c) != 0) {
             send_now(name, p, &[0xb0 | channel, 64, 0], stats);
             send_now(name, p, &[0xb0 | channel, 123, 0], stats);
+        }
+        if p.link.is_none() {
+            self.thru.unquieted(name, channels);
         }
     }
 }
