@@ -366,6 +366,9 @@ impl SyncEncoder for TrackMidi {
             }
             self.reconnected = 0;
         }
+        // Taken on the first update after the loss, whatever it is: a stop or a start in between
+        // already restarts the pass, and a later update must not restart it again.
+        let relocate = std::mem::take(&mut self.relocate);
         let at = b.sample_index_at(now);
         if !b.playing {
             if self.playing {
@@ -378,7 +381,7 @@ impl SyncEncoder for TrackMidi {
             self.cursor = None;
             return None;
         }
-        if !self.playing || self.pass != Some(b.pass) || self.cursor.is_none() || std::mem::take(&mut self.relocate) {
+        if !self.playing || self.pass != Some(b.pass) || self.cursor.is_none() || relocate {
             // A start, locate or loop wrap. Notes of the old pass end now; no All Notes Off
             // while playing on (MIDI 1.0 p24).
             let mut out = |m: &[u8]| send(now, m);
