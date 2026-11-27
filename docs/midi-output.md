@@ -30,8 +30,11 @@ sending. A new track sends nothing until you choose.
   that limit the other ports' names ("DIN (2)") are saved before the name in use, as they are what
   keeps it apart; with that many already saved, a name newly used is not saved, so after a restart
   a port of the same name could take it.
+- Ports are listed by the names the MIDI input list uses: on Linux without the ALSA client prefix
+  and sequencer address ("UM-ONE MIDI 1", not "UM-ONE:UM-ONE MIDI 1 24:0").
 - A port that comes back with a new system identity (CoreMIDI gives a port that is created again a
-  new one) keeps its tracks when no other port has its name. Ports that share a name are told
+  new one; ALSA a device that comes back as another client) keeps its tracks when no other port has
+  its name. Ports that share a name are told
   apart only by their identity, so one of them back with a new identity is listed as a new
   port, such as "DIN (3)", and its tracks need choosing again.
 - A port that is unplugged stays chosen and reads **(unavailable)** on the selector, in the

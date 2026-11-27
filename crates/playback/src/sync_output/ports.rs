@@ -95,9 +95,19 @@ fn winmm_names(mut ports: PortNames, saved: &Bindings) -> PortNames {
     ports
 }
 
+/// The names the output list goes by: the system's, tidied as the MIDI input list tidies its own
+/// ([`crate::midi::tidy_port_name`]). An ALSA name carries the port's sequencer address
+/// (`UM-ONE:UM-ONE MIDI 1 24:0`), which changes when the device comes back as another client
+/// (plugged in after another device, or after a restart); without it the device keeps its label,
+/// which [`assign`] then moves to the new address as for any port back under a new ID. A CoreMIDI
+/// or WinMM name normally has neither part and is left as it is, as in the input list.
+fn shown_names(ports: PortNames) -> PortNames {
+    ports.into_iter().map(|(name, id)| (name.map(|raw| if raw.trim().is_empty() { raw } else { crate::midi::tidy_port_name(&raw) }), id)).collect()
+}
+
 fn enumerate(midi: &MidiOutput, saved: &Bindings) -> (Vec<MidiOutputPort>, PortNames) {
     let ports = midi.ports();
-    let names = ports.iter().map(|p| (midi.port_name(p).ok(), p.id())).collect();
+    let names = shown_names(ports.iter().map(|p| (midi.port_name(p).ok(), p.id())).collect());
     #[cfg(windows)]
     let names = winmm_names(names, saved);
     #[cfg(not(windows))]
@@ -290,6 +300,31 @@ mod tests {
 
     fn listed(ports: &[(&str, &str)]) -> Vec<(Option<String>, String)> {
         ports.iter().map(|(name, id)| (Some(name.to_string()), id.to_string())).collect()
+    }
+
+    #[test]
+    fn alsa_output_names_lose_the_sequencer_address_so_a_device_back_as_another_client_keeps_its_label() {
+        // ALSA lists `Client:Port name client:port` (midir's name), and the port's ID is that
+        // address: a USB interface plugged in after another device, or after a restart, comes
+        // back as another client. The MIDI inputs show such a port as "UM-ONE MIDI 1"; the
+        // output list must too, or the label a track saved stops matching the device.
+        let alsa = |client: u8| {
+            shown_names(listed(&[
+                (&format!("UM-ONE:UM-ONE MIDI 1 {client}:0"), &format!("{client}:0")),
+                ("Midi Through:Midi Through Port-0 14:0", "14:0"),
+            ]))
+        };
+        let mut saved = Bindings::new();
+        let first = assign(&saved, alsa(20));
+        assert_eq!(selected(&first, "UM-ONE MIDI 1"), Ok("20:0"), "{first:?}");
+        learn(&mut saved, &alsa(20), "UM-ONE MIDI 1", "20:0");
+        let back = assign(&saved, alsa(24));
+        assert_eq!(selected(&back, "UM-ONE MIDI 1"), Ok("24:0"), "the label follows the device to its new address: {back:?}");
+        // CoreMIDI and WinMM names have no address: they stay as the system gives them.
+        for name in ["IAC Driver Bus 1", "MIDIOUT2 (Model 12)", "UM-ONE", "Arturia MiniLab mkII", "DIN (2)"] {
+            assert_eq!(shown_names(listed(&[(name, "x")])), listed(&[(name, "x")]));
+        }
+        assert_eq!(shown_names(vec![(None, "x".into())]), vec![(None, "x".into())]);
     }
 
     #[test]
