@@ -58,7 +58,8 @@ When you close a gap, delete its entry (or shrink it) in the same PR, and bump t
   Output (#1757). On macOS an RME UFX's driver allows 15–3072 frames; 4096 opens at its default
   buffer. The note says the size the device runs at (`device.buffer_running`, from the open
   stream), and a device that reports one size (shared-mode WASAPI reports its period, 480 frames at
-  48 kHz) is said to run only at that size.
+  48 kHz) is said to run only at that size. A size the driver takes while the stream runs at
+  another (a host may round it) is said too.
 - **Missing:** routing to physical channels (I/O Setup), one duplex stream on one clock (input and
   output are still separate cpal streams), latency reporting and record-offset compensation, ASIO
   in official builds (owner decision: Steinberg's SDK is proprietary or GPLv3), JACK, and

@@ -791,6 +791,7 @@ fn buffer_note_text(note: soundcraft_playback::devices::BufferNote) -> String {
         BufferNote::Refused { want, running: None } => {
             crate::localized_format!("The device did not take {} samples; it runs at its default buffer.", want)
         }
+        BufferNote::Rounded { want, running } => crate::localized_format!("The device runs at {} samples, not {}.", running, want),
     }
 }
 

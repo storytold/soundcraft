@@ -330,6 +330,7 @@ pub(super) fn translate(source: &str) -> Option<&'static str> {
             "O dispositivo não aceitou {} amostras; ele funciona com o buffer padrão."
         }
         "The device runs only at {} samples." => "O dispositivo funciona apenas com {} amostras.",
+        "The device runs at {} samples, not {}." => "O dispositivo funciona com {} amostras, não {}.",
         "The device allows {}–{} samples; it runs at its default buffer, {} samples." => {
             "O dispositivo aceita {}–{} amostras; ele funciona com o buffer padrão, {} amostras."
         }
