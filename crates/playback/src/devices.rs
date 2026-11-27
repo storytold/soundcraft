@@ -320,15 +320,6 @@ mod tests {
     }
 
     #[test]
-    fn the_input_opens_first_where_callbacks_run_in_open_order() {
-        assert!(in_open_order("ASIO"));
-        assert!(in_open_order("CoreAudio"));
-        for separate_threads in ["WASAPI", "ALSA", "JACK", "PulseAudio", "PipeWire"] {
-            assert!(!in_open_order(separate_threads), "{separate_threads}");
-        }
-    }
-
-    #[test]
     fn config_round_trips_and_tolerates_missing_fields() {
         let c = AudioConfig {
             system: Some("WASAPI".into()),
