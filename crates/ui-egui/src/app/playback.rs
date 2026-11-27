@@ -1,6 +1,7 @@
 use super::audio::feed_meter;
 use super::plugins::failed_plugin_status;
 use super::{Gesture, MainWindow, MeterDisplay, Range, Samples, SoundApp, TrackId, TransportRequest, json};
+use crate::TakeTail;
 
 /// Whether another automation-write pass is due: the transport moved at least
 /// `step` since `last` in either direction. `last == i64::MIN` marks "never
@@ -30,6 +31,8 @@ impl SoundApp {
     }
 
     fn start_play(&mut self, from: Samples, end: Option<Samples>, looped: Option<Range>) {
+        // The new pass's playback would be taken for the stopped punch's.
+        self.settle_take_tail();
         if let Some(p) = &self.player {
             p.update_session(self.engine.session_arc());
             p.play(from, end, looped);
@@ -94,6 +97,8 @@ impl SoundApp {
     }
 
     fn start_recording(&mut self) {
+        // The input cannot arm the next takes while it still takes in the last punch's tail.
+        self.settle_take_tail();
         let armed = self.engine.session().tracks.iter().any(|t| t.mixer.record_arm);
         if !armed {
             let why = if self.engine.session().tracks.is_empty() {
@@ -310,8 +315,40 @@ impl SoundApp {
                 self.engine.session().sample_rate.as_f64(),
             )
         {
-            std::thread::sleep(wait);
+            // Waiting here would hold the frame: up to 2 s with the record offset at its limit.
+            // The take is finished on a later frame instead (`poll_take_tail`), unchanged.
+            let until = self.clock_now().checked_add(wait).unwrap_or_else(|| self.clock_now());
+            self.take_tail = Some(TakeTail { until, midi_pass, play_loop: self.play_loop });
+            return;
         }
+        self.complete_take(midi_pass, self.play_loop);
+    }
+
+    /// Finish a punch whose tail is over; `Some` (time left) while it is still taking in.
+    pub(crate) fn poll_take_tail(&mut self) -> Option<std::time::Duration> {
+        let until = self.take_tail.as_ref()?.until;
+        let left = until.saturating_duration_since(self.clock_now());
+        if !left.is_zero() {
+            return Some(left);
+        }
+        if let Some(t) = self.take_tail.take() {
+            self.complete_take(t.midi_pass, t.play_loop);
+        }
+        None
+    }
+
+    /// Finish a punch still in its tail now, waiting out what is left of it: before anything that
+    /// starts a pass, replaces the devices or the session, or needs the take in it.
+    pub(crate) fn settle_take_tail(&mut self) {
+        let Some(left) = self.poll_take_tail() else { return };
+        std::thread::sleep(left);
+        if let Some(t) = self.take_tail.take() {
+            self.complete_take(t.midi_pass, t.play_loop);
+        }
+    }
+
+    /// The rest of `finish_recording`, once the input has taken in all the punch needs.
+    fn complete_take(&mut self, midi_pass: Option<u64>, play_loop: Option<Range>) {
         // The audio input stops taking in first: waiting for the MIDI below would otherwise add
         // what the input hears meanwhile to the audio takes. No input device is open when the
         // pass was MIDI only.
@@ -333,7 +370,7 @@ impl SoundApp {
         });
         // A punch on the fly during loop playback starts mid-loop; a loop recording starts at the
         // pass start, which is stamped exactly.
-        let looped = if plan.pass.is_none() { self.play_loop } else { None };
+        let looped = if plan.pass.is_none() { play_loop } else { None };
         plan.placement_offset = self.placement_offset(plan.start, looped);
         self.punch = None;
         self.autosaved_rev = 0;
@@ -345,7 +382,7 @@ impl SoundApp {
         // pass punched in while a loop was playing went on round that loop.
         let midi_loop = match plan.pass {
             Some(len) => Some(Range::new(plan.start, plan.start.saturating_add(len))),
-            None => self.play_loop,
+            None => play_loop,
         };
         // A loop pass stopped somewhere inside the loop: where, the audio engine said with its
         // confirmation, in step with the rounds it wrote into the take. Its position now may be
@@ -487,6 +524,9 @@ impl SoundApp {
         for r in reqs {
             match r {
                 TransportRequest::ResetSession => {
+                    // The take belongs to the document it was recorded in, which is gone: the
+                    // commands that replace it finish the take first (`ask_to_save`).
+                    self.take_tail = None;
                     if let Some(p) = &self.player {
                         p.stop();
                         p.set_recording(false);
@@ -664,6 +704,58 @@ mod tests {
         // A positive one places it later; the round trip still covers the punch.
         assert_eq!(punch_tail(out, inp, 4_800, 48_000.0), Some(ms(12) + Duration::from_micros(979)));
         assert_eq!(punch_tail(None, None, 4_800, 48_000.0), None);
+    }
+
+    /// A punch recording with one take; nothing is open, so only the record offset times it.
+    fn app_punching(record_offset: Samples) -> SoundApp {
+        let mut app = SoundApp::new(soundcraft_engine::Engine::default(), None, crate::Services::default());
+        app.ui.record_offset = record_offset;
+        app.engine.transport.playing = true;
+        app.engine.transport.recording = true;
+        app.punch = Some(Range::new(48_000, 96_000));
+        let take = soundcraft_engine::io::Take { track: TrackId(1), path: std::path::PathBuf::from("take.wav"), channels: 1 };
+        let placement_offset = -record_offset;
+        app.take_plan =
+            Some(soundcraft_engine::io::Recording { start: 0, pass: None, punch: app.punch, placement_offset, rate: 48_000, takes: vec![take] });
+        app
+    }
+
+    #[test]
+    fn a_punch_out_waits_for_its_tail_without_blocking_the_frame() {
+        // The longest wait there is: a record offset of -96000 keeps the input open 2 s at 48 kHz.
+        let mut app = app_punching(-96_000);
+        app.advance_test_clock(std::time::Duration::ZERO);
+        let began = std::time::Instant::now();
+        app.stop_play();
+        assert!(began.elapsed() < std::time::Duration::from_millis(500), "Stop returned after {:?}", began.elapsed());
+        assert!(!app.engine.transport.recording && !app.is_playing());
+        // The take is finished on the first frame after its tail, as it was after the wait.
+        assert!(app.take_plan.is_some(), "the take waits for its tail");
+        app.advance_test_clock(std::time::Duration::from_millis(1_999));
+        assert_eq!(app.poll_take_tail(), Some(std::time::Duration::from_millis(1)));
+        assert!(app.take_plan.is_some(), "not before the tail is over");
+        app.advance_test_clock(std::time::Duration::from_millis(1));
+        assert_eq!(app.poll_take_tail(), None);
+        assert!(app.take_plan.is_none() && app.take_tail.is_none(), "finished once the tail is over");
+    }
+
+    #[test]
+    fn a_new_pass_finishes_the_take_still_in_its_tail_first() {
+        // 480 samples: 10 ms at 48 kHz.
+        let mut app = app_punching(-480);
+        app.stop_play();
+        assert!(app.take_tail.is_some());
+        // Play waits out the rest of the tail and finishes the take before it starts.
+        app.start_play(0, None, None);
+        assert!(app.take_tail.is_none() && app.take_plan.is_none());
+    }
+
+    #[test]
+    fn a_take_in_its_tail_is_finished_before_the_session_is_closed() {
+        let mut app = app_punching(-480);
+        app.stop_play();
+        crate::dialogs::ask_to_save(&mut app, "session.close", &json!({}));
+        assert!(app.take_tail.is_none() && app.take_plan.is_none());
     }
 
     #[test]

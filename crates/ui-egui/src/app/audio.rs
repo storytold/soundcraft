@@ -16,6 +16,8 @@ impl SoundApp {
         if self.engine.transport.recording {
             return Err(crate::localization::text("stop recording before changing the audio device").into());
         }
+        // The take still taking in its tail needs the input it records from.
+        self.settle_take_tail();
         self.ui.audio = cfg;
         let at = self.position();
         if let Some(p) = &self.player {
@@ -143,6 +145,7 @@ impl SoundApp {
         }
         let (what, then) = match trouble {
             Trouble::Device(what) => {
+                self.settle_take_tail();
                 self.recorder = None;
                 self.recorder_failed = true;
                 (what, crate::localization::text("Reconnect it, then use Reconnect audio device in Setup › Playback Engine."))
@@ -161,6 +164,7 @@ impl SoundApp {
         if self.is_playing() || self.engine.transport.recording {
             self.stop_play();
         }
+        self.settle_take_tail();
         if let Some(p) = &self.player {
             // Its plugin editors go with it; closed here, on the main thread (see `apply_audio_config`).
             p.close_editors();

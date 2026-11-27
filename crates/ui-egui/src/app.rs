@@ -49,6 +49,7 @@ impl SoundApp {
             play_loop: None,
             lost_shown: 0,
             take_plan: None,
+            take_tail: None,
             ui: UiState::default(),
             audio_health_report: None,
             services,
@@ -204,6 +205,10 @@ impl SoundApp {
             if !self.wants_keyboard && self.touched.is_empty() && self.touched_sends.is_empty() {
                 self.engine.end_merge();
             }
+        }
+        // A punch's tail ends on a frame of its own: the input took in all the punch needs.
+        if let Some(left) = self.poll_take_tail() {
+            ctx.request_repaint_after(left);
         }
         self.watch_output();
         self.watch_input();

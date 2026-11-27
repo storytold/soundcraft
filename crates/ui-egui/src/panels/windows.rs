@@ -691,7 +691,8 @@ pub fn playback_engine(app: &mut SoundApp, ctx: &egui::Context) {
             ui.label(crate::localization::text("Record offset"));
             ui.horizontal(|ui| {
                 let mut offset = app.ui.record_offset;
-                let field = ui.add(egui::DragValue::new(&mut offset).range(-RECORD_OFFSET_LIMIT..=RECORD_OFFSET_LIMIT));
+                let hint = crate::localization::text("Moves recorded takes by this many samples: positive places them later, negative earlier.");
+                let field = ui.add(egui::DragValue::new(&mut offset).range(-RECORD_OFFSET_LIMIT..=RECORD_OFFSET_LIMIT)).on_hover_text(hint);
                 if field.accessible_name(crate::localization::text("Record offset")).changed() {
                     app.ui.record_offset = offset;
                 }
