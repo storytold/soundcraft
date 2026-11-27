@@ -285,6 +285,15 @@ pub enum Gesture {
     ZoomBox { start: f32 },
 }
 
+/// A punch whose transport stopped while its input still takes in what the output played up to the
+/// punch-out: the take is finished at `until` (app clock), as it would have been after waiting.
+struct TakeTail {
+    until: web_time::Instant,
+    /// The MIDI pass the stop ended, and the loop the transport was playing round.
+    midi_pass: Option<u64>,
+    play_loop: Option<Range>,
+}
+
 pub struct SoundApp {
     pub engine: Engine,
     /// The session path as of the last frame, and whether the recent list changed since the host
@@ -317,6 +326,8 @@ pub struct SoundApp {
     lost_shown: u64,
     /// Where the takes being recorded go, autosaved with the session so a crash can't lose them.
     take_plan: Option<soundcraft_engine::io::Recording>,
+    /// A punch stopped but still taking in its tail (see `punch_tail`): finished on a later frame.
+    take_tail: Option<TakeTail>,
     pub ui: UiState,
     pub audio_health_report: Option<Result<Value, String>>,
     pub services: Services,
