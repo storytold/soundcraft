@@ -312,11 +312,6 @@ pub struct SoundApp {
     /// Punch range to trim the take to (pre/post-roll recordings).
     punch: Option<Range>,
     recorder_failed: bool,
-    /// An input that went away and is back: the input opens next by this name, so that a
-    /// "system default" choice does not land on another device (see `input_config`). Kept when
-    /// the output reopens by itself before the input opens; Reconnect and a new device choice
-    /// clear it.
-    input_pin: Option<String>,
     /// The audio devices need reopening, and those that went away are waited for.
     lost_audio: Option<app::LostAudio>,
     /// MIDI device input, opened on the first frame of an app that has an audio engine.

@@ -8,6 +8,7 @@ use std::time::Duration;
 
 use super::SoundApp;
 use soundcraft_playback::OutputLoss;
+use soundcraft_playback::devices::Wanted;
 
 /// How often the device list is read while a device is away.
 const POLL: Duration = Duration::from_secs(2);
@@ -16,8 +17,8 @@ const POLL: Duration = Duration::from_secs(2);
 const STEADY: u32 = 2;
 
 /// Reads whether the audio system (first argument, `None` for the default one) lists the output
-/// and the input device named (a device not asked for counts as listed).
-pub(crate) type Probe = Arc<dyn Fn(Option<&str>, Option<&str>, Option<&str>) -> (bool, bool) + Send + Sync>;
+/// and the input device wanted (see [`soundcraft_playback::devices::devices_present`]).
+pub(crate) type Probe = Arc<dyn Fn(Option<&str>, Wanted<'_>, Wanted<'_>) -> (bool, bool) + Send + Sync>;
 
 /// The audio devices need reopening: the output or input reported trouble. Devices that went away,
 /// and an output whose settings changed or that stopped for a reason the audio system does not
@@ -26,9 +27,9 @@ pub(crate) type Probe = Arc<dyn Fn(Option<&str>, Option<&str>, Option<&str>) -> 
 pub(crate) struct LostAudio {
     /// The audio system the devices belong to (`None`: the default one).
     system: Option<String>,
-    /// The output and input device waited for: one that went away, or (`output_loss`) an
-    /// output whose stream was invalidated while it stayed, or that stopped for a reason the audio
-    /// system does not say.
+    /// The output and input device that was lost and is waited for (by its name, unless
+    /// `follows_default`): one that went away, or (`output_loss`) an output whose stream was
+    /// invalidated while it stayed, or that stopped for a reason the audio system does not say.
     pub(crate) output: Option<String>,
     pub(crate) input: Option<String>,
     /// Why the output waited for was lost. `SettingsChanged` (Core Audio only): another app or
@@ -42,6 +43,10 @@ pub(crate) struct LostAudio {
     /// The same for the input. Kept until an input opens again (`input_opened`) or Reconnect,
     /// so that reopening only the output does not take the offer away.
     pub(crate) input_by_hand: bool,
+    /// Whether the output and the input chosen are the system default (no device named): the
+    /// one waited for is then any default device, not the device that was lost, and the reopen
+    /// opens the current default.
+    follows_default: (bool, bool),
     /// Readings in a row that listed the output and the input.
     steady: (u32, u32),
     /// What the background thread reads; `None` while nothing is waited for. Dropping it ends
@@ -65,6 +70,7 @@ impl LostAudio {
             output_loss: OutputLoss::Left,
             by_hand: false,
             input_by_hand: false,
+            follows_default: (false, false),
             steady: (0, 0),
             list: None,
             probe,
@@ -138,9 +144,9 @@ impl LostAudio {
         }
         let (tx, rx) = channel();
         let (probe, every) = (Arc::clone(&self.probe), self.every);
-        let (system, output, input) = (self.system.clone(), self.output.clone(), self.input.clone());
+        let (system, output, input, follows) = (self.system.clone(), self.output.clone(), self.input.clone(), self.follows_default);
         let reader = std::thread::Builder::new().name("audio device watch".into()).spawn(move || {
-            while tx.send(probe(system.as_deref(), output.as_deref(), input.as_deref())).is_ok() {
+            while tx.send(probe(system.as_deref(), wanted(&output, follows.0), wanted(&input, follows.1))).is_ok() {
                 std::thread::sleep(every);
             }
         });
@@ -162,12 +168,24 @@ impl LostAudio {
     }
 }
 
+/// What to wait for: nothing, the device `name` that was lost, or (`default`) any system default.
+fn wanted(name: &Option<String>, default: bool) -> Wanted<'_> {
+    match name.as_deref() {
+        None => Wanted::Nothing,
+        Some(_) if default => Wanted::Default,
+        Some(name) => Wanted::Named(name),
+    }
+}
+
 impl SoundApp {
     /// The audio devices need reopening: from now on until they are, the status line offers
     /// Reconnect.
     pub(super) fn audio_lost(&mut self) -> &mut LostAudio {
         let system = self.ui.audio.system.clone();
-        self.lost_audio.get_or_insert_with(|| LostAudio::new(system))
+        let follows = (self.ui.audio.output.is_none(), self.ui.audio.input.is_none());
+        let lost = self.lost_audio.get_or_insert_with(|| LostAudio::new(system));
+        lost.follows_default = follows;
+        lost
     }
 
     /// Whether the audio devices need reopening (the status line then offers Reconnect).
@@ -177,8 +195,10 @@ impl SoundApp {
 
     /// Reopen a device that went away once it is back, or an output that stopped (settings
     /// changed, or a cause the audio system does not say) once it is listed, while the transport
-    /// is stopped: the output with the rest of the audio devices, or
-    /// an input alone, by its name, on its next use.
+    /// is stopped: the output with the rest of the audio devices, or an input alone on its next
+    /// use. A device the user chose is waited for and reopened by its name; with the system
+    /// default chosen, the current default is (any default device counts as back), so a default
+    /// that moved to another device is followed.
     pub(super) fn watch_replug(&mut self) {
         let Some(lost) = &mut self.lost_audio else { return };
         let (output, input) = lost.back();
@@ -186,21 +206,22 @@ impl SoundApp {
             return;
         }
         if output && let Some(name) = lost.output.clone() {
-            // Back too (usually the same interface): it opens again with the output, by its name.
-            // Else an input that came back earlier and has not opened yet keeps its pin
-            // (`reopen_audio` clears it, as Reconnect and a new device choice should).
-            let input_back = if input { lost.input.take() } else { None }.or_else(|| self.input_pin.take());
+            // An input that is back too (usually the same interface) opens again with the output.
+            if input {
+                lost.input = None;
+            }
             let loss = lost.output_loss;
             lost.output_done();
             let input_away = lost.input.is_some();
-            // The device that was lost, by name: with the system default chosen, the default
-            // may still be another device.
-            let cfg = soundcraft_playback::AudioConfig { output: Some(name.clone()), ..self.ui.audio.clone() };
+            // What the audio choice says: the device the user chose, by its name, or the current
+            // system default when none is chosen (the default may be another device by now).
+            let follows_default = self.ui.audio.output.is_none();
+            let cfg = self.ui.audio.clone();
             self.reopen_audio(&cfg);
-            self.input_pin = input_back;
             // An input still away opens again when it is back, not on the next record.
             self.recorder_failed = input_away;
-            if self.player.as_ref().is_some_and(|p| !p.silent && p.device_name == name) {
+            let opened = self.player.as_ref().filter(|p| !p.silent).map(|p| p.device_name.clone());
+            if opened.as_deref() == Some(name.as_str()) {
                 if let Some(l) = &mut self.lost_audio {
                     l.output_reopened();
                 }
@@ -209,15 +230,26 @@ impl SoundApp {
                     OutputLoss::Unknown => crate::localized_format!("SoundCraft reopened “{name}”.", name = name),
                     OutputLoss::Left => crate::localized_format!("“{name}” is back: SoundCraft reconnected it.", name = name),
                 };
+            } else if let Some(now) = opened.filter(|_| follows_default) {
+                if let Some(l) = &mut self.lost_audio {
+                    l.output_reopened();
+                }
+                self.ui.status = crate::localized_format!("SoundCraft opened the system default output, “{name}”.", name = now);
             } else {
-                self.ui.status = match loss {
-                    OutputLoss::SettingsChanged => crate::localized_format!(
-                        "SoundCraft could not reopen “{name}” after its settings changed. Use Reconnect to try again.",
-                        name = name
-                    ),
-                    OutputLoss::Unknown => crate::localized_format!("SoundCraft could not reopen “{name}”. Use Reconnect to try again.", name = name),
-                    OutputLoss::Left => {
-                        crate::localized_format!("“{name}” is back, but SoundCraft could not open it. Use Reconnect to try again.", name = name)
+                self.ui.status = if follows_default {
+                    crate::localization::text("SoundCraft could not open the system default output. Use Reconnect to try again.").to_string()
+                } else {
+                    match loss {
+                        OutputLoss::SettingsChanged => crate::localized_format!(
+                            "SoundCraft could not reopen “{name}” after its settings changed. Use Reconnect to try again.",
+                            name = name
+                        ),
+                        OutputLoss::Unknown => {
+                            crate::localized_format!("SoundCraft could not reopen “{name}”. Use Reconnect to try again.", name = name)
+                        }
+                        OutputLoss::Left => {
+                            crate::localized_format!("“{name}” is back, but SoundCraft could not open it. Use Reconnect to try again.", name = name)
+                        }
                     }
                 };
                 if let Some(l) = &mut self.lost_audio {
@@ -230,12 +262,15 @@ impl SoundApp {
             && let Some(name) = lost.input.clone()
         {
             lost.input_done();
-            // It opens on the next record or monitor (this frame, if one waits for it), by its
-            // name: with the system default chosen, the default may now be another device.
+            // It opens on the next record or monitor (this frame, if one waits for it), as the
+            // audio choice says: the device chosen by its name, else the current system default.
             self.recorder = None;
             self.recorder_failed = false;
-            self.input_pin = Some(name.clone());
-            self.ui.status = crate::localized_format!("“{name}” is back.", name = name);
+            self.ui.status = if self.ui.audio.input.is_none() {
+                crate::localization::text("The system default input is available again.").to_string()
+            } else {
+                crate::localized_format!("“{name}” is back.", name = name)
+            };
         }
         if self.lost_audio.as_ref().is_some_and(LostAudio::settled) {
             self.lost_audio = None;
@@ -285,7 +320,7 @@ impl SoundApp {
 
 #[cfg(test)]
 mod tests {
-    use super::{LostAudio, Probe, STEADY};
+    use super::{LostAudio, Probe, STEADY, Wanted};
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::{Arc, Mutex};
     use std::time::{Duration, Instant};
@@ -303,7 +338,12 @@ mod tests {
             let list = self.clone();
             Arc::new(move |_system, output, input| {
                 let listed = list.0.lock().unwrap();
-                let has = |want: Option<&str>| want.is_none_or(|w| listed.iter().any(|n| n == w));
+                let has = |want: Wanted<'_>| match want {
+                    Wanted::Nothing => true,
+                    Wanted::Named(w) => listed.iter().any(|n| n == w),
+                    // The first device listed is the system default.
+                    Wanted::Default => !listed.is_empty(),
+                };
                 (has(output), has(input))
             })
         }
@@ -370,10 +410,19 @@ mod tests {
     /// A device name no test machine has, so that reopening it never depends on the devices there.
     const AWAY: &str = "SoundCraft test device that is never present";
 
-    /// A SoundApp whose output device `AWAY` went away while stopped, waited for on `devices`.
-    fn app_with_lost_output(devices: &Devices) -> crate::SoundApp {
+    /// A SoundApp with `AWAY` chosen by name as its output and input.
+    fn app_on_away(devices: &Devices) -> crate::SoundApp {
         let mut app = crate::SoundApp::new(soundcraft_engine::Engine::default(), None, crate::Services::default());
+        app.ui.audio.output = Some(AWAY.into());
+        app.ui.audio.input = Some(AWAY.into());
         app.lost_audio = Some(lost(devices));
+        app
+    }
+
+    /// A SoundApp whose output device `AWAY`, chosen by name, went away while stopped, waited for
+    /// on `devices`.
+    fn app_with_lost_output(devices: &Devices) -> crate::SoundApp {
+        let mut app = app_on_away(devices);
         app.audio_lost().away(AWAY.into(), true);
         app.ui.status = format!("Audio output: “{AWAY}” is unavailable");
         app
@@ -425,8 +474,7 @@ mod tests {
     fn an_output_whose_settings_changed_is_reopened_without_saying_it_was_away() {
         let devices = Devices::default();
         devices.set(&[AWAY]);
-        let mut app = crate::SoundApp::new(soundcraft_engine::Engine::default(), None, crate::Services::default());
-        app.lost_audio = Some(lost(&devices));
+        let mut app = app_on_away(&devices);
         app.audio_lost().changed(AWAY.into());
         let until = Instant::now() + Duration::from_secs(5);
         while app.player.is_none() && Instant::now() < until {
@@ -440,14 +488,13 @@ mod tests {
         assert!(app.offers_reconnect());
     }
 
-    /// An output lost where the audio system does not say why (WASAPI, ASIO, ALSA, ...) is
-    /// reopened by its name, as before, and neither message claims a cause.
+    /// An output chosen by name and lost where the audio system does not say why (WASAPI, ASIO,
+    /// ALSA, ...) is reopened by its name, as before, and neither message claims a cause.
     #[test]
     fn an_output_lost_for_an_unknown_reason_is_reopened_without_naming_a_cause() {
         let devices = Devices::default();
         devices.set(&[AWAY]);
-        let mut app = crate::SoundApp::new(soundcraft_engine::Engine::default(), None, crate::Services::default());
-        app.lost_audio = Some(lost(&devices));
+        let mut app = app_on_away(&devices);
         app.audio_lost().stopped(AWAY.into());
         let until = Instant::now() + Duration::from_secs(5);
         while app.player.is_none() && Instant::now() < until {
@@ -464,10 +511,11 @@ mod tests {
     fn an_input_that_comes_back_opens_again_on_its_next_use() {
         let devices = Devices::default();
         let mut app = crate::SoundApp::new(soundcraft_engine::Engine::default(), None, crate::Services::default());
+        app.ui.audio.input = Some("Mic".into());
         app.lost_audio = Some(lost(&devices));
         app.audio_lost().away("Mic".into(), false);
         app.recorder_failed = true;
-        app.ui.status = "Audio input: “Mic” is unavailable".into();
+        app.ui.status = "Audio input: “Mic” is unavailable.".into();
         devices.set(&["Mic"]);
         let until = Instant::now() + Duration::from_secs(5);
         while app.recorder_failed && Instant::now() < until {
@@ -476,47 +524,66 @@ mod tests {
         }
         assert!(!app.recorder_failed, "the input may open again");
         assert!(!app.offers_reconnect());
-        assert!(!app.ui.status.contains("unavailable"), "{}", app.ui.status);
-        // With the system default chosen, the default may now be another device: the input
-        // opens by the name that came back, as the output does.
-        assert_eq!(app.ui.audio.input, None);
-        assert_eq!(app.input_config().input.as_deref(), Some("Mic"));
-        // Reconnect opens what the audio choice says.
-        app.reconnect_audio();
-        assert_eq!(app.input_config().input, None);
+        assert_eq!(app.ui.status, "“Mic” is back.");
     }
 
-    /// An input that came back while the output ran is pinned by its name until it opens. If the
-    /// output is then lost and reopens by itself before that, the pin stays: the input still
-    /// opens as the device that came back, not the system default.
+    /// With the system default chosen for the output, a lost output is not waited for by its
+    /// name: once the system has a default output again, the current default opens (seen on
+    /// Windows: the default moved to another device, and the old one was reopened by its name).
     #[test]
-    fn a_pinned_input_stays_pinned_when_the_output_reopens_by_itself() {
+    fn an_output_on_the_system_default_reopens_on_the_current_default() {
         let devices = Devices::default();
+        devices.set(&["Another output"]);
         let mut app = crate::SoundApp::new(soundcraft_engine::Engine::default(), None, crate::Services::default());
         app.lost_audio = Some(lost(&devices));
-        app.audio_lost().away("Mic".into(), false);
-        app.recorder_failed = true;
-        devices.set(&["Mic"]);
-        let until = Instant::now() + Duration::from_secs(5);
-        while app.recorder_failed && Instant::now() < until {
-            app.watch_replug();
-            std::thread::sleep(Duration::from_millis(5));
-        }
-        assert_eq!(app.input_config().input.as_deref(), Some("Mic"), "nothing armed, so the pin waits for the next use");
-        // Now the output is lost and comes back on its own.
-        app.lost_audio = Some(lost(&devices));
-        app.audio_lost().away(AWAY.into(), true);
-        devices.set(&["Mic", AWAY]);
+        app.audio_lost().stopped(AWAY.into());
         let until = Instant::now() + Duration::from_secs(5);
         while app.player.is_none() && Instant::now() < until {
             app.watch_replug();
             std::thread::sleep(Duration::from_millis(5));
         }
-        assert!(app.player.is_some(), "the output was reopened");
-        assert_eq!(app.input_config().input.as_deref(), Some("Mic"), "the input still opens by the name that came back");
-        // Reconnect opens what the audio choice says.
-        app.reconnect_audio();
-        assert_eq!(app.input_config().input, None);
+        assert!(app.player.is_some(), "reopened, though `AWAY` never came back");
+        assert!(!app.ui.status.contains(AWAY), "{}", app.ui.status);
+        assert!(app.ui.status.contains("system default output"), "{}", app.ui.status);
+        assert_eq!(app.ui.audio.output, None, "still the system default");
+    }
+
+    /// An output the user chose by name is waited for by its name, while another device is the
+    /// system default.
+    #[test]
+    fn a_chosen_output_is_waited_for_by_its_name() {
+        let devices = Devices::default();
+        devices.set(&["Another output"]);
+        let mut app = app_on_away(&devices);
+        app.audio_lost().stopped(AWAY.into());
+        for _ in 0..40 {
+            app.watch_replug();
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert!(app.player.is_none(), "not reopened on another device");
+        assert!(app.offers_reconnect());
+    }
+
+    /// With the system default chosen for the input, a lost input is settled once the system has
+    /// a default input again: it opens the current default on its next use, not the device that
+    /// was lost.
+    #[test]
+    fn an_input_on_the_system_default_comes_back_as_the_current_default() {
+        let devices = Devices::default();
+        devices.set(&["Another microphone"]);
+        let mut app = crate::SoundApp::new(soundcraft_engine::Engine::default(), None, crate::Services::default());
+        app.lost_audio = Some(lost(&devices));
+        app.audio_lost().away("Mic".into(), false);
+        app.recorder_failed = true;
+        let until = Instant::now() + Duration::from_secs(5);
+        while app.recorder_failed && Instant::now() < until {
+            app.watch_replug();
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert!(!app.recorder_failed, "the input may open again, though “Mic” never came back");
+        assert!(!app.offers_reconnect());
+        assert_eq!(app.ui.status, "The system default input is available again.");
+        assert_eq!(app.ui.audio.input, None, "still the system default");
     }
 
     /// The status line offers Reconnect while the devices need reopening; using it says what

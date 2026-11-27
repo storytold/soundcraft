@@ -1317,6 +1317,14 @@ fn menu_translate(source: &str) -> Option<&'static str> {
         "SoundCraft could not reopen “{name}”. Use Reconnect to try again." => {
             "O SoundCraft não conseguiu reabrir “{name}”. Use Reconectar para tentar de novo."
         }
+        "“{name}” is unavailable." => "“{name}” está indisponível.",
+        "SoundCraft reopens the system default output, or use Reconnect." => "O SoundCraft reabre a saída padrão do sistema, ou use Reconectar.",
+        "SoundCraft reopens the system default input, or use Reconnect." => "O SoundCraft reabre a entrada padrão do sistema, ou use Reconectar.",
+        "SoundCraft opened the system default output, “{name}”." => "O SoundCraft abriu a saída padrão do sistema, “{name}”.",
+        "SoundCraft could not open the system default output. Use Reconnect to try again." => {
+            "O SoundCraft não conseguiu abrir a saída padrão do sistema. Use Reconectar para tentar de novo."
+        }
+        "The system default input is available again." => "A entrada padrão do sistema está disponível de novo.",
         "Recording stopped: {cause} The take is kept up to there. {then}" => "Gravação interrompida: {cause} A gravação foi mantida até aqui. {then}",
         "Recording stopped: {what} The take is kept up to there. {then}" => "Gravação interrompida: {what} A gravação foi mantida até aqui. {then}",
         "Remove configuration" => "Remover configuração",

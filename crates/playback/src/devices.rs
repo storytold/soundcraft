@@ -109,20 +109,38 @@ pub fn audio_systems() -> Vec<AudioSystem> {
         .collect()
 }
 
-/// Whether the audio system `system` (the default one for `None`) lists an output device named
-/// `output` and an input device named `input`; a device that is not asked for counts as present.
-/// It reads the device list and opens nothing, so it can be polled from a background thread while
-/// a device that went away is waited for (cpal does not expose Core Audio's device-list
-/// notification). An audio system that is not available lists nothing.
-pub fn devices_present(system: Option<&str>, output: Option<&str>, input: Option<&str>) -> (bool, bool) {
+/// A device [`devices_present`] looks for.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Wanted<'a> {
+    /// Nothing is waited for: counts as present.
+    Nothing,
+    /// The device of this name, one the user chose.
+    Named(&'a str),
+    /// The system default device, whichever it is now: present when the system has one.
+    Default,
+}
+
+/// Whether the audio system `system` (the default one for `None`) lists the output and the input
+/// device wanted. It reads the device list and opens nothing, so it can be polled from a
+/// background thread while a device that went away is waited for (cpal does not expose Core
+/// Audio's device-list notification). An audio system that is not available lists nothing.
+pub fn devices_present(system: Option<&str>, output: Wanted<'_>, input: Wanted<'_>) -> (bool, bool) {
     let host = match system {
         Some(want) => cpal::available_hosts().into_iter().find(|id| id.name().eq_ignore_ascii_case(want)).and_then(|id| cpal::host_from_id(id).ok()),
         None => Some(cpal::default_host()),
     };
-    let Some(host) = host else { return (output.is_none(), input.is_none()) };
+    let Some(host) = host else { return (output == Wanted::Nothing, input == Wanted::Nothing) };
     let named = |want: &str, d: &cpal::Device| device_name(d).as_deref() == Some(want);
-    let out = output.is_none_or(|want| host.output_devices().is_ok_and(|mut ds| ds.any(|d| named(want, &d))));
-    let inp = input.is_none_or(|want| host.input_devices().is_ok_and(|mut ds| ds.any(|d| named(want, &d))));
+    let out = match output {
+        Wanted::Nothing => true,
+        Wanted::Named(want) => host.output_devices().is_ok_and(|mut ds| ds.any(|d| named(want, &d))),
+        Wanted::Default => host.default_output_device().is_some(),
+    };
+    let inp = match input {
+        Wanted::Nothing => true,
+        Wanted::Named(want) => host.input_devices().is_ok_and(|mut ds| ds.any(|d| named(want, &d))),
+        Wanted::Default => host.default_input_device().is_some(),
+    };
     (out, inp)
 }
 
@@ -149,8 +167,8 @@ pub(crate) fn stream_lost(e: &cpal::Error) -> bool {
 /// (`AUDCLNT_E_DEVICE_INVALIDATED`) and a switch of the default device, which an unplug can
 /// cause, as `StreamInvalidated`; an ASIO driver's reset request, sent on an unplug, is
 /// `StreamInvalidated`; ALSA was not checked. So every other system gets
-/// [`crate::OutputLoss::Unknown`]. Either way the device is reopened by its name once it is
-/// listed again.
+/// [`crate::OutputLoss::Unknown`]. Either way the device is reopened once it is listed again (by
+/// its name when the user chose it, else the system default; see the app's `watch_replug`).
 pub(crate) fn output_loss(system: &str, left: bool) -> crate::OutputLoss {
     match (system, left) {
         ("CoreAudio", true) => crate::OutputLoss::Left,

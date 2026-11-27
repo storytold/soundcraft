@@ -145,6 +145,8 @@ pub struct Recorder {
     pub device_name: String,
     pub sample_rate: u32,
     pub channels: usize,
+    /// The audio system (cpal host name) the input opened on.
+    system: &'static str,
     /// The take writer, and what each track's take holds so far.
     writer: Option<(std::thread::JoinHandle<Takes>, Vec<(TrackId, Arc<Mutex<LiveTake>>)>)>,
     /// The callback count last seen, and since when.
@@ -282,7 +284,18 @@ impl Recorder {
         };
         stream.play().map_err(|e| e.to_string())?;
         let seen = (0, Instant::now());
-        Ok(Recorder { monitor, shared, _stream: Some(stream), device_name: name, sample_rate: config.sample_rate, channels, writer: None, seen })
+        let system = host.id().name();
+        Ok(Recorder {
+            monitor,
+            shared,
+            _stream: Some(stream),
+            device_name: name,
+            sample_rate: config.sample_rate,
+            channels,
+            system,
+            writer: None,
+            seen,
+        })
     }
 
     #[cfg(target_os = "freebsd")]
@@ -345,6 +358,14 @@ impl Recorder {
     /// stalling or hitting a bug: it can be reopened once the device is back.
     pub fn gone(&self) -> bool {
         self.shared.fault.load(Ordering::Relaxed) == GONE
+    }
+
+    /// Why the input stream was lost ([`Recorder::gone`]), as far as the audio system says. The
+    /// input keeps no `DeviceNotAvailable` flag of its own: on Core Audio it is said to have left
+    /// (`Left`, as it always was), on every other audio system the cause is `Unknown`, as for an
+    /// output there (see [`crate::devices::output_loss`]).
+    pub fn loss(&self) -> crate::OutputLoss {
+        crate::devices::output_loss(self.system, true)
     }
 
     /// Input the current take has lost to a slow disk so far, in milliseconds.
@@ -594,6 +615,7 @@ mod tests {
             device_name: "Mic In".into(),
             sample_rate: 48_000,
             channels: 1,
+            system: "CoreAudio",
             writer: None,
             seen: (0, Instant::now()),
         }

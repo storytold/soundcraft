@@ -28,9 +28,10 @@ impl SoundApp {
         // The input reopens on the next record or monitor with the new choice.
         self.recorder = None;
         self.recorder_failed = false;
-        self.input_pin = None;
-        // A device chosen here replaces any that went away.
+        // A device chosen here replaces any that went away, and what the status line said about
+        // the devices before ("SoundCraft reopened …", a lost device) no longer holds.
         self.lost_audio = None;
+        self.ui.status.clear();
         let player = soundcraft_playback::Player::with_config(self.engine.session_arc(), &self.ui.audio);
         self.attach_midi(&player);
         player.locate(at);
@@ -38,23 +39,12 @@ impl SoundApp {
         Ok(())
     }
 
-    /// The audio choice the input opens with next: an input that went away and is back opens by
-    /// its name (`input_pin`), as a returning output does.
-    pub(super) fn input_config(&self) -> soundcraft_playback::AudioConfig {
-        match &self.input_pin {
-            Some(name) => soundcraft_playback::AudioConfig { input: Some(name.clone()), ..self.ui.audio.clone() },
-            None => self.ui.audio.clone(),
-        }
-    }
-
     /// Open the input device once (for recording and input monitoring) and feed the player.
     pub(super) fn ensure_input(&mut self) {
         if self.recorder.is_some() || self.recorder_failed || self.player.is_none() {
             return;
         }
-        let cfg = self.input_config();
-        self.input_pin = None;
-        match soundcraft_playback::record::Recorder::open_with(&cfg) {
+        match soundcraft_playback::record::Recorder::open_with(&self.ui.audio) {
             Ok(r) => {
                 if let Some(p) = &self.player {
                     p.set_input(std::sync::Arc::clone(&r.monitor));
@@ -87,7 +77,7 @@ impl SoundApp {
                 crate::localization::text("the audio engine hit an internal error (see the log)").to_string(),
                 crate::localization::text("Use Reconnect audio device in Setup › Playback Engine, or restart SoundCraft."),
             ),
-            OutputTrouble::Gone => output_lost_text(&name, loss),
+            OutputTrouble::Gone => lost_text(&name, loss, self.ui.audio.output.is_none().then_some(true)),
             OutputTrouble::Stalled => (
                 format!("“{}” {}", name, crate::localization::text("stopped asking for audio")),
                 crate::localization::text("Use Reconnect audio device in Setup › Playback Engine."),
@@ -120,7 +110,8 @@ impl SoundApp {
             return;
         };
         // Read after `trouble`, so it agrees with the fault reported (a fault is never cleared).
-        let (gone, name) = (r.gone(), r.device_name.clone());
+        let (gone, name, loss) = (r.gone(), r.device_name.clone(), r.loss());
+        let default = self.ui.audio.input.is_none().then_some(false);
         if recording {
             self.stop_play();
         }
@@ -130,11 +121,12 @@ impl SoundApp {
                 self.recorder_failed = true;
                 let lost = self.audio_lost();
                 if gone {
-                    lost.away(name, false);
+                    lost.away(name.clone(), false);
+                    lost_text(&name, loss, default)
                 } else {
                     lost.input_by_hand = true;
+                    (what, crate::localization::text("Reconnect it, then use Reconnect audio device in Setup › Playback Engine."))
                 }
-                (what, input_advice(gone))
             }
             Trouble::Disk(what) => (what, crate::localization::text("Check the disk, then record again.")),
         };
@@ -156,7 +148,6 @@ impl SoundApp {
         }
         self.recorder = None;
         self.recorder_failed = false;
-        self.input_pin = None;
         let player = Player::with_config(self.engine.session_arc(), cfg);
         self.attach_midi(&player);
         self.player = Some(player);
@@ -197,16 +188,18 @@ pub(super) fn wants_audio_input(s: &soundcraft_model::Session) -> bool {
     s.tracks.iter().any(|t| !t.kind.is_midi() && (t.mixer.input_monitor || t.mixer.record_arm))
 }
 
-/// What happened to an output whose stream was lost, and what happens next. Core Audio says
-/// which happened: a device that went away is reopened once it is listed again; one that stayed
-/// (another app or the system changed its settings, such as the sample rate, which invalidates the
-/// stream) is reopened as it is. On every other audio system the error does not say which (see
-/// `soundcraft_playback::devices::output_loss`), so the message is true either way; the device
-/// is still reopened by its name once it is listed.
-fn output_lost_text(name: &str, loss: OutputLoss) -> (String, &'static str) {
-    match loss {
+/// What happened to a device whose stream was lost, and what happens next. Core Audio says
+/// which happened to an output: a device that went away is reopened once it is listed again; one
+/// that stayed (another app or the system changed its settings, such as the sample rate, which
+/// invalidates the stream) is reopened as it is. On every other audio system the error does not
+/// say which (see `soundcraft_playback::devices::output_loss`), so the message is true either way,
+/// for an output or an input. A device chosen by name is reopened by its name once it is listed;
+/// with the system default chosen (`default`: `Some(true)` for an output, `Some(false)` for an
+/// input) the current default is reopened instead (see `watch_replug`), and the advice says so.
+fn lost_text(name: &str, loss: OutputLoss, default: Option<bool>) -> (String, &'static str) {
+    let (cause, then) = match loss {
         OutputLoss::Left => (
-            format!("“{}” {}", name, crate::localization::text("is unavailable")),
+            crate::localized_format!("“{name}” is unavailable.", name = name),
             crate::localization::text("SoundCraft reconnects it when it is back, or use Reconnect."),
         ),
         OutputLoss::SettingsChanged => (
@@ -217,50 +210,65 @@ fn output_lost_text(name: &str, loss: OutputLoss) -> (String, &'static str) {
             crate::localized_format!("“{name}” stopped: the device went away or its settings changed.", name = name),
             crate::localization::text("SoundCraft reopens it when it is available, or use Reconnect."),
         ),
-    }
-}
-
-/// What to do about an input device that failed: one that went away is reopened once it is listed
-/// again (see `watch_replug`); one that is still there but failed needs Reconnect.
-fn input_advice(gone: bool) -> &'static str {
-    if gone {
-        crate::localization::text("SoundCraft reconnects it when it is back, or use Reconnect.")
-    } else {
-        crate::localization::text("Reconnect it, then use Reconnect audio device in Setup › Playback Engine.")
-    }
+    };
+    let then = match default {
+        Some(true) => crate::localization::text("SoundCraft reopens the system default output, or use Reconnect."),
+        Some(false) => crate::localization::text("SoundCraft reopens the system default input, or use Reconnect."),
+        None => then,
+    };
+    (cause, then)
 }
 
 #[cfg(test)]
 mod audio_input_tests {
-    use super::{input_advice, wants_audio_input};
+    use super::wants_audio_input;
 
     /// Core Audio says which happened (observed on an RME UFX).
     #[test]
     fn an_output_that_never_left_is_not_said_to_be_unavailable() {
         use soundcraft_playback::OutputLoss;
-        let (cause, then) = super::output_lost_text("UFX", OutputLoss::SettingsChanged);
+        let (cause, then) = super::lost_text("UFX", OutputLoss::SettingsChanged, None);
         assert_eq!(cause, "“UFX” stopped: another app or the system changed its settings (such as the sample rate).");
         assert_eq!(then, "SoundCraft reopens it, or use Reconnect.");
-        let (cause, then) = super::output_lost_text("UFX", OutputLoss::Left);
-        assert_eq!(cause, "“UFX” is unavailable");
+        let (cause, then) = super::lost_text("UFX", OutputLoss::Left, None);
+        assert_eq!(cause, "“UFX” is unavailable.");
         assert_eq!(then, "SoundCraft reconnects it when it is back, or use Reconnect.");
     }
 
     /// Where the audio system's error does not say whether the device left or its settings
-    /// changed (WASAPI, ASIO, ALSA, ...), the message is true either way.
+    /// changed (WASAPI, ASIO, ALSA, ...), the message is true either way, for an output or an
+    /// input (seen on Windows: an input lost there was said to be "unavailable").
     #[test]
-    fn an_output_lost_for_an_unknown_reason_gets_a_message_true_either_way() {
-        let (cause, then) = super::output_lost_text("Speakers (Model 12)", soundcraft_playback::OutputLoss::Unknown);
-        assert_eq!(cause, "“Speakers (Model 12)” stopped: the device went away or its settings changed.");
+    fn a_device_lost_for_an_unknown_reason_gets_a_message_true_either_way() {
+        let (cause, then) = super::lost_text("麥克風 (Model 12)", soundcraft_playback::OutputLoss::Unknown, None);
+        assert_eq!(cause, "“麥克風 (Model 12)” stopped: the device went away or its settings changed.");
         assert_eq!(then, "SoundCraft reopens it when it is available, or use Reconnect.");
         assert!(!cause.contains("sample rate") && !cause.contains("unavailable"), "{cause}");
     }
 
+    /// A device on the system default is not waited for by its name (see `watch_replug`): the
+    /// advice says the default reopens, whatever the cause.
     #[test]
-    fn an_input_that_went_away_is_said_to_reconnect_when_it_is_back() {
-        assert_eq!(input_advice(true), "SoundCraft reconnects it when it is back, or use Reconnect.");
-        assert_eq!(input_advice(false), "Reconnect it, then use Reconnect audio device in Setup › Playback Engine.");
+    fn a_lost_device_on_the_system_default_is_said_to_reopen_the_default() {
+        use soundcraft_playback::OutputLoss;
+        for loss in [OutputLoss::Left, OutputLoss::SettingsChanged, OutputLoss::Unknown] {
+            let (_, then) = super::lost_text("Speakers", loss, Some(true));
+            assert_eq!(then, "SoundCraft reopens the system default output, or use Reconnect.", "{loss:?}");
+            let (_, then) = super::lost_text("Mic", loss, Some(false));
+            assert_eq!(then, "SoundCraft reopens the system default input, or use Reconnect.", "{loss:?}");
+        }
     }
+
+    /// Applying a device choice replaces what the status line said about the devices before
+    /// (seen on Windows: "SoundCraft reopened …" stayed after a manual Apply).
+    #[test]
+    fn a_device_change_clears_the_last_device_message() {
+        let mut app = crate::SoundApp::new(soundcraft_engine::Engine::default(), None, crate::Services::default());
+        app.ui.status = "SoundCraft reopened “ET322QK C”.".into();
+        app.apply_audio_config(soundcraft_playback::AudioConfig::default()).unwrap();
+        assert_eq!(app.ui.status, "");
+    }
+
     use soundcraft_model::{ChannelFormat, Session, TrackKind};
 
     #[test]
