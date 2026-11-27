@@ -15,7 +15,8 @@ impl cpal::traits::StreamTrait for Fake {
     fn pause(&self) -> Result<(), cpal::Error> {
         Ok(())
     }
-    /// The fake stream has no clock and no fixed buffer; neither is used by these tests.
+    /// The fake stream reports 0 frames, which says nothing about a buffer (see
+    /// `a_stream_that_reports_no_buffer_size_has_no_running_buffer`).
     fn buffer_size(&self) -> Result<cpal::FrameCount, cpal::Error> {
         Ok(0)
     }
