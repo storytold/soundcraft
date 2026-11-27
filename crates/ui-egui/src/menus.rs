@@ -463,6 +463,9 @@ fn checked_state(app: &SoundApp, path: &str, id: Option<&str>) -> bool {
         Some("window.ui_customization") => app.extra.show_ui_customization,
         Some("window.config_auto_update") => app.extra.auto_update_config,
         Some("view.mix_section") => path.rsplit(" > ").next().map(mix_section_id).is_some_and(|s| app.ui.mix_views.iter().any(|v| v == s)),
+        Some(i) => soundcraft_engine::find_command(i)
+            .and_then(|c| c.checked_flag)
+            .is_some_and(|f| e.flag(f) || e.rulers.iter().any(|r| r.as_str() == f) || (f.starts_with("edit_view.") && e.flag("edit_view.all"))),
         _ => false,
     }
 }
@@ -1196,5 +1199,43 @@ mod tests {
         ] {
             assert_eq!(retired_feature_label(label), None, "{label}");
         }
+    }
+
+    /// #1835: every `flag!`/`radio!` view toggle reports its state through `checked_flag` — the
+    /// View menu marks it without a per-item arm, so the menu and the Views ▾ selector agree.
+    #[test]
+    fn view_toggles_report_checked_from_their_flag() {
+        let mut app = SoundApp::new(soundcraft_engine::Engine::default(), None, Services::default());
+        let toggles: Vec<(&'static str, &'static str)> =
+            soundcraft_engine::command_specs().iter().filter_map(|c| c.checked_flag.map(|f| (c.id, f))).collect();
+        assert!(toggles.len() >= 60, "expected view_more's toggles, found {}", toggles.len());
+        let clear = |app: &mut SoundApp, flag: &str| {
+            let edit = &mut app.engine.session_mut().edit;
+            edit.set_flag(flag, false);
+            edit.rulers.retain(|r| r != flag);
+        };
+        for (id, flag) in &toggles {
+            let path = format!("View > {id}");
+            clear(&mut app, flag);
+            assert!(!item_state(&app, &path, Some(id)).1, "{id}: checked with {flag} unset");
+            app.run(id, json!({})).unwrap();
+            assert!(item_state(&app, &path, Some(id)).1, "{id}: unchecked with {flag} set");
+            clear(&mut app, flag);
+            assert!(!item_state(&app, &path, Some(id)).1, "{id}: still checked with {flag} cleared");
+        }
+    }
+
+    /// #1835: with `edit_view.all` set every Edit Window Views item is checked — the same rule
+    /// `edit_columns` uses — while "All" and "Minimal" are actions and show no mark.
+    #[test]
+    fn edit_view_all_checks_every_column_item() {
+        let mut app = SoundApp::new(soundcraft_engine::Engine::default(), None, Services::default());
+        app.engine.session_mut().edit.set_flag("edit_view.all", true);
+        for c in soundcraft_engine::command_specs().iter().filter(|c| c.checked_flag.is_some_and(|f| f.starts_with("edit_view."))) {
+            let path = format!("View > Edit Window Views > {}", c.label);
+            assert!(item_state(&app, &path, Some(c.id)).1, "{} unchecked under edit_view.all", c.id);
+        }
+        assert!(!item_state(&app, "View > Edit Window Views > All", Some("view.edit_all")).1);
+        assert!(!item_state(&app, "View > Edit Window Views > Minimal", Some("view.edit_minimal")).1);
     }
 }
