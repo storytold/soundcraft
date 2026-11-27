@@ -908,7 +908,7 @@ fn output_paths(app: &mut SoundApp, ui: &mut egui::Ui) {
                     format = app.engine.session().main_format();
                     ui.label(crate::localization::text(format.label()));
                 } else {
-                    craft_ui::ComboBox::from_id_salt(("output_format", index)).selected_text(crate::localization::text(format.label())).show_ui(
+                    egui::ComboBox::from_id_salt(("output_format", index)).selected_text(crate::localization::text(format.label())).show_ui(
                         ui,
                         |ui| {
                             for option in ChannelFormat::ALL.into_iter().filter(|option| (1..=16).contains(&option.channels())) {
