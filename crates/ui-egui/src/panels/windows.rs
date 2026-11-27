@@ -743,9 +743,9 @@ pub fn playback_engine(app: &mut SoundApp, ctx: &egui::Context) {
 /// `{system?, output?, input?, sample_rate?, buffer_size?}` (a `null` value means "default") sets
 /// the choice and reopens the devices; `record_offset?` (whole samples within ±96000) sets the
 /// record offset without reopening them. Always returns the choice, the open device, the `latency`
-/// the backend reports for the output and input (`{samples, ms}` each, null when none), the
-/// `record_offset`, and `same_clock` (whether input and output share a clock, null until an
-/// output is open and an input is known).
+/// the backend reports for the output and input (`{samples, ms}` each; null when nothing was
+/// reported, the report was zero, or the stream was lost), the `record_offset`, and `same_clock`
+/// (whether input and output share a clock, null until an output is open and an input is known).
 pub fn audio_device_command(app: &mut SoundApp, p: &serde_json::Value) -> Result<serde_json::Value, String> {
     use serde_json::Value;
     let record_offset = match p.get("record_offset") {
