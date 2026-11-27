@@ -720,7 +720,7 @@ pub fn show(app: &mut SoundApp, ctx: &egui::Context) {
     select_page_from_keyboard(ctx, &mut page);
     // A single-line text edit releases focus on Enter in the frame that receives the key. Capture
     // ownership before drawing so Enter in Search cannot also apply and close the window.
-    let typing = ctx.egui_wants_keyboard_input();
+    let typing = crate::framework::widget_has_keyboard(ctx);
     // egui closes a ComboBox before this window observes Escape, so preserve the previous frame's
     // popup state to keep the same key from also canceling the complete Preferences window.
     let popup_was_open = app.preferences.popup_open;
@@ -800,7 +800,7 @@ pub fn show(app: &mut SoundApp, ctx: &egui::Context) {
     draft.remember_user_edits(draft_before_ui);
     app.preferences.popup_open = ctx.any_popup_open();
 
-    if ctx.input(|i| i.key_pressed(Key::Escape)) && !popup_was_open {
+    if crate::framework::escape_pressed(ctx) && !popup_was_open {
         action = Some(Action::Cancel);
     } else if action.is_none() && ctx.input(|i| i.key_pressed(Key::Enter)) && !typing {
         action = Some(Action::Apply);
@@ -941,14 +941,14 @@ fn control_ui(ui: &mut egui::Ui, page: PreferencesPage, section: &str, index: us
     let id = ("preference", page, section, index);
     match control {
         Control::Theme => {
-            craft_ui::ComboBox::new(id, label("UI Theme")).selected_text(crate::localization::text(draft.theme.label())).show_ui(ui, |ui| {
+            egui::ComboBox::new(id, label("UI Theme")).selected_text(crate::localization::text(draft.theme.label())).show_ui(ui, |ui| {
                 for mode in ThemeMode::ALL {
                     ui.selectable_value(&mut draft.theme, mode, crate::localization::text(mode.label()));
                 }
             });
         }
         Control::ReduceVisualEffects => {
-            craft_ui::ComboBox::new(id, label("Reduce Visual Effects"))
+            egui::ComboBox::new(id, label("Reduce Visual Effects"))
                 .selected_text(crate::localization::text(draft.reduce_visual_effects.label()))
                 .show_ui(ui, |ui| {
                     for mode in ReduceVisualEffects::ALL {
@@ -969,7 +969,7 @@ fn control_ui(ui: &mut egui::Ui, page: PreferencesPage, section: &str, index: us
         }
         Control::Choice(text, value) | Control::ChoiceOptions(text, value, _) => {
             ui.add_enabled_ui(false, |ui| {
-                craft_ui::ComboBox::new(id, label(text)).selected_text(crate::localization::text(value)).show_ui(ui, |_| {});
+                egui::ComboBox::new(id, label(text)).selected_text(crate::localization::text(value)).show_ui(ui, |_| {});
             })
             .response
             .on_disabled_hover_text(crate::localization::text("This preference is not available yet."));
@@ -1107,7 +1107,7 @@ mod tests {
     fn preferences_harness(size: egui::Vec2) -> Harness<'static, SoundApp> {
         let mut app = SoundApp::new(Engine::default(), None, crate::Services::default());
         app.ui.show_preferences = true;
-        Harness::builder().with_size(size).build_ui_state(
+        Harness::builder().with_context_setup(crate::framework::install_headless).with_size(size).build_ui_state(
             |ui, app: &mut SoundApp| {
                 app.logic(&ui.ctx().clone());
                 app.ui(ui);
@@ -1395,13 +1395,14 @@ mod tests {
     #[test]
     fn soundcraft_menu_opens_preferences_through_the_same_command() {
         let app = SoundApp::new(Engine::default(), None, crate::Services::default());
-        let mut harness = Harness::builder().with_size(egui::vec2(1600.0, 1000.0)).build_ui_state(
-            |ui, app: &mut SoundApp| {
-                app.logic(&ui.ctx().clone());
-                app.ui(ui);
-            },
-            app,
-        );
+        let mut harness =
+            Harness::builder().with_context_setup(crate::framework::install_headless).with_size(egui::vec2(1600.0, 1000.0)).build_ui_state(
+                |ui, app: &mut SoundApp| {
+                    app.logic(&ui.ctx().clone());
+                    app.ui(ui);
+                },
+                app,
+            );
         harness.run_steps(4);
         harness.get_by_label("SoundCraft").click();
         harness.run_steps(2);
@@ -1415,13 +1416,14 @@ mod tests {
     fn soundcraft_menu_disables_preferences_during_playback() {
         let mut app = SoundApp::new(Engine::default(), None, crate::Services::default());
         app.engine.transport.playing = true;
-        let mut harness = Harness::builder().with_size(egui::vec2(1600.0, 1000.0)).build_ui_state(
-            |ui, app: &mut SoundApp| {
-                app.logic(&ui.ctx().clone());
-                app.ui(ui);
-            },
-            app,
-        );
+        let mut harness =
+            Harness::builder().with_context_setup(crate::framework::install_headless).with_size(egui::vec2(1600.0, 1000.0)).build_ui_state(
+                |ui, app: &mut SoundApp| {
+                    app.logic(&ui.ctx().clone());
+                    app.ui(ui);
+                },
+                app,
+            );
         harness.run_steps(4);
         harness.get_by_label("SoundCraft").click();
         harness.run_steps(2);
