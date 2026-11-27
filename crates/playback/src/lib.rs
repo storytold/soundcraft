@@ -545,7 +545,8 @@ impl Player {
     }
 
     /// The output latency the audio backend reports: from an output callback to when its first
-    /// frame is heard. `None` for the silent clock, or before the stream reported one.
+    /// frame is heard. `None` for the silent clock, before the stream reported one, or after the
+    /// stream was lost.
     pub fn output_latency(&self) -> Option<std::time::Duration> {
         self.shared.output_latency.get()
     }
