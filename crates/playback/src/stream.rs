@@ -56,7 +56,7 @@ where
     let frame = channels.max(1);
     let mut scratch = vec![0.0f32; 8192 * frame];
     let chunk = scratch.len();
-    let (failed, guard, gone) = (Arc::clone(fault), Arc::clone(shared), Arc::clone(fault));
+    let (failed, guard, gone, lost) = (Arc::clone(fault), Arc::clone(shared), Arc::clone(fault), Arc::clone(shared));
     let device_latency = crate::latency::coreaudio_device_latency(device, false, config.sample_rate);
     device.build_output_stream(
         config,
@@ -84,6 +84,7 @@ where
             // route, and an xrun is transient, so neither counts as losing the stream.
             if devices::stream_lost(&e) {
                 gone.gone.store(true, Ordering::Relaxed);
+                lost.output_latency.lose();
             }
             log::warn!("audio stream error: {e}");
         },
