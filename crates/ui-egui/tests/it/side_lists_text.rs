@@ -12,14 +12,15 @@ fn harness() -> Harness<'static, SoundApp> {
     app.run("track.rename", json!({"track": first, "name": LONG_TRACK})).unwrap();
     app.run("track.group", json!({"name": LONG_GROUP, "tracks": [first]})).unwrap();
     app.engine.session_mut().edit.selected_tracks.clear();
-    let mut h = Harness::builder().with_size(vec2(1600.0, 1000.0)).build_ui_state(
-        |ui, app: &mut SoundApp| {
-            let ctx = ui.ctx().clone();
-            app.logic(&ctx);
-            app.ui(ui);
-        },
-        app,
-    );
+    let mut h =
+        Harness::builder().with_context_setup(soundcraft_ui_egui::framework::install_headless).with_size(vec2(1600.0, 1000.0)).build_ui_state(
+            |ui, app: &mut SoundApp| {
+                let ctx = ui.ctx().clone();
+                app.logic(&ctx);
+                app.ui(ui);
+            },
+            app,
+        );
     h.run_steps(3);
     h
 }

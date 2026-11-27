@@ -15,14 +15,15 @@ fn strip_silence_dialog() -> (Harness<'static, SoundApp>, TrackId, Vec<(i64, i64
     let before = app.engine.session().track(track).unwrap().clips().iter().map(|c| (c.start, c.end())).collect();
     menus::invoke_menu(&mut app, "edit.strip_silence", "Edit > Strip Silence");
     assert_eq!(app.dialogs.open_name(), Some("strip_silence"));
-    let mut h = Harness::builder().with_size(vec2(1600.0, 1000.0)).build_ui_state(
-        |ui, app: &mut SoundApp| {
-            let ctx = ui.ctx().clone();
-            app.logic(&ctx);
-            app.ui(ui);
-        },
-        app,
-    );
+    let mut h =
+        Harness::builder().with_context_setup(soundcraft_ui_egui::framework::install_headless).with_size(vec2(1600.0, 1000.0)).build_ui_state(
+            |ui, app: &mut SoundApp| {
+                let ctx = ui.ctx().clone();
+                app.logic(&ctx);
+                app.ui(ui);
+            },
+            app,
+        );
     h.run_steps(3);
     (h, track, before)
 }

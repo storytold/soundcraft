@@ -14,14 +14,15 @@ use soundcraft_ui_egui::dialogs::{Dialog, ask_to_save};
 use soundcraft_ui_egui::{Services, SoundApp, menus};
 
 fn harness(app: SoundApp) -> Harness<'static, SoundApp> {
-    let mut h = Harness::builder().with_size(vec2(1600.0, 1000.0)).build_ui_state(
-        |ui, app: &mut SoundApp| {
-            let ctx = ui.ctx().clone();
-            app.logic(&ctx);
-            app.ui(ui);
-        },
-        app,
-    );
+    let mut h =
+        Harness::builder().with_context_setup(soundcraft_ui_egui::framework::install_headless).with_size(vec2(1600.0, 1000.0)).build_ui_state(
+            |ui, app: &mut SoundApp| {
+                let ctx = ui.ctx().clone();
+                app.logic(&ctx);
+                app.ui(ui);
+            },
+            app,
+        );
     h.run_steps(3);
     h
 }
@@ -150,6 +151,7 @@ fn a_dialog_opened_while_a_window_button_has_the_focus_takes_enter() {
 fn the_enter_that_opens_a_dialog_does_not_press_its_default_button() {
     let mut app = SoundApp::new(soundcraft_engine::demo::demo_engine(), None, Services::default());
     let ctx = egui::Context::default();
+    soundcraft_ui_egui::framework::install_headless(&ctx);
     run_frame(&ctx, &mut app, vec![]);
     menus::invoke_menu(&mut app, "edit.fades_create", "Edit > Fades > Create...");
     run_frame(&ctx, &mut app, vec![enter_key(false), enter_up()]);
@@ -181,6 +183,7 @@ fn enter_up() -> Event {
 fn the_enter_that_replaces_an_open_dialog_does_not_press_the_new_default_button() {
     let mut app = SoundApp::new(soundcraft_engine::demo::demo_engine(), None, Services::default());
     let ctx = egui::Context::default();
+    soundcraft_ui_egui::framework::install_headless(&ctx);
     menus::invoke_menu(&mut app, "setup.session", "Setup > Session");
     run_frame(&ctx, &mut app, vec![]);
     run_frame(&ctx, &mut app, vec![]);
@@ -196,6 +199,7 @@ fn the_enter_that_replaces_an_open_dialog_does_not_press_the_new_default_button(
 fn a_rename_dialog_that_replaces_an_open_dialog_ignores_the_enter_of_its_first_frame() {
     let mut app = SoundApp::new(soundcraft_engine::demo::demo_engine(), None, Services::default());
     let ctx = egui::Context::default();
+    soundcraft_ui_egui::framework::install_headless(&ctx);
     menus::invoke_menu(&mut app, "setup.session", "Setup > Session");
     run_frame(&ctx, &mut app, vec![]);
     run_frame(&ctx, &mut app, vec![]);
@@ -236,6 +240,7 @@ fn clear_auto_rename_modify_group_and_save_changes_replacing_a_dialog_ignore_the
     for (name, open) in cases {
         let mut app = SoundApp::new(soundcraft_engine::demo::demo_engine(), None, Services::default());
         let ctx = egui::Context::default();
+        soundcraft_ui_egui::framework::install_headless(&ctx);
         menus::invoke_menu(&mut app, "setup.session", "Setup > Session");
         run_frame(&ctx, &mut app, vec![]);
         run_frame(&ctx, &mut app, vec![]);
@@ -249,6 +254,7 @@ fn clear_auto_rename_modify_group_and_save_changes_replacing_a_dialog_ignore_the
 fn a_tempo_change_dialog_that_replaces_an_open_dialog_ignores_the_enter_of_its_first_frame() {
     let mut app = SoundApp::new(soundcraft_engine::demo::demo_engine(), None, Services::default());
     let ctx = egui::Context::default();
+    soundcraft_ui_egui::framework::install_headless(&ctx);
     menus::invoke_menu(&mut app, "setup.session", "Setup > Session");
     run_frame(&ctx, &mut app, vec![]);
     let shapes = run_frame(&ctx, &mut app, vec![]);
@@ -274,6 +280,7 @@ fn a_tempo_change_dialog_that_replaces_an_open_dialog_ignores_the_enter_of_its_f
 fn a_held_enter_does_not_press_the_default_button_until_it_is_pressed_again() {
     let mut app = SoundApp::new(soundcraft_engine::demo::demo_engine(), None, Services::default());
     let ctx = egui::Context::default();
+    soundcraft_ui_egui::framework::install_headless(&ctx);
     run_frame(&ctx, &mut app, vec![]);
     menus::invoke_menu(&mut app, "edit.fades_create", "Edit > Fades > Create...");
     run_frame(&ctx, &mut app, vec![enter_key(false)]);
