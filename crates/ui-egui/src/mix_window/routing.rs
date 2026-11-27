@@ -137,6 +137,66 @@ fn with_channel_names(label: String, names: &[String], first: usize, width: usiz
     }
 }
 
+/// The route a selector shows, followed by the device's names for its channels: "In 15 (ADAT 1)",
+/// "Cue (Phones 9-10)". The closed selector keeps the path name, as Pro Tools' path selectors do;
+/// this is its tooltip, where Pro Tools gives a path's details. `None` for a bus, a MIDI input, or
+/// when the device names none of the channels. `names` are the device's names in that direction.
+pub(crate) fn route_details(app: &SoundApp, track: &Track, input: bool, names: &[String]) -> Option<String> {
+    let session = app.engine.session();
+    let (label, first, width) = if input {
+        if track.kind.is_midi() {
+            return None;
+        }
+        let (first, last) = match &track.mixer.input {
+            Route::Hardware(route) => numbered_input(route)?,
+            Route::None if track.kind.has_playlist() => (1, track.format.channels().max(1)),
+            _ => return None,
+        };
+        (input_name(app, track), first - 1, last + 1 - first)
+    } else {
+        let label = route_name(app, &track.mixer.output);
+        match &track.mixer.output {
+            Route::Main => (label, usize::from(session.outputs.first()?.first_channel), session.main_format().channels()),
+            Route::Hardware(name) => {
+                let path = session.outputs.iter().find(|path| path.name.eq_ignore_ascii_case(name))?;
+                (label, usize::from(path.first_channel), path.format.channels())
+            }
+            _ => return None,
+        }
+    };
+    let detailed = with_channel_names(label.clone(), names, first, width);
+    (detailed != label).then_some(detailed)
+}
+
+/// The channels of a numbered input route, 1-based: "In 15" is (15, 15), "In 8-9" is (8, 9).
+fn numbered_input(route: &str) -> Option<(usize, usize)> {
+    let rest = route.strip_prefix("In ")?;
+    let (first, last) = rest.split_once('-').unwrap_or((rest, rest));
+    let (first, last) = (first.trim().parse::<usize>().ok()?, last.trim().parse::<usize>().ok()?);
+    (first >= 1 && last >= first).then_some((first, last))
+}
+
+/// The tooltip of a track's input or output selector at `rect`: [`route_details`] while the
+/// pointer is over it, else `fallback` ("Input" or "Output", translated). The input's names are
+/// read once per hover, since with no input open they are asked of the device.
+pub(crate) fn selector_tooltip(app: &SoundApp, ui: &Ui, rect: egui::Rect, track: &Track, input: bool, fallback: &str) -> String {
+    let key = egui::Id::unique(("route-selector-names", track.id.0, input));
+    if !ui.rect_contains_pointer(rect) {
+        ui.data_mut(|data| data.remove::<Vec<String>>(key));
+        return fallback.to_string();
+    }
+    let names = if input {
+        ui.data(|data| data.get_temp::<Vec<String>>(key)).unwrap_or_else(|| {
+            let names = app.available_input_channel_names();
+            ui.data_mut(|data| data.insert_temp(key, names.clone()));
+            names
+        })
+    } else {
+        app.player.as_ref().map(|player| player.device_channel_names.clone()).unwrap_or_default()
+    };
+    route_details(app, track, input, &names).unwrap_or_else(|| fallback.to_string())
+}
+
 /// Input or output menu with searchable hardware paths and buses.
 /// `names` are the device's names for the channels in that direction (see [`channel_span`]).
 fn route_menu(app: &mut SoundApp, ui: &mut Ui, id: TrackId, input: bool, inputs: usize, names: &[String]) {
@@ -222,7 +282,7 @@ fn route_menu(app: &mut SoundApp, ui: &mut Ui, id: TrackId, input: bool, inputs:
 
 #[cfg(test)]
 mod tests {
-    use super::{input_name, route_menu};
+    use super::{input_name, route_details, route_menu};
     use crate::{Services, SoundApp};
     use egui_kittest::{Harness, kittest::Queryable};
     use serde_json::json;
@@ -354,6 +414,38 @@ mod tests {
         // The first input named ADAT 1 is the 15th; the routes stay numbered and named as before.
         assert_eq!(track.mixer.input, super::Route::Hardware("In 15".into()));
         assert_eq!(track.mixer.output, super::Route::Hardware("Cue".into()), "the path on channels 9-10 is found by their name");
+    }
+
+    #[test]
+    fn the_selector_keeps_the_path_name_and_its_tooltip_names_the_channels() {
+        // Named like a Fireface UFX inputs: Analog 1-8, Mic 9-12, AES L/R, ADAT 1-16.
+        let names: Vec<String> = (1..=8)
+            .map(|n| format!("Analog {n}"))
+            .chain((9..=12).map(|n| format!("Mic {n}")))
+            .chain(["AES L".to_string(), "AES R".to_string()])
+            .chain((1..=16).map(|n| format!("ADAT {n}")))
+            .collect();
+        let outputs: Vec<String> = names.iter().map(|n| n.replace("Mic", "Phones")).collect();
+        let mut app = SoundApp::new(soundcraft_engine::Engine::default(), None, Services::default());
+        let mono = app.run("track.new", json!({"format": "mono"})).unwrap()["tracks"][0].as_u64().unwrap();
+        let stereo = app.run("track.new", json!({"format": "stereo"})).unwrap()["tracks"][0].as_u64().unwrap();
+        app.run("setup.io", json!({"action": "create_output", "name": "Cue", "first_channel": 8, "format": "stereo"})).unwrap();
+        app.run("track.input", json!({"track": mono, "input": "In 15"})).unwrap();
+        app.run("track.input", json!({"track": stereo, "input": "In 8-9"})).unwrap();
+        app.run("track.output", json!({"track": mono, "output": "Cue"})).unwrap();
+        app.run("track.output", json!({"track": stereo, "output": "Bus 1", "create_bus": true})).unwrap();
+        let fresh = app.run("track.new", json!({"format": "stereo"})).unwrap()["tracks"][0].as_u64().unwrap();
+        let track = |id: u64| app.engine.session().track(super::TrackId(id)).unwrap().clone();
+        let (mono, stereo, fresh) = (track(mono), track(stereo), track(fresh));
+
+        assert_eq!(input_name(&app, &mono), "In 15", "the closed selector keeps the path name");
+        assert_eq!(route_details(&app, &mono, true, &names).as_deref(), Some("In 15 (ADAT 1)"));
+        assert_eq!(route_details(&app, &stereo, true, &names).as_deref(), Some("In 8-9 (Analog 8–Mic 9)"));
+        assert_eq!(route_details(&app, &mono, false, &outputs).as_deref(), Some("Cue (Phones 9-10)"));
+        assert_eq!(route_details(&app, &stereo, false, &outputs), None, "a bus has no channels of the device");
+        assert_eq!(route_details(&app, &mono, true, &[]), None, "a device that names nothing leaves the tooltip as it was");
+        assert_eq!(route_details(&app, &fresh, true, &names).as_deref(), Some("In 1-2 (Analog 1-2)"), "the default input pair");
+        assert_eq!(route_details(&app, &fresh, false, &outputs).as_deref(), Some("Out 1-2 (Analog 1-2)"), "the main path");
     }
 }
 

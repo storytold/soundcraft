@@ -19,7 +19,7 @@ mod slots;
 
 pub(crate) use output::{output_window, toggle_output_window};
 pub use plugin_menu::{instrument_menu, plugin_info, plugin_menu};
-pub(crate) use routing::{channel_span, input_name, route_name, route_popup};
+pub(crate) use routing::{channel_span, input_name, route_name, route_popup, selector_tooltip};
 #[cfg(test)]
 use sends::dragged_send_db;
 pub(crate) use sends::{Readout, editable_readout, parse_db, parse_pan};
@@ -406,33 +406,27 @@ fn io_section(app: &mut SoundApp, ui: &mut Ui, cx: &StripCtx<'_>, mut y: f32) ->
         if has_input {
             let mut c = ui.new_child(egui::UiBuilder::new().id_salt(("mix-input", id.0)).max_rect(in_r));
             let input = input_name(app, track);
+            let tooltip = selector_tooltip(app, &c, in_r, track, true, crate::localization::text("Input"));
             let resp = selector_box_named(
                 &mut c,
                 in_r.width(),
                 in_r.height(),
                 &input,
                 t.text,
-                SelectorLabels {
-                    name: &crate::localized_format!("Input for {}", track.name),
-                    value: &input,
-                    tooltip: crate::localization::text("Input"),
-                },
+                SelectorLabels { name: &crate::localized_format!("Input for {}", track.name), value: &input, tooltip: &tooltip },
             );
             route_popup(app, &resp, id, true);
         }
         let mut c = ui.new_child(egui::UiBuilder::new().id_salt(("mix-output", id.0)).max_rect(out_r));
         let output = route_name(app, &track.mixer.output);
+        let tooltip = selector_tooltip(app, &c, out_r, track, false, crate::localization::text("Output"));
         let resp = selector_box_named(
             &mut c,
             out_r.width(),
             out_r.height(),
             &output,
             t.text,
-            SelectorLabels {
-                name: &crate::localized_format!("Output for {}", track.name),
-                value: &output,
-                tooltip: crate::localization::text("Output"),
-            },
+            SelectorLabels { name: &crate::localized_format!("Output for {}", track.name), value: &output, tooltip: &tooltip },
         );
         route_popup(app, &resp, id, false);
         // Automation mode.
