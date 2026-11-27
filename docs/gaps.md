@@ -60,12 +60,14 @@ When you close a gap, delete its entry (or shrink it) in the same PR, and bump t
   virtual input) reads "not reported", and a stream that failed stops showing its figures.
 - **Done (2026-11-24):** record-offset compensation: a take is placed from when its first sample
   was captured and when the record start was heard, as the devices report them, plus a per-machine
-  record offset (Setup › Playback Engine, `record_offset`) for drivers that misreport. Both moments
-  come from the stream clock, so a heavy mix delaying the input callback does not move the take. On
-  an RME UFX through its internal loopback, ASIO takes moved from 557 samples late to exactly the
-  digital loopback's own 50-sample lead, also with a 3 ms render load; WASAPI shared from 67–87 ms
-  late to 14–18 ms (shared mode under-reports its input latency). On Core Audio (macOS 26.1, the
-  same UFX, a cable through the converters) takes land 1 sample early at 64, 256 and 1024 frames.
+  record offset (Setup › Playback Engine, `record_offset`) for drivers that misreport. On ASIO,
+  WASAPI and Core Audio both moments come from the stream clock, so a heavy mix delaying the input
+  callback does not move the take (ALSA times each stream from its own start, so the callbacks
+  place takes there). On an RME UFX through its internal loopback, ASIO takes moved from 557
+  samples late to exactly the digital loopback's own 50-sample lead, also with a 3 ms render
+  load; WASAPI shared from 67–87 ms late to 14–18 ms (shared mode under-reports its input
+  latency). On Core Audio (macOS 26.1, the same UFX, a cable through the converters) takes land 1
+  sample early at 64, 256 and 1024 frames.
   cpal 0.18's Core Audio capture and playback times count the buffer and safety offset twice, so
   there the stream clock is the callback's host time moved by the device latency alone.
 - **Missing:** routing to physical channels (I/O Setup), one duplex stream on one clock (input and
