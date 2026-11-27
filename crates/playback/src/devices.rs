@@ -200,13 +200,19 @@ pub fn knows_clock(host: &str) -> bool {
 
 /// The name of `cfg`'s audio system as cpal reports it (the default one when none is chosen) and,
 /// where it tells clocks apart ([`knows_clock`]), the name of the input device `cfg` opens (the
-/// chosen one when present, else the default). Elsewhere the input is `None` without listing the
-/// input devices, since [`same_clock`] cannot tell there anyway.
+/// chosen one when present, else the default; see [`clock_input`]).
 pub fn clock_lookup(cfg: &AudioConfig) -> (String, Option<String>) {
     let host = host(cfg);
     let system = host.id().name();
-    let input = if knows_clock(system) { device(&host, cfg.input.as_deref(), false).and_then(|d| device_name(&d)) } else { None };
+    let input = clock_input(system, || device(&host, cfg.input.as_deref(), false).and_then(|d| device_name(&d)));
     (system.to_string(), input)
+}
+
+/// The input device name `read` gives, read only under an audio system where [`same_clock`] can
+/// tell (Core Audio and ASIO). Naming the input lists the input devices; elsewhere (WASAPI, ALSA
+/// and the others) the answer would be unknown anyway, so this is `None` without calling `read`.
+fn clock_input(system: &str, read: impl FnOnce() -> Option<String>) -> Option<String> {
+    if knows_clock(system) { read() } else { None }
 }
 
 /// The chosen audio system, else the default one.
@@ -274,8 +280,26 @@ mod tests {
         for (host, output, input, one) in cases {
             assert_eq!(same_clock(host, output, input), one, "{host}: {output} / {input}");
         }
-        assert!(knows_clock("CoreAudio") && knows_clock("ASIO"));
-        assert!(!knows_clock("WASAPI") && !knows_clock("ALSA"));
+    }
+
+    #[test]
+    fn the_input_is_not_listed_where_the_clock_relation_is_unknown() {
+        // Naming the input lists the input devices (Playback Engine, record-enable, Record). Where
+        // the audio system does not tell whether the clocks match, the name is not read at all.
+        let lookup = |system: &str| {
+            let listed = std::cell::Cell::new(false);
+            let input = clock_input(system, || {
+                listed.set(true);
+                Some("Microphone (Model 12)".to_owned())
+            });
+            (input.is_some(), listed.get())
+        };
+        for system in ["WASAPI", "ALSA", "JACK"] {
+            assert_eq!(lookup(system), (false, false), "{system}");
+        }
+        for system in ["CoreAudio", "ASIO"] {
+            assert_eq!(lookup(system), (true, true), "{system}");
+        }
     }
 
     #[test]
