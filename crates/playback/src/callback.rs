@@ -14,7 +14,10 @@ pub(crate) struct Fault {
     /// The device went away or the stream was invalidated: only a reconnect can restore audio.
     pub(crate) gone: AtomicBool,
     /// The device stopped asking for audio while playing (reported as `Stalled`): only a
-    /// reconnect can restore audio, as for a lost stream.
+    /// reconnect can restore audio, as for a lost stream. Kept on every audio system, from one
+    /// observation: on Windows (WASAPI, a Model 12 just replugged) Play was accepted after the
+    /// stall with the position stuck at 0. Not checked: a Windows sleep and wake while playing,
+    /// which may also read as a 2 s stall and would then need Reconnect too.
     stalled: AtomicBool,
     /// Blocks so far, to tell a device that stopped asking for audio.
     pub(crate) beats: std::sync::atomic::AtomicU64,
