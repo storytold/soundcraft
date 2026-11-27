@@ -6,7 +6,7 @@ use soundcraft_ui_egui::{Services, SoundApp, dialogs, menus};
 
 fn harness() -> Harness<'static, SoundApp> {
     let app = SoundApp::new(soundcraft_engine::demo::demo_engine(), None, Services::default());
-    Harness::builder().with_size(egui::vec2(1600.0, 1000.0)).build_ui_state(
+    Harness::builder().with_context_setup(soundcraft_ui_egui::framework::install_headless).with_size(egui::vec2(1600.0, 1000.0)).build_ui_state(
         |ui, app: &mut SoundApp| {
             let ctx = ui.ctx().clone();
             app.logic(&ctx);

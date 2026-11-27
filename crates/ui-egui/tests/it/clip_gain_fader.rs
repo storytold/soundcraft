@@ -21,6 +21,7 @@ fn the_clip_gain_icon_drags_with_the_pointer_in_one_undo_step() {
     let mut app = SoundApp::new(soundcraft_engine::demo::demo_engine(), None, Services::default());
     app.engine.execute("view.clip_gain_info", &json!({"value": true})).unwrap();
     let ctx = egui::Context::default();
+    soundcraft_ui_egui::framework::install_headless(&ctx);
     frame(&ctx, &mut app, vec![]);
     frame(&ctx, &mut app, vec![]);
     let s = app.engine.session().clone();
