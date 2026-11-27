@@ -92,7 +92,7 @@ pub(crate) fn route_popup(app: &mut SoundApp, resp: &egui::Response, id: TrackId
             return;
         }
         // Query only when opening the selector, never on each frame of the popup.
-        let inputs = if input {
+        let channels = if input {
             let cached = was_open.then(|| ui.data(|data| data.get_temp(width_key))).flatten();
             cached.unwrap_or_else(|| {
                 let channels = app.available_input_channels();
@@ -100,14 +100,15 @@ pub(crate) fn route_popup(app: &mut SoundApp, resp: &egui::Response, id: TrackId
                 channels
             })
         } else {
-            0
+            app.player.as_ref().map_or(0, |player| usize::from(player.device_channels))
         };
-        route_menu(app, ui, id, input, inputs);
+        route_menu(app, ui, id, input, channels);
     });
 }
 
-/// Input or output menu with searchable hardware paths and buses.
-fn route_menu(app: &mut SoundApp, ui: &mut Ui, id: TrackId, input: bool, inputs: usize) {
+/// Input or output menu with searchable hardware paths and buses. `channels` is the device's
+/// input or output count (0 when unknown).
+fn route_menu(app: &mut SoundApp, ui: &mut Ui, id: TrackId, input: bool, channels: usize) {
     let key = if input { "input" } else { "output" };
     let cmd = if input { "track.input" } else { "track.output" };
     let hint = crate::localization::text(if input { "Search inputs…" } else { "Search outputs…" });
@@ -119,7 +120,7 @@ fn route_menu(app: &mut SoundApp, ui: &mut Ui, id: TrackId, input: bool, inputs:
     let mut fixed = vec![(crate::localization::text(if input { "no input" } else { "no output" }).to_string(), "none".to_string())];
     if input {
         let width = app.engine.session().track(id).map_or(1, |track| track.channels().max(1));
-        let channels = if inputs == 0 { 8 } else { inputs };
+        let channels = if channels == 0 { 8 } else { channels };
         fixed.extend((width..=channels).map(|last| {
             let first = last + 1 - width;
             if width == 1 {
@@ -136,7 +137,20 @@ fn route_menu(app: &mut SoundApp, ui: &mut Ui, id: TrackId, input: bool, inputs:
         }
     } else {
         fixed.push((main_name, "main".to_string()));
-        fixed.extend(app.engine.session().outputs.iter().skip(1).map(|path| (path.name.clone(), path.name.clone())));
+        let session = app.engine.session();
+        fixed.extend(session.outputs.iter().skip(1).map(|path| (path.name.clone(), path.name.clone())));
+        // Every other pair of the interface's outputs, by the name Pro Tools' default paths give
+        // it; choosing one makes that path (see `track.output`).
+        let pairs = (2..channels.saturating_sub(1)).step_by(2).filter_map(|first| {
+            let name = format!("Out {}-{}", first + 1, first + 2);
+            let taken = session
+                .outputs
+                .iter()
+                .any(|path| path.name.eq_ignore_ascii_case(&name) || (usize::from(path.first_channel) == first && path.format.channels() == 2))
+                || busses.iter().any(|bus| bus.eq_ignore_ascii_case(&name));
+            (!taken).then(|| (name.clone(), name))
+        });
+        fixed.extend(pairs.collect::<Vec<_>>());
     }
     if search.typing() {
         let visible: Vec<_> =
@@ -196,6 +210,43 @@ mod tests {
     }
 
     #[test]
+    fn the_output_selector_lists_every_pair_of_interface_outputs() {
+        let _palette = crate::theme::lock_test_palette();
+        let mut engine = soundcraft_engine::Engine::default();
+        engine.execute("track.new", &json!({"format": "mono"})).unwrap();
+        // A named path on channels 5-6 stands for that pair.
+        engine.execute("setup.io", &json!({"action": "create_output", "name": "Cue", "first_channel": 4})).unwrap();
+        let id = engine.session().tracks[0].id;
+        let app = SoundApp::new(engine, None, Services::default());
+        let mut h = Harness::builder().with_size(egui::vec2(360.0, 900.0)).with_max_steps(32).build_ui_state(
+            move |ui, app: &mut SoundApp| {
+                let button = ui.button("Choose output");
+                egui::Popup::menu(&button)
+                    .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
+                    .show(|ui| route_menu(app, ui, id, false, 30));
+            },
+            app,
+        );
+        h.run();
+        h.get_by_label("Choose output").click();
+        h.run();
+        for listed in ["Out 1-2", "Out 3-4", "Cue", "Out 7-8", "Out 29-30"] {
+            assert!(h.query_by_label(listed).is_some(), "{listed} is listed");
+        }
+        for missing in ["Out 5-6", "Out 31-32", "Out 2-3"] {
+            assert!(h.query_by_label(missing).is_none(), "{missing} is not listed");
+        }
+        h.event(egui::Event::Text("9-10".into()));
+        h.run();
+        h.key_press(egui::Key::Enter);
+        h.run();
+        let session = h.state().engine.session();
+        assert_eq!(session.tracks[0].mixer.output, soundcraft_model::Route::Hardware("Out 9-10".into()));
+        assert!(session.outputs.iter().any(|path| path.name == "Out 9-10" && path.first_channel == 8), "the path is made");
+        assert!(session.busses.is_empty());
+    }
+
+    #[test]
     fn wide_projects_can_scroll_to_and_assign_high_input_and_output_paths() {
         let _palette = crate::theme::lock_test_palette();
         for ports in [32, 64] {
@@ -225,7 +276,8 @@ mod tests {
                         let button = ui.button(label);
                         egui::Popup::menu(&button)
                             .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
-                            .show(|ui| route_menu(app, ui, id, input, ports));
+                            // Output pairs are left out (0 channels), so the named paths end the list.
+                            .show(|ui| route_menu(app, ui, id, input, if input { ports } else { 0 }));
                     }
                 },
                 app,
