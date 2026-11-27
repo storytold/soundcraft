@@ -211,6 +211,13 @@ impl Player {
         self.fault.trouble(stalled)
     }
 
+    /// Whether the output device reported that it went away (unplugged, switched off). `false` for
+    /// a stream the system invalidated while the device stayed, such as another app changing its
+    /// sample rate. Read it once [`Player::trouble`] reported [`OutputTrouble::Gone`].
+    pub fn device_left(&self) -> bool {
+        self.fault.left.load(Ordering::Relaxed)
+    }
+
     fn side(&self) -> std::sync::MutexGuard<'_, Side> {
         self.side.lock().unwrap_or_else(PoisonError::into_inner)
     }

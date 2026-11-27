@@ -61,22 +61,19 @@ impl SoundApp {
     pub(super) fn watch_output(&mut self) {
         let Some(p) = &self.player else { return };
         let Some(trouble) = p.trouble() else { return };
-        let name = p.device_name.clone();
+        let (name, left) = (p.device_name.clone(), p.device_left());
         let lost = self.audio_lost();
-        if trouble == OutputTrouble::Gone {
-            lost.away(name.clone(), true);
-        } else {
-            lost.by_hand = true;
+        match trouble {
+            OutputTrouble::Gone if left => lost.away(name.clone(), true),
+            OutputTrouble::Gone => lost.changed(name.clone()),
+            _ => lost.by_hand = true,
         }
         let (cause, then) = match trouble {
             OutputTrouble::Bug => (
                 crate::localization::text("the audio engine hit an internal error (see the log)").to_string(),
                 crate::localization::text("Use Reconnect audio device in Setup › Playback Engine, or restart SoundCraft."),
             ),
-            OutputTrouble::Gone => (
-                format!("“{}” {}", name, crate::localization::text("is unavailable")),
-                crate::localization::text("SoundCraft reconnects it when it is back, or use Reconnect."),
-            ),
+            OutputTrouble::Gone => output_lost_text(&name, left),
             OutputTrouble::Stalled => (
                 format!("“{}” {}", name, crate::localization::text("stopped asking for audio")),
                 crate::localization::text("Use Reconnect audio device in Setup › Playback Engine."),
@@ -185,6 +182,23 @@ pub(super) fn wants_audio_input(s: &soundcraft_model::Session) -> bool {
     s.tracks.iter().any(|t| !t.kind.is_midi() && (t.mixer.input_monitor || t.mixer.record_arm))
 }
 
+/// What happened to an output whose stream was lost, and what happens next: a device that went
+/// away is reopened once it is listed again; one that stayed (another app or the system changed
+/// its settings, such as the sample rate, which invalidates the stream) is reopened as it is.
+fn output_lost_text(name: &str, left: bool) -> (String, &'static str) {
+    if left {
+        (
+            format!("“{}” {}", name, crate::localization::text("is unavailable")),
+            crate::localization::text("SoundCraft reconnects it when it is back, or use Reconnect."),
+        )
+    } else {
+        (
+            crate::localized_format!("“{name}” stopped: another app or the system changed its settings (such as the sample rate).", name = name),
+            crate::localization::text("SoundCraft reopens it, or use Reconnect."),
+        )
+    }
+}
+
 /// What to do about an input device that failed: one that went away is reopened once it is listed
 /// again (see `watch_replug`); one that is still there but failed needs Reconnect.
 fn input_advice(gone: bool) -> &'static str {
@@ -198,6 +212,16 @@ fn input_advice(gone: bool) -> &'static str {
 #[cfg(test)]
 mod audio_input_tests {
     use super::{input_advice, wants_audio_input};
+
+    #[test]
+    fn an_output_that_never_left_is_not_said_to_be_unavailable() {
+        let (cause, then) = super::output_lost_text("UFX", false);
+        assert_eq!(cause, "“UFX” stopped: another app or the system changed its settings (such as the sample rate).");
+        assert_eq!(then, "SoundCraft reopens it, or use Reconnect.");
+        let (cause, then) = super::output_lost_text("UFX", true);
+        assert_eq!(cause, "“UFX” is unavailable");
+        assert_eq!(then, "SoundCraft reconnects it when it is back, or use Reconnect.");
+    }
 
     #[test]
     fn an_input_that_went_away_is_said_to_reconnect_when_it_is_back() {

@@ -1300,6 +1300,14 @@ fn menu_translate(source: &str) -> Option<&'static str> {
         "SoundCraft reconnects it when it is back, or use Reconnect." => "O SoundCraft o reconecta quando ele voltar, ou use Reconectar.",
         "“{name}” is back." => "“{name}” voltou.",
         "“{name}” is back: SoundCraft reconnected it." => "“{name}” voltou: o SoundCraft o reconectou.",
+        "“{name}” stopped: another app or the system changed its settings (such as the sample rate)." => {
+            "“{name}” parou: outro aplicativo ou o sistema mudou suas configurações (como a taxa de amostragem)."
+        }
+        "SoundCraft reopens it, or use Reconnect." => "O SoundCraft o reabre, ou use Reconectar.",
+        "SoundCraft reopened “{name}” after its settings changed." => "O SoundCraft reabriu “{name}” depois que suas configurações mudaram.",
+        "SoundCraft could not reopen “{name}” after its settings changed. Use Reconnect to try again." => {
+            "O SoundCraft não conseguiu reabrir “{name}” depois que suas configurações mudaram. Use Reconectar para tentar de novo."
+        }
         "“{name}” is back, but SoundCraft could not open it. Use Reconnect to try again." => {
             "“{name}” voltou, mas o SoundCraft não conseguiu abri-lo. Use Reconectar para tentar de novo."
         }

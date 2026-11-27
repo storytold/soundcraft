@@ -13,6 +13,10 @@ pub(crate) struct Fault {
     failed: AtomicBool,
     /// The device went away or the stream was invalidated: only a reconnect can restore audio.
     pub(crate) gone: AtomicBool,
+    /// The device reported that it went away (`DeviceNotAvailable`), as opposed to a stream the
+    /// system invalidated while the device stayed (`StreamInvalidated`: on Core Audio, another app
+    /// changed its sample rate).
+    pub(crate) left: AtomicBool,
     /// Blocks so far, to tell a device that stopped asking for audio.
     pub(crate) beats: std::sync::atomic::AtomicU64,
     /// The UI has been told.

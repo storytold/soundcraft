@@ -280,6 +280,24 @@ fn a_lost_or_stalled_device_is_reported_once() {
 }
 
 #[test]
+fn a_lost_stream_says_whether_the_device_left() {
+    // Core Audio: unplugged (the device is no longer alive).
+    let unplugged = Fault::default();
+    stream::lose_stream(&unplugged, &cpal::Error::new(cpal::ErrorKind::DeviceNotAvailable));
+    assert_eq!(unplugged.trouble(false), Some(OutputTrouble::Gone));
+    assert!(unplugged.left.load(Ordering::Relaxed));
+    // Core Audio: another app changed the device's sample rate; the device stayed.
+    let changed = Fault::default();
+    stream::lose_stream(&changed, &cpal::Error::new(cpal::ErrorKind::StreamInvalidated));
+    assert_eq!(changed.trouble(false), Some(OutputTrouble::Gone));
+    assert!(!changed.left.load(Ordering::Relaxed), "the stream was invalidated, the device did not leave");
+    // An xrun loses nothing.
+    let xrun = Fault::default();
+    stream::lose_stream(&xrun, &cpal::Error::new(cpal::ErrorKind::Xrun));
+    assert_eq!(xrun.trouble(false), None);
+}
+
+#[test]
 fn audio_state_plays_and_stops_at_end() {
     let s = Arc::new(soundcraft_model::Session::default());
     let shared = Arc::new(Shared {

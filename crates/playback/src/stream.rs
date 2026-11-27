@@ -13,6 +13,17 @@ pub(crate) fn start_stream(stream: &impl cpal::traits::StreamTrait) -> bool {
     }
 }
 
+/// Mark the output lost when `e` means the stream is dead (see [`devices::stream_lost`]), noting
+/// whether the device itself went away.
+pub(crate) fn lose_stream(fault: &Fault, e: &cpal::Error) {
+    if devices::stream_lost(e) {
+        if e.kind() == cpal::ErrorKind::DeviceNotAvailable {
+            fault.left.store(true, Ordering::Relaxed);
+        }
+        fault.gone.store(true, Ordering::Relaxed);
+    }
+}
+
 /// A built output stream and the channels and fault flag its callback shares with the player.
 pub(crate) struct Opened {
     pub(crate) stream: cpal::Stream,
@@ -78,9 +89,7 @@ where
             // reopened: by the app once the device is listed (again), or by Reconnect; a rerouted
             // default device (`DeviceChanged`) keeps playing on the new route, and an xrun is
             // transient, so neither counts as losing the stream.
-            if devices::stream_lost(&e) {
-                gone.gone.store(true, Ordering::Relaxed);
-            }
+            lose_stream(&gone, &e);
             log::warn!("audio stream error: {e}");
         },
         None,

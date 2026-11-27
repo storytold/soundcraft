@@ -25,6 +25,10 @@ pub(crate) struct LostAudio {
     /// The output and input device that went away.
     pub(crate) output: Option<String>,
     pub(crate) input: Option<String>,
+    /// The output did not go away: another app or the system changed its settings, which
+    /// invalidated the stream. It is reopened as soon as it is listed, and said to be reopened
+    /// rather than back.
+    pub(crate) output_changed: bool,
     /// The output is still there but stopped working (stalled, failed, or could not be
     /// reopened): only Reconnect reopens it, so the offer stays when nothing is waited for.
     pub(crate) by_hand: bool,
@@ -47,11 +51,25 @@ impl LostAudio {
 
     /// Reads the device list with `probe` every `every`.
     pub(crate) fn with_probe(system: Option<String>, probe: Probe, every: Duration) -> Self {
-        LostAudio { system, output: None, input: None, by_hand: false, input_by_hand: false, steady: (0, 0), list: None, probe, every }
+        LostAudio {
+            system,
+            output: None,
+            input: None,
+            output_changed: false,
+            by_hand: false,
+            input_by_hand: false,
+            steady: (0, 0),
+            list: None,
+            probe,
+            every,
+        }
     }
 
     /// Wait for the output (or input) device `name`, which went away, to come back.
     pub(crate) fn away(&mut self, name: String, output: bool) {
+        if output {
+            self.output_changed = false;
+        }
         let slot = if output { &mut self.output } else { &mut self.input };
         if slot.as_deref() == Some(name.as_str()) && self.list.is_some() {
             return;
@@ -60,9 +78,17 @@ impl LostAudio {
         self.watch();
     }
 
+    /// The output device `name` stayed, but its stream was invalidated (another app or the
+    /// system changed its settings): reopen it once it is listed, like a device that came back.
+    pub(crate) fn changed(&mut self, name: String) {
+        self.away(name, true);
+        self.output_changed = true;
+    }
+
     /// Stop waiting for the output device (it was reopened, or reopening it failed).
     fn output_done(&mut self) {
         self.output = None;
+        self.output_changed = false;
         self.watch();
     }
 
@@ -147,6 +173,7 @@ impl SoundApp {
                 // Back too (usually the same interface): it opens again with the output.
                 lost.input = None;
             }
+            let changed = lost.output_changed;
             lost.output_done();
             let input_away = lost.input.is_some();
             // The device that went away, by name: with the system default chosen, the default
@@ -159,10 +186,20 @@ impl SoundApp {
                 if let Some(l) = &mut self.lost_audio {
                     l.output_reopened();
                 }
-                self.ui.status = crate::localized_format!("“{name}” is back: SoundCraft reconnected it.", name = name);
+                self.ui.status = if changed {
+                    crate::localized_format!("SoundCraft reopened “{name}” after its settings changed.", name = name)
+                } else {
+                    crate::localized_format!("“{name}” is back: SoundCraft reconnected it.", name = name)
+                };
             } else {
-                self.ui.status =
-                    crate::localized_format!("“{name}” is back, but SoundCraft could not open it. Use Reconnect to try again.", name = name);
+                self.ui.status = if changed {
+                    crate::localized_format!(
+                        "SoundCraft could not reopen “{name}” after its settings changed. Use Reconnect to try again.",
+                        name = name
+                    )
+                } else {
+                    crate::localized_format!("“{name}” is back, but SoundCraft could not open it. Use Reconnect to try again.", name = name)
+                };
                 if let Some(l) = &mut self.lost_audio {
                     l.by_hand = true;
                 }
@@ -358,6 +395,27 @@ mod tests {
         assert!(app.ui.status.contains("could not open"), "{}", app.ui.status);
         assert!(app.offers_reconnect(), "the message asks for Reconnect, so the status line offers it");
         assert!(!app.recorder_failed, "the input that came back with it opens again on its next use");
+    }
+
+    /// A device whose stream another app invalidated (it changed the sample rate) never left: it
+    /// is reopened, and neither message says it went away or came back.
+    #[test]
+    fn an_output_whose_settings_changed_is_reopened_without_saying_it_was_away() {
+        let devices = Devices::default();
+        devices.set(&[AWAY]);
+        let mut app = crate::SoundApp::new(soundcraft_engine::Engine::default(), None, crate::Services::default());
+        app.lost_audio = Some(lost(&devices));
+        app.audio_lost().changed(AWAY.into());
+        let until = Instant::now() + Duration::from_secs(5);
+        while app.player.is_none() && Instant::now() < until {
+            app.watch_replug();
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert!(app.player.is_some(), "the device was reopened");
+        // No machine has `AWAY`, so the reopen does not get it back.
+        assert_eq!(app.ui.status, format!("SoundCraft could not reopen “{AWAY}” after its settings changed. Use Reconnect to try again."));
+        assert!(!app.ui.status.contains("is back"), "{}", app.ui.status);
+        assert!(app.offers_reconnect());
     }
 
     #[test]
