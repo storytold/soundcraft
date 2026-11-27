@@ -1,7 +1,7 @@
 //! The Output window, as in Pro Tools: one track's volume fader and readout, pan, Solo and Mute,
 //! floating over the Edit window. The fader button beside a track's Output selector opens it.
 
-use super::routing::route_name;
+use super::routing::output_name;
 use super::sends::{Readout, editable_readout, parse_db, parse_pan};
 use super::{SoundApp, Tokens, TrackId, TrackKind, db_text, fader, json, pan_knob, pan_text, pos2, surround_panned, text_toggle, vec2};
 
@@ -46,7 +46,7 @@ fn output_window_contents(app: &mut SoundApp, ctx: &egui::Context) {
         .show(ctx, |ui| {
             ui.set_width(150.0);
             ui.vertical_centered(|ui| {
-                ui.label(egui::RichText::new(route_name(app, &track.mixer.output)).color(t.counter_text));
+                ui.label(egui::RichText::new(output_name(app, &track.mixer.output)).color(t.counter_text));
                 if track.kind != TrackKind::Master {
                     ui.horizontal(|ui| {
                         ui.spacing_mut().item_spacing.x = 4.0;

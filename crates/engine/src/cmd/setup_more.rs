@@ -371,7 +371,7 @@ fn io_setup(e: &mut Engine, p: &Value) -> Result<Value> {
             }
             let o = &mut s.outputs[index];
             let old = std::mem::replace(&mut o.name, to.clone());
-            rename_output_routes(s, &old, &to);
+            rename_output_routes(s, &old, Some(&to));
         }
         "set_output" => {
             let (index, output) = s
@@ -393,7 +393,10 @@ fn io_setup(e: &mut Engine, p: &Value) -> Result<Value> {
             if index == 0 {
                 return Err(bad(id, "the main output path cannot be deleted"));
             }
-            s.outputs.remove(index);
+            let path = s.outputs.remove(index);
+            // As Pro Tools does (Reference Guide, "Deleting Paths", printed p. 85), the track
+            // outputs and sends on the path are reset to No Output.
+            rename_output_routes(s, &path.name, None);
         }
         other => return Err(bad(id, format!("unknown action `{other}`"))),
     }
@@ -503,13 +506,13 @@ fn output_in_use(s: &Session, name: &str) -> bool {
     s.tracks.iter().any(|t| uses(&t.mixer.output) || t.mixer.sends.iter().flatten().any(|send| uses(&send.target)))
 }
 
-/// Point every track output and send on the output path `old` at `new`.
-fn rename_output_routes(s: &mut Session, old: &str, new: &str) {
+/// Point every track output and send on the output path `old` at `new`, or at no output.
+fn rename_output_routes(s: &mut Session, old: &str, new: Option<&str>) {
     for t in &mut s.tracks {
         let routes = std::iter::once(&mut t.mixer.output).chain(t.mixer.sends.iter_mut().flatten().map(|send| &mut send.target));
         for route in routes {
             if matches!(route, Route::Hardware(path) if path.eq_ignore_ascii_case(old)) {
-                *route = Route::Hardware(new.to_string());
+                *route = new.map_or(Route::None, |new| Route::Hardware(new.to_string()));
             }
         }
     }
@@ -543,7 +546,7 @@ fn default_outputs(s: &mut Session, channels: usize) {
             continue;
         }
         let old = std::mem::replace(&mut s.outputs[index].name, name.clone());
-        rename_output_routes(s, &old, &name);
+        rename_output_routes(s, &old, Some(&name));
     }
     for first in (2..channels.saturating_sub(1)).step_by(2) {
         let name = format!("Out {}-{}", first + 1, first + 2);
@@ -814,9 +817,12 @@ fn import_session_data(e: &mut Engine, p: &Value) -> Result<Value> {
         } else {
             remap(s, &tr.mixer.input)
         };
-        tr.mixer.output = remap(s, &tr.mixer.output);
+        let output = remap(s, &tr.mixer.output);
+        tr.mixer.output = import_output_route(s, &other, &tr.name, output, &mut missing);
+        let track = tr.name.clone();
         for slot in tr.mixer.sends.iter_mut().flatten() {
-            slot.target = remap(s, &slot.target);
+            let target = remap(s, &slot.target);
+            slot.target = import_output_route(s, &other, &track, target, &mut missing);
         }
         let pos = s.tracks.iter().position(|t| t.kind == TrackKind::Master).unwrap_or(s.tracks.len());
         out.push(tr.id);
@@ -824,6 +830,31 @@ fn import_session_data(e: &mut Engine, p: &Value) -> Result<Value> {
     }
     s.edit.selected_tracks = out.clone();
     Ok(json!({"tracks": out, "sources": map.len(), "missing": missing}))
+}
+
+/// A donor track's route to the output path `name` in this session, as Import Session Data
+/// brings its busses: the same path here is used, a path missing here is copied from the donor,
+/// and anything else (a different path of that name, a bus of that name, or a name the donor has
+/// no path for) is reported in `missing` and becomes no output, so it is never routed silently.
+fn import_output_route(s: &mut Session, donor: &Session, track: &str, route: Route, missing: &mut Vec<String>) -> Route {
+    let Route::Hardware(name) = &route else { return route };
+    if donor.outputs.first().is_some_and(|main| main.name.eq_ignore_ascii_case(name)) {
+        return Route::Main;
+    }
+    let donor_path = donor.outputs.iter().skip(1).find(|path| path.name.eq_ignore_ascii_case(name));
+    let local = s.outputs.iter().find(|path| path.name.eq_ignore_ascii_case(name));
+    match (local, donor_path) {
+        (Some(local), Some(donor)) if local.first_channel == donor.first_channel && local.format == donor.format => {
+            return Route::Hardware(local.name.clone());
+        }
+        (None, Some(donor)) if s.bus_by_name(name).is_none() && check_output_name(name).is_ok() => {
+            s.outputs.push(donor.clone());
+            return Route::Hardware(donor.name.clone());
+        }
+        _ => {}
+    }
+    missing.push(format!("{track}: output path `{name}` is unavailable or different in this session"));
+    Route::None
 }
 
 #[cfg(test)]
@@ -961,6 +992,78 @@ mod tests {
         // With no device known, only the paths change; no pair paths are made.
         io(&mut e, json!({"action": "default_outputs"}));
         assert_eq!(e.session().outputs.len(), 3);
+    }
+
+    /// Deleting an output path resets the track outputs and sends on it to No Output, as in Pro
+    /// Tools (Reference Guide, "Deleting Paths", printed p. 85), so they neither stay silent under
+    /// a name nothing lists nor come back on a later path of that name. One undo step.
+    #[test]
+    fn deleting_an_output_path_resets_its_tracks_and_sends_to_no_output() {
+        let mut e = Engine::default();
+        e.execute("track.new", &json!({"name": "Vox", "format": "mono"})).unwrap();
+        e.execute("setup.io", &json!({"action": "create_output", "name": "Phones", "first_channel": 2})).unwrap();
+        e.execute("track.output", &json!({"track": "Vox", "output": "Phones"})).unwrap();
+        e.execute("mix.send", &json!({"track": "Vox", "output": "Phones", "level_db": -6.0})).unwrap();
+        e.execute("setup.io", &json!({"action": "delete_output", "name": "phones"})).unwrap();
+        let vox = e.session().track_by_name("Vox").unwrap();
+        assert_eq!(vox.mixer.output, Route::None);
+        let send = vox.mixer.sends[0].as_ref().expect("the send stays, with no output");
+        assert_eq!((&send.target, send.level_db), (&Route::None, -6.0));
+        e.execute("setup.io", &json!({"action": "create_output", "name": "Phones", "first_channel": 4})).unwrap();
+        assert_eq!(e.session().track_by_name("Vox").unwrap().mixer.output, Route::None);
+        e.execute("edit.undo", &json!({})).unwrap();
+        e.execute("edit.undo", &json!({})).unwrap();
+        let vox = e.session().track_by_name("Vox").unwrap();
+        assert_eq!(vox.mixer.output, Route::Hardware("Phones".into()));
+        assert_eq!(vox.mixer.sends[0].as_ref().unwrap().target, Route::Hardware("Phones".into()));
+    }
+
+    /// A route names a bus or an output path, so New Bus refuses an output path's name.
+    #[test]
+    fn a_new_bus_cannot_take_an_output_path_name() {
+        let mut e = Engine::default();
+        e.execute("setup.io", &json!({"action": "create_output", "name": "Bus 1", "first_channel": 2})).unwrap();
+        assert!(e.execute("mix.new_bus", &json!({"name": "BUS 1"})).is_err());
+        assert!(e.session().busses.is_empty());
+    }
+
+    /// Import Session Data brings a donor track's output path along, as it does its busses: a
+    /// path missing here is copied, the same path here is used, and a different one, or a name
+    /// the donor has no path for, is reported and left with no output, never routed silently.
+    #[test]
+    fn import_session_data_carries_output_paths_and_reports_conflicts() {
+        let dir = std::env::temp_dir().join(format!("sc-import-outputs-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("donor.scraft").to_string_lossy().into_owned();
+        let mut donor = Engine::default();
+        for name in ["Vox", "Keys", "Gtr"] {
+            donor.execute("track.new", &json!({"name": name, "format": "mono"})).unwrap();
+        }
+        donor.execute("setup.io", &json!({"action": "create_output", "name": "Phones", "first_channel": 2})).unwrap();
+        donor.execute("setup.io", &json!({"action": "create_output", "name": "Cue", "first_channel": 4})).unwrap();
+        donor.execute("track.output", &json!({"track": "Vox", "output": "Phones"})).unwrap();
+        donor.execute("mix.send", &json!({"track": "Vox", "output": "Out 9-10"})).unwrap();
+        donor.execute("track.output", &json!({"track": "Keys", "output": "Cue"})).unwrap();
+        donor.execute("track.output", &json!({"track": "Gtr", "output": "Phones"})).unwrap();
+        crate::io::save_session(&mut donor, &path).unwrap();
+        // A donor saved by an older build can name a path it does not have (Vox's output).
+        let text = std::fs::read_to_string(&path).unwrap().replacen("\"Hardware\": \"Phones\"", "\"Hardware\": \"Gone\"", 1);
+        std::fs::write(&path, &text).unwrap();
+        let mut e = Engine::default();
+        e.execute("setup.io", &json!({"action": "create_output", "name": "Cue", "first_channel": 6})).unwrap();
+        let r = e.execute("file.import_session_data", &json!({"path": path})).unwrap();
+        let s = e.session();
+        let output = |name: &str| s.track_by_name(name).unwrap().mixer.output.clone();
+        assert_eq!(output("Vox"), Route::None, "the donor has no path `Gone`");
+        let send = s.track_by_name("Vox").unwrap().mixer.sends[0].clone().unwrap();
+        assert_eq!(send.target, Route::Hardware("Out 9-10".into()));
+        assert_eq!(output("Keys"), Route::None, "`Cue` is on other channels here");
+        assert_eq!(output("Gtr"), Route::Hardware("Phones".into()));
+        let paths: Vec<_> = s.outputs.iter().map(|path| (path.name.as_str(), path.first_channel)).collect();
+        assert_eq!(paths, [("Out 1-2", 0), ("Cue", 6), ("Out 9-10", 8), ("Phones", 2)]);
+        let missing = r["missing"].to_string();
+        assert!(missing.contains("Gone") && missing.contains("Cue"), "{missing}");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

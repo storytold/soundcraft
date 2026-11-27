@@ -1,5 +1,5 @@
 use super::plugin_menu::{MenuSearch, menu_row};
-use super::routing::{output_channels, output_path_choices, route_name};
+use super::routing::{free_bus_name, output_channels, output_name, output_path_choices, route_name};
 use super::slots::{COMPACT_SLOT, Mark, empty_slot, level_icon, used_slot};
 use super::{
     Align2, Rect, Route, Sense, SoundApp, Stroke, StrokeKind, Tokens, Track, TrackId, TrackKind, Ui, db_text, fader, json, pan_knob, pan_text, pos2,
@@ -23,7 +23,7 @@ pub(crate) fn send_slot(app: &mut SoundApp, ui: &mut Ui, track: &Track, slot: us
     let mark = if compact { Mark::Arrow } else { Mark::Letter((b'a' + slot as u8) as char) };
     match &snd {
         Some(s) => {
-            let name = route_name(app, &s.target);
+            let name = output_name(app, &s.target);
             let level = soundcraft_model::fader_db_to_pos(s.level_db);
             let color = if s.mute { t.mute } else { t.text };
             used_slot(ui.painter(), r, t.slot_face, mark, &name, color, Some(level));
@@ -104,7 +104,7 @@ fn send_window_contents(app: &mut SoundApp, ctx: &egui::Context) {
         .show(ctx, |ui| {
             ui.set_width(150.0);
             ui.vertical_centered(|ui| {
-                ui.label(egui::RichText::new(route_name(app, &send.target)).color(t.counter_text));
+                ui.label(egui::RichText::new(output_name(app, &send.target)).color(t.counter_text));
                 ui.horizontal(|ui| {
                     ui.spacing_mut().item_spacing.x = 4.0;
                     ui.add_space(((ui.available_width() - 62.0) / 2.0).max(0.0));
@@ -184,7 +184,7 @@ fn destination_channels(app: &SoundApp, target: &Route) -> usize {
 /// Secondary controls live behind the amount readout, separate from the bus selector like Logic.
 fn send_options_menu(app: &mut SoundApp, ui: &mut Ui, id: TrackId, slot: usize, send: &soundcraft_model::SendSlot) {
     ui.set_min_width(230.0);
-    ui.strong(crate::localized_format!("Send {} · {}", (b'A' + slot as u8) as char, route_name(app, &send.target)));
+    ui.strong(crate::localized_format!("Send {} · {}", (b'A' + slot as u8) as char, output_name(app, &send.target)));
     let mut db = send.level_db.max(-60.0);
     if ui.add(egui::Slider::new(&mut db, -60.0..=12.0).text(crate::localization::text("Level")).suffix(" dB")).changed() {
         let _ = app.engine.execute_merged("mix.send_level", &json!({"track": id.0, "slot": slot, "db": db}), &format!("send:{}:{slot}", id.0));
@@ -535,15 +535,8 @@ fn send_route_menu(app: &mut SoundApp, ui: &Ui, field: &egui::Response, id: Trac
     }
     match footer {
         Some(SendFooter::NewBus) => {
-            let busses = &app.engine.session().busses;
-            let mut n = busses.len() + 1;
-            while busses.iter().any(|bus| bus.name.eq_ignore_ascii_case(&format!("Bus {n}")))
-                || app.engine.session().track_by_name(&format!("Bus {n}")).is_some()
-            {
-                n += 1;
-            }
-            if app.run("mix.new_bus", json!({"name": format!("Bus {n}")})).is_ok()
-                && app.run("mix.send", json!({"track": id.0, "slot": slot, "bus": format!("Bus {n}")})).is_ok()
+            let name = free_bus_name(app.engine.session());
+            if app.run("mix.new_bus", json!({"name": name})).is_ok() && app.run("mix.send", json!({"track": id.0, "slot": slot, "bus": name})).is_ok()
             {
                 show_new_send(app);
             }

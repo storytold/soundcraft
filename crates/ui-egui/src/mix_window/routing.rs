@@ -10,6 +10,37 @@ pub(crate) fn route_name(app: &SoundApp, r: &Route) -> String {
     }
 }
 
+/// The name an output or send selector shows for `r`. A route to an output path this session does
+/// not have (a deleted path in an older session, or an imported track's), or to one that does not
+/// fit the device, is marked unavailable: it plays nothing, as Pro Tools shows an inactive path in
+/// italics (Reference Guide, "Making Paths Active or Inactive", printed p. 85).
+pub(crate) fn output_name(app: &SoundApp, r: &Route) -> String {
+    let name = route_name(app, r);
+    let Route::Hardware(path) = r else { return name };
+    let channels = output_channels(app);
+    let available = app
+        .engine
+        .session()
+        .outputs
+        .iter()
+        .enumerate()
+        .find(|(_, p)| p.name.eq_ignore_ascii_case(path))
+        .is_some_and(|(index, p)| index == 0 || channels == 0 || usize::from(p.first_channel) + p.format.channels() <= channels);
+    if available { name } else { format!("{name} ({})", crate::localization::text("Unavailable")) }
+}
+
+/// The first "Bus N" from the bus count on that no bus, track, input or output path is called, for New
+/// Bus: a route names a bus or an output path, so the two never share a name.
+pub(crate) fn free_bus_name(session: &soundcraft_model::Session) -> String {
+    let taken = |name: &str| {
+        session.busses.iter().any(|bus| bus.name.eq_ignore_ascii_case(name))
+            || session.track_by_name(name).is_some()
+            || session.inputs.iter().any(|path| path.name.eq_ignore_ascii_case(name))
+            || session.outputs.iter().any(|path| path.name.eq_ignore_ascii_case(name))
+    };
+    (session.busses.len() + 1..).map(|n| format!("Bus {n}")).find(|name| !taken(name)).unwrap_or_else(|| "Bus".into())
+}
+
 /// The input selector's text on a MIDI or instrument track.
 pub(crate) fn midi_input_name(track: &Track) -> String {
     let input = soundcraft_model::MidiInput::of(&track.mixer.input);
@@ -230,16 +261,8 @@ fn route_menu(app: &mut SoundApp, ui: &mut Ui, id: TrackId, input: bool, channel
         }
     });
     if ui.button(crate::localization::text("new bus...")).clicked() {
-        let mut n = busses.len() + 1;
-        let session = app.engine.session();
-        while busses.contains(&format!("Bus {n}"))
-            || session.track_by_name(&format!("Bus {n}")).is_some()
-            || session.inputs.iter().any(|path| path.name.eq_ignore_ascii_case(&format!("Bus {n}")))
-            || session.outputs.iter().any(|path| path.name.eq_ignore_ascii_case(&format!("Bus {n}")))
-        {
-            n += 1;
-        }
-        let _ = app.run(cmd, json!({"track": id.0, key: format!("Bus {n}")}));
+        let name = free_bus_name(app.engine.session());
+        let _ = app.run(cmd, json!({"track": id.0, key: name}));
         ui.close();
     }
 }
@@ -308,6 +331,18 @@ mod tests {
         let track = &app.engine.session().tracks[0];
 
         assert_eq!(input_name(&app, track), "In 1-2");
+    }
+
+    /// A route to an output path the session does not have (a deleted path in an older session,
+    /// or an imported track's) shows as unavailable, as an input route does.
+    #[test]
+    fn an_output_route_to_a_missing_path_shows_unavailable() {
+        let mut engine = soundcraft_engine::Engine::default();
+        engine.execute("setup.io", &json!({"action": "create_output", "name": "Phones", "first_channel": 2})).unwrap();
+        let app = SoundApp::new(engine, None, Services::default());
+        assert_eq!(super::output_name(&app, &soundcraft_model::Route::Hardware("Phones".into())), "Phones");
+        assert_eq!(super::output_name(&app, &soundcraft_model::Route::Hardware("Gone".into())), "Gone (Unavailable)");
+        assert_eq!(super::output_name(&app, &soundcraft_model::Route::Main), "Out 1-2");
     }
 
     #[test]

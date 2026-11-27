@@ -863,8 +863,8 @@ fn bus_paths(app: &mut SoundApp, ui: &mut egui::Ui) {
             }
         });
         if ui.button(crate::localization::text("New Bus")).clicked() {
-            let n = app.engine.session().busses.len() + 1;
-            let _ = app.run("mix.new_bus", json!({"name": format!("Bus {n}")}));
+            let name = crate::mix_window::free_bus_name(app.engine.session());
+            let _ = app.run("mix.new_bus", json!({"name": name}));
         }
     });
 }
