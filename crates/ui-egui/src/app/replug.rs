@@ -1,5 +1,5 @@
 //! Audio devices that stopped working: the Reconnect offer, and reopening a device that went away
-//! once it is back.
+//! once it is back, or an output whose settings another app or the system changed.
 
 use std::sync::Arc;
 use std::sync::mpsc::{Receiver, channel};
@@ -17,17 +17,19 @@ const STEADY: u32 = 2;
 /// and the input device named (a device not asked for counts as listed).
 pub(crate) type Probe = Arc<dyn Fn(Option<&str>, Option<&str>, Option<&str>) -> (bool, bool) + Send + Sync>;
 
-/// The audio devices need reopening: the output or input reported trouble. Devices that went away
-/// are waited for on a background thread that reads the device list, never on the audio thread.
+/// The audio devices need reopening: the output or input reported trouble. Devices that went away,
+/// and an output whose settings changed, are waited for on a background thread that reads the
+/// device list, never on the audio thread.
 pub(crate) struct LostAudio {
     /// The audio system the devices belong to (`None`: the default one).
     system: Option<String>,
-    /// The output and input device that went away.
+    /// The output and input device waited for: one that went away, or (`output_changed`) an
+    /// output whose stream was invalidated while it stayed.
     pub(crate) output: Option<String>,
     pub(crate) input: Option<String>,
     /// The output did not go away: another app or the system changed its settings, which
-    /// invalidated the stream. It is reopened as soon as it is listed, and said to be reopened
-    /// rather than back.
+    /// invalidated the stream. It is reopened once it is listed, and said to be reopened rather
+    /// than back.
     pub(crate) output_changed: bool,
     /// The output is still there but stopped working (stalled, failed, or could not be
     /// reopened): only Reconnect reopens it, so the offer stays when nothing is waited for.
@@ -104,7 +106,7 @@ impl LostAudio {
         self.watch();
     }
 
-    /// Whether a device that went away is waited for.
+    /// Whether a device is waited for (one that went away, or an output whose settings changed).
     fn waiting(&self) -> bool {
         self.list.is_some()
     }
@@ -160,8 +162,9 @@ impl SoundApp {
         self.lost_audio.is_some()
     }
 
-    /// Reopen a device that went away once it is back, while the transport is stopped: the
-    /// output with the rest of the audio devices, or an input alone on its next use.
+    /// Reopen a device that went away once it is back, or an output whose settings changed once it
+    /// is listed, while the transport is stopped: the output with the rest of the audio devices, or
+    /// an input alone on its next use.
     pub(super) fn watch_replug(&mut self) {
         let Some(lost) = &mut self.lost_audio else { return };
         let (output, input) = lost.back();
@@ -176,7 +179,7 @@ impl SoundApp {
             let changed = lost.output_changed;
             lost.output_done();
             let input_away = lost.input.is_some();
-            // The device that went away, by name: with the system default chosen, the default
+            // The device that was lost, by name: with the system default chosen, the default
             // may still be another device.
             let cfg = soundcraft_playback::AudioConfig { output: Some(name.clone()), ..self.ui.audio.clone() };
             self.reopen_audio(&cfg);
