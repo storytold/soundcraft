@@ -220,6 +220,7 @@ impl Player {
     pub fn input_channel_names(&self, cfg: &AudioConfig) -> Vec<String> {
         #[cfg(not(target_os = "freebsd"))]
         return devices::names_where_given(
+            std::env::consts::OS,
             || devices::host(cfg).id().name(),
             || {
                 record::input_device(cfg)

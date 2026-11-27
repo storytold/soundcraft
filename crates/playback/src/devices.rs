@@ -85,14 +85,14 @@ pub(crate) fn channel_names(device: &cpal::Device, input: bool, channels: usize)
     Vec::new()
 }
 
-/// `read()` (the names a device of audio system `system()` gives its channels) where that system
-/// gives any, else none without calling it. `system` is not called off macOS either. Only Core Audio on macOS names channels (see
-/// [`channel_names`]); reading them for an input that is not open lists the input devices and
-/// probes the device's configurations on the UI thread, which on WASAPI, ALSA and the others
-/// would return no names. Output there is unchanged: no names, and the selectors fall back to
-/// "Input" and "Output".
-pub(crate) fn names_where_given(system: impl FnOnce() -> &'static str, read: impl FnOnce() -> Vec<String>) -> Vec<String> {
-    if cfg!(target_os = "macos") && system() == "CoreAudio" { read() } else { Vec::new() }
+/// `read()` (the names a device of audio system `system()` gives its channels) on Core Audio on
+/// macOS only (`os` is a `std::env::consts::OS` value), else none without calling it; off macOS
+/// `system` is not called either. Only Core Audio names channels (see [`channel_names`]); reading
+/// them for an input that is not open lists the input devices and probes the device's
+/// configurations on the UI thread, which on WASAPI, ALSA and the others would return no names.
+/// Output there is unchanged: no names, and the selectors fall back to "Input" and "Output".
+pub(crate) fn names_where_given(os: &str, system: impl FnOnce() -> &'static str, read: impl FnOnce() -> Vec<String>) -> Vec<String> {
+    if os == "macos" && system() == "CoreAudio" { read() } else { Vec::new() }
 }
 
 /// Describe one cpal device as [`DeviceInfo`], or return `None` when its name or supported configurations cannot be
@@ -215,30 +215,37 @@ mod tests {
     use super::*;
 
     /// Channel names exist only on Core Audio on macOS, so elsewhere (WASAPI, ALSA, ...) the
-    /// device is not listed or probed to read none, on every hover of an input selector.
+    /// device is not listed or probed to read none, on every hover of an input selector. The OS is
+    /// passed as a value, so every case runs wherever the tests run.
     #[test]
     fn channel_names_are_read_only_where_the_system_gives_them() {
-        for system in ["WASAPI", "ASIO", "ALSA", "JACK", ""] {
-            let read = std::cell::Cell::new(false);
+        let names = |os: &str, system: &'static str| {
+            let (asked, read) = (std::cell::Cell::new(false), std::cell::Cell::new(false));
             let names = names_where_given(
-                || system,
+                os,
+                || {
+                    asked.set(true);
+                    system
+                },
                 || {
                     read.set(true);
                     vec!["Analog 1".to_owned()]
                 },
             );
-            assert!(names.is_empty() && !read.get(), "{system}: the device was read");
+            (names.is_empty(), asked.get(), read.get())
+        };
+        // Core Audio on macOS reads the device's names.
+        assert_eq!(names("macos", "CoreAudio"), (false, true, true));
+        // Another system on macOS: the system is asked, the device is not read.
+        for system in ["JACK", ""] {
+            assert_eq!(names("macos", system), (true, true, false), "macos, {system}");
         }
-        let read = std::cell::Cell::new(false);
-        let names = names_where_given(
-            || "CoreAudio",
-            || {
-                read.set(true);
-                vec!["Analog 1".to_owned()]
-            },
-        );
-        assert_eq!(read.get(), cfg!(target_os = "macos"), "Core Audio on macOS reads them");
-        assert_eq!(names.len(), usize::from(cfg!(target_os = "macos")));
+        // Off macOS neither the system nor the device is asked, whatever the system.
+        for os in ["windows", "linux", "freebsd"] {
+            for system in ["WASAPI", "ASIO", "ALSA", "JACK", "CoreAudio"] {
+                assert_eq!(names(os, system), (true, false, false), "{os}, {system}");
+            }
+        }
     }
 
     #[test]
