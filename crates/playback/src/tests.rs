@@ -1967,8 +1967,24 @@ fn a_rate_switch_settles_on_a_throwaway_stream_before_the_stream_that_plays() {
     use std::time::{Duration, Instant};
     // Already at the rate, or a rate that cannot be read: nothing is built.
     let mut built = 0;
-    assert!(!settle_rate_switch(Some(48_000), 48_000, |_| { built += 1; Some(()) }, Duration::from_secs(5)));
-    assert!(!settle_rate_switch(None, 48_000, |_| { built += 1; Some(()) }, Duration::from_secs(5)));
+    assert!(!settle_rate_switch(
+        Some(48_000),
+        48_000,
+        |_| {
+            built += 1;
+            Some(())
+        },
+        Duration::from_secs(5)
+    ));
+    assert!(!settle_rate_switch(
+        None,
+        48_000,
+        |_| {
+            built += 1;
+            Some(())
+        },
+        Duration::from_secs(5)
+    ));
     assert_eq!(built, 0);
     // At another rate: the throwaway is built, and its late report ends the wait early.
     let start = Instant::now();
