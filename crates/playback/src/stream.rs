@@ -21,6 +21,56 @@ pub(crate) struct Opened {
     pub(crate) fault: Arc<Fault>,
 }
 
+/// How long [`settle_rate_switch`] waits, at most, for the device to report its own rate switch.
+/// The reports seen came 0.2–0.8 s after the stream opened (Fireface UFX, BlackHole, built-in
+/// speakers on macOS 26).
+pub(crate) const RATE_SETTLE: std::time::Duration = std::time::Duration::from_millis(1500);
+
+/// Let a device that runs at another rate (`current`) switch to `target` before the stream that
+/// plays is built. cpal switches the rate while it builds a Core Audio stream, and the device can
+/// report the switch only once that stream listens for rate changes; the stream then ends ("Device
+/// sample rate changed") right after it opened. So `build` opens a throwaway stream at `target`
+/// whose error callback signals on the sender it is given, and this waits for that late report
+/// (or `wait`) before dropping it. Returns whether a throwaway switched the device. Nothing is
+/// built when the device already runs at `target` or its rate cannot be read.
+pub(crate) fn settle_rate_switch<S>(
+    current: Option<u32>,
+    target: u32,
+    build: impl FnOnce(std::sync::mpsc::Sender<()>) -> Option<S>,
+    wait: std::time::Duration,
+) -> bool {
+    if current.is_none_or(|rate| rate == target) {
+        return false;
+    }
+    let (report, reported) = std::sync::mpsc::channel();
+    let Some(stream) = build(report) else { return false };
+    let _ = reported.recv_timeout(wait);
+    drop(stream);
+    true
+}
+
+/// An output stream that is built and never started: it only switches the device to `config`'s
+/// rate, and signals `report` on any stream error (the device's report of that switch).
+pub(crate) fn throwaway_output(
+    device: &cpal::Device,
+    config: cpal::StreamConfig,
+    format: cpal::SampleFormat,
+    report: std::sync::mpsc::Sender<()>,
+) -> Option<cpal::Stream> {
+    use cpal::traits::DeviceTrait;
+    device
+        .build_output_stream_raw(
+            config,
+            format,
+            |_: &mut cpal::Data, _: &cpal::OutputCallbackInfo| {},
+            move |_| {
+                let _ = report.send(());
+            },
+            None,
+        )
+        .ok()
+}
+
 /// Build and start the attempts in order; the first that builds and starts wins. A build error or
 /// a stream that will not start is logged, and the next attempt is tried. `None` when none works.
 pub(crate) fn first_started<A: std::fmt::Debug, S, E: std::fmt::Display>(

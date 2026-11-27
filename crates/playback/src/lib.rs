@@ -67,7 +67,7 @@ use callback::{AudioState, Fault, Side, take_meter_snapshot};
 use callback::{STALL, copy_meter_snapshot};
 #[cfg(not(target_arch = "wasm32"))]
 use callback::{guarded_block, stalled};
-use stream::{Opened, OutputAttempt, build_output, first_started, open_device, start_stream};
+use stream::{Opened, OutputAttempt, RATE_SETTLE, build_output, first_started, open_device, settle_rate_switch, start_stream, throwaway_output};
 #[cfg(test)]
 use stream::{output_attempts, pick_output_config, pick_wider_output_config};
 
@@ -242,6 +242,16 @@ impl Player {
         };
         match open_device(want, want_ch, cfg) {
             Ok((device, attempts, name)) => {
+                // A device at another rate switches on a throwaway stream first, so the stream
+                // that plays does not end on the device's late report of its own switch.
+                if let Some(first) = attempts.first().filter(|a| !a.default) {
+                    use cpal::traits::DeviceTrait;
+                    let current = device.default_output_config().ok().map(|c| c.sample_rate());
+                    let target = first.config.sample_rate;
+                    if settle_rate_switch(current, target, |report| throwaway_output(&device, first.config, first.format, report), RATE_SETTLE) {
+                        log::info!("audio device: {name} switched to {target} Hz before opening");
+                    }
+                }
                 // The config picked for the chosen rate first, then the device default, each with
                 // the chosen buffer size and then the device's (see `output_attempts`).
                 let opened = first_started(

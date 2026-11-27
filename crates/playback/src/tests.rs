@@ -1957,3 +1957,39 @@ fn a_pass_started_and_ended_by_the_commands_of_one_callback_keeps_what_was_playe
     feed.take_recorded(&mut rec);
     assert!(rec.is_empty(), "{rec:?}");
 }
+
+/// Core Audio can report a rate switch only after the stream that caused it is listening for it,
+/// which then ends that stream ("Device sample rate changed", seen on a Fireface UFX, BlackHole and
+/// the built-in speakers). A device that runs at another rate is switched by a throwaway stream
+/// first, and its late report is waited for, so the stream that plays opens with no switch.
+#[test]
+fn a_rate_switch_settles_on_a_throwaway_stream_before_the_stream_that_plays() {
+    use std::time::{Duration, Instant};
+    // Already at the rate, or a rate that cannot be read: nothing is built.
+    let mut built = 0;
+    assert!(!settle_rate_switch(Some(48_000), 48_000, |_| { built += 1; Some(()) }, Duration::from_secs(5)));
+    assert!(!settle_rate_switch(None, 48_000, |_| { built += 1; Some(()) }, Duration::from_secs(5)));
+    assert_eq!(built, 0);
+    // At another rate: the throwaway is built, and its late report ends the wait early.
+    let start = Instant::now();
+    let switched = settle_rate_switch(
+        Some(44_100),
+        48_000,
+        |report| {
+            std::thread::spawn(move || {
+                std::thread::sleep(Duration::from_millis(50));
+                let _ = report.send(());
+            });
+            Some(())
+        },
+        Duration::from_secs(5),
+    );
+    assert!(switched);
+    assert!(start.elapsed() < Duration::from_secs(2), "waited {:?} after the report", start.elapsed());
+    // No report comes (the throwaway keeps its sender): the wait ends after its limit.
+    let start = Instant::now();
+    assert!(settle_rate_switch(Some(44_100), 48_000, Some, Duration::from_millis(100)));
+    assert!(start.elapsed() >= Duration::from_millis(100));
+    // A throwaway that will not build switched nothing.
+    assert!(!settle_rate_switch(Some(44_100), 48_000, |_| None::<()>, Duration::from_secs(5)));
+}
