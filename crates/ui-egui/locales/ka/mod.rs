@@ -1480,7 +1480,7 @@ fn menu_translate(source: &str) -> Option<&'static str> {
         "Ratio" => "კოეფიციენტი",
         "Rectifier" => "გამმართველი",
         "Rectify" => "გამმართ.",
-        "Release" => "გაშვება",
+        "Release" => "ჩაქრობა",
         "Resonance" => "რეზონანსი",
         "Ring Modulator" => "რგოლური მოდულატორი",
         "RingMod" => "რგოლ. მოდ.",
