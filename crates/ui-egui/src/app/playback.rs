@@ -145,6 +145,7 @@ impl SoundApp {
             return;
         };
         self.lost_shown = 0;
+        crate::panels::windows::note_different_clocks(self);
         self.begin_midi_take();
         if let Some(p) = &self.player {
             p.set_recording(true);

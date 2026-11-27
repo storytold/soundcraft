@@ -850,12 +850,46 @@ fn latency_line(app: &SoundApp) -> String {
 /// clock, see [`soundcraft_playback::devices::same_clock`]. `None` without an open output device
 /// or without any input device.
 fn same_clock(app: &SoundApp) -> Option<bool> {
+    clock_devices(app).map(|(system, output, input)| soundcraft_playback::devices::same_clock(&system, &output, &input))
+}
+
+/// The audio system, the open output and the input (open, else the one recording would open).
+fn clock_devices(app: &SoundApp) -> Option<(String, String, String)> {
     let output = app.player.as_ref().filter(|p| !p.silent)?.device_name.clone();
     let input = match app.recorder.as_ref() {
         Some(r) => r.device_name.clone(),
         None => soundcraft_playback::devices::input_device_name(&app.ui.audio)?,
     };
-    Some(soundcraft_playback::devices::same_clock(&soundcraft_playback::devices::system_name(&app.ui.audio), &output, &input))
+    Some((soundcraft_playback::devices::system_name(&app.ui.audio), output, input))
+}
+
+/// On record-enable and on Record, say on the status line when input and output run on
+/// different clocks, so it is seen without opening the Playback Engine. Once per pair of devices:
+/// a note, not a dialog (Pro Tools does not stop you either).
+pub(crate) fn note_different_clocks(app: &mut SoundApp) {
+    let devices = clock_devices(app);
+    note_clocks(app, devices);
+}
+
+fn note_clocks(app: &mut SoundApp, devices: Option<(String, String, String)>) {
+    let Some((system, output, input)) = devices else { return };
+    if soundcraft_playback::devices::same_clock(&system, &output, &input) {
+        return;
+    }
+    let pair = (output, input);
+    if app.clock_noted.as_ref() == Some(&pair) {
+        return;
+    }
+    app.clock_noted = Some(pair);
+    app.ui.status = crate::localization::text(different_clocks(&system)).to_string();
+}
+
+/// Whether a track became record-enabled since the last frame (none was before).
+pub(crate) fn arm_started(app: &mut SoundApp) -> bool {
+    let armed = app.engine.session().tracks.iter().any(|t| t.mixer.record_arm);
+    let started = armed && !app.armed_seen;
+    app.armed_seen = armed;
+    started
 }
 
 /// The reported latencies for `ui.audio_device` and `setup.playback_engine`.
@@ -1160,5 +1194,48 @@ mod clock_warning_tests {
         let with = window_width(state(true));
         assert!(without > 0.0);
         assert!(with <= without + 1.0, "the warning widened the window from {without} to {with}");
+    }
+}
+
+#[cfg(test)]
+mod clock_note_tests {
+    use super::*;
+
+    fn devices(output: &str, input: &str) -> Option<(String, String, String)> {
+        Some(("CoreAudio".into(), output.into(), input.into()))
+    }
+
+    #[test]
+    fn arming_on_two_clocks_says_so_on_the_status_line_once_per_pair_of_devices() {
+        let mut app = SoundApp::new(soundcraft_engine::Engine::default(), None, crate::Services::default());
+        note_clocks(&mut app, devices("Mac mini Speakers", "Fireface UFX (23693403)"));
+        assert_eq!(app.ui.status, different_clocks("CoreAudio"), "two devices: the status line says so");
+        // Once: arming again with the same devices leaves the status line alone.
+        app.ui.status = "Recorded 1 clip(s)".into();
+        note_clocks(&mut app, devices("Mac mini Speakers", "Fireface UFX (23693403)"));
+        assert_eq!(app.ui.status, "Recorded 1 clip(s)");
+        // Another pair of devices on two clocks is said again.
+        note_clocks(&mut app, devices("Fireface UFX (23693403)", "Microsoft Teams Audio"));
+        assert_eq!(app.ui.status, different_clocks("CoreAudio"));
+        // One device: nothing to say.
+        app.ui.status.clear();
+        note_clocks(&mut app, devices("Fireface UFX (23693403)", "Fireface UFX (23693403)"));
+        note_clocks(&mut app, None);
+        assert_eq!(app.ui.status, "");
+    }
+
+    #[test]
+    fn record_enabling_a_track_checks_the_clocks() {
+        let mut engine = soundcraft_engine::Engine::default();
+        engine.execute("track.new", &json!({"count": 1})).unwrap();
+        let mut app = SoundApp::new(engine, None, crate::Services::default());
+        assert!(!arm_started(&mut app), "nothing armed");
+        app.engine.session_mut().tracks[0].mixer.record_arm = true;
+        assert!(arm_started(&mut app), "the first arm is checked");
+        assert!(!arm_started(&mut app), "staying armed is not");
+        app.engine.session_mut().tracks[0].mixer.record_arm = false;
+        assert!(!arm_started(&mut app));
+        app.engine.session_mut().tracks[0].mixer.record_arm = true;
+        assert!(arm_started(&mut app), "arming again is");
     }
 }

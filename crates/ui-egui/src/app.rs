@@ -49,6 +49,8 @@ impl SoundApp {
             play_loop: None,
             lost_shown: 0,
             take_plan: None,
+            clock_noted: None,
+            armed_seen: false,
             take_tail: None,
             ui: UiState::default(),
             audio_health_report: None,
@@ -214,6 +216,9 @@ impl SoundApp {
         self.watch_input();
         // Stop the old playback before sending a replacement session to the audio thread.
         self.handle_transport(dt);
+        if crate::panels::windows::arm_started(self) {
+            crate::panels::windows::note_different_clocks(self);
+        }
         if self.engine.revision != self.last_rev {
             self.last_rev = self.engine.revision;
             if let Some(p) = &self.player {

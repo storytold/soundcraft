@@ -347,6 +347,10 @@ pub struct SoundApp {
     lost_shown: u64,
     /// Where the takes being recorded go, autosaved with the session so a crash can't lose them.
     take_plan: Option<soundcraft_engine::io::Recording>,
+    /// The output and input last said on the status line to run on different clocks.
+    clock_noted: Option<(String, String)>,
+    /// Whether a track was record-enabled on the last frame.
+    armed_seen: bool,
     /// A punch stopped but still taking in its tail (see `punch_tail`): finished on a later frame.
     take_tail: Option<TakeTail>,
     pub ui: UiState,
