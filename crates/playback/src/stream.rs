@@ -100,16 +100,22 @@ where
 /// Open the output device `cfg` chooses (else the default) at the chosen rate (else the session
 /// rate) if possible, in the best sample format it offers (f32, else 32- or 16-bit integers),
 /// with as many channels as it offers up to `want_ch` (at least stereo when available), and the
-/// chosen buffer size when the device allows it.
+/// chosen buffer size when the device allows it. With `required_output`, that device or none:
+/// an error rather than the system default when it is not to be found (see
+/// [`not_the_required_output`]).
 pub(crate) fn open_device(
     want_rate: u32,
     want_ch: u16,
     cfg: &AudioConfig,
+    required_output: Option<&str>,
 ) -> Result<(cpal::Device, cpal::StreamConfig, cpal::SampleFormat, String, &'static str), String> {
     use cpal::traits::DeviceTrait;
     let host = devices::host(cfg);
-    let device = devices::device(&host, cfg.output.as_deref(), true).ok_or_else(|| "no output device".to_string())?;
+    let device = devices::device(&host, required_output.or(cfg.output.as_deref()), true).ok_or_else(|| "no output device".to_string())?;
     let name = devices::device_name(&device).unwrap_or_else(|| "Audio device".into());
+    if not_the_required_output(required_output, cfg.system.as_deref(), &name, host.id().name()) {
+        return Err(format!("The requested audio output {} is unavailable", required_output.unwrap_or_default()));
+    }
     // Prefer a config at the chosen (else session) rate; else the device default (we resample).
     let want_ch = want_ch.max(2);
     let rates: Vec<u32> = cfg.sample_rate.into_iter().chain(Some(want_rate)).collect();
@@ -141,6 +147,14 @@ pub(crate) fn open_device(
         }
     };
     Ok((device, config, format, name, host.id().name()))
+}
+
+/// Whether the output a device lookup found (`name`, on audio system `host`) is not the one that
+/// must open by its name (`required`, on the audio system `system` when one is chosen). The
+/// lookup falls back to the system default when the named device is not listed, which then is
+/// another device; `required` is `None` when any device will do (the system default chosen).
+pub(crate) fn not_the_required_output(required: Option<&str>, system: Option<&str>, name: &str, host: &str) -> bool {
+    required.is_some_and(|required| name != required || system.is_some_and(|system| !host.eq_ignore_ascii_case(system)))
 }
 
 /// Pick the output configuration for the first requested rate the device offers (the configured

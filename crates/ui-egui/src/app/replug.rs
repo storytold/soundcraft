@@ -218,7 +218,9 @@ impl SoundApp {
             // system default when none is chosen (the default may be another device by now).
             let follows_default = self.ui.audio.output.is_none();
             let cfg = self.ui.audio.clone();
-            self.reopen_audio(&cfg);
+            // A device chosen by name that is gone again by now is not replaced by the default.
+            let required = self.reconnect_requirement();
+            self.reopen_audio(&cfg, required.as_deref());
             // An input still away opens again when it is back, not on the next record.
             self.recorder_failed = input_away;
             let opened = self.player.as_ref().filter(|p| !p.silent).map(|p| p.device_name.clone());
@@ -291,18 +293,38 @@ impl SoundApp {
         }
     }
 
+    /// The output Reconnect must open by its name, else it runs the silent clock: the output
+    /// chosen in Playback Engine, when it is a device by name. With the system default chosen
+    /// (`output` is `None`), none: Reconnect opens the audio system's current default, as Apply
+    /// does, which may be another device by now. What "current default" is depends on the audio
+    /// system: Core Audio and WASAPI report the OS default output; cpal's ASIO host has no default
+    /// and takes the first driver it lists.
+    fn reconnect_requirement(&self) -> Option<String> {
+        self.ui.audio.output.clone()
+    }
+
     /// Reopen the audio devices (Reconnect audio device), keeping a take in progress, and say
-    /// which output opened.
+    /// which output opened. An output or input chosen by name that is not to be found is not
+    /// replaced by the system default: the output runs on the silent clock and the input stays
+    /// closed, each waited for by its name and reopened when it is back.
     pub fn reconnect_audio(&mut self) {
         let cfg = self.ui.audio.clone();
-        self.reopen_audio(&cfg);
+        let required = self.reconnect_requirement();
+        self.reopen_audio(&cfg, required.as_deref());
         let Some(p) = &self.player else { return };
-        if p.silent {
-            self.ui.status = crate::localization::text("Reconnect opened no audio device: SoundCraft runs on a silent clock.").to_string();
+        let opened = (!p.silent).then(|| p.device_name.clone());
+        let missing = required.filter(|_| opened.is_none());
+        // An input chosen by name that is still away: not opened (as the system default) on its
+        // next use, but when it is back (`watch_replug`).
+        let input_away = self.ui.audio.input.as_ref().and(self.lost_audio.as_ref().and_then(|l| l.input.clone()));
+        self.recorder_failed = input_away.is_some();
+        self.ui.status = reconnect_status(missing.as_deref(), opened.as_deref(), input_away.as_deref());
+        if let Some(name) = missing {
+            // Not to be found: waited for by its name, and reopened once it is back.
+            self.audio_lost().away(name, true);
             return;
         }
-        let name = p.device_name.clone();
-        self.ui.status = crate::localized_format!("Reconnected to “{name}”.", name = name);
+        let Some(name) = opened else { return };
         // A device that went away and is still not back is still waited for; an input that is
         // back stops being waited for when it opens (`input_opened`).
         let still_away = self.lost_audio.as_mut().is_some_and(|l| {
@@ -316,6 +338,29 @@ impl SoundApp {
         if !still_away {
             self.lost_audio = None;
         }
+    }
+}
+
+/// What Reconnect says: that the output chosen by name (`missing`) is not to be found and the
+/// silent clock runs, else which output opened (`opened`, `None`: the silent clock, with the system
+/// default chosen), and that an input chosen by name (`input_away`) is still away.
+fn reconnect_status(missing: Option<&str>, opened: Option<&str>, input_away: Option<&str>) -> String {
+    let output = match (missing, opened) {
+        (Some(name), _) => crate::localized_format!(
+            "“{name}” is unavailable: SoundCraft runs on a silent clock and reconnects it when it is back, or use Reconnect.",
+            name = name
+        ),
+        (None, Some(name)) => crate::localized_format!("Reconnected to “{name}”.", name = name),
+        (None, None) => crate::localization::text("Reconnect opened no audio device: SoundCraft runs on a silent clock.").to_string(),
+    };
+    // The input is usually on the same interface as the output: named once.
+    match input_away.filter(|input| missing != Some(*input)) {
+        Some(input) => {
+            let input =
+                crate::localized_format!("“{name}” is unavailable: SoundCraft reconnects it when it is back, or use Reconnect.", name = input);
+            format!("{output} {input}")
+        }
+        None => output,
     }
 }
 
@@ -460,9 +505,9 @@ mod tests {
             app.watch_replug();
             std::thread::sleep(Duration::from_millis(5));
         }
-        // No machine has `AWAY`: the reopen falls back to another device or the silent
-        // clock, which the status says instead of claiming success.
-        assert!(app.player.is_some(), "the devices were reopened");
+        // No machine has `AWAY`: the reopen runs the silent clock rather than another device,
+        // and the status says so instead of claiming success.
+        assert!(app.player.as_ref().is_some_and(|p| p.silent), "the devices were reopened, on the silent clock");
         assert!(!app.ui.status.contains("unavailable"), "{}", app.ui.status);
         assert!(app.ui.status.contains("could not open"), "{}", app.ui.status);
         assert!(app.offers_reconnect(), "the message asks for Reconnect, so the status line offers it");
@@ -653,6 +698,91 @@ mod tests {
         assert!(app.offers_reconnect(), "reopening the output does not take the offer for the input away");
         app.input_opened("Mic");
         assert!(!app.offers_reconnect(), "an input opened: nothing is left to reconnect");
+    }
+
+    /// Reconnect with the output chosen by name and not to be found opens no other device in its
+    /// place, whether the output was lost (went away) or only stopped working (Reconnect by
+    /// hand): the silent clock runs, the status names the device, and it is waited for.
+    #[test]
+    fn reconnect_does_not_open_the_system_default_in_place_of_an_output_chosen_by_name() {
+        for went_away in [true, false] {
+            let devices = Devices::default();
+            let mut app = app_on_away(&devices);
+            if went_away {
+                app.audio_lost().away(AWAY.into(), true);
+            } else {
+                app.audio_lost().by_hand = true;
+            }
+            app.reconnect_audio();
+            let player = app.player.as_ref().expect("the devices were reopened");
+            assert!(player.silent, "went away: {went_away}; opened “{}” in place of “{AWAY}”", player.device_name);
+            assert_eq!(
+                app.ui.status,
+                format!("“{AWAY}” is unavailable: SoundCraft runs on a silent clock and reconnects it when it is back, or use Reconnect."),
+                "went away: {went_away}"
+            );
+            assert_eq!(app.lost_audio.as_ref().and_then(|l| l.output.as_deref()), Some(AWAY), "went away: {went_away}");
+            assert!(app.offers_reconnect());
+        }
+    }
+
+    /// Reconnect requires the output chosen by name; with the system default chosen it opens
+    /// whichever device is the default now.
+    #[test]
+    fn reconnect_requires_only_an_output_chosen_by_name() {
+        for chosen in [None, Some("Model 12"), Some("Fireface UFX (23693403)")] {
+            let mut app = crate::SoundApp::new(soundcraft_engine::Engine::default(), None, crate::Services::default());
+            app.ui.audio.output = chosen.map(str::to_owned);
+            assert_eq!(app.reconnect_requirement().as_deref(), chosen);
+        }
+    }
+
+    /// What Reconnect says, from the output chosen by name that was not found, the output that
+    /// opened, and an input chosen by name still away.
+    #[test]
+    fn reconnect_says_which_device_is_unavailable_by_name() {
+        let unavailable = "“Model 12” is unavailable: SoundCraft runs on a silent clock and reconnects it when it is back, or use Reconnect.";
+        // (missing, opened, input away, status)
+        for (missing, opened, input, status) in [
+            (Some("Model 12"), None, None, unavailable.to_string()),
+            (Some("Model 12"), None, Some("Model 12"), unavailable.to_string()),
+            (
+                Some("Model 12"),
+                None,
+                Some("USB Mic"),
+                format!("{unavailable} “USB Mic” is unavailable: SoundCraft reconnects it when it is back, or use Reconnect."),
+            ),
+            (None, Some("Speakers (Realtek(R) Audio)"), None, "Reconnected to “Speakers (Realtek(R) Audio)”.".to_string()),
+            (
+                None,
+                Some("Model 12"),
+                Some("USB Mic"),
+                "Reconnected to “Model 12”. “USB Mic” is unavailable: SoundCraft reconnects it when it is back, or use Reconnect.".to_string(),
+            ),
+            (None, None, None, "Reconnect opened no audio device: SoundCraft runs on a silent clock.".to_string()),
+        ] {
+            assert_eq!(super::reconnect_status(missing, opened, input), status);
+        }
+    }
+
+    /// Reconnect with an input chosen by name still away does not let its next use open the
+    /// system default input in its place: it opens once it is back.
+    #[test]
+    fn reconnect_keeps_an_input_chosen_by_name_closed_until_it_is_back() {
+        let devices = Devices::default();
+        let mut app = app_on_away(&devices);
+        app.ui.audio.output = None;
+        app.audio_lost().away(AWAY.into(), false);
+        app.reconnect_audio();
+        assert!(app.recorder_failed, "the input is not opened on its next use while it is away");
+        assert_eq!(app.lost_audio.as_ref().and_then(|l| l.input.as_deref()), Some(AWAY));
+        devices.set(&[AWAY]);
+        let until = Instant::now() + Duration::from_secs(5);
+        while app.recorder_failed && Instant::now() < until {
+            app.watch_replug();
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert!(!app.recorder_failed, "the input that came back opens on its next use");
     }
 
     /// Reconnect while an input is still away keeps waiting for it, so that it opens again once

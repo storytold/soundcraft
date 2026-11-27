@@ -57,6 +57,25 @@ fn range(channels: u16, min: u32, max: u32, format: cpal::SampleFormat) -> cpal:
     cpal::SupportedStreamConfigRange::new(channels, min, max, cpal::SupportedBufferSize::Range { min: 64, max: 1024 }, format)
 }
 
+/// An output Reconnect must open by its name opens only as that device, on the chosen audio
+/// system: the lookup's fallback to the system default (another device) is refused, so the
+/// silent clock runs instead. With the system default chosen, whatever the default is now opens.
+#[test]
+fn a_required_output_is_not_replaced_by_the_system_default() {
+    // (required by name, audio system chosen, device the lookup found, its audio system, refused)
+    for (required, system, found, host, refused) in [
+        (Some("Model 12"), Some("WASAPI"), "Speakers (Realtek(R) Audio)", "WASAPI", true),
+        (Some("Fireface UFX (23693403)"), None, "MacBook Pro Speakers", "CoreAudio", true),
+        (Some("Model 12"), Some("WASAPI"), "Model 12", "WASAPI", false),
+        (Some("Model 12"), Some("wasapi"), "Model 12", "WASAPI", false),
+        (Some("Model 12"), Some("ASIO"), "Model 12", "WASAPI", true),
+        (None, Some("WASAPI"), "Speakers (Realtek(R) Audio)", "WASAPI", false),
+        (None, None, "MacBook Pro Speakers", "CoreAudio", false),
+    ] {
+        assert_eq!(not_the_required_output(required, system, found, host), refused, "required {required:?} on {system:?}, found {found} on {host}");
+    }
+}
+
 /// Rates are tried in order, so a stale configured rate falls through to the session rate; when no requested rate
 /// is offered the caller uses the device default and resamples.
 #[test]

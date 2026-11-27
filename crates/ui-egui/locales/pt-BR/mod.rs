@@ -1297,6 +1297,12 @@ fn menu_translate(source: &str) -> Option<&'static str> {
             "Reconectar não abriu nenhum dispositivo de áudio: o SoundCraft funciona com um relógio silencioso."
         }
         "Reconnected to “{name}”." => "Reconectado a “{name}”.",
+        "“{name}” is unavailable: SoundCraft runs on a silent clock and reconnects it when it is back, or use Reconnect." => {
+            "“{name}” está indisponível: o SoundCraft funciona com um relógio silencioso e o reconecta quando ele voltar, ou use Reconectar."
+        }
+        "“{name}” is unavailable: SoundCraft reconnects it when it is back, or use Reconnect." => {
+            "“{name}” está indisponível: o SoundCraft o reconecta quando ele voltar, ou use Reconectar."
+        }
         "SoundCraft reconnects it when it is back, or use Reconnect." => "O SoundCraft o reconecta quando ele voltar, ou use Reconectar.",
         "“{name}” is back." => "“{name}” voltou.",
         "“{name}” is back: SoundCraft reconnected it." => "“{name}” voltou: o SoundCraft o reconectou.",

@@ -142,7 +142,9 @@ impl SoundApp {
     }
 
     /// Reopen the audio devices with `cfg`, keeping a take in progress (see `reconnect_audio`).
-    pub(super) fn reopen_audio(&mut self, cfg: &soundcraft_playback::AudioConfig) {
+    /// With `required` (see `reconnect_requirement`), the output opens as that device or the
+    /// silent clock runs: never the system default in its place.
+    pub(super) fn reopen_audio(&mut self, cfg: &soundcraft_playback::AudioConfig, required: Option<&str>) {
         if self.is_playing() || self.engine.transport.recording {
             self.stop_play();
         }
@@ -152,7 +154,10 @@ impl SoundApp {
         }
         self.recorder = None;
         self.recorder_failed = false;
-        let player = Player::with_config(self.engine.session_arc(), cfg);
+        let player = match required {
+            Some(name) => Player::reconnect_output(self.engine.session_arc(), cfg, name),
+            None => Player::with_config(self.engine.session_arc(), cfg),
+        };
         self.attach_midi(&player);
         self.player = Some(player);
         self.settle_lost_refusal();
