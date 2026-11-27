@@ -795,9 +795,10 @@ pub fn audio_device_command(app: &mut SoundApp, p: &serde_json::Value) -> Result
     Ok(out)
 }
 
-/// The Playback Engine's warning when the input and output run on different clocks, with how to
-/// put them on one clock under audio system `system` (as cpal names it). Pro Tools warns the same
-/// way and leaves the choice to the user: one device for both, or one made of both.
+/// The warning, in the Playback Engine and on the status line, when the input and output run on
+/// different clocks, with how to put them on one clock under audio system `system` (as cpal names
+/// it). Pro Tools warns the same way and leaves the choice to the user: one device for both, or
+/// one made of both.
 fn different_clocks(system: &str) -> &'static str {
     match system {
         "CoreAudio" => {
