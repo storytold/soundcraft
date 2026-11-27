@@ -1,6 +1,10 @@
 //! Unsaved work outlives a crash or an exit without Quit and is offered at the next launch.
+use egui::accesskit::Role;
 use egui::vec2;
-use egui_kittest::{Harness, kittest::Queryable};
+use egui_kittest::{
+    Harness,
+    kittest::{NodeT, Queryable, by},
+};
 use serde_json::json;
 use soundcraft_engine::autosave::leftovers;
 use soundcraft_ui_egui::{Services, SoundApp};
@@ -178,5 +182,50 @@ fn a_panic_in_a_frame_autosaves_and_the_app_carries_on() {
     let mut next = launch(&root);
     next.recover(&left[0]);
     assert!(next.engine.session().track_by_name("Vocal").is_some());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A launch that finds an unsaved change from an earlier run, as the first test leaves it.
+fn launch_with_a_leftover(name: &str) -> (PathBuf, PathBuf, Harness<'static, SoundApp>) {
+    let dir = folder(name);
+    let root = dir.join("Autosave");
+    let path = dir.join("Song.scraft");
+    let mut first = launch(&root);
+    first.run("session.save_as", json!({"path": path})).unwrap();
+    let then = std::time::SystemTime::now() - std::time::Duration::from_secs(1);
+    std::fs::File::options().write(true).open(&path).unwrap().set_modified(then).unwrap();
+    first.run("track.new", json!({"name": "Vocal"})).unwrap();
+    first.close_autosave();
+    drop(first);
+    let mut h =
+        Harness::builder().with_context_setup(soundcraft_ui_egui::framework::install_headless).with_size(vec2(1600.0, 1000.0)).build_ui_state(
+            |ui, app: &mut SoundApp| {
+                app.logic(&ui.ctx().clone());
+                app.ui(ui);
+            },
+            launch(&root),
+        );
+    h.run_steps(4);
+    (dir, root, h)
+}
+
+#[test]
+fn the_recovery_question_is_a_modal_alert_that_takes_the_keyboard_and_escape_keeps_the_work() {
+    let _one = one_at_a_time();
+    let (dir, root, mut h) = launch_with_a_leftover("recovery-keyboard");
+    let alert = h.get_by_role_and_label(Role::AlertDialog, "Recover Unsaved Work");
+    assert!(alert.accesskit_node().is_modal(), "the question is modal");
+    let area = alert.rect();
+    assert!(h.get_by_label("Recover").is_focused(), "the question starts on its default button");
+    for _ in 0..4 {
+        h.key_press(egui::Key::Tab);
+        h.run_steps(2);
+        let focused = h.query_all(by().predicate(|n| n.is_focused())).next().expect("something has the focus");
+        assert!(area.contains(focused.rect().center()), "Tab stays inside the question, but reached {:?}", focused.accesskit_node().label());
+    }
+    h.key_press(egui::Key::Escape);
+    h.run_steps(3);
+    assert!(h.query_by_role_and_label(Role::AlertDialog, "Recover Unsaved Work").is_none(), "Escape closes the question");
+    assert!(!leftovers(&root).is_empty(), "closing the question keeps the autosave for the next run");
     let _ = std::fs::remove_dir_all(&dir);
 }
