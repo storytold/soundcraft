@@ -50,7 +50,8 @@ pub fn take_file_samples(rate: u32, session_rate: u32) -> u64 {
     converted.saturating_mul(u64::from(rate)).checked_div(u64::from(session_rate)).map_or(import, |n| n.min(import))
 }
 
-/// Place recorded take files as `plan` says, as one undo step ("Record").
+/// Place recorded take files as `plan` says, as one undo step ("Record"). A recording that places
+/// no clip (a loop take stopped before the middle of its first pass) adds no step.
 pub fn place_recording(e: &mut Engine, plan: &Recording, takes: Vec<(TrackId, PathBuf)>) -> Vec<soundcraft_model::ClipId> {
     add_recording_in(e, plan.start, takes, plan.pass, plan.punch)
 }
