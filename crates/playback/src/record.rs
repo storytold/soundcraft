@@ -290,9 +290,13 @@ impl Recorder {
             }
             Err(e) => return Err(e.to_string()),
         };
+        // Read the channel names before the stream starts: on Core Audio this lists every device
+        // and reads each channel's name, and a started input would fill the monitor ring all that
+        // time before the player reads it, a backlog that stays in the monitor path (two
+        // callbacks at 64 frames on an RME Fireface UFX). Elsewhere no names are read.
+        let channel_names = crate::devices::channel_names(&device, true, channels);
         stream.play().map_err(|e| e.to_string())?;
         let seen = (0, Instant::now());
-        let channel_names = crate::devices::channel_names(&device, true, channels);
         Ok(Recorder {
             monitor,
             shared,
