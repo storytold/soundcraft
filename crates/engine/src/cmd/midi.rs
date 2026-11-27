@@ -5,7 +5,7 @@ use super::more_util::{set_text, text};
 use crate::{Engine, Result, cmd};
 use serde_json::{Value, json};
 use soundcraft_midi::{KeyScale, Note, Scale, Sequence, parse_pitch_class};
-use soundcraft_model::{Clip, ClipContent, ClipId, Session};
+use soundcraft_model::{Clip, ClipContent, ClipId, EditState, Session};
 use soundcraft_time::{Samples, TICKS_PER_QUARTER};
 
 pub fn specs() -> Vec<CommandSpec> {
@@ -58,6 +58,15 @@ impl ScaleChoice {
             ScaleChoice::Fixed(k) => Some(k),
         }
     }
+}
+
+/// The stored scale setting as it is, absent when following; Undo and Redo carry it over.
+pub(crate) fn scale_setting(edit: &EditState) -> Option<String> {
+    text(edit, SCALE_SETTING)
+}
+
+pub(crate) fn set_scale_setting(edit: &mut EditState, value: Option<&str>) {
+    set_text(edit, SCALE_SETTING, value);
 }
 
 /// The MIDI Editor's scale choice. A saved value it can't read counts as not chosen.
@@ -263,6 +272,20 @@ mod tests {
         assert_eq!(midi_editor_scale(e.session()), ScaleChoice::Off);
         e.execute("midi.scale", &json!({"scale": "follow"})).unwrap();
         assert_eq!(midi_editor_scale(e.session()), ScaleChoice::Follow);
+    }
+
+    #[test]
+    fn undo_and_redo_keep_the_scale_choice() {
+        let mut e = Engine::default();
+        let t = e.session_mut().add_track(TrackKind::Instrument, ChannelFormat::Stereo, Some("Keys"));
+        e.execute("midi.new_clip", &json!({"track": t.0})).unwrap();
+        e.execute("midi.scale", &json!({"scale": "dorian", "root": "D"})).unwrap();
+        let dorian = ScaleChoice::Fixed(KeyScale::new(2, Scale::Dorian));
+        assert!(e.undo());
+        assert_eq!(midi_editor_scale(e.session()), dorian, "undoing an edit keeps the scale");
+        e.execute("midi.scale", &json!({"scale": "follow"})).unwrap();
+        assert!(e.redo());
+        assert_eq!(midi_editor_scale(e.session()), ScaleChoice::Follow, "redoing an edit keeps following");
     }
 
     #[test]

@@ -379,17 +379,20 @@ impl Engine {
         true
     }
 
-    /// Undo and Redo never change the Edit mode or its settings (Shuffle Lock above all).
+    /// Undo and Redo never change the Edit mode or its settings (Shuffle Lock above all), nor the
+    /// MIDI Editor's scale, which is a view choice rather than an edit.
     fn keep_edit_mode(&mut self, from: &Session) {
         use edit::{RELATIVE_GRID, SHUFFLE_LOCK, SNAP_TO_GRID};
         let flags = [SNAP_TO_GRID, SHUFFLE_LOCK, RELATIVE_GRID];
+        let scale = cmd::scale_setting(&from.edit);
         let ed = &self.doc.edit;
-        if ed.edit_mode != from.edit.edit_mode || flags.iter().any(|f| ed.flag(f) != from.edit.flag(f)) {
+        if ed.edit_mode != from.edit.edit_mode || flags.iter().any(|f| ed.flag(f) != from.edit.flag(f)) || cmd::scale_setting(ed) != scale {
             let ed = &mut Arc::make_mut(&mut self.doc).edit;
             ed.edit_mode = from.edit.edit_mode;
             for f in flags {
                 ed.set_flag(f, from.edit.flag(f));
             }
+            cmd::set_scale_setting(ed, scale.as_deref());
         }
     }
 
