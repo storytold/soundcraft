@@ -187,7 +187,9 @@ impl SoundApp {
         }
         if output && let Some(name) = lost.output.clone() {
             // Back too (usually the same interface): it opens again with the output, by its name.
-            let input_back = if input { lost.input.take() } else { None };
+            // Else an input that came back earlier and has not opened yet keeps its pin
+            // (`reopen_audio` clears it, as Reconnect and a new device choice should).
+            let input_back = if input { lost.input.take() } else { None }.or_else(|| self.input_pin.take());
             let loss = lost.output_loss;
             lost.output_done();
             let input_away = lost.input.is_some();
@@ -479,6 +481,39 @@ mod tests {
         // opens by the name that came back, as the output does.
         assert_eq!(app.ui.audio.input, None);
         assert_eq!(app.input_config().input.as_deref(), Some("Mic"));
+        // Reconnect opens what the audio choice says.
+        app.reconnect_audio();
+        assert_eq!(app.input_config().input, None);
+    }
+
+    /// An input that came back while the output ran is pinned by its name until it opens. If the
+    /// output is then lost and reopens by itself before that, the pin stays: the input still
+    /// opens as the device that came back, not the system default.
+    #[test]
+    fn a_pinned_input_stays_pinned_when_the_output_reopens_by_itself() {
+        let devices = Devices::default();
+        let mut app = crate::SoundApp::new(soundcraft_engine::Engine::default(), None, crate::Services::default());
+        app.lost_audio = Some(lost(&devices));
+        app.audio_lost().away("Mic".into(), false);
+        app.recorder_failed = true;
+        devices.set(&["Mic"]);
+        let until = Instant::now() + Duration::from_secs(5);
+        while app.recorder_failed && Instant::now() < until {
+            app.watch_replug();
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert_eq!(app.input_config().input.as_deref(), Some("Mic"), "nothing armed, so the pin waits for the next use");
+        // Now the output is lost and comes back on its own.
+        app.lost_audio = Some(lost(&devices));
+        app.audio_lost().away(AWAY.into(), true);
+        devices.set(&["Mic", AWAY]);
+        let until = Instant::now() + Duration::from_secs(5);
+        while app.player.is_none() && Instant::now() < until {
+            app.watch_replug();
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert!(app.player.is_some(), "the output was reopened");
+        assert_eq!(app.input_config().input.as_deref(), Some("Mic"), "the input still opens by the name that came back");
         // Reconnect opens what the audio choice says.
         app.reconnect_audio();
         assert_eq!(app.input_config().input, None);
