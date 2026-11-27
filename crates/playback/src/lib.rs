@@ -62,7 +62,7 @@ use callback::{STALL, copy_meter_snapshot};
 use callback::{guarded_block, stalled};
 #[cfg(test)]
 use stream::pick_output_config;
-use stream::{Opened, build_output, first_started, open_device, start_stream};
+use stream::{Opened, build_output, first_started, open_device, running_buffer, start_stream};
 
 /// Meter values for the UI: the highest peak (and gain reduction) of every block rendered since
 /// the UI last took them with [`Player::take_meters`]. The audio thread renders blocks faster than
@@ -180,6 +180,8 @@ pub struct Player {
     pub device_buffer: Option<u32>,
     /// The buffer range the output device's driver reports, when it reports one.
     pub device_buffer_range: Option<(u32, u32)>,
+    /// The buffer the open output stream reports it runs at (`None` when it reports none).
+    pub device_buffer_running: Option<u32>,
     /// True when no audio device could be opened (silent clock).
     pub silent: bool,
 }
@@ -268,9 +270,11 @@ impl Player {
                             cpal::BufferSize::Fixed(n) => Some(n),
                             cpal::BufferSize::Default => None,
                         };
+                        let running = running_buffer(&stream);
                         log::info!(
-                            "audio device: {name} @ {rate} Hz, {channels} ch, {format}, buffer {}",
-                            buffer.map_or("default".to_string(), |n| n.to_string())
+                            "audio device: {name} @ {rate} Hz, {channels} ch, {format}, buffer {}{}",
+                            buffer.map_or("default".to_string(), |n| n.to_string()),
+                            running.map_or(String::new(), |n| format!(" (runs at {n})"))
                         );
                         Player {
                             shared,
@@ -285,6 +289,7 @@ impl Player {
                             device_channels: config.channels,
                             device_buffer: buffer,
                             device_buffer_range: buffer_range,
+                            device_buffer_running: running,
                             silent: false,
                         }
                     }
@@ -363,6 +368,7 @@ impl Player {
             device_channels: 0,
             device_buffer: None,
             device_buffer_range: None,
+            device_buffer_running: None,
             silent: true,
         }
     }
@@ -387,6 +393,7 @@ impl Player {
             device_channels: 0,
             device_buffer: None,
             device_buffer_range: None,
+            device_buffer_running: None,
             silent: true,
         }
     }

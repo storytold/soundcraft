@@ -56,7 +56,9 @@ When you close a gap, delete its entry (or shrink it) in the same PR, and bump t
   `setup.playback_engine` and `setup.hardware` return a `buffer_note`, `ui.audio_device` also
   returns the driver's range as `device.buffer_range`, and the Playback Engine shows the note under
   Output (#1757). On macOS an RME UFX's driver allows 15–3072 frames; 4096 opens at its default
-  buffer.
+  buffer. The note says the size the device runs at (`device.buffer_running`, from the open
+  stream), and a device that reports one size (shared-mode WASAPI reports its period, 480 frames at
+  48 kHz) is said to run only at that size.
 - **Missing:** routing to physical channels (I/O Setup), one duplex stream on one clock (input and
   output are still separate cpal streams), latency reporting and record-offset compensation, ASIO
   in official builds (owner decision: Steinberg's SDK is proprietary or GPLv3), JACK, and

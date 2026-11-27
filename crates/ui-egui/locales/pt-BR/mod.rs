@@ -327,6 +327,13 @@ pub(super) fn translate(source: &str) -> Option<&'static str> {
         "The device did not take {} samples; it runs at its default buffer." => {
             "O dispositivo não aceitou {} amostras; ele funciona com o buffer padrão."
         }
+        "The device runs only at {} samples." => "O dispositivo funciona apenas com {} amostras.",
+        "The device allows {}–{} samples; it runs at its default buffer, {} samples." => {
+            "O dispositivo aceita {}–{} amostras; ele funciona com o buffer padrão, {} amostras."
+        }
+        "The device did not take {} samples; it runs at its default buffer, {} samples." => {
+            "O dispositivo não aceitou {} amostras; ele funciona com o buffer padrão, {} amostras."
+        }
         "Bus name: {name}" => "Nome do bus: {name}",
         "Model" => "Modelo",
         "Version" => "Versão",

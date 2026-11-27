@@ -26,6 +26,12 @@ impl cpal::traits::StreamTrait for Fake {
 }
 
 #[test]
+fn a_stream_that_reports_no_buffer_size_has_no_running_buffer() {
+    // The fake reports 0 frames, which says nothing about the device.
+    assert_eq!(stream::running_buffer(&Fake { starts: true }), None);
+}
+
+#[test]
 fn a_stream_that_will_not_start_is_reported_as_failed() {
     assert!(!start_stream(&Fake { starts: false }));
     assert!(start_stream(&Fake { starts: true }));

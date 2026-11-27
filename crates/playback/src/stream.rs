@@ -13,6 +13,12 @@ pub(crate) fn start_stream(stream: &impl cpal::traits::StreamTrait) -> bool {
     }
 }
 
+/// The buffer a started stream reports it runs at: Core Audio's device buffer, WASAPI's period.
+/// `None` when the backend cannot say (or says 0).
+pub(crate) fn running_buffer(stream: &impl cpal::traits::StreamTrait) -> Option<u32> {
+    stream.buffer_size().ok().filter(|n| *n > 0)
+}
+
 /// A built output stream and the channels and fault flag its callback shares with the player.
 pub(crate) struct Opened {
     pub(crate) stream: cpal::Stream,

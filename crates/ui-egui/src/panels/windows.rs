@@ -728,8 +728,8 @@ pub fn playback_engine(app: &mut SoundApp, ctx: &egui::Context) {
 /// `ui.audio_device`: `{list?: bool}` returns the audio systems and their devices;
 /// `{system?, output?, input?, sample_rate?, buffer_size?}` (a `null` value means "default") sets
 /// the choice and reopens the devices. Always returns the choice, the open device (with the
-/// driver's `buffer_range`, null when it reports none) and a `buffer_note` when the device does
-/// not run at the chosen buffer size.
+/// driver's `buffer_range`, null when it reports none, and `buffer_running`, the size the stream
+/// reports it runs at) and a `buffer_note` when the device does not run at the chosen buffer size.
 pub fn audio_device_command(app: &mut SoundApp, p: &serde_json::Value) -> Result<serde_json::Value, String> {
     use serde_json::Value;
     let mut changed = false;
@@ -754,7 +754,7 @@ pub fn audio_device_command(app: &mut SoundApp, p: &serde_json::Value) -> Result
     }
     let device = app.player.as_ref().map(|pl| {
         let range = pl.device_buffer_range.map(|(min, max)| json!({"min": min, "max": max}));
-        json!({"name": pl.device_name, "sample_rate": pl.device_rate, "channels": pl.device_channels, "buffer_size": pl.device_buffer, "buffer_range": range, "silent": pl.silent})
+        json!({"name": pl.device_name, "sample_rate": pl.device_rate, "channels": pl.device_channels, "buffer_size": pl.device_buffer, "buffer_range": range, "buffer_running": pl.device_buffer_running, "silent": pl.silent})
     });
     let mut out = json!({"config": app.ui.audio, "device": device, "buffer_note": buffer_note(app).map(|n| n.english())});
     if p.get("list").and_then(Value::as_bool).unwrap_or(false) {
@@ -766,17 +766,31 @@ pub fn audio_device_command(app: &mut SoundApp, p: &serde_json::Value) -> Result
 /// Why the open output does not run at the chosen buffer, when it does not (#1757).
 fn buffer_note(app: &SoundApp) -> Option<soundcraft_playback::devices::BufferNote> {
     let player = app.player.as_ref().filter(|p| !p.silent)?;
-    soundcraft_playback::devices::buffer_note(app.ui.audio.buffer_size, player.device_buffer, player.device_buffer_range)
+    soundcraft_playback::devices::buffer_note(
+        app.ui.audio.buffer_size,
+        player.device_buffer,
+        player.device_buffer_range,
+        player.device_buffer_running,
+    )
 }
 
 /// The window's wording of a [`soundcraft_playback::devices::BufferNote`].
 fn buffer_note_text(note: soundcraft_playback::devices::BufferNote) -> String {
     use soundcraft_playback::devices::BufferNote;
     match note {
-        BufferNote::OutsideRange { min, max } => {
+        BufferNote::OutsideRange { min, max, .. } if min == max => crate::localized_format!("The device runs only at {} samples.", min),
+        BufferNote::OutsideRange { min, max, running: Some(n) } => {
+            crate::localized_format!("The device allows {}–{} samples; it runs at its default buffer, {} samples.", min, max, n)
+        }
+        BufferNote::OutsideRange { min, max, running: None } => {
             crate::localized_format!("The device allows {}–{} samples; it runs at its default buffer.", min, max)
         }
-        BufferNote::Refused { want } => crate::localized_format!("The device did not take {} samples; it runs at its default buffer.", want),
+        BufferNote::Refused { want, running: Some(n) } => {
+            crate::localized_format!("The device did not take {} samples; it runs at its default buffer, {} samples.", want, n)
+        }
+        BufferNote::Refused { want, running: None } => {
+            crate::localized_format!("The device did not take {} samples; it runs at its default buffer.", want)
+        }
     }
 }
 
