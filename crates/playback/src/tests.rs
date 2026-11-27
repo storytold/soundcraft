@@ -307,6 +307,30 @@ fn a_lost_output_refuses_play_even_after_the_loss_was_reported() {
     assert!(!p.is_playing(), "the transport must not sit at a playhead nothing advances");
 }
 
+/// An output that stopped asking for audio (seen on Windows right after a Model 12 replug) is
+/// as unusable as a lost one: once the stall is reported, Play is refused until a reconnect,
+/// instead of a transport stuck at 0 and a take of nothing.
+#[test]
+fn a_stalled_output_stays_lost_after_the_stall_was_reported() {
+    let fault = Fault::default();
+    assert!(!fault.lost());
+    assert_eq!(fault.trouble(true), Some(OutputTrouble::Stalled));
+    assert!(fault.lost(), "a stalled output cannot play");
+    assert_eq!(fault.trouble(false), None, "reported once");
+    assert!(fault.lost(), "still lost once the transport stopped and the stall is no longer measured");
+}
+
+#[test]
+fn a_player_made_lost_or_stalled_for_tests_refuses_play() {
+    let session = Arc::new(soundcraft_model::Session::default());
+    for stalled in [false, true] {
+        let p = Player::lost_for_tests(Arc::clone(&session), "UFX", stalled);
+        assert!(p.lost());
+        assert!(!p.play(0, None, None));
+        assert_eq!(p.device_name, "UFX");
+    }
+}
+
 #[test]
 fn an_output_whose_engine_failed_refuses_play() {
     let p = silent_player();

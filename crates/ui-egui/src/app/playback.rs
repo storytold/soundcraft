@@ -662,6 +662,33 @@ mod tests {
         assert!(app.ui.status.starts_with("Cannot play: “UFX” is not running."), "{}", app.ui.status);
     }
 
+    /// An app with one armed audio track on an output that is lost (or stalled).
+    fn armed_on_lost_output(stalled: bool) -> SoundApp {
+        let mut app = app();
+        app.run("track.new", json!({"kind": "audio", "format": "mono", "name": "cap"})).unwrap();
+        app.run("mix.record_arm", json!({"tracks": [1], "value": true})).unwrap();
+        app.player = Some(soundcraft_playback::Player::lost_for_tests(app.engine.session_arc(), "UFX", stalled));
+        app
+    }
+
+    /// Record is refused on a lost output with an armed track, not only Play: no pass starts,
+    /// so no take is made (on Windows only the Play refusal had been seen).
+    #[test]
+    fn record_is_refused_on_a_lost_output_with_an_armed_track() {
+        for stalled in [false, true] {
+            let mut app = armed_on_lost_output(stalled);
+            app.run("transport.record", json!({})).unwrap();
+            app.handle_transport(0.0);
+            assert!(!app.engine.transport.recording, "no record pass");
+            assert!(!app.is_playing(), "no transport stuck at a playhead nothing advances");
+            assert!(app.ui.status.starts_with("Cannot record: “UFX” is not running."), "{}", app.ui.status);
+            app.run("transport.play", json!({})).unwrap();
+            app.handle_transport(0.0);
+            assert!(!app.is_playing());
+            assert!(app.ui.status.starts_with("Cannot record"), "Record, then Play: {}", app.ui.status);
+        }
+    }
+
     /// Once the output runs again (Reconnect, or a device applied), the refusal is no longer
     /// true and leaves the status line; any later message stays.
     #[test]
