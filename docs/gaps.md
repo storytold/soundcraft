@@ -71,8 +71,8 @@ When you close a gap, delete its entry (or shrink it) in the same PR, and bump t
   calls a device's callbacks in the order its streams opened: when input and output are one
   device, the input opens before the output (at startup, on Apply and on reconnect), so the output
   mixes the input of the same cycle. Two devices keep the input closed until the first record or
-  monitor. On an
-  RME UFX under ASIO the monitor round trip fell from the device's plus 257 samples to plus 1.
+  monitor. On an RME UFX under ASIO the monitor round trip fell from the device's plus 257 samples
+  to plus 1.
   Core Audio is opened the same way: on the same UFX through a cable the monitor round trip equals
   the reported one at 64, 256 and 1024 frames (it was a buffer more). WASAPI is unchanged.
   On Core Audio the two cpal streams already share the device cycle: a standalone probe on the same
@@ -284,7 +284,7 @@ missing. Out of scope unless the owner decides otherwise.
 | Date | Change | Summary |
 |---|---|---|
 | 2026-11-25 | minor | G-01: Core Audio runs the input and output callbacks in one IO cycle (probe on an RME UFX at 64 and 256 frames); the duplex item narrowed to WASAPI and separate devices; estimates unchanged |
-| 2026-11-25 | minor | G-01: input opens before the output on ASIO and Core Audio, so monitoring adds no device buffer (verified on both with an RME UFX); estimates unchanged |
+| 2026-11-25 | minor | G-01: input opens before the output on ASIO and Core Audio when both are one device, so monitoring adds no device buffer (verified on both with an RME UFX); estimates unchanged |
 | 2026-11-25 | minor | G-01: Core Audio places takes by the host time and the device latency (cpal 0.18 counts the buffer and safety offset twice); 1 sample early on an RME UFX at 64–1024 frames; estimates unchanged |
 | 2026-11-24 | minor | G-01: record-offset compensation from device timing, with a per-machine record offset; estimates unchanged |
 | 2026-11-24 | minor | G-01: latency reporting (Playback Engine, `ui.audio_device`, `setup.playback_engine`); record-offset compensation remains; estimates unchanged |
