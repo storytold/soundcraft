@@ -125,21 +125,31 @@ fn flush_guards() {
 
 /// Smoke test: the main thread opens, services and closes the editor while the audio thread
 /// alternates blocks and flushes. (Overlap is impossible by type, `&mut self`; the fixture still
-/// asserts it.)
+/// asserts it.) The editor is opened before the audio thread starts, so its first block reports
+/// the pending edit; the main thread waits for that block (and the flush after it) before its
+/// first `idle`, because `idle` holds the edit queue and an edit published while it does is dropped
+/// by design. The first `idle` therefore returns that edit deterministically.
 fn editor_alongside_block_and_flush() {
     let (mut p, mut ed) = gain_with_editor();
     let (p0, _) = counters();
     // Opened before the audio thread starts, so an edit is pending whatever the scheduling: the
-    // first block or flush applies it.
+    // first block applies it.
     ed.open().expect("open");
+    let (first_done, first_signal) = std::sync::mpsc::channel();
     let audio = std::thread::spawn(move || {
-        for _ in 0..2_000 {
+        for i in 0..2_000 {
             let _ = block(&mut p);
             p.flush();
+            if i == 0 {
+                first_done.send(()).expect("the main thread is waiting");
+            }
         }
         p
     });
-    let mut edits = ed.idle().len();
+    first_signal.recv().expect("the audio thread ran its first block");
+    let first = ed.idle();
+    assert_eq!(first, vec![("7".to_string(), 0.25)], "the first block's edit reaches the first idle");
+    let mut edits = first.len();
     while !audio.is_finished() {
         ed.close();
         ed.open().expect("reopen");
