@@ -703,8 +703,16 @@ pub fn playback_engine(app: &mut SoundApp, ctx: &egui::Context) {
             ui.label(crate::localized_format!("{sr} Hz{note}", sr = sr, note = note));
             ui.end_row();
         });
-        if same_clock(app) == Some(false) {
-            let _ = clock_warning(ui, &soundcraft_playback::devices::system_name(&app.ui.audio));
+        // Read when the window opens or the device choice changes, not on every frame.
+        let lookup_id = clock_lookup_id();
+        let lookup = cached_lookup(ui.data(|d| d.get_temp::<ClockLookup>(lookup_id)), &app.ui.audio, ClockLookup::read);
+        ui.data_mut(|d| d.insert_temp(lookup_id, lookup.clone()));
+        if clock_relation(app, &lookup) == Some(false) {
+            let _ = clock_warning(ui, &lookup.system);
+        } else if let Some(hint) = clock_hint(&lookup.system)
+            && app.player.as_ref().is_some_and(|p| !p.silent)
+        {
+            ui.add(egui::Label::new(egui::RichText::new(crate::localization::text(hint)).small().color(t.text_dim)).wrap());
         }
         ui.label(
             egui::RichText::new(crate::localization::text("The mix runs in 512-sample blocks; the buffer size sets the device's own latency."))
@@ -717,6 +725,8 @@ pub fn playback_engine(app: &mut SoundApp, ctx: &egui::Context) {
         }
         if ui.button(crate::localization::text("Reconnect audio device")).clicked() {
             app.reconnect_audio();
+            // The default input may be another device now.
+            ui.data_mut(|d| d.remove::<ClockLookup>(clock_lookup_id()));
         }
         ui.separator();
         midi_inputs(app, ui);
@@ -734,6 +744,7 @@ pub fn playback_engine(app: &mut SoundApp, ctx: &egui::Context) {
         ctx.data_mut(|d| {
             d.remove_temp::<AudioConfig>(draft_id);
             d.remove_temp::<Arc<Vec<AudioSystem>>>(egui::Id::unique("audio_systems"));
+            d.remove::<ClockLookup>(clock_lookup_id());
         });
     }
     app.ui.show_playback_engine = open;
@@ -745,7 +756,8 @@ pub fn playback_engine(app: &mut SoundApp, ctx: &egui::Context) {
 /// record offset without reopening them. Always returns the choice, the open device, the `latency`
 /// the backend reports for the output and input (`{samples, ms}` each; null when nothing was
 /// reported, the report was zero, or the stream was lost), the `record_offset`, and `same_clock`
-/// (whether input and output share a clock, null until an output is open and an input is known).
+/// (whether input and output share a clock; null until an output is open and an input is known,
+/// and null where the audio system does not tell: every system other than Core Audio and ASIO).
 pub fn audio_device_command(app: &mut SoundApp, p: &serde_json::Value) -> Result<serde_json::Value, String> {
     use serde_json::Value;
     let record_offset = match p.get("record_offset") {
@@ -804,7 +816,7 @@ fn different_clocks(system: &str) -> &'static str {
         "CoreAudio" => {
             "Input and output run on different clocks: long takes drift and monitoring may click. To fix it, choose one device for both input and output, or combine them as an Aggregate Device in Audio MIDI Setup."
         }
-        "WASAPI" | "ASIO" => {
+        "ASIO" => {
             "Input and output run on different clocks: long takes drift and monitoring may click. To fix it, use one interface for both input and output."
         }
         _ => {
@@ -842,34 +854,85 @@ fn latency_line(app: &SoundApp) -> String {
     crate::localized_format!("output {} · input {}", show(output), show(input))
 }
 
+/// What the clock check reads from the audio system: its name and, where it tells clocks apart,
+/// the input device recording would open (see [`soundcraft_playback::devices::clock_lookup`]),
+/// for the device choice `cfg`.
+#[derive(Clone, Debug, PartialEq)]
+struct ClockLookup {
+    cfg: soundcraft_playback::AudioConfig,
+    system: String,
+    default_input: Option<String>,
+}
+
+/// Where the Playback Engine keeps its [`ClockLookup`] while it is open.
+fn clock_lookup_id() -> egui::Id {
+    egui::Id::unique("pe-clock-lookup")
+}
+
+impl ClockLookup {
+    fn read(cfg: &soundcraft_playback::AudioConfig) -> Self {
+        let (system, default_input) = soundcraft_playback::devices::clock_lookup(cfg);
+        ClockLookup { cfg: cfg.clone(), system, default_input }
+    }
+}
+
+/// `cache` when it was read for `cfg`, else `read(cfg)`. On Core Audio and ASIO, naming the
+/// default input lists the input devices, so the Playback Engine keeps the lookup while it is
+/// open instead of reading it on every frame.
+fn cached_lookup(
+    cache: Option<ClockLookup>,
+    cfg: &soundcraft_playback::AudioConfig,
+    read: impl FnOnce(&soundcraft_playback::AudioConfig) -> ClockLookup,
+) -> ClockLookup {
+    match cache {
+        Some(lookup) if lookup.cfg == *cfg => lookup,
+        _ => read(cfg),
+    }
+}
+
 /// Whether the open output and the input (open, else the one recording would open) share one
-/// clock, see [`soundcraft_playback::devices::same_clock`]. `None` without an open output device
-/// or without any input device.
+/// clock under `lookup`'s audio system, see [`soundcraft_playback::devices::same_clock`]. `None`
+/// without an open output device or without any input device, and where the audio system does
+/// not tell (every system other than Core Audio and ASIO).
+fn clock_relation(app: &SoundApp, lookup: &ClockLookup) -> Option<bool> {
+    let (system, output, input) = clock_devices(app, lookup)?;
+    soundcraft_playback::devices::same_clock(&system, &output, &input)
+}
+
+/// [`clock_relation`] read now, for the commands.
 fn same_clock(app: &SoundApp) -> Option<bool> {
-    clock_devices(app).map(|(system, output, input)| soundcraft_playback::devices::same_clock(&system, &output, &input))
+    clock_relation(app, &ClockLookup::read(&app.ui.audio))
 }
 
 /// The audio system, the open output and the input (open, else the one recording would open).
-fn clock_devices(app: &SoundApp) -> Option<(String, String, String)> {
+fn clock_devices(app: &SoundApp, lookup: &ClockLookup) -> Option<(String, String, String)> {
     let output = app.player.as_ref().filter(|p| !p.silent)?.device_name.clone();
     let input = match app.recorder.as_ref() {
         Some(r) => r.device_name.clone(),
-        None => soundcraft_playback::devices::input_device_name(&app.ui.audio)?,
+        None => lookup.default_input.clone()?,
     };
-    Some((soundcraft_playback::devices::system_name(&app.ui.audio), output, input))
+    Some((lookup.system.clone(), output, input))
 }
 
-/// On record-enable and on Record, say on the status line when input and output run on
-/// different clocks, so it is seen without opening the Playback Engine. Once per pair of devices:
-/// a note, not a dialog (Pro Tools does not stop you either).
+/// The Playback Engine's one-line note where audio system `system` does not tell whether input and
+/// output share a clock (every system other than Core Audio and ASIO): neutral, with no advice,
+/// and never on the status line.
+fn clock_hint(system: &str) -> Option<&'static str> {
+    (!soundcraft_playback::devices::knows_clock(system)).then_some("Whether input and output share a clock is not known on this audio system.")
+}
+
+/// On record-enable and on Record, say on the status line when input and output are known to run
+/// on different clocks, so it is seen without opening the Playback Engine. Once per pair of
+/// devices: a note, not a dialog (Pro Tools does not stop you either). Where the audio system does
+/// not tell (every system other than Core Audio and ASIO), nothing is said.
 pub(crate) fn note_different_clocks(app: &mut SoundApp) {
-    let devices = clock_devices(app);
+    let devices = clock_devices(app, &ClockLookup::read(&app.ui.audio));
     note_clocks(app, devices);
 }
 
 fn note_clocks(app: &mut SoundApp, devices: Option<(String, String, String)>) {
     let Some((system, output, input)) = devices else { return };
-    if soundcraft_playback::devices::same_clock(&system, &output, &input) {
+    if soundcraft_playback::devices::same_clock(&system, &output, &input) != Some(false) {
         return;
     }
     let pair = (output, input);
@@ -1135,19 +1198,17 @@ mod clock_warning_tests {
     fn the_different_clocks_warning_says_how_to_fix_it_on_each_system() {
         let mac = different_clocks("CoreAudio");
         assert!(mac.contains("one device") && mac.contains("Aggregate Device"), "{mac}");
-        for windows in ["WASAPI", "ASIO"] {
-            let text = different_clocks(windows);
-            // Release builds open no ASIO driver, so the advice does not send anyone to one.
-            assert!(text.contains("one interface") && !text.contains("ASIO"), "{windows}: {text}");
-            assert!(!text.contains("Aggregate"), "no macOS advice on {windows}: {text}");
-        }
+        // ASIO is the one Windows system that tells (WASAPI's relation is unknown, so it gets no
+        // warning). Release builds open no ASIO driver, so the advice does not send anyone to one.
+        let asio = different_clocks("ASIO");
+        assert!(asio.contains("one interface") && !asio.contains("ASIO") && !asio.contains("Aggregate"), "{asio}");
         for other in ["ALSA", "JACK", "PulseAudio", "PipeWire", ""] {
             let text = different_clocks(other);
             assert!(text.contains("one device") && !text.contains("Aggregate") && !text.contains("ASIO"), "{other}: {text}");
         }
         // Every variant is in the pt-BR catalog.
         let _language = crate::localization::enter(crate::localization::Language::PortugueseBrazil);
-        for system in ["CoreAudio", "WASAPI", "ALSA"] {
+        for system in ["CoreAudio", "ASIO", "ALSA"] {
             assert_ne!(crate::localization::text(different_clocks(system)), different_clocks(system), "{system}");
         }
     }
@@ -1225,6 +1286,56 @@ mod clock_note_tests {
         note_clocks(&mut app, devices("Fireface UFX (23693403)", "Fireface UFX (23693403)"));
         note_clocks(&mut app, None);
         assert_eq!(app.ui.status, "");
+    }
+
+    /// Where the audio system does not tell whether input and output share a clock (WASAPI:
+    /// one interface's endpoints have different names), nothing is said on the status line.
+    #[test]
+    fn an_unknown_clock_relation_says_nothing_on_the_status_line() {
+        let mut app = SoundApp::new(soundcraft_engine::Engine::default(), None, crate::Services::default());
+        for (system, output, input) in [
+            ("WASAPI", "Speakers (Model 12)", "Microphone (Model 12)"),
+            ("WASAPI", "Speakers (Realtek(R) Audio)", "Microphone (Model 12)"),
+            ("ALSA", "default", "hw:PCH"),
+        ] {
+            note_clocks(&mut app, Some((system.into(), output.into(), input.into())));
+            assert_eq!(app.ui.status, "", "{system}: {output} / {input}");
+        }
+    }
+
+    /// The Playback Engine reads the audio system and the input device once per device choice
+    /// (and when it opens), not on every frame.
+    #[test]
+    fn the_playback_engine_reads_the_clock_devices_once_per_device_choice() {
+        let reads = std::cell::Cell::new(0);
+        let read = |cfg: &soundcraft_playback::AudioConfig| {
+            reads.set(reads.get() + 1);
+            ClockLookup { cfg: cfg.clone(), system: "CoreAudio".into(), default_input: Some("Fireface UFX (23693403)".into()) }
+        };
+        let a = soundcraft_playback::AudioConfig::default();
+        let b = soundcraft_playback::AudioConfig { input: Some("MacBook Pro Microphone".into()), ..a.clone() };
+        let mut cache = None;
+        for _ in 0..3 {
+            cache = Some(cached_lookup(cache, &a, read));
+        }
+        assert_eq!(reads.get(), 1, "read once, then kept");
+        cache = Some(cached_lookup(cache, &b, read));
+        assert_eq!(reads.get(), 2, "a new device choice is read again");
+        let _ = cached_lookup(cache, &b, read);
+        assert_eq!(reads.get(), 2, "and kept");
+        let _ = cached_lookup(None, &b, read);
+        assert_eq!(reads.get(), 3, "a window that opens again reads again");
+    }
+
+    #[test]
+    fn the_playback_engine_hints_only_where_the_clock_relation_is_unknown() {
+        assert!(clock_hint("WASAPI").is_some());
+        assert!(clock_hint("ALSA").is_some());
+        assert!(clock_hint("CoreAudio").is_none());
+        assert!(clock_hint("ASIO").is_none());
+        let _language = crate::localization::enter(crate::localization::Language::PortugueseBrazil);
+        let hint = clock_hint("WASAPI").unwrap_or_default();
+        assert_ne!(crate::localization::text(hint), hint, "in the pt-BR catalog");
     }
 
     #[test]

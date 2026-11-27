@@ -179,23 +179,34 @@ fn in_open_order(host: &str) -> bool {
     matches!(host, "ASIO" | "CoreAudio")
 }
 
-/// Whether `input` and `output` run on one clock under audio system `host`. One device does:
-/// one ASIO driver, one Core Audio device (an Aggregate Device counts as one; Core Audio keeps
-/// its members in step), one device name elsewhere. WASAPI's input and output endpoints are
-/// separate devices, each on its own thread and clock, even on one interface. Two clocks drift
-/// apart over a long take, and the monitor buffer between them runs short or piles up.
-pub fn same_clock(host: &str, output: &str, input: &str) -> bool {
-    !host.eq_ignore_ascii_case("WASAPI") && output == input
+/// Whether `input` and `output` run on one clock under audio system `host`, where SoundCraft can
+/// tell ([`knows_clock`]): one Core Audio device does (an Aggregate Device counts as one; Core
+/// Audio keeps its members in step), and so does one ASIO driver, which runs both directions; two
+/// devices do not (measured on macOS: an RME UFX in and the built-in output out drift apart by
+/// about 9.5 ppm). Two clocks drift apart over a long take, and the monitor buffer between them
+/// runs short or piles up.
+///
+/// `None` (unknown) on every other audio system, where the names do not say: WASAPI names one
+/// interface's input and output endpoints differently ("Speakers (Model 12)", "Microphone (Model
+/// 12)"), and an ALSA name such as "default" or "pipewire" can be a different card each way.
+pub fn same_clock(host: &str, output: &str, input: &str) -> Option<bool> {
+    knows_clock(host).then(|| output == input)
 }
 
-/// The name of `cfg`'s audio system as cpal reports it (the default one when none is chosen).
-pub fn system_name(cfg: &AudioConfig) -> String {
-    host(cfg).id().name().to_string()
+/// Whether [`same_clock`] can tell under audio system `host`: Core Audio and ASIO.
+pub fn knows_clock(host: &str) -> bool {
+    matches!(host, "CoreAudio" | "ASIO")
 }
 
-/// The name of the input device `cfg` opens: the chosen one when present, else the default.
-pub fn input_device_name(cfg: &AudioConfig) -> Option<String> {
-    device(&host(cfg), cfg.input.as_deref(), false).and_then(|d| device_name(&d))
+/// The name of `cfg`'s audio system as cpal reports it (the default one when none is chosen) and,
+/// where it tells clocks apart ([`knows_clock`]), the name of the input device `cfg` opens (the
+/// chosen one when present, else the default). Elsewhere the input is `None` without listing the
+/// input devices, since [`same_clock`] cannot tell there anyway.
+pub fn clock_lookup(cfg: &AudioConfig) -> (String, Option<String>) {
+    let host = host(cfg);
+    let system = host.id().name();
+    let input = if knows_clock(system) { device(&host, cfg.input.as_deref(), false).and_then(|d| device_name(&d)) } else { None };
+    (system.to_string(), input)
 }
 
 /// The chosen audio system, else the default one.
@@ -241,25 +252,30 @@ mod tests {
     use super::*;
 
     #[test]
-    fn input_and_output_share_a_clock_only_on_one_device_outside_wasapi() {
-        // (audio system, output, input, one clock?)
+    fn the_clock_relation_is_known_only_on_core_audio_and_asio() {
+        // (audio system, output, input, one clock? `None`: SoundCraft cannot tell)
         let cases = [
-            ("ASIO", "RME Fireface UFX", "RME Fireface UFX", true),
-            ("ASIO", "RME Fireface UFX", "Focusrite USB ASIO", false),
-            ("CoreAudio", "Fireface UFX (23693403)", "Fireface UFX (23693403)", true),
+            ("ASIO", "RME Fireface UFX", "RME Fireface UFX", Some(true)),
+            ("ASIO", "RME Fireface UFX", "Focusrite USB ASIO", Some(false)),
+            ("CoreAudio", "Fireface UFX (23693403)", "Fireface UFX (23693403)", Some(true)),
             // An Aggregate Device is one device: Core Audio keeps its members on one clock.
-            ("CoreAudio", "Aggregate Device", "Aggregate Device", true),
-            ("CoreAudio", "Fireface UFX (23693403)", "MacBook Pro Microphone", false),
-            // WASAPI's input and output endpoints are separate devices, each on its own thread
-            // and clock, even on one interface and even when the names match.
-            ("WASAPI", "Speakers (RME Fireface UFX)", "Analog (1+2) (RME Fireface UFX)", false),
-            ("WASAPI", "Same Name", "Same Name", false),
-            ("ALSA", "hw:UFX", "hw:UFX", true),
-            ("ALSA", "hw:UFX", "hw:PCH", false),
+            ("CoreAudio", "Aggregate Device", "Aggregate Device", Some(true)),
+            ("CoreAudio", "Fireface UFX (23693403)", "MacBook Pro Microphone", Some(false)),
+            // WASAPI names an interface's two endpoints differently, so the names do not say
+            // whether they share its clock.
+            ("WASAPI", "Speakers (Model 12)", "Microphone (Model 12)", None),
+            ("WASAPI", "Speakers (RME Fireface UFX)", "Analog (1+2) (RME Fireface UFX)", None),
+            ("WASAPI", "Same Name", "Same Name", None),
+            // ALSA's "default" or "pipewire" can be different cards each way.
+            ("ALSA", "default", "default", None),
+            ("ALSA", "hw:UFX", "hw:PCH", None),
+            ("JACK", "system", "system", None),
         ];
         for (host, output, input, one) in cases {
             assert_eq!(same_clock(host, output, input), one, "{host}: {output} / {input}");
         }
+        assert!(knows_clock("CoreAudio") && knows_clock("ASIO"));
+        assert!(!knows_clock("WASAPI") && !knows_clock("ALSA"));
     }
 
     #[test]

@@ -964,6 +964,9 @@ fn menu_translate(source: &str) -> Option<&'static str> {
         "Input and output run on different clocks: long takes drift and monitoring may click. To fix it, use one interface for both input and output." => {
             "Entrada e saída usam relógios diferentes: tomadas longas se desalinham e o monitoramento pode estalar. Para corrigir, use uma só interface para entrada e saída."
         }
+        "Whether input and output share a clock is not known on this audio system." => {
+            "Não se sabe se entrada e saída compartilham um relógio neste sistema de áudio."
+        }
         "Input and output run on different clocks: long takes drift and monitoring may click. To fix it, choose one device for both input and output." => {
             "Entrada e saída usam relógios diferentes: tomadas longas se desalinham e o monitoramento pode estalar. Para corrigir, escolha um só dispositivo para entrada e saída."
         }

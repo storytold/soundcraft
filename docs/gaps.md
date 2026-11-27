@@ -82,16 +82,19 @@ When you close a gap, delete its entry (or shrink it) in the same PR, and bump t
   and no callback ran late after startup. A single AUHAL with input and output enabled
   (coreaudio-rs 0.14.2) calls the render callback before the input callback, so its monitor loop
   is a buffer longer (303 against 239 samples at 64 frames, 879 against 623 at 256).
-- **Done (2026-11-25):** the Playback Engine warns when the input and output run on different
-  clocks: two devices, or WASAPI's separate input and output endpoints. Long takes then drift and
-  monitoring may click. The warning wraps at the window's width, says how to fix it on each audio
-  system (one device for both, or an Aggregate Device on macOS; one interface on Windows), and
-  also shows on the status line on record-enable and on Record, once per pair of devices.
-  `ui.audio_device` and `setup.playback_engine` report `same_clock` (null until an output and an
-  input device are known). As in Pro Tools, two devices on macOS are combined as an Aggregate
-  Device, which is one device; SoundCraft does not correct drift between clocks.
-  Checked on macOS with an RME UFX: no warning with the UFX both ways, a warning with the UFX out
-  and another input device.
+- **Done (2026-11-25):** the Playback Engine warns when the input and output are known to run
+  on different clocks: two Core Audio devices, or two ASIO drivers. Long takes then drift and
+  monitoring may click. The warning wraps at the window's width, says how to fix it (one device
+  for both, or an Aggregate Device on macOS; one interface under ASIO), and also shows on the
+  status line on record-enable and on Record, once per pair of devices. On WASAPI, ALSA and the
+  other systems the device names do not say whether input and output share a clock (WASAPI
+  names one interface's two endpoints differently), so the relation is unknown: no warning and
+  nothing on the status line, only a one-line note in the Playback Engine. `ui.audio_device` and
+  `setup.playback_engine` report `same_clock` (null until an output and an input device are
+  known, and where the audio system does not tell). As in Pro Tools, two devices on macOS are
+  combined as an Aggregate Device, which is one device; SoundCraft does not correct drift between
+  clocks. Checked on macOS with an RME UFX: no warning with the UFX both ways, a warning with the
+  UFX out and another input device.
 - **Missing:** routing to physical channels (I/O Setup), one duplex stream on one clock where the
   input and output callbacks do not share a device cycle (WASAPI; input and output on different
   devices), ASIO
@@ -294,7 +297,7 @@ missing. Out of scope unless the owner decides otherwise.
 
 | Date | Change | Summary |
 |---|---|---|
-| 2026-11-25 | minor | G-01: the Playback Engine warns when input and output run on different clocks (`same_clock` in `ui.audio_device` and `setup.playback_engine`); estimates unchanged |
+| 2026-11-25 | minor | G-01: the Playback Engine warns when input and output run on different clocks, where the audio system tells (Core Audio, ASIO; unknown elsewhere) (`same_clock` in `ui.audio_device` and `setup.playback_engine`); estimates unchanged |
 | 2026-11-25 | minor | G-01: Core Audio runs the input and output callbacks in one IO cycle (probe on an RME UFX at 64 and 256 frames); the duplex item narrowed to WASAPI and separate devices; estimates unchanged |
 | 2026-11-25 | minor | G-01: input opens before the output on ASIO and Core Audio when both are one device, so monitoring adds no device buffer (verified on both with an RME UFX); estimates unchanged |
 | 2026-11-25 | minor | G-01: Core Audio places takes by the host time and the device latency (cpal 0.18 counts the buffer and safety offset twice); 1 sample early on an RME UFX at 64–1024 frames; estimates unchanged |
