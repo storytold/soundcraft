@@ -19,120 +19,123 @@ UI-layer commands (windows, AudioSuite) are counted by the app's own report (`en
 | View | 92 | 112 |
 | Window | 1 | 52 |
 
+**Headless ([RFC-0052](https://github.com/storytold/craft-contrib/blob/main/rfcs/0052-headless-reach.md)): 397 yes, 115 no (window 68, os 9, engine-gap 38), 0 partial, 0 unknown.**
+A leaf the engine implements is `headless: yes`: `soundcraft-cli` and the MCP server load that registry. The rest carry the hand mark from `HEADLESS` in `crates/engine/src/catalog.rs`, or `unknown`.
+
 ## Not yet implemented
 
-- File > Open > Project...
-- File > Open > Sketch...
-- File > Dashboard...
-- File > Start Collaboration...
-- File > Import > VENUE Channel Names as Track Names
-- File > Export > Selected Tracks as New AAF/OMF...
-- File > Export > Selected Tracks as New Media Composer Compatible Session...
-- File > Sign In
-- Edit > Automation > Duplicate Dolby Atmos Plugin Automation to Pan Automation
-- Edit > Automation > Duplicate Pan Automation to Dolby Atmos Plugin Automation
-- Edit > Automation > Coalesce Pan Guide Automation
-- View > Mix Window Views > Mic Preamps
-- View > Mix Window Views > Instruments
-- View > Mix Window Views > HEAT
-- View > Mix Window Views > Inserts A-E
-- View > Mix Window Views > Inserts F-J
-- View > Mix Window Views > Sends A-E
-- View > Mix Window Views > Sends F-J
-- View > Mix Window Views > EQ Curve
-- View > Mix Window Views > I/O
-- View > Mix Window Views > Object
-- View > Mix Window Views > Meters and Faders
-- View > Mix Window Views > Delay Compensation
-- View > Mix Window Views > Track Color
-- View > Mix Window Views > Comments
-- View > Mix Window Views > All
-- View > Mix Window Views > Minimal
-- View > Narrow Mix
-- View > Other Displays > Universe
-- View > Other Displays > Track List
-- View > Other Displays > Clip List
-- Track > Change Track Width > Show / Hide...
-- Track > ARA Plugins > Melodyne
-- Clip > ARA Plugins > Melodyne
-- AudioSuite > EQ > Channel Strip
-- AudioSuite > EQ > EQ3 1-Band
-- AudioSuite > EQ > EQ3 7-Band
-- AudioSuite > Dynamics > BF-76
-- AudioSuite > Dynamics > Channel Strip
-- AudioSuite > Dynamics > Dyn3 Compressor/Limiter
-- AudioSuite > Dynamics > Dyn3 De-Esser
-- AudioSuite > Dynamics > Dyn3 Expander/Gate
-- AudioSuite > Dynamics > Maxim
-- AudioSuite > Pitch Shift > Pitch II
-- AudioSuite > Pitch Shift > Pitch Shift Legacy
-- AudioSuite > Pitch Shift > Time Shift
-- AudioSuite > Pitch Shift > Vari-Fi
-- AudioSuite > Reverb > D-Verb
-- AudioSuite > Delay > Mod Delay III
-- AudioSuite > Modulation > Sci-Fi
-- AudioSuite > Harmonic > Eleven Lite
-- AudioSuite > Harmonic > Lo-Fi
-- AudioSuite > Harmonic > Recti-Fi
-- AudioSuite > Harmonic > SansAmp PSA-1
-- AudioSuite > Other > DC Offset Removal
-- AudioSuite > Other > Duplicate
-- AudioSuite > Other > Gain
-- AudioSuite > Other > Invert
-- AudioSuite > Other > Normalize
-- AudioSuite > Other > Reverse
-- AudioSuite > Other > Signal Generator
-- AudioSuite > Other > Time Compression Expansion
-- Options > Activate HEAT
-- Setup > Machine Track Arming Profiles...
-- Window > Configurations > Window Configuration List
-- Window > Configurations > New Configuration...
-- Window > Configurations > Update Active Configuration
-- Window > Configurations > Auto-Update Active Configuration
-- Window > Arrange > Tile
-- Window > Arrange > Tile Horizontal
-- Window > Arrange > Tile Vertical
-- Window > Arrange > Cascade
-- Window > Hide All Floating Windows
-- Window > Close Window
-- Window > Mix
-- Window > Edit
-- Window > Sketch to Front
-- Window > MIDI Editor
-- Window > Score Editor
-- Window > MIDI Event List
-- Window > MIDI Editors > Bring to Front
-- Window > MIDI Editors > Send to Back
-- Window > MIDI Keyboard
-- Window > Clip List
-- Window > Clip Effects
-- Window > ARA Plugins
-- Window > Splice
-- Window > Learn
-- Window > SoundFlow
-- Window > Task Manager
-- Window > New Workspace > Default
-- Window > New Workspace > Soundbase
-- Window > New Workspace > Track Presets
-- Window > Workspaces > Bring to Front
-- Window > Workspaces > Send to Back
-- Window > Workspaces > Close All Workspaces
-- Window > Transport
-- Window > Big Counter
-- Window > Automation
-- Window > Memory Locations
-- Window > Machine Track Arming
-- Window > Video Universe
-- Window > Video
-- Window > Color Palette
-- Window > UI Customization
-- Window > Metadata Inspector
-- Window > Transcript
-- Window > Pro Tools Search
-- Window > Renderer
-- Window > Trim and Downmix
-- Window > Collaboration > Pro Tools Projects
-- Window > Collaboration > Find Talent
-- Window > Collaboration > Messages
-- Window > Disk Usage
-- Window > System Usage
+- File > Open > Project...: headless: no, reach: os (online project service)
+- File > Open > Sketch...: headless: no, reach: engine-gap (sketch files could be opened by a command)
+- File > Dashboard...: headless: no, reach: window (the start dialog)
+- File > Start Collaboration...: headless: no, reach: os (online collaboration service)
+- File > Import > VENUE Channel Names as Track Names: headless: no, reach: engine-gap (the import could be a command)
+- File > Export > Selected Tracks as New AAF/OMF...: headless: no, reach: engine-gap (the export could be a command)
+- File > Export > Selected Tracks as New Media Composer Compatible Session...: headless: no, reach: engine-gap (the export could be a command)
+- File > Sign In: headless: no, reach: os (online account service)
+- Edit > Automation > Duplicate Dolby Atmos Plugin Automation to Pan Automation: headless: no, reach: engine-gap (automation copies could be commands)
+- Edit > Automation > Duplicate Pan Automation to Dolby Atmos Plugin Automation: headless: no, reach: engine-gap (automation copies could be commands)
+- Edit > Automation > Coalesce Pan Guide Automation: headless: no, reach: engine-gap (automation copies could be commands)
+- View > Mix Window Views > Mic Preamps: headless: no, reach: window (shows or hides part of a desktop window)
+- View > Mix Window Views > Instruments: headless: no, reach: window (shows or hides part of a desktop window)
+- View > Mix Window Views > HEAT: headless: no, reach: window (shows or hides part of a desktop window)
+- View > Mix Window Views > Inserts A-E: headless: no, reach: window (shows or hides part of a desktop window)
+- View > Mix Window Views > Inserts F-J: headless: no, reach: window (shows or hides part of a desktop window)
+- View > Mix Window Views > Sends A-E: headless: no, reach: window (shows or hides part of a desktop window)
+- View > Mix Window Views > Sends F-J: headless: no, reach: window (shows or hides part of a desktop window)
+- View > Mix Window Views > EQ Curve: headless: no, reach: window (shows or hides part of a desktop window)
+- View > Mix Window Views > I/O: headless: no, reach: window (shows or hides part of a desktop window)
+- View > Mix Window Views > Object: headless: no, reach: window (shows or hides part of a desktop window)
+- View > Mix Window Views > Meters and Faders: headless: no, reach: window (shows or hides part of a desktop window)
+- View > Mix Window Views > Delay Compensation: headless: no, reach: window (shows or hides part of a desktop window)
+- View > Mix Window Views > Track Color: headless: no, reach: window (shows or hides part of a desktop window)
+- View > Mix Window Views > Comments: headless: no, reach: window (shows or hides part of a desktop window)
+- View > Mix Window Views > All: headless: no, reach: window (shows or hides part of a desktop window)
+- View > Mix Window Views > Minimal: headless: no, reach: window (shows or hides part of a desktop window)
+- View > Narrow Mix: headless: no, reach: window (shows or hides part of a desktop window)
+- View > Other Displays > Universe: headless: no, reach: window (shows or hides part of a desktop window)
+- View > Other Displays > Track List: headless: no, reach: window (shows or hides part of a desktop window)
+- View > Other Displays > Clip List: headless: no, reach: window (shows or hides part of a desktop window)
+- Track > Change Track Width > Show / Hide...: headless: no, reach: window (a desktop dialog)
+- Track > ARA Plugins > Melodyne: headless: no, reach: engine-gap (no plug-in extension host in the engine yet)
+- Clip > ARA Plugins > Melodyne: headless: no, reach: engine-gap (no plug-in extension host in the engine yet)
+- AudioSuite > EQ > Channel Strip: headless: no, reach: engine-gap (offline processing over the crates/dsp plug-ins could be commands)
+- AudioSuite > EQ > EQ3 1-Band: headless: no, reach: engine-gap (offline processing over the crates/dsp plug-ins could be commands)
+- AudioSuite > EQ > EQ3 7-Band: headless: no, reach: engine-gap (offline processing over the crates/dsp plug-ins could be commands)
+- AudioSuite > Dynamics > BF-76: headless: no, reach: engine-gap (offline processing over the crates/dsp plug-ins could be commands)
+- AudioSuite > Dynamics > Channel Strip: headless: no, reach: engine-gap (offline processing over the crates/dsp plug-ins could be commands)
+- AudioSuite > Dynamics > Dyn3 Compressor/Limiter: headless: no, reach: engine-gap (offline processing over the crates/dsp plug-ins could be commands)
+- AudioSuite > Dynamics > Dyn3 De-Esser: headless: no, reach: engine-gap (offline processing over the crates/dsp plug-ins could be commands)
+- AudioSuite > Dynamics > Dyn3 Expander/Gate: headless: no, reach: engine-gap (offline processing over the crates/dsp plug-ins could be commands)
+- AudioSuite > Dynamics > Maxim: headless: no, reach: engine-gap (offline processing over the crates/dsp plug-ins could be commands)
+- AudioSuite > Pitch Shift > Pitch II: headless: no, reach: engine-gap (offline processing over the crates/dsp plug-ins could be commands)
+- AudioSuite > Pitch Shift > Pitch Shift Legacy: headless: no, reach: engine-gap (offline processing over the crates/dsp plug-ins could be commands)
+- AudioSuite > Pitch Shift > Time Shift: headless: no, reach: engine-gap (offline processing over the crates/dsp plug-ins could be commands)
+- AudioSuite > Pitch Shift > Vari-Fi: headless: no, reach: engine-gap (offline processing over the crates/dsp plug-ins could be commands)
+- AudioSuite > Reverb > D-Verb: headless: no, reach: engine-gap (offline processing over the crates/dsp plug-ins could be commands)
+- AudioSuite > Delay > Mod Delay III: headless: no, reach: engine-gap (offline processing over the crates/dsp plug-ins could be commands)
+- AudioSuite > Modulation > Sci-Fi: headless: no, reach: engine-gap (offline processing over the crates/dsp plug-ins could be commands)
+- AudioSuite > Harmonic > Eleven Lite: headless: no, reach: engine-gap (offline processing over the crates/dsp plug-ins could be commands)
+- AudioSuite > Harmonic > Lo-Fi: headless: no, reach: engine-gap (offline processing over the crates/dsp plug-ins could be commands)
+- AudioSuite > Harmonic > Recti-Fi: headless: no, reach: engine-gap (offline processing over the crates/dsp plug-ins could be commands)
+- AudioSuite > Harmonic > SansAmp PSA-1: headless: no, reach: engine-gap (offline processing over the crates/dsp plug-ins could be commands)
+- AudioSuite > Other > DC Offset Removal: headless: no, reach: engine-gap (offline processing over the crates/dsp plug-ins could be commands)
+- AudioSuite > Other > Duplicate: headless: no, reach: engine-gap (offline processing over the crates/dsp plug-ins could be commands)
+- AudioSuite > Other > Gain: headless: no, reach: engine-gap (offline processing over the crates/dsp plug-ins could be commands)
+- AudioSuite > Other > Invert: headless: no, reach: engine-gap (offline processing over the crates/dsp plug-ins could be commands)
+- AudioSuite > Other > Normalize: headless: no, reach: engine-gap (offline processing over the crates/dsp plug-ins could be commands)
+- AudioSuite > Other > Reverse: headless: no, reach: engine-gap (offline processing over the crates/dsp plug-ins could be commands)
+- AudioSuite > Other > Signal Generator: headless: no, reach: engine-gap (offline processing over the crates/dsp plug-ins could be commands)
+- AudioSuite > Other > Time Compression Expansion: headless: no, reach: engine-gap (offline processing over the crates/dsp plug-ins could be commands)
+- Options > Activate HEAT: headless: no, reach: engine-gap (the processor could be an engine option)
+- Setup > Machine Track Arming Profiles...: headless: no, reach: os (external machine control hardware)
+- Window > Configurations > Window Configuration List: headless: no, reach: window (opens or arranges a desktop window)
+- Window > Configurations > New Configuration...: headless: no, reach: window (opens or arranges a desktop window)
+- Window > Configurations > Update Active Configuration: headless: no, reach: window (opens or arranges a desktop window)
+- Window > Configurations > Auto-Update Active Configuration: headless: no, reach: window (opens or arranges a desktop window)
+- Window > Arrange > Tile: headless: no, reach: window (opens or arranges a desktop window)
+- Window > Arrange > Tile Horizontal: headless: no, reach: window (opens or arranges a desktop window)
+- Window > Arrange > Tile Vertical: headless: no, reach: window (opens or arranges a desktop window)
+- Window > Arrange > Cascade: headless: no, reach: window (opens or arranges a desktop window)
+- Window > Hide All Floating Windows: headless: no, reach: window (opens or arranges a desktop window)
+- Window > Close Window: headless: no, reach: window (opens or arranges a desktop window)
+- Window > Mix: headless: no, reach: window (opens or arranges a desktop window)
+- Window > Edit: headless: no, reach: window (opens or arranges a desktop window)
+- Window > Sketch to Front: headless: no, reach: window (opens or arranges a desktop window)
+- Window > MIDI Editor: headless: no, reach: window (opens or arranges a desktop window)
+- Window > Score Editor: headless: no, reach: window (opens or arranges a desktop window)
+- Window > MIDI Event List: headless: no, reach: window (opens or arranges a desktop window)
+- Window > MIDI Editors > Bring to Front: headless: no, reach: window (opens or arranges a desktop window)
+- Window > MIDI Editors > Send to Back: headless: no, reach: window (opens or arranges a desktop window)
+- Window > MIDI Keyboard: headless: no, reach: window (opens or arranges a desktop window)
+- Window > Clip List: headless: no, reach: window (opens or arranges a desktop window)
+- Window > Clip Effects: headless: no, reach: window (opens or arranges a desktop window)
+- Window > ARA Plugins: headless: no, reach: window (opens or arranges a desktop window)
+- Window > Splice: headless: no, reach: os (online sample service)
+- Window > Learn: headless: no, reach: window (opens or arranges a desktop window)
+- Window > SoundFlow: headless: no, reach: os (third-party automation service)
+- Window > Task Manager: headless: no, reach: window (opens or arranges a desktop window)
+- Window > New Workspace > Default: headless: no, reach: window (opens or arranges a desktop window)
+- Window > New Workspace > Soundbase: headless: no, reach: window (opens or arranges a desktop window)
+- Window > New Workspace > Track Presets: headless: no, reach: window (opens or arranges a desktop window)
+- Window > Workspaces > Bring to Front: headless: no, reach: window (opens or arranges a desktop window)
+- Window > Workspaces > Send to Back: headless: no, reach: window (opens or arranges a desktop window)
+- Window > Workspaces > Close All Workspaces: headless: no, reach: window (opens or arranges a desktop window)
+- Window > Transport: headless: no, reach: window (opens or arranges a desktop window)
+- Window > Big Counter: headless: no, reach: window (opens or arranges a desktop window)
+- Window > Automation: headless: no, reach: window (opens or arranges a desktop window)
+- Window > Memory Locations: headless: no, reach: window (opens or arranges a desktop window)
+- Window > Machine Track Arming: headless: no, reach: window (opens or arranges a desktop window)
+- Window > Video Universe: headless: no, reach: window (opens or arranges a desktop window)
+- Window > Video: headless: no, reach: window (opens or arranges a desktop window)
+- Window > Color Palette: headless: no, reach: window (opens or arranges a desktop window)
+- Window > UI Customization: headless: no, reach: window (opens or arranges a desktop window)
+- Window > Metadata Inspector: headless: no, reach: window (opens or arranges a desktop window)
+- Window > Transcript: headless: no, reach: window (opens or arranges a desktop window)
+- Window > Pro Tools Search: headless: no, reach: window (opens or arranges a desktop window)
+- Window > Renderer: headless: no, reach: window (opens or arranges a desktop window)
+- Window > Trim and Downmix: headless: no, reach: window (opens or arranges a desktop window)
+- Window > Collaboration > Pro Tools Projects: headless: no, reach: os (online collaboration service)
+- Window > Collaboration > Find Talent: headless: no, reach: os (online collaboration service)
+- Window > Collaboration > Messages: headless: no, reach: os (online collaboration service)
+- Window > Disk Usage: headless: no, reach: window (opens or arranges a desktop window)
+- Window > System Usage: headless: no, reach: window (opens or arranges a desktop window)
