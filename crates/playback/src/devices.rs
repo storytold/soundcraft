@@ -140,6 +140,25 @@ pub(crate) fn stream_lost(e: &cpal::Error) -> bool {
     kind == cpal::ErrorKind::DeviceNotAvailable || kind == cpal::ErrorKind::StreamInvalidated
 }
 
+/// Why an output stream was lost under audio system `system`, from whether its error was
+/// `DeviceNotAvailable` (`left`) or `StreamInvalidated`. Only Core Audio's errors say which
+/// happened: cpal 0.18.2 reports `DeviceNotAvailable` from the device's alive listener and
+/// `StreamInvalidated` from its sample-rate listener (observed on an RME UFX when another app
+/// changed its rate). Elsewhere the kinds do not tell (read in cpal 0.18.2, not observed):
+/// WASAPI reports a format change by another app as `DeviceNotAvailable`
+/// (`AUDCLNT_E_DEVICE_INVALIDATED`) and a switch of the default device, which an unplug can
+/// cause, as `StreamInvalidated`; an ASIO driver's reset request, sent on an unplug, is
+/// `StreamInvalidated`; ALSA was not checked. So every other system gets
+/// [`crate::OutputLoss::Unknown`]. Either way the device is reopened by its name once it is
+/// listed again.
+pub(crate) fn output_loss(system: &str, left: bool) -> crate::OutputLoss {
+    match (system, left) {
+        ("CoreAudio", true) => crate::OutputLoss::Left,
+        ("CoreAudio", false) => crate::OutputLoss::SettingsChanged,
+        _ => crate::OutputLoss::Unknown,
+    }
+}
+
 /// The device's configuration at `sample_rate` in the best sample format these streams convert.
 /// cpal 0.18 ranks `I24` (and `F64`) above `I16` when it picks a default configuration, so a
 /// default alone can name a format the callbacks do not decode; this looks for the same rate in a
@@ -276,6 +295,22 @@ mod tests {
             cpal::ErrorKind::BackendError,
         ] {
             assert!(!stream_lost(&error(kind)), "{kind:?} must not stop the stream");
+        }
+    }
+
+    /// Which lost-output cause each audio system reports. Core Audio's mapping was observed
+    /// (another app's rate change gave `StreamInvalidated` on an RME UFX); elsewhere the error
+    /// kinds do not say which happened (cpal 0.18.2: WASAPI reports a format change as
+    /// `DeviceNotAvailable` and a default-device switch as `StreamInvalidated`; an ASIO reset
+    /// request is `StreamInvalidated`), so the cause is unknown.
+    #[test]
+    fn the_cause_of_a_lost_output_is_told_only_on_core_audio() {
+        assert_eq!(output_loss("CoreAudio", true), crate::OutputLoss::Left);
+        assert_eq!(output_loss("CoreAudio", false), crate::OutputLoss::SettingsChanged);
+        for system in ["WASAPI", "ASIO", "ALSA", "JACK", ""] {
+            for left in [true, false] {
+                assert_eq!(output_loss(system, left), crate::OutputLoss::Unknown, "{system}, left: {left}");
+            }
         }
     }
 

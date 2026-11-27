@@ -159,6 +159,19 @@ pub enum OutputTrouble {
     Stalled,
 }
 
+/// Why the output stream was lost ([`OutputTrouble::Gone`]), as far as the audio system says.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OutputLoss {
+    /// The device went away (unplugged, switched off). Core Audio only: its alive listener.
+    Left,
+    /// The device stayed and the system invalidated the stream, as when another app changes its
+    /// sample rate. Core Audio only: its sample-rate listener (observed on an RME UFX).
+    SettingsChanged,
+    /// The audio system's error does not say which of the two happened (every system other than
+    /// Core Audio; see [`devices::output_loss`]).
+    Unknown,
+}
+
 /// The transport and audio device.
 pub struct Player {
     shared: Arc<Shared>,
@@ -180,6 +193,8 @@ pub struct Player {
     pub device_buffer: Option<u32>,
     /// True when no audio device could be opened (silent clock).
     pub silent: bool,
+    /// The audio system (cpal host name) the output opened on; empty for the silent clock.
+    system: &'static str,
 }
 
 impl Player {
@@ -211,11 +226,11 @@ impl Player {
         self.fault.trouble(stalled)
     }
 
-    /// Whether the output device reported that it went away (unplugged, switched off). `false` for
-    /// a stream the system invalidated while the device stayed, such as another app changing its
-    /// sample rate. Read it once [`Player::trouble`] reported [`OutputTrouble::Gone`].
-    pub fn device_left(&self) -> bool {
-        self.fault.left.load(Ordering::Relaxed)
+    /// Why the output stream was lost: the device went away, its settings changed, or (on every
+    /// audio system other than Core Audio) unknown. Read it once [`Player::trouble`] reported
+    /// [`OutputTrouble::Gone`].
+    pub fn output_loss(&self) -> OutputLoss {
+        devices::output_loss(self.system, self.fault.left.load(Ordering::Relaxed))
     }
 
     fn side(&self) -> std::sync::MutexGuard<'_, Side> {
@@ -241,7 +256,7 @@ impl Player {
             Mutex::new(side)
         };
         match open_device(want, want_ch, cfg) {
-            Ok((device, config, format, name)) => {
+            Ok((device, config, format, name, system)) => {
                 // The chosen buffer size first; if the device refuses it, its default.
                 let mut attempts = vec![config];
                 if config.buffer_size != cpal::BufferSize::Default {
@@ -290,6 +305,7 @@ impl Player {
                             device_channels: config.channels,
                             device_buffer: buffer,
                             silent: false,
+                            system,
                         }
                     }
                     None => {
@@ -367,6 +383,7 @@ impl Player {
             device_channels: 0,
             device_buffer: None,
             silent: true,
+            system: "",
         }
     }
 
@@ -390,6 +407,7 @@ impl Player {
             device_channels: 0,
             device_buffer: None,
             silent: true,
+            system: "",
         }
     }
 

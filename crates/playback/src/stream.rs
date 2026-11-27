@@ -14,7 +14,8 @@ pub(crate) fn start_stream(stream: &impl cpal::traits::StreamTrait) -> bool {
 }
 
 /// Mark the output lost when `e` means the stream is dead (see [`devices::stream_lost`]), noting
-/// whether the device itself went away.
+/// whether the error was `DeviceNotAvailable` (what that means depends on the audio system, see
+/// [`devices::output_loss`]).
 pub(crate) fn lose_stream(fault: &Fault, e: &cpal::Error) {
     if devices::stream_lost(e) {
         if e.kind() == cpal::ErrorKind::DeviceNotAvailable {
@@ -104,7 +105,7 @@ pub(crate) fn open_device(
     want_rate: u32,
     want_ch: u16,
     cfg: &AudioConfig,
-) -> Result<(cpal::Device, cpal::StreamConfig, cpal::SampleFormat, String), String> {
+) -> Result<(cpal::Device, cpal::StreamConfig, cpal::SampleFormat, String, &'static str), String> {
     use cpal::traits::DeviceTrait;
     let host = devices::host(cfg);
     let device = devices::device(&host, cfg.output.as_deref(), true).ok_or_else(|| "no output device".to_string())?;
@@ -139,7 +140,7 @@ pub(crate) fn open_device(
             (stream_config, c.sample_format())
         }
     };
-    Ok((device, config, format, name))
+    Ok((device, config, format, name, host.id().name()))
 }
 
 /// Pick the output configuration for the first requested rate the device offers (the configured

@@ -1311,6 +1311,12 @@ fn menu_translate(source: &str) -> Option<&'static str> {
         "“{name}” is back, but SoundCraft could not open it. Use Reconnect to try again." => {
             "“{name}” voltou, mas o SoundCraft não conseguiu abri-lo. Use Reconectar para tentar de novo."
         }
+        "“{name}” stopped: the device went away or its settings changed." => "“{name}” parou: o dispositivo saiu ou suas configurações mudaram.",
+        "SoundCraft reopens it when it is available, or use Reconnect." => "O SoundCraft o reabre quando estiver disponível, ou use Reconectar.",
+        "SoundCraft reopened “{name}”." => "O SoundCraft reabriu “{name}”.",
+        "SoundCraft could not reopen “{name}”. Use Reconnect to try again." => {
+            "O SoundCraft não conseguiu reabrir “{name}”. Use Reconectar para tentar de novo."
+        }
         "Recording stopped: {cause} The take is kept up to there. {then}" => "Gravação interrompida: {cause} A gravação foi mantida até aqui. {then}",
         "Recording stopped: {what} The take is kept up to there. {then}" => "Gravação interrompida: {what} A gravação foi mantida até aqui. {then}",
         "Remove configuration" => "Remover configuração",
