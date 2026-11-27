@@ -19,7 +19,7 @@ mod slots;
 
 pub(crate) use output::{output_window, toggle_output_window};
 pub use plugin_menu::{instrument_menu, plugin_info, plugin_menu};
-pub(crate) use routing::{channel_span, input_name, route_name, route_popup, selector_tooltip};
+pub(crate) use routing::{channel_span, default_output_pairs, free_bus_name, input_name, output_name, route_popup, selector_tooltip};
 #[cfg(test)]
 use sends::dragged_send_db;
 pub(crate) use sends::{Readout, editable_readout, parse_db, parse_pan};
@@ -418,7 +418,7 @@ fn io_section(app: &mut SoundApp, ui: &mut Ui, cx: &StripCtx<'_>, mut y: f32) ->
             route_popup(app, &resp, id, true);
         }
         let mut c = ui.new_child(egui::UiBuilder::new().id_salt(("mix-output", id.0)).max_rect(out_r));
-        let output = route_name(app, &track.mixer.output);
+        let output = output_name(app, &track.mixer.output);
         let tooltip = selector_tooltip(app, &c, out_r, track, false, crate::localization::text("Output"));
         let resp = selector_box_named(
             &mut c,

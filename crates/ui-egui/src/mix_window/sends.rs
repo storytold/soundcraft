@@ -1,5 +1,5 @@
 use super::plugin_menu::{MenuSearch, menu_row};
-use super::routing::route_name;
+use super::routing::{free_bus_name, output_channels, output_name, output_path_choices, route_name};
 use super::slots::{COMPACT_SLOT, Mark, empty_slot, level_icon, used_slot};
 use super::{
     Align2, Rect, Route, Sense, SoundApp, Stroke, StrokeKind, Tokens, Track, TrackId, TrackKind, Ui, db_text, fader, json, pan_knob, pan_text, pos2,
@@ -23,7 +23,7 @@ pub(crate) fn send_slot(app: &mut SoundApp, ui: &mut Ui, track: &Track, slot: us
     let mark = if compact { Mark::Arrow } else { Mark::Letter((b'a' + slot as u8) as char) };
     match &snd {
         Some(s) => {
-            let name = route_name(app, &s.target);
+            let name = output_name(app, &s.target);
             let level = soundcraft_model::fader_db_to_pos(s.level_db);
             let color = if s.mute { t.mute } else { t.text };
             used_slot(ui.painter(), r, t.slot_face, mark, &name, color, Some(level));
@@ -67,7 +67,8 @@ pub(crate) fn send_slot(app: &mut SoundApp, ui: &mut Ui, track: &Track, slot: us
         None => empty_slot(ui.painter(), r, ui.rect_contains_pointer(r), mark),
     }
     let current = snd.as_ref().map(|send| (send.target.clone(), route_name(app, &send.target)));
-    send_route_menu(app, ui, &route_resp, id, slot, current);
+    let channels = output_channels(app);
+    send_route_menu(app, ui, &route_resp, id, slot, current, channels);
 }
 
 /// The Send window, as in Pro Tools: one send's fader, level, pan, Mute and Pre-fader. Clicking a
@@ -103,7 +104,7 @@ fn send_window_contents(app: &mut SoundApp, ctx: &egui::Context) {
         .show(ctx, |ui| {
             ui.set_width(150.0);
             ui.vertical_centered(|ui| {
-                ui.label(egui::RichText::new(route_name(app, &send.target)).color(t.counter_text));
+                ui.label(egui::RichText::new(output_name(app, &send.target)).color(t.counter_text));
                 ui.horizontal(|ui| {
                     ui.spacing_mut().item_spacing.x = 4.0;
                     ui.add_space(((ui.available_width() - 62.0) / 2.0).max(0.0));
@@ -114,16 +115,20 @@ fn send_window_contents(app: &mut SoundApp, ctx: &egui::Context) {
                         let _ = app.run("mix.send_level", json!({"track": id.0, "slot": slot, "mute": !send.mute}));
                     }
                 });
-                let mut pan = send.pan;
-                pan_knob(ui, 32.0, &mut pan, "Send pan (drag; double-click centres)");
-                if (pan - send.pan).abs() > f32::EPSILON {
-                    let _ = app.engine.execute_merged(
-                        "mix.send_level",
-                        &json!({"track": id.0, "slot": slot, "pan": pan}),
-                        &format!("send-pan:{}:{slot}", id.0),
-                    );
+                // A send is as wide as its destination: a mono send has no panner, as in Pro Tools
+                // (Reference Guide, "Mono and Stereo Sends", printed p. 1474).
+                if destination_channels(app, &send.target) > 1 {
+                    let mut pan = send.pan;
+                    pan_knob(ui, 32.0, &mut pan, "Send pan (drag; double-click centres)");
+                    if (pan - send.pan).abs() > f32::EPSILON {
+                        let _ = app.engine.execute_merged(
+                            "mix.send_level",
+                            &json!({"track": id.0, "slot": slot, "pan": pan}),
+                            &format!("send-pan:{}:{slot}", id.0),
+                        );
+                    }
+                    ui.label(egui::RichText::new(pan_text(send.pan)).color(t.counter_text).small());
                 }
-                ui.label(egui::RichText::new(pan_text(send.pan)).color(t.counter_text).small());
                 let (fr, fresp) = ui.allocate_exact_size(vec2(56.0, 220.0), Sense::hover());
                 fresp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Slider, true, crate::localization::text("Send level")));
                 // Distinct from the strip's "Send A level for <track>" icon and from the slot's "Send level", so a
@@ -161,10 +166,25 @@ fn send_window_contents(app: &mut SoundApp, ctx: &egui::Context) {
     }
 }
 
+/// Channels of a send's destination: the main mix, a bus or an output path (0 when it is missing).
+fn destination_channels(app: &SoundApp, target: &Route) -> usize {
+    let session = app.engine.session();
+    match target {
+        Route::Main => session.main_format().channels(),
+        Route::Bus(bus) => session.bus(*bus).map_or(0, |bus| bus.format.channels()),
+        Route::Hardware(name) => match session.outputs.iter().position(|path| path.name.eq_ignore_ascii_case(name)) {
+            Some(0) => session.main_format().channels(),
+            Some(index) => session.outputs[index].format.channels(),
+            None => 0,
+        },
+        _ => 0,
+    }
+}
+
 /// Secondary controls live behind the amount readout, separate from the bus selector like Logic.
 fn send_options_menu(app: &mut SoundApp, ui: &mut Ui, id: TrackId, slot: usize, send: &soundcraft_model::SendSlot) {
     ui.set_min_width(230.0);
-    ui.strong(crate::localized_format!("Send {} · {}", (b'A' + slot as u8) as char, route_name(app, &send.target)));
+    ui.strong(crate::localized_format!("Send {} · {}", (b'A' + slot as u8) as char, output_name(app, &send.target)));
     let mut db = send.level_db.max(-60.0);
     if ui.add(egui::Slider::new(&mut db, -60.0..=12.0).text(crate::localization::text("Level")).suffix(" dB")).changed() {
         let _ = app.engine.execute_merged("mix.send_level", &json!({"track": id.0, "slot": slot, "db": db}), &format!("send:{}:{slot}", id.0));
@@ -185,7 +205,8 @@ fn send_options_menu(app: &mut SoundApp, ui: &mut Ui, id: TrackId, slot: usize, 
         }
     });
     let mut pan = send.pan;
-    if ui.add(egui::Slider::new(&mut pan, -1.0..=1.0).text(crate::localization::text("Pan"))).changed() {
+    if destination_channels(app, &send.target) > 1 && ui.add(egui::Slider::new(&mut pan, -1.0..=1.0).text(crate::localization::text("Pan"))).changed()
+    {
         let _ = app.engine.execute_merged("mix.send_level", &json!({"track": id.0, "slot": slot, "pan": pan}), &format!("send-pan:{}:{slot}", id.0));
     }
     ui.horizontal(|ui| {
@@ -398,10 +419,22 @@ enum SendFooter {
     RemoveSend,
 }
 
-/// The send's destination menu: a title and the bus search on top, the matching buses in a list
-/// that scrolls, "new bus..." (and "Remove send" for an existing send) fixed under it.
+/// A row of the send's destination menu.
+enum SendRow {
+    /// A section title, shown while not searching.
+    Title(&'static str),
+    /// An output path: its label and the name `mix.send` is given as `output`.
+    Output(String, String),
+    /// A bus, by name.
+    Bus(soundcraft_model::BusId, String),
+}
+
+/// The send's destination menu: a title and the search on top, then, as in Pro Tools (Reference
+/// Guide, "Send Path Selector Choices", printed p. 1474), the output paths (as the track output
+/// selector lists them, with every pair of the device's `channels` outputs) and the buses in a
+/// list that scrolls, "new bus..." (and "Remove send" for an existing send) fixed under it.
 /// `current` is the send's destination and its name, if the slot has a send.
-fn send_route_menu(app: &mut SoundApp, ui: &Ui, field: &egui::Response, id: TrackId, slot: usize, current: Option<(Route, String)>) {
+fn send_route_menu(app: &mut SoundApp, ui: &Ui, field: &egui::Response, id: TrackId, slot: usize, current: Option<(Route, String)>, channels: usize) {
     let which = (b'A' + slot as u8) as char;
     let has_send = current.is_some();
     let header = |ui: &mut Ui| {
@@ -420,9 +453,18 @@ fn send_route_menu(app: &mut SoundApp, ui: &Ui, field: &egui::Response, id: Trac
                 ui.strong(crate::localized_format!("Send {which} · Choose destination", which = which));
             }
         }
-        let search = MenuSearch::show(ui, egui::Id::unique(("send-bus-search", id.0, slot)), crate::localization::text("Search buses…"));
-        let busses = &app.engine.session().busses;
-        let visible: Vec<_> = busses.iter().filter(|bus| search.matches(&bus.name)).collect();
+        let search = MenuSearch::show(ui, egui::Id::unique(("send-bus-search", id.0, slot)), crate::localization::text("Search outputs and buses…"));
+        let outputs = output_path_choices(app, channels).into_iter().filter(|(label, _)| search.matches(label)).map(|(l, v)| SendRow::Output(l, v));
+        let busses = app.engine.session().busses.iter().filter(|bus| search.matches(&bus.name)).map(|bus| SendRow::Bus(bus.id, bus.name.clone()));
+        let mut visible = Vec::new();
+        if search.typing() {
+            visible.extend(outputs.chain(busses));
+        } else {
+            visible.push(SendRow::Title("Output"));
+            visible.extend(outputs);
+            visible.push(SendRow::Title("Bus"));
+            visible.extend(busses);
+        }
         (search, visible)
     };
     let target = current.as_ref().map(|(route, _)| route);
@@ -435,13 +477,35 @@ fn send_route_menu(app: &mut SoundApp, ui: &Ui, field: &egui::Response, id: Trac
         |(_, visible)| visible.len(),
         |ui, range, (search, visible)| {
             let n = visible.len();
-            let picked = search.list_rows(ui, range, n, |ui, i, highlighted| {
-                let is_current = matches!(target, Some(Route::Bus(bus_id)) if *bus_id == visible[i].id);
-                menu_row(ui, highlighted || (is_current && !search.typing()), &visible[i].name)
+            let picked = search.list_rows(ui, range, n, |ui, i, highlighted| match &visible[i] {
+                SendRow::Title(title) => {
+                    ui.add_sized(
+                        [ui.available_width(), ui.spacing().interact_size.y],
+                        egui::Label::new(egui::RichText::new(crate::localization::text(title)).strong()),
+                    );
+                    false
+                }
+                SendRow::Output(label, value) => {
+                    let is_current = match target {
+                        Some(Route::Main) => value == "main",
+                        Some(Route::Hardware(name)) => name.eq_ignore_ascii_case(value),
+                        _ => false,
+                    };
+                    menu_row(ui, highlighted || (is_current && !search.typing()), label)
+                }
+                SendRow::Bus(bus_id, name) => {
+                    let is_current = matches!(target, Some(Route::Bus(current)) if current == bus_id);
+                    menu_row(ui, highlighted || (is_current && !search.typing()), name)
+                }
             });
-            picked.map(|i| {
+            picked.and_then(|i| {
+                let pick = match visible.get(i)? {
+                    SendRow::Title(_) => return None,
+                    SendRow::Output(_, value) => ("output", value.clone()),
+                    SendRow::Bus(_, name) => ("bus", name.clone()),
+                };
                 ui.close();
-                visible[i].name.clone()
+                Some(pick)
             })
         },
         |ui| {
@@ -464,22 +528,15 @@ fn send_route_menu(app: &mut SoundApp, ui: &Ui, field: &egui::Response, id: Trac
             app.ui.send_window = Some((id, slot));
         }
     };
-    if let Some(bus) = picked
-        && app.run("mix.send", json!({"track": id.0, "slot": slot, "bus": bus})).is_ok()
+    if let Some((key, name)) = picked
+        && app.run("mix.send", json!({"track": id.0, "slot": slot, key: name})).is_ok()
     {
         show_new_send(app);
     }
     match footer {
         Some(SendFooter::NewBus) => {
-            let busses = &app.engine.session().busses;
-            let mut n = busses.len() + 1;
-            while busses.iter().any(|bus| bus.name.eq_ignore_ascii_case(&format!("Bus {n}")))
-                || app.engine.session().track_by_name(&format!("Bus {n}")).is_some()
-            {
-                n += 1;
-            }
-            if app.run("mix.new_bus", json!({"name": format!("Bus {n}")})).is_ok()
-                && app.run("mix.send", json!({"track": id.0, "slot": slot, "bus": format!("Bus {n}")})).is_ok()
+            let name = free_bus_name(app.engine.session());
+            if app.run("mix.new_bus", json!({"name": name})).is_ok() && app.run("mix.send", json!({"track": id.0, "slot": slot, "bus": name})).is_ok()
             {
                 show_new_send(app);
             }
@@ -619,5 +676,67 @@ mod tests {
         let target = app.engine.session().track(kick).and_then(|t| t.mixer.sends.first().cloned().flatten()).map(|s| route_name(app, &s.target));
         assert_eq!(target.as_deref(), Some("Aux"), "the send moved");
         assert_eq!(app.ui.send_window, None, "no window opened");
+    }
+
+    /// As in Pro Tools (Reference Guide, Sends, printed p. 1468–1469 and 1474), the send selector
+    /// lists output paths, as the track output selector does, and then the buses. Choosing an
+    /// interface pair makes its path and sends there; a mono destination's send has no panner.
+    #[test]
+    fn the_send_selector_lists_output_paths_and_sends_to_an_interface_pair() {
+        let _palette = crate::theme::lock_test_palette();
+        let mut engine = soundcraft_engine::Engine::default();
+        engine.execute("track.new", &json!({"name": "Vox", "format": "mono"})).unwrap();
+        engine.execute("setup.io", &json!({"action": "create_output", "name": "Cue", "format": "mono", "first_channel": 4})).unwrap();
+        engine.execute("mix.new_bus", &json!({"name": "Verb"})).unwrap();
+        let vox = engine.session().track_by_name("Vox").unwrap().id;
+        let app = SoundApp::new(engine, None, Services::default());
+        let mut ready = false;
+        let mut h = Harness::builder().with_size(vec2(600.0, 900.0)).with_max_steps(32).build_ui_state(
+            move |ui, (app, vox): &mut (SoundApp, TrackId)| {
+                if !ready {
+                    crate::fonts::install(ui.ctx(), true);
+                    crate::theme::apply(ui.ctx(), false);
+                    ready = true;
+                    return;
+                }
+                let button = ui.button("Send A for Vox");
+                let current =
+                    app.engine.session().track(*vox).and_then(|t| t.mixer.sends[0].clone()).map(|s| (s.target.clone(), route_name(app, &s.target)));
+                send_route_menu(app, ui, &button, *vox, 0, current, 30);
+                send_window_contents(app, ui.ctx());
+            },
+            (app, vox),
+        );
+        h.run();
+        h.get_by_label("Send A for Vox").click();
+        h.run();
+        for listed in ["Output", "Out 1-2", "Cue", "Out 3-4", "Out 5-6"] {
+            assert!(h.query_by_label(listed).is_some(), "{listed} is listed");
+        }
+        assert!(h.query_by_label("Out 2-3").is_none(), "only Pro Tools' default pairs");
+        // The list scrolls; a search finds the buses after the outputs.
+        h.get_by_role(egui::accesskit::Role::TextInput).type_text("verb");
+        h.run();
+        assert!(h.query_by_label("Verb").is_some() && h.query_by_label("Out 1-2").is_none());
+        for _ in 0..4 {
+            h.key_press(egui::Key::Backspace);
+            h.run();
+        }
+        h.get_by_role(egui::accesskit::Role::TextInput).type_text("9-10");
+        h.run();
+        h.key_press(egui::Key::Enter);
+        h.run();
+        let (app, _) = h.state();
+        let send = app.engine.session().track(vox).and_then(|t| t.mixer.sends[0].clone()).expect("the send is made");
+        assert_eq!(send.target, Route::Hardware("Out 9-10".into()));
+        assert!(app.engine.session().outputs.iter().any(|path| path.name == "Out 9-10" && path.first_channel == 8), "the pair's path is made");
+        assert!(app.engine.session().busses.iter().all(|bus| bus.name == "Verb"), "no bus is made");
+        assert_eq!(app.ui.send_window, Some((vox, 0)), "the new send's window opens");
+        assert!(h.query_by_label("Send pan (drag; double-click centres)").is_some(), "a stereo send has a panner");
+
+        // To the mono path "Cue", the send is mono: no panner.
+        h.state_mut().0.run("mix.send", json!({"track": vox.0, "slot": 0, "output": "Cue"})).unwrap();
+        h.run();
+        assert!(h.query_by_label("Send pan (drag; double-click centres)").is_none(), "a mono send has no panner");
     }
 }
