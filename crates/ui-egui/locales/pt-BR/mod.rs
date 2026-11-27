@@ -125,6 +125,9 @@ pub(super) fn translate(source: &str) -> Option<&'static str> {
         "Input" => "Entrada",
         "Latency" => "Latência",
         "Record offset" => "Deslocamento de gravação",
+        "Moves recorded takes by this many samples: positive places them later, negative earlier." => {
+            "Desloca as tomadas gravadas por este número de amostras: positivo as coloca mais tarde, negativo mais cedo."
+        }
         "Input device" => "Dispositivo de entrada",
         "Instrument" => "Instrumento",
         "Interface scale" => "Escala da interface",
