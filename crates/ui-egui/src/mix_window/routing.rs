@@ -128,8 +128,9 @@ pub(crate) fn channel_span(names: &[String], first: usize, width: usize) -> Opti
     })
 }
 
-/// `label` followed by the device's name for its channels: "In 15 (ADAT 1)". Only the menu text
-/// changes; the route keeps the numbered name, so sessions open the same on any interface.
+/// `label` followed by the device's name for its channels: "In 15 (ADAT 1)". Only the menu and
+/// tooltip text change; the route keeps the numbered name, so sessions open the same on any
+/// interface.
 fn with_channel_names(label: String, names: &[String], first: usize, width: usize) -> String {
     match channel_span(names, first, width) {
         Some(name) if !name.eq_ignore_ascii_case(&label) => format!("{label} ({name})"),

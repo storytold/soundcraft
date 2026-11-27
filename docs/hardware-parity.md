@@ -20,7 +20,7 @@ Legend: ✅ works · 🟡 partial · ❌ missing.
 | Choose input device | ✅ | 🟡 Setup › Playback Engine (not yet verified on macOS) | ✅ (WASAPI, ASIO) | 🟡 (not yet verified) | ❌ no recording | ❌ |
 | Buffer size (32–2048) | ✅ | 🟡 device buffer when the driver allows it (not yet verified); mix in 512-sample blocks | 🟡 device buffer 16–8192 (verified 128 on ASIO, 256 on WASAPI); mix in 512-sample blocks | 🟡 (not yet verified) | 🟡 | ❌ |
 | Duplex stream on one clock | ✅ | ❌ separate input/output streams | ❌ | ❌ | ❌ | ❌ |
-| Hardware I/O mapping (I/O Setup to physical channels) | ✅ | 🟡 named output paths; Core Audio opens every output (a path on outputs 3–4, ADAT outputs 17–22 and a live channel change verified on an RME UFX; Unavailable on a 2-channel device); the input and output selectors and I/O Setup show the channel names the interface reports ("In 15 (ADAT 1)", verified on the UFX) | 🟡 named outputs limited to the opened main-mix width (WASAPI checked on a TASCAM Model 12) | 🟡 named outputs limited to the opened main-mix width; unverified | 🟡 named outputs limited to the opened main-mix width; unverified | ❌ |
+| Hardware I/O mapping (I/O Setup to physical channels) | ✅ | 🟡 named output paths; Core Audio opens every output (a path on outputs 3–4, ADAT outputs 17–22 and a live channel change verified on an RME UFX; Unavailable on a 2-channel device); the input and output selector menus and tooltips and I/O Setup show the channel names the interface reports ("In 15 (ADAT 1)"; the closed selector keeps the path name, verified on the UFX) | 🟡 named outputs limited to the opened main-mix width (WASAPI checked on a TASCAM Model 12) | 🟡 named outputs limited to the opened main-mix width; unverified | 🟡 named outputs limited to the opened main-mix width; unverified | ❌ |
 | Low-latency monitoring | ✅ | ❌ (`options.low_latency_monitoring` is a stored flag) | ❌ | ❌ | ❌ | ❌ |
 | Latency reporting and record offset compensation | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ |
 | Sample rate follows the session; resample when it can't | ✅ (switches device) | 🟡 resamples (input pitch bug fixed, #28) | 🟡 | 🟡 | 🟡 | 🟡 |
@@ -72,7 +72,7 @@ Legend: ✅ works · 🟡 partial · ❌ missing.
 
 | Date | Change | Summary |
 |---|---|---|
-| 2026-11-25 | minor | The input and output selectors and I/O Setup show the channel names the interface reports (verified on an RME UFX) |
+| 2026-11-25 | minor | The input and output selector menus and tooltips and I/O Setup show the channel names the interface reports (verified on an RME UFX) |
 | 2026-11-25 | minor | Named output paths route to hardware channels; Core Audio opens every output of an interface (verified on an RME UFX) |
 | 2026-11-18 | minor | MIDI input devices (`midir`): live play-through to record-enabled MIDI and instrument tracks (notes, pedal, controllers, pitch bend, aftertouch), MIDI recording into clips, per-track device and channel, device switches in Playback Engine; guide in `midi-input.md` |
 | 2026-10-30 | minor | Record to disk: takes are written to disk as they record (#84) and long takes continue in a new file (#888) |
