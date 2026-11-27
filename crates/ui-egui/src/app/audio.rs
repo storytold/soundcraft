@@ -36,6 +36,9 @@ impl SoundApp {
         self.attach_midi(&player);
         player.locate(at);
         self.player = Some(player);
+        self.settle_lost_refusal();
+        // A stall of the device chosen now is a first one.
+        self.stall = None;
         Ok(())
     }
 
@@ -78,10 +81,11 @@ impl SoundApp {
                 crate::localization::text("Use Reconnect audio device in Setup › Playback Engine, or restart SoundCraft."),
             ),
             OutputTrouble::Gone => lost_text(&name, loss, self.ui.audio.output.is_none().then_some(true)),
-            OutputTrouble::Stalled => (
-                format!("“{}” {}", name, crate::localization::text("stopped asking for audio")),
-                crate::localization::text("Use Reconnect audio device in Setup › Playback Engine."),
-            ),
+            OutputTrouble::Stalled => {
+                let said = stalled_text(&name, self.stall, std::time::Instant::now());
+                self.stall = Some(Stall::Reported);
+                said
+            }
         };
         let (recording, playing) = (self.engine.transport.recording, self.engine.transport.playing);
         if recording || playing {
@@ -151,6 +155,12 @@ impl SoundApp {
         let player = Player::with_config(self.engine.session_arc(), cfg);
         self.attach_midi(&player);
         self.player = Some(player);
+        self.settle_lost_refusal();
+        // Reconnecting an output that stopped asking for audio: if it stops again soon, the
+        // status says Reconnect is not enough (see `stalled_text`).
+        if self.stall == Some(Stall::Reported) {
+            self.stall = Some(Stall::Reconnected(std::time::Instant::now()));
+        }
     }
 }
 
@@ -217,6 +227,68 @@ fn lost_text(name: &str, loss: OutputLoss, default: Option<bool>) -> (String, &'
         None => then,
     };
     (cause, then)
+}
+
+/// An output that stopped asking for audio, until a device choice: reported, then reopened by
+/// Reconnect at the instant held.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) enum Stall {
+    Reported,
+    Reconnected(std::time::Instant),
+}
+
+/// How soon after a Reconnect a stall counts as the same one coming back. Seen on Windows after
+/// sleep and wake (Model 12, WASAPI): the reopened output stopped again within 2 s, twice; only
+/// unplugging and replugging the interface brought it back, and a fresh SoundCraft stalled on it
+/// too, so it was the driver's state, which Reconnect cannot reset.
+const STALLED_AGAIN: std::time::Duration = std::time::Duration::from_secs(60);
+
+/// What to say about the output `name` that stopped asking for audio at `now`, after `stall`:
+/// first, use Reconnect; when it stops again soon after a Reconnect, that the interface itself
+/// needs unplugging and plugging back in (or switching off and on) before Reconnect. Wording
+/// only: Reconnect is offered either way. All audio systems.
+fn stalled_text(name: &str, stall: Option<Stall>, now: std::time::Instant) -> (String, &'static str) {
+    let again = matches!(stall, Some(Stall::Reconnected(at)) if now.saturating_duration_since(at) < STALLED_AGAIN);
+    if again {
+        (
+            crate::localized_format!("“{name}” stopped asking for audio again after Reconnect.", name = name),
+            crate::localization::text(
+                "Unplug the interface and plug it back in (or switch it off and on), then use Reconnect audio device in Setup › Playback Engine.",
+            ),
+        )
+    } else {
+        (
+            crate::localized_format!("“{name}” stopped asking for audio.", name = name),
+            crate::localization::text("Use Reconnect audio device in Setup › Playback Engine."),
+        )
+    }
+}
+
+#[cfg(test)]
+mod stall_tests {
+    use super::{Stall, stalled_text};
+    use std::time::{Duration, Instant};
+
+    /// Seen on Windows after sleep and wake: a Model 12 that stopped asking for audio stopped
+    /// again within 2 s of each Reconnect; only unplugging and replugging it brought it back.
+    #[test]
+    fn an_output_that_stalls_again_soon_after_reconnect_is_said_to_need_a_replug() {
+        let name = "喇叭 (Model 12)";
+        let t0 = Instant::now();
+        let first = stalled_text(name, None, t0);
+        assert_eq!(first.0, "“喇叭 (Model 12)” stopped asking for audio.");
+        assert_eq!(first.1, "Use Reconnect audio device in Setup › Playback Engine.");
+        // Stalled before, not reconnected since: Reconnect has not been tried yet.
+        assert_eq!(stalled_text(name, Some(Stall::Reported), t0 + Duration::from_secs(5)), first);
+        let again = stalled_text(name, Some(Stall::Reconnected(t0)), t0 + Duration::from_secs(5));
+        assert_eq!(again.0, "“喇叭 (Model 12)” stopped asking for audio again after Reconnect.");
+        assert_eq!(
+            again.1,
+            "Unplug the interface and plug it back in (or switch it off and on), then use Reconnect audio device in Setup › Playback Engine."
+        );
+        // Long after a Reconnect that worked, a stall is a new one.
+        assert_eq!(stalled_text(name, Some(Stall::Reconnected(t0)), t0 + Duration::from_secs(600)), first);
+    }
 }
 
 #[cfg(test)]

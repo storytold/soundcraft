@@ -17,6 +17,7 @@ mod playback;
 mod plugins;
 mod replug;
 
+pub(crate) use audio::Stall;
 #[cfg(test)]
 pub(crate) use playback::automation_step_due;
 #[cfg(test)]
@@ -44,6 +45,8 @@ impl SoundApp {
             punch: None,
             recorder_failed: false,
             lost_audio: None,
+            lost_refusal: None,
+            stall: None,
             midi_inputs: None,
             midi_scan_at: 0.0,
             midi_take: Vec::new(),
