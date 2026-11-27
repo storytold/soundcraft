@@ -410,6 +410,15 @@ mod tests {
     }
 
     #[test]
+    fn spanish_catalog_covers_every_menu_label() {
+        for path in include_str!("../../engine/catalog/menus.txt").lines() {
+            for label in path.split(" > ").map(str::trim).filter(|label| !label.is_empty()) {
+                assert!(super::es::translate(label).is_some(), "missing es menu label: {label}");
+            }
+        }
+    }
+
+    #[test]
     fn engine_errors_are_translated_with_their_values() {
         assert_eq!(error_text("select a clip"), "select a clip");
         let _scope = enter(Language::PortugueseBrazil);
