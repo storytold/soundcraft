@@ -8,7 +8,7 @@ impl SoundApp {
         self.note_host_geometry(ctx, raw);
         // Expire before injecting: a gesture that can no longer reach a UI pass must not put one
         // last copy of its events into this pass after its request was already canceled.
-        crate::control::expire_gestures(self);
+        crate::control::expire_gestures(self, ctx);
         // A host that could not run a UI pass retains the input this hook mutated (eframe's
         // `pending_raw_input`, the web runner's `input.raw`) and hands it back next tick. Strip the
         // copy appended last time before appending the still-pending batch again: otherwise a

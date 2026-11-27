@@ -17,6 +17,7 @@ impl Rig {
         engine.execute("track.new", &json!({"kind": kind})).unwrap();
         engine.execute("edit.tool", &json!({"tool": "pencil"})).unwrap();
         let mut r = Rig { ctx: egui::Context::default(), app: SoundApp::new(engine, None, Services::default()) };
+        soundcraft_ui_egui::framework::install_headless(&r.ctx);
         r.frames(4);
         r
     }

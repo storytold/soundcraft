@@ -10,6 +10,11 @@ repository.workspace = true
 [dependencies]
 craft-mime.workspace = true
 craft-ui.workspace = true
+craft-behavior.workspace = true
+craft-host.workspace = true
+craft-keymap.workspace = true
+craft-theme.workspace = true
+craft-window.workspace = true
 soundcraft-time.workspace = true
 craft-audio.workspace = true
 soundcraft-midi.workspace = true
