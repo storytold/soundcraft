@@ -828,6 +828,7 @@ pub fn io_setup(app: &mut SoundApp, ctx: &egui::Context) {
                     width
                 });
                 physical_paths(app, ui, true, channels);
+                default_input_paths(ui, channels);
             }
             1 => {
                 main_output(app, ui);
@@ -884,6 +885,33 @@ fn main_output(app: &mut SoundApp, ui: &mut egui::Ui) {
     });
 }
 
+/// The device's default input paths, as Pro Tools' Input page lists them for an interface
+/// (Reference Guide, "Default I/O Settings", printed p. 58; "Default Path Names", p. 83): a stereo
+/// path for each pair (In 1-2, In 3-4 …, a mono one for an odd last input), each with its mono
+/// inputs (In 1 … In N). They come from the device, so they are always there and need no saving;
+/// track input selectors offer them by these names. With no input device known, the first eight.
+fn default_input_paths(ui: &mut egui::Ui, channels: usize) {
+    let channels = if channels == 0 { 8 } else { channels };
+    ui.separator();
+    ui.strong(crate::localization::text("Default paths"));
+    ui.label(egui::RichText::new(crate::localized_format!("Mono: In 1 to In {n}", n = channels)).small());
+    egui::ScrollArea::vertical().id_salt("default_inputs").max_height(140.0).show(ui, |ui| {
+        egui::Grid::new("default_input_paths").striped(true).show(ui, |ui| {
+            for first in (1..=channels).step_by(2) {
+                let (name, format, range) = if first < channels {
+                    (crate::localized_format!("In {}-{}", first, first + 1), "Stereo", format!("{}–{}", first, first + 1))
+                } else {
+                    (crate::localized_format!("In {}", first), "Mono", first.to_string())
+                };
+                ui.label(name);
+                ui.label(crate::localization::text(format));
+                ui.label(range);
+                ui.end_row();
+            }
+        });
+    });
+}
+
 fn physical_paths(app: &mut SoundApp, ui: &mut egui::Ui, input: bool, channels: usize) {
     use soundcraft_model::ChannelFormat;
     let session = app.engine.session();
@@ -897,17 +925,20 @@ fn physical_paths(app: &mut SoundApp, ui: &mut egui::Ui, input: bool, channels: 
         .horizontal(|ui| {
             let new_path = ui.button(crate::localization::text(if input { "New Input" } else { "New Output" })).clicked();
             // Pro Tools' Default (Reference Guide, printed p. 58 and 82–83): delete the paths not in
-            // use, restore default names, and make a path for every pair of the device's outputs.
-            let default = !input
-                && ui
-                    .button(crate::localization::text("Default"))
-                    .on_hover_text(crate::localization::text("Restore the default output paths of the current device"))
-                    .clicked();
+            // use, restore default names, and make a path for every pair of the device's outputs
+            // (the default inputs are always there, see `default_input_paths`).
+            let tip = if input {
+                "Restore the default input paths of the current device"
+            } else {
+                "Restore the default output paths of the current device"
+            };
+            let default = ui.button(crate::localization::text("Default")).on_hover_text(crate::localization::text(tip)).clicked();
             (new_path, default)
         })
         .inner;
     if default {
-        let _ = app.run("setup.io", json!({"action": "default_outputs", "channels": channels}));
+        let args = if input { json!({"action": "default_inputs"}) } else { json!({"action": "default_outputs", "channels": channels}) };
+        let _ = app.run("setup.io", args);
     }
     if new_path {
         let prefix = if input { "Input" } else { "Output" };

@@ -67,7 +67,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "I/O...",
             ["Setup"],
             None,
-            "{action?: list|create_bus|rename_bus|delete_bus|create_input|set_input|rename_input|delete_input|create_output|set_output|rename_output|delete_output|default_outputs, name?, new_name?, format?: stereo, first_channel?: 0, channels?: device outputs (default_outputs)}",
+            "{action?: list|create_bus|rename_bus|delete_bus|create_input|set_input|rename_input|delete_input|create_output|set_output|rename_output|delete_output|default_inputs|default_outputs, name?, new_name?, format?: stereo, first_channel?: 0, channels?: device outputs (default_outputs)}",
             always,
             io_setup
         ),
@@ -309,6 +309,10 @@ fn io_setup(e: &mut Engine, p: &Value) -> Result<Value> {
     if action == "list" {
         return Ok(io_state(e.session()));
     }
+    if action == "default_inputs" {
+        default_inputs(e.session_mut());
+        return Ok(io_state(e.session()));
+    }
     if action == "default_outputs" {
         let channels = usize::try_from(i64_or(p, "channels", 0).clamp(0, soundcraft_mix::MAX_HARDWARE_CHANNELS as i64)).unwrap_or(0);
         default_outputs(e.session_mut(), channels);
@@ -463,6 +467,34 @@ fn input_channel(p: &Value, default: u16, format: ChannelFormat) -> Result<u16> 
         return Err(bad("setup.io", "input path is outside the supported channel range"));
     }
     Ok(first as u16)
+}
+
+/// The Input page's Default, as in Pro Tools (Reference Guide, "Restoring Default Paths and Path
+/// Names", printed p. 82–83): delete the input paths no track uses, and give a path in use that
+/// sits where a default path does its default name back. The default paths are the numbered inputs
+/// every device offers (stereo pairs In 1-2, In 3-4 … and mono In 1 … In N), so its tracks move to
+/// that numbered input, on the same channels, and the path goes. A path in use with no default
+/// name (a pair off the defaults, or a wider path) stays.
+fn default_inputs(s: &mut Session) {
+    for path in std::mem::take(&mut s.inputs) {
+        let uses = |route: &Route| matches!(route, Route::Input(name) if name.eq_ignore_ascii_case(&path.name));
+        if !s.tracks.iter().any(|t| uses(&t.mixer.input)) {
+            continue;
+        }
+        let first = usize::from(path.first_channel);
+        let default = match path.format.channels() {
+            1 => Some(format!("In {}", first + 1)),
+            2 if first % 2 == 0 => Some(format!("In {}-{}", first + 1, first + 2)),
+            _ => None,
+        };
+        let Some(default) = default else {
+            s.inputs.push(path);
+            continue;
+        };
+        for t in s.tracks.iter_mut().filter(|t| uses(&t.mixer.input)) {
+            t.mixer.input = Route::Hardware(default.clone());
+        }
+    }
 }
 
 /// Whether a track output or send uses the output path `name`.
@@ -797,6 +829,36 @@ fn import_session_data(e: &mut Engine, p: &Value) -> Result<Value> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    /// Default on the Input page, as in Pro Tools (Reference Guide, "Restoring Default Paths and
+    /// Path Names", printed p. 82–83): input paths not in use are deleted, and a path in use that
+    /// sits where a default path does gets its default name back, which here is the numbered input
+    /// ("In 7-8", "In 5") the device always offers; its tracks keep the same channels. A path in
+    /// use with no default name stays. One undo step.
+    #[test]
+    fn default_restores_the_default_input_paths() {
+        let mut e = Engine::default();
+        for (track, format) in [("Keys", "stereo"), ("Vox", "mono"), ("Room", "stereo")] {
+            e.execute("track.new", &json!({"name": track, "format": format})).unwrap();
+        }
+        for (name, format, first) in [("PC1X", "stereo", 6), ("Mic", "mono", 4), ("Odd", "stereo", 1), ("Spare", "mono", 9)] {
+            e.execute("setup.io", &json!({"action": "create_input", "name": name, "format": format, "first_channel": first})).unwrap();
+        }
+        for (track, input) in [("Keys", "PC1X"), ("Vox", "Mic"), ("Room", "Odd")] {
+            e.execute("track.input", &json!({"track": track, "input": input})).unwrap();
+        }
+        let before = e.session().inputs.clone();
+        e.execute("setup.io", &json!({"action": "default_inputs"})).unwrap();
+        let input = |e: &Engine, track: &str| e.session().track_by_name(track).unwrap().mixer.input.clone();
+        assert_eq!(input(&e, "Keys"), Route::Hardware("In 7-8".into()));
+        assert_eq!(input(&e, "Vox"), Route::Hardware("In 5".into()));
+        assert_eq!(input(&e, "Room"), Route::Input("Odd".into()), "no default path sits on channels 2-3");
+        let names: Vec<&str> = e.session().inputs.iter().map(|path| path.name.as_str()).collect();
+        assert_eq!(names, ["Odd"]);
+        e.execute("edit.undo", &json!({})).unwrap();
+        assert_eq!(e.session().inputs, before, "one undo step");
+        assert_eq!(input(&e, "Keys"), Route::Input("PC1X".into()));
+    }
+
     #[test]
     fn input_format_and_reused_names_cannot_disconnect_or_rebind_tracks() {
         let mut e = Engine::default();

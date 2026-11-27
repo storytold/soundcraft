@@ -113,3 +113,35 @@ fn default_restores_the_default_output_paths() {
     assert_eq!(outputs.len(), 1, "{outputs:?}");
     assert_eq!((outputs[0].name.as_str(), outputs[0].first_channel), ("Out 1-2", 0));
 }
+
+/// Setup › I/O's Inputs page shows the device's default input paths, Pro Tools' stereo pairs
+/// (Reference Guide, "Default I/O Settings", printed p. 58), and its Default button deletes the
+/// input paths no track uses (p. 82–83). With no input device known, the first eight inputs.
+#[test]
+fn the_inputs_page_shows_the_default_input_paths_and_default_restores_them() {
+    let mut app = SoundApp::new(soundcraft_engine::Engine::default(), None, Services::default());
+    app.run("setup.io", json!({"action": "create_input", "name": "Spare", "format": "mono", "first_channel": 3})).unwrap();
+    menus::invoke_menu(&mut app, "window.io_setup", "Setup > I/O...");
+    let mut h =
+        Harness::builder().with_context_setup(soundcraft_ui_egui::framework::install_headless).with_size(vec2(1600.0, 1000.0)).build_ui_state(
+            |ui, app: &mut SoundApp| {
+                let ctx = ui.ctx().clone();
+                app.logic(&ctx);
+                app.ui(ui);
+            },
+            app,
+        );
+    for _ in 0..3 {
+        h.step();
+    }
+    for listed in ["In 1-2", "In 3-4", "In 5-6", "In 7-8"] {
+        assert!(h.query_by_label(listed).is_some(), "{listed} is shown");
+    }
+    assert!(h.query_by_label("In 2-3").is_none());
+    h.get_by_label("Default").click();
+    for _ in 0..3 {
+        h.step();
+    }
+    assert!(h.state().engine.session().inputs.is_empty(), "the unused path is deleted");
+    assert!(h.query_by_label("In 1-2").is_some(), "the default paths stay");
+}
