@@ -1,4 +1,4 @@
-const PITCH_CLASSES: [&str; 12] = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"];
+pub(crate) const PITCH_CLASSES: [&str; 12] = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"];
 
 /// Note name using the Pro Tools convention where middle C (60) is "C3" (so 0 is "C-2").
 pub fn note_name(pitch: u8) -> String {
