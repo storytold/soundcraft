@@ -812,8 +812,9 @@ pub fn io_setup(app: &mut SoundApp, ctx: &egui::Context) {
             for (name, fmt) in busses {
                 let key = egui::Id::unique(("bus_name", name.clone()));
                 let mut edit: String = ui.ctx().memory(|m| m.data.get_temp(key)).unwrap_or_else(|| name.clone());
-                let r =
-                    crate::widgets::named_text_field(ui.text_edit_singleline(&mut edit), &crate::localized_format!("Bus name: {name}", name = name));
+                // As wide as an output path's name: a grid cell would otherwise shrink it to a few letters.
+                let field = ui.add_sized([155.0, ui.spacing().interact_size.y], egui::TextEdit::singleline(&mut edit));
+                let r = crate::widgets::named_text_field(field, &crate::localized_format!("Bus name: {name}", name = name));
                 ui.ctx().memory_mut(|m| m.data.insert_temp(key, edit.clone()));
                 if r.lost_focus() && edit != name {
                     let _ = app.run("setup.io", json!({"action": "rename_bus", "name": name, "new_name": edit}));
@@ -915,7 +916,10 @@ fn output_paths(app: &mut SoundApp, ui: &mut egui::Ui) {
                 let mut first = usize::from(path.first_channel) + 1;
                 let max_first = if channels == 0 { 1024 } else { usize::from(channels).saturating_sub(format.channels()).saturating_add(1) };
                 let upper = max_first.max(first);
-                let channel = ui.add(egui::DragValue::new(&mut first).range(1..=upper).update_while_editing(false));
+                let channel = crate::widgets::named_text_field(
+                    ui.add(egui::DragValue::new(&mut first).range(1..=upper).update_while_editing(false)),
+                    crate::localization::text("First channel"),
+                );
                 if (channel.changed() || (index != 0 && format != path.format)) && first > 0 {
                     let mut args = json!({"action": "set_output", "name": row_name, "first_channel": first - 1});
                     if index != 0 {
