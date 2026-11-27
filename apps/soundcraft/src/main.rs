@@ -369,7 +369,8 @@ fn main() -> eframe::Result {
         os_window::name_for(os_window::identity()),
         options,
         Box::new(move |cc| {
-            // The input opens before the output (see `SoundApp::open_audio_devices`).
+            // Where the input is the output's device on ASIO or Core Audio, it opens before the
+            // output (see `SoundApp::open_audio_devices`); otherwise on the first record or monitor.
             let (player, input) = if no_audio {
                 (None, None)
             } else {
