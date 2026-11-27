@@ -880,7 +880,7 @@ fn menu_translate(source: &str) -> Option<&'static str> {
         "no output" => "sem saída",
         "Out 1-2" => "Saída 1-2",
         "Bus" => "Bus",
-        "Search buses…" => "Pesquisar buses…",
+        "Search outputs and buses…" => "Buscar saídas e buses…",
         "In {}" => "Entrada {}",
         "In {}-{}" => "Entradas {}-{}",
         "Read" => "Leitura",

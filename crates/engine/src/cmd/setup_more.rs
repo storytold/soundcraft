@@ -359,11 +359,7 @@ fn io_setup(e: &mut Engine, p: &Value) -> Result<Value> {
             }
             let o = &mut s.outputs[index];
             let old = std::mem::replace(&mut o.name, to.clone());
-            for t in &mut s.tracks {
-                if matches!(&t.mixer.output, Route::Hardware(path) if path.eq_ignore_ascii_case(&old)) {
-                    t.mixer.output = Route::Hardware(to.clone());
-                }
-            }
+            rename_output_routes(s, &old, &to);
         }
         "set_output" => {
             let (index, output) = s
@@ -390,6 +386,18 @@ fn io_setup(e: &mut Engine, p: &Value) -> Result<Value> {
         other => return Err(bad(id, format!("unknown action `{other}`"))),
     }
     Ok(io_state(s))
+}
+
+/// Point every track output and send on the output path `old` at `new`.
+fn rename_output_routes(s: &mut Session, old: &str, new: &str) {
+    for t in &mut s.tracks {
+        let routes = std::iter::once(&mut t.mixer.output).chain(t.mixer.sends.iter_mut().flatten().map(|send| &mut send.target));
+        for route in routes {
+            if matches!(route, Route::Hardware(path) if path.eq_ignore_ascii_case(old)) {
+                *route = Route::Hardware(new.to_string());
+            }
+        }
+    }
 }
 
 /// Routes name busses and output paths alike (`track.output`), so one name cannot be both.
