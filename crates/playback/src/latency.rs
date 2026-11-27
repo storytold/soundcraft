@@ -26,7 +26,13 @@ impl ReportedLatency {
     pub fn observe(&self, report: Option<Duration>) {
         if let Some(latency) = report.filter(|d| *d <= PLAUSIBLE) {
             let nanos = u64::try_from(latency.as_nanos()).unwrap_or(u64::MAX).min(LOST - 2);
-            let _ = self.0.fetch_update(Relaxed, Relaxed, |v| (v != LOST).then_some(nanos + 1));
+            let mut seen = self.0.load(Relaxed);
+            while seen != LOST {
+                match self.0.compare_exchange_weak(seen, nanos + 1, Relaxed, Relaxed) {
+                    Ok(_) => break,
+                    Err(now) => seen = now,
+                }
+            }
         }
     }
 
