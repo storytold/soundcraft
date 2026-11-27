@@ -703,7 +703,8 @@ pub fn playback_engine(app: &mut SoundApp, ctx: &egui::Context) {
             ui.label(crate::localized_format!("{sr} Hz{note}", sr = sr, note = note));
             ui.end_row();
         });
-        // Read when the window opens or the device choice changes, not on every frame.
+        // Read when the window opens, the device choice changes or a stream opens or closes, not
+        // on every frame.
         let lookup_id = clock_lookup_id();
         let lookup = cached_lookup(ui.data(|d| d.get_temp::<ClockLookup>(lookup_id)), &app.ui.audio, streams_open(app), ClockLookup::read);
         ui.data_mut(|d| d.insert_temp(lookup_id, lookup.clone()));
@@ -892,8 +893,8 @@ fn streams_open(app: &SoundApp) -> bool {
 }
 
 /// `cache` when it was read for `cfg` with streams `open` as now, else `read(cfg, open)`. On Core
-/// Audio and ASIO, naming the default input lists the input devices, so the Playback Engine keeps
-/// the lookup while it is open instead of reading it on every frame.
+/// Audio, and on ASIO with no stream open, naming the input lists the input devices, so the
+/// Playback Engine keeps the lookup while it is open instead of reading it on every frame.
 fn cached_lookup(
     cache: Option<ClockLookup>,
     cfg: &soundcraft_playback::AudioConfig,
