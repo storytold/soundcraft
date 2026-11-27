@@ -44,7 +44,7 @@ fn repeated_track_controls_are_named_and_valued_per_track() {
     for name in ["Kick", "Snare"] {
         let view_label = format!("Track view for {name}");
         let view = h.query_by_role_and_label(Role::ComboBox, &view_label).unwrap_or_else(|| panic!("missing track view for {name}"));
-        assert_eq!(view.value().as_deref(), Some("waveform"), "track view value for {name}");
+        assert_eq!(view.value().as_deref(), Some("Waveform"), "track view value for {name}");
         let voice_label = format!("Voice for {name}");
         let voice = h.query_by_role_and_label(Role::ComboBox, &voice_label).unwrap_or_else(|| panic!("missing voice for {name}"));
         assert_eq!(voice.value().as_deref(), Some("dyn"), "voice value for {name}");
@@ -2376,4 +2376,27 @@ fn short_track_name_is_centered_and_long_name_is_left_aligned() {
     assert_eq!(long_pos.x, r1.min.x + 17.5);
     let first_center_x = first_pos.x + first_size.x * 0.5;
     assert!((first_center_x - (r0.min.x + 64.5)).abs() <= 0.1, "short name should be centered (center was at {first_center_x})");
+}
+
+/// #1834: every track view shows a name, not its stored id; automation ids get title case.
+#[test]
+fn view_label_names_every_view() {
+    let cases: [(&str, &str); 13] = [
+        ("notes", "Notes"),
+        ("regions", "Clips"),
+        ("blocks", "Blocks"),
+        ("waveform", "Waveform"),
+        ("clip_gain", "Clip Gain"),
+        ("playlists", "Playlists"),
+        ("volume", "Volume"),
+        ("pan", "Pan"),
+        ("pan2", "Pan 2"),
+        ("mute", "Mute"),
+        ("send_a_level", "Send A Level"),
+        ("send_b_pan", "Send B Pan"),
+        ("plugin:a:2", "insert A 2"),
+    ];
+    for (id, label) in cases {
+        assert_eq!(super::tracks::view_label(id), label, "{id}");
+    }
 }

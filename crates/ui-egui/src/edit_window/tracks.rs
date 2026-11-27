@@ -168,18 +168,44 @@ fn playlist_lanes(app: &mut SoundApp, ui: &mut Ui, track: &Track, row: Rect, mai
     }
 }
 
+/// The name a track view shows in the menu and on the selector. Stored ids stay lowercase;
+/// automation ids get the title case `AutoParam::label` leaves off (`plugin:` lanes keep
+/// "insert A <param>").
 pub(super) fn view_label(v: &str) -> String {
+    match v {
+        "notes" => return "Notes".into(),
+        "regions" => return "Clips".into(),
+        "blocks" => return "Blocks".into(),
+        "waveform" => return "Waveform".into(),
+        "clip_gain" => return "Clip Gain".into(),
+        "playlists" => return "Playlists".into(),
+        _ => {}
+    }
     match AutoParam::parse(v) {
-        Some(p) => p.label(),
+        Some(p @ AutoParam::Plugin { .. }) => p.label(),
+        Some(p) => title_case(&p.label()),
         None => v.to_string(),
     }
+}
+
+fn title_case(s: &str) -> String {
+    s.split(' ')
+        .map(|w| {
+            let mut c = w.chars();
+            match c.next() {
+                Some(f) => f.to_uppercase().collect::<String>() + c.as_str(),
+                None => String::new(),
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 pub(super) fn view_menu(app: &mut SoundApp, ui: &mut Ui, track: &Track) {
     let id = track.id.0;
     let mut opts: Vec<&str> = Vec::new();
     if track.kind.is_midi() {
-        opts.extend(["notes", "regions", "blocks"]);
+        opts.extend(["blocks", "regions", "notes"]);
     } else if track.kind.has_playlist() {
         opts.extend(["waveform", "blocks", "clip_gain", "playlists"]);
     }
