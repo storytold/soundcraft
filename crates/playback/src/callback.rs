@@ -733,7 +733,7 @@ impl AudioState {
         let monitoring = midi_live || (self.input.is_some() && self.session.tracks.iter().any(|t| t.mixer.input_monitor || t.mixer.record_arm));
         if !self.playing && !monitoring {
             self.drop_midi();
-            // The input opens with the output: what it sends while nothing listens is not kept.
+            // An input opened with the output sends while nothing listens: that is not kept.
             if let Some(ring) = &self.input {
                 ring.clear();
             }
