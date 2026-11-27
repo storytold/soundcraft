@@ -661,6 +661,7 @@ pub fn playback_engine(app: &mut SoundApp, ctx: &egui::Context) {
             }
         });
         ui.separator();
+        let right = ui.max_rect().right();
         egui::Grid::new("pe-state").num_columns(2).show(ui, |ui| {
             ui.label(crate::localization::text("Output"));
             ui.label(app.player.as_ref().map_or(crate::localization::text("none").to_string(), |p| {
@@ -684,7 +685,7 @@ pub fn playback_engine(app: &mut SoundApp, ctx: &egui::Context) {
             ui.end_row();
             if same_clock(app) == Some(false) {
                 ui.label("");
-                ui.label(egui::RichText::new(crate::localization::text(DIFFERENT_CLOCKS)).color(ui.visuals().warn_fg_color));
+                clock_warning(ui, &soundcraft_playback::devices::system_name(&app.ui.audio), right);
                 ui.end_row();
             }
             ui.label(crate::localization::text("Record offset"));
@@ -796,8 +797,34 @@ pub fn audio_device_command(app: &mut SoundApp, p: &serde_json::Value) -> Result
     Ok(out)
 }
 
-/// The Playback Engine's warning when the input and output run on different clocks.
-const DIFFERENT_CLOCKS: &str = "Input and output run on different clocks: long takes drift and monitoring may click. On macOS, combine them as an Aggregate Device in Audio MIDI Setup.";
+/// The Playback Engine's warning when the input and output run on different clocks, with how to
+/// put them on one clock under audio system `system` (as cpal names it). Pro Tools warns the same
+/// way and leaves the choice to the user: one device for both, or one made of both.
+fn different_clocks(system: &str) -> &'static str {
+    match system {
+        "CoreAudio" => {
+            "Input and output run on different clocks: long takes drift and monitoring may click. To fix it, choose one device for both input and output, or combine them as an Aggregate Device in Audio MIDI Setup."
+        }
+        "WASAPI" | "ASIO" => {
+            "Input and output run on different clocks: long takes drift and monitoring may click. To fix it, use one interface for both input and output, with its ASIO driver where available."
+        }
+        _ => {
+            "Input and output run on different clocks: long takes drift and monitoring may click. To fix it, choose one device for both input and output."
+        }
+    }
+}
+
+/// The different-clocks warning as a cell of the Playback Engine's state grid, wrapped at
+/// `right` (the window content's right edge): a grid cell is otherwise as wide as its text, and
+/// one line of it widened the window to about 1,200 points (pt-BR: 1,325).
+fn clock_warning(ui: &mut egui::Ui, system: &str, right: f32) {
+    let width = (right - ui.cursor().left()).max(120.0);
+    ui.allocate_ui(vec2(width, 0.0), |ui| {
+        ui.set_max_width(width);
+        let text = egui::RichText::new(crate::localization::text(different_clocks(system))).color(ui.visuals().warn_fg_color);
+        ui.add(egui::Label::new(text).wrap());
+    });
+}
 
 /// The latency the backend reports for the open output and input, each as (frames at that
 /// device's rate, milliseconds). `None` where nothing is open or nothing was reported yet.
@@ -1066,5 +1093,71 @@ mod audio_health_tests {
         let mut output = ctx.run_ui(egui::RawInput::default(), |ui| audio_health(&mut app, ui.ctx()));
         output.textures_delta.clear();
         assert!(app.audio_health_report.is_some());
+    }
+}
+
+#[cfg(test)]
+mod clock_warning_tests {
+    use super::*;
+
+    #[test]
+    fn the_different_clocks_warning_says_how_to_fix_it_on_each_system() {
+        let mac = different_clocks("CoreAudio");
+        assert!(mac.contains("one device") && mac.contains("Aggregate Device"), "{mac}");
+        for windows in ["WASAPI", "ASIO"] {
+            let text = different_clocks(windows);
+            assert!(text.contains("one interface") && text.contains("ASIO"), "{windows}: {text}");
+            assert!(!text.contains("Aggregate"), "no macOS advice on {windows}: {text}");
+        }
+        for other in ["ALSA", "JACK", "PulseAudio", "PipeWire", ""] {
+            let text = different_clocks(other);
+            assert!(text.contains("one device") && !text.contains("Aggregate") && !text.contains("ASIO"), "{other}: {text}");
+        }
+        // Every variant is in the pt-BR catalog.
+        let _language = crate::localization::enter(crate::localization::Language::PortugueseBrazil);
+        for system in ["CoreAudio", "WASAPI", "ALSA"] {
+            assert_ne!(crate::localization::text(different_clocks(system)), different_clocks(system), "{system}");
+        }
+    }
+
+    /// The Playback Engine at its default width with the warning in pt-BR, its longest form.
+    fn window_width(draw: impl Fn(&mut egui::Ui)) -> f32 {
+        let ctx = egui::Context::default();
+        let mut width = 0.0;
+        for _ in 0..4 {
+            let input = egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, vec2(2400.0, 1200.0))), ..Default::default() };
+            let mut full = ctx.run_ui(input, |ui| {
+                let mut open = true;
+                win(ui.ctx(), &mut open, "Playback Engine", vec2(460.0, 360.0), |ui| draw(ui));
+            });
+            full.textures_delta.clear();
+            width = ctx.memory(|m| m.area_rect(egui::Id::unique("Playback Engine"))).map_or(0.0, |r| r.width());
+        }
+        width
+    }
+
+    #[test]
+    fn the_different_clocks_warning_wraps_within_the_window() {
+        let _language = crate::localization::enter(crate::localization::Language::PortugueseBrazil);
+        // As in the Playback Engine: the warning is a row of the device state grid.
+        let state = |warn: bool| {
+            move |ui: &mut egui::Ui| {
+                let right = ui.max_rect().right();
+                egui::Grid::new("pe-state").num_columns(2).show(ui, |ui| {
+                    ui.label(crate::localization::text("Latency"));
+                    ui.label("output 6.7 ms (321 samples) · input 6.3 ms (302 samples)");
+                    ui.end_row();
+                    if warn {
+                        ui.label("");
+                        clock_warning(ui, "CoreAudio", right);
+                        ui.end_row();
+                    }
+                });
+            }
+        };
+        let without = window_width(state(false));
+        let with = window_width(state(true));
+        assert!(without > 0.0);
+        assert!(with <= without + 1.0, "the warning widened the window from {without} to {with}");
     }
 }
