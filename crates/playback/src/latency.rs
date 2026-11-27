@@ -17,26 +17,37 @@ use std::time::{Duration, Instant};
 /// A report longer than this is treated as missing: it would come from a mismatched clock.
 const PLAUSIBLE: Duration = Duration::from_secs(1);
 
+/// Stored once the stream is lost: nothing is reported from then on.
+const LOST: u64 = u64::MAX;
+
 /// The last plausible report of one stream, written by its audio callback and read by the UI.
 #[derive(Debug, Default)]
 pub struct ReportedLatency(
-    /// Nanoseconds + 1; 0 means nothing reported yet, so a zero-latency report stays visible.
+    /// Nanoseconds + 1; 0 means nothing reported yet, so a zero-latency report stays visible;
+    /// [`LOST`] once the stream failed.
     AtomicU64,
 );
 
 impl ReportedLatency {
-    /// Record one callback's report. A missing or implausible report keeps the last valid one.
+    /// Record one callback's report. A missing or implausible report keeps the last valid one,
+    /// and a lost stream keeps reporting nothing.
     pub fn observe(&self, report: Option<Duration>) {
         if let Some(latency) = report.filter(|d| *d <= PLAUSIBLE) {
-            let nanos = u64::try_from(latency.as_nanos()).unwrap_or(u64::MAX);
-            self.0.store(nanos.saturating_add(1), Relaxed);
+            let nanos = u64::try_from(latency.as_nanos()).unwrap_or(u64::MAX).min(LOST - 2);
+            let _ = self.0.fetch_update(Relaxed, Relaxed, |v| (v != LOST).then_some(nanos + 1));
         }
     }
 
-    /// The last plausible report, or `None` before the stream reported one.
+    /// The stream failed (its error callback said it is gone): its figures are no longer the
+    /// device's, so nothing is reported until a new stream replaces it.
+    pub fn lose(&self) {
+        self.0.store(LOST, Relaxed);
+    }
+
+    /// The last plausible report, or `None` before the stream reported one or after it was lost.
     pub fn get(&self) -> Option<Duration> {
         match self.0.load(Relaxed) {
-            0 => None,
+            0 | LOST => None,
             v => Some(Duration::from_nanos(v - 1)),
         }
     }
@@ -349,6 +360,13 @@ pub(crate) fn coreaudio_device_latency(_device: &cpal::Device, _input: bool, _ra
     None
 }
 
+/// A report as the window and the commands show it: a zero report is what a backend gives when it
+/// does not know (seen with a Windows virtual input), so it is shown as not reported. Take
+/// placement still uses it as given.
+pub fn shown(latency: Option<Duration>) -> Option<Duration> {
+    latency.filter(|l| !l.is_zero())
+}
+
 /// Output latency of one callback: from the callback to when its first frame is played.
 pub(crate) fn output_report(info: &cpal::OutputCallbackInfo) -> Option<Duration> {
     let t = info.timestamp();
@@ -616,6 +634,24 @@ mod tests {
         cell.clear();
         cell.set_if_empty(7.5);
         assert_eq!(cell.get(), Some(7.5));
+    }
+
+    #[test]
+    fn a_lost_stream_reports_nothing_and_its_late_callbacks_are_ignored() {
+        let latency = ReportedLatency::default();
+        latency.observe(Some(Duration::from_micros(6750)));
+        latency.lose();
+        assert_eq!(latency.get(), None, "a dead stream's figures are not shown");
+        latency.observe(Some(Duration::from_micros(6750)));
+        assert_eq!(latency.get(), None, "a callback after the error does not bring them back");
+    }
+
+    #[test]
+    fn a_zero_report_is_shown_as_not_reported() {
+        // A Windows virtual input reported 0 samples: the backend did not know, it was not instant.
+        assert_eq!(shown(Some(Duration::ZERO)), None);
+        assert_eq!(shown(Some(Duration::from_micros(6750))), Some(Duration::from_micros(6750)));
+        assert_eq!(shown(None), None);
     }
 
     #[test]
