@@ -148,31 +148,51 @@ pub(crate) fn supported_format_config(
     best.and_then(|(_, c)| c.try_with_sample_rate(sample_rate))
 }
 
-/// Whether `cfg`'s input opens before its output: where the audio system calls a device's input
-/// and output callbacks one after the other in each device cycle, in the order the streams opened
-/// (ASIO, Core Audio), and the input and output are that one device. The output callback then
-/// mixes the input of the same cycle. WASAPI and the others run the two on their own threads, and
-/// two devices run on their own clocks: the order gains nothing there, and the input waits for the
+/// Whether the input opens before the output under audio system `host`, with `names` reading the
+/// output and input device names: where the audio system calls a device's input and output
+/// callbacks one after the other in each device cycle, in the order the streams opened (ASIO,
+/// Core Audio), and the input and output are that one device. The output callback then mixes the
+/// input of the same cycle. WASAPI and the others run the two on their own threads, and two
+/// devices run on their own clocks: the order gains nothing there, and the input waits for the
 /// first record or monitor instead (an input opened at launch lights the microphone indicator).
-pub fn input_opens_first(cfg: &AudioConfig) -> bool {
-    let host = host(cfg);
-    opens_first(host.id().name(), || {
-        let output = device(&host, cfg.output.as_deref(), true).and_then(|d| device_name(&d));
-        let input = device(&host, cfg.input.as_deref(), false).and_then(|d| device_name(&d));
-        (output, input)
-    })
-}
-
-/// [`input_opens_first`] under audio system `host`, with `names` reading the output and input
-/// device names. Reading them lists the host's devices, on the UI thread at every open and
-/// reopen, so the audio system is checked first and `names` is called only on ASIO and Core
-/// Audio. On WASAPI, ALSA and the others the answer is false whatever the devices are, and they
-/// are no longer listed here; ASIO and Core Audio compare the names as before.
+///
+/// Reading the names lists the host's devices, on the UI thread at every open and reopen, so the
+/// audio system is checked first and `names` is called only on ASIO and Core Audio.
 fn opens_first(host: &str, names: impl FnOnce() -> (Option<String>, Option<String>)) -> bool {
     in_open_order(host) && {
         let (output, input) = names();
         output.is_some() && output == input
     }
+}
+
+/// Open the input and the output under audio system `host`, the input first where
+/// [`opens_first`] holds. `find` looks up the output (`true`) or input device, `name` names one,
+/// and `open_output` gets the output device when it was found here, else `None` and looks it up
+/// itself, as it always did on WASAPI and the others (nothing is looked up here for them).
+///
+/// Both devices are found before either stream opens. On ASIO an open stream keeps its driver
+/// loaded, and while one driver is loaded cpal 0.18's ASIO host loads no other: its device list
+/// ends at the first other driver it comes to (`DriverAlreadyExists` in `host/asio/device.rs`),
+/// and the default devices come from that list. An output looked up after the input opened could
+/// be missing, and the player then fell back to the silent clock. A stream opened on a device
+/// found earlier loads its driver by name, which gives the driver already loaded.
+pub(crate) fn open_in_order<D, I, O>(
+    host: &str,
+    find: impl Fn(bool) -> Option<D>,
+    name: impl Fn(&D) -> Option<String>,
+    open_input: impl FnOnce(&D) -> Option<I>,
+    open_output: impl FnOnce(Option<&D>) -> O,
+) -> (O, Option<I>) {
+    let mut found = None;
+    let first = opens_first(host, || {
+        let (output, input) = (find(true), find(false));
+        let names = (output.as_ref().and_then(&name), input.as_ref().and_then(&name));
+        found = output.zip(input);
+        names
+    });
+    let (output, input) = found.filter(|_| first).unzip();
+    let input = input.as_ref().and_then(open_input);
+    (open_output(output.as_ref()), input)
 }
 
 fn in_open_order(host: &str) -> bool {
@@ -341,6 +361,29 @@ mod tests {
         };
         assert!(opens_first("ASIO", names));
         assert!(listed.get(), "ASIO compares the devices");
+    }
+
+    #[test]
+    fn the_output_opens_on_the_device_found_before_the_input_opened() {
+        // An open stream keeps its ASIO driver loaded, and cpal's ASIO host stops listing devices
+        // at the first other driver while one is loaded: here, as on the Windows machine that
+        // showed it, nothing is found once the input is open.
+        let held = std::cell::Cell::new(false);
+        let found_while_held = std::cell::Cell::new(false);
+        let find = |_output: bool| {
+            found_while_held.set(found_while_held.get() || held.get());
+            (!held.get()).then_some("ASIO4ALL v2")
+        };
+        let name = |d: &&str| Some((*d).to_owned());
+        let open_input = |d: &&'static str| {
+            held.set(true);
+            Some(*d)
+        };
+        let open_output = |d: Option<&&'static str>| d.copied();
+        let (output, input) = open_in_order("ASIO", find, name, open_input, open_output);
+        assert_eq!(input, Some("ASIO4ALL v2"), "the input opens first on the output's device");
+        assert_eq!(output, input, "the output opens on the same device, not the default or none");
+        assert!(!found_while_held.get(), "no device was looked up while the input held the driver");
     }
 
     #[test]

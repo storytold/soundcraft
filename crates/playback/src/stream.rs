@@ -95,15 +95,19 @@ where
 /// Open the output device `cfg` chooses (else the default) at the chosen rate (else the session
 /// rate) if possible, in the best sample format it offers (f32, else 32- or 16-bit integers),
 /// with as many channels as it offers up to `want_ch` (at least stereo when available), and the
-/// chosen buffer size when the device allows it.
+/// chosen buffer size when the device allows it. `found` is the output device when the caller
+/// already looked it up (see [`devices::open_in_order`]).
 pub(crate) fn open_device(
     want_rate: u32,
     want_ch: u16,
     cfg: &AudioConfig,
+    found: Option<&cpal::Device>,
 ) -> Result<(cpal::Device, cpal::StreamConfig, cpal::SampleFormat, String), String> {
     use cpal::traits::DeviceTrait;
-    let host = devices::host(cfg);
-    let device = devices::device(&host, cfg.output.as_deref(), true).ok_or_else(|| "no output device".to_string())?;
+    let device = match found {
+        Some(d) => d.clone(),
+        None => devices::device(&devices::host(cfg), cfg.output.as_deref(), true).ok_or_else(|| "no output device".to_string())?,
+    };
     let name = devices::device_name(&device).unwrap_or_else(|| "Audio device".into());
     // Prefer a config at the chosen (else session) rate; else the device default (we resample).
     let want_ch = want_ch.max(2);

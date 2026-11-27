@@ -38,23 +38,12 @@ impl SoundApp {
     /// device, the input opens first, as Pro Tools' Playback Engine opens both: the output callback
     /// then mixes the input of the same device cycle, and input monitoring adds no device buffer of
     /// its own. Elsewhere, on two devices, or without an input, the player opens alone and the
-    /// input opens on the next record or monitor.
+    /// input opens on the next record or monitor. See [`Player::with_input`].
     pub fn open_audio_devices(
         session: std::sync::Arc<soundcraft_model::Session>,
         audio: &soundcraft_playback::AudioConfig,
     ) -> (Player, Option<soundcraft_playback::record::Recorder>) {
-        let input = soundcraft_playback::input_opens_first(audio)
-            .then(|| {
-                soundcraft_playback::record::Recorder::open_with(audio)
-                    .inspect_err(|e| log::info!("audio input not opened with the output: {e}"))
-                    .ok()
-            })
-            .flatten();
-        let player = Player::with_config(session, audio);
-        if let Some(r) = &input {
-            player.set_input(std::sync::Arc::clone(&r.monitor));
-        }
-        (player, input)
+        Player::with_input(session, audio)
     }
 
     /// Close the open audio devices and open those of `ui.audio`, input first (see
