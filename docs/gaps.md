@@ -68,8 +68,10 @@ When you close a gap, delete its entry (or shrink it) in the same PR, and bump t
   cpal 0.18's Core Audio capture and playback times count the buffer and safety offset twice, so
   there the stream clock is the callback's host time moved by the device latency alone.
 - **Done (2026-11-24):** input monitoring adds no device buffer of its own where the audio system
-  calls a device's callbacks in the order its streams opened: the input opens before the output
-  (at startup, on Apply and on reconnect), so the output mixes the input of the same cycle. On an
+  calls a device's callbacks in the order its streams opened: when input and output are one
+  device, the input opens before the output (at startup, on Apply and on reconnect), so the output
+  mixes the input of the same cycle. Two devices keep the input closed until the first record or
+  monitor. On an
   RME UFX under ASIO the monitor round trip fell from the device's plus 257 samples to plus 1.
   Core Audio is opened the same way: on the same UFX through a cable the monitor round trip equals
   the reported one at 64, 256 and 1024 frames (it was a buffer more). WASAPI is unchanged.

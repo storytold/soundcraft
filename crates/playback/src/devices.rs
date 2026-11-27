@@ -148,13 +148,22 @@ pub(crate) fn supported_format_config(
     best.and_then(|(_, c)| c.try_with_sample_rate(sample_rate))
 }
 
-/// Whether `cfg`'s audio system calls a device's input and output callbacks one after the other
-/// in each device cycle, in the order the streams opened (ASIO, Core Audio). The
-/// input opens first there, so the output callback mixes the input of the same cycle. WASAPI and
-/// the others run the two on their own threads: the order changes nothing but when the input
-/// starts piling up.
+/// Whether `cfg`'s input opens before its output: where the audio system calls a device's input
+/// and output callbacks one after the other in each device cycle, in the order the streams opened
+/// (ASIO, Core Audio), and the input and output are that one device. The output callback then
+/// mixes the input of the same cycle. WASAPI and the others run the two on their own threads, and
+/// two devices run on their own clocks: the order gains nothing there, and the input waits for the
+/// first record or monitor instead (an input opened at launch lights the microphone indicator).
 pub fn input_opens_first(cfg: &AudioConfig) -> bool {
-    in_open_order(host(cfg).id().name())
+    let host = host(cfg);
+    let output = device(&host, cfg.output.as_deref(), true).and_then(|d| device_name(&d));
+    let input = device(&host, cfg.input.as_deref(), false).and_then(|d| device_name(&d));
+    opens_first(host.id().name(), output.as_deref(), input.as_deref())
+}
+
+/// [`input_opens_first`] for devices as named under audio system `host`.
+fn opens_first(host: &str, output: Option<&str>, input: Option<&str>) -> bool {
+    in_open_order(host) && output.is_some() && output == input
 }
 
 fn in_open_order(host: &str) -> bool {
@@ -241,6 +250,24 @@ mod tests {
         ];
         for (host, output, input, one) in cases {
             assert_eq!(same_clock(host, output, input), one, "{host}: {output} / {input}");
+        }
+    }
+
+    #[test]
+    fn the_input_opens_first_only_on_the_output_device() {
+        // (audio system, output, input, opens first?)
+        let cases = [
+            ("CoreAudio", Some("Fireface UFX (23693403)"), Some("Fireface UFX (23693403)"), true),
+            ("ASIO", Some("RME Fireface UFX"), Some("RME Fireface UFX"), true),
+            // A fresh macOS setup: built-in speakers out, an interface in. Two devices gain nothing
+            // from the order, and an input opened at launch lights the microphone indicator.
+            ("CoreAudio", Some("Mac mini Speakers"), Some("Fireface UFX (23693403)"), false),
+            ("CoreAudio", Some("Fireface UFX (23693403)"), None, false),
+            ("CoreAudio", None, Some("Fireface UFX (23693403)"), false),
+            ("WASAPI", Some("Same Name"), Some("Same Name"), false),
+        ];
+        for (host, output, input, first) in cases {
+            assert_eq!(opens_first(host, output, input), first, "{host}: {output:?} / {input:?}");
         }
     }
 

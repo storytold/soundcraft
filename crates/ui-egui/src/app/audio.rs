@@ -34,11 +34,11 @@ impl SoundApp {
     }
 
     /// Open the audio devices of `audio` for `session`. Where the audio system calls a device's
-    /// callbacks in the order its streams opened (ASIO, Core Audio), the input opens first, when
-    /// there is one, as Pro Tools' Playback Engine opens both: the output callback then mixes the
-    /// input of the same device cycle, and input monitoring adds no device buffer of its own.
-    /// Elsewhere, or without an input, the player opens alone and the input opens on the next
-    /// record or monitor.
+    /// callbacks in the order its streams opened (ASIO, Core Audio) and the input is the output's
+    /// device, the input opens first, as Pro Tools' Playback Engine opens both: the output callback
+    /// then mixes the input of the same device cycle, and input monitoring adds no device buffer of
+    /// its own. Elsewhere, on two devices, or without an input, the player opens alone and the
+    /// input opens on the next record or monitor.
     pub fn open_audio_devices(
         session: std::sync::Arc<soundcraft_model::Session>,
         audio: &soundcraft_playback::AudioConfig,
