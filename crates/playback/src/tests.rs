@@ -1968,7 +1968,8 @@ fn a_rate_switch_settles_on_a_throwaway_stream_before_the_stream_that_plays() {
     // Already at the rate, or a rate that cannot be read: nothing is built.
     let mut built = 0;
     assert!(!settle_rate_switch(
-        Some(48_000),
+        "macos",
+        || Some(48_000),
         48_000,
         |_| {
             built += 1;
@@ -1977,7 +1978,8 @@ fn a_rate_switch_settles_on_a_throwaway_stream_before_the_stream_that_plays() {
         Duration::from_secs(5)
     ));
     assert!(!settle_rate_switch(
-        None,
+        "macos",
+        || None,
         48_000,
         |_| {
             built += 1;
@@ -1989,7 +1991,8 @@ fn a_rate_switch_settles_on_a_throwaway_stream_before_the_stream_that_plays() {
     // At another rate: the throwaway is built, and its late report ends the wait early.
     let start = Instant::now();
     let switched = settle_rate_switch(
-        Some(44_100),
+        "macos",
+        || Some(44_100),
         48_000,
         |report| {
             std::thread::spawn(move || {
@@ -2004,19 +2007,41 @@ fn a_rate_switch_settles_on_a_throwaway_stream_before_the_stream_that_plays() {
     assert!(start.elapsed() < Duration::from_secs(2), "waited {:?} after the report", start.elapsed());
     // No report comes (the throwaway keeps its sender): the wait ends after its limit.
     let start = Instant::now();
-    assert!(settle_rate_switch(Some(44_100), 48_000, Some, Duration::from_millis(100)));
+    assert!(settle_rate_switch("macos", || Some(44_100), 48_000, Some, Duration::from_millis(100)));
     assert!(start.elapsed() >= Duration::from_millis(100));
     // A throwaway that will not build switched nothing.
-    assert!(!settle_rate_switch(Some(44_100), 48_000, |_| None::<()>, Duration::from_secs(5)));
+    assert!(!settle_rate_switch("macos", || Some(44_100), 48_000, |_| None::<()>, Duration::from_secs(5)));
 }
 
-/// Only Core Audio reports a device's own rate switch late (see `settle_rate_switch`). WASAPI
-/// shared mode and ALSA send no such report, so a settle there would wait its whole budget on the
-/// UI thread for nothing and build an extra stream; every other host opens as before.
+/// Only Core Audio reports a device's own rate switch late (see `settle_rate_switch` and the #1749
+/// review). WASAPI shared mode and ALSA send no such report, so a settle there would wait its whole
+/// budget on the UI thread for nothing and build an extra stream. The host is passed as a value, so
+/// this runs every host's case on whichever system runs the tests.
 #[test]
-fn the_rate_switch_settles_only_on_core_audio() {
-    assert!(rate_switch_settles_on("macos"));
-    for os in ["windows", "linux", "freebsd", "ios", "android"] {
-        assert!(!rate_switch_settles_on(os), "{os} must not wait for a rate report");
+fn a_rate_switch_reads_and_builds_nothing_off_core_audio() {
+    use std::cell::Cell;
+    use std::time::Duration;
+    let settle = |os: &str| {
+        let (read, built) = (Cell::new(0), Cell::new(0));
+        let switched = settle_rate_switch(
+            os,
+            || {
+                read.set(read.get() + 1);
+                Some(44_100)
+            },
+            48_000,
+            |report| {
+                built.set(built.get() + 1);
+                Some(report)
+            },
+            Duration::ZERO,
+        );
+        (switched, read.get(), built.get())
+    };
+    // The same device at another rate: Core Audio switches it on a throwaway stream...
+    assert_eq!(settle("macos"), (true, 1, 1));
+    // ...and every other host neither reads its rate nor builds a stream.
+    for os in ["windows", "linux", "freebsd", "android"] {
+        assert_eq!(settle(os), (false, 0, 0), "{os} must not settle a rate switch");
     }
 }
