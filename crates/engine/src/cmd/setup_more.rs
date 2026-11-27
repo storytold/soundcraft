@@ -687,7 +687,7 @@ fn import_session_data(e: &mut Engine, p: &Value) -> Result<Value> {
         if let Some(ins) = tr.instrument.as_mut() {
             ins.sample = ins.sample.and_then(|sid| map.get(&sid.0).copied());
         }
-        // Busses are matched by name (created when missing).
+        // Busses are matched by name (created when missing); output paths by `import_output_route`.
         let remap = |s: &mut Session, r: &Route| -> Route {
             match r {
                 Route::Bus(b) => other.bus(*b).map_or(Route::None, |ob| Route::Bus(s.add_bus(&ob.name, ob.format))),
@@ -711,9 +711,10 @@ fn import_session_data(e: &mut Engine, p: &Value) -> Result<Value> {
 }
 
 /// A donor track's route to the output path `name` in this session, as Import Session Data
-/// brings its busses: the same path here is used, a path missing here is copied from the donor,
-/// and anything else (a different path of that name, a bus of that name, or a name the donor has
-/// no path for) is reported in `missing` and becomes no output, so it is never routed silently.
+/// brings its busses: the donor's main path is the main output here, the same path here is used,
+/// a path missing here is copied from the donor, and anything else (a different path of that
+/// name, a bus of that name, or a name the donor has no path for) is reported in `missing` and
+/// becomes no output, so it is never routed silently.
 fn import_output_route(s: &mut Session, donor: &Session, track: &str, route: Route, missing: &mut Vec<String>) -> Route {
     let Route::Hardware(name) = &route else { return route };
     if donor.outputs.first().is_some_and(|main| main.name.eq_ignore_ascii_case(name)) {
