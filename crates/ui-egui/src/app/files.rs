@@ -81,8 +81,8 @@ impl SoundApp {
     }
 
     /// Done with the open session. Unsaved changes stay in its autosave folder for the next
-    /// launch, unless the user quit with SoundCraft's Quit; a take still recording is finished
-    /// and always stays.
+    /// launch, unless the user quit with SoundCraft's Quit; a take still recording, or still
+    /// taking in its punch tail, is finished and always stays.
     pub fn close_autosave(&mut self) {
         let recording = self.engine.transport.recording || self.take_tail.is_some();
         if self.engine.transport.recording {
