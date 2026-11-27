@@ -63,6 +63,7 @@ mod panic_probe {
 }
 
 pub use file::bounce_job;
+pub use midi::midi_reference_tracks;
 
 pub(crate) use edit::remember_selection;
 pub use strip_silence::strip_silence_scan;

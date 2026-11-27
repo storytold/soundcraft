@@ -4,7 +4,7 @@ use super::{CommandSpec, always, bad, clip_id, has_tracks, i64_or, range_param, 
 use crate::{Engine, Result, cmd};
 use serde_json::{Value, json};
 use soundcraft_midi::{Note, Sequence};
-use soundcraft_model::{Clip, ClipContent, ClipId};
+use soundcraft_model::{Clip, ClipContent, ClipId, Session, TrackId};
 use soundcraft_time::TICKS_PER_QUARTER;
 
 pub fn specs() -> Vec<CommandSpec> {
@@ -23,7 +23,45 @@ pub fn specs() -> Vec<CommandSpec> {
         cmd!("midi.note_edit", "Edit Note", [], None, "{clip, index, pitch?, start_ticks?, length_ticks?, velocity?}", always, note_edit),
         cmd!("midi.note_delete", "Delete Notes", [], None, "{clip, indices: [n]}", always, note_delete),
         cmd!("midi.notes_move", "Move Notes", [], None, "{clip, indices: [n], ticks?: 0, semitones?: 0}", always, notes_move),
+        cmd!(
+            noundo "midi.reference_tracks",
+            "Show Notes in MIDI Editor",
+            [],
+            None,
+            "{tracks?, shown?: bool} (toggles when omitted) — MIDI tracks whose notes the MIDI Editor shows, read-only, behind the edited clip",
+            has_tracks,
+            reference_tracks
+        ),
     ]
+}
+
+/// `edit.flags` key that marks a track as a MIDI Editor reference track.
+fn reference_flag(t: TrackId) -> String {
+    format!("midi_editor.reference.{}", t.0)
+}
+
+/// The MIDI tracks whose notes the MIDI Editor shows behind the edited clip, in track order.
+/// A flag left by a deleted track is ignored: track ids are never reused.
+pub fn midi_reference_tracks(s: &Session) -> Vec<TrackId> {
+    s.tracks.iter().filter(|t| t.kind.is_midi() && s.edit.flag(&reference_flag(t.id))).map(|t| t.id).collect()
+}
+
+fn reference_tracks(e: &mut Engine, p: &Value) -> Result<Value> {
+    const CMD: &str = "midi.reference_tracks";
+    let tracks = tracks_required(e, CMD, p)?;
+    let s = e.session();
+    if let Some(t) = tracks.iter().find_map(|id| s.track(*id).filter(|t| !t.kind.is_midi())) {
+        return Err(bad(CMD, format!("{} is not a MIDI track", t.name)));
+    }
+    let shown = match p.get("shown") {
+        None => !tracks.iter().all(|t| s.edit.flag(&reference_flag(*t))),
+        Some(v) => v.as_bool().ok_or_else(|| bad(CMD, "`shown` must be true or false"))?,
+    };
+    let s = e.session_mut();
+    for t in &tracks {
+        s.edit.set_flag(&reference_flag(*t), shown);
+    }
+    Ok(json!({"shown": shown, "tracks": tracks, "reference": midi_reference_tracks(e.session())}))
 }
 
 fn seq_mut<'a>(e: &'a mut Engine, id: ClipId, cmd: &str) -> Result<&'a mut Sequence> {
@@ -231,6 +269,32 @@ mod tests {
         assert_eq!(r["indices"], json!([1]));
         let notes = e.execute("midi.notes", &json!({"clip": clip})).unwrap();
         assert_eq!(notes["notes"][1]["start"], 720);
+    }
+
+    #[test]
+    fn reference_tracks_toggle_and_are_saved_with_the_session() {
+        let mut e = Engine::default();
+        let keys = e.session_mut().add_track(TrackKind::Instrument, ChannelFormat::Stereo, Some("Keys"));
+        let pad = e.session_mut().add_track(TrackKind::Midi, ChannelFormat::Stereo, Some("Pad"));
+        e.execute("midi.reference_tracks", &json!({"tracks": ["Pad"]})).unwrap();
+        assert_eq!(midi_reference_tracks(e.session()), [pad]);
+        let back = Session::from_json(&e.session().to_json().unwrap()).unwrap();
+        assert_eq!(midi_reference_tracks(&back), [pad], "the choice is saved with the session");
+        // Toggling a mix of on and off turns them all on; toggling again turns them all off.
+        e.execute("midi.reference_tracks", &json!({"tracks": [keys.0, pad.0]})).unwrap();
+        assert_eq!(midi_reference_tracks(e.session()), [keys, pad]);
+        e.execute("midi.reference_tracks", &json!({"tracks": [keys.0, pad.0]})).unwrap();
+        assert!(midi_reference_tracks(e.session()).is_empty());
+    }
+
+    #[test]
+    fn reference_tracks_refuse_audio_tracks_and_change_nothing() {
+        let mut e = Engine::default();
+        e.session_mut().add_track(TrackKind::Midi, ChannelFormat::Stereo, Some("Pad"));
+        let bass = e.session_mut().add_track(TrackKind::Audio, ChannelFormat::Mono, Some("Bass"));
+        let before = e.session().edit.flags.clone();
+        assert!(e.execute("midi.reference_tracks", &json!({"tracks": ["Pad", bass.0]})).is_err());
+        assert_eq!(e.session().edit.flags, before);
     }
 
     #[test]
