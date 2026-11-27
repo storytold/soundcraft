@@ -54,7 +54,8 @@ When you close a gap, delete its entry (or shrink it) in the same PR, and bump t
   session values.
 - **Done (2026-11-25):** Setup › I/O maps named output paths to physical channels, and track
   output selectors assign them; I/O Setup edits reroute the open stream. Core Audio opens all of
-  an interface's outputs, so paths reach outputs past the main mix. On an RME Fireface UFX with a
+  an interface's outputs, so paths reach outputs past the main mix; an interface that offers only
+  its full width opens at the rate it runs at, and the mix resamples. On an RME Fireface UFX with a
   cable from outputs 3–4 to inputs 5–6, a track on a stereo path at channel 3 is heard on outputs
   3–4; moving the path to channel 7 while it plays silences them, and moving it back restores
   them. Paths on ADAT outputs 17–18 and 21–22 (past the 16-channel main) play at the track's level.

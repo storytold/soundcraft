@@ -100,7 +100,9 @@ pub(crate) fn output_width(host: &str, main_width: u16) -> u16 {
 /// rate) if possible, in the best sample format it offers (f32, else 32- or 16-bit integers),
 /// with as many channels as it offers up to [`output_width`] (`want_ch`, the main mix's width,
 /// except every channel up to the hardware path limit on Core Audio; at least stereo when
-/// available), and the chosen buffer size when the device allows it.
+/// available), and the chosen buffer size when the device allows it. On Core Audio the wider
+/// output keeps the rate the main mix's width would have opened at, so an interface that offers
+/// only its full width opens at the rate it runs at (see [`pick_device_output_config`]).
 pub(crate) fn open_device(
     want_rate: u32,
     want_ch: u16,
@@ -110,11 +112,14 @@ pub(crate) fn open_device(
     let host = devices::host(cfg);
     let device = devices::device(&host, cfg.output.as_deref(), true).ok_or_else(|| "no output device".to_string())?;
     let name = devices::device_name(&device).unwrap_or_else(|| "Audio device".into());
-    // Prefer a config at the chosen (else session) rate; else the device default (we resample).
-    let want_ch = output_width(host.id().name(), want_ch.max(2));
+    // Prefer a config at the chosen (else session) rate, all channels on Core Audio at the rate
+    // the main mix's width would use; else the device default (we resample).
     let rates: Vec<u32> = cfg.sample_rate.into_iter().chain(Some(want_rate)).collect();
     let configs: Vec<cpal::SupportedStreamConfigRange> = device.supported_output_configs().map(|configs| configs.collect()).unwrap_or_default();
-    let (config, format) = match pick_output_config(&configs, &rates, want_ch) {
+    let current = || device.default_output_config().ok().map(|c| c.sample_rate());
+    let picked = pick_device_output_config(host.id().name(), &configs, &rates, want_ch.max(2), current);
+    let want_ch = output_width(host.id().name(), want_ch.max(2));
+    let (config, format) = match picked {
         Some((mut c, buffers, format)) => {
             c.buffer_size = devices::buffer_size(cfg.buffer_size, &buffers);
             (c, format)
@@ -141,6 +146,35 @@ pub(crate) fn open_device(
         }
     };
     Ok((device, config, format, name))
+}
+
+/// The output configuration to open on audio system `host` (a `cpal::HostId::name()`), or `None`
+/// for the device's default configuration. Where only the main mix's width opens (WASAPI, ALSA,
+/// JACK, ASIO and the others), this is [`pick_output_config`] at the requested `rates`. Where
+/// [`output_width`] opens every channel (Core Audio), the rate stays the one a configuration
+/// within `main_width` would have used: such a configuration's rate if the device offers one at
+/// a requested rate, else the rate the device runs at (`current`, read only then), which the mix
+/// resamples to the session rate. So widening the output never switches the hardware rate where
+/// the main mix alone would not have: an interface that lists only its full width (an RME
+/// Fireface UFX on Core Audio) stays at its rate, because cpal switches the rate while it builds
+/// a Core Audio stream and the device's late report of that switch then ends the new stream.
+pub(crate) fn pick_device_output_config(
+    host: &str,
+    configs: &[cpal::SupportedStreamConfigRange],
+    rates: &[u32],
+    main_width: u16,
+    current: impl FnOnce() -> Option<u32>,
+) -> Option<(cpal::StreamConfig, cpal::SupportedBufferSize, cpal::SampleFormat)> {
+    let main = pick_output_config(configs, rates, main_width);
+    let width = output_width(host, main_width);
+    if width == main_width {
+        return main;
+    }
+    let rate = match main {
+        Some((config, _, _)) => config.sample_rate,
+        None => current()?,
+    };
+    pick_output_config(configs, &[rate], width)
 }
 
 /// Pick the output configuration for the first requested rate the device offers (the configured
