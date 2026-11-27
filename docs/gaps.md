@@ -56,7 +56,8 @@ When you close a gap, delete its entry (or shrink it) in the same PR, and bump t
   `setup.playback_engine` show the input and output latency cpal reports per stream. ASIO reports
   the driver's figures; WASAPI shared under-reports (an RME UFX reported 49 ms for a measured 79 ms
   round trip); Core Audio reports the buffer plus the device latency and safety offset each way (an RME
-  UFX through a cable: 622 samples measured, 623 reported at 256 frames).
+  UFX through a cable: 622 samples measured, 623 reported at 256 frames). A zero report (a Windows
+  virtual input) reads "not reported", and a stream that failed stops showing its figures.
 - **Done (2026-11-24):** record-offset compensation: a take is placed from when its first sample
   was captured and when the record start was heard, as the devices report them, plus a per-machine
   record offset (Setup › Playback Engine, `record_offset`) for drivers that misreport. Both moments
