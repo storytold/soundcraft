@@ -110,6 +110,15 @@ pub(crate) fn route_popup(app: &mut SoundApp, resp: &egui::Response, id: TrackId
     });
 }
 
+/// The first and last input (1-based) of a numbered input route: "In 7" or "In 7-8", in any case.
+fn numbered_input(name: &str) -> Option<(usize, usize)> {
+    let rest = name.get(..3).filter(|prefix| prefix.eq_ignore_ascii_case("in "))?;
+    let range = &name[rest.len()..];
+    let (first, last) = range.split_once('-').unwrap_or((range, range));
+    let (first, last) = (first.trim().parse::<usize>().ok()?, last.trim().parse::<usize>().ok()?);
+    (first >= 1 && last >= first).then_some((first, last))
+}
+
 /// The output paths a track output or send selector lists, as (label, the name `track.output` or
 /// `mix.send` is given): the main path, the named paths, then every other pair of the interface's
 /// `channels` outputs by the name Pro Tools' default paths give it ("Out 3-4" …); choosing a pair
@@ -163,8 +172,21 @@ fn route_menu(app: &mut SoundApp, ui: &mut Ui, id: TrackId, input: bool, channel
         }
         let width = track.map_or(1, |track| track.channels().max(1));
         let channels = if channels == 0 { 8 } else { channels };
-        fixed.extend((width..=channels).map(|last| {
-            let first = last + 1 - width;
+        // Pro Tools' default input paths (Reference Guide, printed p. 58 and 82–83): every input
+        // for a mono track, the pairs In 1-2, In 3-4 … for a stereo one (blocks of its width for a
+        // wider one). A range off those that a track already uses (an older session's In 2-3)
+        // stays listed, so the sessions that use it keep working and can share it.
+        let mut firsts: Vec<usize> = (0..channels / width).map(|block| block * width + 1).collect();
+        firsts.extend(app.engine.session().tracks.iter().filter(|t| t.channels().max(1) == width).filter_map(|t| match &t.mixer.input {
+            Route::Hardware(name) => {
+                numbered_input(name).filter(|&(first, last)| last + 1 - first == width && last <= channels).map(|(first, _)| first)
+            }
+            _ => None,
+        }));
+        firsts.sort_unstable();
+        firsts.dedup();
+        fixed.extend(firsts.into_iter().map(|first| {
+            let last = first + width - 1;
             if width == 1 {
                 (crate::localized_format!("In {}", first), format!("In {first}"))
             } else {
@@ -228,6 +250,56 @@ mod tests {
     use crate::{Services, SoundApp};
     use egui_kittest::{Harness, kittest::Queryable};
     use serde_json::json;
+
+    /// A stereo track's input selector offers Pro Tools' default stereo input paths, In 1-2, In 3-4
+    /// and so on (Reference Guide, "Default I/O Settings" and "Restoring Default Paths and Path
+    /// Names", printed p. 58 and 82–83), not every adjacent pair; a mono track's offers every input.
+    /// A pair off the defaults that a track already uses (an older session's In 2-3) stays listed.
+    #[test]
+    fn the_stereo_input_selector_lists_the_default_pairs() {
+        let _palette = crate::theme::lock_test_palette();
+        let mut engine = soundcraft_engine::Engine::default();
+        engine.execute("track.new", &json!({"name": "Keys", "format": "stereo"})).unwrap();
+        engine.execute("track.new", &json!({"name": "Vox", "format": "mono"})).unwrap();
+        let keys = engine.session().track_by_name("Keys").unwrap().id;
+        let vox = engine.session().track_by_name("Vox").unwrap().id;
+        let app = SoundApp::new(engine, None, Services::default());
+        let mut h = Harness::builder().with_size(egui::vec2(360.0, 2000.0)).with_max_steps(32).build_ui_state(
+            move |ui, app: &mut SoundApp| {
+                for (label, id) in [("Keys input", keys), ("Vox input", vox)] {
+                    let button = ui.button(label);
+                    egui::Popup::menu(&button)
+                        .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
+                        .show(|ui| route_menu(app, ui, id, true, 30));
+                }
+            },
+            app,
+        );
+        h.run();
+        h.get_by_label("Keys input").click();
+        h.run();
+        for listed in ["In 1-2", "In 3-4", "In 7-8", "In 29-30"] {
+            assert!(h.query_by_label(listed).is_some(), "{listed} is listed");
+        }
+        for missing in ["In 2-3", "In 28-29", "In 7"] {
+            assert!(h.query_by_label(missing).is_none(), "{missing} is not listed");
+        }
+        h.get_by_label("Keys input").click();
+        h.run();
+
+        h.state_mut().run("track.input", json!({"track": keys.0, "input": "In 2-3"})).unwrap();
+        h.get_by_label("Keys input").click();
+        h.run();
+        assert!(h.query_by_label("In 2-3").is_some(), "a pair in use stays selectable");
+        h.get_by_label("Keys input").click();
+        h.run();
+
+        h.get_by_label("Vox input").click();
+        h.run();
+        for listed in ["In 1", "In 2", "In 3"] {
+            assert!(h.query_by_label(listed).is_some(), "{listed} is listed for a mono track");
+        }
+    }
 
     #[test]
     fn stereo_track_defaults_to_a_stereo_input_pair() {
