@@ -78,7 +78,8 @@ impl LostAudio {
         }
     }
 
-    /// Wait for the output (or input) device `name`, which went away, to come back.
+    /// Wait for the output (or input) device `name`, which went away, to come back (with the
+    /// system default chosen, for any default device: `follows_default`).
     pub(crate) fn away(&mut self, name: String, output: bool) {
         if output {
             self.output_loss = OutputLoss::Left;
