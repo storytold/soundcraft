@@ -1,9 +1,10 @@
 # Localization parity
 
-> **Last reviewed:** 2026-11-13 · **Last updated:** 2026-11-24 · **Change:** minor (French and Spanish catalogs, partial; previously minor: pt-BR catalog completed: all fixed UI strings translated and covered by tests; native-speaker review, CJK/RTL font fallbacks and RTL script shaping still pending) · **Target:** Avid Pro Tools Ultimate 2026.4.1
+> **Last reviewed:** 2026-11-13 · **Last updated:** 2026-11-27 · **Change:** minor (Spanish catalog completed, with native-speaker terminology review; previously minor: French and Spanish catalogs, partial; previously minor: pt-BR catalog completed: all fixed UI strings translated and covered by tests; native-speaker review, CJK/RTL font fallbacks and RTL script shaping still pending) · **Target:** Avid Pro Tools Ultimate 2026.4.1
 
 SoundCraft defaults to English and supports selecting Brazilian Portuguese, French and Spanish. The
-French and Spanish catalogs are partial (missing strings show in English). The pt-BR catalog
+Spanish catalog covers the same fixed UI strings and engine errors as pt-BR; the French catalog is
+partial (missing strings show in English). The pt-BR catalog
 covers all fixed UI strings found in the current source: command labels, menus, Appearance,
 About/Credits, Audio Health, Playback Engine, System Usage, Workspace, plugin parameter and display
 names, dialogs and buttons, tooltips (including those localized inside buttons and toggles),
@@ -21,14 +22,14 @@ CJK/Devanagari/Arabic (PR #141 open), RTL layout and complex-script shaping (egu
 ≈ 25–40 h, or ship Arabic/Hindi menus-only), then ≈ 3–5 h of agent translation per language, plus
 native-speaker review (human).
 
-Open work: completing the French and Spanish catalogs (rows also kept in storytold/craft-i18n for
+Open work: completing the French catalog (rows also kept in storytold/craft-i18n for
 when SoundCraft reads it), PR #141 (bundled multilingual font fallbacks), issue #67 (Ukrainian).
 
 | Language | Code | UI strings translated | Dialogs / tooltips / help | Script support | Native review | Status | Est. to full (h) | In Pro Tools |
 |---|---|---|---|---|---|---|---:|---|
 | English | en | all (source) | ✅ | Latin ✅ | — | **full** | 0 | ✅ |
 | Simplified Chinese | zh-Hans | 0 (0 %) | ❌ | ❌ no CJK font fallback, no IME testing | no | none | 6–10 | ✅ |
-| Spanish | es | 🟡 1,368 of ~2,210 catalog strings (≈ 62 %); engine errors not yet translated | 🟡 partial | Latin ✅ | partial (one native-speaker pass on #143) | partial | 1–3 | ✅ |
+| Spanish | es | ✅ 100 % of fixed UI strings (1,960) and engine errors (254), as pt-BR; catalog and menu-coverage tests pass | 🟡 partial | Latin ✅ | yes (es-ES, sound engineer; terminology reviewed) | full | 0–2 | ✅ |
 | Hindi | hi | 0 (0 %) | ❌ | ❌ no Devanagari font or shaping | no | none | 8–15 | ❌ |
 | Arabic | ar | 0 (0 %) | ❌ | ❌ no RTL layout, no shaping | no | none | 15–25 | ❌ |
 | French | fr | 🟡 1,368 of ~2,210 catalog strings (≈ 62 %); engine errors not yet translated | 🟡 partial | Latin ✅ | no | partial | 1–3 | ✅ |
@@ -58,6 +59,7 @@ Per-language hours exclude the shared catalog and script work above.
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-11-27 | minor | Completed the Spanish catalog (all fixed UI strings and engine errors) with a native-speaker terminology review; Spanish menu-coverage test; the path prompt's field uses its own `File Path` key so the Auto Pan `Path` parameter can be translated apart |
 | 2026-11-24 | minor | French and Spanish catalogs (`locales/fr`, `locales/es`, 1,368 strings each) from PR #143, on the `localization` layer; Appearance ▸ Language lists them; estimates unchanged |
 | 2026-11-13 | minor | Completed the pt-BR catalog: tooltips passed to buttons and toggles, `Not available yet.`, the send hover help, `no instrument`, the search placeholders, the Edit-window status bar (bit depth, track count, undo, ms/frame), the remove-session question and the transport/sample-rate readouts; engine errors now reach the status line through `error_text` |
 | 2026-11-05 | minor | Added persisted language selection, the `ui.language` command, English fallback and a pt-BR catalog (menus, dialogs, tooltips, accessibility text, formatted messages); added a Usage section and catalog tests |
