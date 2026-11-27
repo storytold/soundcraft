@@ -950,8 +950,8 @@ fn physical_paths(app: &mut SoundApp, ui: &mut egui::Ui, input: bool, channels: 
     }
     if new_path {
         let prefix = if input { "Input" } else { "Output" };
-        // Output and bus names share one namespace (a route names either).
-        let busses: &[_] = if input { &[] } else { &app.engine.session().busses };
+        // Path and bus names share one namespace (a route names either).
+        let busses = &app.engine.session().busses;
         let taken = |name: &str| {
             paths.iter().any(|(path, _, _)| path.eq_ignore_ascii_case(name)) || busses.iter().any(|bus| bus.name.eq_ignore_ascii_case(name))
         };

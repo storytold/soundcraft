@@ -334,6 +334,7 @@ fn io_setup(e: &mut Engine, p: &Value) -> Result<Value> {
                 return Err(bad(id, format!("a bus named `{name}` exists")));
             }
             check_name_free_of_outputs(s, &name)?;
+            check_name_free_of_inputs(s, &name)?;
             s.add_bus(&name, format);
         }
         "rename_bus" => {
@@ -342,6 +343,7 @@ fn io_setup(e: &mut Engine, p: &Value) -> Result<Value> {
                 return Err(bad(id, format!("a bus named `{to}` exists")));
             }
             check_name_free_of_outputs(s, &to)?;
+            check_name_free_of_inputs(s, &to)?;
             let b = s.busses.iter_mut().find(|b| b.name.eq_ignore_ascii_case(&name)).ok_or_else(|| bad(id, format!("no bus `{name}`")))?;
             b.name = to;
         }
@@ -417,6 +419,7 @@ fn edit_input_path(s: &mut Session, p: &Value, action: &str, name: &str, new_nam
         if s.inputs.iter().enumerate().any(|(i, path)| (action == "create_input" || Some(i) != index) && path.name.eq_ignore_ascii_case(proposed)) {
             return Err(bad(id, format!("an input named `{proposed}` exists")));
         }
+        check_name_free_of_busses(s, proposed)?;
         if index.is_none_or(|current| !s.inputs[current].name.eq_ignore_ascii_case(proposed))
             && s.tracks.iter().any(|track| matches!(&track.mixer.input, Route::Input(path) if path.eq_ignore_ascii_case(proposed)))
         {
@@ -574,6 +577,15 @@ fn check_name_free_of_busses(s: &Session, name: &str) -> Result<()> {
 fn check_name_free_of_outputs(s: &Session, name: &str) -> Result<()> {
     if s.outputs.iter().any(|o| o.name.eq_ignore_ascii_case(name)) {
         return Err(bad("setup.io", format!("an output named `{name}` exists")));
+    }
+    Ok(())
+}
+
+/// A track input names a bus or an input path (`track.input`), so a bus never takes an input
+/// path's name.
+fn check_name_free_of_inputs(s: &Session, name: &str) -> Result<()> {
+    if s.inputs.iter().any(|path| path.name.eq_ignore_ascii_case(name)) {
+        return Err(bad("setup.io", format!("an input named `{name}` exists")));
     }
     Ok(())
 }
@@ -1026,6 +1038,26 @@ mod tests {
         e.execute("setup.io", &json!({"action": "create_output", "name": "Bus 1", "first_channel": 2})).unwrap();
         assert!(e.execute("mix.new_bus", &json!({"name": "BUS 1"})).is_err());
         assert!(e.session().busses.is_empty());
+    }
+
+    /// A track input names a bus or an input path (`track.input`), and the bus wins a shared name,
+    /// so a bus never takes an input path's name and an input path never takes a bus's.
+    #[test]
+    fn busses_and_input_paths_never_share_a_name() {
+        let mut e = Engine::default();
+        e.execute("setup.io", &json!({"action": "create_input", "name": "Keys", "format": "mono", "first_channel": 2})).unwrap();
+        assert!(e.execute("mix.new_bus", &json!({"name": "KEYS"})).is_err(), "mix.new_bus");
+        assert!(e.execute("setup.io", &json!({"action": "create_bus", "name": "keys"})).is_err(), "create_bus");
+        e.execute("setup.io", &json!({"action": "create_bus", "name": "Verb"})).unwrap();
+        assert!(e.execute("setup.io", &json!({"action": "rename_bus", "name": "Verb", "new_name": "Keys"})).is_err(), "rename_bus");
+        assert!(
+            e.execute("setup.io", &json!({"action": "create_input", "name": "VERB", "format": "mono", "first_channel": 3})).is_err(),
+            "create_input"
+        );
+        assert!(e.execute("setup.io", &json!({"action": "rename_input", "name": "Keys", "new_name": "verb"})).is_err(), "rename_input");
+        let busses: Vec<_> = e.session().busses.iter().map(|bus| bus.name.as_str()).collect();
+        let inputs: Vec<_> = e.session().inputs.iter().map(|path| path.name.as_str()).collect();
+        assert_eq!((busses, inputs), (vec!["Verb"], vec!["Keys"]));
     }
 
     /// Import Session Data brings a donor track's output path along, as it does its busses: a

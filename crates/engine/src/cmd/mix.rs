@@ -132,9 +132,12 @@ pub fn specs() -> Vec<CommandSpec> {
         cmd!("mix.new_bus", "New Bus", [], None, "{name, format?: stereo}", always, |e, p| {
             let name = str_param(p, "name").filter(|n| !n.trim().is_empty()).ok_or_else(|| bad("mix.new_bus", "`name` required"))?.to_string();
             let fmt = str_param(p, "format").and_then(soundcraft_model::ChannelFormat::from_id).unwrap_or(soundcraft_model::ChannelFormat::Stereo);
-            // A route names a bus or an output path (`track.output`), so one name cannot be both.
+            // A route names a bus or a path (`track.input`, `track.output`), so one name cannot be both.
             if e.session().outputs.iter().any(|path| path.name.eq_ignore_ascii_case(name.trim())) {
                 return Err(bad("mix.new_bus", format!("an output path named `{name}` exists")));
+            }
+            if e.session().inputs.iter().any(|path| path.name.eq_ignore_ascii_case(name.trim())) {
+                return Err(bad("mix.new_bus", format!("an input path named `{name}` exists")));
             }
             let id = e.session_mut().add_bus(&name, fmt);
             Ok(json!({"bus": id}))
