@@ -156,14 +156,23 @@ pub(crate) fn supported_format_config(
 /// first record or monitor instead (an input opened at launch lights the microphone indicator).
 pub fn input_opens_first(cfg: &AudioConfig) -> bool {
     let host = host(cfg);
-    let output = device(&host, cfg.output.as_deref(), true).and_then(|d| device_name(&d));
-    let input = device(&host, cfg.input.as_deref(), false).and_then(|d| device_name(&d));
-    opens_first(host.id().name(), output.as_deref(), input.as_deref())
+    opens_first(host.id().name(), || {
+        let output = device(&host, cfg.output.as_deref(), true).and_then(|d| device_name(&d));
+        let input = device(&host, cfg.input.as_deref(), false).and_then(|d| device_name(&d));
+        (output, input)
+    })
 }
 
-/// [`input_opens_first`] for devices as named under audio system `host`.
-fn opens_first(host: &str, output: Option<&str>, input: Option<&str>) -> bool {
-    in_open_order(host) && output.is_some() && output == input
+/// [`input_opens_first`] under audio system `host`, with `names` reading the output and input
+/// device names. Reading them lists the host's devices, on the UI thread at every open and
+/// reopen, so the audio system is checked first and `names` is called only on ASIO and Core
+/// Audio. On WASAPI, ALSA and the others the answer is false whatever the devices are, and they
+/// are no longer listed here; ASIO and Core Audio compare the names as before.
+fn opens_first(host: &str, names: impl FnOnce() -> (Option<String>, Option<String>)) -> bool {
+    in_open_order(host) && {
+        let (output, input) = names();
+        output.is_some() && output == input
+    }
 }
 
 fn in_open_order(host: &str) -> bool {
@@ -226,8 +235,31 @@ mod tests {
             ("WASAPI", Some("Same Name"), Some("Same Name"), false),
         ];
         for (host, output, input, first) in cases {
-            assert_eq!(opens_first(host, output, input), first, "{host}: {output:?} / {input:?}");
+            let names = || (output.map(str::to_owned), input.map(str::to_owned));
+            assert_eq!(opens_first(host, names), first, "{host}: {output:?} / {input:?}");
         }
+    }
+
+    #[test]
+    fn the_devices_are_not_listed_where_the_order_does_not_apply() {
+        // Naming the devices lists them (on the UI thread, at every open). Where callbacks do not
+        // run in open order the answer is false whatever the devices are, so they are not listed.
+        for host in ["WASAPI", "ALSA", "JACK"] {
+            let listed = std::cell::Cell::new(false);
+            let names = || {
+                listed.set(true);
+                (Some("Same Name".to_owned()), Some("Same Name".to_owned()))
+            };
+            assert!(!opens_first(host, names), "{host}");
+            assert!(!listed.get(), "{host}: the devices were listed");
+        }
+        let listed = std::cell::Cell::new(false);
+        let names = || {
+            listed.set(true);
+            (Some("RME Fireface UFX".to_owned()), Some("RME Fireface UFX".to_owned()))
+        };
+        assert!(opens_first("ASIO", names));
+        assert!(listed.get(), "ASIO compares the devices");
     }
 
     #[test]
