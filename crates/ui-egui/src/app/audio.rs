@@ -27,7 +27,7 @@ impl SoundApp {
         // The input reopens on the next record or monitor with the new choice.
         self.recorder = None;
         self.recorder_failed = false;
-        let player = soundcraft_playback::Player::with_config(self.engine.session_arc(), &self.ui.audio);
+        let player = reopen(&mut self.player, &self.ui.audio, || soundcraft_playback::Player::with_config(self.engine.session_arc(), &self.ui.audio));
         self.attach_midi(&player);
         player.locate(at);
         self.player = Some(player);
@@ -127,10 +127,32 @@ impl SoundApp {
         }
         self.recorder = None;
         self.recorder_failed = false;
-        let player = Player::with_config(self.engine.session_arc(), &self.ui.audio);
+        let player = reopen(&mut self.player, &self.ui.audio, || Player::with_config(self.engine.session_arc(), &self.ui.audio));
         self.attach_midi(&player);
         self.player = Some(player);
     }
+}
+
+/// Open the new device of `cfg` with `open` in place of the one in `slot`, and return it; the caller
+/// stores it, which closes the old one if it is still there.
+///
+/// On ASIO the old device closes first: in cpal 0.18.2 a process holds one ASIO driver, and while
+/// the old stream keeps it loaded the device list stops at the first other driver, so the new device
+/// (even the same driver again) is often not found and the player falls back to the silent clock
+/// (#1864). Elsewhere (Core Audio, WASAPI, ALSA, JACK) a device opens whatever else is open, and the
+/// old one stays open until the new one is there, as before: closing first there would only make the
+/// new device start cold, which on Core Audio holds Apply on the UI thread for about half a second.
+fn reopen<T>(slot: &mut Option<T>, cfg: &soundcraft_playback::AudioConfig, open: impl FnOnce() -> T) -> T {
+    if one_driver_per_process(cfg) {
+        drop(slot.take());
+    }
+    open()
+}
+
+/// Whether `cfg`'s audio system opens one driver per process (ASIO in cpal 0.18.2), so the device in
+/// use must close before another (or the same one again) can be found.
+fn one_driver_per_process(cfg: &soundcraft_playback::AudioConfig) -> bool {
+    cfg.system.as_deref().is_some_and(|s| s.eq_ignore_ascii_case("ASIO"))
 }
 
 pub(super) fn feed_meter(d: &mut MeterDisplay, peak: [f32; 2], gr: f32, dt: f32) {
@@ -165,6 +187,84 @@ pub(super) fn feed_meter(d: &mut MeterDisplay, peak: [f32; 2], gr: f32, dt: f32)
 /// arming one does not open an audio device or complain that there is none.
 pub(super) fn wants_audio_input(s: &soundcraft_model::Session) -> bool {
     s.tracks.iter().any(|t| !t.kind.is_midi() && (t.mixer.input_monitor || t.mixer.record_arm))
+}
+
+#[cfg(test)]
+mod reopen_tests {
+    use super::reopen;
+    use soundcraft_playback::AudioConfig;
+    use std::cell::Cell;
+    use std::rc::Rc;
+
+    /// A fake audio system. `one_driver` models ASIO in cpal 0.18.2: while a stream holds the
+    /// driver, looking a device up by name finds nothing. Without it, any device opens.
+    #[derive(Default)]
+    struct FakeHost {
+        one_driver: bool,
+        open_streams: Rc<Cell<u32>>,
+        opened_while_another_was_open: Cell<u32>,
+    }
+
+    /// An open stream; dropping it closes it (and releases an ASIO driver).
+    struct Stream(Rc<Cell<u32>>);
+
+    impl Drop for Stream {
+        fn drop(&mut self) {
+            self.0.set(self.0.get() - 1);
+        }
+    }
+
+    /// A player: its stream when the device was found, else the silent clock (no stream).
+    struct FakePlayer {
+        stream: Option<Stream>,
+    }
+
+    impl FakeHost {
+        fn open(&self) -> FakePlayer {
+            if self.open_streams.get() > 0 {
+                self.opened_while_another_was_open.set(self.opened_while_another_was_open.get() + 1);
+                if self.one_driver {
+                    return FakePlayer { stream: None };
+                }
+            }
+            self.open_streams.set(self.open_streams.get() + 1);
+            FakePlayer { stream: Some(Stream(Rc::clone(&self.open_streams))) }
+        }
+    }
+
+    fn config(system: &str) -> AudioConfig {
+        AudioConfig { system: Some(system.into()), output: Some("ASIO4ALL v2".into()), ..AudioConfig::default() }
+    }
+
+    /// Apply, Apply, Reconnect: each step opens the device of `cfg` in place of the open one, as
+    /// `apply_audio_config` and `reconnect_audio` do. Returns whether each step found the device.
+    fn apply_apply_reconnect(host: &FakeHost, cfg: &AudioConfig) -> Vec<bool> {
+        let mut player = Some(host.open());
+        assert!(player.as_ref().is_some_and(|p| p.stream.is_some()), "the first open finds the device");
+        let mut found = Vec::new();
+        for _ in ["first Apply", "second Apply", "Reconnect"] {
+            let new = reopen(&mut player, cfg, || host.open());
+            found.push(new.stream.is_some());
+            player = Some(new);
+        }
+        found
+    }
+
+    #[test]
+    fn on_asio_every_apply_and_reconnect_finds_the_device() {
+        let host = FakeHost { one_driver: true, ..FakeHost::default() };
+        assert_eq!(apply_apply_reconnect(&host, &config("ASIO")), [true, true, true], "no step falls back to the silent clock");
+        assert_eq!(host.opened_while_another_was_open.get(), 0, "the old stream released the driver before each lookup");
+    }
+
+    #[test]
+    fn elsewhere_the_old_device_stays_open_until_the_new_one_is_there() {
+        for system in ["CoreAudio", "WASAPI"] {
+            let host = FakeHost::default();
+            assert_eq!(apply_apply_reconnect(&host, &config(system)), [true, true, true]);
+            assert_eq!(host.opened_while_another_was_open.get(), 3, "{system}: each new device opened before the old one closed, as before");
+        }
+    }
 }
 
 #[cfg(test)]
