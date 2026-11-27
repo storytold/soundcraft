@@ -893,7 +893,23 @@ fn physical_paths(app: &mut SoundApp, ui: &mut egui::Ui, input: bool, channels: 
         session.outputs.iter().map(|p| (p.name.clone(), p.first_channel, p.format)).collect()
     };
     let direction = if input { "input" } else { "output" };
-    if ui.button(crate::localization::text(if input { "New Input" } else { "New Output" })).clicked() {
+    let (new_path, default) = ui
+        .horizontal(|ui| {
+            let new_path = ui.button(crate::localization::text(if input { "New Input" } else { "New Output" })).clicked();
+            // Pro Tools' Default (Reference Guide, printed p. 58 and 82–83): delete the paths not in
+            // use, restore default names, and make a path for every pair of the device's outputs.
+            let default = !input
+                && ui
+                    .button(crate::localization::text("Default"))
+                    .on_hover_text(crate::localization::text("Restore the default output paths of the current device"))
+                    .clicked();
+            (new_path, default)
+        })
+        .inner;
+    if default {
+        let _ = app.run("setup.io", json!({"action": "default_outputs", "channels": channels}));
+    }
+    if new_path {
         let prefix = if input { "Input" } else { "Output" };
         // Output and bus names share one namespace (a route names either).
         let busses: &[_] = if input { &[] } else { &app.engine.session().busses };

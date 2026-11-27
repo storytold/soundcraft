@@ -1038,6 +1038,32 @@ pub(crate) fn interface_output_pair(name: &str) -> Option<u16> {
     (a >= 3 && a % 2 == 1 && b == a + 1 && b <= soundcraft_mix::MAX_HARDWARE_CHANNELS).then(|| u16::try_from(a - 1).ok()).flatten()
 }
 
+/// Make the stereo output path of the interface pair `name` names by its default name ("Out 9-10"),
+/// and return the path's name; `None` when `name` is no such pair.
+fn make_output_pair(s: &mut soundcraft_model::Session, name: &str) -> Option<String> {
+    let first = interface_output_pair(name)?;
+    let name = format!("Out {}-{}", first + 1, first + 2);
+    s.outputs.push(soundcraft_model::OutputPath { name: name.clone(), first_channel: first, format: ChannelFormat::Stereo });
+    Some(name)
+}
+
+/// The route to the output path `name`: the main path (by its name, `main` or `Out 1-2`), a named
+/// output path, or an interface pair by its default name, whose path this makes. `None` when
+/// `name` names none of these, or names a bus (a route names one or the other).
+pub(crate) fn output_path_route(s: &mut soundcraft_model::Session, name: &str) -> Option<Route> {
+    let name = name.trim();
+    if parse_route(s, name) == Route::Main {
+        return Some(Route::Main);
+    }
+    if let Some((index, path)) = s.outputs.iter().enumerate().find(|(_, path)| path.name.eq_ignore_ascii_case(name)) {
+        return Some(if index == 0 { Route::Main } else { Route::Hardware(path.name.clone()) });
+    }
+    if s.bus_by_name(name).is_some() {
+        return None;
+    }
+    make_output_pair(s, name).map(Route::Hardware)
+}
+
 fn route(e: &mut Engine, p: &Value, input: bool) -> Result<Value> {
     let key = if input { "input" } else { "output" };
     let tracks = tracks_required(e, "track.route", p)?;
@@ -1067,10 +1093,8 @@ fn route(e: &mut Engine, p: &Value, input: bool) -> Result<Value> {
     if !input
         && let Route::Hardware(name) = &r
         && !s.outputs.iter().any(|path| path.name.eq_ignore_ascii_case(name))
-        && let Some(first) = interface_output_pair(name)
+        && let Some(name) = make_output_pair(s, name)
     {
-        let name = format!("Out {}-{}", first + 1, first + 2);
-        s.outputs.push(soundcraft_model::OutputPath { name: name.clone(), first_channel: first, format: ChannelFormat::Stereo });
         r = Route::Hardware(name);
     }
     if let Route::Hardware(name) = &r

@@ -732,16 +732,18 @@ impl MixEngine {
             let lvl = send_level(t, i, snd.level_db, pos);
             let gain = db_to_gain(lvl);
             let src = if snd.pre_fader { &strip.pre } else { &strip.buf };
-            let Route::Bus(b) = &snd.target else { continue };
-            let Some(dst) = self.busses.get_mut(b) else { continue };
             if gain <= 0.0 {
                 continue;
             }
+            // As in Pro Tools, a send goes to a bus or to an output path, in that path's width.
+            let Some((dst, dst_fmt)) = destination(s, &snd.target, &mut self.main, self.main_fmt, &mut self.busses, &mut self.physical) else {
+                continue;
+            };
             // Mono sends use the send's own pan; stereo sends go straight to L/R.
             let stereo = if src.len() == 1 { [snd.pan, 0.0] } else { [-1.0, 1.0] };
             let surround = snd.surround.as_ref().or(if snd.follow_main_pan { t.mixer.surround.as_ref() } else { None });
-            let m = build_matrix(src_fmt, src.len(), dst.fmt, dst.buf.len(), &PanSpec { stereo, surround }, law);
-            apply_matrix(src, frames, &mut dst.buf, &m, gain);
+            let m = build_matrix(src_fmt, src.len(), dst_fmt, dst.len(), &PanSpec { stereo, surround }, law);
+            apply_matrix(src, frames, dst, &m, gain);
         }
         let src: &[Vec<f32>] = match &t.mixer.output {
             Route::Main | Route::Bus(_) | Route::Hardware(_) if strip.out_extra.len > 0 => {
@@ -757,24 +759,8 @@ impl MixEngine {
             }
             _ => &strip.buf,
         };
-        let (dst, dst_fmt) = match &t.mixer.output {
-            Route::Main => (self.main.as_mut_slice(), self.main_fmt),
-            Route::Hardware(name) if s.outputs.first().is_some_and(|path| path.name.eq_ignore_ascii_case(name)) => {
-                (self.main.as_mut_slice(), self.main_fmt)
-            }
-            Route::Bus(b) => match self.busses.get_mut(b) {
-                Some(d) => (d.buf.as_mut_slice(), d.fmt),
-                None => return,
-            },
-            Route::Hardware(name) => {
-                if self.physical.is_empty() {
-                    return;
-                }
-                let Some(path) = s.outputs.iter().find(|path| path.name.eq_ignore_ascii_case(name)) else { return };
-                let Some(channels) = fitted_channels(path, self.physical.len()) else { return };
-                (&mut self.physical[channels], path.format)
-            }
-            Route::None | Route::Input(_) => return,
+        let Some((dst, dst_fmt)) = destination(s, &t.mixer.output, &mut self.main, self.main_fmt, &mut self.busses, &mut self.physical) else {
+            return;
         };
         let mut start = 0;
         while start < frames {
@@ -793,6 +779,34 @@ std::thread_local! {
 
 fn is_live(t: &Track) -> bool {
     !(t.kind == TrackKind::Master || t.inactive || t.kind == TrackKind::Vca)
+}
+
+/// The buffers a track output or send to `route` mixes into, and their format: the main mix (also
+/// for the main path by name), a bus, or a named output path's hardware channels. `None` when there
+/// is nowhere to play it: no route, a missing bus or path, a path that does not fit the device, or
+/// offline rendering (no hardware channels).
+fn destination<'a>(
+    s: &Session,
+    route: &Route,
+    main: &'a mut [Vec<f32>],
+    main_fmt: ChannelFormat,
+    busses: &'a mut HashMap<BusId, BusBuf>,
+    physical: &'a mut [Vec<f32>],
+) -> Option<(&'a mut [Vec<f32>], ChannelFormat)> {
+    match route {
+        Route::Main => Some((main, main_fmt)),
+        Route::Hardware(name) if s.outputs.first().is_some_and(|path| path.name.eq_ignore_ascii_case(name)) => Some((main, main_fmt)),
+        Route::Bus(b) => busses.get_mut(b).map(|d| (d.buf.as_mut_slice(), d.fmt)),
+        Route::Hardware(name) => {
+            if physical.is_empty() {
+                return None;
+            }
+            let path = s.outputs.iter().find(|path| path.name.eq_ignore_ascii_case(name))?;
+            let channels = fitted_channels(path, physical.len())?;
+            Some((&mut physical[channels], path.format))
+        }
+        _ => None,
+    }
 }
 
 /// Index of the named output path `name` in `Session::outputs`.

@@ -2395,3 +2395,70 @@ fn a_clip_volume_moved_earlier_by_the_track_delay_counts_as_set_when_a_device_go
     render_block(&mut eng, &s, 1024);
     assert_eq!(std::mem::take(&mut *heard.lock().unwrap()), vec![(0, [0xB0, 121, 0]), (0, [0xB0, 7, 80])], "the clip's volume, not the default");
 }
+
+/// Pro Tools sends go to output paths as well as busses (Reference Guide, Sends, printed
+/// p. 1468–1469 and 1474): a send to a named output path sums into that path's hardware channels
+/// in the path's width (a mono send to a stereo path is panned; a mono path is fed as a mono bus
+/// is), and a send to the main path joins the main mix.
+#[test]
+fn a_send_to_an_output_path_sums_into_its_hardware_channels() {
+    let (mut s, t) = session_with_dc(0.5, 4800);
+    s.outputs.push(soundcraft_model::OutputPath { name: "Out 9-10".into(), first_channel: 8, format: ChannelFormat::Stereo });
+    s.outputs.push(soundcraft_model::OutputPath { name: "Cue".into(), first_channel: 4, format: ChannelFormat::Mono });
+    {
+        let tr = s.track_mut(t).unwrap();
+        tr.mixer.output = Route::None;
+        let mut pair = soundcraft_model::SendSlot::new(Route::Hardware("out 9-10".into()));
+        pair.level_db = 0.0;
+        tr.mixer.sends[0] = Some(pair);
+        let mut cue = soundcraft_model::SendSlot::new(Route::Hardware("Cue".into()));
+        cue.level_db = -6.0;
+        tr.mixer.sends[1] = Some(cue);
+    }
+    let render = |s: &Session| {
+        let mut mix = MixEngine::new(48_000.0, 512);
+        mix.set_hardware_channels(12);
+        let mut out = vec![vec![0.0f32; 512]; 2];
+        for pos in (0..2048).step_by(512) {
+            mix.clear_hardware_output(512);
+            mix.render(s, pos as i64, 512, &mut out);
+        }
+        (out, mix.hardware_output().iter().map(|channel| channel[100]).collect::<Vec<f32>>())
+    };
+    let (main, hw) = render(&s);
+    let centre = 0.5 * std::f32::consts::FRAC_1_SQRT_2;
+    assert!((hw[8] - centre).abs() < 1e-3 && (hw[9] - centre).abs() < 1e-3, "a centred mono send on Out 9-10: {hw:?}");
+    assert!((hw[4] - centre * db_to_gain(-6.0)).abs() < 1e-3, "the mono path takes the send as a mono bus does: {hw:?}");
+    for (channel, sample) in hw.iter().enumerate().filter(|(channel, _)| ![4, 8, 9].contains(channel)) {
+        assert!(sample.abs() < 1e-6, "channel {channel} stays silent: {hw:?}");
+    }
+    assert!(main[0][100].abs() < 1e-6, "the track's output is off, so the main mix is silent");
+
+    // The send's pan places a mono track on the pair, as on a stereo bus.
+    if let Some(Some(send)) = s.track_mut(t).unwrap().mixer.sends.get_mut(0) {
+        send.pan = -1.0;
+    }
+    let (_, hw) = render(&s);
+    assert!(hw[8] > 0.49 && hw[9].abs() < 1e-4, "hard left: {hw:?}");
+
+    // Muted, the send plays nothing; to the main path, it joins the main mix.
+    if let Some(Some(send)) = s.track_mut(t).unwrap().mixer.sends.get_mut(1) {
+        send.mute = true;
+    }
+    if let Some(Some(send)) = s.track_mut(t).unwrap().mixer.sends.get_mut(0) {
+        send.target = Route::Main;
+    }
+    let (main, hw) = render(&s);
+    assert!(hw.iter().all(|sample| sample.abs() < 1e-6), "{hw:?}");
+    assert!(main[0][100] > 0.49 && main[1][100].abs() < 1e-4, "the send to the main path plays on the main mix");
+
+    // A send to a path that does not fit the device is silent, as a track output there is.
+    if let Some(Some(send)) = s.track_mut(t).unwrap().mixer.sends.get_mut(0) {
+        send.target = Route::Hardware("Out 9-10".into());
+    }
+    let mut mix = MixEngine::new(48_000.0, 512);
+    mix.set_hardware_channels(8);
+    let mut out = vec![vec![0.0f32; 512]; 2];
+    mix.render(&s, 0, 512, &mut out);
+    assert!(mix.hardware_output().iter().all(|channel| channel[100].abs() < 1e-6));
+}

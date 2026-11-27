@@ -67,7 +67,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "I/O...",
             ["Setup"],
             None,
-            "{action?: list|create_bus|rename_bus|delete_bus|create_input|set_input|rename_input|delete_input|create_output|set_output|rename_output|delete_output, name?, new_name?, format?: stereo, first_channel?: 0}",
+            "{action?: list|create_bus|rename_bus|delete_bus|create_input|set_input|rename_input|delete_input|create_output|set_output|rename_output|delete_output|default_outputs, name?, new_name?, format?: stereo, first_channel?: 0, channels?: device outputs (default_outputs)}",
             always,
             io_setup
         ),
@@ -309,6 +309,11 @@ fn io_setup(e: &mut Engine, p: &Value) -> Result<Value> {
     if action == "list" {
         return Ok(io_state(e.session()));
     }
+    if action == "default_outputs" {
+        let channels = usize::try_from(i64_or(p, "channels", 0).clamp(0, soundcraft_mix::MAX_HARDWARE_CHANNELS as i64)).unwrap_or(0);
+        default_outputs(e.session_mut(), channels);
+        return Ok(io_state(e.session()));
+    }
     let name = str_param(p, "name").map(str::trim).filter(|n| !n.is_empty()).ok_or_else(|| bad(id, "`name` required"))?.to_string();
     let new_name = str_param(p, "new_name").map(str::trim).filter(|n| !n.is_empty()).map(str::to_string);
     let format = match str_param(p, "format") {
@@ -362,11 +367,7 @@ fn io_setup(e: &mut Engine, p: &Value) -> Result<Value> {
             }
             let o = &mut s.outputs[index];
             let old = std::mem::replace(&mut o.name, to.clone());
-            for t in &mut s.tracks {
-                if matches!(&t.mixer.output, Route::Hardware(path) if path.eq_ignore_ascii_case(&old)) {
-                    t.mixer.output = Route::Hardware(to.clone());
-                }
-            }
+            rename_output_routes(s, &old, &to);
         }
         "set_output" => {
             let (index, output) = s
@@ -462,6 +463,69 @@ fn input_channel(p: &Value, default: u16, format: ChannelFormat) -> Result<u16> 
         return Err(bad("setup.io", "input path is outside the supported channel range"));
     }
     Ok(first as u16)
+}
+
+/// Whether a track output or send uses the output path `name`.
+fn output_in_use(s: &Session, name: &str) -> bool {
+    let uses = |route: &Route| matches!(route, Route::Hardware(path) if path.eq_ignore_ascii_case(name));
+    s.tracks.iter().any(|t| uses(&t.mixer.output) || t.mixer.sends.iter().flatten().any(|send| uses(&send.target)))
+}
+
+/// Point every track output and send on the output path `old` at `new`.
+fn rename_output_routes(s: &mut Session, old: &str, new: &str) {
+    for t in &mut s.tracks {
+        let routes = std::iter::once(&mut t.mixer.output).chain(t.mixer.sends.iter_mut().flatten().map(|send| &mut send.target));
+        for route in routes {
+            if matches!(route, Route::Hardware(path) if path.eq_ignore_ascii_case(old)) {
+                *route = Route::Hardware(new.to_string());
+            }
+        }
+    }
+}
+
+/// The Output page's Default, as in Pro Tools (Reference Guide, "Restoring Default Paths and Path
+/// Names", printed p. 82–83): delete the paths no track output or send uses, give a path in use on
+/// an interface pair that pair's default name ("Out 5-6"), put the main path back on channels 1-2
+/// as "Out 1-2", and make a stereo path for every further pair of the device's `channels`
+/// outputs. A path in use with no default name (a mono or wider path, or one off the pairs) stays.
+/// The paths are then in channel order, the main path first.
+fn default_outputs(s: &mut Session, channels: usize) {
+    let mut kept = Vec::new();
+    let paths = std::mem::take(&mut s.outputs);
+    for (index, path) in paths.into_iter().enumerate() {
+        if index == 0 {
+            kept.push(OutputPath { name: "Out 1-2".into(), first_channel: 0, ..path });
+        } else if output_in_use(s, &path.name) {
+            kept.push(path);
+        }
+    }
+    s.outputs = kept;
+    for index in 1..s.outputs.len() {
+        let path = &s.outputs[index];
+        let first = usize::from(path.first_channel);
+        if path.format.channels() != 2 || first % 2 != 0 {
+            continue;
+        }
+        let name = format!("Out {}-{}", first + 1, first + 2);
+        if s.outputs.iter().any(|other| other.name.eq_ignore_ascii_case(&name)) || s.bus_by_name(&name).is_some() {
+            continue;
+        }
+        let old = std::mem::replace(&mut s.outputs[index].name, name.clone());
+        rename_output_routes(s, &old, &name);
+    }
+    for first in (2..channels.saturating_sub(1)).step_by(2) {
+        let name = format!("Out {}-{}", first + 1, first + 2);
+        let covered = s
+            .outputs
+            .iter()
+            .any(|path| path.name.eq_ignore_ascii_case(&name) || (usize::from(path.first_channel) == first && path.format.channels() == 2));
+        if !covered && s.bus_by_name(&name).is_none() {
+            s.outputs.push(OutputPath { name, first_channel: first as u16, format: ChannelFormat::Stereo });
+        }
+    }
+    if let Some(paths) = s.outputs.get_mut(1..) {
+        paths.sort_by_key(|path| path.first_channel);
+    }
 }
 
 /// Routes name busses and output paths alike (`track.output`), so one name cannot be both.
@@ -796,6 +860,45 @@ mod tests {
         assert_eq!(e.session().outputs.len(), 2);
         assert!(e.execute("setup.io", &json!({"action": "nope", "name": "x"})).is_err());
         assert!(e.can_undo());
+    }
+
+    /// Default on the Output page, as in Pro Tools (Reference Guide, "Restoring Default Paths and
+    /// Path Names", printed p. 82–83): paths not in use are deleted, paths in use on an interface
+    /// pair get that pair's default name back, the main path is "Out 1-2" on channels 1-2 again,
+    /// and a stereo path is made for every further pair of the device's outputs. One undo step.
+    #[test]
+    fn default_restores_the_output_paths_of_the_device() {
+        let mut e = Engine::default();
+        for name in ["Vox", "Keys"] {
+            e.execute("track.new", &json!({"name": name, "format": "mono"})).unwrap();
+        }
+        let io = |e: &mut Engine, args: Value| e.execute("setup.io", &args).unwrap();
+        io(&mut e, json!({"action": "rename_output", "name": "Out 1-2", "new_name": "Monitors"}));
+        io(&mut e, json!({"action": "set_output", "name": "Monitors", "first_channel": 2}));
+        io(&mut e, json!({"action": "create_output", "name": "Phones", "first_channel": 4}));
+        io(&mut e, json!({"action": "create_output", "name": "Spare", "first_channel": 6}));
+        io(&mut e, json!({"action": "create_output", "name": "Talkback", "format": "mono", "first_channel": 9}));
+        e.execute("track.output", &json!({"track": "Vox", "output": "Phones"})).unwrap();
+        e.execute("mix.send", &json!({"track": "Keys", "slot": 0, "output": "Talkback"})).unwrap();
+        let before = e.session().outputs.clone();
+
+        let r = io(&mut e, json!({"action": "default_outputs", "channels": 10}));
+        let names: Vec<String> = e.session().outputs.iter().map(|path| path.name.clone()).collect();
+        assert_eq!(names, ["Out 1-2", "Out 3-4", "Out 5-6", "Out 7-8", "Out 9-10", "Talkback"], "in channel order: {r}");
+        assert_eq!(e.session().outputs[0].first_channel, 0, "the main path is back on channels 1-2");
+        let path = |e: &Engine, name: &str| e.session().outputs.iter().find(|path| path.name == name).cloned().unwrap();
+        assert_eq!((path(&e, "Out 9-10").first_channel, path(&e, "Out 9-10").format), (8, ChannelFormat::Stereo));
+        assert_eq!(e.session().track_by_name("Vox").unwrap().mixer.output, Route::Hardware("Out 5-6".into()), "renamed with its tracks");
+        assert_eq!(
+            e.session().track_by_name("Keys").unwrap().mixer.sends[0].as_ref().map(|send| send.target.clone()),
+            Some(Route::Hardware("Talkback".into())),
+            "a mono path in use has no default name and stays"
+        );
+        e.execute("edit.undo", &json!({})).unwrap();
+        assert_eq!(e.session().outputs, before, "one undo step");
+        // With no device known, only the paths change; no pair paths are made.
+        io(&mut e, json!({"action": "default_outputs"}));
+        assert_eq!(e.session().outputs.len(), 3);
     }
 
     #[test]

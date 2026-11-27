@@ -104,10 +104,37 @@ pub(crate) fn route_popup(app: &mut SoundApp, resp: &egui::Response, id: TrackId
                 channels
             })
         } else {
-            app.player.as_ref().map_or(0, |player| usize::from(player.device_channels))
+            output_channels(app)
         };
         route_menu(app, ui, id, input, channels);
     });
+}
+
+/// The output paths a track output or send selector lists, as (label, the name `track.output` or
+/// `mix.send` is given): the main path, the named paths, then every other pair of the interface's
+/// `channels` outputs by the name Pro Tools' default paths give it ("Out 3-4" …); choosing a pair
+/// makes its path. A pair a path already covers, or a bus of that name, is left out.
+pub(crate) fn output_path_choices(app: &SoundApp, channels: usize) -> Vec<(String, String)> {
+    let session = app.engine.session();
+    let main_name = session.outputs.first().map_or_else(|| "Out 1-2".to_string(), |o| o.name.clone());
+    let mut choices = vec![(main_name, "main".to_string())];
+    choices.extend(session.outputs.iter().skip(1).map(|path| (path.name.clone(), path.name.clone())));
+    let pairs = (2..channels.saturating_sub(1)).step_by(2).filter_map(|first| {
+        let name = format!("Out {}-{}", first + 1, first + 2);
+        let taken = session
+            .outputs
+            .iter()
+            .any(|path| path.name.eq_ignore_ascii_case(&name) || (usize::from(path.first_channel) == first && path.format.channels() == 2))
+            || session.busses.iter().any(|bus| bus.name.eq_ignore_ascii_case(&name));
+        (!taken).then(|| (name.clone(), name))
+    });
+    choices.extend(pairs);
+    choices
+}
+
+/// The device's output channels as the output and send selectors use them (0 when unknown).
+pub(crate) fn output_channels(app: &SoundApp) -> usize {
+    app.player.as_ref().map_or(0, |player| usize::from(player.device_channels))
 }
 
 /// Input or output menu with searchable hardware paths and buses. `channels` is the device's
@@ -119,7 +146,6 @@ fn route_menu(app: &mut SoundApp, ui: &mut Ui, id: TrackId, input: bool, channel
     let search = MenuSearch::show(ui, egui::Id::unique(("route-search", id.0, input)), hint);
     let list_height = (ui.ctx().content_rect().height() - 105.0).clamp(48.0, 420.0);
     let busses: Vec<String> = app.engine.session().busses.iter().map(|b| b.name.clone()).collect();
-    let main_name = app.engine.session().outputs.first().map_or_else(|| "Out 1-2".to_string(), |o| o.name.clone());
     // (label, the route the command is given)
     let mut fixed = vec![(crate::localization::text(if input { "no input" } else { "no output" }).to_string(), "none".to_string())];
     if input {
@@ -152,21 +178,7 @@ fn route_menu(app: &mut SoundApp, ui: &mut Ui, id: TrackId, input: bool, channel
             fixed.push((format!("{name} ({})", crate::localization::text("Unavailable")), name.clone()));
         }
     } else {
-        fixed.push((main_name, "main".to_string()));
-        let session = app.engine.session();
-        fixed.extend(session.outputs.iter().skip(1).map(|path| (path.name.clone(), path.name.clone())));
-        // Every other pair of the interface's outputs, by the name Pro Tools' default paths give
-        // it; choosing one makes that path (see `track.output`).
-        let pairs = (2..channels.saturating_sub(1)).step_by(2).filter_map(|first| {
-            let name = format!("Out {}-{}", first + 1, first + 2);
-            let taken = session
-                .outputs
-                .iter()
-                .any(|path| path.name.eq_ignore_ascii_case(&name) || (usize::from(path.first_channel) == first && path.format.channels() == 2))
-                || busses.iter().any(|bus| bus.eq_ignore_ascii_case(&name));
-            (!taken).then(|| (name.clone(), name))
-        });
-        fixed.extend(pairs.collect::<Vec<_>>());
+        fixed.extend(output_path_choices(app, channels));
     }
     if search.typing() {
         let visible: Vec<_> =
