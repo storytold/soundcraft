@@ -264,11 +264,9 @@ impl SoundApp {
         });
         self.punch = None;
         self.autosaved_rev = 0;
-        let sources_before = self.engine.session().sources.len();
+        // A loop take stopped before the middle of its first pass is discarded, as in Pro Tools.
+        let loop_audio = plan.pass.is_some() && !takes.is_empty();
         let ids = soundcraft_engine::io::place_recording(&mut self.engine, &plan, takes);
-        // A loop take stopped before its first pass was past halfway places no clip but is kept
-        // in the Clips list; its MIDI joins the same Record undo step.
-        let saved_audio_source = self.engine.session().sources.len() > sources_before;
         // The audio engine may have confirmed the pass while the audio takes were finished: the
         // stop position and what the user is told go by one answer.
         let midi_confirmed = midi_confirmed || self.midi_pass_stopped_at(midi_pass).is_some();
@@ -287,10 +285,10 @@ impl SoundApp {
         // keys still down are held to the end of the loop (the take is reported as incomplete).
         let (midi_range, midi_kind) =
             super::midi::midi_take_span(midi_loop, plan.punch, self.record_start, stopped_at, self.midi_pass_stopped_at(midi_pass));
-        let (midi_clips, midi_problem) = self.finish_midi_take(midi_range, !ids.is_empty() || saved_audio_source, midi_confirmed, midi_kind);
+        let (midi_clips, midi_problem) = self.finish_midi_take(midi_range, !ids.is_empty(), midi_confirmed, midi_kind);
         self.ui.status = if plan.pass.is_some() && midi_clips == 0 {
-            if ids.is_empty() && saved_audio_source {
-                crate::localization::text("Short loop take saved in the Clips list").into()
+            if ids.is_empty() && loop_audio {
+                crate::localization::text("Loop take discarded: recording stopped before the middle of the first pass").into()
             } else {
                 crate::localized_format!("Loop-recorded {} take(s)", ids.len() / tracks)
             }

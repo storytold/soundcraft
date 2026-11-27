@@ -89,7 +89,6 @@ fn add_recording_in(
     // file is decoded once the take is laid out and it holds a kept span, one file at a time, so
     // a punch on a take of several files decodes no more than the files it keeps.
     let every_file_placed = pass.is_none() && punch.is_none();
-    let sources_before = e.session().sources.len();
     let mut out = Vec::new();
     for (tid, paths) in tracks {
         let mut files = Vec::new();
@@ -105,8 +104,7 @@ fn add_recording_in(
         }
         out.extend(clips);
     }
-    // A short loop take places no clip but stays in the Clips list, so it is undone with the rest.
-    if !out.is_empty() || e.session().sources.len() > sources_before {
+    if !out.is_empty() {
         e.push_undo("Record", before);
     }
     out
@@ -182,11 +180,11 @@ fn place_take(
         .into_iter()
         .map(|(index, offset, clip_start, clip_len)| (index, Range::new(offset, offset.saturating_add(clip_len)), clip_start))
         .collect();
-    // A loop take stopped before any pass is kept stays reachable in the Clips list.
-    let keep_every_file = kept_passes.is_empty() && len > 0 && pass.is_some_and(|p| p > 0);
+    // A loop take stopped before the middle of its first pass keeps nothing: Pro Tools discards
+    // it (Reference Guide p.800), and its file is not registered.
     let mut sources = Vec::new();
     for (file, span) in files {
-        if !keep_every_file && !kept_passes.iter().any(|(_, kept, _)| kept.intersect(&span).is_some()) {
+        if !kept_passes.iter().any(|(_, kept, _)| kept.intersect(&span).is_some()) {
             continue;
         }
         let read = match file.audio {
@@ -606,17 +604,19 @@ mod record_tests {
     }
 
     #[test]
-    fn a_short_first_loop_take_remains_available_and_undoable() {
+    fn a_loop_take_stopped_before_the_middle_of_its_first_pass_is_discarded() {
+        // Pro Tools Reference Guide p.800: "If you stop recording before you reach the midpoint of
+        // the loop, Pro Tools discards that take."
         let dir = std::env::temp_dir().join(format!("soundcraft-short-loop-{}", std::process::id()));
         let mut e = Engine::default();
         let vox = armed(&mut e, "Vox", "mono", "In 1");
+        let undo_before = e.undo_label().map(str::to_string);
         let take = dir.join("Audio Files/Short Loop.wav");
         write_take(&take, 499);
         let plan = Recording { start: 700, pass: Some(400), punch: Some(Range::new(1_000, 1_400)), rate: 48_000, takes: vec![] };
         assert!(place_recording(&mut e, &plan, vec![(vox, take)]).is_empty());
-        assert_eq!(e.session().sources.len(), 1);
-        e.execute("edit.undo", &json!({})).unwrap();
-        assert!(e.session().sources.is_empty());
+        assert!(e.session().sources.is_empty(), "the take is not in the Clips list");
+        assert_eq!(e.undo_label().map(str::to_string), undo_before, "nothing to undo");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

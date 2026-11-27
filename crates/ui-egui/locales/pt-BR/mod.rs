@@ -1606,7 +1606,9 @@ fn menu_translate(source: &str) -> Option<&'static str> {
         "the session has no tracks" => "a sessão não tem faixas",
         "the session has not been saved" => "a sessão não foi salva",
         "Loop-recorded {} take(s)" => "Gravadas em loop: {} tomada(s)",
-        "Short loop take saved in the Clips list" => "Tomada curta em loop salva na lista de clipes",
+        "Loop take discarded: recording stopped before the middle of the first pass" => {
+            "Tomada em loop descartada: a gravação parou antes do meio da primeira passagem"
+        }
         "Recorded {} clip(s)" => "{} clipe(s) gravado(s)",
         "Recovered “{name}”. Save it to keep the changes." => "Recuperada “{name}”. Salve para manter as alterações.",
         "Recovered “{name}”, but {n} audio file(s) are missing. Save it to keep the changes." => {
