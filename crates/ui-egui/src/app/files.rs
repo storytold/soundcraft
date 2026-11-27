@@ -84,10 +84,11 @@ impl SoundApp {
     /// launch, unless the user quit with SoundCraft's Quit; a take still recording is finished
     /// and always stays.
     pub fn close_autosave(&mut self) {
-        let recording = self.engine.transport.recording;
-        if recording {
+        let recording = self.engine.transport.recording || self.take_tail.is_some();
+        if self.engine.transport.recording {
             self.stop_play();
         }
+        self.settle_take_tail();
         let keep = self.has_unsaved_changes() && (recording || !self.quit_requested);
         if keep {
             self.capture_plugin_states();
@@ -123,6 +124,7 @@ impl SoundApp {
             self.ui.status = crate::localization::text("Stop recording before recovering other work.").into();
             return;
         }
+        self.settle_take_tail();
         self.close_autosave();
         match soundcraft_engine::autosave::recover(&mut self.engine, left) {
             Ok(missing) => {

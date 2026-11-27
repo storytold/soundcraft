@@ -11,6 +11,7 @@ pub fn ask_to_save(app: &mut SoundApp, id: &str, params: &Value) -> bool {
     if app.engine.transport.recording {
         app.stop_play();
     }
+    app.settle_take_tail();
     if !app.engine.is_dirty() {
         return false;
     }
