@@ -145,17 +145,24 @@ pub(crate) fn output_path_choices(app: &SoundApp, channels: usize) -> Vec<(Strin
     let main_name = session.outputs.first().map_or_else(|| "Out 1-2".to_string(), |o| o.name.clone());
     let mut choices = vec![(main_name, "main".to_string())];
     choices.extend(session.outputs.iter().skip(1).map(|path| (path.name.clone(), path.name.clone())));
-    let pairs = (2..channels.saturating_sub(1)).step_by(2).filter_map(|first| {
-        let name = format!("Out {}-{}", first + 1, first + 2);
-        let taken = session
-            .outputs
-            .iter()
-            .any(|path| path.name.eq_ignore_ascii_case(&name) || (usize::from(path.first_channel) == first && path.format.channels() == 2))
-            || session.busses.iter().any(|bus| bus.name.eq_ignore_ascii_case(&name));
-        (!taken).then(|| (name.clone(), name))
-    });
-    choices.extend(pairs);
+    choices.extend(default_output_pairs(session, channels).into_iter().map(|(name, _)| (name.clone(), name)));
     choices
+}
+
+/// The device's further pairs of `channels` outputs by their default path names ("Out 3-4" …) with
+/// their first channel (0-based), leaving out a pair a path already covers or a bus of that name.
+pub(crate) fn default_output_pairs(session: &soundcraft_model::Session, channels: usize) -> Vec<(String, usize)> {
+    (2..channels.saturating_sub(1))
+        .step_by(2)
+        .map(|first| (format!("Out {}-{}", first + 1, first + 2), first))
+        .filter(|(name, first)| {
+            !session
+                .outputs
+                .iter()
+                .any(|path| path.name.eq_ignore_ascii_case(name) || (usize::from(path.first_channel) == *first && path.format.channels() == 2))
+                && !session.busses.iter().any(|bus| bus.name.eq_ignore_ascii_case(name))
+        })
+        .collect()
 }
 
 /// The device's output channels as the output and send selectors use them (0 when unknown).

@@ -153,6 +153,10 @@ pub(super) fn translate(source: &str) -> Option<&'static str> {
         "New Bus" => "Novo bus",
         "New Output" => "Nova saída",
         "Restore the default output paths of the current device" => "Restaurar os caminhos de saída padrão do dispositivo atual",
+        "Default paths" => "Caminhos padrão",
+        "A pair becomes a path when a track output or send chooses it, or with Default" => {
+            "Um par vira caminho quando a saída ou um envio de uma faixa o escolhe, ou com Padrão"
+        }
         "Output path name" => "Nome do caminho de saída",
         "First channel" => "Primeiro canal",
         "Unavailable" => "Indisponível",
