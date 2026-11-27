@@ -147,8 +147,8 @@ pub fn devices_present(system: Option<&str>, output: Wanted<'_>, input: Wanted<'
 /// True when a cpal error means the stream is dead and only a rebuild can restore audio. cpal 0.18
 /// reports every operation through one [`cpal::Error`]: `DeviceNotAvailable` means the device went
 /// away, and `StreamInvalidated` explicitly requires the stream to be rebuilt. SoundCraft has no
-/// in-place rebuild, so both map to the existing actionable "reconnect audio device" trouble
-/// instead of leaving a dead stream silently logging. A rerouted default device
+/// in-place rebuild, so both mark the output lost (see [`output_loss`] for what the UI then
+/// reopens, or Reconnect) instead of leaving a dead stream silently logging. A rerouted default device
 /// (`DeviceChanged`) keeps playing, and an xrun is transient, so neither is a lost stream.
 /// `HostUnavailable`, `DeviceBusy` and `BackendError` stay log-only until their retry/rebuild
 /// policies exist.
@@ -255,7 +255,7 @@ pub(crate) fn device(host: &cpal::Host, name: Option<&str>, output: bool) -> Opt
 /// up COM as single-threaded on the Windows thread that called it, which is the inferred cause).
 /// The listed device still opens, so the default is followed by opening it by its identity. Such
 /// a stream is not told when the default moves to another device; it is reopened on the current
-/// default only when it is lost or the audio devices are applied again.
+/// default only when it is lost, on Reconnect, or when the audio devices are applied again.
 ///
 /// Elsewhere the default is the device itself: it is returned unchecked.
 pub(crate) fn default_to_open<D>(

@@ -690,8 +690,8 @@ mod tests {
         }
     }
 
-    /// Once the output runs again (Reconnect, or a device applied), the refusal is no longer
-    /// true and leaves the status line; any later message stays.
+    /// Once the output runs again (reopened by SoundCraft, Reconnect, or a device applied), the
+    /// refusal is no longer true and leaves the status line; any later message stays.
     #[test]
     fn a_refusal_leaves_the_status_line_once_the_output_runs_again() {
         let mut app = app();

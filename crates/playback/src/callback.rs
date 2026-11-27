@@ -11,14 +11,15 @@ use soundcraft_model::TrackKind;
 pub(crate) struct Fault {
     /// A block panicked: output stays silent from then on.
     failed: AtomicBool,
-    /// The device went away or the stream was invalidated: only a reconnect can restore audio.
+    /// The device went away or the stream was invalidated: the UI reopens it once the device (or,
+    /// with the system default chosen, any default) is listed again, or on Reconnect.
     pub(crate) gone: AtomicBool,
     /// The error was `DeviceNotAvailable`, as opposed to `StreamInvalidated`. On Core Audio that
     /// tells a device that went away from a stream invalidated while the device stayed (another
     /// app changed its sample rate); elsewhere it does not (see [`crate::devices::output_loss`]).
     pub(crate) left: AtomicBool,
     /// The device stopped asking for audio while playing (reported as `Stalled`): only a
-    /// reconnect can restore audio, as for a lost stream. Kept on every audio system, from one
+    /// reconnect can restore audio (unlike a lost stream, nothing is waited for). Kept on every audio system, from one
     /// observation: on Windows (WASAPI, a Model 12 just replugged) Play was accepted after the
     /// stall with the position stuck at 0. Also seen after a Windows sleep and wake (Model 12):
     /// the output stalled, and again after each Reconnect until the interface was replugged (see
