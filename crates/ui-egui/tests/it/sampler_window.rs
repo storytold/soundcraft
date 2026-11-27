@@ -1,10 +1,10 @@
 //! The Sampler's instrument window: audio dropped on it loads the sample (by path on the
 //! desktop, by bytes in the browser), and built-in instruments show their parameters.
 
+use craft_audio::{AudioBuffer, BitDepth, EncodeOptions};
 use egui::{DroppedFile, Event, vec2};
 use egui_kittest::Harness;
 use egui_kittest::kittest::Queryable as _;
-use soundcraft_audio_io::{AudioBuffer, BitDepth, EncodeOptions, FileFormat};
 use soundcraft_model::TrackId;
 use soundcraft_ui_egui::{Services, SoundApp};
 use std::path::{Path, PathBuf};
@@ -29,8 +29,8 @@ fn wav(secs: f32) -> Vec<u8> {
     let n = (48_000.0 * secs) as usize;
     let one: Vec<f32> = (0..n).map(|i| 0.4 * (std::f32::consts::TAU * 220.0 * i as f32 / 48_000.0).sin()).collect();
     let buf = AudioBuffer { sample_rate: 48_000, channels: vec![one; 2] };
-    let opts = EncodeOptions { format: FileFormat::Wav, bit_depth: BitDepth::Int16, dither: false, bwf: None };
-    soundcraft_audio_io::encode(&buf, &opts).unwrap()
+    let opts = EncodeOptions::new(craft_audio::EncodeFormat::Wav).with_bit_depth(BitDepth::Int16);
+    craft_audio::encode(&buf, &opts).unwrap()
 }
 
 /// Feed one harness frame through the raw-input hook before stepping, so dropped files and scripted input are
@@ -49,14 +49,15 @@ fn harness() -> (Harness<'static, SoundApp>, TrackId) {
     let keys = engine.session().tracks.iter().find(|t| t.name == "Keys").unwrap().id;
     let mut app = SoundApp::new(engine, None, Services::default());
     app.ui.plugin_windows.push((keys, soundcraft_mix::INSTRUMENT_SLOT));
-    let mut h = Harness::builder().with_size(vec2(1600.0, 1000.0)).build_ui_state(
-        |ui, app: &mut SoundApp| {
-            let ctx = ui.ctx().clone();
-            app.logic(&ctx);
-            app.ui(ui);
-        },
-        app,
-    );
+    let mut h =
+        Harness::builder().with_context_setup(soundcraft_ui_egui::framework::install_headless).with_size(vec2(1600.0, 1000.0)).build_ui_state(
+            |ui, app: &mut SoundApp| {
+                let ctx = ui.ctx().clone();
+                app.logic(&ctx);
+                app.ui(ui);
+            },
+            app,
+        );
     for _ in 0..6 {
         step(&mut h);
     }

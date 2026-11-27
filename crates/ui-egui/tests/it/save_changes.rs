@@ -6,7 +6,7 @@ use soundcraft_ui_egui::{Services, SoundApp, dialogs, menus};
 
 fn harness() -> Harness<'static, SoundApp> {
     let app = SoundApp::new(soundcraft_engine::demo::demo_engine(), None, Services::default());
-    Harness::builder().with_size(egui::vec2(1600.0, 1000.0)).build_ui_state(
+    Harness::builder().with_context_setup(soundcraft_ui_egui::framework::install_headless).with_size(egui::vec2(1600.0, 1000.0)).build_ui_state(
         |ui, app: &mut SoundApp| {
             let ctx = ui.ctx().clone();
             app.logic(&ctx);
@@ -94,6 +94,22 @@ fn save_in_the_question_saves_before_closing() {
     h.state_mut().run("session.open", json!({"path": path})).unwrap();
     assert!(!h.state().engine.session().track_by_name("Kick").unwrap().mixer.mute);
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn enter_on_a_focused_cancel_neither_saves_nor_closes() {
+    let mut h = harness();
+    let tracks = h.state().engine.session().tracks.len();
+    mute_kick(&mut h);
+    close_session(&mut h);
+    assert_eq!(h.state().dialogs.open_name(), Some("save_changes"));
+    h.get_by_label("Cancel").focus();
+    steps(&mut h);
+    h.event(egui::Event::Key { key: egui::Key::Enter, physical_key: None, pressed: true, repeat: false, modifiers: egui::Modifiers::NONE });
+    steps(&mut h);
+    assert!(h.state().dialogs.open.is_none(), "no Save As dialog follows");
+    assert_eq!(h.state().engine.session().tracks.len(), tracks);
+    assert!(h.state().engine.is_dirty());
 }
 
 /// A session the browser read: an empty one, so opening it is easy to see.

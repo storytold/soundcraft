@@ -1,7 +1,5 @@
 //! Small custom widgets in the studio style.
 
-use craft_ui::buttons::{ButtonVisuals, IconButton, IconButtonStyle};
-
 use crate::icons;
 use crate::theme::{Tokens, bold, regular};
 use egui::{Align2, Color32, CornerRadius, Mesh, Painter, Rect, Response, Sense, Stroke, StrokeKind, Ui, Vec2, pos2, vec2};
@@ -69,11 +67,15 @@ pub fn key_fill(resp: &Response) -> Color32 {
     if resp.hovered() { t.button_hi } else { t.button }
 }
 
+/// The [`shade`] of a pressed key's face, top and bottom of its gradient.
+pub const PRESSED_SHADE: [f32; 2] = [-0.14, 0.02];
+
 /// A key in `fill`, softly lit from above; it sinks while pressed.
 pub fn key(p: &Painter, r: Rect, resp: &Response, fill: Color32) {
     let face = r.shrink(1.0);
     if resp.is_pointer_button_down_on() {
-        vgradient(p, face, shade(fill, -0.14), shade(fill, 0.02));
+        let [top, bottom] = PRESSED_SHADE;
+        vgradient(p, face, shade(fill, top), shade(fill, bottom));
     } else {
         p.rect_filled(face, 0.0, fill);
         key_light(p, face);
@@ -85,6 +87,110 @@ pub fn key(p: &Painter, r: Rect, resp: &Response, fill: Color32) {
 fn key_light(p: &Painter, face: Rect) {
     vgradient(p, face, Color32::from_white_alpha(26), Color32::from_black_alpha(31));
     p.hline(face.min.x + 1.0..=face.max.x - 1.0, face.min.y + 0.5, Stroke::new(1.0, Color32::from_white_alpha(30)));
+}
+
+/// The background, border and icon colour of an icon button in one interaction state.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct ButtonVisuals {
+    fill: Color32,
+    stroke: Stroke,
+    icon: Color32,
+}
+
+/// The look of an icon button in each state. Selection takes precedence over press and hover.
+#[derive(Clone, Copy, Debug)]
+struct IconButtonStyle {
+    normal: ButtonVisuals,
+    hovered: ButtonVisuals,
+    /// `None` keeps the hover or normal look while pressed.
+    pressed: Option<ButtonVisuals>,
+    selected: ButtonVisuals,
+    corner_radius: CornerRadius,
+    /// An inset outline while the button has keyboard focus.
+    focus_stroke: Stroke,
+}
+
+impl IconButtonStyle {
+    fn visuals(&self, selected: bool, hovered: bool, pressed: bool) -> ButtonVisuals {
+        if selected {
+            self.selected
+        } else if let Some(visuals) = self.pressed.filter(|_| pressed) {
+            visuals
+        } else if hovered {
+            self.hovered
+        } else {
+            self.normal
+        }
+    }
+}
+
+/// An icon-only button painted in SoundCraft's own colours. The label is its accessible name; the caller paints the
+/// icon, attaches a tooltip and dispatches from the response. Selection is the caller's.
+struct IconButton<'a> {
+    label: &'a str,
+    size: Vec2,
+    selected: bool,
+    style: &'a IconButtonStyle,
+    single_shape_frame: bool,
+}
+
+impl<'a> IconButton<'a> {
+    fn new(label: &'a str, size: Vec2, style: &'a IconButtonStyle) -> Self {
+        Self { label, size, selected: false, style, single_shape_frame: false }
+    }
+
+    fn selected(mut self, selected: bool) -> Self {
+        self.selected = selected;
+        self
+    }
+
+    /// Paints fill and border as one rectangle, keeping the edge tessellation of a `Painter::rect`.
+    fn single_shape_frame(mut self) -> Self {
+        self.single_shape_frame = true;
+        self
+    }
+
+    /// Paints the button and returns its response. `paint_icon` gets the button's rect and the icon tint. A
+    /// non-finite, non-positive or oversized (over 4096 points) size gives an inert zero-size response.
+    fn show(self, ui: &mut Ui, paint_icon: impl FnOnce(&Ui, Rect, Color32)) -> Response {
+        let valid = self.size.is_finite() && self.size.x > 0.0 && self.size.y > 0.0 && self.size.x <= 4096.0 && self.size.y <= 4096.0;
+        let (rect, response) =
+            ui.allocate_exact_size(if valid { self.size } else { Vec2::ZERO }, if valid { Sense::click() } else { Sense::hover() });
+        response.widget_info(|| egui::WidgetInfo::selected(egui::Role::Button, valid && ui.is_enabled(), self.selected, self.label));
+        if !valid {
+            return response;
+        }
+        let visuals = self.style.visuals(self.selected, response.hovered(), response.is_pointer_button_down_on());
+        let stroke = bounded_stroke(visuals.stroke, rect);
+        if self.single_shape_frame {
+            ui.painter().rect(rect, self.style.corner_radius, visuals.fill, stroke, StrokeKind::Inside);
+        } else {
+            if visuals.fill != Color32::TRANSPARENT {
+                ui.painter().rect_filled(rect, self.style.corner_radius, visuals.fill);
+            }
+            if !stroke.is_empty() {
+                ui.painter().rect_stroke(rect, self.style.corner_radius, stroke, StrokeKind::Inside);
+            }
+        }
+        paint_icon(ui, rect, visuals.icon);
+        if response.has_focus() && rect.width() > 4.0 && rect.height() > 4.0 {
+            let focus_rect = rect.shrink(2.0);
+            let stroke = bounded_stroke(self.style.focus_stroke, focus_rect);
+            if !stroke.is_empty() {
+                ui.painter().rect_stroke(focus_rect, self.style.corner_radius, stroke, StrokeKind::Inside);
+            }
+        }
+        response
+    }
+}
+
+/// `stroke` no wider than half of `rect`'s smaller side; none when its width is not positive.
+fn bounded_stroke(stroke: Stroke, rect: Rect) -> Stroke {
+    if stroke.width.is_finite() && stroke.width > 0.0 {
+        Stroke::new(stroke.width.min(rect.width().min(rect.height()) * 0.5), stroke.color)
+    } else {
+        Stroke::NONE
+    }
 }
 
 /// Local colors for shared icon-button interaction; transport-specific states stay in the toolbar.
@@ -114,6 +220,7 @@ pub(crate) fn named_text_field(resp: egui::Response, name: &str) -> egui::Respon
 /// A toolbar button with an icon; `on` draws the blue selected state.
 pub fn icon_button(ui: &mut Ui, size: egui::Vec2, icon: &str, on: bool, tip: &str) -> Response {
     let t = Tokens::current();
+    let tip = crate::localization::text(tip);
     let style = button_style(t.accent, t.text, 3);
     let resp = IconButton::new(tip, size, &style).selected(on).single_shape_frame().show(ui, |ui, r, tint| {
         key_light(ui.painter(), r.shrink(1.0));
@@ -130,6 +237,7 @@ pub fn icon_button(ui: &mut Ui, size: egui::Vec2, icon: &str, on: bool, tip: &st
 /// the accessible name and the tooltip.
 pub fn close_button(ui: &mut Ui, label: &str) -> Response {
     let t = Tokens::current();
+    let label = crate::localization::text(label);
     let size = Vec2::splat(ui.spacing().interact_size.y.max(14.0));
     let style = IconButtonStyle {
         normal: ButtonVisuals { fill: Color32::TRANSPARENT, stroke: Stroke::NONE, icon: t.text_dim },
@@ -200,12 +308,15 @@ pub(crate) struct SelectorLabels<'a> {
 /// published separately in the accessibility tree.
 pub(crate) fn selector_box_named(ui: &mut Ui, width: f32, height: f32, text: &str, color: Color32, labels: SelectorLabels<'_>) -> Response {
     let t = Tokens::current();
+    // `text` and `value` can be user-defined route or group names (a bus called "Read"), so they
+    // are shown unchanged. Callers pass every label already translated.
+    let SelectorLabels { name, value, tooltip } = labels;
     let (r, resp) = ui.allocate_exact_size(vec2(width, height), Sense::click());
     // The compact visible text can be an abbreviation ("t/l"); the full meaning on hover is the
     // accessible name, not the tooltip. `current_text_value` tells a screen reader the selection.
     resp.widget_info(|| {
-        let mut info = egui::WidgetInfo::labeled(egui::Role::ComboBox, ui.is_enabled(), labels.name);
-        info.current_text_value = Some(labels.value.to_string());
+        let mut info = egui::WidgetInfo::labeled(egui::Role::ComboBox, ui.is_enabled(), name);
+        info.current_text_value = Some(value.to_string());
         info
     });
     key(ui.painter(), r, &resp, key_fill(&resp));
@@ -219,7 +330,7 @@ pub(crate) fn selector_box_named(ui: &mut Ui, width: f32, height: f32, text: &st
     let galley = ui.painter().layout_job(job);
     let pos = text_rect.center() - galley.size() * 0.5;
     ui.painter().with_clip_rect(r.shrink(1.0)).galley(pos, galley, color);
-    resp.on_hover_text(labels.tooltip)
+    resp.on_hover_text(tooltip)
 }
 
 /// Rotary knob for pan / send pan (-1..1). Drag vertically; double-click resets.
@@ -424,6 +535,175 @@ pub fn db_text(db: f32) -> String {
     if db <= -143.9 { "-inf".into() } else { format!("{db:.1}") }
 }
 
+/// Where a [`fine_slider`] drag is anchored: the pointer's x and the value there, whether the key
+/// was held at the anchor, whether the drag moves the value from the anchor and not to the
+/// pointer, and the pass that last drew the slider during the drag.
+#[derive(Clone, Copy)]
+struct FineDrag {
+    x: f32,
+    value: f64,
+    fine: bool,
+    relative: bool,
+    pass: u64,
+}
+
+/// A horizontal slider that moves a tenth as far for the same drag while Ctrl (Command on a Mac)
+/// is held, as a [`fader`] does, on the rail and on the value box. Pressing or releasing the key
+/// during a drag on the rail or the value box leaves the value where it is, and the drag goes on
+/// from there. The value box shows the decimal places that a tenth of a point's step needs, and a
+/// drag on the rail that the key has touched rounds the value to them.
+pub fn fine_slider(ui: &mut Ui, value: &mut f64, range: std::ops::RangeInclusive<f64>, text: &str) -> Response {
+    FineSlider::new(value, range).text(text).show(ui)
+}
+
+/// A [`fine_slider`] with the options of `egui::Slider` that plug-in parameters use.
+pub struct FineSlider<'a> {
+    value: &'a mut f64,
+    range: std::ops::RangeInclusive<f64>,
+    text: &'a str,
+    id_salt: Option<&'a str>,
+    show_value: bool,
+    logarithmic: bool,
+    integer: bool,
+    default: Option<f64>,
+}
+
+impl<'a> FineSlider<'a> {
+    pub fn new(value: &'a mut f64, range: std::ops::RangeInclusive<f64>) -> Self {
+        Self { value, range, text: "", id_salt: None, show_value: true, logarithmic: false, integer: false, default: None }
+    }
+
+    /// The value that an Alt-click (Option-click on a Mac) on the slider or its value box sets,
+    /// as a [`fader`] returns to 0 dB. While Alt is held, a drag leaves the value where it is, and
+    /// an Alt-click on the value box does not open it for typing.
+    pub fn default_value(mut self, default: f64) -> Self {
+        self.default = Some(default);
+        self
+    }
+
+    /// The label after the slider. It also tells sliders in the same `Ui` apart unless
+    /// [`Self::id_salt`] is set.
+    pub fn text(mut self, text: &'a str) -> Self {
+        self.text = text;
+        self
+    }
+
+    /// Tells sliders in the same `Ui` apart when they have no label.
+    pub fn id_salt(mut self, salt: &'a str) -> Self {
+        self.id_salt = Some(salt);
+        self
+    }
+
+    /// Whether the value box is shown. Without it, a drag that the key has touched rounds the
+    /// value only on a whole-number slider.
+    pub fn show_value(mut self, show: bool) -> Self {
+        self.show_value = show;
+        self
+    }
+
+    /// A logarithmic rail, as `egui::Slider::logarithmic`, for a range above zero. A range that
+    /// reaches zero or below stays linear.
+    pub fn logarithmic(mut self, logarithmic: bool) -> Self {
+        self.logarithmic = logarithmic;
+        self
+    }
+
+    /// Whole numbers only, as `egui::Slider::integer`.
+    pub fn integer(mut self) -> Self {
+        self.integer = true;
+        self
+    }
+
+    pub fn show(self, ui: &mut Ui) -> Response {
+        let Self { value, range, text, id_salt, show_value, logarithmic, integer, default } = self;
+        let id = ui.scope_id().with(("fine_slider", id_salt.unwrap_or(text)));
+        let before = *value;
+        let (fine, x) = ui.input(|i| (i.modifiers.command || i.modifiers.ctrl, i.pointer.interact_pos().map(|p| p.x)));
+        let reset = default.is_some() && ui.input(|i| i.modifiers.alt);
+        // A drag lasts through the pass that releases the button, where egui still sets the value
+        // from the pointer. An anchor that the previous pass did not store was left by an earlier
+        // drag, and is ignored.
+        let pass = ui.ctx().cumulative_pass_nr();
+        let mut drag = ui.data(|d| d.get_temp::<FineDrag>(id)).filter(|d| d.pass + 1 == pass);
+        let (lo, hi) = (*range.start(), *range.end());
+        let log = logarithmic && lo > 0.0 && hi > lo;
+        // The handle's travel along the rail, as `egui::Slider` lays it out.
+        let thickness = ui.text_style_height(&egui::TextStyle::Body).max(ui.spacing().interact_size.y);
+        let travel = f64::from((ui.spacing().slider_width - 2.0 * thickness / 2.5).max(1.0));
+        // Where a value sits along the rail (0 to 1), and back, as `egui::Slider` maps them.
+        let span = if log { (hi / lo).ln() } else { hi - lo };
+        let along = |v: f64| if span > 0.0 { if log { (v / lo).ln() / span } else { (v - lo) / span } } else { 0.0 };
+        let at = |n: f64| {
+            let n = n.clamp(0.0, 1.0);
+            if log { lo * (n * span).exp() } else { lo + n * span }
+        };
+        // How far the value moves for one point of the rail at `v`.
+        let per_point = |v: f64| if log { v * span / travel } else { span / travel };
+        let scale = if fine { 0.1 } else { 1.0 };
+        let decimals = if integer { 0 } else { (-(per_point(lo) * 0.1).log10()).ceil().clamp(0.0, 6.0) as usize };
+        if let (Some(d), Some(x)) = (&mut drag, x) {
+            if d.fine != fine || reset {
+                *d = FineDrag { x, value: *value, fine, relative: true, pass };
+            } else if d.relative {
+                let moved = at(along(d.value) + f64::from(x - d.x) / travel * scale);
+                let moved = if show_value || integer { egui::emath::round_to_decimals(moved, decimals) } else { moved };
+                *value = moved.clamp(lo, hi);
+            }
+        }
+        let hold = reset || drag.is_some_and(|d| d.relative);
+        let speed = per_point(*value) * scale;
+        let mut slider = egui::Slider::from_get_set(range, |v| {
+            if let Some(v) = v
+                && !hold
+            {
+                *value = v;
+            }
+            *value
+        })
+        .show_value(show_value)
+        .logarithmic(log)
+        .min_decimals(decimals)
+        .text(text);
+        if integer {
+            slider = slider.integer();
+        }
+        if fine {
+            slider = slider.drag_value_speed(speed);
+        }
+        let mut resp = ui.add(slider);
+        // A drag from the anchor set the value before the slider read it.
+        if *value != before {
+            resp.mark_changed();
+        }
+        // The rail senses drags only, so a click on it ends as a drag that the pointer did not
+        // move far enough to count as one.
+        let clicked = resp.clicked() || (resp.drag_stopped() && ui.input(|i| i.pointer.could_any_button_be_click()));
+        if let Some(d) = default
+            && reset
+            && clicked
+        {
+            let d = if integer { d.round() } else { d };
+            *value = d.clamp(lo, hi);
+            resp.surrender_focus();
+            resp.mark_changed();
+        }
+        let rail = Rect::from_min_size(resp.rect.min, vec2(ui.spacing().slider_width, resp.rect.height()));
+        let on_rail = resp.dragged() && ui.input(|i| i.pointer.press_origin()).is_some_and(|p| rail.contains(p));
+        let next = match (on_rail, drag, x) {
+            (true, Some(d), _) => Some(FineDrag { pass, ..d }),
+            (true, None, Some(x)) => Some(FineDrag { x, value: *value, fine, relative: fine, pass }),
+            _ => None,
+        };
+        ui.data_mut(|m| match next {
+            Some(d) => {
+                m.insert_temp(id, d);
+            }
+            None => m.remove::<FineDrag>(id),
+        });
+        resp
+    }
+}
+
 /// A speaker dot on the surround panner: label, square position (-1..1, y up = front), height layer.
 pub struct PannerSpeaker {
     pub label: &'static str,
@@ -502,7 +782,7 @@ pub fn surround_panner(ui: &mut Ui, size: f32, speakers: &[PannerSpeaker], puck:
         painter.circle(pp, 5.0 + div * half, Color32::from_rgba_unmultiplied(80, 160, 230, 28), Stroke::new(1.0, Color32::from_rgb(70, 130, 190)));
     }
     painter.circle(pp, 5.0, t.counter_text, Stroke::new(1.0, Color32::BLACK));
-    let tip = "Surround pan: drag the puck · double-click: front centre · Alt-drag: divergence";
+    let tip = crate::localization::text("Surround pan: drag the puck · double-click: front centre · Alt-drag: divergence");
     let _ = resp.on_hover_text(tip);
     // Sliders below: divergence, then elevation for height formats.
     let mut sliders: Vec<(&str, f32, u8)> = vec![("div", div, 0)];
@@ -528,7 +808,8 @@ pub fn surround_panner(ui: &mut Ui, size: f32, speakers: &[PannerSpeaker], puck:
         if sresp.double_clicked() {
             edit = Some(if kind == 0 { PannerEdit::Divergence(0.0) } else { PannerEdit::Height(0.0) });
         }
-        let _ = sresp.on_hover_text(if kind == 0 { "Divergence (0 = point source)" } else { "Elevation (height speakers)" });
+        let _ =
+            sresp.on_hover_text(crate::localization::text(if kind == 0 { "Divergence (0 = point source)" } else { "Elevation (height speakers)" }));
     }
     edit
 }

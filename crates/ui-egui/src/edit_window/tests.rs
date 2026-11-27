@@ -2,6 +2,25 @@ use super::*;
 use egui::accesskit::Role;
 use egui_kittest::{Harness, kittest::Queryable};
 
+/// A trim cannot snap to the clip's own old boundary in Clips/Markers mode.
+#[test]
+fn clips_markers_trim_ignores_the_trimmed_clip() {
+    let mut s = Session::default();
+    let track = s.add_track(TrackKind::Midi, soundcraft_model::ChannelFormat::Mono, None);
+    let clip = Clip::midi(s.new_clip_id(), "Notes", 1_000, 1_000, soundcraft_midi::Sequence::default());
+    let clip_id = clip.id;
+    s.track_mut(track).and_then(Track::playlist_mut).unwrap().clips.push(clip);
+    s.add_marker("Inside", soundcraft_model::MarkerKind::Marker, 1_500, 1_500);
+    s.add_marker("Target", soundcraft_model::MarkerKind::Marker, 2_500, 2_500);
+    s.edit.edit_mode = soundcraft_model::EditMode::Grid;
+    s.edit.grid_clips_markers = true;
+
+    assert_eq!(super::drag::drag_snap(&s, 2_100, false), 2_000);
+    assert_eq!(super::drag::drag_snap_excluding(&s, 2_100, false, &[clip_id]), 2_500);
+    assert_eq!(super::drag::trim_drag_snap(&s, clip_id, 1_000, true, false), 1_000);
+    assert_eq!(super::drag::trim_drag_snap(&s, clip_id, 2_000, false, false), 2_000);
+}
+
 /// The painted header selectors are interactive controls; their accessible name is the field
 /// they edit, not the short value text ("Read", "Waveform") painted inside them.
 #[test]
@@ -264,7 +283,7 @@ fn harness(n: usize) -> Harness<'static, SoundApp> {
 
 fn harness_with(engine: soundcraft_engine::Engine) -> Harness<'static, SoundApp> {
     let app = SoundApp::new(engine, None, crate::Services::default());
-    let builder = Harness::builder().with_size(vec2(1400.0, 900.0)).with_step_dt(1.0 / 60.0);
+    let builder = Harness::builder().with_size(vec2(1400.0, 900.0)).with_step_dt(1.0 / 60.0).with_context_setup(crate::framework::install_headless);
     let builder = if std::env::var_os("SOUNDCRAFT_FADE_SHOTS").is_some() { builder.wgpu() } else { builder };
     let mut h = builder.build_ui_state(
         |ui, app: &mut SoundApp| {
@@ -515,6 +534,53 @@ fn shift_and_cmd_click_on_track_names_extend_the_selection() {
     }
 }
 
+/// #1254: double-clicking a track's colour strip selects the track and opens the Color Palette;
+/// a single click only selects it.
+#[test]
+fn double_clicking_the_color_strip_opens_the_color_palette() {
+    let mut h = harness(3);
+    let ids = row_ids(&h);
+    let strip = |h: &Harness<SoundApp>, i: usize| pos2(row(h, i).min.x + layout::STRIP_W / 2.0, row(h, i).center().y);
+    h.state_mut().engine.execute("edit.select", &json!({"tracks": [ids[0].0]})).unwrap();
+    h.run_steps(2);
+    let at = strip(&h, 1);
+    click(&mut h, at);
+    assert_eq!(h.state().engine.session().edit.selected_tracks, [ids[1]]);
+    assert!(!h.state().ui.show_color_palette, "a single click on the strip doesn't open the palette");
+    h.run_steps(30);
+    let at = strip(&h, 2);
+    click(&mut h, at);
+    click(&mut h, at);
+    assert_eq!(h.state().engine.session().edit.selected_tracks, [ids[2]]);
+    assert!(h.state().ui.show_color_palette, "a double click on the strip opens the palette");
+}
+
+/// #1254: a double click on the strip of one of several selected tracks keeps them all selected,
+/// so the palette colours every one; with Cmd held the double-clicked track ends selected too.
+#[test]
+fn double_clicking_a_selected_tracks_strip_keeps_the_selection() {
+    let mut h = harness(3);
+    let ids = row_ids(&h);
+    let strip = |h: &Harness<SoundApp>, i: usize| pos2(row(h, i).min.x + layout::STRIP_W / 2.0, row(h, i).center().y);
+    h.state_mut().engine.execute("edit.select", &json!({"tracks": [ids[0].0, ids[2].0]})).unwrap();
+    h.run_steps(2);
+    let at = strip(&h, 2);
+    click(&mut h, at);
+    assert_eq!(h.state().engine.session().edit.selected_tracks, [ids[0], ids[2]], "a plain click on a selected strip keeps the selection");
+    assert!(!h.state().ui.show_color_palette);
+    click(&mut h, at);
+    assert_eq!(h.state().engine.session().edit.selected_tracks, [ids[0], ids[2]], "both tracks stay selected");
+    assert!(h.state().ui.show_color_palette, "a double click on the strip opens the palette");
+
+    h.state_mut().ui.show_color_palette = false;
+    h.run_steps(30);
+    let at = strip(&h, 0);
+    click_with(&mut h, at, egui::Modifiers::COMMAND);
+    click_with(&mut h, at, egui::Modifiers::COMMAND);
+    assert!(h.state().engine.session().edit.selected_tracks.contains(&ids[0]), "a Cmd double click leaves its track selected");
+    assert!(h.state().ui.show_color_palette, "a Cmd double click on the strip opens the palette");
+}
+
 #[test]
 fn a_quick_drag_from_a_clip_edge_trims_it() {
     let mut h = smart_demo();
@@ -606,8 +672,7 @@ fn make_stereo(h: &mut Harness<'static, SoundApp>, tid: soundcraft_model::TrackI
     let audio = h.state().engine.session().pool.get(source).unwrap().clone();
     let left = audio.buffer.channels[0].clone();
     let right = left.iter().map(|sample| sample * 0.5).collect();
-    let audio =
-        soundcraft_model::SourceAudio::new(soundcraft_audio_io::AudioBuffer { sample_rate: audio.buffer.sample_rate, channels: vec![left, right] });
+    let audio = soundcraft_model::SourceAudio::new(craft_audio::AudioBuffer { sample_rate: audio.buffer.sample_rate, channels: vec![left, right] });
     let s = h.state_mut().engine.session_mut();
     s.pool.insert(source, std::sync::Arc::new(audio));
     s.track_mut(tid).unwrap().format = soundcraft_model::ChannelFormat::Stereo;
@@ -978,7 +1043,7 @@ fn fade_midpoint_handles_remain_visible_and_can_be_grabbed_again() {
                         h.step();
                         assert_eq!(h.output().platform_output.cursor_icon, egui::CursorIcon::ResizeVertical);
                         start_drag(&mut h, control);
-                        let to = control - vec2(0.0, (lane.height() - 2.0 - clip_name_height(&before, lane)) * 0.1);
+                        let to = control - vec2(0.0, (lane.height() - 2.0) * 0.1);
                         h.hover_at(to);
                         h.step();
                         assert!(
@@ -1507,6 +1572,763 @@ fn alt_click_on_a_breakpoint_deletes_it() {
         assert_eq!(volume_points(&h, track), before[..1], "{tool}");
         assert_eq!(h.state().engine.session().track(track).unwrap().clips(), clips.as_slice(), "{tool}");
     }
+}
+
+/// Modifier clicks insert an undoable point with the existing tools; plain clicks leave the curve alone.
+#[test]
+fn command_click_adds_an_automation_point_without_changing_clips_and_undoes() {
+    for tool in ["smart", "grabber", "selector"] {
+        let (mut h, track, [a, b], clips) = breakpoints_over_a_clip(tool);
+        let before = volume_points(&h, track);
+        let s = h.state().engine.session_arc();
+        let i = h.state().edit_layout.rows.iter().position(|(id, _)| *id == track.0).unwrap();
+        let lane = lane_rect(s.track(track).unwrap(), row(&h, i), timeline(&h));
+        let at = pos2((a.x + b.x) * 0.5, lane.center().y);
+        let sample = sample_at(h.state().engine.session(), timeline(&h), at.x);
+
+        click(&mut h, at);
+        assert_eq!(volume_points(&h, track), before, "{tool}: a plain click adds no point");
+        h.run_steps(30);
+        fade_shot(&mut h, &format!("automation-command-{tool}-before"));
+        click_with(&mut h, at, egui::Modifiers::COMMAND);
+        let points = volume_points(&h, track);
+        assert_eq!(points.len(), before.len() + 1, "{tool}: {points:?}");
+        let point = points.iter().find(|(at, _)| *at == sample).expect("a point at the clicked sample");
+        assert!((point.1 + 24.0).abs() < 0.01, "{tool}: the lane midpoint is -24 dB, above the -40 dB curve: {}", point.1);
+        assert_eq!(h.state().engine.session().track(track).unwrap().clips(), clips.as_slice(), "{tool}: clips stay");
+        h.run_steps(2);
+        fade_shot(&mut h, &format!("automation-command-{tool}-after"));
+
+        h.state_mut().engine.execute("edit.undo", &json!({})).unwrap();
+        assert_eq!(volume_points(&h, track), before, "{tool}: one undo removes only the new point");
+        assert_eq!(h.state().engine.session().track(track).unwrap().clips(), clips.as_slice(), "{tool}: undo leaves clips alone");
+    }
+}
+
+/// A modifier click adds a point while retaining an existing clip and range selection, including after undo.
+#[test]
+fn command_click_preserves_an_existing_edit_selection() {
+    for tool in ["smart", "selector"] {
+        let (mut h, track, [a, b], clips) = breakpoints_over_a_clip(tool);
+        let s = h.state().engine.session_arc();
+        let i = h.state().edit_layout.rows.iter().position(|(id, _)| *id == track.0).unwrap();
+        let lane = lane_rect(s.track(track).unwrap(), row(&h, i), timeline(&h));
+        let at = pos2((a.x + b.x) * 0.5, lane.min.y + lane.height() * 0.35);
+        h.state_mut().engine.execute("edit.select", &json!({"clips": [clips[0].id.0]})).unwrap();
+        h.run_steps(2);
+        let before = h.state().engine.session().edit.clone();
+        let points_before = volume_points(&h, track);
+        assert!(!before.selection.is_empty());
+        assert!(!before.selected_clips.is_empty());
+        fade_shot(&mut h, &format!("automation-command-selection-{tool}-before"));
+
+        click_with(&mut h, at, egui::Modifiers::COMMAND);
+        assert_eq!(volume_points(&h, track).len(), points_before.len() + 1, "{tool}");
+        let after = &h.state().engine.session().edit;
+        assert_eq!(after.selection, before.selection, "{tool}: the range stays");
+        assert_eq!(after.selected_clips, before.selected_clips, "{tool}: selected clips stay");
+        assert_eq!(after.selected_tracks, before.selected_tracks, "{tool}: selected tracks stay");
+        h.run_steps(2);
+        fade_shot(&mut h, &format!("automation-command-selection-{tool}-after"));
+        h.state_mut().engine.execute("edit.undo", &json!({})).unwrap();
+        assert_eq!(volume_points(&h, track), points_before, "{tool}: one undo removes the point");
+        assert_eq!(h.state().engine.session().edit.selection, before.selection, "{tool}: undo retains the range");
+        assert_eq!(h.state().engine.session().edit.selected_clips, before.selected_clips, "{tool}: undo retains selected clips");
+
+        h.event(egui::Event::ModifiersChanged(egui::Modifiers::COMMAND));
+        drag(&mut h, at, at + vec2(50.0, 0.0));
+        h.event(egui::Event::ModifiersChanged(egui::Modifiers::NONE));
+        let after_drag = &h.state().engine.session().edit;
+        assert!(!after_drag.selection.is_empty(), "{tool}: a Command-drag still selects a range");
+        assert_ne!(after_drag.selection, before.selection, "{tool}: drag selection changes once the gesture starts");
+        assert_eq!(volume_points(&h, track), points_before, "{tool}: dragging adds no point");
+        assert_eq!(h.state().engine.session().track(track).unwrap().clips(), clips.as_slice(), "{tool}: clips stay");
+    }
+}
+
+/// Tracks that always paint volume automation also accept modifier clicks when their stored view is not automation.
+#[test]
+fn command_click_adds_to_fallback_volume_views() {
+    for kind in [TrackKind::Master, TrackKind::Aux, TrackKind::Vca] {
+        let mut engine = soundcraft_engine::Engine::default();
+        let track = engine.session_mut().add_track(kind, soundcraft_model::ChannelFormat::Stereo, None);
+        engine.execute("track.view", &json!({"track": track.0, "view": "waveform"})).unwrap();
+        engine.execute("edit.tool", &json!({"tool": "smart"})).unwrap();
+        let mut h = harness_with(engine);
+        let s = h.state().engine.session_arc();
+        let lane = lane_rect(s.track(track).unwrap(), row(&h, 0), timeline(&h));
+        let at = pos2(lane.min.x + 100.0, lane.center().y);
+        let sample = sample_at(&s, timeline(&h), at.x);
+        fade_shot(&mut h, &format!("automation-command-fallback-{kind:?}-before"));
+        click_with(&mut h, at, egui::Modifiers::COMMAND);
+        let points = volume_points(&h, track);
+        assert_eq!(points.len(), 1, "{kind:?}: status {}", h.state().ui.status);
+        assert_eq!(points[0].0, sample, "{kind:?}");
+        assert!((points[0].1 + 24.0).abs() < 0.01, "{kind:?}: {}", points[0].1);
+        h.run_steps(2);
+        fade_shot(&mut h, &format!("automation-command-fallback-{kind:?}-after"));
+        h.state_mut().engine.execute("edit.undo", &json!({})).unwrap();
+        assert!(volume_points(&h, track).is_empty(), "{kind:?}: one undo removes the point");
+    }
+}
+
+/// Command-click keeps an existing visible breakpoint as the hit target with every active tool.
+#[test]
+fn command_click_near_an_existing_breakpoint_does_not_insert_another_point() {
+    for tool in ["smart", "grabber", "pencil", "selector", "trim", "scrubber", "zoom"] {
+        let (mut h, track, [_, point], clips) = breakpoints_over_a_clip(tool);
+        h.state_mut().engine.execute("edit.select", &json!({"clips": [clips[0].id.0]})).unwrap();
+        h.run_steps(2);
+        let before = volume_points(&h, track);
+        let edit = h.state().engine.session().edit.clone();
+        assert!(!edit.selection.is_empty());
+        assert!(!edit.selected_clips.is_empty());
+        // Inside the six-point hit target, but a different sample from the stored point.
+        let near = point + vec2(3.0, 0.0);
+        let sample = sample_at(h.state().engine.session(), timeline(&h), near.x);
+        assert_ne!(sample, before[1].0);
+        click_with(&mut h, near, egui::Modifiers::COMMAND);
+        assert_eq!(volume_points(&h, track), before, "{tool}: the existing point wins over insertion");
+        let after = &h.state().engine.session().edit;
+        assert_eq!(after.tool, edit.tool, "{tool}: active tool stays");
+        assert_eq!(after.selection, edit.selection, "{tool}: range selection stays");
+        assert_eq!(after.selected_clips, edit.selected_clips, "{tool}: clip selection stays");
+        assert_eq!(after.selected_tracks, edit.selected_tracks, "{tool}: track selection stays");
+        assert_eq!(h.state().engine.session().track(track).unwrap().clips(), clips.as_slice(), "{tool}: clips stay");
+
+        click_with(&mut h, near, egui::Modifiers::COMMAND | egui::Modifiers::ALT);
+        assert_eq!(volume_points(&h, track), before[..1], "{tool}: Alt still deletes the existing point");
+        h.state_mut().engine.execute("edit.undo", &json!({})).unwrap();
+        assert_eq!(volume_points(&h, track), before, "{tool}: deletion remains undoable");
+    }
+}
+
+/// Command advertises insertion over empty automation space, while a breakpoint keeps its grab cursor.
+#[test]
+fn command_hover_shows_insertion_only_away_from_existing_breakpoints() {
+    let (mut h, track, [a, b], _) = breakpoints_over_a_clip("selector");
+    let s = h.state().engine.session_arc();
+    let i = h.state().edit_layout.rows.iter().position(|(id, _)| *id == track.0).unwrap();
+    let lane = lane_rect(s.track(track).unwrap(), row(&h, i), timeline(&h));
+    let at = pos2((a.x + b.x) * 0.5, lane.center().y);
+    let points = volume_points(&h, track);
+
+    h.hover_at(at);
+    h.step();
+    assert_eq!(h.output().platform_output.cursor_icon, egui::CursorIcon::Text, "plain Selector hover stays unchanged");
+    h.event(egui::Event::ModifiersChanged(egui::Modifiers::COMMAND));
+    h.hover_at(at);
+    h.step();
+    assert_eq!(h.output().platform_output.cursor_icon, egui::CursorIcon::Crosshair, "Command shows the insertion gesture");
+    h.run_steps(40);
+    fade_shot(&mut h, "automation-command-hover-insertion");
+    h.hover_at(b + vec2(3.0, 0.0));
+    h.step();
+    assert_eq!(h.output().platform_output.cursor_icon, egui::CursorIcon::Grab, "the existing point stays the target");
+    h.event(egui::Event::ModifiersChanged(egui::Modifiers::NONE));
+    h.hover_at(at);
+    h.step();
+    assert_eq!(h.output().platform_output.cursor_icon, egui::CursorIcon::Text, "releasing Command restores the active tool cursor");
+    assert_eq!(volume_points(&h, track), points, "hover adds no points");
+}
+
+/// The Command click shortcut does not turn a Selector drag beginning beside a point into a point move.
+#[test]
+fn command_drag_near_an_existing_breakpoint_retains_the_selector_gesture() {
+    let (mut h, track, [_, point], clips) = breakpoints_over_a_clip("selector");
+    let points = volume_points(&h, track);
+    let before = h.state().engine.session().edit.clone();
+    let near = point + vec2(3.0, 0.0);
+    h.event(egui::Event::ModifiersChanged(egui::Modifiers::COMMAND));
+    drag(&mut h, near, near + vec2(50.0, 0.0));
+    h.event(egui::Event::ModifiersChanged(egui::Modifiers::NONE));
+    let after = &h.state().engine.session().edit;
+    assert!(!after.selection.is_empty(), "a Command-drag still selects a range");
+    assert_ne!(after.selection, before.selection, "the Selector gesture changes the range");
+    assert_eq!(after.tool, before.tool, "the active tool stays selected");
+    assert_eq!(volume_points(&h, track), points, "dragging the selection does not move or insert a point");
+    assert_eq!(h.state().engine.session().track(track).unwrap().clips(), clips.as_slice(), "the clips stay");
+}
+
+const ALONE: ClipCut = ClipCut { left: false, right: false };
+
+#[test]
+fn butted_pair_shares_one_seam() {
+    // 0..100 then 100..200: the first drops its right edge, the second draws the seam on its left.
+    assert_eq!(clip_cut(0, 100, [(100, 200)]), ClipCut { left: false, right: true });
+    assert_eq!(clip_cut(100, 200, [(0, 100)]), ClipCut { left: true, right: false });
+}
+
+#[test]
+fn middle_clip_of_a_run_is_butted_on_both_sides() {
+    let cut = clip_cut(100, 200, [(0, 100), (200, 300)]);
+    assert_eq!(cut, ClipCut { left: true, right: true });
+    let c = cut.corners();
+    assert_eq!((c.nw, c.sw, c.ne, c.se), (0, 0, 0, 0));
+}
+
+#[test]
+fn gap_overlap_and_lone_clips_keep_their_own_outline() {
+    // First and last clips: nothing on the open side.
+    assert_eq!(clip_cut(0, 100, []), ALONE);
+    // A gap of one sample is not a cut.
+    assert_eq!(clip_cut(101, 200, [(0, 100), (201, 300)]), ALONE);
+    // Overlaps (crossfades, layers) keep both outlines.
+    assert_eq!(clip_cut(90, 200, [(0, 100), (150, 300)]), ALONE);
+    assert_eq!(clip_cut(0, 100, [(60, 160)]), ALONE);
+    // A third clip lying across the cut hides it: no shared seam.
+    assert_eq!(clip_cut(100, 200, [(0, 100), (50, 150)]), ALONE);
+    // Empty clips share nothing, and are not neighbours either.
+    assert_eq!(clip_cut(100, 100, [(0, 100), (100, 200)]), ALONE);
+    assert_eq!(clip_cut(100, 200, [(100, 100)]), ALONE);
+}
+
+#[test]
+fn sorted_playlists_find_the_same_cuts_without_a_scan() {
+    let layouts: [&[(Samples, Samples)]; 8] = [
+        &[(0, 100), (100, 100)],
+        &[(0, 100), (100, 100), (200, 100)],
+        &[(0, 100), (101, 99), (201, 99)],
+        &[(0, 100), (90, 110), (150, 150)],
+        &[(0, 100), (50, 100), (100, 100)],
+        &[(0, 100), (100, 0), (100, 100)],
+        &[(0, 1000), (100, 100), (200, 100)],
+        &[(0, 100), (100, 50), (100, 100), (200, 100)],
+    ];
+    for spans in layouts {
+        let clips: Vec<Clip> = spans.iter().zip(1..).map(|(&(start, len), id)| test_clip(id, start, len)).collect();
+        let cut_of = clip_cuts(&clips);
+        for c in &clips {
+            assert_eq!(cut_of(c), clip_cut_in(&clips, c), "{spans:?}, clip at {}", c.start);
+        }
+    }
+    // Not vacuous: the middle clip of a run is butted on both sides.
+    let run: Vec<Clip> = (0..3).map(|i| test_clip(i + 1, i as Samples * 100, 100)).collect();
+    assert_eq!(clip_cuts(&run)(&run[1]), ClipCut { left: true, right: true });
+}
+
+#[test]
+fn only_butted_sides_lose_their_round_corners() {
+    let round = ALONE.corners();
+    assert_eq!((round.nw, round.sw, round.ne, round.se), (2, 2, 2, 2));
+    let first = ClipCut { left: false, right: true }.corners();
+    assert_eq!((first.nw, first.sw, first.ne, first.se), (2, 2, 0, 0));
+    let second = ClipCut { left: true, right: false }.corners();
+    assert_eq!((second.nw, second.sw, second.ne, second.se), (0, 0, 2, 2));
+}
+
+#[test]
+fn name_pill_is_as_wide_as_its_text_and_cut_cleanly_on_short_clips() {
+    // Room to spare: the text plus its padding on both sides.
+    assert_eq!(name_pill_width(200.0, 50.0), Some(50.0 + 2.0 * PILL_PAD));
+    // A short clip caps the pill at the room it leaves; the text is then cut at the pill's edge.
+    assert_eq!(name_pill_width(30.0, 80.0), Some(30.0));
+    assert_eq!(name_pill_width(PILL_MIN_WIDTH, 80.0), Some(PILL_MIN_WIDTH));
+    // Too narrow to show anything useful, or nonsense numbers: no pill.
+    assert_eq!(name_pill_width(PILL_MIN_WIDTH - 0.1, 80.0), None);
+    assert_eq!(name_pill_width(-5.0, 80.0), None);
+    assert_eq!(name_pill_width(f32::NAN, 80.0), None);
+    // A bogus text width never makes a negative or NaN pill.
+    assert_eq!(name_pill_width(100.0, f32::NAN), Some(2.0 * PILL_PAD));
+    assert_eq!(name_pill_width(100.0, -40.0), Some(2.0 * PILL_PAD));
+}
+
+#[test]
+fn marks_list_the_rating_and_the_lock() {
+    let mut clip = test_clip(1, 0, 100);
+    assert_eq!(clip_marks(&clip, true), "");
+    clip.rating = 3;
+    assert_eq!(clip_marks(&clip, true), "★★★");
+    assert_eq!(clip_marks(&clip, false), "");
+    clip.edit_locked = true;
+    assert_eq!(clip_marks(&clip, true), "★★★ 🔒");
+    assert_eq!(clip_marks(&clip, false), "🔒");
+    clip.rating = 200;
+    assert_eq!(clip_marks(&clip, true), "★★★★★ 🔒");
+}
+
+#[test]
+fn the_clip_name_is_a_pill_over_the_waveform_not_a_bar() {
+    for show_name in [true, false] {
+        let mut h = smart_demo();
+        h.state_mut().engine.execute("view.clip_name", &json!({"value": show_name})).unwrap();
+        h.step();
+        let tl = timeline(&h);
+        let (clip, lane) = clip_on_screen(&h, |xs, xe| xs > tl.min.x + 30.0 && xe < tl.max.x - 100.0 && xe - xs > 100.0);
+        let s = h.state().engine.session();
+        let (xs, xe) = (x_of(s, tl, clip.start), x_of(s, tl, clip.end()));
+        let clip_rect = Rect::from_min_max(pos2(xs, lane.min.y), pos2(xe, lane.max.y));
+        let shapes = &h.output().shapes;
+        let pills: Vec<Rect> = shapes
+            .iter()
+            .filter_map(|shape| match &shape.shape {
+                Shape::Rect(r) if r.fill == PILL_BG && clip_rect.contains_rect(r.rect) => Some(r.rect),
+                _ => None,
+            })
+            .collect();
+        if !show_name {
+            assert!(pills.is_empty(), "names are off");
+            continue;
+        }
+        assert_eq!(pills.len(), 1, "one pill per clip");
+        let pill = pills[0];
+        // At the top-left, 1 pt inside the outline, as wide as its text plus padding: far from a full-width bar.
+        assert_eq!(pill.min, pos2(xs + PILL_INSET, lane.min.y + 1.0 + PILL_INSET));
+        assert_eq!(pill.height(), PILL_HEIGHT);
+        let text_w = shapes
+            .iter()
+            .find_map(|shape| match &shape.shape {
+                Shape::Text(t) if t.galley.text() == clip.name && pill.contains(t.pos) => Some(t.galley.size().x),
+                _ => None,
+            })
+            .expect("the name is drawn on the pill");
+        assert_eq!(pill.width(), text_w + 2.0 * PILL_PAD);
+        assert!(pill.width() < clip_rect.width() * 0.5);
+    }
+}
+
+#[test]
+fn the_rating_stars_follow_the_rating_switch_whatever_the_name_switch_says() {
+    for (show_name, show_rating) in [(false, true), (true, true), (true, false), (false, false)] {
+        let mut h = smart_demo();
+        for (cmd, on) in [("view.clip_name", show_name), ("view.clip_rating", show_rating)] {
+            h.state_mut().engine.execute(cmd, &json!({"value": on})).unwrap();
+        }
+        h.state_mut().engine.session_mut().tracks.iter_mut().flat_map(|t| &mut t.playlists).flat_map(|p| &mut p.clips).for_each(|c| c.rating = 3);
+        h.step();
+        let stars = h.output().shapes.iter().filter(|c| matches!(&c.shape, Shape::Text(t) if t.galley.text() == "★★★")).count();
+        assert_eq!(stars > 0, show_rating, "names {show_name}, rating {show_rating}: {stars} rated clips drew their stars");
+    }
+}
+
+#[test]
+fn alternate_playlist_lanes_draw_only_the_clips_on_screen() {
+    let mut h = harness(1);
+    let tl = timeline(&h);
+    let s = h.state().engine.session();
+    let (view, color) = (Range::new(sample_at(s, tl, tl.min.x), sample_at(s, tl, tl.max.x)), s.tracks[0].color);
+    let len = (view.end - view.start) / 20;
+    // One clip well inside the view, one running past its right edge, two far beyond it.
+    let starts = [view.start + 4 * len, view.end - len / 2, view.end + 20 * len, view.end + 2_000 * len];
+    let s = h.state_mut().engine.session_mut();
+    let mut alt = soundcraft_model::Playlist::new("alt");
+    alt.clips = starts.iter().map(|&at| test_clip(s.new_clip_id().0, at, len)).collect();
+    let track = s.tracks.first_mut().unwrap();
+    (track.view, track.active_playlist) = ("playlists".into(), 0);
+    track.playlists.push(alt);
+    h.run_steps(3);
+    // The main playlist is empty: every clip body in the track's rows belongs to the alternate lane.
+    let bodies: Vec<Rect> = h
+        .output()
+        .shapes
+        .iter()
+        .filter_map(|c| match &c.shape {
+            Shape::Rect(r) if r.fill == clip_colors(color, false).0 => Some(r.rect),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(bodies.len(), 2, "only the two clips that show are drawn: {bodies:?}");
+    assert!(bodies.iter().all(|r| r.max.x > tl.min.x && r.min.x < tl.max.x), "{bodies:?} are not all on screen");
+}
+
+fn test_clip(id: u64, start: Samples, len: Samples) -> Clip {
+    Clip::audio(ClipId(id), "c", soundcraft_model::SourceId(0), 0, start, len)
+}
+
+#[test]
+fn cut_is_found_among_the_playlist_neighbours() {
+    // Selection never enters: it recolours the body, so a selected clip gets the same edges as any other.
+    let clips = [test_clip(1, 0, 100), test_clip(2, 100, 100), test_clip(3, 200, 100), test_clip(4, 400, 50)];
+    let cuts: Vec<ClipCut> = clips.iter().map(|c| clip_cut_in(&clips, c)).collect();
+    assert_eq!(cuts, [ClipCut { left: false, right: true }, ClipCut { left: true, right: true }, ClipCut { left: true, right: false }, ALONE]);
+}
+
+#[test]
+fn cut_does_not_depend_on_the_playlist_order() {
+    // Bring to Front / Send to Back reorder a playlist (its order is the stacking order): the seam stays.
+    let (a, b) = (test_clip(1, 0, 100), test_clip(2, 100, 100));
+    let reordered = [b.clone(), a.clone()];
+    assert_eq!(clip_cut_in(&reordered, &a), ClipCut { left: false, right: true });
+    assert_eq!(clip_cut_in(&reordered, &b), ClipCut { left: true, right: false });
+    let run = [test_clip(3, 200, 100), test_clip(1, 0, 100), test_clip(2, 100, 100)];
+    let cuts: Vec<ClipCut> = run.iter().map(|c| clip_cut_in(&run, c)).collect();
+    assert_eq!(cuts, [ClipCut { left: true, right: false }, ClipCut { left: false, right: true }, ClipCut { left: true, right: true }]);
+}
+
+#[test]
+fn layered_clips_share_a_seam_only_where_they_really_meet() {
+    // A short clip inside a long one does not hide the seam between the long clip and the next.
+    let clips = [test_clip(1, 0, 100), test_clip(2, 10, 10), test_clip(3, 100, 100)];
+    assert_eq!(clip_cut_in(&clips, &clips[2]), ClipCut { left: true, right: false });
+    assert_eq!(clip_cut_in(&clips, &clips[0]), ClipCut { left: false, right: true });
+    assert_eq!(clip_cut_in(&clips, &clips[1]), ALONE);
+    // Two clips on one start, and a lone clip.
+    let same = [test_clip(1, 0, 100), test_clip(2, 0, 100), test_clip(3, 300, 100)];
+    assert_eq!(clip_cut_in(&same, &same[1]), ALONE);
+    assert_eq!(clip_cut_in(&same, &same[2]), ALONE);
+    assert_eq!(clip_cut_in(&[], &test_clip(9, 0, 100)), ALONE);
+}
+
+#[test]
+fn marks_pill_is_hidden_when_the_clip_is_too_narrow_for_it() {
+    // A 60 pt clip from x=100 (pills start at 102) holds a 30 pt pill at its right end.
+    assert_eq!(marks_pill_left(102.0, 160.0, 30.0), Some(128.0));
+    // Exactly full: the pill's left edge meets the leftmost x.
+    assert_eq!(marks_pill_left(102.0, 134.0, 30.0), Some(102.0));
+    // Any narrower and it would veil the clip: hidden.
+    assert_eq!(marks_pill_left(102.0, 133.0, 30.0), None);
+    assert_eq!(marks_pill_left(102.0, f32::NAN, 30.0), None);
+}
+
+#[test]
+fn an_overlapping_clip_covers_the_pill_of_the_clip_below() {
+    let mut h = smart_demo();
+    h.step();
+    let tl = timeline(&h);
+    let (below, lane) = clip_on_screen(&h, |xs, xe| xs > tl.min.x + 30.0 && xe < tl.max.x - 100.0 && xe - xs > 100.0);
+    // A copy on top (last in the playlist), starting at the same place.
+    let s = h.state_mut().engine.session_mut();
+    let (track, _) = s.find_clip(below.id).unwrap();
+    let id = s.new_clip_id();
+    let top = Clip { id, name: "Top".into(), ..below.clone() };
+    s.track_mut(track).unwrap().playlist_mut().unwrap().clips.push(top);
+    h.step();
+    h.step();
+    let s = h.state().engine.session();
+    let at = pos2(x_of(s, tl, below.start) + PILL_INSET, lane.min.y + 1.0 + PILL_INSET);
+    let shapes = &h.output().shapes;
+    let pills: Vec<(usize, Rect)> = shapes
+        .iter()
+        .enumerate()
+        .filter_map(|(i, shape)| match &shape.shape {
+            Shape::Rect(r) if r.fill == PILL_BG && r.rect.min == at => Some((i, r.rect)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(pills.len(), 2, "both clips draw a pill at the same spot");
+    let ((lower, pill), (upper, _)) = (pills[0], pills[1]);
+    assert!(
+        shapes[lower + 1..upper].iter().any(|shape| matches!(&shape.shape, Shape::Rect(r) if r.fill != PILL_BG && r.rect.contains_rect(pill))),
+        "the top clip's body is painted between the two pills, so it hides the lower pill"
+    );
+}
+
+#[test]
+fn selection_markers_are_blue_or_red_when_a_track_is_armed() {
+    for t in [Tokens::DARK, Tokens::LIGHT] {
+        let (blue, red) = (selection_marker_colour(&t, false), selection_marker_colour(&t, true));
+        assert!(blue.b() > blue.r() && blue.b() > blue.g(), "{blue:?} is not blue");
+        assert!(red.r() > red.g() && red.r() > red.b(), "{red:?} is not red");
+    }
+}
+
+type Piece = (Color32, Vec<egui::Pos2>);
+
+/// The filled pieces of `shapes`, as (fill, points).
+fn fills(shapes: &[Shape]) -> Vec<Piece> {
+    let filled = |s: &Shape| match s {
+        Shape::Path(p) if p.fill != Color32::TRANSPARENT => Some((p.fill, p.points.clone())),
+        _ => None,
+    };
+    shapes.iter().filter_map(filled).collect()
+}
+
+/// The outlines of `shapes`: closed, unfilled paths, as (stroke colour, width, points).
+fn outlines(shapes: &[Shape]) -> Vec<(egui::epaint::ColorMode, f32, Vec<egui::Pos2>)> {
+    let outline = |s: &Shape| match s {
+        Shape::Path(p) if p.closed && p.fill == Color32::TRANSPARENT => Some((p.stroke.color.clone(), p.stroke.width, p.points.clone())),
+        _ => None,
+    };
+    shapes.iter().filter_map(outline).collect()
+}
+
+/// Leftmost and rightmost x, and topmost and bottommost y, of some pieces.
+fn extent(pieces: &[Piece]) -> (f32, f32, f32, f32) {
+    let pts = || pieces.iter().flat_map(|(_, p)| p.iter());
+    let fold = |f: fn(f32, f32) -> f32, init: f32, get: fn(&egui::Pos2) -> f32| pts().map(get).fold(init, f);
+    (fold(f32::min, f32::MAX, |p| p.x), fold(f32::max, f32::MIN, |p| p.x), fold(f32::min, f32::MAX, |p| p.y), fold(f32::max, f32::MIN, |p| p.y))
+}
+
+#[test]
+fn a_range_gets_the_left_half_of_the_arrow_at_its_start_and_the_right_half_at_its_end() {
+    let row = Rect::from_min_max(pos2(0.0, 0.0), pos2(400.0, 17.0));
+    let range = selection_markers(100.0, 200.0, row, Color32::BLUE, Color32::BLACK);
+    let pieces = fills(&range);
+    assert_eq!(pieces.len(), 4, "a bar and a wing for each end");
+    // Left half: cut edge on the start, ten pixels of bar and wing out to its left, row-high.
+    assert_eq!(extent(&pieces[..2]), (90.0, 100.0, 0.5, 16.5));
+    // Right half: cut edge on the end, wing out to its right.
+    assert_eq!(extent(&pieces[2..]), (200.0, 210.0, 0.5, 16.5));
+    // The wing starts at mid-height and its slope ends at the foot of the cut edge: nothing below it.
+    assert_eq!(pieces[1].1, vec![pos2(90.0, 8.5), pos2(100.0, 8.5), pos2(100.0, 16.5)]);
+    // Each half is outlined on its own, thin and dark, cut edge included.
+    let lines = outlines(&range);
+    assert_eq!(lines.len(), 2);
+    assert!(lines.iter().all(|(c, w, pts)| *c == egui::epaint::ColorMode::Solid(Color32::BLACK) && *w == 1.0 && pts.len() == 5));
+}
+
+#[test]
+fn an_empty_selection_joins_the_halves_into_the_whole_arrow() {
+    let row = Rect::from_min_max(pos2(0.0, 0.0), pos2(400.0, 17.0));
+    let point = selection_markers(150.0, 150.0, row, Color32::BLUE, Color32::BLACK);
+    let pieces = fills(&point);
+    assert_eq!(pieces.len(), 2, "a shaft and a head, with no seam");
+    assert_eq!(extent(&pieces), (140.0, 160.0, 0.5, 16.5), "centred on 150");
+    assert_eq!(pieces[0].1, vec![pos2(146.0, 0.5), pos2(154.0, 0.5), pos2(154.0, 8.5), pos2(146.0, 8.5)]);
+    assert_eq!(pieces[1].1, vec![pos2(140.0, 8.5), pos2(160.0, 8.5), pos2(150.0, 16.5)], "tip on the position");
+    // One outline, built only from the corners of the two halves, nothing along the cut axis.
+    let lines = outlines(&point);
+    assert_eq!(lines.len(), 1);
+    let (left, right) = (arrow_half(150.0, row, -1.0), arrow_half(150.0, row, 1.0));
+    assert_eq!(lines[0].2.len(), 7);
+    assert!(lines[0].2.iter().all(|p| left.contains(p) || right.contains(p)));
+    assert!(lines[0].2.windows(2).all(|w| !(w[0].x == 150.0 && w[1].x == 150.0)));
+    // The halves are mirror images across the cut axis, so they always fit together.
+    for (l, r) in left.iter().zip(&right) {
+        assert_eq!((300.0 - l.x, l.y), (r.x, r.y));
+    }
+}
+
+/// Everything `draw_rulers` paints for a selection, with the clip rectangle of each shape. The
+/// timeline starts at x 100 and the view at sample `scroll`. Rulers are Bars|Beats (row y 3..20)
+/// over Min:Secs (row y 20..37); `main` picks which carries the markers.
+fn ruler_shapes(selection: Range, scroll: Samples, armed: bool, main: TimeFormat) -> Vec<egui::epaint::ClippedShape> {
+    let _palette = crate::theme::lock_test_palette();
+    let mut engine = soundcraft_engine::Engine::default();
+    engine.execute("track.new", &json!({"count": 1})).unwrap();
+    let session = engine.session_mut();
+    session.edit.selection = selection;
+    session.edit.zoom.scroll = scroll;
+    session.edit.zoom.samples_per_px = 1_000.0;
+    session.edit.main_counter = main;
+    session.tracks[0].mixer.record_arm = armed;
+    let mut app = SoundApp::new(engine, None, crate::Services::default());
+    let tl = Rect::from_min_max(pos2(100.0, 100.0), pos2(900.0, 500.0));
+    let rulers_rect = Rect::from_min_max(pos2(0.0, 0.0), pos2(900.0, 100.0));
+    let rulers = ["bars_beats".to_string(), "min_secs".to_string()];
+    let ctx = egui::Context::default();
+    crate::fonts::install(&ctx, true);
+    let mut output = ctx.run_ui(egui::RawInput::default(), |ui| draw_rulers(&mut app, ui, rulers_rect, tl, &rulers));
+    output.textures_delta.clear();
+    output.shapes
+}
+
+/// The marker pieces (accent or record fill) and the number of dark outlines `draw_rulers`
+/// paints for a selection, with the view at the start of the session.
+fn ruler_markers(selection: Range, armed: bool, main: TimeFormat) -> (Vec<Piece>, usize) {
+    let t = Tokens::current();
+    let shapes: Vec<Shape> = ruler_shapes(selection, 0, armed, main).into_iter().map(|s| s.shape).collect();
+    let dark = outlines(&shapes).iter().filter(|(c, w, _)| *c == egui::epaint::ColorMode::Solid(t.text_dark) && *w == 1.0).count();
+    (fills(&shapes).into_iter().filter(|(c, _)| *c == t.accent || *c == t.rec).collect(), dark)
+}
+
+#[test]
+fn rulers_mark_a_range_and_a_point_in_the_main_ruler_and_red_when_armed() {
+    let _palette = crate::theme::lock_test_palette();
+    let t = Tokens::current();
+    for armed in [false, true] {
+        let colour = if armed { t.rec } else { t.accent };
+        // 30_000..60_000 samples at 1_000 samples/px: x 130 and 160, in the Min:Secs row (y 20..37).
+        let (range, dark) = ruler_markers(Range::new(30_000, 60_000), armed, TimeFormat::MinSecs);
+        assert_eq!(range.len(), 4, "a bar and a wing for each end");
+        assert!(range.iter().all(|(c, _)| *c == colour), "{range:?}");
+        assert_eq!(extent(&range[..2]), (120.0, 130.0, 20.5, 36.5), "the start, cut edge on 130");
+        assert_eq!(extent(&range[2..]), (160.0, 170.0, 20.5, 36.5), "the end, cut edge on 160");
+        assert_eq!(dark, 2);
+        // A point: the whole arrow centred on the insertion point, one outline.
+        let (point, dark) = ruler_markers(Range::point(30_000), armed, TimeFormat::MinSecs);
+        assert_eq!(extent(&point), (120.0, 140.0, 20.5, 36.5));
+        assert!(point.iter().all(|(c, _)| *c == colour) && dark == 1);
+    }
+    // The markers follow the main counter: with Bars|Beats main they move to the first row (y 3..20).
+    let (bars, _) = ruler_markers(Range::point(30_000), false, TimeFormat::BarsBeats);
+    assert_eq!(extent(&bars), (120.0, 140.0, 3.5, 19.5));
+}
+
+/// Clip rectangles of the marker pieces (accent fill) `draw_rulers` paints, with their extent.
+fn marker_clips(selection: Range, scroll: Samples) -> Vec<(Rect, Rect)> {
+    let accent = Tokens::current().accent;
+    ruler_shapes(selection, scroll, false, TimeFormat::MinSecs)
+        .into_iter()
+        .filter_map(|c| match c.shape {
+            Shape::Path(p) if p.fill == accent => Some((c.clip_rect, Rect::from_points(&p.points))),
+            _ => None,
+        })
+        .collect()
+}
+
+#[test]
+fn the_arrow_at_position_zero_is_not_cut_at_the_edge_of_the_timeline() {
+    let _palette = crate::theme::lock_test_palette();
+    // Insertion at 0 with scroll 0, as in a new session: x 100, the timeline's left edge, so the
+    // left wing sits in the 10 px next to it (x 90..100). The Min:Secs row is y 20..37.
+    for selection in [Range::point(0), Range::new(0, 30_000)] {
+        let clips = marker_clips(selection, 0);
+        assert!(clips.len() >= 2, "{clips:?}");
+        let (clip, drawn) = clips.iter().fold((Rect::NOTHING, Rect::NOTHING), |(c, d), (clip, piece)| (c.union(*clip), d.union(*piece)));
+        assert_eq!(drawn.min.x, 90.0, "the left wing starts 10 px before the edge");
+        assert!(clip.contains_rect(drawn), "the clip {clip:?} cuts the arrow {drawn:?}");
+        // ...and only the ruler row's strip is opened: the same band of rows, nothing wider.
+        assert_eq!((clip.min.x, clip.min.y, clip.max.y), (90.0, 20.0, 37.0), "{clip:?}");
+    }
+}
+
+#[test]
+fn a_start_scrolled_out_of_view_does_not_bleed_into_the_strip_beside_the_timeline() {
+    let _palette = crate::theme::lock_test_palette();
+    // Scrolled 5 px: the insertion at 0 is at x 95, off the timeline (which starts at x 100).
+    let clips = marker_clips(Range::point(0), 5_000);
+    assert!(!clips.is_empty());
+    assert!(clips.iter().all(|(clip, _)| clip.min.x == 100.0), "{clips:?}");
+}
+
+/// x of every insertion-point stroke painted in the last frame.
+fn insertion_xs(h: &Harness<SoundApp>) -> Vec<f32> {
+    lines(h, Tokens::current().insertion).iter().map(|l| l[0].x).collect()
+}
+
+/// Every line segment of `colour` painted in the last frame.
+fn lines(h: &Harness<SoundApp>, colour: Color32) -> Vec<[Pos2; 2]> {
+    let line = |shape: &Shape| match shape {
+        Shape::LineSegment { points, stroke } if stroke.color == colour => Some(*points),
+        _ => None,
+    };
+    h.output().shapes.iter().filter_map(|c| line(&c.shape)).collect()
+}
+
+/// Centre x of the ruler arrow's head (a 20 px wide filled triangle in the marker colour) in the last frame.
+fn arrow_xs(h: &Harness<SoundApp>) -> Vec<f32> {
+    let shapes: Vec<Shape> = h.output().shapes.iter().map(|c| c.shape.clone()).collect();
+    let heads = fills(&shapes).into_iter().filter(|(c, pts)| *c == Tokens::current().accent && pts.len() == 3);
+    heads.map(|piece| extent(&[piece])).filter(|(x0, x1, _, _)| (x1 - x0 - 20.0).abs() < 0.01).map(|(x0, x1, _, _)| (x0 + x1) / 2.0).collect()
+}
+
+/// Steps until the blinking insertion point is on (at most one second and a half).
+fn step_to_insertion_on(h: &mut Harness<SoundApp>) {
+    for _ in 0..90 {
+        if !insertion_rows(h).is_empty() {
+            return;
+        }
+        h.step();
+    }
+}
+
+/// An insertion point on row 2, then playback from it with the view held still.
+fn playing_from_an_insertion_point() -> (Harness<'static, SoundApp>, Samples) {
+    let mut h = harness(4);
+    h.state_mut().run("options.scrolling", json!({"mode": "none"})).unwrap();
+    let a = lane_point(&h, 2);
+    click(&mut h, a);
+    let at = h.state().engine.session().edit.selection.start;
+    h.state_mut().run("transport.play", json!({})).unwrap();
+    h.run_steps(5);
+    assert!(h.state().is_playing());
+    (h, at)
+}
+
+#[test]
+fn the_insertion_point_stays_drawn_while_playing_beside_the_playhead() {
+    let (mut h, at) = playing_from_an_insertion_point();
+    step_to_insertion_on(&mut h);
+    assert!(h.state().is_playing());
+    assert!(h.state().position() > at, "the playhead did not move on");
+    let (s, tl) = (h.state().engine.session(), timeline(&h));
+    assert_eq!(insertion_rows(&h), [2], "only on the selected track");
+    let x = x_of(s, tl, at);
+    assert!(matches!(insertion_xs(&h)[..], [i] if (i - x).abs() < 0.01), "{:?} is not on {x}", insertion_xs(&h));
+    // The playback line has its own colour and is already further along.
+    assert_ne!(Tokens::current().insertion, Tokens::current().playback);
+    // (The overview paints a small playhead of its own: keep the line that crosses all four tracks.)
+    let span = row(&h, 3).max.y - row(&h, 0).min.y;
+    let playhead: Vec<f32> = lines(&h, Tokens::current().playback).iter().filter(|l| l[1].y - l[0].y >= span).map(|l| l[0].x).collect();
+    assert!(matches!(playhead[..], [p] if p > x), "{playhead:?} is not past the insertion point {x}");
+}
+
+#[test]
+fn a_click_in_a_track_while_playing_moves_the_insertion_point_and_the_arrow_not_the_playback() {
+    let (mut h, at) = playing_from_an_insertion_point();
+    let (s, tl) = (h.state().engine.session(), timeline(&h));
+    assert!(matches!(arrow_xs(&h)[..], [a] if (a - x_of(s, tl, at)).abs() < 0.01), "{:?} is not on the insertion point", arrow_xs(&h));
+    let before = h.state().position();
+    let b = lane_point(&h, 0) + vec2(300.0, 0.0);
+    click(&mut h, b);
+    let s = h.state().engine.session();
+    let want = sample_at(s, timeline(&h), b.x);
+    assert_eq!(s.edit.selection, Range::point(want));
+    assert_eq!(s.edit.selected_tracks, row_ids(&h)[..1]);
+    let x = x_of(s, timeline(&h), want);
+    assert!(matches!(arrow_xs(&h)[..], [a] if (a - x).abs() < 0.01), "{:?} is not on {x}", arrow_xs(&h));
+    // Playback went on from where it was: it neither stopped nor jumped to the click. The harness steps
+    // 1/60 s per frame (800 samples at 48 kHz) and the click takes five of them (measured: 4 000 samples),
+    // so allow seven. The old bound, one second, let a seek up to 60 frames ahead pass.
+    let pos = h.state().position();
+    assert!(h.state().is_playing());
+    assert!(pos >= before && pos < before + 7 * 800 && pos < want, "playback went from {before} to {pos}, the click is at {want}");
+    step_to_insertion_on(&mut h);
+    assert!(matches!(insertion_xs(&h)[..], [i] if (i - x).abs() < 0.01), "{:?} is not on {x}", insertion_xs(&h));
+    assert_eq!(insertion_rows(&h), [0]);
+}
+
+#[test]
+fn playhead_is_red_only_while_recording() {
+    for t in [Tokens::DARK, Tokens::LIGHT] {
+        assert_eq!(playhead_colour(&t, true), t.playhead);
+        assert_eq!(playhead_colour(&t, false), t.playback);
+        assert_ne!(t.playback, t.playhead, "plain playback must not read as the record line");
+    }
+}
+
+/// WCAG contrast ratio between two colours (1 = identical, 21 = black on white).
+fn contrast(a: Color32, b: Color32) -> f32 {
+    let lum = |c: Color32| {
+        let lin = |v: u8| {
+            let v = f32::from(v) / 255.0;
+            if v <= 0.04045 { v / 12.92 } else { ((v + 0.055) / 1.055).powf(2.4) }
+        };
+        0.2126 * lin(c.r()) + 0.7152 * lin(c.g()) + 0.0722 * lin(c.b())
+    };
+    let (hi, lo) = (lum(a).max(lum(b)), lum(a).min(lum(b)));
+    (hi + 0.05) / (lo + 0.05)
+}
+
+/// The edit cursor stands still beside the moving playback line while playing: in both themes
+/// they must be two clearly different greys, and the line must still read on the lanes.
+#[test]
+fn the_playback_line_is_set_apart_from_the_insertion_point_in_both_themes() {
+    for (name, t) in [("dark", Tokens::DARK), ("light", Tokens::LIGHT)] {
+        let apart = contrast(t.playback, t.insertion);
+        assert!(apart >= 2.5, "{name}: playback {:?} and insertion {:?} are only {apart:.2}:1 apart", t.playback, t.insertion);
+        let reads = contrast(t.playback, t.playlist_bg);
+        assert!(reads >= 3.0, "{name}: the playback line is only {reads:.2}:1 on the lanes");
+    }
+}
+
+/// The colour `overlay` gives the full-height playback line (width 1.5) in this transport state.
+fn playback_line_colour(recording: bool) -> Option<Color32> {
+    use egui::{Rect, pos2};
+    let _palette = crate::theme::lock_test_palette();
+    let mut app = SoundApp::new(soundcraft_engine::Engine::default(), None, crate::Services::default());
+    app.engine.session_mut().edit.zoom.samples_per_px = 1_000.0;
+    app.engine.transport.playing = true;
+    app.engine.transport.recording = recording;
+    app.engine.transport.position = 80_000;
+    let tl = Rect::from_min_max(pos2(100.0, 100.0), pos2(900.0, 500.0));
+    let area = Rect::from_min_max(pos2(100.0, 50.0), tl.max);
+    let ctx = egui::Context::default();
+    let mut output = ctx.run_ui(egui::RawInput::default(), |ui| overlay(&mut app, ui, tl, area));
+    output.textures_delta.clear();
+    output.shapes.iter().find_map(|s| match &s.shape {
+        Shape::LineSegment { points, stroke } if points[0].x == 180.0 && stroke.width == 1.5 => Some(stroke.color),
+        _ => None,
+    })
+}
+
+#[test]
+fn overlay_draws_the_playback_line_neutral_and_the_record_line_red() {
+    let _palette = crate::theme::lock_test_palette();
+    let t = Tokens::current();
+    assert_eq!(playback_line_colour(false), Some(t.playback));
+    assert_eq!(playback_line_colour(true), Some(t.playhead));
 }
 
 #[test]

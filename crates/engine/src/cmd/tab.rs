@@ -58,6 +58,13 @@ fn tab(e: &mut Engine, p: &Value) -> Result<Value> {
     Ok(json!({"selection": r}))
 }
 
+/// Whether Tab has a stop after the insertion point or the selection's start. Every stop of a clip lies at or before
+/// its end, which is a stop itself.
+pub fn tab_stop_ahead(s: &Session) -> bool {
+    let from = s.edit.selection.start;
+    s.tracks.iter().filter(|t| s.edit.selected_tracks.contains(&t.id)).flat_map(|t| t.clips()).any(|c| c.start.max(c.end()) > from)
+}
+
 /// The nearest stop after `from` (before it when `back`) on the selected tracks.
 fn stop(s: &Session, from: Samples, back: bool) -> Option<Samples> {
     let nearer = |x: Samples, best: Option<Samples>| {
@@ -175,9 +182,10 @@ fn analysed(s: &Session, t: TrackId, around: Range) -> Vec<Samples> {
 #[cfg(test)]
 mod tests {
     use crate::Engine;
+    use craft_audio::AudioBuffer;
     use serde_json::json;
-    use soundcraft_audio_io::{AudioBuffer, FileFormat};
     use soundcraft_midi::{Note, Sequence};
+    use soundcraft_model::FileFormat;
     use soundcraft_model::{ChannelFormat, Clip, Session, TrackId, TrackKind};
     use soundcraft_time::{SampleRate, TICKS_PER_QUARTER};
 

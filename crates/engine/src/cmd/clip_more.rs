@@ -470,6 +470,13 @@ mod tests {
     }
 
     #[test]
+    fn loop_count_accepts_up_to_the_documented_thousand() {
+        let (mut e, t, ids) = engine_with(&[(0, 100, 0)]);
+        assert_eq!(e.execute("clip.loop", &json!({"clip": ids[0].0, "count": 600})).unwrap()["loops"], 599);
+        assert_eq!(e.session().track(t).unwrap().clips().len(), 600);
+    }
+
+    #[test]
     fn regroup_reuses_group() {
         let (mut e, _, ids) = engine_with(&[(0, 100, 0), (500, 100, 0), (900, 100, 0)]);
         let all: Vec<u64> = ids.iter().map(|c| c.0).collect();
@@ -511,8 +518,8 @@ mod tests {
         let mut s = Session::default();
         let t = s.add_track(TrackKind::Audio, ChannelFormat::Mono, None);
         let tone: Vec<f32> = (0..12_000).map(|i| (i as f32 * 0.07).sin() * 0.5).collect();
-        let buf = soundcraft_audio_io::AudioBuffer { sample_rate: 48_000, channels: vec![tone] };
-        let src = crate::io::add_source(&mut s, "tone", buf, None, soundcraft_audio_io::FileFormat::Wav);
+        let buf = craft_audio::AudioBuffer { sample_rate: 48_000, channels: vec![tone] };
+        let src = crate::io::add_source(&mut s, "tone", buf, None, soundcraft_model::FileFormat::Wav);
         let id = s.new_clip_id();
         let mut c = Clip::audio(id, "tone", src, 0, 0, 18_000);
         c.stretch = 1.5;
@@ -544,8 +551,8 @@ mod tests {
                 let mut s = Session::default();
                 let t = s.add_track(TrackKind::Audio, ChannelFormat::Mono, None);
                 let tone: Vec<f32> = (0..9_600).map(|i| (i as f32 * 0.05).sin() * 0.4).collect();
-                let buf = soundcraft_audio_io::AudioBuffer { sample_rate: 48_000, channels: vec![tone] };
-                let src = crate::io::add_source(&mut s, "tone", buf, None, soundcraft_audio_io::FileFormat::Wav);
+                let buf = craft_audio::AudioBuffer { sample_rate: 48_000, channels: vec![tone] };
+                let src = crate::io::add_source(&mut s, "tone", buf, None, soundcraft_model::FileFormat::Wav);
                 let id = s.new_clip_id();
                 crate::edit::place_clip(&mut s, t, Clip::audio(id, "tone", src, 0, 0, 9_600));
                 s.edit.selected_clips = vec![id];
@@ -575,8 +582,8 @@ mod tests {
         let mut s = Session::default();
         let t = s.add_track(TrackKind::Audio, ChannelFormat::Mono, None);
         let tone: Vec<f32> = (0..9_600).map(|i| (i as f32 * 0.05).sin() * 0.4).collect();
-        let buf = soundcraft_audio_io::AudioBuffer { sample_rate: 48_000, channels: vec![tone] };
-        let src = crate::io::add_source(&mut s, "tone", buf, None, soundcraft_audio_io::FileFormat::Wav);
+        let buf = craft_audio::AudioBuffer { sample_rate: 48_000, channels: vec![tone] };
+        let src = crate::io::add_source(&mut s, "tone", buf, None, soundcraft_model::FileFormat::Wav);
         let id = s.new_clip_id();
         crate::edit::place_clip(&mut s, t, Clip::audio(id, "tone", src, 0, 0, 9_600));
         s.edit.selected_clips = vec![id];

@@ -4,7 +4,7 @@
 //!   (stepped enum A/B/C), hidden param 9, latency 3 samples.
 //! - `org.soundcraft.test.synth`: instrument, stereo out, CLAP note port; outputs a constant equal
 //!   to the velocity of the held note (0 when none), switching at the event's sample offset. A
-//!   MIDI CC 7 (volume) sets the constant to its value / 127.
+//!   MIDI CC 7 (volume) sets the constant to its value / 127. `reset` leaves the note sounding.
 //!
 //! - `org.soundcraft.test.wide16`, `.wide17ports`, `.wide65ch`: effects advertising wide layouts
 //!   (16 ports of 64 channels, 17 ports of 2 channels, one port of 65 channels per direction).
@@ -118,6 +118,8 @@ struct Fx {
     active: bool,
     processing: bool,
     gui_created: bool,
+    /// The thread that created the GUI (the host's main thread).
+    gui_thread: Option<std::thread::ThreadId>,
     gui_visible: bool,
     /// Set from the main thread by `gui.show`, consumed on the audio thread.
     gui_edit_pending: AtomicBool,
@@ -147,7 +149,10 @@ unsafe extern "C" fn init(p: *const clap_plugin) -> bool {
 }
 
 unsafe extern "C" fn destroy(p: *const clap_plugin) {
-    assert!(!unsafe { fx(p) }.gui_created, "plugin destroyed with its GUI alive");
+    let f = unsafe { fx(p) };
+    // A host destroying the plugin off the GUI's thread can't destroy the GUI there (clap.gui is
+    // main-thread only), so it may leave it; on the GUI's thread it must destroy it first.
+    assert!(!f.gui_created || f.gui_thread != Some(std::thread::current().id()), "plugin destroyed with its GUI alive");
     let data = unsafe { (*p).plugin_data } as *mut Fx;
     drop(unsafe { Box::from_raw(data) });
 }
@@ -178,12 +183,13 @@ unsafe extern "C" fn stop_processing(p: *const clap_plugin) {
     unsafe { fx(p) }.processing = false;
 }
 
-/// Zeroes the level and calls `clap_host.request_process` (not `request_flush`), which the host
-/// is expected to ignore.
+/// Leaves the synth's note sounding, then calls `clap_host.request_process` (never
+/// `params.request_flush`), which the host is expected to ignore. CLAP asks `reset` to kill voices,
+/// but some synths' doesn't (Surge XT's), so the host must send the releases itself. Every fixture
+/// plugin shares this function and the `Fx` state behind `plugin_data`, so reading the host pointer
+/// is valid for all of them.
 unsafe extern "C" fn reset(p: *const clap_plugin) {
     let f = unsafe { fx(p) };
-    f.level = 0.0;
-    // `clap_host.request_process` only (never `params.request_flush`): the host ignores it.
     if let Some(rp) = unsafe { (*f.host).request_process } {
         unsafe { rp(f.host) };
     }
@@ -545,6 +551,7 @@ unsafe extern "C" fn gui_create(p: *const clap_plugin, _api: *const c_char, floa
     let f = unsafe { fx(p) };
     assert!(floating && !f.gui_created, "create");
     f.gui_created = true;
+    f.gui_thread = Some(std::thread::current().id());
     true
 }
 
@@ -700,6 +707,7 @@ unsafe extern "C" fn factory_create(_f: *const clap_plugin_factory, host: *const
         active: false,
         processing: false,
         gui_created: false,
+        gui_thread: None,
         gui_visible: false,
         gui_edit_pending: AtomicBool::new(false),
         offline: false,

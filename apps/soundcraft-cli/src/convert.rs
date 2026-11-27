@@ -14,7 +14,16 @@ pub(crate) fn convert(args: &ConvertArgs, out: &mut dyn Write) -> Result<(), Cli
     };
     let bytes = std::fs::read(input).map_err(|source| CliError::File { path: input.clone(), source })?;
     let ext = input.extension().and_then(std::ffi::OsStr::to_str);
-    let (info, mut buf) = soundcraft_audio_io::decode(&bytes, ext).map_err(|source| CliError::Audio { path: input.clone(), source })?;
+    let (info, mut buf) = craft_audio::decode(&bytes, ext).map_err(|source| CliError::Audio { path: input.clone(), source })?;
+    // The decoder replaces packets it cannot decode with silence of their length and counts them.
+    // Such a file is not a copy of what was recorded: never let it replace its source, and say so
+    // when it is written elsewhere.
+    if info.damaged > 0 {
+        if args.in_place {
+            return Err(ConvertError::Damaged { input: input.clone(), packets: info.damaged }.into());
+        }
+        log::warn!("{}: {} damaged packet(s) decoded as silence", input.display(), info.damaged);
+    }
     let source_rate = buf.sample_rate;
     if let Some(rate) = rate {
         buf.channels = soundcraft_dsp::offline::resample(&buf.channels, buf.sample_rate, rate);
@@ -28,17 +37,22 @@ pub(crate) fn convert(args: &ConvertArgs, out: &mut dyn Write) -> Result<(), Cli
     let dither = dither_flag.unwrap_or_else(|| auto_dither(info.sample_format, bit_depth, processed));
     // Lossy only for the message: an extension that is not valid Unicode names no format.
     let out_ext = output.extension().map_or_else(|| "wav".into(), |e| e.to_string_lossy().to_ascii_lowercase());
-    let Some(format) = soundcraft_audio_io::FileFormat::from_write_extension(&out_ext) else {
+    let Some(format) = craft_audio::encode_format_for(&out_ext) else {
         return Err(ConvertError::OutputFormat { output: output.clone(), ext: out_ext }.into());
     };
     // A BWF source keeps its `bext` (written for WAV output only). The time reference counts
     // samples, so it moves to the output rate.
-    let bwf = info.bwf.map(|mut b| {
+    let mut opts = craft_audio::EncodeOptions::new(format).with_bit_depth(bit_depth).with_dither(dither);
+    // The source's speakers, not the usual ones for its channel count (5.1 with side surrounds
+    // stays that). Channels with no speaker assignment get the format's default.
+    if info.layout.is_ordered() {
+        opts = opts.with_layout(info.layout);
+    }
+    opts.bwf = info.bwf.map(|mut b| {
         b.time_reference = at_rate(b.time_reference, source_rate, buf.sample_rate);
         b
     });
-    let opts = soundcraft_audio_io::EncodeOptions { format, bit_depth, dither, bwf };
-    let bytes = soundcraft_audio_io::encode(&buf, &opts).map_err(|source| CliError::Audio { path: output.clone(), source })?;
+    let bytes = craft_audio::encode(&buf, &opts).map_err(|source| CliError::Audio { path: output.clone(), source })?;
     write_replacing(&args.write_path(), &bytes).map_err(|source| CliError::File { path: output.clone(), source })?;
     outln!(out, "wrote {} ({} ch, {} Hz, {:.2} s)", output.display(), buf.num_channels(), buf.sample_rate, buf.duration_secs());
     Ok(())
@@ -75,13 +89,15 @@ fn write_replacing(target: &std::path::Path, bytes: &[u8]) -> std::io::Result<()
 /// source exactly, i.e. the output has fewer bits than the source, the source is float or lossy, or
 /// resampling/normalizing produced new sample values. A 16-bit file written as 16 or 24-bit, or
 /// anything written as 32-bit float, is copied sample for sample (digital silence stays silent).
-fn auto_dither(source: soundcraft_audio_io::SampleFormat, target: soundcraft_audio_io::BitDepth, processed: bool) -> bool {
-    use soundcraft_audio_io::{BitDepth, SampleFormat};
+fn auto_dither(source: craft_audio::SampleFormat, target: craft_audio::BitDepth, processed: bool) -> bool {
+    use craft_audio::{BitDepth, SampleFormat};
     let target_bits = match target {
         BitDepth::Float32 => return false,
         BitDepth::Int16 => 16,
         BitDepth::Int24 => 24,
         BitDepth::Int32 => 32,
+        // A depth added to craft-audio later: dither, as for any step that may lose resolution.
+        _ => return true,
     };
     if processed {
         return true;
@@ -91,8 +107,8 @@ fn auto_dither(source: soundcraft_audio_io::SampleFormat, target: soundcraft_aud
         SampleFormat::Int16 => target_bits < 16,
         SampleFormat::Int24 => target_bits < 24,
         // Decoded through f32, which holds 24 bits: a 32-bit integer source has already lost
-        // resolution, so treat it like float.
-        SampleFormat::Int32 | SampleFormat::Float32 | SampleFormat::Float64 | SampleFormat::Compressed => true,
+        // resolution, so treat it like float (as is any format added to craft-audio later).
+        _ => true,
     }
 }
 
@@ -102,7 +118,7 @@ mod tests {
 
     #[test]
     fn convert_dithers_only_when_resolution_is_lost() {
-        use soundcraft_audio_io::{BitDepth, SampleFormat};
+        use craft_audio::{BitDepth, SampleFormat};
         // Same depth or wider: the samples fit exactly.
         assert!(!auto_dither(SampleFormat::Int16, BitDepth::Int16, false));
         assert!(!auto_dither(SampleFormat::Int16, BitDepth::Int24, false));
