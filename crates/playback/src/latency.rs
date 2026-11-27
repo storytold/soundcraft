@@ -103,10 +103,9 @@ impl InstantCell {
     }
 }
 
-/// The stream clock's time of `instant`, in seconds. Within one host the input and output
-/// streams share this clock (ASIO: the driver's system time; WASAPI: the performance counter;
-/// Core Audio: the host time), and it stamps the device's own moments rather than the time a
-/// callback happens to run.
+/// The stream clock's time of `instant`, in seconds. It stamps the device's own moments rather
+/// than the time a callback happens to run. On ASIO, WASAPI and Core Audio the input and output
+/// streams share it; on ALSA they do not (see [`shares_stream_clock`]).
 pub fn clock_seconds(instant: cpal::StreamInstant) -> f64 {
     instant.as_nanos() as f64 / 1e9
 }
@@ -309,23 +308,44 @@ pub fn placement_offset(heard: Moment, captured: Moment, rate: f64, round_trip: 
     }
 }
 
-/// When the first frame of an input callback was captured, on the stream clock.
+/// Whether the input and output streams of the audio system named `host` (cpal's host name) stamp
+/// their times on one clock from one origin, so that a capture time of the input can be compared
+/// with a playback time of the output: Core Audio (the host time), WASAPI (the performance
+/// counter) and ASIO (the driver's system time). cpal 0.18's ALSA counts each stream's times from
+/// that stream's own start, so its input and output times differ by however far apart the two
+/// streams were opened. There, and on systems not listed, the callback timing places takes (see
+/// [`placement_offset`]).
+pub fn shares_stream_clock(host: &str) -> bool {
+    matches!(host, "CoreAudio" | "WASAPI" | "ASIO")
+}
+
+/// [`shares_stream_clock`] for the audio system `device` belongs to.
+pub(crate) fn device_shares_stream_clock(device: &cpal::Device) -> bool {
+    use cpal::traits::DeviceTrait;
+    device.id().is_ok_and(|id| shares_stream_clock(id.host().name()))
+}
+
+/// When the first frame of an input callback was captured, on the stream clock; `None` when the
+/// stream's system does not share its clock with the output (`shared`, see
+/// [`shares_stream_clock`]).
 ///
 /// With `device_latency` (Core Audio, see [`coreaudio_device_latency`]) the time is the callback's
 /// host time less that latency; otherwise it is cpal's capture time.
 #[cfg(not(target_os = "freebsd"))]
-pub(crate) fn capture_clock(info: &cpal::InputCallbackInfo, device_latency: Option<Duration>) -> f64 {
+pub(crate) fn capture_clock(info: &cpal::InputCallbackInfo, device_latency: Option<Duration>, shared: bool) -> Option<f64> {
     let t = info.timestamp();
-    device_latency.map_or_else(|| clock_seconds(t.capture), |l| from_host_time(clock_seconds(t.callback), l, true))
+    shared.then(|| device_latency.map_or_else(|| clock_seconds(t.capture), |l| from_host_time(clock_seconds(t.callback), l, true)))
 }
 
-/// When the first frame of an output callback will be heard, on the stream clock.
+/// When the first frame of an output callback will be heard, on the stream clock; `None` when the
+/// stream's system does not share its clock with the input (`shared`, see
+/// [`shares_stream_clock`]).
 ///
 /// With `device_latency` (Core Audio, see [`coreaudio_device_latency`]) the time is the callback's
 /// host time plus that latency; otherwise it is cpal's playback time.
-pub(crate) fn playback_clock(info: &cpal::OutputCallbackInfo, device_latency: Option<Duration>) -> f64 {
+pub(crate) fn playback_clock(info: &cpal::OutputCallbackInfo, device_latency: Option<Duration>, shared: bool) -> Option<f64> {
     let t = info.timestamp();
-    device_latency.map_or_else(|| clock_seconds(t.playback), |l| from_host_time(clock_seconds(t.callback), l, false))
+    shared.then(|| device_latency.map_or_else(|| clock_seconds(t.playback), |l| from_host_time(clock_seconds(t.callback), l, false)))
 }
 
 /// A Core Audio callback's host time (seconds on the stream clock) moved to the converters: an
@@ -614,6 +634,35 @@ mod tests {
         // A heavier session waits longer, up to the device buffer; the clock still decides.
         let busy = Moment { at: shift(t, 1_000.0 / rate - 1_070.0 / rate).unwrap(), ..captured };
         assert_eq!(placement_offset(heard, busy, rate, rt), 2_159);
+    }
+
+    /// cpal 0.18's ALSA counts each stream's times from that stream's own start, so an input opened
+    /// 5 ms after the output stamps its captures 5 ms behind the output's playback times. Within half
+    /// the round trip of the callbacks, that clock would place the take 240 samples late; the
+    /// callbacks place it there instead. Where one clock serves both streams it still decides.
+    #[test]
+    #[cfg(not(target_os = "freebsd"))]
+    fn streams_that_count_from_their_own_start_are_placed_by_the_callbacks() {
+        let rate = 48_000.0;
+        let t = Instant::now() + Duration::from_secs(1);
+        let rt = Some(Duration::from_secs_f64(623.0 / rate));
+        let secs = |s: f64| StreamInstant::from_nanos((s * 1e9).round() as u64);
+        // The start is heard at 10 s and the take's first sample was captured 607 samples before;
+        // the input callback ran 19 samples late, so the callbacks alone say 588.
+        let (heard_at, captured_at) = (10.0, 10.0 - 607.0 / rate);
+        let place = |host: &str, input_opened_after: f64| {
+            let shared = shares_stream_clock(host);
+            let output = OutputCallbackInfo::new(OutputStreamTimestamp { callback: secs(heard_at - 0.002), playback: secs(heard_at) });
+            let capture = captured_at - input_opened_after;
+            let input = InputCallbackInfo::new(InputStreamTimestamp { callback: secs(capture + 0.002), capture: secs(capture) });
+            let heard = Moment { at: t, clock: playback_clock(&output, None, shared) };
+            let captured = Moment { at: shift(t, (19.0 - 607.0) / rate).unwrap(), clock: capture_clock(&input, None, shared) };
+            placement_offset(heard, captured, rate, rt)
+        };
+        assert_eq!(place("ALSA", 0.005), 588, "the input's own start is not the output's");
+        for host in ["CoreAudio", "WASAPI", "ASIO"] {
+            assert_eq!(place(host, 0.0), 607, "{host}: one clock for both streams decides");
+        }
     }
 
     #[test]

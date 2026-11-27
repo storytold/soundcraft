@@ -136,14 +136,16 @@ impl Shared {
         }
     }
 
-    /// Latch the take's first sample, captured `at` and at `clock` on the stream clock, the first
-    /// time only: `timed` says whether the input had reported its latency, which `at` is moved
-    /// back by. Only the input callback latches.
+    /// Latch the take's first sample, captured `at` and at `clock` on the stream clock (`None` where
+    /// the input does not share the output's clock), the first time only: `timed` says whether the
+    /// input had reported its latency, which `at` is moved back by. Only the input callback latches.
     #[cfg_attr(target_os = "freebsd", allow(dead_code))]
-    fn latch_first_capture(&self, at: std::time::Instant, clock: f64, timed: bool) {
+    fn latch_first_capture(&self, at: std::time::Instant, clock: Option<f64>, timed: bool) {
         if self.first_capture.get().is_none() {
             self.first_capture_timed.store(timed, Ordering::Relaxed);
-            self.first_capture_clock.set_if_empty(clock);
+            if let Some(clock) = clock {
+                self.first_capture_clock.set_if_empty(clock);
+            }
             self.first_capture.set_if_empty(at);
         }
     }
@@ -217,13 +219,14 @@ where
     let rate = f64::from(config.sample_rate).max(1.0);
     let mut owed = 0;
     let device_latency = crate::latency::coreaudio_device_latency(device, true, config.sample_rate);
+    let shared_clock = crate::latency::device_shares_stream_clock(device);
     device.build_input_stream(
         config,
         move |data: &[T], info: &cpal::InputCallbackInfo| {
             crate::mark_audio_thread();
             sh.input_latency.observe(crate::latency::input_report(info));
             let called = std::time::Instant::now();
-            let captured = crate::latency::capture_clock(info, device_latency);
+            let captured = crate::latency::capture_clock(info, device_latency, shared_clock);
             sh.guarded(|| {
                 for (index, part) in data.chunks(chunk).enumerate() {
                     let Some(s) = scratch.get_mut(..part.len()) else { return };
@@ -238,7 +241,7 @@ where
                         let into = (index * chunk / frame) as f64 / rate;
                         let back = latency.unwrap_or_default().as_secs_f64();
                         if let Some(at) = crate::latency::shift(called, into - back) {
-                            sh.latch_first_capture(at, captured + into, latency.is_some());
+                            sh.latch_first_capture(at, captured.map(|c| c + into), latency.is_some());
                         }
                         sh.capture(s, &mut owed);
                     } else {
@@ -635,13 +638,13 @@ mod tests {
     fn a_first_capture_latched_without_the_input_latency_is_not_a_capture_moment() {
         let shared = Shared::new(CaptureRing::new(8));
         let t = std::time::Instant::now();
-        shared.latch_first_capture(t, 10.0, false);
-        shared.latch_first_capture(t + std::time::Duration::from_millis(5), 10.005, true);
+        shared.latch_first_capture(t, Some(10.0), false);
+        shared.latch_first_capture(t + std::time::Duration::from_millis(5), Some(10.005), true);
         assert_eq!(shared.first_capture(), None);
         // The next take, latched with the latency known.
         shared.clear_first_capture();
-        shared.latch_first_capture(t, 10.0, true);
-        shared.latch_first_capture(t + std::time::Duration::from_millis(5), 10.005, false);
+        shared.latch_first_capture(t, Some(10.0), true);
+        shared.latch_first_capture(t + std::time::Duration::from_millis(5), Some(10.005), false);
         let moment = shared.first_capture().unwrap();
         assert_eq!(moment.clock, Some(10.0));
         let d = moment.at.max(t) - moment.at.min(t);
