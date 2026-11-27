@@ -148,3 +148,43 @@ fn the_playback_engine_shows_the_current_choice_after_a_command_changes_it() {
     assert!(shows(&h, "1024 samples"), "an open window follows a change made elsewhere");
     assert!(h.query_by_label("Revert").is_none(), "nothing to revert: no edit differs from the current choice");
 }
+
+/// Make an unapplied edit in the window: its buffer size set to `buffer`, as if chosen in its
+/// Buffer size selector (the window keeps its edits with the choice they started from).
+fn edit_buffer(h: &mut Harness<'_, SoundApp>, buffer: u32) {
+    let from = h.state().ui.audio.clone();
+    let draft = soundcraft_playback::AudioConfig { buffer_size: Some(buffer), ..from.clone() };
+    h.ctx.data_mut(|d| d.insert_temp(egui::Id::unique("audio_draft"), (from, draft)));
+    h.run_steps(2);
+}
+
+/// Pro Tools' Playback Engine is a modal dialog, so nothing else changes the device while it has
+/// unapplied edits (Reference Guide p. 109). This window is not modal: when a command changes the
+/// choice under unapplied edits, the window takes the new choice and says the edits were replaced.
+#[test]
+fn the_playback_engine_says_when_a_command_replaces_its_unapplied_edits() {
+    const NOTE: &str = "The audio settings were changed outside this window; your unapplied changes were replaced.";
+    let mut h = playback_engine_harness(256);
+    edit_buffer(&mut h, 128);
+    h.run_steps(2);
+    assert!(shows(&h, "128 samples"), "the edit is in the window");
+    assert!(h.query_by_label("Revert").is_some(), "an unapplied edit");
+
+    // A command changes the buffer to 1024 while the edit is unapplied.
+    h.state_mut().ui.audio.buffer_size = Some(1024);
+    h.run_steps(3);
+    assert!(shows(&h, "1024 samples"), "the window takes the current choice");
+    assert!(h.query_by_label(NOTE).is_some(), "and says the unapplied edit was replaced");
+    assert!(h.state().ui.status.contains(NOTE), "the status line says it too: {}", h.state().ui.status);
+
+    // The next edit takes the note away.
+    edit_buffer(&mut h, 512);
+    h.run_steps(2);
+    assert!(h.query_by_label(NOTE).is_none(), "a new edit: the note goes");
+
+    // A change made elsewhere with no unapplied edit replaces nothing, so nothing is said.
+    let mut h = playback_engine_harness(256);
+    h.state_mut().ui.audio.buffer_size = Some(1024);
+    h.run_steps(3);
+    assert!(h.query_by_label(NOTE).is_none(), "no edit was replaced");
+}

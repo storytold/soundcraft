@@ -55,7 +55,9 @@ When you close a gap, delete its entry (or shrink it) in the same PR, and bump t
 - **Done (2026-11-25):** the Playback Engine shows the current choice when `ui.audio_device` or
   `setup.playback_engine` changed it while the window was closed or open, and Apply no longer puts
   an earlier choice back. Closing the window from the menu discards unapplied edits, as its close
-  button does. Checked on macOS (Core Audio, RME UFX and a second input device).
+  button does. A change made elsewhere that replaces unapplied edits is said in the window and the
+  status line (Pro Tools' dialog is modal, so it never meets this case). Checked on macOS (Core
+  Audio, RME UFX and a second input device).
 - **Missing:** routing to physical channels (I/O Setup), one duplex stream on one clock (input and
   output are still separate cpal streams), latency reporting and record-offset compensation, ASIO
   in official builds (owner decision: Steinberg's SDK is proprietary or GPLv3), JACK, and

@@ -321,6 +321,9 @@ pub(super) fn translate(source: &str) -> Option<&'static str> {
         }
         "No engine" => "Sem mecanismo de áudio",
         "default buffer" => "buffer padrão",
+        "The audio settings were changed outside this window; your unapplied changes were replaced." => {
+            "As configurações de áudio foram alteradas fora desta janela; suas alterações não aplicadas foram substituídas."
+        }
         "Bus name: {name}" => "Nome do bus: {name}",
         "Model" => "Modelo",
         "Version" => "Versão",
