@@ -289,11 +289,19 @@ impl Recorder {
     /// Open the input device `audio` chooses (else the default) at its chosen rate and buffer
     /// size when the device offers them, else at the device's defaults. Integer devices (ASIO
     /// drivers usually are) are converted to f32.
-    #[cfg(not(target_os = "freebsd"))]
     pub fn open_with(audio: &crate::AudioConfig) -> Result<Recorder, String> {
+        Recorder::open_on(audio, None)
+    }
+
+    /// [`Recorder::open_with`] on the input device `found` when the caller already looked it up
+    /// (see `devices::open_in_order`).
+    #[cfg(not(target_os = "freebsd"))]
+    pub(crate) fn open_on(audio: &crate::AudioConfig, found: Option<&cpal::Device>) -> Result<Recorder, String> {
         use cpal::traits::{DeviceTrait, StreamTrait};
-        let host = crate::devices::host(audio);
-        let device = crate::devices::device(&host, audio.input.as_deref(), false).ok_or("no audio input device")?;
+        let device = match found {
+            Some(d) => d.clone(),
+            None => crate::devices::device(&crate::devices::host(audio), audio.input.as_deref(), false).ok_or("no audio input device")?,
+        };
         let name = crate::devices::device_name(&device).unwrap_or_else(|| "Input".into());
         // At the chosen rate when the device offers it, so input and output run together: the
         // best format first, then the most channels.
@@ -344,7 +352,7 @@ impl Recorder {
     }
 
     #[cfg(target_os = "freebsd")]
-    pub fn open_with(_audio: &crate::AudioConfig) -> Result<Recorder, String> {
+    pub(crate) fn open_on(_audio: &crate::AudioConfig, _found: Option<&cpal::Device>) -> Result<Recorder, String> {
         Err("recording is not supported on this platform yet".into())
     }
 

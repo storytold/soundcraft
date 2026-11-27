@@ -33,7 +33,7 @@ pub mod latency;
 pub mod midi;
 pub mod record;
 
-pub use devices::{AudioConfig, input_opens_first};
+pub use devices::AudioConfig;
 
 use soundcraft_dsp::{Plugin, PluginEditor, PluginStateReader};
 use soundcraft_mix::{MAX_CHANNELS, MixEngine, PreparedInstance, StripMeter, itu_stereo_fold, main_channels};
@@ -196,7 +196,33 @@ impl Player {
     /// Open the output device `cfg` chooses (system, device, rate, buffer size), falling back to the
     /// defaults for whatever is unavailable. Never fails: without a device it runs a silent clock.
     pub fn with_config(session: Arc<Session>, cfg: &AudioConfig) -> Player {
-        let p = Player::open(Arc::clone(&session), cfg);
+        Player::with_device(session, cfg, None)
+    }
+
+    /// Open the output `cfg` chooses as [`Player::with_config`] does and, where the audio system
+    /// calls a device's callbacks in the order its streams opened (ASIO, Core Audio) and the input
+    /// is the output's device, its input first, feeding the player: the output callback then
+    /// mixes the input of the same device cycle. Both devices are looked up before either opens,
+    /// because cpal's ASIO host lists no other driver while one is loaded (see
+    /// `devices::open_in_order`). Elsewhere, on two devices, or when the input does not open, the
+    /// player opens alone.
+    pub fn with_input(session: Arc<Session>, cfg: &AudioConfig) -> (Player, Option<record::Recorder>) {
+        let host = devices::host(cfg);
+        let find = |output| devices::device(&host, if output { cfg.output.as_deref() } else { cfg.input.as_deref() }, output);
+        let open_input = |d: &cpal::Device| {
+            record::Recorder::open_on(cfg, Some(d)).inspect_err(|e| log::info!("audio input not opened with the output: {e}")).ok()
+        };
+        let (player, input) =
+            devices::open_in_order(host.id().name(), find, devices::device_name, open_input, |d| Player::with_device(session, cfg, d));
+        if let Some(r) = &input {
+            player.set_input(Arc::clone(&r.monitor));
+        }
+        (player, input)
+    }
+
+    /// [`Player::with_config`] on the output device `found` when the caller already looked it up.
+    fn with_device(session: Arc<Session>, cfg: &AudioConfig, found: Option<&cpal::Device>) -> Player {
+        let p = Player::open(Arc::clone(&session), cfg, found);
         p.side().return_old_sessions(&p.tx);
         // Hand the initial session's third-party plugins over.
         p.update_session(session);
@@ -223,7 +249,7 @@ impl Player {
     /// Open the output device for `session`, trying the requested buffer size before the device default, then build
     /// the shared player state. If no configuration starts or the device cannot open, fall back to a silent clock at
     /// the session rate.
-    fn open(session: Arc<Session>, cfg: &AudioConfig) -> Player {
+    fn open(session: Arc<Session>, cfg: &AudioConfig, found: Option<&cpal::Device>) -> Player {
         let shared = Arc::new(Shared {
             position: AtomicI64::new(0),
             playing: AtomicBool::new(false),
@@ -240,7 +266,7 @@ impl Player {
             side.gone_tracks(&session);
             Mutex::new(side)
         };
-        match open_device(want, want_ch, cfg) {
+        match open_device(want, want_ch, cfg, found) {
             Ok((device, config, format, name)) => {
                 // The chosen buffer size first; if the device refuses it, its default.
                 let mut attempts = vec![config];
