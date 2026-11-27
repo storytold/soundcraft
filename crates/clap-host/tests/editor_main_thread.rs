@@ -121,45 +121,55 @@ fn flush_guards() {
     assert_eq!(counters().1 - f0, 2, "flushed after a processed block, outside the processing state");
     let _ = block(&mut p);
     assert_eq!(counters().0 - p0, 2, "processing restarts on the next block");
+    ed.close();
 }
 
-/// Smoke test: the main thread opens, services and closes the editor while the audio thread
-/// alternates blocks and flushes. (Overlap is impossible by type, `&mut self`; the fixture still
-/// asserts it.) The editor is opened before the audio thread starts, so its first block reports
-/// the pending edit; the main thread waits for that block (and the flush after it) before its
-/// first `idle`, because `idle` holds the edit queue and an edit published while it does is dropped
-/// by design. The first `idle` therefore returns that edit deterministically.
+/// Smoke test: the main thread opens, services and closes the editor a fixed number of times while
+/// the audio thread alternates blocks and flushes until told to stop. (Overlap is impossible by
+/// type, `&mut self`; the fixture still asserts it.) The editor is opened before the audio thread
+/// starts, so its first block reports the pending edit; the main thread waits for that block (and
+/// the flush after it) before its first `idle`, because `idle` holds the edit queue and an edit
+/// published while it does is dropped by design. The first `idle` therefore returns that edit
+/// deterministically. The audio thread keeps running for the whole churn, so every close/open/idle
+/// cycle really overlaps it.
 fn editor_alongside_block_and_flush() {
+    const CYCLES: u32 = 50;
     let (mut p, mut ed) = gain_with_editor();
     let (p0, _) = counters();
     // Opened before the audio thread starts, so an edit is pending whatever the scheduling: the
     // first block applies it.
     ed.open().expect("open");
+    let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
     let (first_done, first_signal) = std::sync::mpsc::channel();
-    let audio = std::thread::spawn(move || {
-        for i in 0..2_000 {
-            let _ = block(&mut p);
-            p.flush();
-            if i == 0 {
-                first_done.send(()).expect("the main thread is waiting");
+    let audio = {
+        let stop = std::sync::Arc::clone(&stop);
+        std::thread::spawn(move || {
+            let mut blocks = 0u32;
+            while blocks == 0 || !stop.load(std::sync::atomic::Ordering::Acquire) {
+                let _ = block(&mut p);
+                p.flush();
+                if blocks == 0 {
+                    first_done.send(()).expect("the main thread is waiting");
+                }
+                blocks += 1;
             }
-        }
-        p
-    });
+            (p, blocks)
+        })
+    };
     first_signal.recv().expect("the audio thread ran its first block");
     let first = ed.idle();
     assert_eq!(first, vec![("7".to_string(), 0.25)], "the first block's edit reaches the first idle");
-    let mut edits = first.len();
-    while !audio.is_finished() {
+    for _ in 0..CYCLES {
         ed.close();
         ed.open().expect("reopen");
-        edits += ed.idle().len();
+        let _ = ed.idle();
     }
-    let p = audio.join().expect("the fixture saw an overlap or panicked");
-    edits += ed.idle().len();
+    stop.store(true, std::sync::atomic::Ordering::Release);
+    let (p, blocks) = audio.join().expect("the fixture saw an overlap or panicked");
     ed.close();
-    assert!(edits > 0, "some edit got through");
-    assert_eq!(counters().0 - p0, 2_000);
+    // No concurrent writer is left, so the counters file reads whole.
+    assert!(blocks >= 1);
+    assert_eq!(counters().0 - p0, u64::from(blocks), "every block was processed");
     drop(p);
 }
 
@@ -229,7 +239,8 @@ fn main() {
     editor_alongside_block_and_flush();
     // #901: a plugin dropped on another thread with its editor open (an audio callback dropped
     // by the device's thread) does not destroy the editor there, clap.gui being main-thread only:
-    // it warns and leaves it.
+    // it warns and leaves it. Earlier scenarios' warnings are dropped first, so only this one counts.
+    WARNINGS.lock().unwrap().clear();
     let mut p = soundcraft_clap_host::create(GAIN).expect("fixture");
     p.prepare(48_000.0, 64, 2);
     let mut ed = p.editor().expect("editor handle");
