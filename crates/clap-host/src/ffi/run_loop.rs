@@ -153,6 +153,9 @@ impl RunLoop {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::Write;
+    use std::os::fd::AsRawFd;
+    use std::os::unix::net::UnixStream;
 
     #[test]
     fn timers_and_descriptors_follow_registration() {
@@ -168,25 +171,21 @@ mod tests {
         assert_eq!(due, vec![a, b], "a late frame fires each timer once");
         assert!(rl.remove_timer(a) && !rl.remove_timer(a));
         assert_eq!(rl.due(t0 + Duration::from_secs(2)), vec![b]);
-        let mut fds = [0; 2];
-        // SAFETY: `fds` holds the two descriptors `pipe` writes.
-        assert_eq!(unsafe { libc::pipe(fds.as_mut_ptr()) }, 0);
-        assert!(rl.add_fd(fds[0], CLAP_POSIX_FD_READ));
-        assert!(!rl.add_fd(fds[0], CLAP_POSIX_FD_READ), "registered once");
+        // A connected stream has defined read and write readiness on both Linux and BSD.
+        let (stream, mut peer) = UnixStream::pair().unwrap();
+        let fd = stream.as_raw_fd();
+        assert!(rl.add_fd(fd, CLAP_POSIX_FD_READ));
+        assert!(!rl.add_fd(fd, CLAP_POSIX_FD_READ), "registered once");
         assert!(!rl.add_fd(-1, CLAP_POSIX_FD_READ));
         assert!(rl.ready().is_empty(), "nothing to read");
-        // SAFETY: a valid one-byte buffer written to our own pipe.
-        assert_eq!(unsafe { libc::write(fds[1], b"x".as_ptr().cast(), 1) }, 1);
-        assert_eq!(rl.ready(), vec![(fds[0], CLAP_POSIX_FD_READ)]);
-        assert!(rl.modify_fd(fds[0], CLAP_POSIX_FD_WRITE));
-        assert!(rl.ready().is_empty(), "a read end never becomes writable");
-        assert!(rl.remove_fd(fds[0]) && !rl.has_fd(fds[0]));
+        peer.write_all(b"x").unwrap();
+        assert_eq!(rl.ready(), vec![(fd, CLAP_POSIX_FD_READ)]);
+        // The unread byte is still there, so reporting read as well would be a stale interest.
+        assert!(rl.modify_fd(fd, CLAP_POSIX_FD_WRITE));
+        assert_eq!(rl.ready(), vec![(fd, CLAP_POSIX_FD_WRITE)]);
+        assert!(rl.remove_fd(fd) && !rl.has_fd(fd));
+        assert!(rl.ready().is_empty(), "no callbacks for an unregistered descriptor");
         rl.clear();
         assert!(!rl.has_timer(b));
-        // SAFETY: closing the pipe we opened.
-        unsafe {
-            libc::close(fds[0]);
-            libc::close(fds[1]);
-        }
     }
 }

@@ -1,7 +1,7 @@
 //! The Output window, as in Pro Tools: one track's volume fader and readout, pan, Solo and Mute,
 //! floating over the Edit window. The fader button beside a track's Output selector opens it.
 
-use super::routing::route_name;
+use super::routing::output_name;
 use super::sends::{Readout, editable_readout, parse_db, parse_pan};
 use super::{SoundApp, Tokens, TrackId, TrackKind, db_text, fader, json, pan_knob, pan_text, pos2, surround_panned, text_toggle, vec2};
 
@@ -16,7 +16,7 @@ pub(crate) fn output_window(app: &mut SoundApp, ctx: &egui::Context) {
     // last frame, because egui closes them before this runs.
     let busy_id = egui::Id::unique("output_window_escape");
     let busy = ctx.data(|d| d.get_temp(busy_id)).unwrap_or(false) || app.dialogs.open.is_some() || app.ui.show_search;
-    if !busy && ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+    if !busy && crate::framework::escape_pressed(ctx) {
         app.ui.output_window = None;
     }
     output_window_contents(app, ctx);
@@ -46,7 +46,7 @@ fn output_window_contents(app: &mut SoundApp, ctx: &egui::Context) {
         .show(ctx, |ui| {
             ui.set_width(150.0);
             ui.vertical_centered(|ui| {
-                ui.label(egui::RichText::new(route_name(app, &track.mixer.output)).color(t.counter_text));
+                ui.label(egui::RichText::new(output_name(app, &track.mixer.output)).color(t.counter_text));
                 if track.kind != TrackKind::Master {
                     ui.horizontal(|ui| {
                         ui.spacing_mut().item_spacing.x = 4.0;
@@ -147,7 +147,7 @@ mod tests {
         app.run("view.edit_io", json!({})).unwrap();
         app.run("track.height", json!({"tracks": ["Kick"], "height": "medium"})).unwrap();
         let kick = app.engine.session().track_by_name("Kick").unwrap().id;
-        let mut h = Harness::builder().with_size(egui::vec2(1600.0, 1000.0)).build_ui_state(
+        let mut h = Harness::builder().with_context_setup(crate::framework::install_headless).with_size(egui::vec2(1600.0, 1000.0)).build_ui_state(
             |ui, app: &mut SoundApp| {
                 app.logic(ui.ctx());
                 app.ui(ui);

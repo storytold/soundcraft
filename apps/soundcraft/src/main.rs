@@ -71,8 +71,6 @@ impl eframe::App for App {
         }
         if self.0.quit_requested {
             ctx.send_viewport_cmd(egui::ViewportCommand::Close);
-        } else if ctx.input(|i| i.viewport().close_requested()) && dialogs::ask_to_save(&mut self.0, "app.quit", &serde_json::json!({})) {
-            ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
         }
         soundcraft_ui_egui::fit_window_to_screen(ctx);
         let (inner, maximized) = ctx.input(|i| (i.viewport().inner_rect, i.viewport().maximized.unwrap_or(false)));
@@ -96,13 +94,17 @@ impl eframe::App for App {
             soundcraft_ui_egui::os_title(app_name, Some(document.0))
         };
         set_title(ctx, title);
+        // Last: the runtime's close path, which asks about unsaved changes before the window closes.
+        self.0.close_path(ctx);
     }
     /// Forward raw input to the shared app hook so scripted gestures and host-key protection behave like the desktop
     /// shell.
     fn raw_input_hook(&mut self, ctx: &egui::Context, raw: &mut egui::RawInput) {
         self.0.raw_input_hook(ctx, raw);
+        self.0.before_input(ctx);
     }
-    fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+    fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
+        soundcraft_ui_egui::framework::before_ui(ui.ctx(), &*frame);
         self.0.guarded(|app| app.ui(ui));
     }
     fn on_exit(&mut self) {
@@ -213,14 +215,23 @@ fn initialize_nightly_process_identity() -> Result<(), process_identity::Identit
     )
 }
 
-/// Report a refused launch profile on standard error, and in a dialog on a desktop session: a
-/// Nightly build started from a file manager has no console to read.
+/// Whether a refusal may also open a native message box. Standard error always carries the reason;
+/// this only adds a box where one renders without the app's event loop. Never on macOS: rfd's alert
+/// there needs the AppKit run loop this start has not reached, so a refused nightly launch hung in
+/// an invisible modal instead of exiting (GridCraft Mac smoke, 2026-11-26).
+fn refusal_dialog(flavor: build_flavor::BuildFlavor, desktop_session: bool, macos: bool) -> bool {
+    build_flavor::needs_native_error(flavor, desktop_session) && !macos
+}
+
+/// Report a refused launch profile on standard error, and in a dialog on a Windows or X11/Wayland
+/// desktop session: a Nightly build started from a file manager has no console to read. macOS keeps
+/// the console line, because a modal before its event loop never appears.
 fn report_launch_profile_error(error: &str) {
     eprintln!("SoundCraft launch profile: {error}");
     let desktop_session = cfg!(windows)
         || cfg!(target_os = "macos")
         || (cfg!(target_os = "linux") && ["DISPLAY", "WAYLAND_DISPLAY"].into_iter().any(|key| std::env::var_os(key).is_some_and(|v| !v.is_empty())));
-    if build_flavor::needs_native_error(build_flavor::COMPILED, desktop_session) {
+    if refusal_dialog(build_flavor::COMPILED, desktop_session, cfg!(target_os = "macos")) {
         if let Err(error) = initialize_nightly_process_identity() {
             eprintln!("SoundCraft launch profile: {error}");
             return;
@@ -331,11 +342,15 @@ fn main() -> eframe::Result {
     // Before eframe creates the wgpu instance: default Windows to DirectX 12 with FXC (see graphics.rs).
     #[cfg(target_os = "windows")]
     graphics::configure(&mut options, eframe::wgpu::Backends::from_env(), eframe::wgpu::Dx12Compiler::from_env());
-    #[cfg(all(unix, not(target_os = "macos")))]
     // winit has no file drag-and-drop on Wayland (only on X11), so dropping files from the file
     // manager showed a "no" cursor. Run through XWayland when it's there; SOUNDCRAFT_WAYLAND=1
     // keeps the native Wayland backend.
-    if env.use_xwayland(std::env::var_os("DISPLAY").as_ref()) {
+    #[cfg(all(unix, not(target_os = "macos")))]
+    let forced_x11 = env.use_xwayland(std::env::var_os("DISPLAY").as_ref());
+    #[cfg(not(all(unix, not(target_os = "macos"))))]
+    let forced_x11 = false;
+    #[cfg(all(unix, not(target_os = "macos")))]
+    if forced_x11 {
         options.event_loop_builder = Some(Box::new(|b| {
             use winit::platform::x11::EventLoopBuilderExtX11;
             b.with_x11();
@@ -369,6 +384,7 @@ fn main() -> eframe::Result {
         os_window::name_for(os_window::identity()),
         options,
         Box::new(move |cc| {
+            soundcraft_ui_egui::framework::install(&cc.egui_ctx, forced_x11)?;
             let player =
                 if no_audio { None } else { Some(soundcraft_playback::Player::with_config(Arc::new(engine.session().clone()), &prefs.audio)) };
             let mut app = SoundApp::new(engine, player, services());
@@ -447,5 +463,19 @@ mod tests {
         assert_eq!(titles("Song — SoundCraft"), 1);
         assert_eq!(titles("Song — SoundCraft"), 0);
         assert_eq!(titles("Song * — SoundCraft"), 1);
+    }
+}
+
+#[cfg(test)]
+mod refusal_dialog_tests {
+    use super::refusal_dialog;
+    use crate::build_flavor::BuildFlavor;
+
+    #[test]
+    fn a_refusal_never_blocks_on_a_modal_before_the_event_loop_on_macos() {
+        assert!(refusal_dialog(BuildFlavor::NightlyV1, true, false), "a desktop refusal still shows the box where one renders");
+        assert!(!refusal_dialog(BuildFlavor::NightlyV1, true, true), "macOS has no run loop yet: the modal would hang");
+        assert!(!refusal_dialog(BuildFlavor::NightlyV1, false, false), "a headless session has no box");
+        assert!(!refusal_dialog(BuildFlavor::Stable, true, false), "only a nightly refusal explains itself in a box");
     }
 }

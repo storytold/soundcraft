@@ -1,6 +1,6 @@
 # Where SoundCraft falls short of Pro Tools
 
-> **Last reviewed:** 2026-11-18 · **Last updated:** 2026-11-25 · **Change:** minor (G-01, opt-in `asio` build: ASIO opens every output of a device; previously minor: G-01: Setup › I/O routes named output paths to hardware channels, verified on Core Audio with an RME UFX; Core Audio opens every output of an interface; input selectors follow the device's recording width; previously minor: G-06: recording to disk is done (#84, long takes #888); streaming sources remain; previously minor: G-02 shrunk: MIDI input devices work; G-03: strict external-WAV AAF import; previously minor: G-05: plugin editors on Linux/X11; previously trivial: G-09: the pt-BR catalog now covers helper-passed tooltips, the status bar, the remove-session prompt and engine error text; G-08: Frequency Shifter, 28 processors; G-04: volume automation read at every sample, #1354; G-01: `setup.playback_engine` applies the device buffer in the desktop app; G-04: Clip Looping crossfade and loop count) · **Target:** Avid Pro Tools Ultimate 2026.4.1
+> **Last reviewed:** 2026-11-18 · **Last updated:** 2026-11-27 · **Change:** minor (G-01, opt-in `asio` build: ASIO opens every output of a device; previously minor: G-01: sends go to output paths as well as busses; I/O Setup's Default restores the default output paths; previously minor: G-01: Setup › I/O routes named output paths to hardware channels, verified on Core Audio with an RME UFX; Core Audio opens every output of an interface; output selectors list every interface output pair; input selectors follow the device's recording width; previously trivial: G-04: Number of Loops accepts up to 1,000; crossfade remains open; previously minor: G-06: recording to disk is done (#84, long takes #888); streaming sources remain; previously minor: G-02 shrunk: MIDI input devices work; G-03: strict external-WAV AAF import; previously minor: G-05: plugin editors on Linux/X11; previously trivial: G-09: the pt-BR catalog now covers helper-passed tooltips, the status bar, the remove-session prompt and engine error text; G-08: Frequency Shifter, 28 processors; G-04: volume automation read at every sample, #1354; G-01: `setup.playback_engine` applies the device buffer in the desktop app; G-04: Clip Looping crossfade and loop count) · **Target:** Avid Pro Tools Ultimate 2026.4.1
 
 Every known shortfall, one entry each, ranked by how much it stops a Pro Tools user from doing
 real work in SoundCraft. This is the work list: pick from the top. Rows marked **alpha blocker**
@@ -54,7 +54,8 @@ When you close a gap, delete its entry (or shrink it) in the same PR, and bump t
   session values.
 - **Done (2026-11-25):** Setup › I/O maps named output paths to physical channels, and track
   output selectors assign them; I/O Setup edits reroute the open stream. Core Audio opens all of
-  an interface's outputs, so paths reach outputs past the main mix. On an RME Fireface UFX with a
+  an interface's outputs, so paths reach outputs past the main mix; an interface that offers only
+  its full width opens at the rate it runs at, and the mix resamples. On an RME Fireface UFX with a
   cable from outputs 3–4 to inputs 5–6, a track on a stereo path at channel 3 is heard on outputs
   3–4; moving the path to channel 7 while it plays silences them, and moving it back restores
   them. Paths on ADAT outputs 17–18 and 21–22 (past the 16-channel main) play at the track's level.
@@ -63,7 +64,16 @@ When you close a gap, delete its entry (or shrink it) in the same PR, and bump t
   (USB outputs 1–10 of a TASCAM Model 12 each returned on their own USB input). Other hosts open
   only the main mix's width, so a path there must fit within it.
 - **Done (2026-11-25):** Track input selectors use the selected device's usable recording width.
-  Track input and output lists scroll in the existing Edit and Mix selectors.
+  Track output selectors list every further pair of the device's outputs by its default path name
+  (Out 3-4 to Out 29-30 on a 30-output RME UFX); choosing one, or naming it in `track.output`,
+  makes that output path, as Pro Tools' default I/O settings hold one path per pair. Track input
+  and output lists scroll in the existing Edit and Mix selectors.
+- **Done (2026-11-27):** Sends go to output paths as well as busses, as in Pro Tools: the send
+  selector lists the output paths as the track output selector does (an interface pair makes its
+  path), then the busses, and `mix.send` takes `output`. A send to a path plays on that path's
+  hardware channels in the path's width (a mono path's send has no panner). I/O Setup's Default
+  deletes unused output paths, restores default names and the main path on channels 1-2, and makes
+  a path for every pair of the device's outputs.
 - **Missing:** full hardware input mapping in I/O Setup, outputs past the main mix's width outside
   Core Audio and ASIO, one duplex stream on one clock (input and output are still separate cpal
   streams), latency reporting and record-offset compensation, ASIO in official builds (owner
@@ -135,8 +145,7 @@ including surround channels, instead of repeating channel zero. Clip edits, sour
 Undo/Redo and save/reopen are covered by regression tests; missing or empty media fails atomically.
 
 **Open (2026-10-25):** the Clip Looping dialog (#1030) has no option to crossfade the loops into
-each other, and its Number of Loops field stops at 512, while Loop Length and Loop Until End of
-Session or Next Clip make up to 1000 loops.
+each other.
 
 Open on 2026-10-10 (several have PRs open):
 editing #3, #5, #140, #144; clip/session #86 (PR #123), #88 (PR #130), #91 (PR #124), #92 (PR #132);
@@ -266,8 +275,10 @@ missing. Out of scope unless the owner decides otherwise.
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-11-27 | minor | G-01: sends go to output paths (Out N-M and named paths) as well as busses; I/O Setup's Default restores the default output paths |
 | 2026-11-25 | minor | G-01, opt-in `asio` build: ASIO opens every output of a device, so named output paths reach channels past the main mix; estimates unchanged |
-| 2026-11-25 | minor | G-01: Setup › I/O routes named output paths to hardware channels (verified on Core Audio with an RME UFX); Core Audio opens every output of an interface; input selectors follow the device's recording width |
+| 2026-11-25 | minor | G-01: Setup › I/O routes named output paths to hardware channels (verified on Core Audio with an RME UFX); Core Audio opens every output of an interface; output selectors list every interface output pair; input selectors follow the device's recording width |
+| 2026-11-23 | trivial | G-04: Clip Looping Number of Loops accepts up to 1,000; crossfade remains open; estimates unchanged |
 | 2026-11-14 | minor | G-03: strict external-WAV AAF import with bounded property caching; AAF/OMF export, OMF import and `.ptx` remain; estimates unchanged |
 | 2026-11-13 | trivial | G-09: the pt-BR catalog now covers tooltips localized inside buttons and toggles, the Edit-window status bar, the remove-session question, the send help text and engine errors shown in the status line; estimates unchanged |
 | 2026-11-09 | trivial | G-08: 28 processors + 3 instruments with the Frequency Shifter |

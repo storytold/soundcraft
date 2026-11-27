@@ -104,7 +104,8 @@ fn output_config_can_use_the_full_device_width() {
 fn core_audio_opens_every_interface_output_as_asio_does() {
     // An interface that offers a stereo configuration besides its full width: named paths on
     // outputs 3 and up need the full width. (A device offering only its full width, as an RME
-    // Fireface UFX does under Core Audio, fell back to its default configuration and got all 30.)
+    // Fireface UFX does under Core Audio, opens it at the rate it runs at; see
+    // `a_widened_output_opens_at_the_rate_the_interface_runs_at`.)
     use crate::stream::output_width;
     let interface = [range(2, 44_100, 192_000, cpal::SampleFormat::F32), range(30, 44_100, 192_000, cpal::SampleFormat::F32)];
     let opened = |host: &str| pick_output_config(&interface, &[48_000], output_width(host, 2)).map(|(c, _, _)| c.channels);
@@ -117,6 +118,43 @@ fn core_audio_opens_every_interface_output_as_asio_does() {
     for host in ["WASAPI", "ALSA", "JACK", "PulseAudio"] {
         assert_eq!(output_width(host, 2), 2, "{host}");
     }
+}
+
+/// Opening every output of an interface must not switch its hardware rate: an interface that
+/// lists only its full width (an RME Fireface UFX lists one 30-channel configuration per rate
+/// range under Core Audio) opens at the rate it runs at, and the mix resamples, as it did before
+/// the output was widened. Switching the device to the chosen rate made the late rate report end
+/// the stream (smoke check 3).
+#[test]
+fn a_widened_output_opens_at_the_rate_the_interface_runs_at() {
+    use crate::stream::pick_device_output_config;
+    let ufx = [
+        range(30, 44_100, 48_000, cpal::SampleFormat::F32),
+        range(30, 88_200, 96_000, cpal::SampleFormat::F32),
+        range(30, 176_400, 192_000, cpal::SampleFormat::F32),
+    ];
+    let open = |host: &str, rates: &[u32], current: Option<u32>| {
+        pick_device_output_config(host, &ufx, rates, 2, || current).map(|(c, _, _)| (c.channels, c.sample_rate))
+    };
+    // Chosen 96 kHz (then the session's 44.1 kHz) while the interface runs at 48 kHz.
+    assert_eq!(open("CoreAudio", &[96_000, 44_100], Some(48_000)), Some((30, 48_000)));
+    assert_eq!(open("CoreAudio", &[44_100], Some(96_000)), Some((30, 96_000)));
+    // The interface's rate cannot be read: no picked configuration, so the caller opens the
+    // device's default configuration (at the rate it runs at) as before.
+    assert_eq!(open("CoreAudio", &[96_000], None), None);
+    // Hosts that open only the main mix's width find no stereo configuration here and fall back
+    // to the default configuration, as before.
+    assert_eq!(open("WASAPI", &[96_000], Some(48_000)), None);
+    // A device with a configuration within the main mix's width keeps the chosen rate, as before
+    // the output was widened (built-in speakers).
+    let builtin = [range(2, 44_100, 96_000, cpal::SampleFormat::F32)];
+    let picked = pick_device_output_config("CoreAudio", &builtin, &[96_000], 2, || Some(48_000));
+    assert_eq!(picked.map(|(c, _, _)| (c.channels, c.sample_rate)), Some((2, 96_000)));
+    // An interface listing a stereo configuration besides its full width opens all of it at the
+    // rate the stereo configuration would have used.
+    let both = [range(2, 44_100, 192_000, cpal::SampleFormat::F32), range(30, 44_100, 192_000, cpal::SampleFormat::F32)];
+    let picked = pick_device_output_config("CoreAudio", &both, &[96_000], 2, || Some(48_000));
+    assert_eq!(picked.map(|(c, _, _)| (c.channels, c.sample_rate)), Some((30, 96_000)));
 }
 
 #[test]

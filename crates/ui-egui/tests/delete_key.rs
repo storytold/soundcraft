@@ -65,14 +65,15 @@ fn the_midi_editor_keeps_the_key_for_its_selected_notes() {
     let end: i64 = 48_000 * 600;
     app.run("edit.select", json!({"tracks": ["Keys"], "start": 0, "end": end})).unwrap();
     let clips_before = clips(&app, "Keys");
-    let mut h = Harness::builder().with_size(vec2(1600.0, 1000.0)).build_ui_state(
-        |ui, app: &mut SoundApp| {
-            let ctx = ui.ctx().clone();
-            app.logic(&ctx);
-            app.ui(ui);
-        },
-        app,
-    );
+    let mut h =
+        Harness::builder().with_context_setup(soundcraft_ui_egui::framework::install_headless).with_size(vec2(1600.0, 1000.0)).build_ui_state(
+            |ui, app: &mut SoundApp| {
+                let ctx = ui.ctx().clone();
+                app.logic(&ctx);
+                app.ui(ui);
+            },
+            app,
+        );
     for _ in 0..3 {
         h.step();
     }

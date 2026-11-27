@@ -3,9 +3,10 @@ use super::{
     CommandSpec, always, bad, bool_or, f32_or, has_range, has_selection, has_tracks, i64_or, position_param, range_param, str_param, tracks_required,
 };
 
+use super::track::output_path_route;
 use crate::{Engine, EngineError, Result, cmd};
 use serde_json::{Value, json};
-use soundcraft_model::{AutoParam, AutomationMode, INSERT_SLOTS, Insert, SEND_SLOTS, SendSlot, Session, TrackId};
+use soundcraft_model::{AutoParam, AutomationMode, INSERT_SLOTS, Insert, Route, SEND_SLOTS, SendSlot, Session, TrackId};
 
 /// Commands for mixer controls, with live input toggles kept outside document history.
 pub fn specs() -> Vec<CommandSpec> {
@@ -114,7 +115,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Assign Send",
             [],
             None,
-            "{track?, slot?: 0..9|a..j, bus: name, level_db?: -144..12, default -144 (silent; kept when re-targeting), pre_fader?: false}",
+            "{track?, slot?: 0..9|a..j, bus: name | output: main|output path|Out N-M (makes that output pair's path), level_db?: -144..12, default -144 (silent; kept when re-targeting), pre_fader?: false}",
             has_selection,
             send
         ),
@@ -131,6 +132,10 @@ pub fn specs() -> Vec<CommandSpec> {
         cmd!("mix.new_bus", "New Bus", [], None, "{name, format?: stereo}", always, |e, p| {
             let name = str_param(p, "name").filter(|n| !n.trim().is_empty()).ok_or_else(|| bad("mix.new_bus", "`name` required"))?.to_string();
             let fmt = str_param(p, "format").and_then(soundcraft_model::ChannelFormat::from_id).unwrap_or(soundcraft_model::ChannelFormat::Stereo);
+            // A route names a bus or an output path (`track.output`), so one name cannot be both.
+            if e.session().outputs.iter().any(|path| path.name.eq_ignore_ascii_case(name.trim())) {
+                return Err(bad("mix.new_bus", format!("an output path named `{name}` exists")));
+            }
             let id = e.session_mut().add_bus(&name, fmt);
             Ok(json!({"bus": id}))
         }),
@@ -471,25 +476,38 @@ fn insert_move(e: &mut Engine, p: &Value) -> Result<Value> {
     Ok(json!({}))
 }
 
+/// Assign a send to a bus (`bus`) or, as Pro Tools sends can, to an output path (`output`: the main
+/// path, a named path or an interface pair by its default name, see [`output_path_route`]).
 fn send(e: &mut Engine, p: &Value) -> Result<Value> {
-    let bus = str_param(p, "bus").ok_or_else(|| bad("mix.send", "`bus` required"))?.to_string();
+    let bus = str_param(p, "bus").map(str::to_string);
+    let output = str_param(p, "output").map(str::to_string);
     let t = tracks_required(e, "mix.send", p)?.first().copied().ok_or_else(|| bad("mix.send", "no track"))?;
     let explicit = optional_slot(p, "mix.send", SEND_SLOTS)?;
     let s = e.session_mut();
-    let bid = s.bus_by_name(&bus).map(|b| b.id).ok_or_else(|| bad("mix.send", format!("no bus named \"{bus}\"")))?;
+    let slot = {
+        let tr = s.track(t).ok_or_else(|| bad("mix.send", "no track"))?;
+        explicit.or_else(|| tr.mixer.sends.iter().position(Option::is_none)).ok_or_else(|| bad("mix.send", "all send slots are in use"))?
+    };
+    let target = match (&bus, &output) {
+        (Some(bus), _) => Route::Bus(s.bus_by_name(bus).map(|b| b.id).ok_or_else(|| bad("mix.send", format!("no bus named \"{bus}\"")))?),
+        (None, Some(output)) => output_path_route(s, output).ok_or_else(|| bad("mix.send", format!("no output path named \"{output}\"")))?,
+        (None, None) => return Err(bad("mix.send", "`bus` or `output` required")),
+    };
     let tr = s.track_mut(t).ok_or_else(|| bad("mix.send", "no track"))?;
-    let slot = explicit.or_else(|| tr.mixer.sends.iter().position(Option::is_none)).ok_or_else(|| bad("mix.send", "all send slots are in use"))?;
     // Re-targeting an existing send keeps its level, pan, mute and pre/post setting.
     let mut sl = match tr.mixer.sends.get(slot).cloned().flatten() {
-        Some(old) => SendSlot { target: soundcraft_model::Route::Bus(bid), ..old },
-        None => SendSlot::new(soundcraft_model::Route::Bus(bid)),
+        Some(old) => SendSlot { target: target.clone(), ..old },
+        None => SendSlot::new(target.clone()),
     };
     sl.level_db = f32_or(p, "level_db", sl.level_db).clamp(-144.0, 12.0);
     sl.pre_fader = bool_or(p, "pre_fader", sl.pre_fader);
     if let Some(x) = tr.mixer.sends.get_mut(slot) {
         *x = Some(sl);
     }
-    Ok(json!({"slot": slot, "bus": bid}))
+    Ok(match target {
+        Route::Bus(bid) => json!({"slot": slot, "bus": bid}),
+        other => json!({"slot": slot, "output": other}),
+    })
 }
 
 fn send_level(e: &mut Engine, p: &Value) -> Result<Value> {
