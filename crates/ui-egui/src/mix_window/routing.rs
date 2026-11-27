@@ -243,7 +243,8 @@ fn numbered_input(route: &str) -> Option<(usize, usize)> {
 
 /// The tooltip of a track's input or output selector at `rect`: [`route_details`] while the
 /// pointer is over it, else `fallback` ("Input" or "Output", translated). The input's names are
-/// read once per hover, since with no input open they are asked of the device.
+/// read once per hover, since with no input open they are asked of the device (on Core Audio on
+/// macOS only; other audio systems give no names, and the device is not asked).
 pub(crate) fn selector_tooltip(app: &SoundApp, ui: &Ui, rect: egui::Rect, track: &Track, input: bool, fallback: &str) -> String {
     let key = egui::Id::unique(("route-selector-names", track.id.0, input));
     if !ui.rect_contains_pointer(rect) {

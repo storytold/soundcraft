@@ -214,16 +214,23 @@ impl Player {
     }
 
     /// The names the input device gives its channels (see [`Player::device_channel_names`]),
-    /// without opening a recording stream: for the routing menus.
+    /// without opening a recording stream: for the routing menus and the selectors' tooltips.
+    /// Only on Core Audio on macOS is the device read (see [`devices::names_where_given`]);
+    /// elsewhere this returns no names without listing devices.
     pub fn input_channel_names(&self, cfg: &AudioConfig) -> Vec<String> {
         #[cfg(not(target_os = "freebsd"))]
-        return record::input_device(cfg)
-            .ok()
-            .map(|device| {
-                let channels = record::input_config(&device, cfg).map_or(0, |config| usize::from(config.channels()));
-                devices::channel_names(&device, true, channels)
-            })
-            .unwrap_or_default();
+        return devices::names_where_given(
+            || devices::host(cfg).id().name(),
+            || {
+                record::input_device(cfg)
+                    .ok()
+                    .map(|device| {
+                        let channels = record::input_config(&device, cfg).map_or(0, |config| usize::from(config.channels()));
+                        devices::channel_names(&device, true, channels)
+                    })
+                    .unwrap_or_default()
+            },
+        );
         #[cfg(target_os = "freebsd")]
         {
             let _ = cfg;

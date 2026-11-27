@@ -85,6 +85,16 @@ pub(crate) fn channel_names(device: &cpal::Device, input: bool, channels: usize)
     Vec::new()
 }
 
+/// `read()` (the names a device of audio system `system()` gives its channels) where that system
+/// gives any, else none without calling it. `system` is not called off macOS either. Only Core Audio on macOS names channels (see
+/// [`channel_names`]); reading them for an input that is not open lists the input devices and
+/// probes the device's configurations on the UI thread, which on WASAPI, ALSA and the others
+/// would return no names. Output there is unchanged: no names, and the selectors fall back to
+/// "Input" and "Output".
+pub(crate) fn names_where_given(system: impl FnOnce() -> &'static str, read: impl FnOnce() -> Vec<String>) -> Vec<String> {
+    if cfg!(target_os = "macos") && system() == "CoreAudio" { read() } else { Vec::new() }
+}
+
 /// Describe one cpal device as [`DeviceInfo`], or return `None` when its name or supported configurations cannot be
 /// read. Only formats the playback path can convert are considered.
 fn describe(d: &cpal::Device, default_name: Option<&str>, output: bool) -> Option<DeviceInfo> {
@@ -203,6 +213,33 @@ pub(crate) fn buffer_size(want: Option<u32>, supported: &cpal::SupportedBufferSi
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Channel names exist only on Core Audio on macOS, so elsewhere (WASAPI, ALSA, ...) the
+    /// device is not listed or probed to read none, on every hover of an input selector.
+    #[test]
+    fn channel_names_are_read_only_where_the_system_gives_them() {
+        for system in ["WASAPI", "ASIO", "ALSA", "JACK", ""] {
+            let read = std::cell::Cell::new(false);
+            let names = names_where_given(
+                || system,
+                || {
+                    read.set(true);
+                    vec!["Analog 1".to_owned()]
+                },
+            );
+            assert!(names.is_empty() && !read.get(), "{system}: the device was read");
+        }
+        let read = std::cell::Cell::new(false);
+        let names = names_where_given(
+            || "CoreAudio",
+            || {
+                read.set(true);
+                vec!["Analog 1".to_owned()]
+            },
+        );
+        assert_eq!(read.get(), cfg!(target_os = "macos"), "Core Audio on macOS reads them");
+        assert_eq!(names.len(), usize::from(cfg!(target_os = "macos")));
+    }
 
     #[test]
     fn config_round_trips_and_tolerates_missing_fields() {
