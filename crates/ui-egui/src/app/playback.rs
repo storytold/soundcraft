@@ -153,18 +153,19 @@ impl SoundApp {
         }
         let e = self.engine.session().edit.clone();
         let sel = e.selection;
+        let (pre, post) = if e.pre_post_roll { (e.pre_roll, e.post_roll) } else { (0, 0) };
+        let from = (sel.start - pre).max(0);
         // Loop recording needs a selection the transport will loop: one too short for that is
-        // recorded as a punch, like any other selection.
+        // recorded as a punch, like any other selection. Pre-roll plays once, before the first
+        // pass, and the passes start at the selection.
         if e.loop_record && !sel.is_empty() && soundcraft_playback::loops(sel) {
-            self.record_start = sel.start;
-            self.punch = None;
-            self.start_play(sel.start, None, Some(sel));
+            self.record_start = from;
+            self.punch = Some(sel);
+            self.start_play(from, None, Some(sel));
             self.plan_recording(takes, Some(sel.len()));
         } else {
             // Record into the selection when there is one (punch), with pre/post-roll if enabled;
             // the take is trimmed back to the punch range afterwards.
-            let (pre, post) = if e.pre_post_roll { (e.pre_roll, e.post_roll) } else { (0, 0) };
-            let from = (sel.start - pre).max(0);
             self.record_start = from;
             self.punch = (!sel.is_empty()).then_some(sel);
             let end = (!sel.is_empty()).then_some(sel.end + post);
@@ -263,6 +264,8 @@ impl SoundApp {
         });
         self.punch = None;
         self.autosaved_rev = 0;
+        // A loop take stopped before the middle of its first pass is discarded, as in Pro Tools.
+        let loop_audio = plan.pass.is_some() && !takes.is_empty();
         let ids = soundcraft_engine::io::place_recording(&mut self.engine, &plan, takes);
         // The audio engine may have confirmed the pass while the audio takes were finished: the
         // stop position and what the user is told go by one answer.
@@ -270,7 +273,10 @@ impl SoundApp {
         // MIDI goes where the audio of the pass goes: the loop, the punch range, or all of it. A
         // pass punched in while a loop was playing went on round that loop.
         let midi_loop = match plan.pass {
-            Some(len) => Some(Range::new(plan.start, plan.start.saturating_add(len))),
+            Some(len) => {
+                let start = plan.punch.map_or(plan.start, |range| range.start);
+                Some(Range::new(start, start.saturating_add(len)))
+            }
             None => self.play_loop,
         };
         // A loop pass stopped somewhere inside the loop: where, the audio engine said with its
@@ -281,7 +287,11 @@ impl SoundApp {
             super::midi::midi_take_span(midi_loop, plan.punch, self.record_start, stopped_at, self.midi_pass_stopped_at(midi_pass));
         let (midi_clips, midi_problem) = self.finish_midi_take(midi_range, !ids.is_empty(), midi_confirmed, midi_kind);
         self.ui.status = if plan.pass.is_some() && midi_clips == 0 {
-            crate::localized_format!("Loop-recorded {} take(s)", ids.len() / tracks)
+            if ids.is_empty() && loop_audio {
+                crate::localization::text("Loop take discarded: recording stopped before the middle of the first pass").into()
+            } else {
+                crate::localized_format!("Loop-recorded {} take(s)", ids.len() / tracks)
+            }
         } else if ids.is_empty() && midi_clips == 0 {
             crate::localization::text("Nothing was recorded: the record-enabled tracks received no input").to_string()
         } else {
