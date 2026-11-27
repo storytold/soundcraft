@@ -760,10 +760,12 @@ pub fn audio_device_command(app: &mut SoundApp, p: &serde_json::Value) -> Result
 }
 
 /// The latency the backend reports for the open output and input, each as (frames at that
-/// device's rate, milliseconds). `None` where nothing is open or nothing was reported yet.
+/// device's rate, milliseconds). `None` where nothing is open, nothing was reported yet, the
+/// report was zero (the backend did not know) or the stream was lost.
 fn reported_latency(app: &SoundApp) -> (Option<(u64, f64)>, Option<(u64, f64)>) {
-    let measure =
-        |latency: Option<std::time::Duration>, rate: u32| latency.map(|l| (soundcraft_playback::latency::frames(l, rate), l.as_secs_f64() * 1000.0));
+    let measure = |latency: Option<std::time::Duration>, rate: u32| {
+        soundcraft_playback::latency::shown(latency).map(|l| (soundcraft_playback::latency::frames(l, rate), l.as_secs_f64() * 1000.0))
+    };
     let output = app.player.as_ref().filter(|p| !p.silent).and_then(|p| measure(p.output_latency(), p.device_rate));
     let input = app.recorder.as_ref().and_then(|r| measure(r.input_latency(), r.sample_rate));
     (output, input)

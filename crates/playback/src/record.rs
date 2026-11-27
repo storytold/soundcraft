@@ -201,6 +201,7 @@ where
             // `DeviceChanged` (a rerouted default device) and an xrun are not faults.
             if crate::devices::stream_lost(&e) {
                 let _ = errors.fault.compare_exchange(0, GONE, Ordering::Relaxed, Ordering::Relaxed);
+                errors.input_latency.lose();
             }
             log::warn!("input stream error: {e}");
         },
