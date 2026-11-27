@@ -61,7 +61,7 @@ Legend: ✅ works · 🟡 partial · ❌ missing.
 | Feature | Pro Tools | SoundCraft | Evidence |
 |---|---|---|---|
 | Parallel mixing across cores | ✅ | ✅ | `soundcraft-mix` renders independent strips in parallel (rayon) |
-| Plugin delay compensation | ✅ | ✅ | Bounces of a bus that an aux returns onto are compensated like the main mix (#246). A track that monitors its input (TrackInput, or record-enabled while stopped or recording) takes no compensation delay, as Pro Tools suspends it automatically (Reference Guide p.1504): an RME UFX at 256 frames, 950 → 879 samples with a 71-sample plugin on another track. |
+| Plugin delay compensation | ✅ | ✅ | Bounces of a bus that an aux returns onto are compensated like the main mix (#246). A track that monitors its input (input monitoring on, or record-enabled while stopped or recording) takes no compensation delay, as Pro Tools suspends it automatically (Reference Guide p.1504): an RME UFX at 256 frames, 950 → 879 samples with a 71-sample plugin on another track. |
 | Disk streaming of long sources | ✅ | ❌ | Whole files decoded into the `SourcePool` |
 | Track count (Ultimate: 2,048 voices) | ✅ | unmeasured | No benchmark exists; add `cargo xtask bench` |
 | Real-time audio thread discipline | ✅ | ✅ | No blocking/allocation in steady state, audio-thread-aware logger |

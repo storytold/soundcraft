@@ -50,7 +50,7 @@ fn delay_line_change_keeps_buffers_and_history() {
 
 #[test]
 fn a_delay_line_back_from_zero_does_not_replay_old_audio() {
-    // Low Latency Monitoring sets a monitored track's compensation to zero and back (#1754).
+    // A track's compensation goes to zero while it monitors its input, and back after (#1754).
     let mut d = DelayLine::default();
     d.set(4, 1);
     let mut io = vec![vec![1.0f32; 8]];
