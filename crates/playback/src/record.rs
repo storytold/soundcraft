@@ -295,7 +295,7 @@ impl Recorder {
     }
 
     /// The input latency the audio backend reports: from when an input callback's first frame was
-    /// captured to the callback. `None` before the stream reported one.
+    /// captured to the callback. `None` before the stream reported one, or after it was lost.
     pub fn input_latency(&self) -> Option<std::time::Duration> {
         self.shared.input_latency.get()
     }
