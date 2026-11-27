@@ -1338,6 +1338,11 @@ fn menu_translate(source: &str) -> Option<&'static str> {
         "silent clock" => "relógio silencioso",
         "stop recording before changing the audio device" => "pare a gravação antes de alterar o dispositivo de áudio",
         "stopped asking for audio" => "parou de solicitar áudio",
+        "“{name}” stopped asking for audio." => "“{name}” parou de solicitar áudio.",
+        "“{name}” stopped asking for audio again after Reconnect." => "“{name}” parou de solicitar áudio de novo depois de Reconectar.",
+        "Unplug the interface and plug it back in (or switch it off and on), then use Reconnect audio device in Setup › Playback Engine." => {
+            "Desconecte a interface e conecte-a de novo (ou desligue-a e ligue-a), depois use Reconectar dispositivo de áudio em Configurar › Mecanismo de reprodução."
+        }
         "the audio engine hit an internal error (see the log)" => "o mecanismo de áudio encontrou um erro interno (veja o registro)",
         "Equal Power" => "Potência igual",
         "Exponential" => "Exponencial",
