@@ -243,8 +243,9 @@ impl Player {
         Self::open_configured(session, cfg, None)
     }
 
-    /// Reconnect the named physical output. If it is still unavailable, use the silent
-    /// clock. An explicit device change belongs to Setup > Playback Engine.
+    /// Reconnect the named physical output (one the user chose by name; with the system default
+    /// chosen, the app reopens with [`Player::with_config`] instead). If it is still unavailable,
+    /// use the silent clock. An explicit device change belongs to Setup > Playback Engine.
     pub fn reconnect_output(session: Arc<Session>, cfg: &AudioConfig, name: &str) -> Player {
         Self::open_configured(session, cfg, Some(name))
     }

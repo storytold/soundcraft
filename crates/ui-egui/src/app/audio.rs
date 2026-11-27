@@ -192,6 +192,16 @@ impl SoundApp {
         })
     }
 
+    /// The output Reconnect must open by its name, else it runs the silent clock: the lost output,
+    /// when the output chosen in Playback Engine is a device by name. With the system default
+    /// chosen (`output` is `None`), none: Reconnect opens the audio system's current default, as
+    /// Apply does, which may be another device by now. What "current default" is depends on the
+    /// audio system: Core Audio and WASAPI report the OS default output; cpal's ASIO host has no
+    /// default and takes the first driver it lists.
+    fn reconnect_requirement(&self) -> Option<String> {
+        self.ui.audio.output.as_ref().and(self.recovery_output())
+    }
+
     fn transport_active_for_reconnect(&self) -> bool {
         // The UI polls device health before it dispatches transport commands in this frame.
         self.is_playing()
@@ -220,9 +230,10 @@ impl SoundApp {
 
     /// Reopen the audio devices, keeping a take in progress.
     pub fn reconnect_audio(&mut self) {
-        let required = self.recovery_output();
+        let lost = self.recovery_output();
+        let required = self.reconnect_requirement();
         let config = self.recovery_config();
-        if required.is_some() && self.transport_active_for_reconnect() {
+        if lost.is_some() && self.transport_active_for_reconnect() {
             return;
         }
         if self.is_playing() || self.engine.transport.recording {
@@ -237,13 +248,19 @@ impl SoundApp {
         self.recorder = None;
         self.recorder_failed = false;
         let session = self.engine.session_arc();
-        let player = match required {
-            Some(name) => {
+        let player = match (required, lost) {
+            (Some(name), _) => {
                 let player = Player::reconnect_output(session, &config, &name);
                 self.reconnected_output_status(Some(name), config.system, player.silent);
                 player
             }
-            None => Player::with_config(session, &self.ui.audio),
+            // The system default chosen: whichever device is the default now, on the lost output's host.
+            (None, Some(_)) => {
+                let player = Player::with_config(session, &config);
+                self.reconnected_output_status(None, config.system, player.silent);
+                player
+            }
+            (None, None) => Player::with_config(session, &self.ui.audio),
         };
         self.attach_midi(&player);
         player.locate(at);
@@ -356,6 +373,26 @@ mod timing_warning_tests {
             app.engine.transport_requests.clear();
         }
         assert!(!app.transport_active_for_reconnect());
+    }
+
+    #[test]
+    fn reconnect_follows_the_current_system_default_and_requires_only_a_device_chosen_by_name() {
+        // (output chosen in Playback Engine, output that was lost, name Reconnect must open)
+        for (chosen, lost, required) in [
+            (None, "Speakers (Realtek(R) Audio)", None),
+            (None, "MacBook Pro Speakers", None),
+            (Some("Model 12"), "Model 12", Some("Model 12")),
+            (Some("Fireface UFX (23693403)"), "Fireface UFX (23693403)", Some("Fireface UFX (23693403)")),
+        ] {
+            let mut app = SoundApp::new(crate::Engine::default(), None, crate::Services::default());
+            app.ui.audio.output = chosen.map(str::to_owned);
+            app.report_output_trouble(OutputTrouble::Gone, lost.into(), 0);
+            assert_eq!(app.reconnect_requirement().as_deref(), required, "output chosen: {chosen:?}, lost: {lost}");
+            // Either way the lost output still holds Reconnect back while the transport runs.
+            assert_eq!(app.recovery_output().as_deref(), Some(lost));
+            app.engine.transport.playing = true;
+            assert!(!app.timing_reconnect_allowed());
+        }
     }
 
     #[test]
