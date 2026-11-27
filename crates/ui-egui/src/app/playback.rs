@@ -29,9 +29,10 @@ impl SoundApp {
         if self.engine.transport.playing { self.engine.transport.position } else { self.engine.session().edit.selection.start }
     }
 
-    /// When the output stream is lost (see [`Player::lost`]), say so and return true: Play and
-    /// Record are refused until the device is reopened, instead of starting a transport whose
-    /// playhead nothing advances.
+    /// When the output cannot play (see [`Player::lost`]: its stream was lost, it stopped asking for
+    /// audio, or the engine hit an internal error), say so and return true: Play and Record are
+    /// refused until the device is reopened, instead of starting a transport whose playhead nothing
+    /// advances.
     fn refuse_on_lost_output(&mut self, recording: bool) -> bool {
         let Some(p) = &self.player else { return false };
         if !p.lost() {

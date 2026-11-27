@@ -513,8 +513,8 @@ impl Player {
     }
 
     /// True while the output cannot play until the device is reopened: its stream was lost, the
-    /// device stopped asking for audio, or the engine hit an internal error. Unlike [`Player::trouble`], it keeps answering after the
-    /// problem has been reported.
+    /// device stopped asking for audio, or the engine hit an internal error. Unlike
+    /// [`Player::trouble`], it keeps answering after the problem has been reported.
     pub fn lost(&self) -> bool {
         self.fault.lost()
     }
