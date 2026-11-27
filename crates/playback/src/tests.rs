@@ -2111,9 +2111,9 @@ fn flush_instrument_rig() -> (AudioState, Sender<Cmd>, Arc<Calls>) {
 }
 
 /// A stopped transport still renders a MIDI-thru instrument track (#493), so a pending flush
-/// request there is answered by one `flush` and then served by `process` in the same callback:
-/// the edit is applied exactly once, the next callback has nothing to flush, and the two calls
-/// never overlap (the `Flusher` asserts it).
+/// request there is answered by one `flush` and then served by `process` (here in the same
+/// callback, at 256 frames): the edit is applied exactly once, the next callback has nothing to
+/// flush, and the two calls never overlap (the `Flusher` asserts it).
 #[test]
 fn midi_thru_instrument_while_stopped_is_flushed_once_and_never_overlaps_process() {
     let (mut st, _tx, calls) = flush_instrument_rig();
