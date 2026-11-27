@@ -805,7 +805,7 @@ fn different_clocks(system: &str) -> &'static str {
             "Input and output run on different clocks: long takes drift and monitoring may click. To fix it, choose one device for both input and output, or combine them as an Aggregate Device in Audio MIDI Setup."
         }
         "WASAPI" | "ASIO" => {
-            "Input and output run on different clocks: long takes drift and monitoring may click. To fix it, use one interface for both input and output, with its ASIO driver where available."
+            "Input and output run on different clocks: long takes drift and monitoring may click. To fix it, use one interface for both input and output."
         }
         _ => {
             "Input and output run on different clocks: long takes drift and monitoring may click. To fix it, choose one device for both input and output."
@@ -1135,7 +1135,8 @@ mod clock_warning_tests {
         assert!(mac.contains("one device") && mac.contains("Aggregate Device"), "{mac}");
         for windows in ["WASAPI", "ASIO"] {
             let text = different_clocks(windows);
-            assert!(text.contains("one interface") && text.contains("ASIO"), "{windows}: {text}");
+            // Release builds open no ASIO driver, so the advice does not send anyone to one.
+            assert!(text.contains("one interface") && !text.contains("ASIO"), "{windows}: {text}");
             assert!(!text.contains("Aggregate"), "no macOS advice on {windows}: {text}");
         }
         for other in ["ALSA", "JACK", "PulseAudio", "PipeWire", ""] {

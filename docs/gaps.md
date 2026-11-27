@@ -84,10 +84,11 @@ When you close a gap, delete its entry (or shrink it) in the same PR, and bump t
 - **Done (2026-11-25):** the Playback Engine warns when the input and output run on different
   clocks: two devices, or WASAPI's separate input and output endpoints. Long takes then drift and
   monitoring may click. The warning wraps at the window's width, says how to fix it on each audio
-  system, and also shows on the status line on record-enable and on Record, once per pair of
-  devices. `ui.audio_device` and `setup.playback_engine` report `same_clock` (null until an output
-  and an input device are known). As in Pro Tools, two devices on macOS are combined as an
-  Aggregate Device, which is one device; SoundCraft does not correct drift between clocks.
+  system (one device for both, or an Aggregate Device on macOS; one interface on Windows), and
+  also shows on the status line on record-enable and on Record, once per pair of devices.
+  `ui.audio_device` and `setup.playback_engine` report `same_clock` (null until an output and an
+  input device are known). As in Pro Tools, two devices on macOS are combined as an Aggregate
+  Device, which is one device; SoundCraft does not correct drift between clocks.
   Checked on macOS with an RME UFX: no warning with the UFX both ways, a warning with the UFX out
   and another input device.
 - **Missing:** routing to physical channels (I/O Setup), one duplex stream on one clock where the

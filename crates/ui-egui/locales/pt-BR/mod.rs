@@ -961,8 +961,8 @@ fn menu_translate(source: &str) -> Option<&'static str> {
         "Input and output run on different clocks: long takes drift and monitoring may click. To fix it, choose one device for both input and output, or combine them as an Aggregate Device in Audio MIDI Setup." => {
             "Entrada e saída usam relógios diferentes: tomadas longas se desalinham e o monitoramento pode estalar. Para corrigir, escolha um só dispositivo para entrada e saída ou combine-os em um Dispositivo Agregado na Configuração de Áudio e MIDI."
         }
-        "Input and output run on different clocks: long takes drift and monitoring may click. To fix it, use one interface for both input and output, with its ASIO driver where available." => {
-            "Entrada e saída usam relógios diferentes: tomadas longas se desalinham e o monitoramento pode estalar. Para corrigir, use uma só interface para entrada e saída, com o driver ASIO dela quando houver."
+        "Input and output run on different clocks: long takes drift and monitoring may click. To fix it, use one interface for both input and output." => {
+            "Entrada e saída usam relógios diferentes: tomadas longas se desalinham e o monitoramento pode estalar. Para corrigir, use uma só interface para entrada e saída."
         }
         "Input and output run on different clocks: long takes drift and monitoring may click. To fix it, choose one device for both input and output." => {
             "Entrada e saída usam relógios diferentes: tomadas longas se desalinham e o monitoramento pode estalar. Para corrigir, escolha um só dispositivo para entrada e saída."
