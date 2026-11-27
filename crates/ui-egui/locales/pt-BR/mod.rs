@@ -157,6 +157,9 @@ pub(super) fn translate(source: &str) -> Option<&'static str> {
         "Restore the default output paths of the current device" => "Restaurar os caminhos de saída padrão do dispositivo atual",
         "Restore the default input paths of the current device" => "Restaurar os caminhos de entrada padrão do dispositivo atual",
         "Default paths" => "Caminhos padrão",
+        "A pair becomes a path when a track output or send chooses it, or with Default" => {
+            "Um par vira caminho quando a saída ou um envio de uma faixa o escolhe, ou com Padrão"
+        }
         "Mono: In 1 to In {n}" => "Mono: Entrada 1 a Entrada {n}",
         "Output path name" => "Nome do caminho de saída",
         "First channel" => "Primeiro canal",

@@ -809,7 +809,14 @@ pub fn io_setup(app: &mut SoundApp, ctx: &egui::Context) {
     if !open {
         ctx.data_mut(|data| data.remove::<(AudioConfig, usize)>(width_key));
     }
+    if !open {
+        ctx.data_mut(|data| data.remove::<String>(io_error_id()));
+    }
     win(ctx, &mut open, "I/O Setup", vec2(510.0, 465.0), |ui| {
+        // Why the last edit here was refused, until one succeeds.
+        if let Some(error) = ui.data(|data| data.get_temp::<String>(io_error_id())) {
+            ui.colored_label(ui.visuals().error_fg_color, error);
+        }
         let tab_key = ui.scope_id().with("io_setup_tab");
         let mut tab = ui.data(|data| data.get_temp(tab_key)).unwrap_or(0);
         ui.horizontal(|ui| {
@@ -834,6 +841,7 @@ pub fn io_setup(app: &mut SoundApp, ctx: &egui::Context) {
                 main_output(app, ui);
                 let channels = app.player.as_ref().map_or(0, |player| usize::from(player.device_channels));
                 physical_paths(app, ui, false, channels);
+                default_output_paths(ui, app.engine.session(), channels);
             }
             _ => bus_paths(app, ui),
         }
@@ -853,18 +861,18 @@ fn bus_paths(app: &mut SoundApp, ui: &mut egui::Ui) {
                 let r = crate::widgets::named_text_field(field, &crate::localized_format!("Bus name: {name}", name = name));
                 ui.ctx().memory_mut(|m| m.data.insert_temp(key, edit.clone()));
                 if r.lost_focus() && edit != name {
-                    let _ = app.run("setup.io", json!({"action": "rename_bus", "name": name, "new_name": edit}));
+                    let _ = io_run(app, ui.ctx(), "setup.io", json!({"action": "rename_bus", "name": name, "new_name": edit}));
                 }
                 ui.label(fmt);
                 if ui.small_button(crate::localization::text("Delete")).clicked() {
-                    let _ = app.run("setup.io", json!({"action": "delete_bus", "name": name}));
+                    let _ = io_run(app, ui.ctx(), "setup.io", json!({"action": "delete_bus", "name": name}));
                 }
                 ui.end_row();
             }
         });
         if ui.button(crate::localization::text("New Bus")).clicked() {
             let name = crate::mix_window::free_bus_name(app.engine.session());
-            let _ = app.run("mix.new_bus", json!({"name": name}));
+            let _ = io_run(app, ui.ctx(), "mix.new_bus", json!({"name": name}));
         }
     });
 }
@@ -876,7 +884,7 @@ fn main_output(app: &mut SoundApp, ui: &mut egui::Ui) {
         let format = egui::ComboBox::from_id_salt("main_output_format").selected_text(crate::localization::text(main.label())).show_ui(ui, |ui| {
             for f in soundcraft_model::ChannelFormat::ALL.into_iter().filter(|f| (2..=16).contains(&f.channels())) {
                 if ui.selectable_label(f == main, crate::localization::text(f.label())).clicked() && f != main {
-                    let _ = app.run("setup.main_format", json!({"format": f.label()}));
+                    let _ = io_run(app, ui.ctx(), "setup.main_format", json!({"format": f.label()}));
                 }
             }
         });
@@ -938,7 +946,7 @@ fn physical_paths(app: &mut SoundApp, ui: &mut egui::Ui, input: bool, channels: 
         .inner;
     if default {
         let args = if input { json!({"action": "default_inputs"}) } else { json!({"action": "default_outputs", "channels": channels}) };
-        let _ = app.run("setup.io", args);
+        let _ = io_run(app, ui.ctx(), "setup.io", args);
     }
     if new_path {
         let prefix = if input { "Input" } else { "Output" };
@@ -957,7 +965,12 @@ fn physical_paths(app: &mut SoundApp, ui: &mut egui::Ui, input: bool, channels: 
                     })
                 })
                 .unwrap_or(0);
-            let _ = app.run("setup.io", json!({"action": format!("create_{direction}"), "name": name, "format": "mono", "first_channel": first}));
+            let _ = io_run(
+                app,
+                ui.ctx(),
+                "setup.io",
+                json!({"action": format!("create_{direction}"), "name": name, "format": "mono", "first_channel": first}),
+            );
         }
     }
     egui::ScrollArea::vertical().id_salt(direction).max_height(300.0).show(ui, |ui| {
@@ -980,9 +993,10 @@ fn physical_paths(app: &mut SoundApp, ui: &mut egui::Ui, input: bool, channels: 
                         crate::localization::text(if input { "Input path name" } else { "Output path name" }),
                     );
                     if edit.lost_focus() && name != row_name {
-                        match app.run("setup.io", json!({"action": format!("rename_{direction}"), "name": row_name, "new_name": name})) {
-                            Ok(_) => row_name = name.trim().to_string(),
-                            Err(error) => app.ui.status = error,
+                        if io_run(app, ui.ctx(), "setup.io", json!({"action": format!("rename_{direction}"), "name": row_name, "new_name": name}))
+                            .is_ok()
+                        {
+                            row_name = name.trim().to_string();
                         }
                         ui.data_mut(|data| data.remove::<String>(id));
                     } else if edit.has_focus() || edit.changed() {
@@ -1013,16 +1027,66 @@ fn physical_paths(app: &mut SoundApp, ui: &mut egui::Ui, input: bool, channels: 
                     if !main {
                         args["format"] = json!(format.label());
                     }
-                    let _ = app.run("setup.io", args);
+                    let _ = io_run(app, ui.ctx(), "setup.io", args);
                 }
                 ui.horizontal(|ui| {
                     if channels > 0 && first - 1 + format.channels() > channels && (!main || first > 1) {
                         ui.label(crate::localization::text(if main { "Playing from channel 1" } else { "Unavailable" }));
                     }
                     if !main && ui.small_button(crate::localization::text("Delete")).clicked() {
-                        let _ = app.run("setup.io", json!({"action": format!("delete_{direction}"), "name": row_name}));
+                        let _ = io_run(app, ui.ctx(), "setup.io", json!({"action": format!("delete_{direction}"), "name": row_name}));
                     }
                 });
+                ui.end_row();
+            }
+        });
+    });
+}
+
+/// Id of the I/O Setup's last refusal.
+fn io_error_id() -> egui::Id {
+    egui::Id::unique("io_setup_error")
+}
+
+/// Run an I/O Setup edit. A refusal is said in the window until an edit succeeds, and in the
+/// status line, without the command's name: Pro Tools tells you in the I/O Setup what to correct
+/// (Reference Guide, printed p. 55, 77 and 87).
+fn io_run(app: &mut SoundApp, ctx: &egui::Context, id: &str, args: Value) -> Result<Value, String> {
+    let result = app.run(id, args);
+    match &result {
+        Ok(_) => ctx.data_mut(|data| data.remove::<String>(io_error_id())),
+        Err(error) => {
+            let text = crate::localization::error_text(plain_error(error));
+            app.ui.status = text.clone();
+            ctx.data_mut(|data| data.insert_temp(io_error_id(), text));
+        }
+    }
+    result
+}
+
+/// `error` without the "bad parameters for `command`: " that names the command.
+fn plain_error(error: &str) -> &str {
+    error.strip_prefix("bad parameters for `").and_then(|rest| rest.split_once("`: ")).map_or(error, |(_, why)| why)
+}
+
+/// The device's default output paths: the further pairs (Out 3-4 …) that the track output and
+/// send selectors offer and Default makes into paths, as Pro Tools' Output page holds them
+/// (Reference Guide, "Default I/O Settings", printed p. 58; "Default Path Names", p. 83). A pair a
+/// path already covers is left out, as in the selectors.
+fn default_output_paths(ui: &mut egui::Ui, session: &soundcraft_model::Session, channels: usize) {
+    let pairs = crate::mix_window::default_output_pairs(session, channels);
+    if pairs.is_empty() {
+        return;
+    }
+    ui.separator();
+    ui.strong(crate::localization::text("Default paths"));
+    ui.label(egui::RichText::new(crate::localization::text("A pair becomes a path when a track output or send chooses it, or with Default")).small());
+    egui::ScrollArea::vertical().id_salt("default_outputs").max_height(140.0).show(ui, |ui| {
+        egui::Grid::new("default_output_paths").striped(true).show(ui, |ui| {
+            for (name, first) in pairs {
+                ui.label(name);
+                ui.label(crate::localization::text("Stereo"));
+                ui.label(format!("{}–{}", first + 1, first + 2));
                 ui.end_row();
             }
         });
@@ -1185,5 +1249,37 @@ mod io_setup_tests {
         h.run();
         assert!(h.query_by_label("New Output").is_some());
         assert!(h.query_by_label("New Input").is_none());
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod io_setup_output_tests {
+    use super::*;
+    use egui_kittest::{Harness, kittest::Queryable};
+
+    /// The Outputs page lists the device's default output paths, the pairs Out 3-4 … the track
+    /// output and send selectors offer, as Pro Tools' Output page holds them (Reference Guide,
+    /// "Default I/O Settings", printed p. 58; "Default Path Names", p. 83). A pair a named path
+    /// already covers is left out, as in the selectors.
+    #[test]
+    fn the_outputs_page_lists_the_default_output_pairs() {
+        let mut engine = soundcraft_engine::Engine::default();
+        engine.execute("setup.io", &json!({"action": "create_output", "name": "Cue", "first_channel": 4})).unwrap();
+        let app = SoundApp::new(engine, None, crate::Services::default());
+        let mut h = Harness::builder().with_size(egui::vec2(600.0, 900.0)).build_ui_state(
+            |ui, app: &mut SoundApp| {
+                physical_paths(app, ui, false, 10);
+                default_output_paths(ui, app.engine.session(), 10);
+            },
+            app,
+        );
+        h.run();
+        for listed in ["Out 3-4", "Out 7-8", "Out 9-10"] {
+            assert!(h.query_by_label(listed).is_some(), "{listed} is listed");
+        }
+        for missing in ["Out 5-6", "Out 11-12"] {
+            assert!(h.query_by_label(missing).is_none(), "{missing} is not listed");
+        }
     }
 }
