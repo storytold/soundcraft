@@ -31,6 +31,7 @@ impl SoundApp {
         self.attach_midi(&player);
         player.locate(at);
         self.player = Some(player);
+        self.settle_lost_refusal();
         Ok(())
     }
 
@@ -130,6 +131,7 @@ impl SoundApp {
         let player = Player::with_config(self.engine.session_arc(), &self.ui.audio);
         self.attach_midi(&player);
         self.player = Some(player);
+        self.settle_lost_refusal();
     }
 }
 

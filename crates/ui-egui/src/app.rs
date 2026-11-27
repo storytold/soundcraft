@@ -41,6 +41,7 @@ impl SoundApp {
             record_start: 0,
             punch: None,
             recorder_failed: false,
+            lost_refusal: None,
             midi_inputs: None,
             midi_scan_at: 0.0,
             midi_take: Vec::new(),

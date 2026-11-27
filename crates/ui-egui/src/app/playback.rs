@@ -38,12 +38,42 @@ impl SoundApp {
             return false;
         }
         let name = p.device_name.clone();
-        self.ui.status = if recording {
+        self.refuse_lost_output(&name, recording);
+        true
+    }
+
+    /// Say that Play or Record cannot start on the lost output `name`. A Play after a refused
+    /// Record, with no Stop between, is refused as a record: Pro Tools records with Record, then
+    /// Play (Reference Guide p. 788).
+    pub(super) fn refuse_lost_output(&mut self, name: &str, recording: bool) {
+        let recording = recording || self.lost_refusal.as_ref().is_some_and(|(_, record)| *record);
+        let text = if recording {
             crate::localized_format!("Cannot record: “{name}” is not running. Use Reconnect audio device in Setup › Playback Engine.", name = name)
         } else {
             crate::localized_format!("Cannot play: “{name}” is not running. Use Reconnect audio device in Setup › Playback Engine.", name = name)
         };
-        true
+        self.ui.status = text.clone();
+        self.lost_refusal = Some((text, recording));
+    }
+
+    /// Stop takes back a Record refused on a lost output: a Play after it is a play.
+    pub(super) fn drop_record_request(&mut self) {
+        if let Some((_, record)) = &mut self.lost_refusal {
+            *record = false;
+        }
+    }
+
+    /// Once the output runs again, a refusal still shown is no longer true: it leaves the status
+    /// line (a later message stays), and a refused Record is forgotten.
+    pub(super) fn settle_lost_refusal(&mut self) {
+        if self.player.as_ref().is_some_and(soundcraft_playback::Player::lost) {
+            return;
+        }
+        if let Some((text, _)) = self.lost_refusal.take()
+            && self.ui.status == text
+        {
+            self.ui.status.clear();
+        }
     }
 
     fn start_play(&mut self, from: Samples, end: Option<Samples>, looped: Option<Range>) {
@@ -500,7 +530,10 @@ impl SoundApp {
                         self.start_play(at, None, None);
                     }
                 }
-                TransportRequest::Stop | TransportRequest::Pause => self.stop_play(),
+                TransportRequest::Stop | TransportRequest::Pause => {
+                    self.drop_record_request();
+                    self.stop_play();
+                }
                 TransportRequest::TogglePlay => {
                     if self.is_playing() {
                         self.stop_play();
@@ -608,5 +641,40 @@ mod tests {
         assert!(a.is_dir());
         assert_eq!(app.fallback_take_dir().unwrap(), a, "the same folder for the rest of the run");
         let _ = std::fs::remove_dir_all(&a);
+    }
+
+    fn app() -> SoundApp {
+        SoundApp::new(soundcraft_engine::Engine::default(), None, crate::Services::default())
+    }
+
+    /// Pro Tools order (Reference Guide p. 788, steps 7 and 9): Record, then Play. Refused on a
+    /// lost output, the Play that follows a refused Record is the same record attempt.
+    #[test]
+    fn play_after_a_refused_record_is_refused_as_a_record() {
+        let mut app = app();
+        app.refuse_lost_output("UFX", true);
+        assert!(app.ui.status.starts_with("Cannot record: “UFX” is not running."), "{}", app.ui.status);
+        app.refuse_lost_output("UFX", false);
+        assert!(app.ui.status.starts_with("Cannot record: “UFX” is not running."), "{}", app.ui.status);
+        // Stop takes the record request back: Play alone is then a play.
+        app.drop_record_request();
+        app.refuse_lost_output("UFX", false);
+        assert!(app.ui.status.starts_with("Cannot play: “UFX” is not running."), "{}", app.ui.status);
+    }
+
+    /// Once the output runs again (Reconnect, or a device applied), the refusal is no longer
+    /// true and leaves the status line; any later message stays.
+    #[test]
+    fn a_refusal_leaves_the_status_line_once_the_output_runs_again() {
+        let mut app = app();
+        app.refuse_lost_output("UFX", false);
+        app.settle_lost_refusal();
+        assert_eq!(app.ui.status, "", "no player is lost here, so the refusal is stale");
+        app.refuse_lost_output("UFX", true);
+        app.ui.status = "Recorded 1 clip(s)".into();
+        app.settle_lost_refusal();
+        assert_eq!(app.ui.status, "Recorded 1 clip(s)", "a later message is not the refusal's to clear");
+        app.refuse_lost_output("UFX", false);
+        assert!(app.ui.status.starts_with("Cannot play"), "the record request went with the settled refusal: {}", app.ui.status);
     }
 }
