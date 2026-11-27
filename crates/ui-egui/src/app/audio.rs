@@ -8,7 +8,7 @@ impl SoundApp {
     }
 
     /// The names of [`Self::available_input_channels`]: those of the open input, else of the
-    /// device it would open.
+    /// device it would open (read only on Core Audio on macOS; empty elsewhere).
     pub(crate) fn available_input_channel_names(&self) -> Vec<String> {
         self.recorder.as_ref().map_or_else(
             || self.player.as_ref().map(|player| player.input_channel_names(&self.ui.audio)).unwrap_or_default(),

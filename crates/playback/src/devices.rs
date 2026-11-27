@@ -90,7 +90,8 @@ pub(crate) fn channel_names(device: &cpal::Device, input: bool, channels: usize)
 /// `system` is not called either. Only Core Audio names channels (see [`channel_names`]); reading
 /// them for an input that is not open lists the input devices and probes the device's
 /// configurations on the UI thread, which on WASAPI, ALSA and the others would return no names.
-/// Output there is unchanged: no names, and the selectors fall back to "Input" and "Output".
+/// Output there is unchanged: no names, and the selectors' tooltips fall back to "Input" and
+/// "Output".
 pub(crate) fn names_where_given(os: &str, system: impl FnOnce() -> &'static str, read: impl FnOnce() -> Vec<String>) -> Vec<String> {
     if os == "macos" && system() == "CoreAudio" { read() } else { Vec::new() }
 }
