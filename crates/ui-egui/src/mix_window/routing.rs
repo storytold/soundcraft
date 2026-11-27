@@ -71,9 +71,8 @@ pub(crate) fn midi_input_menu(app: &mut SoundApp, ui: &mut Ui, id: TrackId) {
 pub(crate) fn input_name(app: &SoundApp, track: &Track) -> String {
     if track.kind.is_midi() {
         midi_input_name(track)
-    } else if track.kind.has_playlist() && track.mixer.input == Route::None {
-        let channels = track.format.channels();
-        if channels == 1 { crate::localized_format!("In {}", 1) } else { crate::localized_format!("In 1-{}", channels) }
+    } else if track.mixer.input == Route::None {
+        crate::localization::text("no input").to_string()
     } else {
         route_name(app, &track.mixer.input)
     }
@@ -178,5 +177,24 @@ mod midi_input_tests {
             assert_eq!(shown(&app, midi), text, "{input}");
         }
         assert_eq!(shown(&app, audio), "In 1", "an audio track still shows its audio input");
+    }
+}
+
+#[cfg(test)]
+mod no_input_tests {
+    use super::input_name;
+    use crate::{Services, SoundApp};
+    use serde_json::json;
+
+    /// An audio or aux track set to no input says so (it showed "In 1", or "no output" on an aux).
+    #[test]
+    fn no_input_reads_no_input_on_the_selector() {
+        let mut app = SoundApp::new(soundcraft_engine::Engine::default(), None, Services::default());
+        app.run("track.new", json!({"format": "mono"})).unwrap();
+        app.run("track.new", json!({"kind": "aux"})).unwrap();
+        app.run("track.input", json!({"tracks": [app.engine.session().tracks[0].id.0], "input": "none"})).unwrap();
+        for track in &app.engine.session().tracks {
+            assert_eq!(input_name(&app, track), "no input", "{}", track.name);
+        }
     }
 }

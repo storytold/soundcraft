@@ -1143,6 +1143,7 @@ fn a_hosted_instruments_latency_is_compensated() {
 #[test]
 fn input_monitoring_replaces_clips() {
     let (mut s, t) = session_with_dc(0.5, 4800);
+    s.track_mut(t).unwrap().mixer.input = Route::Hardware("In 1".into());
     let mut eng = MixEngine::new(48_000.0, 512);
     eng.input = vec![vec![0.25; 512]];
     let mut out = vec![vec![0.0; 512]; 2];
@@ -1159,6 +1160,23 @@ fn input_monitoring_replaces_clips() {
     s.track_mut(t).unwrap().mixer.input_monitor = false;
     eng.render(&s, 1024, 512, &mut out);
     assert!(out[0][100].abs() < 1e-6, "stopped, unmonitored: silence");
+}
+
+/// A track whose input is "no input" (`Route::None`) hears nothing, not hardware input 1.
+#[test]
+fn a_track_with_no_input_monitors_nothing() {
+    let (mut s, t) = session_with_dc(0.0, 4800);
+    let mut eng = MixEngine::new(48_000.0, 512);
+    eng.input = vec![vec![0.25; 512], vec![0.5; 512]];
+    eng.monitor_only = true;
+    let mut out = vec![vec![0.0; 512]; 2];
+    s.track_mut(t).unwrap().mixer.input_monitor = true;
+    s.track_mut(t).unwrap().mixer.input = Route::None;
+    eng.render(&s, 0, 512, &mut out);
+    assert!(out.iter().all(|c| c.iter().all(|x| *x == 0.0)), "no input: silence, not In 1");
+    s.track_mut(t).unwrap().mixer.input = Route::Hardware("In 2".into());
+    eng.render(&s, 512, 512, &mut out);
+    assert!((out[0][100] - 0.5 * std::f32::consts::FRAC_1_SQRT_2).abs() < 1e-3, "In 2 is heard: {}", out[0][100]);
 }
 
 #[test]

@@ -696,6 +696,7 @@ fn armed_tracks_are_heard_and_metered_after_playback_stops() {
     let mut s = soundcraft_model::Session::default();
     let t = s.add_track(TrackKind::Audio, ChannelFormat::Mono, None);
     s.track_mut(t).unwrap().mixer.record_arm = true;
+    s.track_mut(t).unwrap().mixer.input = soundcraft_model::Route::Hardware("In 1".into());
     let shared = Arc::new(Shared {
         position: AtomicI64::new(0),
         playing: AtomicBool::new(false),

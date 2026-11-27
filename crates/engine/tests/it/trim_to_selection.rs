@@ -68,8 +68,8 @@ fn insertion_trims_still_trim_unlocked_clips_beside_both_lock_kinds() {
         for clip in &mut session.track_mut(track).unwrap().playlist_mut().unwrap().clips {
             clip.start = 0;
         }
-        let before = session.clone();
         let mut engine = Engine::new(session);
+        let before = engine.session().clone();
         let result = engine.execute(command, &json!({"tracks": [track.0], "at": 50})).unwrap();
         assert_eq!(result["trimmed"], json!(1), "{command}");
         let clips = engine.session().track(track).unwrap().clips();

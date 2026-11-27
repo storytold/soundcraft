@@ -192,7 +192,8 @@ fn place_import(
         Some(t) => t,
         None => {
             let stem = Path::new(name).file_stem().and_then(OsStr::to_str).unwrap_or("Audio").to_string();
-            s.add_track(TrackKind::Audio, ChannelFormat::for_channels(channels), Some(&stem))
+            let t = s.add_track(TrackKind::Audio, ChannelFormat::for_channels(channels), Some(&stem));
+            crate::no_input::assign_first_input(s, t)
         }
     };
     let cid = s.new_clip_id();

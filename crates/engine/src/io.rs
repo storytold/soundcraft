@@ -1097,7 +1097,8 @@ fn read_bundle(bytes: &[u8], limits: BundleLimits) -> Result<(String, std::colle
 }
 
 /// The record-enabled audio tracks, each with the input channels it records (those its input
-/// route names, "In 3" → 2, wrapped to the device's `input_channels`) and a new take file
+/// route names, "In 3" → 2, wrapped to the device's `input_channels`; with no input,
+/// [`NO_INPUT_CHANNEL`](crate::no_input::NO_INPUT_CHANNEL), which records silence) and a new take file
 /// `<track>_<NN>.wav` in the `Audio Files` of the session's folder (`unsaved_dir` until it is saved).
 pub fn plan_takes(e: &Engine, unsaved_dir: &Path, input_channels: usize) -> Vec<(TrackId, Vec<usize>, PathBuf)> {
     let dir = e.path.as_deref().and_then(|p| Path::new(p).parent()).unwrap_or(unsaved_dir);
@@ -1113,7 +1114,11 @@ pub fn plan_takes(e: &Engine, unsaved_dir: &Path, input_channels: usize) -> Vec<
                 }
                 _ => 0,
             };
-            let inputs = (0..t.channels()).map(|k| first.saturating_add(k) % input_channels.max(1)).collect();
+            let inputs = if t.mixer.input == soundcraft_model::Route::None {
+                vec![crate::no_input::NO_INPUT_CHANNEL; t.channels()]
+            } else {
+                (0..t.channels()).map(|k| first.saturating_add(k) % input_channels.max(1)).collect()
+            };
             let file = |n: usize| dir.join("Audio Files").join(format!("{}_{n:02}.wav", sanitize_name(&t.name)));
             let path = (take_no..take_no + 1_000).map(file).find(|p| !p.exists()).unwrap_or_else(|| file(take_no));
             (t.id, inputs, path)
