@@ -938,7 +938,9 @@ fn physical_paths(app: &mut SoundApp, ui: &mut egui::Ui, input: bool, channels: 
                             Err(error) => app.ui.status = error,
                         }
                         ui.data_mut(|data| data.remove::<String>(id));
-                    } else if edit.has_focus() {
+                    } else if edit.has_focus() || edit.changed() {
+                        // Keep what was typed: egui reports no focus while the window is in the
+                        // background, yet the field still takes keys sent to it.
                         ui.data_mut(|data| data.insert_temp(id, name));
                     }
                 });
