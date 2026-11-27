@@ -216,7 +216,8 @@ pub(crate) fn host(cfg: &AudioConfig) -> cpal::Host {
         })
 }
 
-/// The named output (or input) device of `host`, else its default device.
+/// The named output (or input) device of `host`, else its default device (see
+/// [`default_to_open`] for the WASAPI default).
 pub(crate) fn device(host: &cpal::Host, name: Option<&str>, output: bool) -> Option<cpal::Device> {
     if let Some(want) = name {
         let found = if output { host.output_devices().ok() } else { host.input_devices().ok() }
@@ -226,7 +227,54 @@ pub(crate) fn device(host: &cpal::Host, name: Option<&str>, output: bool) -> Opt
         }
         log::warn!("audio device `{want}` is not available; using the default");
     }
-    if output { host.default_output_device() } else { host.default_input_device() }
+    let default = if output { host.default_output_device() } else { host.default_input_device() };
+    default_to_open(
+        host.id().name(),
+        default,
+        // Reading the default configuration activates the audio client; cpal keeps it for the
+        // stream that opens next, so the check opens nothing twice.
+        |d| if output { d.default_output_config().is_ok() } else { d.default_input_config().is_ok() },
+        |d| {
+            let id = d.id().ok()?;
+            let mut listed = if output { host.output_devices().ok() } else { host.input_devices().ok() }?;
+            listed.find(|l| l.id().ok().as_ref() == Some(&id))
+        },
+    )
+}
+
+/// The system default device to open on audio system `system`: `default`, unless it is a handle
+/// of its own that cannot open (`opens`), in which case the device listed as the current default
+/// (`listed`) opens instead, if there is one.
+///
+/// Only WASAPI's default is such a handle. cpal 0.18.2 activates it through
+/// `ActivateAudioInterfaceAsync`, which completes on a Windows worker thread, and gives its
+/// stream a default-device listener; a listed device is activated directly on the calling thread
+/// (`IMMDevice::Activate`) and has no listener. After a device a default stream followed went
+/// away, the default handle can fail for the rest of the process with `RPC_E_CHANGED_MODE`
+/// (observed on Windows with a Model 12 unplugged; cpal's listener, on a device's removal, sets
+/// up COM as single-threaded on the Windows thread that called it, which is the inferred cause).
+/// The listed device still opens, so the default is followed by opening it by its identity. Such
+/// a stream is not told when the default moves to another device; it is reopened on the current
+/// default only when it is lost or the audio devices are applied again.
+///
+/// Elsewhere the default is the device itself: it is returned unchecked.
+pub(crate) fn default_to_open<D>(
+    system: &str,
+    default: Option<D>,
+    opens: impl FnOnce(&D) -> bool,
+    listed: impl FnOnce(&D) -> Option<D>,
+) -> Option<D> {
+    let default = default?;
+    if system != "WASAPI" || opens(&default) {
+        return Some(default);
+    }
+    match listed(&default) {
+        Some(d) => {
+            log::warn!("the system default audio device cannot open as the default; opening the device that is the default now");
+            Some(d)
+        }
+        None => Some(default),
+    }
 }
 
 /// The buffer to request: the chosen size when the device's range allows it, else the default.
@@ -329,6 +377,39 @@ mod tests {
             for left in [true, false] {
                 assert_eq!(output_loss(system, left), crate::OutputLoss::Unknown, "{system}, left: {left}");
             }
+        }
+    }
+
+    #[test]
+    fn a_wasapi_default_that_cannot_open_is_opened_as_the_listed_device() {
+        // On WASAPI the default is a handle of its own; when it cannot open, the device listed
+        // as the current default opens instead.
+        let opened = default_to_open("WASAPI", Some("default handle"), |_| false, |_| Some("listed default"));
+        assert_eq!(opened, Some("listed default"));
+        // The default handle that opens is kept, so a later default switch is still reported.
+        let opened = default_to_open("WASAPI", Some("default handle"), |_| true, |_| Some("listed default"));
+        assert_eq!(opened, Some("default handle"));
+        // Nothing listed under the default: the default handle, whose open then says why.
+        assert_eq!(default_to_open("WASAPI", Some("default handle"), |_| false, |_| None), Some("default handle"));
+        assert_eq!(default_to_open("WASAPI", None::<&str>, |_| false, |_| Some("listed default")), None);
+    }
+
+    #[test]
+    fn a_default_is_only_checked_where_it_is_a_handle_of_its_own() {
+        // Elsewhere the default is the device itself: nothing is opened twice or looked up again.
+        for system in ["CoreAudio", "ALSA", "ASIO", "JACK"] {
+            let checked = std::cell::Cell::new(false);
+            let opened = default_to_open(
+                system,
+                Some("default"),
+                |_| {
+                    checked.set(true);
+                    false
+                },
+                |_| Some("listed"),
+            );
+            assert_eq!(opened, Some("default"), "{system}");
+            assert!(!checked.get(), "{system}");
         }
     }
 
