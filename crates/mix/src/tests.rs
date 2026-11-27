@@ -2171,11 +2171,13 @@ fn a_clip_volume_moved_earlier_by_the_track_delay_counts_as_set_when_a_device_go
     assert_eq!(std::mem::take(&mut *heard.lock().unwrap()), vec![(0, [0xB0, 121, 0]), (0, [0xB0, 7, 80])], "the clip's volume, not the default");
 }
 
-/// Low Latency Monitoring (#1754): delay compensation lines a monitored input up with the slowest
-/// track, so a latent plugin on *another* track delays what the performer hears. With the option
-/// on, a track that monitors its input takes no compensation delay; with it off, it waits.
+/// Pro Tools Reference Guide p.1504, "Low Latency Monitoring During Recording" (#1754): a track
+/// that is record-enabled, TrackInput-enabled or punched in has its delay compensation suspended
+/// automatically, with no option, so a latent plugin on *another* track does not delay what the
+/// performer hears. Options › Low Latency Monitoring (p.785) is the hardware-mixer feature and
+/// changes nothing here. Without delay compensation nothing waits anyway.
 #[test]
-fn low_latency_monitoring_keeps_a_monitored_input_out_of_delay_compensation() {
+fn a_monitored_input_is_kept_out_of_delay_compensation_without_any_option() {
     let monitored_delay = |low_latency: bool| {
         let mut s = Session::default();
         s.edit.delay_compensation = true;
@@ -2207,6 +2209,6 @@ fn low_latency_monitoring_keeps_a_monitored_input_out_of_delay_compensation() {
     };
     let (waits, latency) = monitored_delay(false);
     assert!(latency > 0, "the Maximizer adds latency to compensate");
-    assert_eq!(waits, latency as i64, "without the option the monitored input waits for the latent track");
-    assert_eq!(monitored_delay(true).0, 0, "with the option it does not");
+    assert_eq!(waits, 0, "the monitored input does not wait for the latent track");
+    assert_eq!(monitored_delay(true).0, 0, "Low Latency Monitoring changes nothing here");
 }

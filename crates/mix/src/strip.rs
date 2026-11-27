@@ -34,7 +34,7 @@ pub(crate) struct PluginSlot {
 pub(crate) struct Strip {
     pub(crate) buf: Vec<Vec<f32>>,
     /// This block plays the track's live audio input (input monitoring, or record-enabled while
-    /// stopped or recording): Low Latency Monitoring keeps it out of delay compensation.
+    /// stopped or recording): it is kept out of delay compensation (Pro Tools p.1504).
     pub(crate) monitoring: bool,
     /// Pre-fader copy for pre-fader sends.
     pub(crate) pre: Vec<Vec<f32>>,

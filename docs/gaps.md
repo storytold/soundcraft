@@ -1,6 +1,6 @@
 # Where SoundCraft falls short of Pro Tools
 
-> **Last reviewed:** 2026-11-14 · **Last updated:** 2026-11-25 · **Change:** minor (G-01: Low Latency Monitoring keeps monitored inputs out of delay compensation; previously minor: G-06: recording to disk is done (#84, long takes #888); streaming sources remain; previously minor: G-02 shrunk: MIDI input devices work; G-03: strict external-WAV AAF import; previously minor: G-05: plugin editors on Linux/X11; previously trivial: G-09: the pt-BR catalog now covers helper-passed tooltips, the status bar, the remove-session prompt and engine error text; G-08: Frequency Shifter, 28 processors; G-04: volume automation read at every sample, #1354; G-01: `setup.playback_engine` applies the device buffer in the desktop app; G-04: Clip Looping crossfade and loop count) · **Target:** Avid Pro Tools Ultimate 2026.4.1
+> **Last reviewed:** 2026-11-14 · **Last updated:** 2026-11-25 · **Change:** minor (G-01: monitored inputs are kept out of delay compensation, as in Pro Tools; previously minor: G-06: recording to disk is done (#84, long takes #888); streaming sources remain; previously minor: G-02 shrunk: MIDI input devices work; G-03: strict external-WAV AAF import; previously minor: G-05: plugin editors on Linux/X11; previously trivial: G-09: the pt-BR catalog now covers helper-passed tooltips, the status bar, the remove-session prompt and engine error text; G-08: Frequency Shifter, 28 processors; G-04: volume automation read at every sample, #1354; G-01: `setup.playback_engine` applies the device buffer in the desktop app; G-04: Clip Looping crossfade and loop count) · **Target:** Avid Pro Tools Ultimate 2026.4.1
 
 Every known shortfall, one entry each, ranked by how much it stops a Pro Tools user from doing
 real work in SoundCraft. This is the work list: pick from the top. Rows marked **alpha blocker**
@@ -52,9 +52,11 @@ When you close a gap, delete its entry (or shrink it) in the same PR, and bump t
   not rounded onto the window's power-of-two list. Headless (CLI, no app) still stores the request
   and returns `applied: false`, with `buffer_size` null when unset; playback does not read those
   session values.
-- **Done (2026-11-25):** Options › Low Latency Monitoring keeps a track that monitors its input out of
-  delay compensation, so a latent plugin on another track no longer delays what the performer hears
-  (#1754). On macOS with an RME UFX and a 71-sample plugin elsewhere: 905 → 834 samples.
+- **Done (2026-11-25):** a track that monitors its input is kept out of delay compensation
+  automatically, as Pro Tools suspends it on record-enabled and TrackInput tracks (Reference Guide
+  p.1504), so a latent plugin on another track no longer delays what the performer hears (#1754).
+  On macOS with an RME UFX at 256 frames and a 71-sample plugin elsewhere: 950 → 879 samples.
+  Options › Low Latency Monitoring (p.785, hardware-mixer monitoring) is still a stored flag.
 - **Missing:** routing to physical channels (I/O Setup), one duplex stream on one clock (input and
   output are still separate cpal streams), latency reporting and record-offset compensation, ASIO
   in official builds (owner decision: Steinberg's SDK is proprietary or GPLv3), JACK, and
@@ -256,7 +258,7 @@ missing. Out of scope unless the owner decides otherwise.
 
 | Date | Change | Summary |
 |---|---|---|
-| 2026-11-25 | minor | G-01: Low Latency Monitoring keeps monitored inputs out of delay compensation (#1754); estimates unchanged |
+| 2026-11-25 | minor | G-01: monitored inputs are kept out of delay compensation automatically, as in Pro Tools (#1754); estimates unchanged |
 | 2026-11-14 | minor | G-03: strict external-WAV AAF import with bounded property caching; AAF/OMF export, OMF import and `.ptx` remain; estimates unchanged |
 | 2026-11-13 | trivial | G-09: the pt-BR catalog now covers tooltips localized inside buttons and toggles, the Edit-window status bar, the remove-session question, the send help text and engine errors shown in the status line; estimates unchanged |
 | 2026-11-09 | trivial | G-08: 28 processors + 3 instruments with the Frequency Shifter |

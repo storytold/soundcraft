@@ -405,8 +405,8 @@ impl MixEngine {
             }
         });
         self.busses = busses;
-        // Delay compensation: align every strip to the slowest, except monitored inputs under Low
-        // Latency Monitoring. Direct-to-main outputs also wait for the slowest aux return. Aux latency has to be read before those outputs are routed,
+        // Delay compensation: align every strip to the slowest, except monitored inputs (Pro Tools
+        // p.1504). Direct-to-main outputs also wait for the slowest aux return. Aux latency has to be read before those outputs are routed,
         // or the first block (and a one-block bounce probe) still sees zero.
         self.compensate_delay(s, &mut work, blk);
         self.work = work;
@@ -497,13 +497,14 @@ impl MixEngine {
                 }
             }
         }
-        // Low Latency Monitoring: a monitored input is heard as soon as its own inserts let it,
-        // not lined up with the slowest track (Options › Low Latency Monitoring, #1754).
-        let low_latency = s.edit.flag("options.low_latency_monitoring");
+        // A monitored input is heard as soon as its own inserts let it, not lined up with the
+        // slowest track: Pro Tools suspends delay compensation on record-enabled, TrackInput and
+        // punched-in tracks automatically, with no option (Reference Guide p.1504, "Low Latency
+        // Monitoring During Recording"; #1754).
         for (i, st) in work.iter_mut() {
             let Some(t) = s.tracks.get(*i) else { continue };
             let ch = st.buf.len();
-            let skip = low_latency && st.monitoring;
+            let skip = st.monitoring;
             let align = if skip { 0 } else { lmax_t.saturating_sub(st.latency) };
             st.align.set(align, ch);
             st.align.process(&mut st.buf, frames);
