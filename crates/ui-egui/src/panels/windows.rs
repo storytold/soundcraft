@@ -661,7 +661,6 @@ pub fn playback_engine(app: &mut SoundApp, ctx: &egui::Context) {
             }
         });
         ui.separator();
-        let right = ui.max_rect().right();
         egui::Grid::new("pe-state").num_columns(2).show(ui, |ui| {
             ui.label(crate::localization::text("Output"));
             ui.label(app.player.as_ref().map_or(crate::localization::text("none").to_string(), |p| {
@@ -683,11 +682,6 @@ pub fn playback_engine(app: &mut SoundApp, ctx: &egui::Context) {
             ui.label(crate::localization::text("Latency"));
             ui.label(latency_line(app));
             ui.end_row();
-            if same_clock(app) == Some(false) {
-                ui.label("");
-                clock_warning(ui, &soundcraft_playback::devices::system_name(&app.ui.audio), right);
-                ui.end_row();
-            }
             ui.label(crate::localization::text("Record offset"));
             ui.horizontal(|ui| {
                 let mut offset = app.ui.record_offset;
@@ -709,6 +703,9 @@ pub fn playback_engine(app: &mut SoundApp, ctx: &egui::Context) {
             ui.label(crate::localized_format!("{sr} Hz{note}", sr = sr, note = note));
             ui.end_row();
         });
+        if same_clock(app) == Some(false) {
+            let _ = clock_warning(ui, &soundcraft_playback::devices::system_name(&app.ui.audio));
+        }
         ui.label(
             egui::RichText::new(crate::localization::text("The mix runs in 512-sample blocks; the buffer size sets the device's own latency."))
                 .small()
@@ -815,16 +812,12 @@ fn different_clocks(system: &str) -> &'static str {
     }
 }
 
-/// The different-clocks warning as a cell of the Playback Engine's state grid, wrapped at
-/// `right` (the window content's right edge): a grid cell is otherwise as wide as its text, and
-/// one line of it widened the window to about 1,200 points (pt-BR: 1,325).
-fn clock_warning(ui: &mut egui::Ui, system: &str, right: f32) {
-    let width = (right - ui.cursor().left()).max(120.0);
-    ui.allocate_ui(vec2(width, 0.0), |ui| {
-        ui.set_max_width(width);
-        let text = egui::RichText::new(crate::localization::text(different_clocks(system))).color(ui.visuals().warn_fg_color);
-        ui.add(egui::Label::new(text).wrap());
-    });
+/// The different-clocks warning under the Playback Engine's device state, wrapped at the window's
+/// width. As a cell of the state grid it was one line as wide as its text, which widened the
+/// window to about 1,200 points (pt-BR: 1,325).
+fn clock_warning(ui: &mut egui::Ui, system: &str) -> egui::Response {
+    let text = egui::RichText::new(crate::localization::text(different_clocks(system))).color(ui.visuals().warn_fg_color);
+    ui.add(egui::Label::new(text).wrap())
 }
 
 /// The latency the backend reports for the open output and input, each as (frames at that
@@ -1174,26 +1167,32 @@ mod clock_warning_tests {
     #[test]
     fn the_different_clocks_warning_wraps_within_the_window() {
         let _language = crate::localization::enter(crate::localization::Language::PortugueseBrazil);
-        // As in the Playback Engine: the warning is a row of the device state grid.
+        // As in the Playback Engine: the warning follows the device state grid.
+        let warning = std::cell::Cell::new(egui::Rect::NOTHING);
+        let next_row = std::cell::Cell::new(egui::Rect::NOTHING);
         let state = |warn: bool| {
+            let (warning, next_row) = (&warning, &next_row);
             move |ui: &mut egui::Ui| {
-                let right = ui.max_rect().right();
                 egui::Grid::new("pe-state").num_columns(2).show(ui, |ui| {
                     ui.label(crate::localization::text("Latency"));
                     ui.label("output 6.7 ms (321 samples) · input 6.3 ms (302 samples)");
                     ui.end_row();
-                    if warn {
-                        ui.label("");
-                        clock_warning(ui, "CoreAudio", right);
-                        ui.end_row();
-                    }
+                    ui.label(crate::localization::text("Record offset"));
+                    ui.label("0");
+                    ui.end_row();
                 });
+                if warn {
+                    warning.set(clock_warning(ui, "CoreAudio").rect);
+                }
+                next_row.set(ui.label(crate::localization::text("Delay compensation")).rect);
             }
         };
         let without = window_width(state(false));
         let with = window_width(state(true));
         assert!(without > 0.0);
         assert!(with <= without + 1.0, "the warning widened the window from {without} to {with}");
+        assert!(warning.get().height() > 30.0, "wrapped onto more than one line: {:?}", warning.get());
+        assert!(next_row.get().top() >= warning.get().bottom(), "the next row {:?} overlaps the warning {:?}", next_row.get(), warning.get());
     }
 }
 
