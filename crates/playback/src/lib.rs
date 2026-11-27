@@ -9,7 +9,8 @@
 //!
 //! Rate: the device is opened at the chosen rate (else the session rate) when it offers it; if it
 //! does not, or a stream at that rate will not build or start, at its default configuration, and
-//! the mix resamples.
+//! the mix resamples. A device that runs at another rate is first switched by a throwaway stream,
+//! whose late report of the switch is waited for, so the stream that plays opens with no switch.
 //!
 //! Surround: the device is opened with as many output channels as it offers, up to the width of
 //! the session's main format; a device that offers the rate only wider than the mix (some
@@ -224,6 +225,7 @@ impl Player {
 
     /// Open the output device for `session`, trying the configuration picked for the chosen rate before the device's
     /// default configuration, and the requested buffer size before the device's, then build the shared player state.
+    /// A device at another rate than the picked configuration is switched first (`settle_rate_switch`).
     /// If no configuration starts or the device cannot open, fall back to a silent clock at the session rate.
     fn open(session: Arc<Session>, cfg: &AudioConfig) -> Player {
         let shared = Arc::new(Shared {
