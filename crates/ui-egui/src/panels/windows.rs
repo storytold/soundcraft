@@ -1253,7 +1253,6 @@ mod io_setup_tests {
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used)]
 mod io_setup_output_tests {
     use super::*;
     use egui_kittest::{Harness, kittest::Queryable};
