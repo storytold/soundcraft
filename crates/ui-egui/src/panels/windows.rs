@@ -856,7 +856,22 @@ fn output_paths(app: &mut SoundApp, ui: &mut egui::Ui) {
     use soundcraft_model::ChannelFormat;
     let paths = app.engine.session().outputs.clone();
     let channels = app.player.as_ref().map_or(0, |player| player.device_channels);
-    if ui.button(crate::localization::text("New Output")).clicked() {
+    let (new_output, default) = ui
+        .horizontal(|ui| {
+            let new_output = ui.button(crate::localization::text("New Output")).clicked();
+            // Pro Tools' Default (Reference Guide, printed p. 58 and 82–83): delete the paths not in
+            // use, restore default names, and make a path for every pair of the device's outputs.
+            let default = ui
+                .button(crate::localization::text("Default"))
+                .on_hover_text(crate::localization::text("Restore the default output paths of the current device"))
+                .clicked();
+            (new_output, default)
+        })
+        .inner;
+    if default {
+        let _ = app.run("setup.io", json!({"action": "default_outputs", "channels": channels}));
+    }
+    if new_output {
         // Output and bus names share one namespace (a route names either).
         let busses = &app.engine.session().busses;
         let taken = |name: &str| {
@@ -878,7 +893,7 @@ fn output_paths(app: &mut SoundApp, ui: &mut egui::Ui) {
     egui::ScrollArea::vertical().id_salt("output_paths").max_height(300.0).show(ui, |ui| {
         egui::Grid::new("output_mapping").striped(true).show(ui, |ui| {
             ui.strong(crate::localization::text("Path"));
-            ui.strong(crate::localization::text("Format"));
+            let format_label = ui.strong(crate::localization::text("Format"));
             ui.strong(crate::localization::text("First channel"));
             ui.label("");
             ui.end_row();
@@ -904,14 +919,15 @@ fn output_paths(app: &mut SoundApp, ui: &mut egui::Ui) {
                     format = app.engine.session().main_format();
                     ui.label(crate::localization::text(format.label()));
                 } else {
-                    egui::ComboBox::from_id_salt(("output_format", index)).selected_text(crate::localization::text(format.label())).show_ui(
-                        ui,
-                        |ui| {
+                    egui::ComboBox::from_id_salt(("output_format", index))
+                        .selected_text(crate::localization::text(format.label()))
+                        .show_ui(ui, |ui| {
                             for option in ChannelFormat::ALL.into_iter().filter(|option| (1..=16).contains(&option.channels())) {
                                 ui.selectable_value(&mut format, option, crate::localization::text(option.label()));
                             }
-                        },
-                    );
+                        })
+                        .response
+                        .labelled_by(format_label.id);
                 }
                 let mut first = usize::from(path.first_channel) + 1;
                 let max_first = if channels == 0 { 1024 } else { usize::from(channels).saturating_sub(format.channels()).saturating_add(1) };

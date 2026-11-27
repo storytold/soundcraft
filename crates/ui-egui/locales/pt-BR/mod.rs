@@ -152,6 +152,7 @@ pub(super) fn translate(source: &str) -> Option<&'static str> {
         "new" => "novo",
         "New Bus" => "Novo bus",
         "New Output" => "Nova saída",
+        "Restore the default output paths of the current device" => "Restaurar os caminhos de saída padrão do dispositivo atual",
         "Output path name" => "Nome do caminho de saída",
         "First channel" => "Primeiro canal",
         "Unavailable" => "Indisponível",
