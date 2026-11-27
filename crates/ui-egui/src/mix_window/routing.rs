@@ -30,7 +30,8 @@ pub(crate) fn output_name(app: &SoundApp, r: &Route) -> String {
 }
 
 /// The first "Bus N" from the bus count on that no bus, track, input or output path is called, for New
-/// Bus: a route names a bus or an output path, so the two never share a name.
+/// Bus: a route names a bus or a path (`track.input`, `track.output`), so a bus never takes a
+/// path's name.
 pub(crate) fn free_bus_name(session: &soundcraft_model::Session) -> String {
     let taken = |name: &str| {
         session.busses.iter().any(|bus| bus.name.eq_ignore_ascii_case(name))
