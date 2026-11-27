@@ -43,6 +43,7 @@ impl SoundApp {
             record_start: 0,
             punch: None,
             recorder_failed: false,
+            input_pin: None,
             lost_audio: None,
             midi_inputs: None,
             midi_scan_at: 0.0,

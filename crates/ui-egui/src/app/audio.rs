@@ -27,6 +27,7 @@ impl SoundApp {
         // The input reopens on the next record or monitor with the new choice.
         self.recorder = None;
         self.recorder_failed = false;
+        self.input_pin = None;
         // A device chosen here replaces any that went away.
         self.lost_audio = None;
         let player = soundcraft_playback::Player::with_config(self.engine.session_arc(), &self.ui.audio);
@@ -36,12 +37,23 @@ impl SoundApp {
         Ok(())
     }
 
+    /// The audio choice the input opens with next: an input that went away and is back opens by
+    /// its name (`input_pin`), as a returning output does.
+    pub(super) fn input_config(&self) -> soundcraft_playback::AudioConfig {
+        match &self.input_pin {
+            Some(name) => soundcraft_playback::AudioConfig { input: Some(name.clone()), ..self.ui.audio.clone() },
+            None => self.ui.audio.clone(),
+        }
+    }
+
     /// Open the input device once (for recording and input monitoring) and feed the player.
     pub(super) fn ensure_input(&mut self) {
         if self.recorder.is_some() || self.recorder_failed || self.player.is_none() {
             return;
         }
-        match soundcraft_playback::record::Recorder::open_with(&self.ui.audio) {
+        let cfg = self.input_config();
+        self.input_pin = None;
+        match soundcraft_playback::record::Recorder::open_with(&cfg) {
             Ok(r) => {
                 if let Some(p) = &self.player {
                     p.set_input(std::sync::Arc::clone(&r.monitor));
@@ -142,6 +154,7 @@ impl SoundApp {
         }
         self.recorder = None;
         self.recorder_failed = false;
+        self.input_pin = None;
         let player = Player::with_config(self.engine.session_arc(), cfg);
         self.attach_midi(&player);
         self.player = Some(player);
