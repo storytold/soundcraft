@@ -201,7 +201,7 @@ pub fn show(app: &mut SoundApp, ui: &mut Ui) {
     );
     if let Some(names) = &reference {
         summary.push_str(" · ");
-        summary.push_str(&crate::localized_format!("Reference: {names}", names = names));
+        summary.push_str(&crate::localized_format!("Also showing: {names}", names = names));
     }
     ui.painter().text(pos2(header.min.x + 110.0, header.center().y), Align2::LEFT_CENTER, &summary, regular(11.0), t.text_dim);
     let grid_ticks = grid_ticks_of(app);
@@ -236,7 +236,7 @@ pub fn show(app: &mut SoundApp, ui: &mut Ui) {
     let base = egui::Color32::from_rgb(track_color[0], track_color[1], track_color[2]);
     draw_notes(app, &painter, &g, base);
     let roll_label = match &reference {
-        Some(names) => crate::localized_format!("MIDI Editor: {clip}, reference: {names}", clip = clip.name, names = names),
+        Some(names) => crate::localized_format!("MIDI Editor: {clip}, also showing: {names}", clip = clip.name, names = names),
         None => crate::localized_format!("MIDI Editor: {clip}", clip = clip.name),
     };
     note_pointer(app, ui, &g, cid, s.edit.tool == Tool::Pencil, &roll_label);

@@ -21,6 +21,7 @@ pub(super) fn translate(source: &str) -> Option<&'static str> {
             "Adiciona dither triangular de ±1 LSB ao gravar arquivos de 16 ou 24 bits. Deixe desativado se a cadeia master já aplicar dither."
         }
         "All" => "Tudo",
+        "Also showing: {names}" => "Mostrando também: {names}",
         "All audio clips checked" => "Todos os clipes de áudio verificados",
         "All audio clips have loaded media within source bounds." => "Todos os clipes de áudio têm mídia carregada dentro dos limites da origem.",
         "An open-source digital audio workstation from the ArtCraft team." => {
@@ -205,7 +206,6 @@ pub(super) fn translate(source: &str) -> Option<&'static str> {
         "Reduce motion" => "Reduzir animações",
         "Refresh devices" => "Atualizar dispositivos",
         "Refresh Report" => "Atualizar relatório",
-        "Reference: {names}" => "Referência: {names}",
         "Remove from Folder" => "Remover da pasta",
         "Remove send" => "Remover envio",
         "Remove this row" => "Remover esta linha",
@@ -314,7 +314,7 @@ pub(super) fn translate(source: &str) -> Option<&'static str> {
         "MIDI in: all" => "Entrada MIDI: todas",
         "MIDI EDITOR" => "EDITOR MIDI",
         "MIDI Editor: {clip}" => "Editor MIDI: {clip}",
-        "MIDI Editor: {clip}, reference: {names}" => "Editor MIDI: {clip}, referência: {names}",
+        "MIDI Editor: {clip}, also showing: {names}" => "Editor MIDI: {clip}, mostrando também: {names}",
         "Velocity" => "Velocidade",
         "movie missing from session" => "vídeo ausente da sessão",
         "Video Track Offline" => "Faixa de vídeo indisponível",

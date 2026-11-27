@@ -45,7 +45,7 @@ fn the_track_list_toggle_shows_a_track_in_the_midi_editor() {
     assert!(lead_shown(&h), "the toggle did not reach the engine");
     assert_eq!(h.get_by_label("Show Notes in MIDI Editor: Lead").accesskit_node().toggled(), Some(Toggled::True));
     // The editor says which tracks it shows behind the edited clip.
-    h.get_by_label("MIDI Editor: Keys, reference: Lead");
+    h.get_by_label("MIDI Editor: Keys, also showing: Lead");
     // Clicking the toggle selects nothing: the edited clip stays Keys'.
     let s = h.state().engine.session();
     assert!(!s.edit.selected_tracks.contains(&s.track_by_name("Lead").unwrap().id));
