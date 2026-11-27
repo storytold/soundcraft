@@ -827,8 +827,8 @@ pub fn io_setup(app: &mut SoundApp, ctx: &egui::Context) {
             }
         });
         if ui.button(crate::localization::text("New Bus")).clicked() {
-            let n = app.engine.session().busses.len() + 1;
-            let _ = app.run("mix.new_bus", json!({"name": format!("Bus {n}")}));
+            let name = crate::mix_window::free_bus_name(app.engine.session());
+            let _ = app.run("mix.new_bus", json!({"name": name}));
         }
         ui.separator();
         ui.label(egui::RichText::new(crate::localization::text("Outputs")).strong());

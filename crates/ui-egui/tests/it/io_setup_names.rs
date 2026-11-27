@@ -55,3 +55,30 @@ fn default_restores_the_default_output_paths() {
     assert_eq!(outputs.len(), 1, "{outputs:?}");
     assert_eq!((outputs[0].name.as_str(), outputs[0].first_channel), ("Out 1-2", 0));
 }
+
+/// Setup › I/O's New Bus skips a name an output path has: a route names a bus or an output path,
+/// so the two never share a name.
+#[test]
+fn new_bus_skips_an_output_path_name() {
+    let mut app = SoundApp::new(soundcraft_engine::Engine::default(), None, Services::default());
+    app.run("setup.io", json!({"action": "create_output", "name": "Bus 1", "first_channel": 2})).unwrap();
+    menus::invoke_menu(&mut app, "window.io_setup", "Setup > I/O...");
+    let mut h =
+        Harness::builder().with_context_setup(soundcraft_ui_egui::framework::install_headless).with_size(vec2(1600.0, 1000.0)).build_ui_state(
+            |ui, app: &mut SoundApp| {
+                let ctx = ui.ctx().clone();
+                app.logic(&ctx);
+                app.ui(ui);
+            },
+            app,
+        );
+    for _ in 0..3 {
+        h.step();
+    }
+    h.get_by_label("New Bus").click();
+    for _ in 0..3 {
+        h.step();
+    }
+    let busses: Vec<_> = h.state().engine.session().busses.iter().map(|bus| bus.name.clone()).collect();
+    assert_eq!(busses, ["Bus 2"]);
+}
