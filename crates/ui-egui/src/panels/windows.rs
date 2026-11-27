@@ -705,7 +705,7 @@ pub fn playback_engine(app: &mut SoundApp, ctx: &egui::Context) {
         });
         // Read when the window opens or the device choice changes, not on every frame.
         let lookup_id = clock_lookup_id();
-        let lookup = cached_lookup(ui.data(|d| d.get_temp::<ClockLookup>(lookup_id)), &app.ui.audio, ClockLookup::read);
+        let lookup = cached_lookup(ui.data(|d| d.get_temp::<ClockLookup>(lookup_id)), &app.ui.audio, streams_open(app), ClockLookup::read);
         ui.data_mut(|d| d.insert_temp(lookup_id, lookup.clone()));
         let output = app.player.as_ref().filter(|p| !p.silent).map(|p| p.device_name.as_str());
         match clock_note(&lookup.system, output, clock_input(app, &lookup).as_deref()) {
@@ -859,10 +859,12 @@ fn latency_line(app: &SoundApp) -> String {
 
 /// What the clock check reads from the audio system: its name and, where it tells clocks apart,
 /// the input device recording would open (see [`soundcraft_playback::devices::clock_lookup`]),
-/// for the device choice `cfg`.
+/// for the device choice `cfg`, read while a stream was `open` or not (on ASIO an open stream
+/// changes what can be read).
 #[derive(Clone, Debug, PartialEq)]
 struct ClockLookup {
     cfg: soundcraft_playback::AudioConfig,
+    open: bool,
     system: String,
     default_input: Option<String>,
 }
@@ -873,23 +875,34 @@ fn clock_lookup_id() -> egui::Id {
 }
 
 impl ClockLookup {
-    fn read(cfg: &soundcraft_playback::AudioConfig) -> Self {
-        let (system, default_input) = soundcraft_playback::devices::clock_lookup(cfg);
-        ClockLookup { cfg: cfg.clone(), system, default_input }
+    fn read(cfg: &soundcraft_playback::AudioConfig, open: bool) -> Self {
+        let (system, default_input) = soundcraft_playback::devices::clock_lookup(cfg, open);
+        ClockLookup { cfg: cfg.clone(), open, system, default_input }
+    }
+
+    /// [`Self::read`] for the app's device choice and open streams.
+    fn of(app: &SoundApp) -> Self {
+        Self::read(&app.ui.audio, streams_open(app))
     }
 }
 
-/// `cache` when it was read for `cfg`, else `read(cfg)`. On Core Audio and ASIO, naming the
-/// default input lists the input devices, so the Playback Engine keeps the lookup while it is
-/// open instead of reading it on every frame.
+/// Whether a stream of the app is open: an output on a device, or an input.
+fn streams_open(app: &SoundApp) -> bool {
+    app.player.as_ref().is_some_and(|p| !p.silent) || app.recorder.is_some()
+}
+
+/// `cache` when it was read for `cfg` with streams `open` as now, else `read(cfg, open)`. On Core
+/// Audio and ASIO, naming the default input lists the input devices, so the Playback Engine keeps
+/// the lookup while it is open instead of reading it on every frame.
 fn cached_lookup(
     cache: Option<ClockLookup>,
     cfg: &soundcraft_playback::AudioConfig,
-    read: impl FnOnce(&soundcraft_playback::AudioConfig) -> ClockLookup,
+    open: bool,
+    read: impl FnOnce(&soundcraft_playback::AudioConfig, bool) -> ClockLookup,
 ) -> ClockLookup {
     match cache {
-        Some(lookup) if lookup.cfg == *cfg => lookup,
-        _ => read(cfg),
+        Some(lookup) if lookup.cfg == *cfg && lookup.open == open => lookup,
+        _ => read(cfg, open),
     }
 }
 
@@ -904,7 +917,7 @@ fn clock_relation(app: &SoundApp, lookup: &ClockLookup) -> Option<bool> {
 
 /// [`clock_relation`] read now, for the commands.
 fn same_clock(app: &SoundApp) -> Option<bool> {
-    clock_relation(app, &ClockLookup::read(&app.ui.audio))
+    clock_relation(app, &ClockLookup::of(app))
 }
 
 /// The audio system, the open output and the input (open, else the one recording would open).
@@ -955,7 +968,7 @@ fn clock_note(system: &str, output: Option<&str>, input: Option<&str>) -> Option
 /// devices: a note, not a dialog (Pro Tools does not stop you either). Where the audio system does
 /// not tell (every system other than Core Audio and ASIO), nothing is said.
 pub(crate) fn note_different_clocks(app: &mut SoundApp) {
-    let devices = clock_devices(app, &ClockLookup::read(&app.ui.audio));
+    let devices = clock_devices(app, &ClockLookup::of(app));
     note_clocks(app, devices);
 }
 
@@ -1333,27 +1346,30 @@ mod clock_note_tests {
     }
 
     /// The Playback Engine reads the audio system and the input device once per device choice
-    /// (and when it opens), not on every frame.
+    /// (and when it opens, or a stream opens or closes), not on every frame.
     #[test]
     fn the_playback_engine_reads_the_clock_devices_once_per_device_choice() {
         let reads = std::cell::Cell::new(0);
-        let read = |cfg: &soundcraft_playback::AudioConfig| {
+        let read = |cfg: &soundcraft_playback::AudioConfig, open: bool| {
             reads.set(reads.get() + 1);
-            ClockLookup { cfg: cfg.clone(), system: "CoreAudio".into(), default_input: Some("Fireface UFX (23693403)".into()) }
+            ClockLookup { cfg: cfg.clone(), open, system: "CoreAudio".into(), default_input: Some("Fireface UFX (23693403)".into()) }
         };
         let a = soundcraft_playback::AudioConfig::default();
         let b = soundcraft_playback::AudioConfig { input: Some("MacBook Pro Microphone".into()), ..a.clone() };
         let mut cache = None;
         for _ in 0..3 {
-            cache = Some(cached_lookup(cache, &a, read));
+            cache = Some(cached_lookup(cache, &a, true, read));
         }
         assert_eq!(reads.get(), 1, "read once, then kept");
-        cache = Some(cached_lookup(cache, &b, read));
+        cache = Some(cached_lookup(cache, &b, true, read));
         assert_eq!(reads.get(), 2, "a new device choice is read again");
-        let _ = cached_lookup(cache, &b, read);
+        cache = Some(cached_lookup(cache, &b, true, read));
         assert_eq!(reads.get(), 2, "and kept");
-        let _ = cached_lookup(None, &b, read);
-        assert_eq!(reads.get(), 3, "a window that opens again reads again");
+        // On ASIO what can be read depends on whether a stream holds the driver.
+        let _ = cached_lookup(cache, &b, false, read);
+        assert_eq!(reads.get(), 3, "read again once the streams closed");
+        let _ = cached_lookup(None, &b, true, read);
+        assert_eq!(reads.get(), 4, "a window that opens again reads again");
     }
 
     /// The Playback Engine and the status line decide through [`clock_note`], with the audio system

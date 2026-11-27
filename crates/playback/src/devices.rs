@@ -220,40 +220,61 @@ pub fn knows_clock(host: &str) -> bool {
 
 /// The name of `cfg`'s audio system as cpal reports it (the default one when none is chosen) and,
 /// where it tells clocks apart ([`knows_clock`]), the name of the input device `cfg` opens (the
-/// chosen one when present, else the default; see [`clock_input`]).
-pub fn clock_lookup(cfg: &AudioConfig) -> (String, Option<String>) {
-    let host = host(cfg);
+/// chosen one when present, else the default; see [`clock_input`]). `open` says whether a stream
+/// of this app is open (an output on a device, or an input). The check opens nothing, so it logs
+/// nothing either: a device it does not find is not reported as unavailable.
+pub fn clock_lookup(cfg: &AudioConfig, open: bool) -> (String, Option<String>) {
+    let host = find_host(cfg).unwrap_or_else(cpal::default_host);
     let system = host.id().name();
-    let input = clock_input(system, || device(&host, cfg.input.as_deref(), false).and_then(|d| device_name(&d)));
+    let input = clock_input(system, open, cfg.input.as_deref(), || {
+        let chosen = cfg.input.as_deref().and_then(|name| find_device(&host, name, false));
+        chosen.or_else(|| host.default_input_device()).and_then(|d| device_name(&d))
+    });
     (system.to_string(), input)
 }
 
-/// The input device name `read` gives, read only under an audio system where [`same_clock`] can
-/// tell (Core Audio and ASIO). Naming the input lists the input devices; elsewhere (WASAPI, ALSA
-/// and the others) the answer would be unknown anyway, so this is `None` without calling `read`.
-fn clock_input(system: &str, read: impl FnOnce() -> Option<String>) -> Option<String> {
-    if knows_clock(system) { read() } else { None }
+/// The input device name the clocks are compared with: `read` lists the devices for it, and is
+/// called only under an audio system where [`same_clock`] can tell (Core Audio and ASIO);
+/// elsewhere (WASAPI, ALSA and the others) the answer would be unknown anyway, so this is `None`.
+/// On ASIO with a stream `open`, nothing is listed: the stream keeps its driver loaded, and cpal
+/// 0.18 then lists no other driver (see [`open_in_order`]), so a lookup by name would miss the
+/// chosen device. The chosen input's name is compared instead, as the input would open by it;
+/// with no input chosen the default would come from that list, so it is `None` (not judged).
+fn clock_input(system: &str, open: bool, chosen: Option<&str>, read: impl FnOnce() -> Option<String>) -> Option<String> {
+    match system {
+        "ASIO" if open => chosen.map(str::to_owned),
+        _ if knows_clock(system) => read(),
+        _ => None,
+    }
 }
 
 /// The chosen audio system, else the default one.
 pub(crate) fn host(cfg: &AudioConfig) -> cpal::Host {
-    cfg.system
-        .as_deref()
-        .and_then(|want| cpal::available_hosts().into_iter().find(|id| id.name().eq_ignore_ascii_case(want)))
-        .and_then(|id| cpal::host_from_id(id).ok())
-        .unwrap_or_else(|| {
-            if let Some(s) = &cfg.system {
-                log::warn!("audio system `{s}` is not available; using the default");
-            }
-            cpal::default_host()
-        })
+    find_host(cfg).unwrap_or_else(|| {
+        if let Some(s) = &cfg.system {
+            log::warn!("audio system `{s}` is not available; using the default");
+        }
+        cpal::default_host()
+    })
+}
+
+/// The chosen audio system, if one is chosen and available.
+fn find_host(cfg: &AudioConfig) -> Option<cpal::Host> {
+    let want = cfg.system.as_deref()?;
+    let id = cpal::available_hosts().into_iter().find(|id| id.name().eq_ignore_ascii_case(want))?;
+    cpal::host_from_id(id).ok()
+}
+
+/// The output (or input) device of `host` named `want`, if it is listed.
+fn find_device(host: &cpal::Host, want: &str, output: bool) -> Option<cpal::Device> {
+    if output { host.output_devices().ok() } else { host.input_devices().ok() }
+        .and_then(|mut ds| ds.find(|d| device_name(d).as_deref() == Some(want)))
 }
 
 /// The named output (or input) device of `host`, else its default device.
 pub(crate) fn device(host: &cpal::Host, name: Option<&str>, output: bool) -> Option<cpal::Device> {
     if let Some(want) = name {
-        let found = if output { host.output_devices().ok() } else { host.input_devices().ok() }
-            .and_then(|mut ds| ds.find(|d| device_name(d).as_deref() == Some(want)));
+        let found = find_device(host, want, output);
         if found.is_some() {
             return found;
         }
@@ -308,7 +329,7 @@ mod tests {
         // the audio system does not tell whether the clocks match, the name is not read at all.
         let lookup = |system: &str| {
             let listed = std::cell::Cell::new(false);
-            let input = clock_input(system, || {
+            let input = clock_input(system, false, None, || {
                 listed.set(true);
                 Some("Microphone (Model 12)".to_owned())
             });
@@ -320,6 +341,30 @@ mod tests {
         for system in ["CoreAudio", "ASIO"] {
             assert_eq!(lookup(system), (true, true), "{system}");
         }
+    }
+
+    #[test]
+    fn the_clock_check_lists_no_device_while_an_asio_stream_is_open() {
+        // While a stream holds an ASIO driver, cpal 0.18 lists no other driver (see
+        // `open_in_order`): a lookup by name then misses the chosen device and logs that it "is not
+        // available" (seen on Windows with ASIO4ALL after every open). With a stream open, ASIO
+        // compares the chosen input's name, and nothing is listed.
+        let lookup = |system: &str, open: bool, chosen: Option<&str>| {
+            let listed = std::cell::Cell::new(false);
+            let input = clock_input(system, open, chosen, || {
+                listed.set(true);
+                Some("listed input".to_owned())
+            });
+            (input, listed.get())
+        };
+        assert_eq!(lookup("ASIO", true, Some("ASIO4ALL v2")), (Some("ASIO4ALL v2".to_owned()), false));
+        // No input chosen: the default would come from the device list, which shows nothing
+        // reliable while a driver is loaded, so the relation is not judged.
+        assert_eq!(lookup("ASIO", true, None), (None, false));
+        // Nothing open holds a driver: the list is whole.
+        assert_eq!(lookup("ASIO", false, Some("ASIO4ALL v2")), (Some("listed input".to_owned()), true));
+        // Core Audio lists every device while streams run: read as before.
+        assert_eq!(lookup("CoreAudio", true, Some("Fireface UFX (23693403)")), (Some("listed input".to_owned()), true));
     }
 
     #[test]
