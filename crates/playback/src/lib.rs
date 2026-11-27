@@ -9,8 +9,9 @@
 //!
 //! Rate: the device is opened at the chosen rate (else the session rate) when it offers it; if it
 //! does not, or a stream at that rate will not build or start, at its default configuration, and
-//! the mix resamples. A device that runs at another rate is first switched by a throwaway stream,
-//! whose late report of the switch is waited for, so the stream that plays opens with no switch.
+//! the mix resamples. On Core Audio, a device that runs at another rate is first switched by a
+//! throwaway stream, whose late report of the switch is waited for, so the stream that plays opens
+//! with no switch. Other hosts open without that step.
 //!
 //! Surround: the device is opened with as many output channels as it offers, up to the width of
 //! the session's main format; a device that offers the rate only wider than the mix (some
@@ -68,7 +69,10 @@ use callback::{AudioState, Fault, Side, take_meter_snapshot};
 use callback::{STALL, copy_meter_snapshot};
 #[cfg(not(target_arch = "wasm32"))]
 use callback::{guarded_block, stalled};
-use stream::{Opened, OutputAttempt, RATE_SETTLE, build_output, first_started, open_device, settle_rate_switch, start_stream, throwaway_output};
+use stream::{
+    Opened, OutputAttempt, RATE_SETTLE, build_output, first_started, open_device, rate_switch_settles_on, settle_rate_switch, start_stream,
+    throwaway_output,
+};
 #[cfg(test)]
 use stream::{output_attempts, pick_output_config, pick_wider_output_config};
 
@@ -225,7 +229,7 @@ impl Player {
 
     /// Open the output device for `session`, trying the configuration picked for the chosen rate before the device's
     /// default configuration, and the requested buffer size before the device's, then build the shared player state.
-    /// A device at another rate than the picked configuration is switched first (`settle_rate_switch`).
+    /// On Core Audio, a device at another rate than the picked configuration is switched first (`settle_rate_switch`).
     /// If no configuration starts or the device cannot open, fall back to a silent clock at the session rate.
     fn open(session: Arc<Session>, cfg: &AudioConfig) -> Player {
         let shared = Arc::new(Shared {
@@ -244,9 +248,10 @@ impl Player {
         };
         match open_device(want, want_ch, cfg) {
             Ok((device, attempts, name)) => {
-                // A device at another rate switches on a throwaway stream first, so the stream
-                // that plays does not end on the device's late report of its own switch.
-                if let Some(first) = attempts.first().filter(|a| !a.default) {
+                // On Core Audio, a device at another rate switches on a throwaway stream first,
+                // so the stream that plays does not end on the device's late report of its own
+                // switch. Other hosts skip this and open as before (`rate_switch_settles_on`).
+                if let Some(first) = attempts.first().filter(|a| !a.default && rate_switch_settles_on(std::env::consts::OS)) {
                     use cpal::traits::DeviceTrait;
                     let current = device.default_output_config().ok().map(|c| c.sample_rate());
                     let target = first.config.sample_rate;

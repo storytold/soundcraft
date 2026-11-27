@@ -26,6 +26,14 @@ pub(crate) struct Opened {
 /// speakers on macOS 26).
 pub(crate) const RATE_SETTLE: std::time::Duration = std::time::Duration::from_millis(1500);
 
+/// Whether opening on `os` (a `std::env::consts::OS` value) settles a rate switch first. Only Core
+/// Audio reports a device's own rate switch after the stream that caused it opened. WASAPI shared
+/// mode and ALSA send no such report, so a settle there would only wait out [`RATE_SETTLE`] on the
+/// UI thread and build an extra stream; every other host opens as it did before the settle.
+pub(crate) fn rate_switch_settles_on(os: &str) -> bool {
+    os == "macos"
+}
+
 /// Let a device that runs at another rate (`current`) switch to `target` before the stream that
 /// plays is built. cpal switches the rate while it builds a Core Audio stream, and the device can
 /// report the switch only once that stream listens for rate changes; the stream then ends ("Device

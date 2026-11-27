@@ -1960,8 +1960,8 @@ fn a_pass_started_and_ended_by_the_commands_of_one_callback_keeps_what_was_playe
 
 /// Core Audio can report a rate switch only after the stream that caused it is listening for it,
 /// which then ends that stream ("Device sample rate changed", seen on a Fireface UFX, BlackHole and
-/// the built-in speakers). A device that runs at another rate is switched by a throwaway stream
-/// first, and its late report is waited for, so the stream that plays opens with no switch.
+/// the built-in speakers). There, a device that runs at another rate is switched by a throwaway
+/// stream first, and its late report is waited for, so the stream that plays opens with no switch.
 #[test]
 fn a_rate_switch_settles_on_a_throwaway_stream_before_the_stream_that_plays() {
     use std::time::{Duration, Instant};
@@ -2008,4 +2008,15 @@ fn a_rate_switch_settles_on_a_throwaway_stream_before_the_stream_that_plays() {
     assert!(start.elapsed() >= Duration::from_millis(100));
     // A throwaway that will not build switched nothing.
     assert!(!settle_rate_switch(Some(44_100), 48_000, |_| None::<()>, Duration::from_secs(5)));
+}
+
+/// Only Core Audio reports a device's own rate switch late (see `settle_rate_switch`). WASAPI
+/// shared mode and ALSA send no such report, so a settle there would wait its whole budget on the
+/// UI thread for nothing and build an extra stream; every other host opens as before.
+#[test]
+fn the_rate_switch_settles_only_on_core_audio() {
+    assert!(rate_switch_settles_on("macos"));
+    for os in ["windows", "linux", "freebsd", "ios", "android"] {
+        assert!(!rate_switch_settles_on(os), "{os} must not wait for a rate report");
+    }
 }
