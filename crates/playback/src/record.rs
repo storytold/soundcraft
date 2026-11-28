@@ -358,9 +358,10 @@ impl Recorder {
     }
 
     /// When the first sample of the armed take was captured: its input callback's time less the
-    /// reported input latency, and its capture time on the stream clock. `None` until the first
-    /// armed input callback, and for a take whose first callback came before the input reported
-    /// its latency (a later report does not tell when that sample was captured).
+    /// reported input latency, and its capture time on the stream clock (none where the input does
+    /// not share the output's clock, see [`crate::latency::shares_stream_clock`]). `None` until
+    /// the first armed input callback, and for a take whose first callback came before the input
+    /// reported its latency (a later report does not tell when that sample was captured).
     pub fn first_capture(&self) -> Option<crate::latency::Moment> {
         self.shared.first_capture()
     }
