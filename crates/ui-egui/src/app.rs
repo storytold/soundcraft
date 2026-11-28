@@ -28,6 +28,11 @@ impl SoundApp {
         self.system_fonts = on;
     }
 
+    /// Whether fonts installed from the system are enabled for this app instance.
+    pub const fn system_fonts(&self) -> bool {
+        self.system_fonts
+    }
+
     /// Build an app around an engine and optional player, initialising UI, recording, autosave, control and
     /// synthetic-input state.
     pub fn new(engine: Engine, player: Option<Player>, services: Services) -> Self {
@@ -152,6 +157,9 @@ impl SoundApp {
     /// Each host iteration starts with `raw_input_hook`; its editor-poll admission prevents an
     /// empty queue on a discarded pass from ending a still-active plugin gesture.
     pub fn logic(&mut self, ctx: &egui::Context) {
+        if !self.ui.language.is_supported_with_system_fonts(self.system_fonts) {
+            self.ui.language = crate::localization::Language::English;
+        }
         let _language = crate::localization::enter(self.ui.language);
         self.ui.undo_levels = self.ui.undo_levels.clamp(1, 64);
         self.engine.set_history_limit(self.ui.undo_levels);
@@ -166,7 +174,8 @@ impl SoundApp {
             }
         }
         let light = theme::wants_light(ctx, self.ui.theme);
-        if self.theme_applied != Some(light) || theme::is_light() != light {
+        let theme_changed = self.theme_applied != Some(light) || theme::is_light() != light;
+        if theme_changed {
             theme::apply(ctx, light);
             self.theme_applied = Some(light);
         }
@@ -188,6 +197,10 @@ impl SoundApp {
         self.last_frame = Some(self.uptime);
         crate::control::expire_gestures(self, ctx);
         crate::control::drain(self, ctx);
+        let rtl = self.ui.language.direction() == craft_ui::runtime::env::Direction::Rtl;
+        if theme_changed || ctx.global_style().right_to_left != rtl {
+            ctx.all_styles_mut(|s| s.right_to_left = rtl);
+        }
         self.note_recent_session();
         self.apply_editor_edits();
         // A multi-pass frame runs this logic once per pass; bounce slices and background-import

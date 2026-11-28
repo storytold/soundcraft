@@ -100,7 +100,8 @@ impl SoundApp {
     fn frame_input(&mut self, _output: FrameOutput) -> FrameInput {
         let mode = if crate::theme::is_light() { craft_theme::Mode::Light } else { craft_theme::Mode::Dark };
         // SoundCraft zooms with Cmd/Ctrl+scroll itself, so a smooth Ctrl+wheel stays a wheel event.
-        let root = RootEnv::new().mode(mode).scale(Scale::new(self.extra.applied_scale())).ctrl_wheel_pinch(false);
+        let root =
+            RootEnv::new().mode(mode).scale(Scale::new(self.extra.applied_scale())).ctrl_wheel_pinch(false).direction(self.ui.language.direction());
         FrameInput::new(root).commands(CommandInput::new().overrides(command_overrides())).host(Arc::clone(&self.framework_host))
     }
 

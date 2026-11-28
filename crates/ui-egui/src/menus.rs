@@ -274,78 +274,86 @@ pub fn menu_bar(app: &mut SoundApp, ui: &mut egui::Ui) {
         ui,
         |ui| {
             egui::MenuBar::new().ui(ui, |ui| {
-                ui.menu_button(crate::localization::text("SoundCraft"), |ui| {
-                    ui.add_enabled_ui(menu_entries_enabled, |ui| {
-                        if ui.button(crate::localization::text("About SoundCraft")).clicked() {
-                            app.ui.show_about = true;
-                        }
-                        if ui.add_enabled(preferences_enabled, egui::Button::new(crate::localization::text("Preferences..."))).clicked() {
-                            let _ = app.run("setup.preferences", json!({"value": true}));
-                        }
-                        // Nightly has no in-app updater: ArtCraft Launcher installs and updates it.
-                        if app.update_services_allowed() && ui.button(crate::localization::text("Check for Updates…")).clicked() {
-                            let _ = app.run("app.checkForUpdates", json!({}));
-                        }
-                        if ui.button(crate::localization::text("Session Info")).clicked() {
-                            app.ui.show_session_info = true;
-                        }
-                        if ui.button(crate::localization::text("Session Audio Health")).clicked() {
-                            let _ = app.run("window.audio_health", json!({"value": true}));
-                        }
-                        ui.separator();
-                        if ui.button(crate::localization::text("Quit")).clicked() {
-                            let _ = crate::dialogs::run_or_ask(app, "app.quit", json!({}));
-                        }
-                    });
-                });
-                let extra = ui_aliases();
-                for root in tree() {
-                    ui.menu_button(crate::localization::text(&root.label), |ui| {
-                        scrolling(ui, |ui| {
-                            ui.add_enabled_ui(menu_entries_enabled, |ui| {
-                                for c in &root.children {
-                                    menu_node(app, ui, c, &extra);
-                                    if c.path == "File > Open" {
-                                        crate::recent::menu(app, ui);
-                                    }
-                                    if c.path == "Track > New..." {
-                                        instrument_menu(app, ui);
-                                    }
-                                }
-                                if root.path == "AudioSuite" {
-                                    ui.separator();
-                                    ui.label(
-                                        egui::RichText::new(crate::localization::text("Processes selected clips offline")).small().color(t.text_dim),
-                                    );
-                                }
-                                if root.path == "Window" {
-                                    ui.separator();
-                                    let mut separate = app.ui.mix_separate;
-                                    if ui
-                                        .checkbox(&mut separate, crate::localization::text("Mix in Separate Window"))
-                                        .on_hover_text(crate::localization::text("Show Edit and Mix at once, e.g. one per monitor"))
-                                        .changed()
-                                    {
-                                        let _ = run_ui_command(app, "window.mix_separate", &json!({"value": separate}));
-                                        ui.close();
-                                    }
-                                }
-                            })
+                let rtl = ui.style().right_to_left;
+                let row = if rtl { egui::Layout::right_to_left(egui::Align::Center) } else { egui::Layout::left_to_right(egui::Align::Center) };
+                ui.with_layout(row, |ui| {
+                    ui.menu_button(crate::localization::text("SoundCraft"), |ui| {
+                        ui.add_enabled_ui(menu_entries_enabled, |ui| {
+                            if ui.button(crate::localization::text("About SoundCraft")).clicked() {
+                                app.ui.show_about = true;
+                            }
+                            if ui.add_enabled(preferences_enabled, egui::Button::new(crate::localization::text("Preferences..."))).clicked() {
+                                let _ = app.run("setup.preferences", json!({"value": true}));
+                            }
+                            // Nightly has no in-app updater: ArtCraft Launcher installs and updates it.
+                            if app.update_services_allowed() && ui.button(crate::localization::text("Check for Updates…")).clicked() {
+                                let _ = app.run("app.checkForUpdates", json!({}));
+                            }
+                            if ui.button(crate::localization::text("Session Info")).clicked() {
+                                app.ui.show_session_info = true;
+                            }
+                            if ui.button(crate::localization::text("Session Audio Health")).clicked() {
+                                let _ = app.run("window.audio_health", json!({"value": true}));
+                            }
+                            ui.separator();
+                            if ui.button(crate::localization::text("Quit")).clicked() {
+                                let _ = crate::dialogs::run_or_ask(app, "app.quit", json!({}));
+                            }
                         });
                     });
-                }
-                let title = format!(
-                    "{}{}  —  {}",
-                    app.engine.session().name,
-                    if app.engine.is_dirty() { " *" } else { "" },
-                    if app.ui.window == MainWindow::Edit || app.ui.mix_separate {
-                        crate::localization::text("Edit")
-                    } else {
-                        crate::localization::text("Mix")
+                    let extra = ui_aliases();
+                    for root in tree() {
+                        ui.menu_button(crate::localization::text(&root.label), |ui| {
+                            scrolling(ui, |ui| {
+                                ui.add_enabled_ui(menu_entries_enabled, |ui| {
+                                    for c in &root.children {
+                                        menu_node(app, ui, c, &extra);
+                                        if c.path == "File > Open" {
+                                            crate::recent::menu(app, ui);
+                                        }
+                                        if c.path == "Track > New..." {
+                                            instrument_menu(app, ui);
+                                        }
+                                    }
+                                    if root.path == "AudioSuite" {
+                                        ui.separator();
+                                        ui.label(
+                                            egui::RichText::new(crate::localization::text("Processes selected clips offline"))
+                                                .small()
+                                                .color(t.text_dim),
+                                        );
+                                    }
+                                    if root.path == "Window" {
+                                        ui.separator();
+                                        let mut separate = app.ui.mix_separate;
+                                        if ui
+                                            .checkbox(&mut separate, crate::localization::text("Mix in Separate Window"))
+                                            .on_hover_text(crate::localization::text("Show Edit and Mix at once, e.g. one per monitor"))
+                                            .changed()
+                                        {
+                                            let _ = run_ui_command(app, "window.mix_separate", &json!({"value": separate}));
+                                            ui.close();
+                                        }
+                                    }
+                                })
+                            });
+                        });
                     }
-                );
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    ui.label(egui::RichText::new(title).color(t.text_dim));
+                    let title = format!(
+                        "{}{}  —  {}",
+                        app.engine.session().name,
+                        if app.engine.is_dirty() { " *" } else { "" },
+                        if app.ui.window == MainWindow::Edit || app.ui.mix_separate {
+                            crate::localization::text("Edit")
+                        } else {
+                            crate::localization::text("Mix")
+                        }
+                    );
+                    let trailing =
+                        if rtl { egui::Layout::left_to_right(egui::Align::Center) } else { egui::Layout::right_to_left(egui::Align::Center) };
+                    ui.with_layout(trailing, |ui| {
+                        ui.label(egui::RichText::new(title).color(t.text_dim));
+                    });
                 });
             });
         },
@@ -641,9 +649,12 @@ pub fn run_ui_command(app: &mut SoundApp, id: &str, p: &Value) -> Option<Result<
             let Some(tag) = p.get("language").and_then(Value::as_str) else {
                 return Some(Ok(json!({"language": app.ui.language.id()})));
             };
-            let Some(language) = crate::localization::Language::parse(tag) else {
-                return Some(Err(format!("unknown language `{tag}` (en or pt-BR)")));
+            let Some(language) = crate::localization::Language::parse_any(tag) else {
+                return Some(Err(format!("unknown language `{tag}` (en, pt-BR, or he)")));
             };
+            if !language.is_supported_with_system_fonts(app.system_fonts()) {
+                return Some(Err(format!("language `{}` is unavailable without a Hebrew system font", language.id())));
+            }
             app.ui.language = language;
             json!({"language": language.id()})
         }
@@ -858,6 +869,9 @@ pub fn run_ui_command(app: &mut SoundApp, id: &str, p: &Value) -> Option<Result<
                 }
                 match serde_json::from_value::<crate::UiState>(cur) {
                     Ok(ns) => {
+                        if p.get("language").is_some() && !ns.language.is_supported_with_system_fonts(app.system_fonts()) {
+                            return Some(Err(format!("language `{}` is unavailable without a Hebrew system font", ns.language.id())));
+                        }
                         if let Err(error) = crate::docking::validate(&ns.docking).and_then(|()| crate::docking::validate_mix(&ns.mix_docking)) {
                             return Some(Err(error));
                         }
