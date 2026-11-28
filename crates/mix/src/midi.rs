@@ -18,13 +18,34 @@ fn midi_offset(s: &Session, t: &Track) -> i64 {
         .map_or(0, |v| v as i64)
 }
 
+/// Clip notes already sounding, whether a seek should chase them, and the live keys sharing the instrument.
+///
+/// Kept together so [`schedule_notes`] stays under the argument limit. The instrument slot is
+/// separate: the strip borrows it mutably at the same time as `held` and `live`.
+pub(crate) struct SoundingNotes<'a> {
+    /// Pitches a clip note-on has started and a note-off has not ended.
+    pub held: &'a mut Vec<u8>,
+    /// Sound notes already held at the playhead after a seek or a new instrument.
+    pub chase: bool,
+    /// Notes played live on the same instrument.
+    pub live: &'a mut LiveNotes,
+}
+
 /// Send note on/offs and controllers for MIDI clips overlapping the block.
 ///
-/// `live` holds the notes played live on the same instrument. Instruments end notes by pitch, so
-/// a clip note-off is not sent while a live key holds that pitch: the key's own release ends it.
-/// A note-off held back that way is told to `live`: when the key goes up earlier in the same
-/// block, the note still lasts until the clip's note-off.
-pub(crate) fn schedule_notes(s: &Session, t: &Track, pos: Samples, frames: usize, inst: &mut PluginSlot, held: &mut Vec<u8>, live: &mut LiveNotes) {
+/// [`SoundingNotes::chase`] sounds notes already held at the playhead after a seek or a new
+/// instrument. `live` holds the notes played live on the same instrument. Instruments end notes
+/// by pitch, so a clip note-off is not sent while a live key holds that pitch: the key's own
+/// release ends it. A note-off held back that way is told to `live`: when the key goes up earlier
+/// in the same block, the note still lasts until the clip's note-off.
+pub(crate) fn schedule_notes(
+    s: &Session,
+    t: &Track,
+    pos: Samples,
+    frames: usize,
+    inst: &mut PluginSlot,
+    SoundingNotes { held, chase, live }: SoundingNotes<'_>,
+) {
     let sr = s.sample_rate;
     // MIDI Track Offsets: the track's notes sound `offset` samples later (earlier if negative), so
     // the block looks that far back into the clips.
@@ -36,7 +57,7 @@ pub(crate) fn schedule_notes(s: &Session, t: &Track, pos: Samples, frames: usize
             continue;
         }
         let ClipContent::Midi { sequence } = &clip.content else { continue };
-        if !clip.range().overlaps(&Range { start: pos, end }) {
+        if !clip.range().overlaps(&Range { start: pos, end }) && clip.end() != pos {
             continue;
         }
         let base = s.tempo.samples_to_ticks(clip.start, sr);
@@ -71,8 +92,8 @@ pub(crate) fn schedule_notes(s: &Session, t: &Track, pos: Samples, frames: usize
             if on >= clip.end() {
                 continue;
             }
-            if on >= pos && on < end {
-                inst.plugin.note_on(usize::try_from(on - pos).unwrap_or(0), n.pitch, n.velocity);
+            if (on >= pos && on < end) || (chase && on < pos && off > pos && !held.contains(&n.pitch)) {
+                inst.plugin.note_on(usize::try_from(on.saturating_sub(pos).max(0)).unwrap_or(0), n.pitch, n.velocity);
                 if !held.contains(&n.pitch) && held.len() < 128 {
                     held.push(n.pitch);
                 }

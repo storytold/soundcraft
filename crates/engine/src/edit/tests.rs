@@ -41,6 +41,28 @@ fn copy_range_resets_fades_at_cut_edges() {
 }
 
 #[test]
+fn midi_split_and_trim_preserve_crossing_notes() {
+    use soundcraft_midi::{Note, Sequence};
+    use soundcraft_model::ClipContent;
+    let s = Session::default();
+    let note = |start, length, pitch| Note { start, length, pitch, velocity: 100, release_velocity: 64, channel: 0 };
+    let seq = Sequence { notes: vec![note(0, 960, 60), note(0, 480, 62), note(480, 240, 64), note(i64::MAX, 1, 67)], ..Sequence::default() };
+    let at = s.tempo.tick_to_samples(480, s.sample_rate);
+    let end = s.tempo.tick_to_samples(1920, s.sample_rate);
+    let clip = Clip::midi(ClipId(100), "Keys", 0, end, seq);
+    let (left, right) = split_clip(&clip, at, ClipId(101), TimeCtx::of(&s)).unwrap();
+    let ClipContent::Midi { sequence: ls } = left.content else { panic!("MIDI expected") };
+    let ClipContent::Midi { sequence: rs } = right.content else { panic!("MIDI expected") };
+    assert_eq!(ls.notes, vec![note(0, 480, 60), note(0, 480, 62)]);
+    assert_eq!(rs.notes, vec![note(0, 480, 60), note(0, 240, 64), note(i64::MAX - 480, 1, 67)]);
+    let mut trimmed = clip;
+    trimmed.trim_start_to(at);
+    rebase_midi_start(&mut trimmed, 0, TimeCtx::of(&s));
+    let ClipContent::Midi { sequence } = trimmed.content else { panic!("MIDI expected") };
+    assert_eq!(sequence.notes, rs.notes);
+}
+
+#[test]
 fn separate_splits_and_heal_rejoins() {
     let (mut s, t) = session_with_clip();
     assert_eq!(separate_at(&mut s, t, 3000), 1);

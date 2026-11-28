@@ -2,7 +2,7 @@ use super::automation::{Level, apply_gain, transport_at, volume_level};
 use super::clips::{ClipFx, clip_fx_params, render_clip};
 use super::instances::{INSTRUMENT_SLOT, PluginFailures, PreparedInstance, create_instance_for, is_third_party};
 use super::live_midi::{LiveMidi, LiveNotes, MidiPorts, midi_thru};
-use super::midi::{chase_controllers, schedule_notes};
+use super::midi::{SoundingNotes, chase_controllers, schedule_notes};
 use super::pan::{PanSpec, apply_matrix, build_matrix, identity_matrix};
 use super::routing::solo_muted;
 use super::{
@@ -50,6 +50,8 @@ pub(crate) struct Strip {
     pub(crate) live: LiveNotes,
     /// The instrument's next block starts somewhere new: send it the controllers in effect there.
     pub(crate) chase: bool,
+    /// The next block should sound notes that are already held at the playhead (seek or a new instrument).
+    pub(crate) chase_notes: bool,
     /// The last block played the clips: stopped monitoring has their sustain pedal to let go of.
     pub(crate) clips_played: bool,
     pub(crate) muted: bool,
@@ -151,6 +153,7 @@ impl Strip {
             held: Vec::new(),
             live: LiveNotes::default(),
             chase: true,
+            chase_notes: true,
             clips_played: false,
             muted: false,
             gr: 0.0,
@@ -246,9 +249,8 @@ fn monitor_input(t: &Track, strip: &mut Strip, live: &LiveInput<'_>, frames: usi
         }
         _ => 0,
     };
-    let n_in = live.input.len().max(1);
     for (k, dst) in strip.buf.iter_mut().enumerate() {
-        if let Some(src) = live.input.get((first + k) % n_in) {
+        if let Some(src) = first.checked_add(k).and_then(|i| live.input.get(i)) {
             for (d, x) in dst.iter_mut().zip(src.iter()).take(frames) {
                 *d = *x;
             }
@@ -344,8 +346,11 @@ fn render_instrument(s: &Session, t: &Track, strip: &mut Strip, live: &LiveInput
             chased = true;
         }
         if !live.monitor_only {
-            schedule_notes(s, t, pos, frames, inst, &mut strip.held, &mut strip.live);
+            schedule_notes(s, t, pos, frames, inst, SoundingNotes { held: &mut strip.held, chase: strip.chase_notes, live: &mut strip.live });
             strip.clips_played = true;
+            if frames > 0 {
+                strip.chase_notes = false;
+            }
         } else {
             // Stopped: the clips are silent, only live MIDI input plays. Playback that ran to its
             // end left the clips' notes without their note-offs: end them here, except a pitch a
