@@ -19,6 +19,7 @@ mod random_edits;
 mod recording;
 mod session_transport;
 mod split_into_mono;
+mod tap_tempo;
 mod time_key_signatures;
 mod track_name_collisions;
 mod trim_to_selection;

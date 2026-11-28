@@ -204,6 +204,10 @@ pub struct Engine {
     merge_key: Option<String>,
     /// The key every merged gesture takes while held (see `hold_merge`).
     merge_hold: Option<String>,
+    /// Times (ms) of the current tap-tempo series, oldest first (see `event.tap_tempo`).
+    tap_times: Vec<f64>,
+    /// The document the last tap left, so later taps of the series join its undo step.
+    tap_doc: Option<Arc<Session>>,
     /// Messages for the UI status line / agents.
     pub messages: Vec<String>,
     /// The edit selection (range, tracks) before the last change, for Restore Last Selection.
@@ -239,6 +243,8 @@ impl Engine {
             dirty_at: Cell::new((0, false)),
             merge_key: None,
             merge_hold: None,
+            tap_times: Vec::new(),
+            tap_doc: None,
             messages: Vec::new(),
             last_selection: None,
             imports: Vec::new(),
@@ -306,6 +312,8 @@ impl Engine {
         self.undo.clear();
         self.redo.clear();
         self.last_selection = None;
+        self.tap_times.clear();
+        self.tap_doc = None;
         self.revision = self.revision.wrapping_add(1);
         self.dirty = false;
     }

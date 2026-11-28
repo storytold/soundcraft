@@ -61,6 +61,7 @@ mod strip_silence_rename;
 mod strip_silence_sliders;
 mod sub_counter;
 mod toolbar_scroll;
+mod toolbar_tap_tempo;
 mod toolbar_tempo;
 mod track_height;
 mod track_list;

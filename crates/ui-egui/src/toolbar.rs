@@ -670,6 +670,7 @@ fn tempo_meter(app: &mut SoundApp, ui: &mut Ui) {
     ui.painter().text(pos2(r.min.x + 70.0, r.min.y + 48.0), Align2::RIGHT_CENTER, crate::localization::text("Tempo"), regular(11.0), t.counter_label);
     icons::draw(ui.painter(), Rect::from_center_size(pos2(r.min.x + 82.0, r.min.y + 48.0), vec2(13.0, 13.0)), "note", t.counter_text);
     tempo_value(app, ui, r.max.x - 8.0, r.min.y + 48.0, bpm);
+    tap_key(app, ui, Rect::from_min_size(pos2(r.min.x + 6.0, r.min.y + 25.0), vec2(28.0, 13.0)));
     let clk = Rect::from_min_size(pos2(r.min.x + 6.0, r.min.y + 40.0), vec2(18.0, 18.0));
     icons::draw(ui.painter(), clk, "click", if click { t.counter_text } else { t.text_dim });
     if ui.interact(clk, ui.scope_id().with("click"), Sense::click()).on_hover_text(crate::localization::text("Click")).clicked() {
@@ -707,6 +708,24 @@ fn tempo_value(app: &mut SoundApp, ui: &mut Ui, right: f32, y: f32, bpm: f64) {
         app.engine.end_merge();
     }
     resp.on_hover_text(crate::localization::text("Drag to change the tempo (Shift: fine steps), or click to type it"));
+}
+
+/// Tap key: each click is a beat, and from the second one the tempo at the playhead follows the
+/// clicks (`event.tap_tempo`).
+fn tap_key(app: &mut SoundApp, ui: &mut Ui, rect: Rect) {
+    let t = Tokens::current();
+    let resp = ui.interact(rect, ui.scope_id().with("tap_tempo"), Sense::click());
+    key(ui.painter(), rect, &resp, t.counter_off);
+    ui.painter().text(rect.center(), Align2::CENTER_CENTER, crate::localization::text("Tap"), bold(10.0), t.mode_off_text);
+    resp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, crate::localization::text("Tap Tempo")));
+    // A mouse tap counts when the button goes down, on the beat, however long it is held; a keyboard or
+    // accessibility activation, which has no press of its own, counts when it comes. A click pressed and released
+    // in one frame is no longer down on the key but counts as its press.
+    let (now, pressed, released) = ui.input(|i| (i.time * 1000.0, i.pointer.primary_pressed(), i.pointer.primary_released()));
+    if (pressed && (resp.is_pointer_button_down_on() || resp.clicked())) || (resp.clicked() && !released) {
+        let _ = app.run("event.tap_tempo", json!({"time_ms": now, "at": app.position()}));
+    }
+    resp.on_hover_text(crate::localization::text("Click on the beat to set the tempo"));
 }
 
 /// Draws the compact stereo main-output meter.

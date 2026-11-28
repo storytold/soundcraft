@@ -6,6 +6,7 @@ use serde_json::{Value, json};
 use soundcraft_midi::ops::{DurationOp, QuantizeOptions, VelocityOp};
 use soundcraft_model::{ClipContent, MarkerKind};
 use soundcraft_time::TICKS_PER_QUARTER;
+use std::sync::Arc;
 
 pub fn specs() -> Vec<CommandSpec> {
     vec![
@@ -16,6 +17,15 @@ pub fn specs() -> Vec<CommandSpec> {
             let tick = s.tempo.samples_to_ticks(at, s.sample_rate);
             Ok(json!({"removed": s.tempo.remove_tempo(tick)}))
         }),
+        cmd!(
+            noundo "event.tap_tempo",
+            "Tap Tempo",
+            [],
+            None,
+            "{time_ms: tap time in ms on any steady clock, at?: position (default playhead)}",
+            always,
+            tap_tempo
+        ),
         cmd!("event.meter", "Change Meter...", ["Event", "Time Operations"], None, "{numerator, denominator, at?: position}", always, meter),
         cmd!("event.tempo_scale", "Scale...", ["Event", "Tempo Operations"], None, "{factor}", always, |e, p| {
             let f = f64_or(p, "factor", 1.0);
@@ -108,6 +118,55 @@ fn tempo(e: &mut Engine, p: &Value) -> Result<Value> {
     let tick = s.tempo.samples_to_ticks(at, s.sample_rate);
     s.tempo.set_tempo(tick, bpm).map_err(|err| bad("event.tempo", err.to_string()))?;
     Ok(json!({"tick": tick, "bpm": bpm}))
+}
+
+/// A tap this long after the previous one (or earlier than it) starts a new series.
+pub const TAP_RESET_MS: f64 = 2_000.0;
+/// The tempo comes from the intervals between at most this many recent taps.
+pub const TAP_WINDOW: usize = 8;
+
+/// Records a tap; from the second tap of a series on, sets the tempo change in effect at `at`
+/// (default the playhead) to the average of the recent intervals, clamped to the tempo range.
+/// A series is one undo step.
+fn tap_tempo(e: &mut Engine, p: &Value) -> Result<Value> {
+    let id = "event.tap_tempo";
+    let now = f64_or(p, "time_ms", f64::NAN);
+    if !now.is_finite() {
+        return Err(bad(id, "time_ms (a finite number) is required"));
+    }
+    let at = position_param(e, id, p, "at")?.unwrap_or(e.transport.position);
+    let fresh = e.tap_times.last().is_none_or(|&last| now <= last || now - last > TAP_RESET_MS);
+    if fresh {
+        e.tap_times.clear();
+        e.tap_doc = None;
+    }
+    e.tap_times.push(now);
+    if e.tap_times.len() > TAP_WINDOW {
+        let excess = e.tap_times.len() - TAP_WINDOW;
+        e.tap_times.drain(..excess);
+    }
+    let taps = e.tap_times.len();
+    // One tap alone only starts the count.
+    let [first, .., last] = e.tap_times[..] else {
+        return Ok(json!({"taps": taps}));
+    };
+    let interval = (last - first) / (taps - 1) as f64;
+    let bpm = (60_000.0 / interval).clamp(5.0, 1000.0);
+    let s = e.session();
+    let tick = s.tempo.samples_to_ticks(at, s.sample_rate);
+    let event = s.tempo.tempos().iter().rev().find(|x| x.tick <= tick).map_or(0, |x| x.tick);
+    if s.tempo.tempo_at_tick(event) == bpm {
+        return Ok(json!({"taps": taps, "tick": event, "bpm": bpm}));
+    }
+    let before = Arc::clone(&e.doc);
+    e.session_mut().tempo.set_tempo(event, bpm).map_err(|err| bad(id, err.to_string()))?;
+    // The first change of a series is an undo step; later taps join it while nothing else has
+    // changed the document in between and no undone edit waits in redo.
+    if !e.redo.is_empty() || !e.tap_doc.as_ref().is_some_and(|d| Arc::ptr_eq(d, &before)) {
+        e.push_undo("Tap Tempo", before);
+    }
+    e.tap_doc = Some(Arc::clone(&e.doc));
+    Ok(json!({"taps": taps, "tick": event, "bpm": bpm}))
 }
 
 fn tempo_constant(e: &mut Engine, p: &Value) -> Result<Value> {
