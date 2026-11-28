@@ -17,6 +17,7 @@ impl Rig {
             app: SoundApp::new(soundcraft_engine::Engine::default(), None, Services::default()),
             shapes: Vec::new(),
         };
+        soundcraft_ui_egui::framework::install_headless(&r.ctx);
         r.frames(4);
         r
     }

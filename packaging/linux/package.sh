@@ -7,7 +7,7 @@
 #   $DIST/soundcraft-<version>-linux-<arch>.rpm       Fedora, openSUSE, RHEL, ...
 #   $DIST/soundcraft-<version>-linux-<arch>.tar.gz    plain FHS-style tree (bin/, share/)
 #
-# Usage: packaging/linux/package.sh [--skip-build] [--formats "appimage deb rpm tar"]
+# Usage: packaging/linux/package.sh [--skip-build] [--formats "appimage deb rpm tar"] [--arch-tar-dir DIRECTORY]
 #
 # Needs: cargo; nfpm for deb/rpm (https://nfpm.goreleaser.com); appimagetool for the AppImage
 # (downloaded into $CARGO_TARGET_DIR if missing). Build on an old distro (CI: Ubuntu 22.04,
@@ -26,10 +26,16 @@ APP_ID=ai.storyteller.soundcraft
 
 SKIP_BUILD=0
 FORMATS="appimage deb rpm tar"
+ARCH_TAR_DIR=
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --skip-build) SKIP_BUILD=1; shift ;;
     --formats) FORMATS="$2"; shift 2 ;;
+    --arch-tar-dir)
+      [[ -n "${2:-}" ]] || { echo "error: --arch-tar-dir needs a directory" >&2; exit 2; }
+      ARCH_TAR_DIR="$2"
+      shift 2
+      ;;
     -h | --help) sed -n '2,20p' "$0"; exit 0 ;;
     *) echo "unknown argument: $1" >&2; exit 2 ;;
   esac
@@ -43,9 +49,24 @@ case "$ARCH" in
   *) echo "unsupported architecture $ARCH" >&2; exit 2 ;;
 esac
 export SOUNDCRAFT_MAINTAINER="${SOUNDCRAFT_MAINTAINER:-SoundCraft maintainers <soundcraft@storyteller.ai>}"
-BASENAME="soundcraft-$VERSION-linux-$ARCH"
+IS_NIGHTLY=0
+if [[ "${SOUNDCRAFT_BUILD_CHANNEL:-}" == nightly-v1 || "$VERSION" == *-nightly* ]]; then
+  IS_NIGHTLY=1
+  export SOUNDCRAFT_BUILD_CHANNEL=nightly-v1
+  export SOUNDCRAFT_OVERRIDE_VERSION="$VERSION"
+fi
+ARTIFACT_VERSION="$VERSION"
+if [[ "$IS_NIGHTLY" = 1 && "$VERSION" != *-nightly* ]]; then
+  ARTIFACT_VERSION="$VERSION-nightly"
+fi
+BASENAME="soundcraft-$ARTIFACT_VERSION-linux-$ARCH"
 
-echo "==> SoundCraft $VERSION for Linux $ARCH ($FORMATS)"
+if [[ -n "$ARCH_TAR_DIR" && "$IS_NIGHTLY" != 1 ]]; then
+  echo "error: --arch-tar-dir is only for Nightly builds" >&2
+  exit 2
+fi
+
+echo "==> SoundCraft $VERSION for Linux $ARCH ($FORMATS, channel=${SOUNDCRAFT_BUILD_CHANNEL:-stable})"
 
 # The man-and-completions example is built with the binaries: it writes soundcraft-cli's man pages
 # and shell completions below.
@@ -68,6 +89,11 @@ install -Dm755 "$BIN/soundcraft" "$STAGE/usr/bin/soundcraft"
 install -Dm755 "$BIN/soundcraft-cli" "$STAGE/usr/bin/soundcraft-cli"
 "${CROSS_COMPILE:-}strip" "$STAGE/usr/bin/soundcraft" "$STAGE/usr/bin/soundcraft-cli" 2>/dev/null || true
 install -Dm644 "$HERE/$APP_ID.desktop" "$STAGE/usr/share/applications/$APP_ID.desktop"
+if [[ "$IS_NIGHTLY" = 1 ]]; then
+  sed -e 's|^StartupWMClass=.*|StartupWMClass=ai.storyteller.soundcraft.nightly-v1|' \
+      "$STAGE/usr/share/applications/$APP_ID.desktop" >"$STAGE/usr/share/applications/$APP_ID.desktop.tmp"
+  mv "$STAGE/usr/share/applications/$APP_ID.desktop.tmp" "$STAGE/usr/share/applications/$APP_ID.desktop"
+fi
 install -Dm644 "$HERE/$APP_ID.mime.xml" "$STAGE/usr/share/mime/packages/$APP_ID.xml"
 mkdir -p "$STAGE/usr/share/metainfo"
 sed -e "s/@VERSION@/$VERSION/g" -e "s/@DATE@/$SOUNDCRAFT_BUILD_DATE/g" \
@@ -115,8 +141,26 @@ has() {
 if has tar; then
   mkdir -p "$WORK/tar"
   cp -R "$STAGE/usr" "$WORK/tar/$BASENAME"
+  if [[ "$IS_NIGHTLY" = 1 ]]; then
+    # A Nightly binary only starts with its private profile, so an unpacked FHS tar (also the
+    # Flatpak's input) gets the same launcher the other Nightly formats install: bin/soundcraft
+    # starts bin/soundcraft-bin.
+    mv "$WORK/tar/$BASENAME/bin/soundcraft" "$WORK/tar/$BASENAME/bin/soundcraft-bin"
+    install -Dm755 "$HERE/nightly-launch.sh" "$WORK/tar/$BASENAME/bin/soundcraft"
+  fi
   tar -C "$WORK/tar" -czf "$DIST/$BASENAME.tar.gz" "$BASENAME"
   echo "wrote $DIST/$BASENAME.tar.gz"
+fi
+
+# The Arch handoff keeps the same basename as the plain tarball in a separate directory.
+# Flatpak, OCI and direct tar consumers still get the original binary, not this launcher.
+if [[ -n "$ARCH_TAR_DIR" ]]; then
+  mkdir -p "$ARCH_TAR_DIR"
+  if [[ "$(cd "$ARCH_TAR_DIR" && pwd -P)" == "$(cd "$DIST" && pwd -P)" ]]; then
+    echo "error: the Arch tar directory must differ from the release directory" >&2
+    exit 2
+  fi
+  bash "$HERE/nightly-arch-tar.sh" "$STAGE/usr" "$WORK/arch-tar" "$ARCH_TAR_DIR" "$BASENAME"
 fi
 
 # ---- .deb / .rpm --------------------------------------------------------------------------------
@@ -124,12 +168,93 @@ if has deb || has rpm; then
   command -v nfpm >/dev/null || { echo "error: nfpm not found (https://nfpm.goreleaser.com/install/)" >&2; exit 1; }
   export VERSION
   export NFPM_ARCH="$DEB_ARCH"
+  NFPM_STAGE="$STAGE"
+  export NFPM_NAME="soundcraft"
+  export NFPM_BIN="soundcraft"
+  export NFPM_CLI="soundcraft-cli"
+  if [[ "$IS_NIGHTLY" = 1 ]]; then
+    NIGHTLY_DESK_ID="$APP_ID.nightly-v1"
+    export NFPM_NAME="soundcraft-nightly"
+    export NFPM_BIN="soundcraft-nightly"
+    export NFPM_CLI="soundcraft-nightly-cli"
+    NFPM_STAGE="$WORK/nfpm-root"
+    rm -rf "$NFPM_STAGE"
+    cp -R "$STAGE" "$NFPM_STAGE"
+    install -Dm755 "$NFPM_STAGE/usr/bin/soundcraft" "$NFPM_STAGE/usr/lib/soundcraft-nightly/soundcraft"
+    cat >"$NFPM_STAGE/usr/bin/$NFPM_BIN" <<'WRAPPER'
+#!/bin/sh
+# SoundCraft Nightly: the GUI runs with the Launcher's private profile, which holds ui.json,
+# Autosave/, Presets/ and logs/ away from stable's settings folder.
+set -eu
+profile="${XDG_CONFIG_HOME:-${HOME:-}/.config}/soundcraft-nightly"
+bin=/usr/lib/soundcraft-nightly/soundcraft
+# The Launcher's protocol, and a bare version query, pass through untouched.
+case "${1-}" in
+  --launch-profile | --profile-root | --version | -V) exec "$bin" "$@" ;;
+esac
+exec "$bin" --launch-profile nightly-v1 --profile-root "$profile" -- "$@"
+WRAPPER
+    chmod 755 "$NFPM_STAGE/usr/bin/$NFPM_BIN"
+    rm -f "$NFPM_STAGE/usr/bin/soundcraft"
+    mv "$NFPM_STAGE/usr/bin/soundcraft-cli" "$NFPM_STAGE/usr/bin/$NFPM_CLI"
+    mv "$NFPM_STAGE/usr/share/doc/soundcraft" "$NFPM_STAGE/usr/share/doc/$NFPM_NAME"
+    sed -e "s#^Exec=soundcraft\([[:space:]]\|$\)#Exec=$NFPM_BIN\1#" \
+        -e "s|^TryExec=soundcraft$|TryExec=$NFPM_BIN|" \
+        -e "s|^Icon=$APP_ID$|Icon=$NIGHTLY_DESK_ID|" \
+        -e "s|^Name=SoundCraft$|Name=SoundCraft Nightly|" \
+        -e '/^MimeType=/d' \
+        "$NFPM_STAGE/usr/share/applications/$APP_ID.desktop" >"$NFPM_STAGE/usr/share/applications/$NIGHTLY_DESK_ID.desktop"
+    rm -f "$NFPM_STAGE/usr/share/applications/$APP_ID.desktop"
+    sed -e "s|<id>$APP_ID</id>|<id>$NIGHTLY_DESK_ID</id>|g" \
+        -e "s|<name>SoundCraft</name>|<name>SoundCraft Nightly</name>|g" \
+        -e "s|<launchable type=\"desktop-id\">$APP_ID.desktop</launchable>|<launchable type=\"desktop-id\">$NIGHTLY_DESK_ID.desktop</launchable>|g" \
+        -e "s|<icon type=\"stock\">$APP_ID</icon>|<icon type=\"stock\">$NIGHTLY_DESK_ID</icon>|g" \
+        -e "s|<binary>soundcraft</binary>|<binary>$NFPM_BIN</binary>|g" \
+        -e '/<mediatype>/d' \
+        "$NFPM_STAGE/usr/share/metainfo/$APP_ID.metainfo.xml" >"$NFPM_STAGE/usr/share/metainfo/$NIGHTLY_DESK_ID.metainfo.xml"
+    rm -f "$NFPM_STAGE/usr/share/metainfo/$APP_ID.metainfo.xml"
+    rm -rf "$NFPM_STAGE/usr/share/mime"
+    NIGHTLY_ICON="$ROOT/assets/app-icon/soundcraft-nightly.png"
+    [[ -f "$NIGHTLY_ICON" ]] || NIGHTLY_ICON="$ROOT/assets/app-icon/hicolor/256x256/apps/$APP_ID.png"
+    rm -rf "$NFPM_STAGE/usr/share/icons/hicolor"
+    install -Dm644 "$NIGHTLY_ICON" \
+      "$NFPM_STAGE/usr/share/icons/hicolor/256x256/apps/$NIGHTLY_DESK_ID.png"
+    if [[ -d "$NFPM_STAGE/usr/share/man/man1" ]]; then
+      for man_file in "$NFPM_STAGE/usr/share/man/man1"/soundcraft-cli*.1; do
+        [[ -f "$man_file" ]] || continue
+        man_base="$(basename "$man_file")"
+        sed -e 's/soundcraft-cli/soundcraft-nightly-cli/g' -e 's/SOUNDCRAFT-CLI/SOUNDCRAFT-NIGHTLY-CLI/g' \
+          "$man_file" >"$man_file.tmp"
+        mv "$man_file.tmp" "$NFPM_STAGE/usr/share/man/man1/${NFPM_CLI}${man_base#soundcraft-cli}"
+        rm -f "$man_file"
+      done
+    fi
+    if [[ -f "$NFPM_STAGE/usr/share/bash-completion/completions/soundcraft-cli" ]]; then
+      sed -e 's/_soundcraft-cli/_soundcraft-nightly-cli/g' -e 's/soundcraft-cli/soundcraft-nightly-cli/g' \
+        "$NFPM_STAGE/usr/share/bash-completion/completions/soundcraft-cli" >"$NFPM_STAGE/usr/share/bash-completion/completions/$NFPM_CLI"
+      rm -f "$NFPM_STAGE/usr/share/bash-completion/completions/soundcraft-cli"
+    fi
+    if [[ -f "$NFPM_STAGE/usr/share/zsh/site-functions/_soundcraft-cli" ]]; then
+      sed -e 's/_soundcraft-cli/_soundcraft-nightly-cli/g' -e 's/soundcraft-cli/soundcraft-nightly-cli/g' \
+        "$NFPM_STAGE/usr/share/zsh/site-functions/_soundcraft-cli" >"$NFPM_STAGE/usr/share/zsh/site-functions/_$NFPM_CLI"
+      rm -f "$NFPM_STAGE/usr/share/zsh/site-functions/_soundcraft-cli"
+    fi
+    if [[ -f "$NFPM_STAGE/usr/share/fish/vendor_completions.d/soundcraft-cli.fish" ]]; then
+      sed -e 's/soundcraft-cli/soundcraft-nightly-cli/g' \
+        "$NFPM_STAGE/usr/share/fish/vendor_completions.d/soundcraft-cli.fish" >"$NFPM_STAGE/usr/share/fish/vendor_completions.d/$NFPM_CLI.fish"
+      rm -f "$NFPM_STAGE/usr/share/fish/vendor_completions.d/soundcraft-cli.fish"
+    fi
+  fi
   # nfpm expands env vars in fields like `version` and `arch`, but not in `contents[].src`.
   # Without the completions (a cross build with no EMULATOR) the deb's zsh symlink would dangle,
   # so its entry is dropped too.
+  DROP_LIB_TREE=
+  # shellcheck disable=SC2016
+  [[ -d "$NFPM_STAGE/usr/lib" ]] || DROP_LIB_TREE='\|^  - src: \${STAGE}/usr/lib/|,+2d;'
   DROP_ZSH_LINK=
-  [[ -f "$STAGE/usr/share/zsh/site-functions/_soundcraft-cli" ]] || DROP_ZSH_LINK='\|^  - src: /usr/share/zsh/site-functions/|,/packager: deb/d;'
-  sed "${DROP_ZSH_LINK}s|\${STAGE}|$STAGE|g" "$HERE/nfpm.yaml" >"$WORK/nfpm.yaml"
+  [[ -f "$NFPM_STAGE/usr/share/zsh/site-functions/_$NFPM_CLI" ]] || DROP_ZSH_LINK='\|^  - src: /usr/share/zsh/site-functions/|,/packager: deb/d;'
+  # shellcheck disable=SC2016
+  sed "${DROP_LIB_TREE}${DROP_ZSH_LINK}s|\${STAGE}|$NFPM_STAGE|g;s|\${NFPM_BIN}|$NFPM_BIN|g;s|\${NFPM_CLI}|$NFPM_CLI|g" "$HERE/nfpm.yaml" >"$WORK/nfpm.yaml"
   for fmt in deb rpm; do
     if has "$fmt"; then (cd "$ROOT" && nfpm package -f "$WORK/nfpm.yaml" -p "$fmt" -t "$DIST/$BASENAME.$fmt"); fi
   done
@@ -156,10 +281,42 @@ if has appimage; then
   fi
   APPDIR="$WORK/SoundCraft.AppDir"
   cp -R "$STAGE" "$APPDIR"
-  ln -s usr/bin/soundcraft "$APPDIR/AppRun"
-  cp "$HERE/$APP_ID.desktop" "$APPDIR/$APP_ID.desktop"
-  cp "$ROOT/assets/app-icon/hicolor/256x256/apps/$APP_ID.png" "$APPDIR/$APP_ID.png"
-  ln -s "$APP_ID.png" "$APPDIR/.DirIcon"
+  if [[ "$IS_NIGHTLY" = 1 ]]; then
+    cat >"$APPDIR/AppRun" <<'APPRUN'
+#!/bin/sh
+# SoundCraft Nightly: the GUI runs with the Launcher's private profile, which holds ui.json,
+# Autosave/, Presets/ and logs/ away from stable's settings folder.
+set -eu
+HERE="$(dirname "$(readlink -f "$0")")"
+bin="$HERE/usr/bin/soundcraft"
+profile="${XDG_CONFIG_HOME:-${HOME:-}/.config}/soundcraft-nightly"
+# The Launcher's protocol, and a bare version query, pass through untouched.
+case "${1-}" in
+  --launch-profile | --profile-root | --version | -V) exec "$bin" "$@" ;;
+esac
+exec "$bin" --launch-profile nightly-v1 --profile-root "$profile" -- "$@"
+APPRUN
+    chmod 755 "$APPDIR/AppRun"
+    APPIMAGE_ID="$APP_ID.nightly-v1"
+    sed -e "s|^Icon=$APP_ID$|Icon=$APPIMAGE_ID|" \
+        -e "s|^Name=SoundCraft$|Name=SoundCraft Nightly|" \
+        -e '/^MimeType=/d' \
+        "$APPDIR/usr/share/applications/$APP_ID.desktop" >"$APPDIR/usr/share/applications/$APPIMAGE_ID.desktop"
+    rm -f "$APPDIR/usr/share/applications/$APP_ID.desktop"
+    cp "$APPDIR/usr/share/applications/$APPIMAGE_ID.desktop" "$APPDIR/$APPIMAGE_ID.desktop"
+    NIGHTLY_ICON="$ROOT/assets/app-icon/soundcraft-nightly.png"
+    [[ -f "$NIGHTLY_ICON" ]] || NIGHTLY_ICON="$ROOT/assets/app-icon/hicolor/256x256/apps/$APP_ID.png"
+    rm -rf "$APPDIR/usr/share/icons/hicolor"
+    install -Dm644 "$NIGHTLY_ICON" \
+      "$APPDIR/usr/share/icons/hicolor/256x256/apps/$APPIMAGE_ID.png"
+    cp "$NIGHTLY_ICON" "$APPDIR/$APPIMAGE_ID.png"
+    ln -s "$APPIMAGE_ID.png" "$APPDIR/.DirIcon"
+  else
+    ln -s usr/bin/soundcraft "$APPDIR/AppRun"
+    cp "$HERE/$APP_ID.desktop" "$APPDIR/$APP_ID.desktop"
+    cp "$ROOT/assets/app-icon/hicolor/256x256/apps/$APP_ID.png" "$APPDIR/$APP_ID.png"
+    ln -s "$APP_ID.png" "$APPDIR/.DirIcon"
+  fi
 
   verify_sha256() {
     local sha="$1" file="$2"
@@ -204,11 +361,20 @@ if has appimage; then
   # each AppImage on GitHub Releases. `latest` is the newest published release that is not a
   # pre-release. A fork's builds point at its own releases through GITHUB_REPOSITORY.
   REPO="${GITHUB_REPOSITORY:-storytold/soundcraft}"
-  UPDATE_INFO="gh-releases-zsync|${REPO%%/*}|${REPO#*/}|latest|soundcraft-*-linux-$ARCH.AppImage.zsync"
+  UPDATE_ARGS=()
+  if [[ "$IS_NIGHTLY" = 0 ]]; then
+    UPDATE_INFO="gh-releases-zsync|${REPO%%/*}|${REPO#*/}|latest|soundcraft-*-linux-$ARCH.AppImage.zsync"
+    UPDATE_ARGS=(-u "$UPDATE_INFO")
+  else
+    # Nightly releases are GitHub pre-releases (`latest` only selects stable releases), so point
+    # zsync update metadata at pre-release tags matching `-nightly` rather than stable `latest`.
+    UPDATE_INFO="gh-releases-zsync|${REPO%%/*}|${REPO#*/}|latest-pre|soundcraft-*-nightly*-linux-$ARCH.AppImage.zsync"
+    UPDATE_ARGS=(-u "$UPDATE_INFO")
+  fi
   # Extract-and-run: works without FUSE (containers, CI). The output embeds the static runtime,
   # so users don't need libfuse2 either. With zsyncmake on the host (CI installs the zsync
   # package) appimagetool also writes the .zsync, into its working directory, hence the cd.
-  (cd "$DIST" && ARCH="$ARCH" APPIMAGE_EXTRACT_AND_RUN=1 "$TOOL" --no-appstream --runtime-file "$RUNTIME" -u "$UPDATE_INFO" "$APPDIR" "$OUT")
+  (cd "$DIST" && ARCH="$ARCH" APPIMAGE_EXTRACT_AND_RUN=1 "$TOOL" --no-appstream --runtime-file "$RUNTIME" "${UPDATE_ARGS[@]}" "$APPDIR" "$OUT")
   echo "wrote $OUT"
   if [[ -s "$OUT.zsync" ]]; then
     echo "wrote $OUT.zsync"

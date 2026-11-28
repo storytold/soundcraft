@@ -12,13 +12,14 @@ fn quantize_on(grid: &str) -> i64 {
     app.run("edit.select", json!({"clips": [clip]})).unwrap();
     app.run("view.grid", json!({"value": grid})).unwrap();
     app.ui.show_midi_editor = true;
-    let mut h = Harness::builder().with_size(vec2(1600.0, 1000.0)).build_ui_state(
-        |ui, app: &mut SoundApp| {
-            app.logic(&ui.ctx().clone());
-            app.ui(ui);
-        },
-        app,
-    );
+    let mut h =
+        Harness::builder().with_context_setup(soundcraft_ui_egui::framework::install_headless).with_size(vec2(1600.0, 1000.0)).build_ui_state(
+            |ui, app: &mut SoundApp| {
+                app.logic(&ui.ctx().clone());
+                app.ui(ui);
+            },
+            app,
+        );
     h.run_steps(5);
     h.get_by_label("Quantize").click();
     h.run_steps(3);

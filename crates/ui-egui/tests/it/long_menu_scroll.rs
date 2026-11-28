@@ -18,7 +18,7 @@ fn step(h: &mut Harness<'_, SoundApp>) {
 #[test]
 fn a_long_main_menu_scrolls_to_its_last_item() {
     let app = SoundApp::new(soundcraft_engine::demo::demo_engine(), None, Services::default());
-    let mut h = Harness::builder().with_size(SIZE).build_ui_state(
+    let mut h = Harness::builder().with_context_setup(soundcraft_ui_egui::framework::install_headless).with_size(SIZE).build_ui_state(
         |ui, app: &mut SoundApp| {
             let ctx = ui.ctx().clone();
             app.logic(&ctx);
