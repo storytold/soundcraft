@@ -33,6 +33,16 @@ fn new_app() -> SoundApp {
 }
 
 #[test]
+fn the_reply_says_when_the_device_does_not_run_at_the_chosen_buffer() {
+    // Nothing open: there is no device buffer to explain, so the note is null, never a guess (#1757).
+    let mut app = SoundApp::new(soundcraft_engine::Engine::default(), None, Services::default());
+    for command in ["ui.audio_device", "setup.playback_engine"] {
+        let r = app.run(command, json!({})).unwrap();
+        assert!(r.get("buffer_note").is_some_and(serde_json::Value::is_null), "{command}: {r}");
+    }
+}
+
+#[test]
 fn playback_engine_refuses_an_invalid_or_untimely_device_choice_without_side_effects() {
     let mut app = new_app();
     let before = app.ui.audio.clone();

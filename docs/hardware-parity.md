@@ -1,6 +1,6 @@
 # Hardware parity
 
-> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-11-25 · **Change:** minor (the Playback Engine shows the current device choice after a command changes it; previously minor: record to disk: done, #84 and #888, previously trivial: bounces of a bus fed by an aux compensate its latency, #246; previously minor: MIDI input devices, live play-through with controllers, and MIDI recording) · **Target:** Avid Pro Tools Ultimate 2026.4.1
+> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-11-25 · **Change:** minor (the Playback Engine shows the current device choice after a command changes it; buffer sizes verified on Core Audio; one the driver does not take is reported; previously minor: record to disk: done, #84 and #888, previously trivial: bounces of a bus fed by an aux compensate its latency, #246; previously minor: MIDI input devices, live play-through with controllers, and MIDI recording) · **Target:** Avid Pro Tools Ultimate 2026.4.1
 
 A DAW is judged by how it drives audio interfaces, MIDI gear, control surfaces and sync. This is
 SoundCraft's weakest dimension. Ours is measured from `crates/playback` (cpal) and the absence of
@@ -18,7 +18,7 @@ Legend: ✅ works · 🟡 partial · ❌ missing.
 | Driver API | Core Audio / ASIO | 🟡 Core Audio via cpal | 🟡 WASAPI shared via cpal; ASIO with the opt-in `asio` build feature (verified with an SSL 2+) | 🟡 ALSA/Pulse via cpal; no JACK | 🟡 cpal (ALSA layer) | 🟡 Web Audio |
 | Choose playback device | ✅ Playback Engine | ✅ Setup › Playback Engine and `ui.audio_device` (verified with an RME UFX and the built-in speakers; the window shows a choice made by command) | ✅ Setup › Playback Engine (WASAPI, ASIO) | 🟡 (not yet verified) | 🟡 (not yet verified) | ❌ |
 | Choose input device | ✅ | ✅ Setup › Playback Engine and `ui.audio_device` (verified with an RME UFX and a second input device) | ✅ (WASAPI, ASIO) | 🟡 (not yet verified) | ❌ no recording | ❌ |
-| Buffer size (32–2048) | ✅ | 🟡 device buffer when the driver allows it (not yet verified); mix in 512-sample blocks | 🟡 device buffer 16–8192 (verified 128 on ASIO, 256 on WASAPI); mix in 512-sample blocks | 🟡 (not yet verified) | 🟡 | ❌ |
+| Buffer size (32–2048) | ✅ | 🟡 device buffer when the driver allows it (16–2048 verified on an RME UFX, whose driver allows 15–3072); outside the driver's range the default buffer, and the Playback Engine says so; mix in 512-sample blocks | 🟡 device buffer 16–8192 (verified 128 on ASIO, 256 on WASAPI); mix in 512-sample blocks | 🟡 (not yet verified) | 🟡 | ❌ |
 | Duplex stream on one clock | ✅ | ❌ separate input/output streams | ❌ | ❌ | ❌ | ❌ |
 | Hardware I/O mapping (I/O Setup to physical channels) | ✅ | 🟡 multichannel output in order; no per-channel map | 🟡 | 🟡 | 🟡 | ❌ |
 | Low-latency monitoring | ✅ | ❌ (`options.low_latency_monitoring` is a stored flag) | ❌ | ❌ | ❌ | ❌ |
@@ -72,7 +72,7 @@ Legend: ✅ works · 🟡 partial · ❌ missing.
 
 | Date | Change | Summary |
 |---|---|---|
-| 2026-11-25 | minor | Choosing the playback and input device verified on macOS; the Playback Engine shows a choice made by command |
+| 2026-11-25 | minor | Choosing the playback and input device verified on macOS; the Playback Engine shows a choice made by command; buffer sizes 16–2048 verified on Core Audio; a size the driver does not take is reported with its range (#1757) |
 | 2026-11-18 | minor | MIDI input devices (`midir`): live play-through to record-enabled MIDI and instrument tracks (notes, pedal, controllers, pitch bend, aftertouch), MIDI recording into clips, per-track device and channel, device switches in Playback Engine; guide in `midi-input.md` |
 | 2026-10-30 | minor | Record to disk: takes are written to disk as they record (#84) and long takes continue in a new file (#888) |
 | 2026-10-13 | trivial | bounces of a bus fed by an aux compensate its latency (#246) |
