@@ -903,6 +903,59 @@ fn holding_a_zoom_chord_keeps_zooming() {
     assert_eq!(app.engine.session().edit.zoom.waveform_zoom, waveform * 8.0, "Cmd+Alt+] and two repeats raise the waveform three steps");
 }
 
+/// A host press and two auto-repeats of the key in US `physical`'s place that types `key` on this layout.
+fn hold_layout_key(ctx: &egui::Context, app: &mut SoundApp, key: egui::Key, physical: egui::Key, modifiers: egui::Modifiers) {
+    for repeat in [false, true, true] {
+        key_pass(ctx, app, vec![egui::Event::Key { key, physical_key: Some(physical), pressed: true, repeat, modifiers }]);
+    }
+    key_pass(ctx, app, vec![egui::Event::Key { key, physical_key: Some(physical), pressed: false, repeat: false, modifiers }]);
+}
+
+/// One host press and release of the key in US `physical`'s place that types `key` on this layout.
+fn press_layout_key(ctx: &egui::Context, app: &mut SoundApp, key: egui::Key, physical: egui::Key, modifiers: egui::Modifiers) {
+    for pressed in [true, false] {
+        key_pass(ctx, app, vec![egui::Event::Key { key, physical_key: Some(physical), pressed, repeat: false, modifiers }]);
+    }
+}
+
+/// #1441: on German, Spanish and Italian keyboards the key in US ]'s place types +, so egui reports
+/// Cmd/Ctrl++ there. It zooms in like Cmd+], one step per press or repeat, and Cmd+Alt on it steps
+/// the waveform zoom. (The key in [ 's place types ü, è or a dead key, which egui already reports
+/// as [.)
+#[test]
+fn the_zoom_keys_work_where_the_bracket_key_types_plus() {
+    let (ctx, mut app) = app_for_keys();
+    let cmd = egui::Modifiers { command: true, ..egui::Modifiers::NONE };
+    let start = app.engine.session().edit.zoom.samples_per_px;
+    hold_layout_key(&ctx, &mut app, egui::Key::Plus, egui::Key::CloseBracket, cmd);
+    assert_eq!(app.engine.session().edit.zoom.samples_per_px, start / 8.0, "Cmd++ and two repeats zoom in three steps");
+    let waveform = app.engine.session().edit.zoom.waveform_zoom;
+    hold_layout_key(&ctx, &mut app, egui::Key::Plus, egui::Key::CloseBracket, egui::Modifiers { alt: true, ..cmd });
+    assert_eq!(app.engine.session().edit.zoom.waveform_zoom, waveform * 8.0, "Cmd+Alt++ and two repeats raise the waveform three steps");
+}
+
+/// #1441: the key's place is only a fallback. A chord whose typed character has its own shortcut
+/// keeps it: on Dvorak the keys in US [ and ]'s places type / and =, and Cmd+= still switches
+/// between the Mix and Edit windows without zooming. A press without Cmd/Ctrl isn't redirected:
+/// in Commands Keyboard Focus a plain ] plays, but a character typed in ]'s place doesn't.
+#[test]
+fn a_typed_character_keeps_its_own_shortcut_on_the_bracket_keys() {
+    let (ctx, mut app) = app_for_keys();
+    let cmd = egui::Modifiers { command: true, ..egui::Modifiers::NONE };
+    let start = app.engine.session().edit.zoom.samples_per_px;
+    let window = app.ui.window;
+    press_layout_key(&ctx, &mut app, egui::Key::Equals, egui::Key::CloseBracket, cmd);
+    assert!(app.ui.window != window, "Dvorak Cmd+= still switches windows");
+    press_layout_key(&ctx, &mut app, egui::Key::Equals, egui::Key::CloseBracket, cmd);
+    assert!(app.ui.window == window, "and switches back");
+    assert_eq!(app.engine.session().edit.zoom.samples_per_px, start, "Cmd+= doesn't zoom");
+    app.run("options.keyboard_focus", json!({"focus": "commands"})).unwrap();
+    press_layout_key(&ctx, &mut app, egui::Key::Exclamationmark, egui::Key::CloseBracket, egui::Modifiers::NONE);
+    assert!(!app.is_playing(), "a plain press in ]'s place isn't taken as ]");
+    press_layout_key(&ctx, &mut app, egui::Key::CloseBracket, egui::Key::CloseBracket, egui::Modifiers::NONE);
+    assert!(app.is_playing(), "while a plain ] plays (so the check above can see a wrong ])");
+}
+
 /// Only the zoom commands repeat: a held registry chord (Cmd+Z) still undoes once and a held
 /// `fixed` key (Enter) still adds one marker.
 #[test]

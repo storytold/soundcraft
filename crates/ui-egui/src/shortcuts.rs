@@ -83,39 +83,75 @@ pub fn handle(app: &mut SoundApp, ctx: &egui::Context) {
     // an event's `repeat` flag from the physical key state, which says nothing about whether that
     // particular event was injected.
     let scripted = app.scripted_key_press_indices();
-    let events: Vec<(Key, Modifiers, bool)> = ctx.input(|i| {
+    let events: Vec<(Key, Option<Key>, Modifiers, bool)> = ctx.input(|i| {
         i.events
             .iter()
             .enumerate()
             .filter_map(|(index, e)| match e {
-                egui::Event::Key { key, pressed: true, repeat, modifiers, .. } => Some((*key, *modifiers, *repeat && !scripted.contains(&index))),
+                egui::Event::Key { key, physical_key, pressed: true, repeat, modifiers } => {
+                    Some((*key, *physical_key, *modifiers, *repeat && !scripted.contains(&index)))
+                }
                 _ => None,
             })
             .collect()
     });
     // Cmd and Ctrl are separate keys only on macOS (asked at runtime so the web build in a Mac browser agrees).
     let mac = ctx.os() == egui::os::OperatingSystem::Mac;
-    for (key, mods, repeat) in events {
+    let placed = egui::Id::unique("shortcuts_by_key_place");
+    for (key, physical, mods, repeat) in events {
+        let place = by_place(key, physical, mods);
         if repeat {
+            // A repeat follows its press: by the key's place only if the press went that way.
+            let key = match place {
+                Some(p) if ctx.data(|d| d.get_temp::<Remembered>(placed)).flatten() == Some((key, p, mods)) => p,
+                _ => key,
+            };
             if let Some((id, params)) = repeating_command(key, mods, mac) {
                 let _ = app.run(id, params);
             }
             continue;
         }
-        if fixed(app, key, mods, mac) {
-            continue;
-        }
-        if let Some(id) = command_for(key, mods, mac) {
-            if crate::menus::invoke_shortcut_dialog(app, id) {
-                continue;
+        let by_typed = dispatch(app, key, mods, mac);
+        if let Some(p) = place {
+            // Remember this press's choice for its repeats, and forget an earlier one.
+            if !by_typed && dispatch(app, p, mods, mac) {
+                ctx.data_mut(|d| d.insert_temp::<Remembered>(placed, Some((key, p, mods))));
+            } else {
+                ctx.data_mut(|d| d.insert_temp::<Remembered>(placed, None));
             }
-            let _ = app.run(id, json!({}));
-        } else if let Some(c) =
-            crate::menus::UI_COMMANDS.iter().find(|c| c.3.and_then(parse).is_some_and(|(m, k)| k == key && mods_match(m, mods, mac)))
-        {
-            let _ = app.run(c.0, json!({}));
         }
     }
+}
+
+/// The last press that went by its key's place: typed key, place, modifiers.
+type Remembered = Option<(Key, Key, Modifiers)>;
+
+/// Run the shortcut for this chord, if it has one. Returns true when one ran.
+fn dispatch(app: &mut SoundApp, key: Key, mods: Modifiers, mac: bool) -> bool {
+    if fixed(app, key, mods, mac) {
+        return true;
+    }
+    if let Some(id) = command_for(key, mods, mac) {
+        if !crate::menus::invoke_shortcut_dialog(app, id) {
+            let _ = app.run(id, json!({}));
+        }
+        true
+    } else if let Some(c) = crate::menus::UI_COMMANDS.iter().find(|c| c.3.and_then(parse).is_some_and(|(m, k)| k == key && mods_match(m, mods, mac)))
+    {
+        let _ = app.run(c.0, json!({}));
+        true
+    } else {
+        false
+    }
+}
+
+/// The US bracket key in this press's place, to try when the character it types has no shortcut
+/// of its own (#1441). egui reports the typed character when it knows it, so on German, Spanish
+/// and Italian keyboards the key in ]'s place arrives as + and Cmd+] (Zoom In) never fired. Only
+/// with Cmd or Ctrl held, where a press is a shortcut and never types; a character with its own
+/// shortcut keeps it (on Dvorak the keys there type / and =, and Cmd+/ and Cmd+= keep theirs).
+fn by_place(key: Key, physical: Option<Key>, mods: Modifiers) -> Option<Key> {
+    physical.filter(|p| *p != key && matches!(p, Key::OpenBracket | Key::CloseBracket)).filter(|_| mods.command || mods.ctrl)
 }
 
 /// The command a host auto-repeat of this chord runs, if it is one of [`REPEATING`]. A repeat
