@@ -163,9 +163,7 @@ impl SoundApp {
         self.settle_lost_refusal();
         // Reconnecting an output that stopped asking for audio: if it stops again soon, the
         // status says Reconnect is not enough (see `stalled_text`).
-        if self.stall == Some(Stall::Reported) {
-            self.stall = Some(Stall::Reconnected(std::time::Instant::now()));
-        }
+        self.stall = reconnected(self.stall, std::time::Instant::now());
     }
 }
 
@@ -235,11 +233,17 @@ fn lost_text(name: &str, loss: OutputLoss, default: Option<bool>) -> (String, &'
 }
 
 /// An output that stopped asking for audio, until a device choice: reported, then reopened by
-/// Reconnect at the instant held.
+/// the latest Reconnect at the instant held.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) enum Stall {
     Reported,
     Reconnected(std::time::Instant),
+}
+
+/// The stall state after a Reconnect at `now`: no stall stays none; a stall, reported or
+/// already reconnected, is reconnected at `now`, so "soon after Reconnect" counts from the latest.
+fn reconnected(stall: Option<Stall>, now: std::time::Instant) -> Option<Stall> {
+    stall.map(|_| Stall::Reconnected(now))
 }
 
 /// How soon after a Reconnect a stall counts as the same one coming back. Seen on Windows after
@@ -271,8 +275,23 @@ fn stalled_text(name: &str, stall: Option<Stall>, now: std::time::Instant) -> (S
 
 #[cfg(test)]
 mod stall_tests {
-    use super::{Stall, stalled_text};
+    use super::{Stall, reconnected, stalled_text};
     use std::time::{Duration, Instant};
+
+    /// Reconnect at 0 s, again at 55 s, stall at 65 s: the stall comes 10 s after the last
+    /// Reconnect, so it is the same one coming back, not a new one.
+    #[test]
+    fn a_stall_soon_after_the_latest_of_two_reconnects_is_said_to_need_a_replug() {
+        let name = "喇叭 (Model 12)";
+        let t0 = Instant::now();
+        assert_eq!(reconnected(None, t0), None);
+        let first = reconnected(Some(Stall::Reported), t0);
+        assert_eq!(first, Some(Stall::Reconnected(t0)));
+        let second = reconnected(first, t0 + Duration::from_secs(55));
+        assert_eq!(second, Some(Stall::Reconnected(t0 + Duration::from_secs(55))));
+        let said = stalled_text(name, second, t0 + Duration::from_secs(65));
+        assert_eq!(said.0, "“喇叭 (Model 12)” stopped asking for audio again after Reconnect.");
+    }
 
     /// Seen on Windows after sleep and wake: a Model 12 that stopped asking for audio stopped
     /// again within 2 s of each Reconnect; only unplugging and replugging it brought it back.
