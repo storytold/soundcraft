@@ -283,7 +283,7 @@ fn harness(n: usize) -> Harness<'static, SoundApp> {
 
 fn harness_with(engine: soundcraft_engine::Engine) -> Harness<'static, SoundApp> {
     let app = SoundApp::new(engine, None, crate::Services::default());
-    let builder = Harness::builder().with_size(vec2(1400.0, 900.0)).with_step_dt(1.0 / 60.0);
+    let builder = Harness::builder().with_size(vec2(1400.0, 900.0)).with_step_dt(1.0 / 60.0).with_context_setup(crate::framework::install_headless);
     let builder = if std::env::var_os("SOUNDCRAFT_FADE_SHOTS").is_some() { builder.wgpu() } else { builder };
     let mut h = builder.build_ui_state(
         |ui, app: &mut SoundApp| {

@@ -3,7 +3,7 @@
 //! Reads the AAF structured-storage object model directly (properties streams, strong
 //! reference vectors/sets and dictionary weak references) for a deliberately small subset:
 //! one CompositionMob whose timeline slots hold Sequences of SourceClip and Filler, resolved
-//! through MasterMobs to SourceMobs with a WAVEDescriptor and one external NetworkLocator.
+//! through MasterMobs to SourceMobs with a WAVE or PCM descriptor and one external NetworkLocator.
 //! Anything else in an audio slot aborts instead of producing a misleading montage.
 //!
 //! No filesystem access happens here: the caller passes the opened AAF and a [`MediaResolver`]
@@ -32,6 +32,7 @@
 //!   locator resolves under the AAF's folder (see `locator_path`). A file that cannot be found
 //!   is reported and its edits skipped; it does not abort the import.
 use crate::{ImportClip, ImportError, ImportTrack, Media, Plan, Rational, TimecodeRate};
+use craft_aaf::aaf::linked_audio::{AudioFileDescriptor, DescriptorFieldError, DescriptorKind, DescriptorProperty};
 use craft_aaf::aaf::properties::{Properties, Property, PropertyError};
 use std::{
     collections::{HashMap, HashSet},
@@ -80,8 +81,6 @@ const PID_CONTENT_ESSENCE: u16 = 0x1902;
 const PID_DEF_NAME: u16 = 0x1B02;
 const PID_ESSENCE_MOB_ID: u16 = 0x2701;
 const PID_DESCRIPTOR_LOCATORS: u16 = 0x2F01;
-const PID_FILE_SAMPLE_RATE: u16 = 0x3001;
-const PID_FILE_LENGTH: u16 = 0x3002;
 const PID_HEADER_CONTENT: u16 = 0x3B03;
 const PID_URL_STRING: u16 = 0x4001;
 const PID_MOB_ID: u16 = 0x4401;
@@ -230,6 +229,8 @@ impl Q {
 struct Obj {
     path: String,
     class: String,
+    /// The class AUID in on-disk byte order, as the shared descriptor view classifies it.
+    auid: [u8; 16],
     // Cached objects are cloned along source and dictionary walks; share their property payload.
     props: Rc<HashMap<u16, (u16, Vec<u8>)>>,
 }
@@ -269,6 +270,16 @@ impl Obj {
     fn is(&self, class: &str) -> bool {
         self.class == class
     }
+    /// The shared typed view of a WAVE or PCM file descriptor (craft-libs#3180); `None` for any
+    /// other class.
+    fn audio_descriptor<'a>(&'a self) -> Option<AudioFileDescriptor<impl Fn(u16) -> DescriptorProperty<'a> + 'a>> {
+        let kind = DescriptorKind::from_auid_le(self.auid)?;
+        Some(AudioFileDescriptor::new(kind, move |pid| match self.props.get(&pid) {
+            None => DescriptorProperty::Missing,
+            Some((form, data)) if *form == SF_DATA => DescriptorProperty::Data(data),
+            Some(_) => DescriptorProperty::OtherForm,
+        }))
+    }
     /// Class name for messages; unknown (extension) classes print their AUID.
     fn kind(&self) -> &str {
         CLASS_NAMES.iter().find(|(id, _)| *id == self.class).map_or(self.class.as_str(), |(_, n)| n)
@@ -292,6 +303,13 @@ fn property_error(path: &str, e: PropertyError) -> ImportError {
         PropertyError::UnsupportedByteOrder => fail("unsupported AAF byte order"),
         PropertyError::ShortHeader | PropertyError::TruncatedIndex => fail("truncated AAF structure"),
         PropertyError::TruncatedValue => fail(format!("{path}: truncated properties")),
+    }
+}
+
+fn descriptor_error(field: &str, e: DescriptorFieldError) -> ImportError {
+    match e {
+        DescriptorFieldError::Missing | DescriptorFieldError::Truncated => fail(format!("missing or short descriptor {field}")),
+        DescriptorFieldError::OtherForm => fail(format!("descriptor {field} is not a data property")),
     }
 }
 
@@ -391,6 +409,7 @@ impl<F: Read + Seek> Store<F> {
             return Err(fail(format!("{path}: not an AAF object")));
         }
         let class = entry.clsid().to_string();
+        let auid = entry.clsid().to_bytes_le();
         let props_path = if path == "/" { "/properties".to_string() } else { format!("{path}/properties") };
         let d = self.stream(&props_path)?.ok_or_else(|| fail(format!("{path}: missing properties")))?;
         if d.first() != Some(&0x4c) {
@@ -411,7 +430,7 @@ impl<F: Read + Seek> Store<F> {
             let Property { id, form, payload } = record.map_err(|e| property_error(path, e))?;
             props.insert(id, (form, payload.to_vec()));
         }
-        let object = Obj { path: path.to_string(), class, props: Rc::new(props) };
+        let object = Obj { path: path.to_string(), class, auid, props: Rc::new(props) };
         self.objects.insert(path.to_string(), object.clone());
         Ok(object)
     }
@@ -670,7 +689,7 @@ impl<F: Read + Seek> Builder<'_, F> {
         }
         if mob.is(CLASS_SOURCE_MOB) {
             let desc = self.store.opt_strong(&mob, PID_SOURCE_MOB_DESCRIPTOR, "EssenceDescription")?;
-            if let Some(desc) = desc.filter(|d| d.is(CLASS_WAVE_DESCRIPTOR)) {
+            if let Some(desc) = desc.filter(|d| d.audio_descriptor().is_some()) {
                 return self.file_source(&mob, &slot, &desc, key_urn, offset);
             }
         }
@@ -691,12 +710,20 @@ impl<F: Read + Seek> Builder<'_, F> {
     }
 
     fn file_source(&mut self, mob: &Obj, slot: &Obj, desc: &Obj, key: String, offset: Q) -> Result<(String, Q)> {
-        // Full interleaved WAV only: selecting one physical channel needs a channel map.
-        if !matches!(slot.opt_u32(PID_SLOT_PHYSICAL, "PhysicalTrackNumber")?, None | Some(0)) {
+        // Full interleaved WAV only: selecting one physical channel needs a channel map. Track 1
+        // of a mono file is the whole file (checked once the file is probed).
+        let physical = slot.opt_u32(PID_SLOT_PHYSICAL, "PhysicalTrackNumber")?;
+        if !matches!(physical, None | Some(0 | 1)) {
             return Err(fail("Physical channel selection / split stereo unsupported"));
         }
         // Each source file is located, probed and reported once, however many edits use it.
-        if self.sources.iter().any(|s| s.key == key) || self.missing.iter().any(|m| m.key == key) {
+        if let Some(source) = self.sources.iter().find(|s| s.key == key) {
+            if physical == Some(1) && source.channels != 1 {
+                return Err(fail("Physical channel selection / split stereo unsupported"));
+            }
+            return Ok((key, offset));
+        }
+        if self.missing.iter().any(|m| m.key == key) {
             return Ok((key, offset));
         }
         let name = mob.string(PID_MOB_NAME);
@@ -721,11 +748,22 @@ impl<F: Read + Seek> Builder<'_, F> {
         if !matches!(info.channels, 1 | 2) {
             return Err(fail("Only mono/stereo PCM WAV supported"));
         }
-        if desc.rational(PID_FILE_SAMPLE_RATE, "descriptor SampleRate")? != Q::int(i64::from(info.sample_rate)) {
+        let fields =
+            desc.audio_descriptor().ok_or_else(|| fail(format!("Unsupported referenced mob/descriptor: {}", name.clone().unwrap_or_default())))?;
+        let (num, den) = fields.sample_rate().map_err(|e| descriptor_error("SampleRate", e))?;
+        if Q::new(i128::from(num), i128::from(den))? != Q::int(i64::from(info.sample_rate)) {
             return Err(fail(format!("Descriptor/file sample rates differ: {}", name.unwrap_or_default())));
         }
-        if u64::try_from(desc.i64(PID_FILE_LENGTH, "descriptor Length")?).ok() != Some(info.frames) {
+        if u64::try_from(fields.length().map_err(|e| descriptor_error("Length", e))?).ok() != Some(info.frames) {
             return Err(fail(format!("Descriptor/file lengths differ: {}", name.unwrap_or_default())));
+        }
+        if let Some(declared) = fields.pcm_channels().map_err(|e| descriptor_error("Channels", e))?
+            && declared != u32::from(info.channels)
+        {
+            return Err(fail(format!("Descriptor/file channel counts differ: {}", name.unwrap_or_default())));
+        }
+        if physical == Some(1) && info.channels != 1 {
+            return Err(fail("Physical channel selection / split stereo unsupported"));
         }
         let stem = Path::new(&info.path).file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
         self.sources.push(Media {

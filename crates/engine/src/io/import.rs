@@ -176,6 +176,13 @@ fn place_import(
     let file_rate = info.sample_rate;
     let s = e.session_mut();
     let session_rate = s.sample_rate.hz();
+    // An explicit non-audio target cannot play the clip: refuse it before registering
+    // the source, like `clip.place_source` does.
+    if let Some(t) = target
+        && !s.track(t).is_some_and(|tr| tr.kind == TrackKind::Audio)
+    {
+        return Err(EngineError::BadParams("file.import_audio".into(), "audio files go on audio tracks".into()));
+    }
     let src = add_source_audio(s, name, audio, path, FileFormat::of(info));
     if let (Some(bwf), Some(sx)) = (info.bwf.as_ref(), s.sources.last_mut()) {
         sx.time_reference = stamp_at_rate(bwf.time_reference, file_rate, session_rate);

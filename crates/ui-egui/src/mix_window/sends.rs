@@ -5,7 +5,6 @@ use super::{
     Align2, Rect, Route, Sense, SoundApp, Stroke, StrokeKind, Tokens, Track, TrackId, TrackKind, Ui, db_text, fader, json, pan_knob, pan_text, pos2,
     regular, text_toggle, vec2,
 };
-use craft_ui::combo::Menu;
 
 /// Draw one send slot: the route area picks a destination, while the level area opens or edits the send level.
 pub(crate) fn send_slot(app: &mut SoundApp, ui: &mut Ui, track: &Track, slot: usize, r: Rect) {
@@ -78,7 +77,7 @@ pub(crate) fn send_window(app: &mut SoundApp, ctx: &egui::Context) {
     // was theirs comes from the last frame. A dialog or the search on top takes it too.
     let busy_id = egui::Id::unique("send_window_escape");
     let busy = ctx.data(|d| d.get_temp(busy_id)).unwrap_or(false) || app.dialogs.open.is_some() || app.ui.show_search;
-    if !busy && ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+    if !busy && crate::framework::escape_pressed(ctx) {
         app.ui.send_window = None;
     }
     send_window_contents(app, ctx);
@@ -334,6 +333,65 @@ fn send_level_scale(ui: &mut Ui, db: f32) {
     ui.painter().line_segment([pos2(x, r.min.y), pos2(x, line_y + 3.0)], Stroke::new(2.0, t.counter_text));
 }
 
+/// The most height of the send menu's contents.
+const SEND_MENU_HEIGHT: f32 = 260.0;
+
+/// A menu under `field` that opens and closes on its clicks and closes on a click outside it: `header` stays at the
+/// top, `total_rows` rows of `row_height` scroll under it (only the rows in view are laid out) and `footer` stays under
+/// the list. The menu is up to [`SEND_MENU_HEIGHT`] tall and the room on its side of the field, at least as wide as
+/// the field, and opens below the field or above it, never beside it. Returns what `rows` and `footer` returned, or
+/// `None` while the menu is closed.
+fn header_footer_menu<H, R, F>(
+    ui: &Ui,
+    field: &egui::Response,
+    header: impl FnOnce(&mut Ui) -> H,
+    row_height: f32,
+    total_rows: impl FnOnce(&H) -> usize,
+    rows: impl FnOnce(&mut Ui, std::ops::Range<usize>, H) -> R,
+    footer: impl FnOnce(&mut Ui) -> F,
+) -> Option<(R, F)> {
+    let screen = ui.ctx().content_rect();
+    let room = (screen.bottom() - field.rect.bottom()).max(field.rect.top() - screen.top());
+    let frame = egui::Frame::popup(ui.style()).total_margin().sum().y;
+    let height = SEND_MENU_HEIGHT.min(room - frame).max(0.0);
+    let flipped: &'static [egui::RectAlign] =
+        if ui.ctx().global_style().right_to_left { &[egui::RectAlign::TOP_END] } else { &[egui::RectAlign::TOP_START] };
+    let popup = egui::Popup::menu(field);
+    let id = popup.get_id();
+    let footer_id = id.with("footer-height");
+    let shown = popup
+        .align_alternatives(flipped)
+        .max_height_from_constrain(true)
+        .width(field.rect.width())
+        .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
+        .show(|ui| {
+            ui.set_min_width(ui.available_width());
+            // egui offers the popup last pass's height; offer the full height so a list that shrank (a search with
+            // no matches) grows back.
+            ui.set_max_height(height.min(ui.available_height()));
+            let header = header(ui);
+            // The footer comes after the list; keep the room it took last pass.
+            let footer_room = ui.data(|d| d.get_temp::<f32>(footer_id)).unwrap_or(0.0) + ui.spacing().item_spacing.y;
+            // Labels widen a narrow menu rather than wrap early, as in egui's combo box.
+            ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Extend);
+            let total = total_rows(&header);
+            let list = egui::ScrollArea::vertical()
+                .max_height((ui.available_height() - footer_room).max(0.0))
+                .show_rows(ui, row_height, total, |ui, range| rows(ui, range, header))
+                .inner;
+            let top = ui.cursor().top();
+            let footer = footer(ui);
+            let footer_height = ui.min_rect().bottom() - top;
+            ui.data_mut(|d| d.insert_temp(footer_id, footer_height));
+            (list, footer)
+        })
+        .map(|shown| shown.inner);
+    if shown.is_some() {
+        ui.ctx().accesskit_node_builder(id, |node| node.set_role(egui::accesskit::Role::ListBox));
+    }
+    shown
+}
+
 /// What the send menu's footer was used for.
 enum SendFooter {
     NewBus,
@@ -369,7 +427,9 @@ fn send_route_menu(app: &mut SoundApp, ui: &Ui, field: &egui::Response, id: Trac
     };
     let target = current.as_ref().map(|(route, _)| route);
     let row_h = ui.spacing().interact_size.y;
-    let shown = Menu::new(ui, field).height(260.0).close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside).show_rows_with_header_footer(
+    let shown = header_footer_menu(
+        ui,
+        field,
         header,
         row_h,
         |(_, visible)| visible.len(),

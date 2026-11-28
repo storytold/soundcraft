@@ -437,3 +437,105 @@ fn repeated_local_mob_references_fail_before_property_expansion() {
     let err = f.preview().unwrap_err().to_string();
     assert!(err.contains("duplicate local reference in mobs"), "{err}");
 }
+
+/// A FilmCraft-style AAF that references one external mono PCM WAV per channel, written by the
+/// shared `craft-aaf` writer around WAVs generated here.
+struct MonoWavAaf {
+    dir: PathBuf,
+}
+impl MonoWavAaf {
+    fn new(wav_channels: usize) -> Self {
+        use craft_aaf::model::{CClip, CItem, CKind, CTrack, Composition, Document, Source};
+        use craft_aaf::time::{FrameRate, Tick};
+        static NEXT: AtomicU64 = AtomicU64::new(0);
+        let dir = std::env::temp_dir().join(format!("soundcraft-aaf-mono-{}-{}", std::process::id(), NEXT.fetch_add(1, Ordering::Relaxed)));
+        std::fs::create_dir(&dir).unwrap();
+        let frames = 96_000;
+        let options = EncodeOptions::new(craft_audio::EncodeFormat::Wav).with_bit_depth(BitDepth::Int16);
+        let mut sources = Vec::new();
+        let mut tracks = Vec::new();
+        for (i, name) in ["Dialogue.A1.wav", "Dialogue.A2.wav"].into_iter().enumerate() {
+            let audio = AudioBuffer { sample_rate: 48000, channels: vec![vec![0.25; frames]; wav_channels] };
+            let path = dir.join(name);
+            std::fs::write(&path, craft_audio::encode(&audio, &options).unwrap()).unwrap();
+            sources.push(Source {
+                key: "item:1".into(),
+                name: name.into(),
+                kind: CKind::Sound,
+                path: Some(path.display().to_string()),
+                channel: None,
+                channels: 1,
+                file_channels: 1,
+                width: 0,
+                height: 0,
+                frame_rate: FrameRate::FPS_25,
+                sample_rate: 48000,
+                bits: 16,
+                length: Tick::from_units(frames as i64, 48000),
+                offset: Tick::ZERO,
+                start_tc: None,
+                tc_rate: FrameRate::FPS_25,
+                embedded: None,
+                markers: Vec::new(),
+                nested: None,
+            });
+            let clip = CClip { len: Tick::from_units(25, 25), source: i, start: Tick::ZERO, gain: None, name: format!("Cut {}", i + 1) };
+            tracks.push(CTrack {
+                kind: CKind::Sound,
+                name: format!("A{}", i + 1),
+                number: i as u32 + 1,
+                channels: 1,
+                items: vec![CItem::Clip(clip)],
+            });
+        }
+        let composition = Composition {
+            name: "Separate mono".into(),
+            aaf_mob_id: None,
+            rate: FrameRate::FPS_25,
+            sample_rate: 48000,
+            width: 1920,
+            height: 1080,
+            start_tc: 0,
+            drop: false,
+            tracks,
+            markers: Vec::new(),
+        };
+        let doc = Document { compositions: vec![composition], sources, ..Document::default() };
+        let identity =
+            craft_aaf::Identity { company: "Craft", product: "soundcraft tests", version: "1", platform: "test", product_id: *b"soundcraft-test." };
+        let bytes =
+            craft_aaf::aaf::write(&doc, &craft_aaf::aaf::WriteOptions { identity, small_sectors: false }, &mut craft_aaf::Report::default()).unwrap();
+        std::fs::write(dir.join("Separate mono.aaf"), bytes).unwrap();
+        Self { dir }
+    }
+    fn preview(&self) -> soundcraft_engine::Result<Value> {
+        Engine::default().execute("file.preview_aaf", &json!({"path": self.dir.join("Separate mono.aaf"), "media_dir": self.dir}))
+    }
+}
+impl Drop for MonoWavAaf {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.dir);
+    }
+}
+
+#[test]
+fn separate_mono_pcm_wav_aaf_imports_one_mono_track_per_file() {
+    let f = MonoWavAaf::new(1);
+    let preview = f.preview().unwrap();
+    let plan = &preview["plan"];
+    let channels: Vec<_> = plan["sources"].as_array().unwrap().iter().map(|s| s["channels"].as_u64().unwrap()).collect();
+    assert_eq!(channels, [1, 1]);
+    let mut e = Engine::default();
+    e.execute("file.import_aaf", &json!({"plan": plan, "media_dir": f.dir, "selected": [0, 1]})).unwrap();
+    assert_eq!(e.session().tracks.len(), 2);
+    assert!(e.session().tracks.iter().all(|t| t.channels() == 1 && t.clips().len() == 1));
+    let sources: Vec<_> = e.session().tracks.iter().map(|t| t.clips()[0].source()).collect();
+    assert_ne!(sources[0], sources[1], "each channel file is its own source");
+}
+
+#[test]
+fn a_pcm_descriptor_whose_channel_count_differs_from_its_wav_is_refused() {
+    let f = MonoWavAaf::new(2);
+    let err = f.preview().unwrap_err().to_string();
+    assert!(err.contains("channel counts differ"), "{err}");
+}
