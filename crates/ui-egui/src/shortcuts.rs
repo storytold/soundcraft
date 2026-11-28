@@ -1,7 +1,9 @@
 //! Keyboard shortcuts. Most come from the command registry's `shortcut` strings; a few
 //! context-sensitive keys (Space, Enter, F-keys, nudge, Tab) are handled here.
 
+use crate::docking::{Panel, Workspace};
 use crate::{MainWindow, SoundApp};
+use craft_behavior::dock::PanelState;
 use egui::{Key, Modifiers};
 use serde_json::json;
 
@@ -166,7 +168,7 @@ fn fixed(app: &mut SoundApp, key: Key, m: Modifiers, mac: bool) -> bool {
                 // No MIDI target can consume the notes any more: drop the stale selection.
                 app.midi.selected.clear();
             }
-            if app.ui.show_midi_editor && !app.midi.selected.is_empty() {
+            if midi_editor_on_screen(app) && !app.midi.selected.is_empty() {
                 return false;
             }
             let _ = app.run("edit.clear", json!({}));
@@ -474,6 +476,14 @@ fn centre_on_selection(app: &mut SoundApp, end: bool) -> bool {
     let at = if end { sel.end } else { sel.start };
     let _ = app.run("view.scroll", json!({"to": at.saturating_sub(soundcraft_time::to_samples(half)).max(0)}));
     true
+}
+
+/// Whether the MIDI editor's body is on screen: its tab is the visible one of its dock group in either
+/// window. `show_midi_editor` only means the panel is in the layout, so a tab parked behind another keeps
+/// it true while nothing draws the editor — Delete must not defer to it then (#1627).
+fn midi_editor_on_screen(app: &SoundApp) -> bool {
+    let front = |w: &Workspace| w.layout().panel_state(&Panel::Midi) == PanelState::Front;
+    front(&app.ui.docking) || front(&app.ui.mix_docking)
 }
 
 /// Whether the pointer is over the MIDI editor, whose piano roll moves the selected notes with the arrow keys.
