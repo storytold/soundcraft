@@ -59,7 +59,7 @@ Per-language hours exclude the shared catalog and script work above.
 
 | Date | Change | Summary |
 |---|---|---|
-| 2026-11-27 | minor | Completed the Spanish catalog (all fixed UI strings and engine errors) with a native-speaker terminology review; Spanish menu-coverage test; the path prompt's field uses its own `File Path` key so the Auto Pan `Path` parameter can be translated apart |
+| 2026-11-27 | minor | Completed the Spanish catalog (all fixed UI strings and engine errors) with a native-speaker terminology review; Spanish menu-coverage test; the path prompt's `File path` and `Folder path` fields are translated apart from the Auto Pan `Path` parameter |
 | 2026-11-24 | minor | French and Spanish catalogs (`locales/fr`, `locales/es`, 1,368 strings each) from PR #143, on the `localization` layer; Appearance ▸ Language lists them; estimates unchanged |
 | 2026-11-13 | minor | Completed the pt-BR catalog: tooltips passed to buttons and toggles, `Not available yet.`, the send hover help, `no instrument`, the search placeholders, the Edit-window status bar (bit depth, track count, undo, ms/frame), the remove-session question and the transport/sample-rate readouts; engine errors now reach the status line through `error_text` |
 | 2026-11-05 | minor | Added persisted language selection, the `ui.language` command, English fallback and a pt-BR catalog (menus, dialogs, tooltips, accessibility text, formatted messages); added a Usage section and catalog tests |
