@@ -29,6 +29,24 @@ use info::info;
 use mcp::mcp;
 use session::{run_cmds, script};
 
+/// A Launcher-only protocol argument, in either the separate or the `=` form. Everything after
+/// `--` is a file name, so it is not inspected.
+fn launcher_protocol_flag(args: &[OsString]) -> Option<&'static str> {
+    for arg in args {
+        if arg == "--" {
+            break;
+        }
+        let text = arg.to_string_lossy();
+        if text == "--launch-profile" || text.starts_with("--launch-profile=") {
+            return Some("--launch-profile");
+        }
+        if text == "--profile-root" || text.starts_with("--profile-root=") {
+            return Some("--profile-root");
+        }
+    }
+    None
+}
+
 /// The command line's clap definition.
 pub fn command() -> clap::Command {
     Cli::command()
@@ -44,6 +62,12 @@ where
     T: Into<OsString>,
 {
     let args: Vec<OsString> = args.into_iter().map(Into::into).collect();
+    // The Launcher's Nightly protocol belongs to the GUI alone. Refuse it here, with a usage error,
+    // before the subcommand is parsed: `soundcraft-cli` never opens a profile root or a window.
+    if let Some(flag) = launcher_protocol_flag(&args) {
+        let _ = writeln!(err, "soundcraft-cli: {flag} belongs to SoundCraft Nightly; this is the command-line tool");
+        return 2;
+    }
     // Help and the version (`help`, `-h`, `<subcommand> --help`, `-V`) come back as errors too.
     let cli = match parse(&args) {
         Ok(cli) => cli,
@@ -80,4 +104,32 @@ fn dispatch(command: Command, out: &mut dyn Write, err: &mut dyn Write) -> Resul
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod launcher_protocol_tests {
+    use super::*;
+
+    #[test]
+    fn the_launcher_only_protocol_is_a_usage_error_not_a_file() {
+        for args in [
+            vec!["--launch-profile", "nightly-v1", "--profile-root", "/tmp/profile", "--", "song.scraft"],
+            vec!["--launch-profile=nightly-v1"],
+            vec!["--profile-root=/tmp/profile"],
+            vec!["convert", "in.wav", "--launch-profile", "nightly-v1"],
+        ] {
+            let (mut out, mut err) = (Vec::new(), Vec::new());
+            let code = run(args.iter().map(OsString::from), &mut out, &mut err);
+            assert_eq!(code, 2, "{args:?}");
+            let message = String::from_utf8_lossy(&err);
+            assert!(message.contains("SoundCraft Nightly"), "{args:?}: {message}");
+        }
+    }
+
+    #[test]
+    fn everything_after_the_delimiter_is_a_file_name() {
+        let args: Vec<OsString> = ["convert", "--", "--launch-profile", "--profile-root=./x"].map(OsString::from).to_vec();
+        assert_eq!(launcher_protocol_flag(&args), None);
+        assert_eq!(launcher_protocol_flag(&[OsString::from("--profile-root"), OsString::from("/p")]), Some("--profile-root"));
+    }
 }

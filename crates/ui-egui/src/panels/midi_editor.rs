@@ -432,7 +432,7 @@ fn note_pointer(app: &mut SoundApp, ui: &mut Ui, g: &Roll<'_>, cid: ClipId, penc
 fn note_keys(app: &mut SoundApp, ui: &mut Ui, g: &Roll<'_>, cid: ClipId) {
     let Roll { sequence, roll, grid_ticks, .. } = *g;
     // Keyboard: Cmd+A select all; arrows transpose (Shift = octave) and move by the grid.
-    if ui.rect_contains_pointer(roll) && !ui.ctx().egui_wants_keyboard_input() {
+    if ui.rect_contains_pointer(roll) && !crate::framework::widget_has_keyboard(ui.ctx()) {
         let (all, up, down, left, right, shift) = ui.input(|i| {
             let arrows = !i.modifiers.alt && !i.modifiers.command && !i.modifiers.ctrl;
             (
@@ -469,7 +469,7 @@ fn note_keys(app: &mut SoundApp, ui: &mut Ui, g: &Roll<'_>, cid: ClipId) {
         }
     }
     if !app.midi.selected.is_empty()
-        && !ui.ctx().egui_wants_keyboard_input()
+        && !crate::framework::widget_has_keyboard(ui.ctx())
         && ui.input(|i| i.key_pressed(egui::Key::Delete) || i.key_pressed(egui::Key::Backspace))
     {
         let _ = app.run("midi.note_delete", json!({"clip": cid.0, "indices": app.midi.selected}));
