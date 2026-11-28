@@ -42,12 +42,15 @@ fn type_in_app(ctx: &egui::Context, app: &mut SoundApp, keys: &[(Key, Modifiers)
 fn tab_leaves_the_keys_to_the_shortcuts() {
     let mut app = SoundApp::new(soundcraft_engine::demo::demo_engine(), None, Services::default());
     let ctx = egui::Context::default();
+    soundcraft_ui_egui::framework::install_headless(&ctx);
     for _ in 0..3 {
         type_in_app(&ctx, &mut app, &[]);
     }
+    app.run("edit.select", json!({"tracks": ["Kick"], "start": 0})).unwrap();
+    let view = Some(soundcraft_ui_egui::framework::session_view_id(true));
     for tab in [Modifiers::NONE, Modifiers::SHIFT] {
         type_in_app(&ctx, &mut app, &[(Key::Tab, tab)]);
-        assert_eq!(ctx.memory(|m| m.focused()), None, "{tab:?}");
+        assert_eq!(ctx.memory(|m| m.focused()), view, "{tab:?}");
         let zoom = app.engine.session().edit.zoom.samples_per_px;
         type_in_app(&ctx, &mut app, &[(Key::T, Modifiers::NONE)]);
         assert_eq!(app.engine.session().edit.zoom.samples_per_px, zoom / 2.0, "{tab:?}");
@@ -111,5 +114,163 @@ fn cmd_equals_toggles_mix_and_edit_without_zooming() {
         ctx.run_ui(egui::RawInput::default(), |_| {}).textures_delta.clear();
         assert_eq!(app.ui.window, MainWindow::Edit, "{os:?}");
         assert_eq!(ctx.zoom_factor(), 1.25, "{os:?}");
+    }
+}
+
+/// One full app frame on a 1600×1000 screen.
+fn app_frame(ctx: &egui::Context, app: &mut SoundApp, events: Vec<egui::Event>) {
+    let screen_rect = Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1600.0, 1000.0)));
+    ctx.run_ui(egui::RawInput { screen_rect, events, ..Default::default() }, |ui| {
+        app.logic(ui.ctx());
+        app.ui(ui);
+    })
+    .textures_delta
+    .clear();
+}
+
+fn arrow(key: Key) -> Vec<egui::Event> {
+    [true, false].map(|pressed| egui::Event::Key { key, physical_key: None, pressed, repeat: false, modifiers: Modifiers::NONE }).to_vec()
+}
+
+/// Where `at` is drawn in the Edit window's timeline, and the timeline's middle (#1376).
+fn x_and_middle(app: &SoundApp, at: i64) -> (f32, f32) {
+    let tl = soundcraft_ui_egui::edit_window::rect(app.edit_layout.timeline);
+    (soundcraft_ui_egui::edit_window::x_of(app.engine.session(), tl, at), tl.center().x)
+}
+
+#[test]
+fn left_and_right_arrows_centre_the_edit_window_on_the_selected_clip() {
+    let mut app = SoundApp::new(soundcraft_engine::demo::demo_engine(), None, Services::default());
+    let ctx = egui::Context::default();
+    soundcraft_ui_egui::framework::install_headless(&ctx);
+    let (clip_id, clip) = app.engine.session().tracks.iter().flat_map(|t| t.clips()).find(|c| c.start > 100_000).map(|c| (c.id, c.range())).unwrap();
+    app.run("view.zoom_set", json!({"samples_per_px": 10.0})).unwrap();
+    app.run("view.scroll", json!({"to": 0})).unwrap();
+    for _ in 0..3 {
+        app_frame(&ctx, &mut app, vec![]);
+    }
+    app.run("edit.select", json!({"clips": [clip_id.0]})).unwrap();
+    assert!(x_and_middle(&app, clip.start).0 > app.edit_layout.timeline[2], "the clip starts off-screen");
+
+    app_frame(&ctx, &mut app, arrow(Key::ArrowLeft));
+    let (x, middle) = x_and_middle(&app, clip.start);
+    assert!((x - middle).abs() < 1.0, "Left: the clip start at {x}, the middle at {middle}");
+    app_frame(&ctx, &mut app, arrow(Key::ArrowRight));
+    let (x, middle) = x_and_middle(&app, clip.end);
+    assert!((x - middle).abs() < 1.0, "Right: the clip end at {x}, the middle at {middle}");
+
+    // An insertion point alone leaves the view where it is.
+    app.run("edit.select", json!({"start": clip.start})).unwrap();
+    let scroll = app.engine.session().edit.zoom.scroll;
+    app_frame(&ctx, &mut app, arrow(Key::ArrowLeft));
+    app_frame(&ctx, &mut app, arrow(Key::ArrowRight));
+    assert_eq!(app.engine.session().edit.zoom.scroll, scroll);
+}
+
+/// Over the piano roll the arrows move the selected note and leave the Edit window's view alone.
+#[test]
+fn the_piano_roll_keeps_the_plain_arrows() {
+    let mut app = SoundApp::new(soundcraft_engine::demo::demo_engine(), None, Services::default());
+    app.ui.show_midi_editor = true;
+    app.run("edit.select", json!({"tracks": ["Keys"], "start": 0, "end": 480_000})).unwrap();
+    app.run("view.zoom_set", json!({"samples_per_px": 10.0})).unwrap();
+    app.run("view.scroll", json!({"to": 1_000_000})).unwrap();
+    let ctx = egui::Context::default();
+    soundcraft_ui_egui::framework::install_headless(&ctx);
+    for _ in 0..6 {
+        app_frame(&ctx, &mut app, vec![]);
+    }
+    let body = ctx.data(|d| d.get_temp::<egui::Rect>(egui::Id::unique("soundcraft-midi-body"))).unwrap();
+    app_frame(&ctx, &mut app, vec![egui::Event::PointerMoved(body.center())]);
+    app.midi.selected = vec![0];
+    let note_start = |app: &SoundApp| {
+        let clip = soundcraft_ui_egui::midi_editor::target_clip(app).unwrap();
+        match &app.engine.session().find_clip(clip).unwrap().1.content {
+            soundcraft_model::ClipContent::Midi { sequence } => sequence.notes[app.midi.selected[0]].start,
+            _ => panic!("not a MIDI clip"),
+        }
+    };
+    let (before, scroll) = (note_start(&app), app.engine.session().edit.zoom.scroll);
+    app_frame(&ctx, &mut app, arrow(Key::ArrowRight));
+    assert!(note_start(&app) > before, "the note moved right");
+    assert_eq!(app.engine.session().edit.zoom.scroll, scroll, "the Edit window kept its view");
+}
+
+/// The MIDI editor open behind another tab has no piano roll on screen: the panel in front of it takes no
+/// arrows, so they centre the Edit window there as anywhere else.
+#[test]
+fn a_midi_editor_behind_another_tab_leaves_the_arrows_to_the_edit_window() {
+    let mut app = SoundApp::new(soundcraft_engine::demo::demo_engine(), None, Services::default());
+    app.ui.show_midi_editor = true;
+    let (clip_id, clip) = app.engine.session().tracks.iter().flat_map(|t| t.clips()).find(|c| c.start > 100_000).map(|c| (c.id, c.range())).unwrap();
+    app.run("view.zoom_set", json!({"samples_per_px": 10.0})).unwrap();
+    app.run("view.scroll", json!({"to": 0})).unwrap();
+    let ctx = egui::Context::default();
+    soundcraft_ui_egui::framework::install_headless(&ctx);
+    for _ in 0..6 {
+        app_frame(&ctx, &mut app, vec![]);
+    }
+    let body = ctx.data(|d| d.get_temp::<egui::Rect>(egui::Id::unique("soundcraft-midi-body"))).unwrap();
+    app.run("ui.dock", json!({"operation": "open", "panel": "history"})).unwrap();
+    app.run("ui.dock", json!({"operation": "move", "panel": "history", "target": "midi", "zone": "tab"})).unwrap();
+    for _ in 0..3 {
+        app_frame(&ctx, &mut app, vec![]);
+    }
+    assert!(app.ui.show_midi_editor, "the MIDI editor is still open");
+    assert_ne!(app.ui.docking.layout().panel_state(&soundcraft_ui_egui::docking::Panel::Midi), craft_behavior::dock::PanelState::Front);
+    app_frame(&ctx, &mut app, vec![egui::Event::PointerMoved(body.center())]);
+    app.run("edit.select", json!({"clips": [clip_id.0]})).unwrap();
+
+    app_frame(&ctx, &mut app, arrow(Key::ArrowLeft));
+    let (x, middle) = x_and_middle(&app, clip.start);
+    assert!((x - middle).abs() < 1.0, "Left: the clip start at {x}, the middle at {middle}");
+}
+
+#[test]
+fn pro_tools_shift_keys_bypass_inserts_and_mute_sends() {
+    for os in [OperatingSystem::Mac, OperatingSystem::Windows, OperatingSystem::Nix] {
+        let mut app = SoundApp::new(soundcraft_engine::demo::demo_engine(), None, Services::default());
+        app.engine.execute("edit.select", &json!({"tracks": ["Snare"]})).unwrap();
+        let ctx = egui::Context::default();
+        ctx.set_os(os);
+        for (key, id) in [
+            (Key::A, "track.bypass_inserts"),
+            (Key::Num2, "track.bypass_inserts_ae"),
+            (Key::Num3, "track.bypass_inserts_fj"),
+            (Key::E, "track.bypass_eq"),
+            (Key::C, "track.bypass_dynamics"),
+            (Key::V, "track.bypass_reverb"),
+            (Key::D, "track.bypass_delay"),
+            (Key::W, "track.bypass_modulation"),
+            (Key::Q, "track.mute_sends"),
+            (Key::Num4, "track.mute_sends_ae"),
+            (Key::Num5, "track.mute_sends_fj"),
+        ] {
+            let before = app.engine.journal.len();
+            press(&ctx, &mut app, key, Modifiers::SHIFT);
+            assert_eq!(app.engine.journal.len(), before + 1, "{os:?} Shift+{key:?}: {}", app.ui.status);
+            assert_eq!(app.engine.journal.back().unwrap().0, id, "{os:?} Shift+{key:?}");
+        }
+        let muted = |app: &SoundApp| app.engine.session().track_by_name("Snare").unwrap().mixer.sends[0].as_ref().is_some_and(|s| s.mute);
+        let was = muted(&app);
+        press(&ctx, &mut app, Key::Q, Modifiers::SHIFT);
+        assert_ne!(muted(&app), was, "{os:?}");
+        press(&ctx, &mut app, Key::Q, Modifiers::SHIFT);
+        assert_eq!(muted(&app), was, "{os:?}: a second Shift+Q unmutes");
+
+        // The keys reach the right inserts, not just the right command ids: Kick has an EQ then a compressor.
+        app.engine.execute("edit.select", &json!({"tracks": ["Kick"]})).unwrap();
+        let bypassed = |app: &SoundApp| -> Vec<bool> {
+            app.engine.session().track_by_name("Kick").unwrap().mixer.inserts.iter().take(2).map(|i| i.as_ref().unwrap().bypass).collect()
+        };
+        let before = bypassed(&app);
+        press(&ctx, &mut app, Key::E, Modifiers::SHIFT);
+        let after_eq = bypassed(&app);
+        assert_ne!(after_eq[0], before[0], "{os:?}: Shift+E flips the EQ");
+        assert_eq!(after_eq[1], before[1], "{os:?}: Shift+E leaves the compressor");
+        press(&ctx, &mut app, Key::C, Modifiers::SHIFT);
+        let after_dyn = bypassed(&app);
+        assert_ne!(after_dyn[1], before[1], "{os:?}: Shift+C flips the compressor");
+        assert_eq!(after_dyn[0], after_eq[0], "{os:?}: Shift+C leaves the EQ");
     }
 }

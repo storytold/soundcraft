@@ -3,9 +3,9 @@ use super::{CommandSpec, always, bad, bool_or, f32_or, f64_or, i64_or, position_
 
 use crate::{Engine, Result, cmd};
 use serde_json::{Value, json};
-use soundcraft_time::TimeFormat;
-use soundcraft_time::{GridValue, MAX_POSITION, NoteValue};
+use soundcraft_time::{FeetFramesValue, GridScale, GridValue, MAX_POSITION, NoteValue, TimeFormat, TimecodeValue};
 
+/// Returns commands that control saved view, counter, Grid, and Nudge state.
 pub fn specs() -> Vec<CommandSpec> {
     vec![
         cmd!(view "view.zoom_in", "Zoom In", [], Some("Cmd+]"), "{}", always, |e, _| zoom(e, 0.5, None)),
@@ -65,7 +65,18 @@ pub fn specs() -> Vec<CommandSpec> {
         cmd!(noundo "view.ruler", "Rulers", ["View", "Rulers"], None, "{ruler: bars_beats|min_secs|timecode|feet_frames|samples|tempo|meter|markers|key|chords, visible?: bool}", always, ruler),
         cmd!(noundo "view.main_counter", "Main Counter", ["View", "Main Counter"], None, "{format: bars_beats|min_secs|timecode|feet_frames|samples}", always, |e, p| {
             let f = str_param(p, "format").and_then(TimeFormat::from_id).ok_or_else(|| bad("view.main_counter", "unknown format"))?;
-            e.session_mut().edit.main_counter = f;
+            let edit = &mut e.session_mut().edit;
+            edit.main_counter = f;
+            let scale = grid_scale(f);
+            if edit.grid_follow_main && edit.grid.scale() != scale {
+                edit.grid = GridValue::for_scale(scale);
+            }
+            if edit.grid_follow_main {
+                edit.grid_clips_markers = false;
+            }
+            if edit.nudge_follow_main && edit.nudge.scale() != scale {
+                edit.nudge = GridValue::for_scale(scale);
+            }
             Ok(json!({"format": f}))
         }),
         cmd!(noundo "view.sub_counter", "Sub Counter", [], None, "{format?: … | null}", always, |e, p| {
@@ -73,23 +84,58 @@ pub fn specs() -> Vec<CommandSpec> {
             e.session_mut().edit.sub_counter = f;
             Ok(json!({"format": f}))
         }),
-        cmd!(noundo "view.grid", "Grid Value", [], Some("Shift+=/-"), "{value: '1/16' | '1 bar' | '1/8t' | '1/4.' | {seconds} | {frames} | {samples}, or step: ±n values larger or smaller; lines?: bool}", always, |e, p| {
-            let g = value_or_step(p, e.session().edit.grid).ok_or_else(|| bad("view.grid", "unknown grid value"))?;
+        cmd!(noundo "view.grid", "Grid Value", [], Some("Shift+=/-"), "{value?, step?, format?: bars_beats|min_secs|timecode|feet_frames|samples|clips_markers, follow_main?: bool, lines?: bool}", always, |e, p| {
+            let current = e.session().edit.grid;
+            let requested_scale = str_param(p, "format").and_then(GridScale::from_id);
+            let mut g = requested_grid_value(p, current).ok_or_else(|| bad("view.grid", "unknown grid value or format"))?;
             let lines = p.get("lines").and_then(Value::as_bool);
+            let follow = p.get("follow_main").and_then(Value::as_bool);
+            if follow == Some(true) {
+                let scale = grid_scale(e.session().edit.main_counter);
+                if g.scale() != scale {
+                    g = GridValue::for_scale(scale);
+                }
+            }
             let s = e.session_mut();
             s.edit.grid = g;
+            if p.get("value").is_some() || p.get("step").is_some() {
+                s.edit.grid_clips_markers = false;
+            }
+            if let Some(scale) = requested_scale {
+                s.edit.grid_clips_markers = scale == GridScale::ClipsMarkers;
+            }
+            if follow == Some(true) {
+                s.edit.grid_clips_markers = false;
+            }
+            s.edit.grid_follow_main = follow.unwrap_or(
+                s.edit.grid_follow_main && !s.edit.grid_clips_markers && g.scale() == grid_scale(s.edit.main_counter),
+            );
             if let Some(l) = lines { s.edit.grid_lines = l }
-            Ok(json!({"grid": g.label()}))
+            let format = if s.edit.grid_clips_markers { GridScale::ClipsMarkers } else { g.scale() };
+            Ok(json!({"grid": g.label(), "format": format.id(), "follow_main": s.edit.grid_follow_main}))
         }),
         cmd!(noundo "view.grid_lines", "Show Grid Lines", [], None, "{value?: bool}", always, |e, p| {
             let s = e.session_mut();
             s.edit.grid_lines = p.get("value").and_then(Value::as_bool).unwrap_or(!s.edit.grid_lines);
             Ok(json!({"value": s.edit.grid_lines}))
         }),
-        cmd!(noundo "view.nudge", "Nudge Value", [], Some("Alt+Shift+=/-"), "{value or step: like grid}", always, |e, p| {
-            let g = value_or_step(p, e.session().edit.nudge).ok_or_else(|| bad("view.nudge", "unknown nudge value"))?;
-            e.session_mut().edit.nudge = g;
-            Ok(json!({"nudge": g.label()}))
+        cmd!(noundo "view.nudge", "Nudge Value", [], Some("Alt+Shift+=/-"), "{value?, step?, format?: bars_beats|min_secs|timecode|feet_frames|samples, follow_main?: bool}", always, |e, p| {
+            let current = e.session().edit.nudge;
+            if str_param(p, "format").and_then(GridScale::from_id) == Some(GridScale::ClipsMarkers) {
+                return Err(bad("view.nudge", "Clips/Markers is available only for Grid"));
+            }
+            let mut g = requested_grid_value(p, current).ok_or_else(|| bad("view.nudge", "unknown nudge value or format"))?;
+            let follow = p.get("follow_main").and_then(Value::as_bool);
+            if follow == Some(true) {
+                let scale = grid_scale(e.session().edit.main_counter);
+                if g.scale() != scale {
+                    g = GridValue::for_scale(scale);
+                }
+            }
+            let edit = &mut e.session_mut().edit;
+            edit.nudge = g;
+            edit.nudge_follow_main = follow.unwrap_or(edit.nudge_follow_main && g.scale() == grid_scale(edit.main_counter));
+            Ok(json!({"nudge": g.label(), "format": g.scale().id(), "follow_main": edit.nudge_follow_main}))
         }),
     ]
 }
@@ -137,7 +183,33 @@ fn value_or_step(p: &Value, current: GridValue) -> Option<GridValue> {
     Some((0..step.unsigned_abs().min(16)).fold(current, |g, _| g.stepped(step > 0)))
 }
 
-/// Parse grid/nudge values.
+/// Maps a counter format to the corresponding Grid/Nudge scale.
+fn grid_scale(format: TimeFormat) -> GridScale {
+    match format {
+        TimeFormat::BarsBeats => GridScale::BarsBeats,
+        TimeFormat::MinSecs => GridScale::MinSecs,
+        TimeFormat::Timecode => GridScale::Timecode,
+        TimeFormat::FeetFrames => GridScale::FeetFrames,
+        TimeFormat::Samples => GridScale::Samples,
+    }
+}
+
+/// Resolves an explicit value, a step, or a scale change while preserving the current increment.
+fn requested_grid_value(p: &Value, current: GridValue) -> Option<GridValue> {
+    if p.get("value").is_some() || p.get("step").is_some() {
+        return value_or_step(p, current);
+    }
+    let scale = str_param(p, "format").and_then(GridScale::from_id);
+    match scale {
+        Some(GridScale::ClipsMarkers) => Some(current),
+        Some(scale) if current.scale() == scale => Some(current),
+        Some(scale) => Some(GridValue::for_scale(scale)),
+        None if p.get("follow_main").is_some() || p.get("lines").is_some() => Some(current),
+        None => None,
+    }
+}
+
+/// Parse grid/nudge values; legacy `1` and `1/1` mean a bar, while `whole` means four quarter notes.
 pub fn grid_param(p: &Value, key: &str) -> Option<GridValue> {
     let v = p.get(key)?;
     if let Some(sec) = v.get("seconds").and_then(Value::as_f64) {
@@ -146,15 +218,23 @@ pub fn grid_param(p: &Value, key: &str) -> Option<GridValue> {
     if let Some(f) = v.get("frames").and_then(Value::as_i64) {
         return Some(GridValue::Frames(f.clamp(1, 100_000)));
     }
+    if let Some(value) = v.get("timecode").and_then(Value::as_str).and_then(TimecodeValue::from_id) {
+        return Some(GridValue::Timecode(value));
+    }
+    if let Some(value) = v.get("feet_frames").and_then(Value::as_str).and_then(FeetFramesValue::from_id) {
+        return Some(GridValue::FeetFrames(value));
+    }
     if let Some(n) = v.get("samples").and_then(Value::as_i64) {
         return Some(GridValue::Samples(n.clamp(1, i64::from(u32::MAX))));
     }
     let s = v.as_str()?.trim().to_ascii_lowercase();
     let triplet = s.ends_with('t') || s.contains("triplet");
     let dotted = s.ends_with('.') || s.contains("dotted");
-    let core: String = s.chars().take_while(|c| c.is_ascii_digit() || *c == '/' || *c == ' ' || c.is_ascii_alphabetic() && *c != 't').collect();
+    let core = s.replace("triplet", "").replace("dotted", "");
+    let core = core.trim().trim_end_matches(['t', '.']);
     let value = match core.trim() {
-        "1 bar" | "bar" | "1/1" | "1" => NoteValue::Bar,
+        "1" | "1/1" | "1 bar" | "bar" => NoteValue::Bar,
+        "whole" | "whole note" => NoteValue::Whole,
         "1/2" => NoteValue::Half,
         "1/4" => NoteValue::Quarter,
         "1/8" => NoteValue::Eighth,
@@ -170,13 +250,57 @@ pub fn grid_param(p: &Value, key: &str) -> Option<GridValue> {
 mod tests {
     use super::*;
     use soundcraft_time::Samples;
+    /// Grid values accept compact and word-form musical modifiers plus every absolute scale.
     #[test]
     fn grid_values_parse() {
         assert_eq!(grid_param(&json!({"v": "1/16"}), "v"), Some(GridValue::Note { value: NoteValue::Sixteenth, dotted: false, triplet: false }));
         assert_eq!(grid_param(&json!({"v": "1/8t"}), "v"), Some(GridValue::Note { value: NoteValue::Eighth, dotted: false, triplet: true }));
+        assert_eq!(grid_param(&json!({"v": "1/8 triplet"}), "v"), Some(GridValue::Note { value: NoteValue::Eighth, dotted: false, triplet: true }));
         assert_eq!(grid_param(&json!({"v": "1/4."}), "v"), Some(GridValue::Note { value: NoteValue::Quarter, dotted: true, triplet: false }));
+        for alias in ["1", "1/1"] {
+            assert_eq!(grid_param(&json!({"v": alias}), "v"), Some(GridValue::Note { value: NoteValue::Bar, dotted: false, triplet: false }));
+        }
+        assert_eq!(grid_param(&json!({"v": "whole"}), "v"), Some(GridValue::Note { value: NoteValue::Whole, dotted: false, triplet: false }));
+        assert_eq!(grid_param(&json!({"v": "whole note"}), "v"), Some(GridValue::Note { value: NoteValue::Whole, dotted: false, triplet: false }));
         assert_eq!(grid_param(&json!({"v": {"seconds": 0.5}}), "v"), Some(GridValue::Seconds(0.5)));
+        assert_eq!(grid_param(&json!({"v": {"timecode": "quarter_frame"}}), "v"), Some(GridValue::Timecode(TimecodeValue::QuarterFrame)));
+        assert_eq!(grid_param(&json!({"v": {"feet_frames": "foot"}}), "v"), Some(GridValue::FeetFrames(FeetFramesValue::Foot)));
         assert_eq!(grid_param(&json!({"v": "nonsense"}), "v"), None);
+    }
+
+    /// Explicit values and formats retain Follow Main only when the selected scale still matches.
+    #[test]
+    fn explicit_grid_and_nudge_scales_keep_follow_state_consistent() {
+        for command in ["view.grid", "view.nudge"] {
+            let mut e = Engine::default();
+            e.execute("view.main_counter", &json!({"format": "min_secs"})).unwrap();
+            e.execute(command, &json!({"follow_main": true})).unwrap();
+            let result = e.execute(command, &json!({"value": {"seconds": 0.1}})).unwrap();
+            assert_eq!(result["follow_main"], true);
+            let result = e.execute(command, &json!({"value": {"feet_frames": "foot"}})).unwrap();
+            assert_eq!(result["follow_main"], false);
+            e.execute(command, &json!({"follow_main": true})).unwrap();
+            let result = e.execute(command, &json!({"format": "bars_beats"})).unwrap();
+            assert_eq!(result["follow_main"], false);
+        }
+        let mut e = Engine::default();
+        e.execute("view.grid", &json!({"format": "clips_markers"})).unwrap();
+        assert!(!e.session().edit.grid_follow_main);
+        e.execute("view.grid", &json!({"value": {"samples": 100}})).unwrap();
+        assert!(!e.session().edit.grid_clips_markers);
+        assert_eq!(e.session().edit.grid, GridValue::Samples(100));
+    }
+
+    /// Historical bar aliases retain meter-dependent duration; the explicit whole note remains distinct.
+    #[test]
+    fn legacy_bar_aliases_and_whole_notes_remain_distinct_in_odd_meter() {
+        let mut e = Engine::default();
+        e.session_mut().tempo = soundcraft_time::TempoMap::new(120.0, 3, 4).unwrap();
+        for (value, expected) in [("1", 72_000), ("1/1", 72_000), ("whole", 96_000)] {
+            e.execute("view.grid", &json!({"value": value, "follow_main": false})).unwrap();
+            let s = e.session();
+            assert_eq!(s.edit.grid.step_samples(0, s.sample_rate, &s.tempo, s.frame_rate), expected);
+        }
     }
 
     fn view(e: &Engine) -> (f64, Samples) {
@@ -241,6 +365,7 @@ mod tests {
         assert_eq!(state(&e), before);
     }
 
+    /// Grid and Nudge steps drive edit movement while preserving their selected increments.
     #[test]
     fn grid_and_nudge_values_step_and_nudges_can_use_the_next_value() {
         let mut e = Engine::default();
@@ -261,5 +386,33 @@ mod tests {
         e.execute("edit.nudge", &json!({"direction": -1})).unwrap();
         assert_eq!(e.session().edit.selection.start, 6_000);
         assert_eq!(e.session().edit.nudge.label(), "1/16 note");
+    }
+
+    /// Grid and Nudge expose independent scale-following state, while Clips/Markers remains Grid-only.
+    #[test]
+    fn grid_and_nudge_choose_scales_follow_the_main_counter_and_keep_clips_markers_grid_only() {
+        let mut e = Engine::default();
+        e.execute("view.grid", &json!({"format": "timecode", "follow_main": false})).unwrap();
+        assert_eq!(e.session().edit.grid, GridValue::Timecode(TimecodeValue::Frame));
+        e.execute("view.grid", &json!({"value": {"timecode": "quarter_frame"}})).unwrap();
+        e.execute("view.grid", &json!({"format": "clips_markers", "follow_main": false})).unwrap();
+        assert_eq!(e.session().edit.grid, GridValue::Timecode(TimecodeValue::QuarterFrame));
+        assert!(e.session().edit.grid_clips_markers);
+        assert!(e.execute("view.nudge", &json!({"format": "clips_markers"})).is_err());
+
+        e.execute("view.grid", &json!({"follow_main": true})).unwrap();
+        e.execute("view.nudge", &json!({"follow_main": true})).unwrap();
+        assert_eq!((e.session().edit.grid, e.session().edit.nudge), (GridValue::Seconds(1.0), GridValue::Seconds(1.0)));
+        assert!(!e.session().edit.grid_clips_markers);
+        e.execute("view.main_counter", &json!({"format": "samples"})).unwrap();
+        assert_eq!((e.session().edit.grid, e.session().edit.nudge), (GridValue::Samples(100), GridValue::Samples(100)));
+        assert!(e.session().edit.grid_follow_main && e.session().edit.nudge_follow_main);
+
+        e.execute("view.grid", &json!({"format": "bars_beats", "follow_main": false})).unwrap();
+        assert_eq!(e.session().edit.grid, GridValue::default());
+        assert!(!e.session().edit.grid_follow_main);
+        e.execute("view.main_counter", &json!({"format": "timecode"})).unwrap();
+        assert_eq!(e.session().edit.grid, GridValue::default());
+        assert_eq!(e.session().edit.nudge, GridValue::Timecode(TimecodeValue::Frame));
     }
 }

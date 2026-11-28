@@ -17,10 +17,10 @@ pub(crate) fn info(args: &InfoArgs, out: &mut dyn Write, err: &mut dyn Write) ->
     }
     let bytes = std::fs::read(path).map_err(|source| CliError::File { path: path.clone(), source })?;
     let ext = path.extension().and_then(std::ffi::OsStr::to_str);
-    let i = soundcraft_audio_io::probe(&bytes, ext).map_err(|source| CliError::Audio { path: path.clone(), source })?;
+    let i = craft_audio::probe(&bytes, ext).map_err(|source| CliError::Audio { path: path.clone(), source })?;
     print_json(
         out,
-        &json!({"format": i.format, "sample_format": i.sample_format, "sample_rate": i.sample_rate, "channels": i.channels, "frames": i.frames, "seconds": i.duration_secs(), "bwf": i.bwf}),
+        &json!({"format": soundcraft_engine::model::FileFormat::of(&i), "sample_format": i.sample_format, "sample_rate": i.sample_rate, "channels": i.channels, "frames": i.frames, "seconds": i.duration_secs(), "bwf": i.bwf}),
         args.compact,
     );
     Ok(())

@@ -85,9 +85,9 @@ impl SoundApp {
 
 /// The File › Open Recent submenu.
 pub fn menu(app: &mut SoundApp, ui: &mut egui::Ui) {
-    ui.menu_button("Open Recent", |ui| {
+    ui.menu_button(crate::localization::text("Open Recent"), |ui| {
         if app.ui.recent_sessions.is_empty() {
-            ui.add_enabled(false, egui::Button::new("No Recent Sessions"));
+            ui.add_enabled(false, egui::Button::new(crate::localization::text("No Recent Sessions")));
             return;
         }
         let now = ui.ctx().input(|i| i.time);
@@ -95,14 +95,17 @@ pub fn menu(app: &mut SoundApp, ui: &mut egui::Ui) {
         let mut open = None;
         for (i, path) in app.ui.recent_sessions.iter().enumerate() {
             let here = exists.get(i).copied().unwrap_or(true);
-            let text = if here { label(path) } else { format!("{}  (missing)", label(path)) };
-            let r = ui.add_enabled(here, egui::Button::new(text)).on_hover_text(path.as_str()).on_disabled_hover_text(format!("{path}\nnot found"));
+            let text = if here { label(path) } else { crate::localized_format!("{}  (missing)", label(path)) };
+            let r = ui
+                .add_enabled(here, egui::Button::new(text))
+                .on_hover_text(path.as_str())
+                .on_disabled_hover_text(crate::localized_format!("{path}\nnot found", path = path));
             if r.clicked() {
                 open = Some(path.clone());
             }
         }
         ui.separator();
-        if ui.button("Clear Recent").clicked() {
+        if ui.button(crate::localization::text("Clear Recent")).clicked() {
             app.ui.recent_sessions.clear();
             app.recent_changed = true;
             ui.close();
@@ -112,7 +115,7 @@ pub fn menu(app: &mut SoundApp, ui: &mut egui::Ui) {
             // Through the dialog layer, so unsaved changes are asked about first.
             if let Err(e) = crate::dialogs::run_or_ask(app, "session.open", json!({"path": path})) {
                 log::warn!("{path}: {e}");
-                app.ui.status = format!("Could not open {path}: {e}");
+                app.ui.status = crate::localized_format!("Could not open {path}: {e}", path = path, e = e);
             }
         }
     });
@@ -155,5 +158,20 @@ mod tests {
     fn older_ui_json_without_the_list_still_loads() {
         let ui: crate::UiState = serde_json::from_str("{}").unwrap();
         assert!(ui.recent_sessions.is_empty());
+    }
+
+    /// A saved state with more entries than the menu keeps (a hand-edited `ui.json`) is cut to
+    /// the newest [`MAX_RECENT`] on the first frame, and a list within the limit is left alone.
+    /// Cutting it tells the host to save, so the file is corrected without waiting for a clean exit.
+    #[test]
+    fn an_oversized_saved_list_is_capped_on_the_first_frame() {
+        let paths = |count: usize| (0..count).map(|i| format!("{i}.scraft")).collect::<Vec<_>>();
+        for (saved, kept) in [(1000, MAX_RECENT), (MAX_RECENT + 1, MAX_RECENT), (MAX_RECENT, MAX_RECENT), (3, 3), (0, 0)] {
+            let mut app = SoundApp::new(soundcraft_engine::Engine::default(), None, crate::Services::default());
+            app.ui = serde_json::from_value(json!({"recent_sessions": paths(saved)})).unwrap();
+            let mut harness = egui_kittest::Harness::builder().build_ui_state(|ui, app: &mut SoundApp| app.logic(&ui.ctx().clone()), app);
+            assert_eq!(harness.state().ui.recent_sessions, paths(kept), "{saved} saved entries");
+            assert_eq!(harness.state_mut().take_recent_changed(), saved > kept, "{saved} saved entries: save only when entries were cut");
+        }
     }
 }

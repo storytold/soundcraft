@@ -88,7 +88,7 @@ where things are.
   </tr>
   <tr>
     <td><b>Automation and markers.</b> Breakpoint automation for volume, pan, mute, sends and every plugin parameter, written live in Write, Touch and Latch, plus memory locations and a big counter.</td>
-    <td><b>Everywhere.</b> Signed builds for macOS (universal), Windows (x64, x86, Arm), Linux (AppImage, deb, rpm, Flatpak), FreeBSD, and a WebAssembly build that runs in the browser.</td>
+    <td><b>Everywhere.</b> Signed builds for macOS (universal), Windows (x64 and ARM64), Linux (AppImage, deb, rpm, Flatpak, Arch), FreeBSD, and a WebAssembly build that runs in the browser.</td>
   </tr>
   <tr>
     <td width="50%"><img alt="The Video window showing a colour-bar test movie with a timecode burn-in, above a Video track with thumbnails in the Edit window" src="docs/images/video.png"></td>
@@ -123,19 +123,21 @@ where things are.
   Trim passes recorded live from the faders; thin, glide, coalesce and convert to clip gain.
 - **Plugins:** 7-band and 1-band EQ, compressor/limiter, expander/gate, de-esser, maximizer,
   channel strip, room and plate reverbs, mod delay, auto pan, chorus, flanger, phaser, ring
-  modulator, saturator, lo-fi, rectifier, subharmonic, pitch shifter, time shift, gain, trim,
-  invert, DC removal, signal generator, dither, a subtractive synth, a drum synth and a sampler
-  (plays any WAV, AIFF, FLAC, MP3 or OGG across the keyboard), all original. **CLAP plugins**
-  load too. Any processor runs offline as AudioSuite, and user presets save per plugin.
+  modulator, frequency shifter, saturator, lo-fi, rectifier, subharmonic, pitch shifter, time
+  shift, gain, trim, invert, DC removal, signal generator, dither, a subtractive synth, a drum
+  synth and a sampler (plays any WAV, AIFF, FLAC, MP3 or OGG across the keyboard), all original.
+  **CLAP plugins** load too. Any processor runs offline as AudioSuite, and user presets save
+  per plugin.
 - **MIDI:** instrument and MIDI tracks, a piano-roll MIDI editor with a velocity lane, an event
   list, a score view, step input, quantize, transpose, real-time properties, Standard MIDI Files,
-  and Audio-to-MIDI from a sung or played melody.
+  and Audio-to-MIDI from a sung or played melody. MIDI keyboards play the instruments live and
+  are recorded into MIDI clips ([how](docs/midi-input.md)).
 - **Recording:** punch in on a selection or on the fly, pre/post-roll, loop recording with a
   playlist per take, input monitoring through the full channel strip, and autosave with recovery.
 - **Time and tempo:** Bars|Beats, Min:Secs, Timecode (every rate, drop-frame included),
   Feet+Frames and Samples; tempo and meter maps with a tempo editor; linear, parabolic and
-  S-curve tempo ramps; key signatures and detected chords; Beat Detective and Identify Beat;
-  pitch-preserving Elastic warping.
+  S-curve tempo ramps; key signatures and detected chords; Beat Analysis and Identify Beat;
+  pitch-preserving Elastic Audio warping.
 - **Audio files:** WAV/BWF/RF64, AIFF/AIFC and FLAC in and out; MP3, Ogg Vorbis, AAC, ALAC, CAF
   and the audio of MP4/MOV movies in. Any sample rate and bit depth.
 - **Bounce:** mix or stems to WAV, AIFF or FLAC at 16/24/32-bit float with optional dither and
@@ -146,8 +148,7 @@ where things are.
 ## Getting started
 
 Download a build from the [releases page](https://github.com/storytold/soundcraft/releases), or build
-from source with Rust 1.95 or later for the desktop/web UI (the core workspace's declared
-minimum remains Rust 1.90):
+from source with Rust 1.95 or later:
 
 ```sh
 git clone https://github.com/storytold/soundcraft
@@ -177,6 +178,16 @@ On macOS, **⌘←/→** changes the active row's format, **⌘↑/↓** its typ
 and **⌥⌘↑/↓** its timebase. **⇧⌃⌘↓/↑** adds/removes the active row, also with **⌥**;
 **⇧⌘↓/↑** works too. Windows/Linux use **Ctrl** for **⌘**. The active row follows the
 field you click. A new row starts with its count focused and selected; Enter creates and Escape cancels.
+
+### MIDI keyboards
+
+Plug a keyboard in, record-enable an instrument track (its **R** button) and play: the keyboard
+is heard through the track's instrument, and a record pass turns what you play into a MIDI clip.
+**Setup › Playback Engine…** lists the MIDI devices with a switch each (**Setup › MIDI › MIDI
+Input Devices…** opens the same window), and a track's input selector chooses a device and a
+channel. Tried on Linux so far; on macOS and Windows it builds but has not been tried with a
+device, and there is no MIDI input on FreeBSD or the web. The guide is
+[docs/midi-input.md](docs/midi-input.md).
 
 ### Logs
 
@@ -228,7 +239,8 @@ soundcraft-cli mcp --automation-read-root DIR --automation-write-root DIR
 
 See [`docs/cli.md`](docs/cli.md) for the command-line tool (subcommands, exit codes, environment
 variables, man pages and completions), [`docs/control-protocol.md`](docs/control-protocol.md) and
-[`docs/mcp.md`](docs/mcp.md). `soundcraft-cli commands` lists every command.
+[`docs/mcp.md`](docs/mcp.md). `soundcraft-cli commands` lists every command (`--json` for each
+one's parameters and details, as JSON).
 
 Open **SoundCraft › Session Audio Health** to check loaded audio availability, sample-rate
 mismatches and clip source bounds across all playlists, including alternate takes. The report
@@ -243,14 +255,13 @@ about egui, so the interface could be swapped for another one.
 
 | Crate | What it does |
 |---|---|
-| `soundcraft-time` | Timebases, tempo and meter maps, timecode, grid |
-| `soundcraft-audio-io` | Audio file formats and waveform overviews |
+| `soundcraft-time` | Compatibility re-export of `craft-time`'s SoundCraft sample-index API |
 | `soundcraft-midi` | Standard MIDI Files and MIDI operations |
 | `soundcraft-dsp` | Plugins, offline processing, meters, loudness, FFT |
-| `soundcraft-model` | The session document |
+| `soundcraft-model` | Compatibility re-export of `craft-scraft-format`'s schema, validation and JSON API |
 | `soundcraft-mix` | The mix engine (realtime and offline share it) |
 | `soundcraft-engine` | Commands, undo, editing, import/export, bounce |
-| `soundcraft-playback` | Audio devices (CoreAudio, WASAPI, ALSA, WebAudio) and recording |
+| `soundcraft-playback` | Audio devices (CoreAudio, WASAPI, ALSA, WebAudio), MIDI input devices and recording |
 | `soundcraft-automation` | MCP server and control-channel client |
 | `soundcraft-ui-egui` | The user interface |
 
@@ -264,8 +275,18 @@ SoundCraft is **pre-alpha**: it covers 94 % of the incumbent's menu items (measu
 its features by presence, and is roughly 40 % of the way to replacing it for real work: record,
 edit, mix and bounce work end to end, but choosing an audio interface and buffer size,
 recording MIDI from a controller and session interchange (AAF/OMF) are still missing, and those
-are the alpha checklist. Translations are missing too. The status, the stage and our effort
-estimates are in [`ROADMAP.md`](ROADMAP.md); the full assessment is in
+are the alpha checklist.
+
+**Translations:** the Brazilian Portuguese (`pt-BR`) catalog is **100 % complete** for every fixed
+UI string found in the current source — menus, dialogs and buttons, tooltips (including those
+localized inside buttons and toggles), accessibility names, the Edit-window status bar, the
+remove-session question, formatted messages, engine error templates and engine error text at display
+time. All these entries are covered by a test, placeholders match, keys are unique, and the
+`pt-BR` catalog is chosen automatically when `ui.language` is `pt-BR` (or "Portuguese (Brazil)")
+under `Setup › Appearance`. Engine errors keep their run-time values and a decimal comma in
+`pt-BR`. The remaining localization work is a native-speaker (human) review of wording plus CJK /
+Devanagari / Arabic font fallbacks and RTL layout — not new UI translation. The status, the stage
+and our effort estimates are in [`ROADMAP.md`](ROADMAP.md); the full assessment is in
 [`docs/target-app-parity.md`](docs/target-app-parity.md), the ranked list of what's missing in
 [`docs/gaps.md`](docs/gaps.md), and the menu-by-menu comparison in
 [`docs/parity-checklist.md`](docs/parity-checklist.md). Bug reports and wish lists are
@@ -281,7 +302,9 @@ very welcome, in the issues or on Discord.
 |---|---|---|
 | x64 (64-bit Intel/AMD) | `soundcraft-<ver>-windows-x64.msi` | `soundcraft-<ver>-windows-x64-portable.zip` |
 | arm64 (Snapdragon and other ARM PCs) | `soundcraft-<ver>-windows-arm64.msi` | `soundcraft-<ver>-windows-arm64-portable.zip` |
-| x86 (32-bit) | `soundcraft-<ver>-windows-x86.msi` | `soundcraft-<ver>-windows-x86-portable.zip` |
+
+For 32-bit Windows, [SoundCraft v0.18.0](https://github.com/storytold/soundcraft/releases/tag/v0.18.0)
+was the last release with both an x86 MSI and portable ZIP.
 
 Installers and executables are code-signed.
 
@@ -319,21 +342,43 @@ DirectX 12 shaders are compiled with FXC, which is part of Windows, so no `dxcom
 | Flatpak | `soundcraft-<ver>-linux-x86_64.flatpak` | `soundcraft-<ver>-linux-aarch64.flatpak` | Sandboxed; `flatpak install --user <file>` |
 | Debian/Ubuntu | `soundcraft-<ver>-linux-x86_64.deb` | `soundcraft-<ver>-linux-aarch64.deb` | |
 | Fedora/RHEL/openSUSE | `soundcraft-<ver>-linux-x86_64.rpm` | `soundcraft-<ver>-linux-aarch64.rpm` | |
+| Arch Linux | `soundcraft-<ver>-linux-x86_64.pkg.tar.zst` | `soundcraft-<ver>-linux-aarch64.pkg.tar.zst` | |
 | Tarball | `soundcraft-<ver>-linux-x86_64.tar.gz` | `soundcraft-<ver>-linux-aarch64.tar.gz` | Unpack anywhere |
 
-RISC-V (riscv64): `soundcraft-<ver>-linux-riscv64.tar.gz`, a tarball only (glibc 2.39+, e.g. Ubuntu 24.04).
+RISC-V (riscv64) packages are `soundcraft-<ver>-linux-riscv64.deb`,
+`soundcraft-<ver>-linux-riscv64.rpm`, and `soundcraft-<ver>-linux-riscv64.tar.gz`
+(glibc 2.39+, e.g. Ubuntu 24.04).
 
 ### FreeBSD
 
 | Build | File |
 |---|---|
 | x86_64 | `soundcraft-<ver>-freebsd-x86_64.tar.gz` |
+| aarch64 (ARM64) | `soundcraft-<ver>-freebsd-aarch64.tar.gz` |
 
 ### Web (WebAssembly)
 
 | Build | File | Notes |
 |---|---|---|
 | Static site | `soundcraft-web-<ver>.zip` | Runs in a modern browser; host it on any static server |
+
+### Nightly (ArtCraft Launcher only)
+
+A separate build channel, `nightly-v1`, ships untested previews of main. It is a different app
+with a different identity, installed and updated by ArtCraft Launcher:
+
+| | |
+|---|---|
+| Package, macOS bundle and Linux identity | `ai.storyteller.soundcraft.nightly` |
+| Window app id and Windows taskbar id | `ai.storyteller.soundcraft.nightly-v1` |
+| Data (settings, autosaves, presets, logs) | the Launcher's `profiles/soundcraft` folder, never the stable one |
+| Launch | `soundcraft --launch-profile nightly-v1 --profile-root <dir> -- <files>` |
+| Version | `soundcraft --version` → `SoundCraft <x.y.z>-nightly.<date>.<run>.<attempt>.g<sha12> (nightly-v1)` |
+
+It carries no updater, control server or file associations, and it refuses to start without its
+profile. Build artifacts are `soundcraft-<ver>-{windows-x86_64-nightly.zip,linux-x86_64-nightly.tar.gz,macos-aarch64-nightly.zip}`,
+made by `packaging/windows/nightly.ps1`, `packaging/linux/nightly.sh` and `packaging/macos/nightly.sh`;
+see `docs/nightly-release-preparation.md`. Nothing is enabled yet.
 
 ## The Crafting Apps
 

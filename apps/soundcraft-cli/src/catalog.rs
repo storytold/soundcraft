@@ -7,11 +7,15 @@ use std::io::Write;
 pub(crate) fn commands(args: &CommandsArgs, out: &mut dyn Write) {
     let filter = args.filter.clone().unwrap_or_default();
     let e = Engine::default();
-    for c in soundcraft_engine::command_specs() {
-        if !filter.is_empty() && !c.id.contains(&filter) && !c.label.to_ascii_lowercase().contains(&filter.to_ascii_lowercase()) {
-            continue;
-        }
-        let i = c.info(&e);
+    let infos = soundcraft_engine::command_specs()
+        .iter()
+        .filter(|c| filter.is_empty() || c.id.contains(&filter) || c.label.to_ascii_lowercase().contains(&filter.to_ascii_lowercase()))
+        .map(|c| c.info(&e));
+    if args.json {
+        print_json(out, &infos.collect::<Vec<_>>(), args.compact);
+        return;
+    }
+    for i in infos {
         outln!(out, "{:<36} {:<34} {}", i.id, i.label, i.menu.join(" > "));
     }
 }
@@ -36,9 +40,12 @@ pub(crate) fn parity(args: &ParityArgs, out: &mut dyn Write) -> Result<(), CliEr
     for m in p["per_menu"].as_array().cloned().unwrap_or_default() {
         md.push_str(&format!("| {} | {} | {} |\n", m["menu"].as_str().unwrap_or(""), m["implemented"], m["total"]));
     }
+    md.push_str(&format!("\n{}\n", soundcraft_engine::catalog::headless_summary_line(&p)));
+    md.push_str("A leaf the engine implements is `headless: yes`: `soundcraft-cli` and the MCP server load that registry. The rest carry the hand mark from `HEADLESS` in `crates/engine/src/catalog.rs`, or `unknown`.\n");
     md.push_str("\n## Not yet implemented\n\n");
-    for m in p["missing"].as_array().cloned().unwrap_or_default() {
-        md.push_str(&format!("- {}\n", m.as_str().unwrap_or("")));
+    for m in p["headless_missing"].as_array().cloned().unwrap_or_default() {
+        let reach = m["reach"].as_str().map(|r| format!(", reach: {r} ({})", m["why"].as_str().unwrap_or(""))).unwrap_or_default();
+        md.push_str(&format!("- {}: headless: {}{reach}\n", m["path"].as_str().unwrap_or(""), m["headless"].as_str().unwrap_or("")));
     }
     if let Some(path) = &args.write {
         std::fs::write(path, &md).map_err(|source| CliError::File { path: path.clone(), source })?;

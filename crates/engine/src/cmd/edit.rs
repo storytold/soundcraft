@@ -9,7 +9,7 @@ use super::more_util::toggle_flag;
 use crate::edit as ops;
 use crate::{Clipboard, Engine, Result, cmd};
 use serde_json::{Value, json};
-use soundcraft_model::{ClipId, EditMode, Fade, FadeShape, Session, TrackId};
+use soundcraft_model::{Clip, ClipId, EditMode, Fade, FadeShape, Session, TrackId};
 
 pub fn specs() -> Vec<CommandSpec> {
     vec![
@@ -165,7 +165,7 @@ pub fn specs() -> Vec<CommandSpec> {
             always,
             shuffle_lock
         ),
-        cmd!(noundo "edit.tool", "Edit Tool", [], Some("F5-F10"), "{tool: zoom|trim|selector|grabber|scrubber|pencil|smart}", always, |e, p| {
+        cmd!(noundo "edit.tool", "Edit Tool", [], Some("F5-F10, F6+F7, F7+F8, Cmd+6-7"), "{tool: zoom|trim|selector|grabber|scrubber|pencil|smart}", always, |e, p| {
             let t = str_param(p, "tool").and_then(soundcraft_model::Tool::from_id).ok_or_else(|| bad("edit.tool", "unknown tool"))?;
             e.session_mut().edit.tool = t;
             Ok(json!({"tool": t}))
@@ -258,7 +258,8 @@ fn cut_copy(e: &mut Engine, p: &Value, cut: bool, id: &str) -> Result<Value> {
     let mut cb = Clipboard::of_range(e.session(), range);
     let follow = e.session().edit.automation_follows_edit;
     for t in &tracks {
-        cb.tracks.push(ops::copy_range(e.session(), *t, range));
+        // Cut carries only what it removes; a locked clip stays where it is (see `ops::take_range`).
+        cb.tracks.push(if cut { ops::take_range(e.session(), *t, range) } else { ops::copy_range(e.session(), *t, range) });
         let lanes = e
             .session()
             .track(*t)
@@ -301,6 +302,7 @@ fn cut_copy(e: &mut Engine, p: &Value, cut: bool, id: &str) -> Result<Value> {
             cut_track(s, *t, range, sh, follow);
         }
         s.edit.selection = soundcraft_time::Range::point(range.start);
+        cb.cut_from = Some(range.start);
     }
     let n: usize = cb.tracks.iter().map(Vec::len).sum();
     e.clipboard = cb;
@@ -328,6 +330,7 @@ pub(super) fn clipboard_for_paste(e: &mut Engine) -> Clipboard {
     cb
 }
 
+/// Pastes the clipboard at an explicit position or at the current edit insertion point.
 fn paste(e: &mut Engine, p: &Value) -> Result<Value> {
     let tracks = tracks_required(e, "edit.paste", p)?;
     let given = position_param(e, "edit.paste", p, "at")?;
@@ -335,9 +338,10 @@ fn paste(e: &mut Engine, p: &Value) -> Result<Value> {
     let s = e.session();
     let at = match given {
         Some(at) => at,
-        None if s.edit.edit_mode == EditMode::GridRelative => {
-            s.edit.grid.line_at_or_before(s.edit.selection.start, s.sample_rate, &s.tempo, s.frame_rate).saturating_add(cb.grid_offset)
+        None if s.edit.edit_mode == EditMode::GridRelative && s.edit.selection.is_empty() && cb.cut_from == Some(s.edit.selection.start) => {
+            s.edit.selection.start
         }
+        None if s.edit.edit_mode == EditMode::GridRelative => s.grid_line_at_or_before(s.edit.selection.start).saturating_add(cb.grid_offset),
         None => s.edit.selection.start,
     };
     let sh = shuffle(s) && !cb.automation_only;
@@ -668,11 +672,16 @@ fn separate(e: &mut Engine, p: &Value) -> Result<Value> {
     Ok(json!({"separated": n}))
 }
 
+/// Separates selected clips at every active Grid boundary in the requested range.
 fn separate_on_grid(e: &mut Engine, p: &Value) -> Result<Value> {
     let tracks = tracks_required(e, "edit.separate_on_grid", p)?;
     let r = range_param(e, "edit.separate_on_grid", p)?;
     let s = e.session_mut();
-    let lines = s.edit.grid.lines(r.start, r.end, s.sample_rate, &s.tempo, s.frame_rate, 10_000);
+    let max = if s.edit.grid_clips_markers { usize::MAX } else { 10_001 };
+    let lines = s.grid_lines(r.start, r.end, max);
+    if lines.len() > 10_000 {
+        return Err(bad("edit.separate_on_grid", "the range contains more than 10,000 grid boundaries"));
+    }
     let mut n = 0;
     for t in &tracks {
         for at in &lines {
@@ -732,10 +741,9 @@ fn trim_to_file(e: &mut Engine, p: &Value) -> Result<Value> {
         if let Some((frames, lo, hi)) = trim_limits(s, id)
             && let Some(c) = s.find_clip_mut(id)
         {
-            let off = c.source_offset();
-            let new_start = c.start - off;
-            c.trim_start_to(new_start.max(lo));
-            c.trim_end_to((new_start + frames).min(hi));
+            let (file_start, file_end) = file_span(c, frames);
+            c.trim_start_to(file_start.max(lo));
+            c.trim_end_to(file_end.min(hi));
             n += 1;
         }
     }
@@ -751,13 +759,22 @@ fn trim_to_fill(e: &mut Engine, p: &Value) -> Result<Value> {
         if let Some((frames, lo, hi)) = trim_limits(s, id)
             && let Some(c) = s.find_clip_mut(id)
         {
-            let file_start = c.start - c.source_offset();
+            let (file_start, file_end) = file_span(c, frames);
             c.trim_start_to(r.start.max(file_start).max(lo));
-            c.trim_end_to(r.end.min(file_start + frames).min(hi));
+            c.trim_end_to(r.end.min(file_end).min(hi));
             n += 1;
         }
     }
     Ok(json!({"trimmed": n}))
+}
+
+/// Where a clip's whole source file lies on the timeline. The mixer plays `offset + rel / stretch`,
+/// so the file starts `offset * stretch` before the clip and spans `frames * stretch` samples.
+fn file_span(c: &Clip, frames: Samples) -> (Samples, Samples) {
+    let stretch = if c.stretch.is_finite() && c.stretch > 0.0 { c.stretch } else { 1.0 };
+    let scale = |n: Samples| if (stretch - 1.0).abs() >= 1e-9 { (n as f64 * stretch).round() as Samples } else { n };
+    let start = c.start.saturating_sub(scale(c.source_offset()));
+    (start, start.saturating_add(scale(frames)))
 }
 
 /// How far a trim may extend an audio clip: its source length in frames, and the earliest
@@ -956,6 +973,7 @@ fn nudge(e: &mut Engine, p: &Value) -> Result<Value> {
     Ok(json!({"moved": n, "by": step}))
 }
 
+/// Same-track placement at the existing start is a no-op; quantization is a separate command.
 fn move_clips(e: &mut Engine, p: &Value) -> Result<Value> {
     let ids = clip_ids_param(e, p);
     if ids.is_empty() {
@@ -978,17 +996,21 @@ fn move_clips(e: &mut Engine, p: &Value) -> Result<Value> {
     };
     let mode = s.edit.edit_mode;
     let delta = match first {
-        Some(c) if mode.is_grid() && p.get("to").is_some() => ops::grid_delta(s, c, delta, mode == EditMode::GridRelative),
+        Some(_) if mode.is_grid() && p.get("to").is_some() && delta == 0 && dest.iter().all(|(from, to)| from == to) => 0,
+        Some(c) if mode.is_grid() && p.get("to").is_some() => ops::grid_delta(s, c, delta, mode == EditMode::GridRelative, &ids),
         _ => delta,
     };
+    let effective_delta = first.map_or(delta, |clip| delta.max(clip.start.saturating_neg()));
     let s = e.session_mut();
     let n = if mode == EditMode::Shuffle {
         ops::shuffle_clips(s, &ids, delta, &dest).map_err(|why| bad("edit.move_clips", why))?
+    } else if effective_delta == 0 && dest.iter().all(|(from, to)| from == to) {
+        0
     } else {
-        ops::move_clips(s, &ids, delta, &dest)
+        ops::move_clips(s, &ids, effective_delta, &dest)
     };
     s.edit.selected_clips = ids;
-    Ok(json!({"moved": n, "by": delta}))
+    Ok(json!({"moved": n, "by": if mode == EditMode::Shuffle { delta } else { effective_delta }}))
 }
 
 fn trim_clip(e: &mut Engine, p: &Value) -> Result<Value> {
@@ -1008,6 +1030,9 @@ fn consolidate(e: &mut Engine, p: &Value) -> Result<Value> {
     let r = range_param(e, "edit.consolidate", p)?;
     if r.is_empty() {
         return Err(bad("edit.consolidate", "selection is empty"));
+    }
+    if tracks.iter().any(|&t| ops::holds_locked(e.session(), t, r)) {
+        return Err(bad("edit.consolidate", ops::LOCKED_IN_RANGE));
     }
     let midi = tracks.iter().filter(|&&t| crate::edit::consolidate_midi(e.session_mut(), t, r)).count();
     let mut n = 0;
@@ -1192,9 +1217,9 @@ mod tests {
         let (mut e, t, at) = keys();
         let s = e.session_mut();
         let cc = soundcraft_midi::CtrlEvent { tick: 0, channel: 0, kind: soundcraft_midi::CtrlKind::Cc(1), value: 64 };
-        let a = soundcraft_midi::Sequence { notes: vec![note(0, 1, 60), note(3, 2, 62), note(5, 1, 63)], ctrls: vec![] };
-        let b = soundcraft_midi::Sequence { notes: vec![note(0, 1, 64)], ctrls: vec![] };
-        let c = soundcraft_midi::Sequence { notes: vec![note(1, 1, 65)], ctrls: vec![cc] };
+        let a = soundcraft_midi::Sequence { notes: vec![note(0, 1, 60), note(3, 2, 62), note(5, 1, 63)], ctrls: vec![], sysex: vec![] };
+        let b = soundcraft_midi::Sequence { notes: vec![note(0, 1, 64)], ctrls: vec![], sysex: vec![] };
+        let c = soundcraft_midi::Sequence { notes: vec![note(1, 1, 65)], ctrls: vec![cc], sysex: vec![] };
         for (start, end, seq, muted) in [(0, 4, a, false), (6, 8, b, true), (8, 12, c, false)] {
             let id = s.new_clip_id();
             let mut clip = Clip::midi(id, "Keys", at(start), at(end) - at(start), seq);
@@ -1215,8 +1240,8 @@ mod tests {
         use soundcraft_model::{ChannelFormat, Clip, TrackKind};
         let mut s = Session::default();
         let t = s.add_track(TrackKind::Audio, ChannelFormat::Mono, None);
-        let buf = soundcraft_audio_io::AudioBuffer { sample_rate: s.sample_rate.hz(), channels: vec![vec![0.25; 60_000]] };
-        let src = crate::io::add_source(&mut s, "src", buf, None, soundcraft_audio_io::FileFormat::Wav);
+        let buf = craft_audio::AudioBuffer { sample_rate: s.sample_rate.hz(), channels: vec![vec![0.25; 60_000]] };
+        let src = crate::io::add_source(&mut s, "src", buf, None, soundcraft_model::FileFormat::Wav);
         let mut ids = Vec::new();
         for &(start, len, off) in clips {
             let id = s.new_clip_id();
@@ -1235,6 +1260,33 @@ mod tests {
         let (mut e, t, ids) = trim_session(&[(0, 10_000, 0), (20_000, 10_000, 20_000), (40_000, 5_000, 0)]);
         e.execute("edit.trim_to_file_boundaries", &json!({"clips": [ids[1].0]})).unwrap();
         assert_eq!(bounds(&e, t), vec![(0, 10_000, 0), (10_000, 40_000, 10_000), (40_000, 45_000, 0)]);
+    }
+
+    /// A lone stretched clip (start 20,000, length 10,000, source offset 5,000) over the 60,000-frame source.
+    fn stretched_trim_session(stretch: f64) -> (Engine, TrackId, Vec<ClipId>) {
+        let (mut e, t, ids) = trim_session(&[(20_000, 10_000, 5_000)]);
+        if let Some(c) = e.session_mut().find_clip_mut(ids[0]) {
+            c.stretch = stretch;
+        }
+        (e, t, ids)
+    }
+
+    #[test]
+    fn trim_to_file_boundaries_covers_the_whole_stretched_file() {
+        let (mut e, t, ids) = stretched_trim_session(2.0);
+        e.execute("edit.trim_to_file_boundaries", &json!({"clips": [ids[0].0]})).unwrap();
+        let (start, end, offset) = bounds(&e, t)[0];
+        assert_eq!(offset, 0, "the clip starts at the file start");
+        assert!(((end - start) as f64 / 2.0 - 60_000.0).abs() <= 1.0, "it plays every file frame: {start}..{end}");
+    }
+
+    #[test]
+    fn trim_to_fill_selection_stops_at_the_stretched_file() {
+        let (mut e, t, ids) = stretched_trim_session(2.0);
+        e.execute("edit.trim_to_fill_selection", &json!({"clips": [ids[0].0], "start": 0, "end": 500_000})).unwrap();
+        let (start, end, offset) = bounds(&e, t)[0];
+        assert_eq!(offset, 0);
+        assert!(((end - start) as f64 / 2.0 - 60_000.0).abs() <= 1.0, "a wider selection stops at the file: {start}..{end}");
     }
 
     #[test]

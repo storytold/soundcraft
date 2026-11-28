@@ -23,7 +23,16 @@ impl Drop for Scratch {
 }
 
 fn invoke(dir: &Path, args: &[&str]) -> Output {
-    Command::new(env!("CARGO_BIN_EXE_soundcraft-cli")).current_dir(dir).env("SOUNDCRAFT_NO_PREFS", "1").args(args).output().unwrap()
+    Command::new(crate::common::soundcraft_cli_binary()).current_dir(dir).env("SOUNDCRAFT_NO_PREFS", "1").args(args).output().unwrap()
+}
+
+#[test]
+fn script_accepts_a_leading_utf8_bom() {
+    let dir = Scratch::new();
+    std::fs::write(dir.0.join("bom.txt"), "\u{feff}track.new {\"name\":\"BOM\",\"count\":1,\"format\":\"stereo\"}\n").unwrap();
+    let output = invoke(&dir.0, &["script", "bom.txt"]);
+    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+    assert!(String::from_utf8_lossy(&output.stdout).contains("track.new:"));
 }
 
 #[test]

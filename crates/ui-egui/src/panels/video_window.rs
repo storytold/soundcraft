@@ -32,19 +32,19 @@ fn video_status_text(app: &SoundApp, pic: Option<&(MovieKey, Result<String, Stri
 
 fn draw_video_surface(app: &SoundApp, painter: &egui::Painter, img: Rect, pic: Option<&(MovieKey, Result<String, String>, f64, f64)>, on: bool) {
     let msg = if !on {
-        Some("Video Track Offline".to_string())
+        Some(crate::localization::text("Video Track Offline").to_string())
     } else {
         match pic {
             None => None,
-            Some((_, Err(why), ..)) => Some(why.clone()),
+            Some((_, Err(why), ..)) => Some(crate::localization::text(why).to_string()),
             Some((k, ..)) => match (app.video.current(*k), app.video.current_error(*k)) {
                 (Some(tex), _) => {
                     painter.image(tex.id(), img, Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), Color32::WHITE);
                     None
                 }
-                (None, Some(e)) => Some(e.to_string()),
+                (None, Some(e)) => Some(crate::localization::text(e).to_string()),
                 (None, None) => match app.video.info(*k) {
-                    Some(Err(e)) => Some(e.clone()),
+                    Some(Err(e)) => Some(crate::localization::text(e).to_string()),
                     _ => None,
                 },
             },
@@ -72,33 +72,38 @@ fn video(app: &mut SoundApp, ctx: &egui::Context) {
         .clamp(0.2, 5.0);
     let mut open = true;
     let mut burn = app.ui.video_burn_in;
-    egui::Window::new("Video").open(&mut open).default_size(vec2(480.0, 480.0 / aspect + 28.0)).resizable(true).show(ctx, |ui| {
-        ui.horizontal(|ui| {
-            crate::widgets::checkbox(ui, &mut burn, "Timecode burn-in");
-            let text = video_status_text(app, pic.as_ref());
-            ui.label(egui::RichText::new(text).font(regular(10.5)).color(Color32::from_gray(150)));
+    egui::Window::new(crate::localization::text("Video"))
+        .id(egui::Id::unique("Video"))
+        .open(&mut open)
+        .default_size(vec2(480.0, 480.0 / aspect + 28.0))
+        .resizable(true)
+        .show(ctx, |ui| {
+            ui.horizontal(|ui| {
+                crate::widgets::checkbox(ui, &mut burn, crate::localization::text("Timecode burn-in"));
+                let text = video_status_text(app, pic.as_ref());
+                ui.label(egui::RichText::new(text).font(regular(10.5)).color(Color32::from_gray(150)));
+            });
+            let avail = ui.available_rect_before_wrap();
+            let (r, _) = ui.allocate_exact_size(avail.size().max(vec2(64.0, 36.0)), Sense::hover());
+            let painter = ui.painter_at(r);
+            painter.rect_filled(r, 0.0, Color32::BLACK);
+            // Fit the picture inside the area, keeping its aspect.
+            let (mut w, mut h) = (r.width(), r.width() / aspect);
+            if h > r.height() {
+                h = r.height();
+                w = h * aspect;
+            }
+            let img = Rect::from_center_size(r.center(), vec2(w, h));
+            draw_video_surface(app, &painter, img, pic.as_ref(), on);
+            if burn {
+                let tc = s.format_position(pos, TimeFormat::Timecode);
+                let size = (h / 12.0).clamp(10.0, 36.0);
+                let galley = painter.layout_no_wrap(tc, mono(size), Color32::WHITE);
+                let at = pos2(img.center().x - galley.size().x / 2.0, img.max.y - galley.size().y - size * 0.6);
+                painter.rect_filled(Rect::from_min_size(at, galley.size()).expand2(vec2(6.0, 2.0)), 2.0, Color32::from_black_alpha(200));
+                painter.galley(at, galley, Color32::WHITE);
+            }
         });
-        let avail = ui.available_rect_before_wrap();
-        let (r, _) = ui.allocate_exact_size(avail.size().max(vec2(64.0, 36.0)), Sense::hover());
-        let painter = ui.painter_at(r);
-        painter.rect_filled(r, 0.0, Color32::BLACK);
-        // Fit the picture inside the area, keeping its aspect.
-        let (mut w, mut h) = (r.width(), r.width() / aspect);
-        if h > r.height() {
-            h = r.height();
-            w = h * aspect;
-        }
-        let img = Rect::from_center_size(r.center(), vec2(w, h));
-        draw_video_surface(app, &painter, img, pic.as_ref(), on);
-        if burn {
-            let tc = s.format_position(pos, TimeFormat::Timecode);
-            let size = (h / 12.0).clamp(10.0, 36.0);
-            let galley = painter.layout_no_wrap(tc, mono(size), Color32::WHITE);
-            let at = pos2(img.center().x - galley.size().x / 2.0, img.max.y - galley.size().y - size * 0.6);
-            painter.rect_filled(Rect::from_min_size(at, galley.size()).expand2(vec2(6.0, 2.0)), 2.0, Color32::from_black_alpha(200));
-            painter.galley(at, galley, Color32::WHITE);
-        }
-    });
     app.ui.video_burn_in = burn;
     if !open {
         app.ui.show_video = false;
@@ -115,62 +120,90 @@ fn first_movie_aspect(s: &soundcraft_model::Session) -> Option<f32> {
     s.videos.first().map(|v| v.aspect() as f32)
 }
 
+/// Most thumbnails one clip draws in the Video Universe strip: 8 pt each, so more than the
+/// widest strip holds.
+const MAX_UNIVERSE_THUMBS: usize = 1 << 12;
+
+/// Left edges of the thumbnails of a clip starting at `clip_x` (each `tw` wide) that lie in
+/// `shown_min..shown_max`. The index and position are worked out in `f64`: an `f32` this far from
+/// the origin (a clip starting a billion points left) cannot step by a thumbnail's width.
+fn thumb_xs(clip_x: f32, shown_min: f32, shown_max: f32, tw: f32) -> impl Iterator<Item = f32> {
+    let (origin, tw) = (f64::from(clip_x), f64::from(tw));
+    // Nothing of the clip is in view when the shown span is empty (or inverted).
+    let empty = shown_max <= shown_min;
+    let first = ((f64::from(shown_min) - origin) / tw).floor().max(0.0);
+    let count = if empty { 0 } else { ((f64::from(shown_max) - origin) / tw - first).ceil().max(0.0) as usize };
+    (0..count.min(MAX_UNIVERSE_THUMBS)).map(move |i| (origin + (first + i as f64) * tw) as f32)
+}
+
 fn universe(app: &mut SoundApp, ctx: &egui::Context) {
     app.video.poll(ctx);
     let s = app.engine.session_arc();
     let pos = app.position();
     let mut open = true;
     let mut locate = None;
-    egui::Window::new("Video Universe").open(&mut open).default_size(vec2(640.0, 90.0)).resizable(true).show(ctx, |ui| {
-        let avail = ui.available_rect_before_wrap();
-        let (r, resp) = ui.allocate_exact_size(vec2(avail.width().max(120.0), 64.0), Sense::click_and_drag());
-        let painter = ui.painter_at(r);
-        painter.rect_filled(r, 0.0, Color32::from_rgb(14, 14, 15));
-        let end = s.content_end().max(s.sample_rate.samples(10.0)).max(1);
-        let x_at = |at: i64| r.min.x + r.width() * (at as f32 / end as f32);
-        let on = online(&s);
-        let Some(track) = s.tracks.iter().find(|t| t.kind == TrackKind::Video) else {
-            painter.text(r.center(), Align2::CENTER_CENTER, "No Video track — File › Import › Video…", regular(11.0), Color32::from_gray(150));
-            return;
-        };
-        let ppp = ctx.pixels_per_point();
-        for c in track.clips() {
-            let ClipContent::Video { source, offset } = c.content else { continue };
-            let Some(v) = s.video(source) else { continue };
-            let key = MovieKey::new(source, &v.path);
-            let cr = Rect::from_min_max(pos2(x_at(c.start), r.min.y + 4.0), pos2(x_at(c.end()).max(x_at(c.start) + 2.0), r.max.y - 4.0));
-            painter.rect_filled(cr, 0.0, Color32::from_rgb(30, 30, 34));
-            if !on || v.offline.is_some() {
-                continue;
-            }
-            let tw = (cr.height() * v.aspect() as f32).max(8.0);
-            let hpx = ((cr.height() * ppp / 16.0).ceil() * 16.0).clamp(16.0, 256.0) as u32;
-            let mut x = cr.min.x;
-            while x < cr.max.x {
-                let secs = movie_secs(&s, c.start, offset, strip_position(x, r.min.x, r.width(), end, c.start)).max(0.0);
-                if let Some(tex) = app.video.thumb(ctx, key, &v.path, secs, hpx) {
-                    let tr = Rect::from_min_size(pos2(x, cr.min.y), vec2(tw, cr.height()));
-                    let vis = tr.intersect(cr);
-                    let uv = Rect::from_min_max(pos2(0.0, 0.0), pos2((vis.width() / tw).clamp(0.0, 1.0), 1.0));
-                    painter.image(tex.id(), vis, uv, Color32::WHITE);
+    egui::Window::new(crate::localization::text("Video Universe"))
+        .id(egui::Id::unique("Video Universe"))
+        .open(&mut open)
+        .default_size(vec2(640.0, 90.0))
+        .resizable(true)
+        .show(ctx, |ui| {
+            let avail = ui.available_rect_before_wrap();
+            let (r, resp) = ui.allocate_exact_size(vec2(avail.width().max(120.0), 64.0), Sense::click_and_drag());
+            let painter = ui.painter_at(r);
+            painter.rect_filled(r, 0.0, Color32::from_rgb(14, 14, 15));
+            let end = s.content_end().max(s.sample_rate.samples(10.0)).max(1);
+            let x_at = |at: i64| r.min.x + r.width() * (at as f32 / end as f32);
+            let on = online(&s);
+            let Some(track) = s.tracks.iter().find(|t| t.kind == TrackKind::Video) else {
+                painter.text(
+                    r.center(),
+                    Align2::CENTER_CENTER,
+                    crate::localization::text("No Video track — File › Import › Video…"),
+                    regular(11.0),
+                    Color32::from_gray(150),
+                );
+                return;
+            };
+            let ppp = ctx.pixels_per_point();
+            for c in track.clips() {
+                let ClipContent::Video { source, offset } = c.content else { continue };
+                let Some(v) = s.video(source) else { continue };
+                let key = MovieKey::new(source, &v.path);
+                let cr = Rect::from_min_max(pos2(x_at(c.start), r.min.y + 4.0), pos2(x_at(c.end()).max(x_at(c.start) + 2.0), r.max.y - 4.0));
+                painter.rect_filled(cr, 0.0, Color32::from_rgb(30, 30, 34));
+                if !on || v.offline.is_some() {
+                    continue;
                 }
-                x += tw;
+                let tw = (cr.height() * v.aspect() as f32).max(8.0);
+                let hpx = ((cr.height() * ppp / 16.0).ceil() * 16.0).clamp(16.0, 256.0) as u32;
+                // Only the thumbnails inside the strip, counted rather than stepped: a clip starting
+                // far left of it has an edge so large that adding a thumbnail's width wouldn't move it.
+                let shown = cr.intersect(r);
+                for x in thumb_xs(cr.min.x, shown.min.x, shown.max.x, tw) {
+                    let secs = movie_secs(&s, c.start, offset, strip_position(x, r.min.x, r.width(), end, c.start)).max(0.0);
+                    if let Some(tex) = app.video.thumb(ctx, key, &v.path, secs, hpx) {
+                        let tr = Rect::from_min_size(pos2(x, cr.min.y), vec2(tw, cr.height()));
+                        let vis = tr.intersect(cr);
+                        let uv = Rect::from_min_max(pos2(0.0, 0.0), pos2((vis.width() / tw).clamp(0.0, 1.0), 1.0));
+                        painter.image(tex.id(), vis, uv, Color32::WHITE);
+                    }
+                }
             }
-        }
-        // The Edit window's visible range and the playhead.
-        let spp = s.edit.zoom.samples_per_px.max(1e-6);
-        let vs = s.edit.zoom.scroll.max(0);
-        let ve = vs.saturating_add((spp * f64::from(ui.ctx().content_rect().width())) as i64);
-        let view = Rect::from_min_max(pos2(x_at(vs), r.min.y + 1.0), pos2(x_at(ve).min(r.max.x), r.max.y - 1.0));
-        painter.rect_stroke(view, 0.0, egui::Stroke::new(1.0, Color32::from_rgb(230, 200, 80)), egui::StrokeKind::Inside);
-        let px = x_at(pos);
-        painter.line_segment([pos2(px, r.min.y), pos2(px, r.max.y)], egui::Stroke::new(1.5, Color32::from_rgb(240, 240, 240)));
-        if (resp.clicked() || resp.dragged())
-            && let Some(p) = resp.interact_pointer_pos()
-        {
-            locate = Some((((p.x - r.min.x) / r.width()).clamp(0.0, 1.0) * end as f32) as i64);
-        }
-    });
+            // The Edit window's visible range and the playhead.
+            let spp = s.edit.zoom.samples_per_px.max(1e-6);
+            let vs = s.edit.zoom.scroll.max(0);
+            let ve = vs.saturating_add((spp * f64::from(ui.ctx().content_rect().width())) as i64);
+            let view = Rect::from_min_max(pos2(x_at(vs), r.min.y + 1.0), pos2(x_at(ve).min(r.max.x), r.max.y - 1.0));
+            painter.rect_stroke(view, 0.0, egui::Stroke::new(1.0, Color32::from_rgb(230, 200, 80)), egui::StrokeKind::Inside);
+            let px = x_at(pos);
+            painter.line_segment([pos2(px, r.min.y), pos2(px, r.max.y)], egui::Stroke::new(1.5, Color32::from_rgb(240, 240, 240)));
+            if (resp.clicked() || resp.dragged())
+                && let Some(p) = resp.interact_pointer_pos()
+            {
+                locate = Some((((p.x - r.min.x) / r.width()).clamp(0.0, 1.0) * end as f32) as i64);
+            }
+        });
     if let Some(at) = locate {
         let _ = app.run("transport.locate", json!({"at": at}));
         let _ = app.run("edit.select", json!({"start": at, "end": at}));
@@ -182,7 +215,21 @@ fn universe(app: &mut SoundApp, ctx: &egui::Context) {
 
 #[cfg(test)]
 mod tests {
-    use super::strip_position;
+    use super::{strip_position, thumb_xs};
+
+    #[test]
+    fn thumbnails_of_a_clip_far_left_of_the_strip_are_evenly_spaced() {
+        // 2^30 points left of the strip with 8 pt thumbnails: f32 steps of `first + i` here are 16 apart
+        let xs: Vec<f32> = thumb_xs(-1_073_741_824.0, 0.0, 80.0, 8.0).collect();
+        assert_eq!(xs.len(), 10);
+        assert!(xs.windows(2).all(|w| w[1] - w[0] == 8.0), "{xs:?}");
+        assert_eq!(xs[0], 0.0);
+        // a clip inside the strip starts at its own edge
+        assert_eq!(thumb_xs(10.0, 10.0, 34.0, 8.0).collect::<Vec<_>>(), vec![10.0, 18.0, 26.0]);
+        // a clip ending left of the strip (the shown span is empty or inverted) draws none
+        assert_eq!(thumb_xs(-10.0, 0.0, -1.0, 8.0).count(), 0);
+        assert_eq!(thumb_xs(-10.0, 0.0, 0.0, 8.0).count(), 0);
+    }
 
     // A 1024 px strip over 1_024_000 samples: 1000 samples per point, exact in f32.
     const LEFT: f32 = 100.0;

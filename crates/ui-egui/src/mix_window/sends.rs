@@ -5,7 +5,6 @@ use super::{
     Align2, Rect, Route, Sense, SoundApp, Stroke, StrokeKind, Tokens, Track, TrackId, TrackKind, Ui, db_text, fader, json, pan_knob, pan_text, pos2,
     regular, text_toggle, vec2,
 };
-use craft_ui::combo::Menu;
 
 /// Draw one send slot: the route area picks a destination, while the level area opens or edits the send level.
 pub(crate) fn send_slot(app: &mut SoundApp, ui: &mut Ui, track: &Track, slot: usize, r: Rect) {
@@ -18,8 +17,9 @@ pub(crate) fn send_slot(app: &mut SoundApp, ui: &mut Ui, track: &Track, slot: us
     let level_r = if compact { r } else { level_icon(r).expand2(vec2(3.0, 0.0)).with_min_y(r.min.y).with_max_y(r.max.y) };
     let route_r = Rect::from_min_max(r.min, pos2((level_r.min.x - 1.0).max(r.min.x), r.max.y));
     let route_resp = ui.interact(if snd.is_some() { route_r } else { r }, ui.scope_id().with(("snd-route", id.0, slot)), Sense::click());
-    route_resp
-        .widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, format!("Send {} for {}", (b'A' + slot as u8) as char, track.name)));
+    route_resp.widget_info(|| {
+        egui::WidgetInfo::labeled(egui::Role::Button, true, crate::localized_format!("Send {} for {}", (b'A' + slot as u8) as char, track.name))
+    });
     let mark = if compact { Mark::Arrow } else { Mark::Letter((b'a' + slot as u8) as char) };
     match &snd {
         Some(s) => {
@@ -30,7 +30,13 @@ pub(crate) fn send_slot(app: &mut SoundApp, ui: &mut Ui, track: &Track, slot: us
             let which = (b'A' + slot as u8) as char;
             let shown = app.ui.send_window == Some((id, slot));
             let level_resp = ui.interact(level_r, ui.scope_id().with(("send-value", id.0, slot)), Sense::click_and_drag());
-            level_resp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, format!("Send {which} level for {}", track.name)));
+            level_resp.widget_info(|| {
+                egui::WidgetInfo::labeled(
+                    egui::Role::Button,
+                    true,
+                    crate::localized_format!("Send {which} level for {track}", which = which, track = track.name),
+                )
+            });
             if shown {
                 ui.painter().rect_stroke(level_r.shrink(0.5), 1.0, Stroke::new(1.5, t.accent), StrokeKind::Inside);
             }
@@ -50,9 +56,11 @@ pub(crate) fn send_slot(app: &mut SoundApp, ui: &mut Ui, track: &Track, slot: us
                 let _ =
                     app.engine.execute_merged("mix.send_level", &json!({"track": id.0, "slot": slot, "db": db}), &format!("send:{}:{slot}", id.0));
             }
-            let _ = level_resp.clone().on_hover_text(format!(
-                "Send {which} to {name}: {} dB\nClick for the send fader · drag vertically to adjust · Shift-drag for fine control · Alt-click for 0 dB · right-click for options",
-                db_text(s.level_db)
+            let _ = level_resp.clone().on_hover_text(crate::localized_format!(
+                "Send {which} to {name}: {db} dB\nClick for the send fader · drag vertically to adjust · Shift-drag for fine control · Alt-click for 0 dB · right-click for options",
+                which = which,
+                name = name,
+                db = db_text(s.level_db)
             ));
             level_resp.context_menu(|ui| send_options_menu(app, ui, id, slot, s));
         }
@@ -69,7 +77,7 @@ pub(crate) fn send_window(app: &mut SoundApp, ctx: &egui::Context) {
     // was theirs comes from the last frame. A dialog or the search on top takes it too.
     let busy_id = egui::Id::unique("send_window_escape");
     let busy = ctx.data(|d| d.get_temp(busy_id)).unwrap_or(false) || app.dialogs.open.is_some() || app.ui.show_search;
-    if !busy && ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+    if !busy && crate::framework::escape_pressed(ctx) {
         app.ui.send_window = None;
     }
     send_window_contents(app, ctx);
@@ -86,7 +94,7 @@ fn send_window_contents(app: &mut SoundApp, ctx: &egui::Context) {
     };
     let t = Tokens::current();
     let mut open = true;
-    egui::Window::new(format!("{name} · Send {}", (b'A' + slot as u8) as char))
+    egui::Window::new(crate::localized_format!("{name} · Send {letter}", name = name, letter = (b'A' + slot as u8) as char))
         .id(egui::Id::unique("send_window"))
         .open(&mut open)
         .auto_sized()
@@ -117,7 +125,7 @@ fn send_window_contents(app: &mut SoundApp, ctx: &egui::Context) {
                 }
                 ui.label(egui::RichText::new(pan_text(send.pan)).color(t.counter_text).small());
                 let (fr, fresp) = ui.allocate_exact_size(vec2(56.0, 220.0), Sense::hover());
-                fresp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Slider, true, "Send level"));
+                fresp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Slider, true, crate::localization::text("Send level")));
                 // Distinct from the strip's "Send A level for <track>" icon and from the slot's "Send level", so a
                 // label query while the window is open still picks one node.
                 if let Some(db) = fader(ui, fr, send.level_db, ui.scope_id().with("send_fader"), "Send level fader") {
@@ -136,7 +144,7 @@ fn send_window_contents(app: &mut SoundApp, ctx: &egui::Context) {
                     rr,
                     ui.scope_id().with("send_level_value"),
                     Readout {
-                        name: &format!("{name} send level"),
+                        name: &crate::localized_format!("{name} send level", name = name),
                         display: &shown,
                         edit_initial: &format!("{:.1}", send.level_db),
                         parse: parse_db,
@@ -156,9 +164,9 @@ fn send_window_contents(app: &mut SoundApp, ctx: &egui::Context) {
 /// Secondary controls live behind the amount readout, separate from the bus selector like Logic.
 fn send_options_menu(app: &mut SoundApp, ui: &mut Ui, id: TrackId, slot: usize, send: &soundcraft_model::SendSlot) {
     ui.set_min_width(230.0);
-    ui.strong(format!("Send {} · {}", (b'A' + slot as u8) as char, route_name(app, &send.target)));
+    ui.strong(crate::localized_format!("Send {} · {}", (b'A' + slot as u8) as char, route_name(app, &send.target)));
     let mut db = send.level_db.max(-60.0);
-    if ui.add(egui::Slider::new(&mut db, -60.0..=12.0).text("Level").suffix(" dB")).changed() {
+    if ui.add(egui::Slider::new(&mut db, -60.0..=12.0).text(crate::localization::text("Level")).suffix(" dB")).changed() {
         let _ = app.engine.execute_merged("mix.send_level", &json!({"track": id.0, "slot": slot, "db": db}), &format!("send:{}:{slot}", id.0));
     }
     send_level_scale(ui, send.level_db);
@@ -169,31 +177,31 @@ fn send_options_menu(app: &mut SoundApp, ui: &mut Ui, id: TrackId, slot: usize, 
                 let _ = app.run("mix.send_level", json!({"track": id.0, "slot": slot, "db": db}));
             }
         }
-        if ui.small_button("0 dB").clicked() {
+        if ui.small_button(crate::localization::text("0 dB")).clicked() {
             let _ = app.run("mix.send_level", json!({"track": id.0, "slot": slot, "db": 0.0}));
         }
-        if ui.small_button("−∞").clicked() {
+        if ui.small_button(crate::localization::text("−∞")).clicked() {
             let _ = app.run("mix.send_level", json!({"track": id.0, "slot": slot, "db": -144.0}));
         }
     });
     let mut pan = send.pan;
-    if ui.add(egui::Slider::new(&mut pan, -1.0..=1.0).text("Pan")).changed() {
+    if ui.add(egui::Slider::new(&mut pan, -1.0..=1.0).text(crate::localization::text("Pan"))).changed() {
         let _ = app.engine.execute_merged("mix.send_level", &json!({"track": id.0, "slot": slot, "pan": pan}), &format!("send-pan:{}:{slot}", id.0));
     }
     ui.horizontal(|ui| {
         let mut mute = send.mute;
-        if crate::widgets::checkbox(ui, &mut mute, "Mute").changed() {
+        if crate::widgets::checkbox(ui, &mut mute, crate::localization::text("Mute")).changed() {
             let _ = app.run("mix.send_level", json!({"track": id.0, "slot": slot, "mute": mute}));
         }
         let mut pre = send.pre_fader;
-        if crate::widgets::checkbox(ui, &mut pre, "Pre-fader").changed() {
+        if crate::widgets::checkbox(ui, &mut pre, crate::localization::text("Pre-fader")).changed() {
             let _ = app.run("mix.send_level", json!({"track": id.0, "slot": slot, "pre_fader": pre}));
         }
     });
     if let Route::Bus(bus) = send.target
         && let Some(aux) =
             app.engine.session().tracks.iter().find(|t| t.kind == TrackKind::Aux && t.mixer.input == Route::Bus(bus)).map(|t| (t.id, t.name.clone()))
-        && ui.button("Rename bus…").clicked()
+        && ui.button(crate::localization::text("Rename bus…")).clicked()
     {
         app.dialogs.open_rename_track(aux.0, &aux.1);
         ui.close();
@@ -208,22 +216,22 @@ pub(super) fn dragged_send_db(db: f32, dy: f32, fine: bool) -> f32 {
 }
 
 /// What an [`editable_readout`] shows and how a typed value is parsed.
-pub(super) struct Readout<'a> {
+pub(crate) struct Readout<'a> {
     /// Accessible name of the text field shown while editing.
-    pub(super) name: &'a str,
+    pub(crate) name: &'a str,
     /// The value painted while not editing.
-    pub(super) display: &'a str,
+    pub(crate) display: &'a str,
     /// The editor's initial text.
-    pub(super) edit_initial: &'a str,
-    pub(super) parse: fn(&str) -> Option<f32>,
+    pub(crate) edit_initial: &'a str,
+    pub(crate) parse: fn(&str) -> Option<f32>,
     /// The value an Alt-click sets.
-    pub(super) reset: f32,
+    pub(crate) reset: f32,
 }
 
 /// Paint a value until clicked, then replace it with a focused text field. Enter or clicking away
 /// commits a valid value; Escape cancels, and so does the field losing focus while hidden.
 /// Alt-click returns `reset`. The interaction response remains available for dragging.
-pub(super) fn editable_readout(ui: &mut Ui, r: Rect, id: egui::Id, readout: Readout<'_>) -> (Option<egui::Response>, Option<f32>) {
+pub(crate) fn editable_readout(ui: &mut Ui, r: Rect, id: egui::Id, readout: Readout<'_>) -> (Option<egui::Response>, Option<f32>) {
     let Readout { name, display, edit_initial, parse, reset } = readout;
     let t = Tokens::current();
     let active_id = id.with("active");
@@ -280,7 +288,7 @@ pub(super) fn editable_readout(ui: &mut Ui, r: Rect, id: egui::Id, readout: Read
     (response, value)
 }
 
-pub(super) fn parse_db(text: &str) -> Option<f32> {
+pub(crate) fn parse_db(text: &str) -> Option<f32> {
     let cleaned = text.trim().to_ascii_lowercase().replace("db", "").replace(',', ".");
     if matches!(cleaned.trim(), "-inf" | "-infinity" | "off") {
         return Some(-144.0);
@@ -288,7 +296,7 @@ pub(super) fn parse_db(text: &str) -> Option<f32> {
     cleaned.trim().parse::<f32>().ok().filter(|v| v.is_finite()).map(|v| v.clamp(-144.0, 12.0))
 }
 
-pub(super) fn parse_pan(text: &str) -> Option<f32> {
+pub(crate) fn parse_pan(text: &str) -> Option<f32> {
     let cleaned = text.trim().to_ascii_lowercase().replace(',', ".");
     let (sign, number) = if let Some(v) = cleaned.strip_prefix('<').or_else(|| cleaned.strip_prefix('l')) {
         (-1.0, v)
@@ -325,6 +333,65 @@ fn send_level_scale(ui: &mut Ui, db: f32) {
     ui.painter().line_segment([pos2(x, r.min.y), pos2(x, line_y + 3.0)], Stroke::new(2.0, t.counter_text));
 }
 
+/// The most height of the send menu's contents.
+const SEND_MENU_HEIGHT: f32 = 260.0;
+
+/// A menu under `field` that opens and closes on its clicks and closes on a click outside it: `header` stays at the
+/// top, `total_rows` rows of `row_height` scroll under it (only the rows in view are laid out) and `footer` stays under
+/// the list. The menu is up to [`SEND_MENU_HEIGHT`] tall and the room on its side of the field, at least as wide as
+/// the field, and opens below the field or above it, never beside it. Returns what `rows` and `footer` returned, or
+/// `None` while the menu is closed.
+fn header_footer_menu<H, R, F>(
+    ui: &Ui,
+    field: &egui::Response,
+    header: impl FnOnce(&mut Ui) -> H,
+    row_height: f32,
+    total_rows: impl FnOnce(&H) -> usize,
+    rows: impl FnOnce(&mut Ui, std::ops::Range<usize>, H) -> R,
+    footer: impl FnOnce(&mut Ui) -> F,
+) -> Option<(R, F)> {
+    let screen = ui.ctx().content_rect();
+    let room = (screen.bottom() - field.rect.bottom()).max(field.rect.top() - screen.top());
+    let frame = egui::Frame::popup(ui.style()).total_margin().sum().y;
+    let height = SEND_MENU_HEIGHT.min(room - frame).max(0.0);
+    let flipped: &'static [egui::RectAlign] =
+        if ui.ctx().global_style().right_to_left { &[egui::RectAlign::TOP_END] } else { &[egui::RectAlign::TOP_START] };
+    let popup = egui::Popup::menu(field);
+    let id = popup.get_id();
+    let footer_id = id.with("footer-height");
+    let shown = popup
+        .align_alternatives(flipped)
+        .max_height_from_constrain(true)
+        .width(field.rect.width())
+        .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
+        .show(|ui| {
+            ui.set_min_width(ui.available_width());
+            // egui offers the popup last pass's height; offer the full height so a list that shrank (a search with
+            // no matches) grows back.
+            ui.set_max_height(height.min(ui.available_height()));
+            let header = header(ui);
+            // The footer comes after the list; keep the room it took last pass.
+            let footer_room = ui.data(|d| d.get_temp::<f32>(footer_id)).unwrap_or(0.0) + ui.spacing().item_spacing.y;
+            // Labels widen a narrow menu rather than wrap early, as in egui's combo box.
+            ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Extend);
+            let total = total_rows(&header);
+            let list = egui::ScrollArea::vertical()
+                .max_height((ui.available_height() - footer_room).max(0.0))
+                .show_rows(ui, row_height, total, |ui, range| rows(ui, range, header))
+                .inner;
+            let top = ui.cursor().top();
+            let footer = footer(ui);
+            let footer_height = ui.min_rect().bottom() - top;
+            ui.data_mut(|d| d.insert_temp(footer_id, footer_height));
+            (list, footer)
+        })
+        .map(|shown| shown.inner);
+    if shown.is_some() {
+        ui.ctx().accesskit_node_builder(id, |node| node.set_role(egui::accesskit::Role::ListBox));
+    }
+    shown
+}
+
 /// What the send menu's footer was used for.
 enum SendFooter {
     NewBus,
@@ -335,7 +402,6 @@ enum SendFooter {
 /// that scrolls, "new bus..." (and "Remove send" for an existing send) fixed under it.
 /// `current` is the send's destination and its name, if the slot has a send.
 fn send_route_menu(app: &mut SoundApp, ui: &Ui, field: &egui::Response, id: TrackId, slot: usize, current: Option<(Route, String)>) {
-    let busses = app.engine.session().busses.clone();
     let which = (b'A' + slot as u8) as char;
     let has_send = current.is_some();
     let header = |ui: &mut Ui| {
@@ -343,24 +409,27 @@ fn send_route_menu(app: &mut SoundApp, ui: &Ui, field: &egui::Response, id: Trac
         match &current {
             Some((_, name)) => {
                 ui.horizontal(|ui| {
-                    ui.strong(format!("Send {which}"));
+                    ui.strong(crate::localized_format!("Send {which}", which = which));
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         ui.label(egui::RichText::new(name).color(Tokens::current().counter_text));
                     });
                 });
-                ui.label(egui::RichText::new("DESTINATION").size(8.0).color(Tokens::current().text_dim));
+                ui.label(egui::RichText::new(crate::localization::text("DESTINATION")).size(8.0).color(Tokens::current().text_dim));
             }
             None => {
-                ui.strong(format!("Send {which} · Choose destination"));
+                ui.strong(crate::localized_format!("Send {which} · Choose destination", which = which));
             }
         }
-        let search = MenuSearch::show(ui, egui::Id::unique(("send-bus-search", id.0, slot)), "Search buses…");
+        let search = MenuSearch::show(ui, egui::Id::unique(("send-bus-search", id.0, slot)), crate::localization::text("Search buses…"));
+        let busses = &app.engine.session().busses;
         let visible: Vec<_> = busses.iter().filter(|bus| search.matches(&bus.name)).collect();
         (search, visible)
     };
     let target = current.as_ref().map(|(route, _)| route);
     let row_h = ui.spacing().interact_size.y;
-    let shown = Menu::new(ui, field).height(260.0).close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside).show_rows_with_header_footer(
+    let shown = header_footer_menu(
+        ui,
+        field,
         header,
         row_h,
         |(_, visible)| visible.len(),
@@ -376,11 +445,11 @@ fn send_route_menu(app: &mut SoundApp, ui: &Ui, field: &egui::Response, id: Trac
             })
         },
         |ui| {
-            if ui.button("new bus...").clicked() {
+            if ui.button(crate::localization::text("new bus...")).clicked() {
                 ui.close();
                 return Some(SendFooter::NewBus);
             }
-            if has_send && ui.button("Remove send").clicked() {
+            if has_send && ui.button(crate::localization::text("Remove send")).clicked() {
                 ui.close();
                 return Some(SendFooter::RemoveSend);
             }
@@ -402,6 +471,7 @@ fn send_route_menu(app: &mut SoundApp, ui: &Ui, field: &egui::Response, id: Trac
     }
     match footer {
         Some(SendFooter::NewBus) => {
+            let busses = &app.engine.session().busses;
             let mut n = busses.len() + 1;
             while busses.iter().any(|bus| bus.name.eq_ignore_ascii_case(&format!("Bus {n}")))
                 || app.engine.session().track_by_name(&format!("Bus {n}")).is_some()

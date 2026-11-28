@@ -723,7 +723,8 @@ fn to_playlist(e: &mut Engine, p: &Value, dest: Dest, mv: bool, id: &str) -> Res
                 tr.playlists.len() - 1
             }
         };
-        let clips = ops::copy_range(s, *t, r);
+        // A move carries only what it clears from the main playlist; locked clips stay there.
+        let clips = if mv { ops::take_range(s, *t, r) } else { ops::copy_range(s, *t, r) };
         let main = s.track(*t).map_or(0, |tr| tr.active_playlist);
         if let Some(tr) = s.track_mut(*t) {
             tr.active_playlist = idx;
@@ -1158,8 +1159,8 @@ mod tests {
         let mut s = Session::default();
         let t = s.add_track(TrackKind::Audio, ChannelFormat::Mono, None);
         let tone: Vec<f32> = (0..24_000).map(|i| (i as f32 * 0.05).sin() * 0.5).collect();
-        let buf = soundcraft_audio_io::AudioBuffer { sample_rate: 48_000, channels: vec![tone] };
-        let src = crate::io::add_source(&mut s, "tone", buf, None, soundcraft_audio_io::FileFormat::Wav);
+        let buf = craft_audio::AudioBuffer { sample_rate: 48_000, channels: vec![tone] };
+        let src = crate::io::add_source(&mut s, "tone", buf, None, soundcraft_model::FileFormat::Wav);
         let id = s.new_clip_id();
         ops::place_clip(&mut s, t, Clip::audio(id, "tone", src, 0, 0, 24_000));
         s.edit.selected_tracks = vec![t];

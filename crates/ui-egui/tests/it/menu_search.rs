@@ -12,13 +12,14 @@ use soundcraft_ui_egui::{MainWindow, Services, SoundApp};
 fn harness(engine: soundcraft_engine::Engine) -> Harness<'static, SoundApp> {
     let mut app = SoundApp::new(engine, None, Services::default());
     app.ui.window = MainWindow::Mix;
-    let mut h = Harness::builder().with_size(vec2(1400.0, 1000.0)).build_ui_state(
-        |ui, app: &mut SoundApp| {
-            app.logic(&ui.ctx().clone());
-            app.ui(ui);
-        },
-        app,
-    );
+    let mut h =
+        Harness::builder().with_context_setup(soundcraft_ui_egui::framework::install_headless).with_size(vec2(1400.0, 1000.0)).build_ui_state(
+            |ui, app: &mut SoundApp| {
+                app.logic(&ui.ctx().clone());
+                app.ui(ui);
+            },
+            app,
+        );
     h.run_steps(4);
     h
 }
@@ -167,6 +168,28 @@ fn send_and_output_menus_search_buses_as_soon_as_they_open() {
     type_text(&mut h, "ver");
     press(&mut h, Key::Enter);
     assert_eq!(h.state().engine.session().tracks[0].mixer.output, Route::Bus(bus(&h, "Verb")));
+}
+
+/// The I/O menus' search finds the hardware inputs, the main output and "no input/output", not just buses.
+#[test]
+fn io_menus_search_every_route_not_just_buses() {
+    let mut h = harness(vox());
+    open(&mut h, "Input for Vox");
+    type_text(&mut h, "in 3");
+    assert!(h.query_by_label("In 4").is_none(), "only the matches are listed");
+    press(&mut h, Key::Enter);
+    assert_eq!(h.state().engine.session().tracks[0].mixer.input, Route::Hardware("In 3".into()));
+
+    open(&mut h, "Output for Vox");
+    type_text(&mut h, "no out");
+    press(&mut h, Key::Enter);
+    assert_eq!(h.state().engine.session().tracks[0].mixer.output, Route::None);
+
+    let main = h.state().engine.session().outputs.first().map_or_else(|| "Out 1-2".to_string(), |o| o.name.clone());
+    open(&mut h, "Output for Vox");
+    type_text(&mut h, &main.to_lowercase());
+    press(&mut h, Key::Enter);
+    assert_eq!(h.state().engine.session().tracks[0].mixer.output, Route::Main);
 }
 
 /// Scripted typing and Enter reach a menu search even when the host window is unfocused.

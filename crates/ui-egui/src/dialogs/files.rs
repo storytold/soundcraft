@@ -14,7 +14,7 @@ pub fn ask_to_save(app: &mut SoundApp, id: &str, params: &Value) -> bool {
     if !app.engine.is_dirty() {
         return false;
     }
-    app.dialogs.open = Some(Dialog::SaveChanges { then: (id.into(), params.clone()) });
+    app.dialogs.set(Dialog::SaveChanges { then: (id.into(), params.clone()) });
     true
 }
 
@@ -45,20 +45,22 @@ pub fn unicode(path: &std::path::Path) -> Result<&str, NotUnicode> {
 }
 
 /// Opens a dropped, picked or command-line file by its extension: a session opens (asking to save
-/// first), MIDI imports, and anything else imports as audio, decoded in the background so a long
+/// first), an AAF opens the Session Data window, MIDI imports, and anything else imports as audio, decoded in the background so a long
 /// file doesn't freeze the window (#597). A name that is not valid Unicode goes on the status line.
 pub fn open_path(app: &mut SoundApp, path: &std::path::Path) {
     let p = match unicode(path) {
         Ok(p) => p,
         Err(e) => {
             log::warn!("{e}");
-            app.ui.status = e.to_string();
+            app.ui.status = crate::localization::error_text(&e.to_string());
             return;
         }
     };
     let lower = p.to_ascii_lowercase();
     let r = if lower.ends_with(".scraft") {
         run_or_ask(app, "session.open", json!({"path": p}))
+    } else if lower.ends_with(".aaf") {
+        app.run("window.import_aaf", json!({"path": p}))
     } else if lower.ends_with(".mid") || lower.ends_with(".midi") || lower.ends_with(".smf") {
         app.run("file.import_midi", json!({"path": p}))
     } else {
@@ -98,9 +100,13 @@ pub(super) fn open_pending_session(app: &mut SoundApp) {
         Ok(missing) => {
             // This path replaces the document without going through `SoundApp::run`.
             app.document_replaced();
-            if missing.is_empty() { format!("Opened {name}") } else { format!("Opened {name} ({} missing media)", missing.len()) }
+            if missing.is_empty() {
+                crate::localized_format!("Opened {name}", name = name)
+            } else {
+                crate::localized_format!("Opened {name} ({missing} missing media)", name = name, missing = missing.len())
+            }
         }
-        Err(e) => e.to_string(),
+        Err(e) => crate::localization::error_text(&e.to_string()),
     };
 }
 

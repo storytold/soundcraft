@@ -6,6 +6,7 @@ use soundcraft_model::{ClipId, TrackId};
 use soundcraft_time::{Range, Samples};
 use std::sync::OnceLock;
 
+mod aaf;
 mod audio_midi;
 mod audiosuite;
 mod auto_rename;
@@ -65,6 +66,7 @@ pub use file::bounce_job;
 
 pub(crate) use edit::remember_selection;
 pub use strip_silence::strip_silence_scan;
+pub use tab::tab_stop_ahead;
 
 pub type Run = fn(&mut Engine, &Value) -> Result<Value>;
 /// `Err(reason)` = disabled.
@@ -131,6 +133,7 @@ pub fn command_specs() -> &'static [CommandSpec] {
     SPECS.get_or_init(|| {
         let mut v = Vec::new();
         v.extend(file::specs());
+        v.extend(aaf::specs());
         v.extend(edit::specs());
         v.extend(edit_more::specs());
         v.extend(view::specs());
@@ -347,7 +350,10 @@ pub fn clip_id(p: &Value, cmd: &str) -> Result<ClipId> {
 
 pub fn clip_ids_param(e: &Engine, p: &Value) -> Vec<ClipId> {
     if let Some(arr) = p.get("clips").and_then(Value::as_array) {
-        return arr.iter().filter_map(Value::as_u64).map(ClipId).collect();
+        // Each clip once, in the order given: a repeated id would otherwise be processed (and,
+        // for a render, re-rendered into another source) once per repeat.
+        let mut seen = std::collections::HashSet::new();
+        return arr.iter().filter_map(Value::as_u64).map(ClipId).filter(|id| seen.insert(*id)).collect();
     }
     if let Some(n) = p.get("clip").and_then(Value::as_u64) {
         return vec![ClipId(n)];
