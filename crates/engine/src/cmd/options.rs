@@ -19,7 +19,7 @@ macro_rules! toggle {
 pub fn specs() -> Vec<CommandSpec> {
     vec![
         toggle!("options.loop_record", "Loop Record", ["Options"], Some("Alt+L"), loop_record),
-        toggle!("options.quickpunch", "QuickPunch", ["Options"], Some("Cmd+Shift+P"), quickpunch),
+        toggle!("options.quickpunch", "Punch Recording", ["Options"], Some("Cmd+Shift+P"), quickpunch),
         toggle!("options.pre_post_roll", "Pre/Post-Roll", ["Options"], Some("Cmd+K"), pre_post_roll),
         toggle!("options.loop_playback", "Loop Playback", ["Options"], Some("Cmd+Shift+L"), loop_playback),
         toggle!("options.link_timeline_edit", "Link Timeline and Edit Selection", ["Options"], Some("Shift+/"), link_timeline_edit),

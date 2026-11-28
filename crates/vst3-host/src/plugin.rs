@@ -259,6 +259,11 @@ impl Plugin for Vst3Plugin {
         }
     }
 
+    fn set_offline(&mut self, offline: bool) {
+        // `processMode`, set up by the next `prepare`.
+        self.inst.set_offline(offline);
+    }
+
     fn reset(&mut self) {
         // Keep pending releases and release whatever is still held, so the processor's voices stop
         // on the next block instead of sounding on while the host forgets them.

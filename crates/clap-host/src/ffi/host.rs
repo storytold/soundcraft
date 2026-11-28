@@ -3,6 +3,8 @@ use super::{
     CLAP_LOG_WARNING, CStr, EDIT_CAP, Mutex, Ordering, c_char, c_void, clap_host, clap_host_gui, clap_host_latency, clap_host_log, clap_host_params,
     clap_host_state, clap_id, clap_log_severity, clap_param_clear_flags, clap_param_rescan_flags, read_cstr,
 };
+#[cfg(all(unix, not(target_os = "macos")))]
+use super::{CLAP_EXT_POSIX_FD_SUPPORT, CLAP_EXT_TIMER_SUPPORT, clap_host_posix_fd_support, clap_host_timer_support};
 
 // ---- host side -----------------------------------------------------------------------------
 
@@ -25,6 +27,10 @@ pub(crate) struct HostState {
     /// Parameter changes the plugin reported (output events: typically edits in its GUI),
     /// waiting for the UI. Bounded by `EDIT_CAP`; the audio thread only `try_lock`s it.
     pub edits: Mutex<Vec<(u32, f64)>>,
+    /// The timers and descriptors the plugin registered (`clap.timer-support`,
+    /// `clap.posix-fd-support`), serviced by the editor's `idle` on the main thread.
+    #[cfg(all(unix, not(target_os = "macos")))]
+    pub run_loop: super::run_loop::RunLoop,
 }
 
 impl Default for HostState {
@@ -42,6 +48,8 @@ impl Default for HostState {
             gui_hide: AtomicBool::new(false),
             gui_resize: AtomicU64::new(0),
             edits: Mutex::new(Vec::with_capacity(EDIT_CAP)),
+            #[cfg(all(unix, not(target_os = "macos")))]
+            run_loop: super::run_loop::RunLoop::default(),
         }
     }
 }
@@ -199,8 +207,74 @@ pub(super) unsafe extern "C" fn host_get_extension(_host: *const clap_host, id: 
         (&HOST_STATE as *const clap_host_state).cast()
     } else if id == CLAP_EXT_GUI {
         (&HOST_GUI as *const clap_host_gui).cast()
+    } else if let Some(ext) = run_loop_extension(id) {
+        ext
     } else {
-        // Everything else (thread-check, timers, fd support, …) is unsupported: CLAP allows null.
+        // Everything else (thread-check, …) is unsupported: CLAP allows null.
         std::ptr::null()
     }
+}
+
+/// `clap.timer-support` and `clap.posix-fd-support`: X11 editors have no event loop of their own
+/// and rely on the host's to read their display connection and to repaint.
+#[cfg(all(unix, not(target_os = "macos")))]
+fn run_loop_extension(id: &CStr) -> Option<*const c_void> {
+    if id == CLAP_EXT_TIMER_SUPPORT {
+        Some((&HOST_TIMER as *const clap_host_timer_support).cast())
+    } else if id == CLAP_EXT_POSIX_FD_SUPPORT {
+        Some((&HOST_FD as *const clap_host_posix_fd_support).cast())
+    } else {
+        None
+    }
+}
+
+#[cfg(not(all(unix, not(target_os = "macos"))))]
+fn run_loop_extension(_id: &CStr) -> Option<*const c_void> {
+    None
+}
+
+#[cfg(all(unix, not(target_os = "macos")))]
+static HOST_TIMER: clap_host_timer_support =
+    clap_host_timer_support { register_timer: Some(host_register_timer), unregister_timer: Some(host_unregister_timer) };
+#[cfg(all(unix, not(target_os = "macos")))]
+static HOST_FD: clap_host_posix_fd_support =
+    clap_host_posix_fd_support { register_fd: Some(host_register_fd), modify_fd: Some(host_modify_fd), unregister_fd: Some(host_unregister_fd) };
+
+#[cfg(all(unix, not(target_os = "macos")))]
+unsafe extern "C" fn host_register_timer(host: *const clap_host, period_ms: u32, timer_id: *mut clap_id) -> bool {
+    // SAFETY: the plugin passes back the host pointer we gave it.
+    let Some(s) = (unsafe { state(host) }) else { return false };
+    // SAFETY: an out-pointer from the plugin (or null, handled).
+    let Some(out) = (unsafe { timer_id.as_mut() }) else { return false };
+    match s.run_loop.add_timer(period_ms) {
+        Some(id) => {
+            *out = id;
+            true
+        }
+        None => false,
+    }
+}
+
+#[cfg(all(unix, not(target_os = "macos")))]
+unsafe extern "C" fn host_unregister_timer(host: *const clap_host, timer_id: clap_id) -> bool {
+    // SAFETY: the plugin passes back the host pointer we gave it.
+    unsafe { state(host) }.is_some_and(|s| s.run_loop.remove_timer(timer_id))
+}
+
+#[cfg(all(unix, not(target_os = "macos")))]
+unsafe extern "C" fn host_register_fd(host: *const clap_host, fd: i32, flags: u32) -> bool {
+    // SAFETY: the plugin passes back the host pointer we gave it.
+    unsafe { state(host) }.is_some_and(|s| s.run_loop.add_fd(fd, flags))
+}
+
+#[cfg(all(unix, not(target_os = "macos")))]
+unsafe extern "C" fn host_modify_fd(host: *const clap_host, fd: i32, flags: u32) -> bool {
+    // SAFETY: the plugin passes back the host pointer we gave it.
+    unsafe { state(host) }.is_some_and(|s| s.run_loop.modify_fd(fd, flags))
+}
+
+#[cfg(all(unix, not(target_os = "macos")))]
+unsafe extern "C" fn host_unregister_fd(host: *const clap_host, fd: i32) -> bool {
+    // SAFETY: the plugin passes back the host pointer we gave it.
+    unsafe { state(host) }.is_some_and(|s| s.run_loop.remove_fd(fd))
 }

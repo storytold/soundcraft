@@ -25,16 +25,19 @@ fn painted_labels_with(narrow: bool, fonts: Option<FontDefinitions>) -> Vec<(Str
     app.run("view.mix_section", json!({"section": "all"})).unwrap();
     app.run("view.mix_section", json!({"section": "instruments"})).unwrap();
     app.ui.narrow_mix = narrow;
-    let mut harness = egui_kittest::Harness::builder().with_size(vec2(1600.0, 1000.0)).build_ui_state(
-        |ui, app: &mut SoundApp| {
-            app.logic(ui.ctx());
-            if let Some(f) = &fonts {
-                ui.ctx().set_fonts(f.clone());
-            }
-            app.ui(ui);
-        },
-        app,
-    );
+    let mut harness = egui_kittest::Harness::builder()
+        .with_context_setup(soundcraft_ui_egui::framework::install_headless)
+        .with_size(vec2(1600.0, 1000.0))
+        .build_ui_state(
+            |ui, app: &mut SoundApp| {
+                app.logic(ui.ctx());
+                if let Some(f) = &fonts {
+                    ui.ctx().set_fonts(f.clone());
+                }
+                app.ui(ui);
+            },
+            app,
+        );
     for _ in 0..4 {
         harness.step();
     }

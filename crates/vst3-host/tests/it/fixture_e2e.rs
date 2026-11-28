@@ -64,7 +64,7 @@ fn identity_mapped_param_text_is_read_on_the_main_thread_only() {
     assert_eq!((level.min, level.max, level.unit), (0.0, 1.0, Unit::Db));
     let mut p = soundcraft_vst3_host::instantiate_plugin(&id).unwrap();
     let mut ed = soundcraft_dsp::Plugin::editor(&mut p).expect("editor handle");
-    if cfg!(any(target_os = "macos", windows)) {
+    if cfg!(any(target_os = "macos", windows, unix)) {
         assert_eq!(ed.value_text("13", 0.375), None, "test threads are not the main thread");
     } else {
         assert_eq!(ed.value_text("13", 0.375).as_deref(), Some("\u{2212}6.0 dB"));
@@ -332,6 +332,18 @@ fn layouts_beyond_the_host_limits_are_rejected_not_truncated() {
 }
 
 #[test]
+fn offline_renders_set_up_and_process_in_offline_mode() {
+    for (offline, want) in [(false, 1.0), (true, 2.0)] {
+        let mut p = soundcraft_vst3_host::create(&id_of("Fixture Wide 16x64")).unwrap();
+        p.set_offline(offline);
+        p.prepare(44_100.0, 64, 2);
+        let mut io = vec![vec![0.5f32; 64]; 2];
+        p.process(&mut io, 64);
+        assert!(io.iter().flatten().all(|&x| x == want), "offline {offline}: {:?}", &io[0][..4]);
+    }
+}
+
+#[test]
 fn many_buses_like_multi_out_instruments_are_activated() {
     // Multi-out instruments declare dozens of buses (SSD Sampler 5: 32); only the main one is
     // active, but the plugin must still load, get buffers for every bus and play (#1247).
@@ -347,8 +359,8 @@ fn many_buses_like_multi_out_instruments_are_activated() {
 fn editor_view_is_probed_and_edits_come_back_as_plain_values() {
     let id = id_of("Fixture Gain");
     let mut p = soundcraft_vst3_host::instantiate_plugin(&id).unwrap();
-    // Editor windows are hosted on macOS and Windows; elsewhere the probe reports "unsupported".
-    if cfg!(any(target_os = "macos", windows)) {
+    // Editor windows are hosted on macOS, Windows and X11 (Linux, BSDs); elsewhere the probe reports "unsupported".
+    if cfg!(any(target_os = "macos", windows, unix)) {
         assert_eq!(p.editor_size(), Ok((320, 240)));
     } else {
         assert!(p.editor_size().is_err());
@@ -357,7 +369,7 @@ fn editor_view_is_probed_and_edits_come_back_as_plain_values() {
     // The fixture "edits" Gain to 0.9 (normalized) when it gets the component handler.
     assert_eq!(ed.idle(), vec![("7".to_string(), 1.8)]);
     assert!(ed.idle().is_empty());
-    if cfg!(any(target_os = "macos", windows)) {
+    if cfg!(any(target_os = "macos", windows, unix)) {
         assert!(ed.open().unwrap_err().contains("main thread"), "test threads are not the main thread");
     } else {
         assert!(ed.open().is_err(), "unsupported elsewhere");

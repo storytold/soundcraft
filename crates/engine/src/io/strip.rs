@@ -117,9 +117,7 @@ pub fn strip_silence(
     }
     cut_points.push(r.end);
     let old: std::collections::HashSet<_> = s.track(t).map(|x| x.clips().iter().map(|c| c.id).collect()).unwrap_or_default();
-    for p in &cut_points {
-        crate::edit::separate_at_if(s, t, *p, |_| false);
-    }
+    crate::edit::separate_at_points(s, t, &cut_points);
     let kept = strip_pieces(s, t, r, &keep, mode);
     crate::edit::auto_name_new_clips(s, t, &old, |c| !(named && c.is_audio() && c.start >= r.start && c.end() <= r.end));
     Ok(kept)
@@ -144,10 +142,24 @@ fn strip_pieces(s: &mut Session, t: TrackId, r: Range, keep: &[(Samples, Samples
     let audio: Vec<Range> = keep.iter().map(|(a, b)| Range::new(*a, *b)).collect();
     let remove = if mode == StripMode::Extract { &audio } else { &gaps };
     let inside = |c: &Clip, g: &Range| c.start >= g.start && c.end() <= g.end;
+    // The range of `rs` holding `c`: by binary search when `rs` is ascending and disjoint (the
+    // usual case, checked once by the caller), by scan otherwise.
+    let holder = |rs: &[Range], sorted: bool, c: &Clip| {
+        if sorted {
+            let i = rs.partition_point(|g| g.end < c.end());
+            rs.get(i).filter(|g| inside(c, g)).map(|_| i)
+        } else {
+            rs.iter().position(|g| inside(c, g))
+        }
+    };
+    let ordered = |rs: &[Range]| rs.windows(2).all(|w| w[0].end <= w[1].start);
     let Some(pl) = s.track_mut(t).and_then(|x| x.playlist_mut()) else { return if mode == StripMode::Extract { 0 } else { keep.len() } };
-    pl.clips.retain(|c| !remove.iter().any(|g| inside(c, g)));
+    let sorted = ordered(remove);
+    pl.clips.retain(|c| holder(remove, sorted, c).is_none());
     if mode == StripMode::Extract {
-        return gaps.iter().filter(|g| pl.clips.iter().any(|c| inside(c, g))).count();
+        let sorted = ordered(&gaps);
+        let held: std::collections::HashSet<usize> = pl.clips.iter().filter_map(|c| holder(&gaps, sorted, c)).collect();
+        return held.len();
     }
     keep.len()
 }
@@ -292,6 +304,57 @@ mod strip_tests {
         let p = json!({"track": t.0, "start": 0, "end": 144_000, "pad_before_ms": 0, "pad_after_ms": 0, "mode": mode});
         let r = e.execute("edit.strip_silence", &p).unwrap();
         (r, e.session().track(t).unwrap().clips().iter().map(|c| (c.start, c.end())).collect())
+    }
+
+    #[test]
+    fn cutting_at_many_points_in_one_pass_equals_cutting_at_each() {
+        let spans = |e: &Engine, t: TrackId| {
+            let mut v: Vec<_> = e.session().track(t).unwrap().clips().iter().map(|c| (c.start, c.end())).collect();
+            v.sort_unstable();
+            v
+        };
+        let points = [30_000, 10, 5_000, 30_000, 120_000, 0, 20_000, 1_000_000];
+        let (mut one, t) = tones(&[0, 20_000, 100_000], 40_000);
+        let (mut each, _) = tones(&[0, 20_000, 100_000], 40_000);
+        crate::edit::separate_at_points(one.session_mut(), t, &points);
+        for p in points {
+            crate::edit::separate_at_if(each.session_mut(), t, p, |_| false);
+        }
+        assert_eq!(spans(&one, t), spans(&each, t));
+        assert!(spans(&one, t).len() > 3);
+        let ids: std::collections::HashSet<_> = one.session().track(t).unwrap().clips().iter().map(|c| c.id).collect();
+        assert_eq!(ids.len(), spans(&one, t).len(), "new pieces have distinct ids");
+    }
+
+    #[test]
+    fn cutting_stretched_audio_at_ascending_points_matches_cutting_at_each() {
+        let pieces = |e: &Engine, t: TrackId| {
+            let mut v: Vec<_> = e
+                .session()
+                .track(t)
+                .unwrap()
+                .clips()
+                .iter()
+                .map(|c| (c.start, c.end(), if let soundcraft_model::ClipContent::Audio { offset, .. } = c.content { offset } else { -1 }))
+                .collect();
+            v.sort_unstable();
+            v
+        };
+        let stretched = || {
+            let (mut e, t) = tones(&[0], 40_000);
+            for c in &mut e.session_mut().track_mut(t).unwrap().playlist_mut().unwrap().clips {
+                c.stretch = 2.0;
+            }
+            (e, t)
+        };
+        let points = [1, 2, 3_001, 12_345];
+        let ((mut one, t), (mut each, _)) = (stretched(), stretched());
+        crate::edit::separate_at_points(one.session_mut(), t, &points);
+        for p in points {
+            crate::edit::separate_at_if(each.session_mut(), t, p, |_| false);
+        }
+        assert_eq!(pieces(&one, t), pieces(&each, t));
+        assert_eq!(pieces(&one, t).len(), points.len() + 1);
     }
 
     #[test]

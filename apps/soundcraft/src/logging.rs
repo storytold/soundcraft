@@ -166,7 +166,13 @@ pub fn rotate(dir: &Path) -> std::io::Result<(PathBuf, File)> {
 /// One formatted log line: `<timestamp> <LEVEL> [<thread>] <target>: <message>\n`.
 pub fn format_line(ts: &str, level: log::Level, thread: &str, target: &str, message: &str) -> String {
     let message = message.strip_suffix('\n').unwrap_or(message);
-    format!("{ts} {level:<5} [{thread}] {target}: {message}\n")
+    // Control characters are written escaped: a message quoting a session file (a plugin id, a
+    // path) must not start a line of its own in the log or steer the terminal.
+    let mut escaped = String::with_capacity(message.len());
+    for c in message.chars() {
+        if c.is_control() { escaped.extend(c.escape_default()) } else { escaped.push(c) }
+    }
+    format!("{ts} {level:<5} [{thread}] {target}: {escaped}\n")
 }
 
 /// Where formatted lines go besides standard error: kept in memory until a file is attached,

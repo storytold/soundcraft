@@ -16,6 +16,7 @@ impl Rig {
         let mut engine = soundcraft_engine::Engine::default();
         engine.execute("track.new", &json!({"count": 6})).unwrap();
         let mut r = Rig { ctx: egui::Context::default(), app: SoundApp::new(engine, None, Services::default()), shapes: Vec::new() };
+        soundcraft_ui_egui::framework::install_headless(&r.ctx);
         for _ in 0..4 {
             r.frame(vec![]);
         }
@@ -48,6 +49,16 @@ impl Rig {
                 _ => None,
             })
             .expect("row not in the Tracks list")
+    }
+
+    fn text_x(&self, name: &str) -> f32 {
+        self.shapes
+            .iter()
+            .find_map(|c| match &c.shape {
+                Shape::Text(t) if t.galley.text() == name && t.pos.x < 150.0 => Some(t.pos.x),
+                _ => None,
+            })
+            .expect("text not in the Tracks list")
     }
 
     fn press(&mut self, at: Pos2, pressed: bool) {
@@ -89,4 +100,36 @@ fn clicking_a_track_list_row_still_selects_the_track() {
     r.press(at, true);
     r.press(at, false);
     assert_eq!(r.app.engine.session().edit.selected_tracks, vec![r.order()[2]]);
+}
+
+#[test]
+fn a_track_inside_a_folder_is_indented_in_the_track_list() {
+    let mut r = Rig::new();
+    let child = r.order()[1];
+    let child_name = r.app.engine.session().track(child).unwrap().name.clone();
+    r.app.run("track.move_to_new_folder", json!({"tracks": [child.0], "name": "Folder"})).unwrap();
+    r.frame(vec![]);
+    let folder = r.app.engine.session().tracks.iter().find(|track| track.is_folder()).unwrap();
+
+    assert!(r.text_x(&child_name) > r.text_x(&folder.name), "child is not indented under the folder");
+}
+
+#[test]
+fn deeply_nested_tracks_keep_indenting_past_six_folders() {
+    let mut r = Rig::new();
+    let child = r.order()[1];
+    let child_name = r.app.engine.session().track(child).unwrap().name.clone();
+    r.app.run("track.move_to_new_folder", json!({"tracks": [child.0], "name": "Folder 1"})).unwrap();
+
+    let mut parent = r.app.engine.session().tracks.iter().find(|track| track.name == "Folder 1").unwrap().id;
+    for depth in 2..=7 {
+        r.app.run("track.move_to_new_folder", json!({"tracks": [parent.0], "name": format!("Folder {depth}")})).unwrap();
+        parent = r.app.engine.session().tracks.iter().find(|track| track.name == format!("Folder {depth}")).unwrap().id;
+    }
+    r.frame(vec![]);
+
+    // "Folder 1" is the child's own folder and the seventh level; "Folder 7" is the outermost.
+    assert_eq!(r.app.engine.session().track(parent).unwrap().name, "Folder 7");
+    assert!(r.text_x(&child_name) > r.text_x("Folder 1"), "deeply nested child is not indented under its own folder");
+    assert!(r.text_x("Folder 1") > r.text_x("Folder 2"), "each level indents further");
 }

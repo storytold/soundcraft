@@ -33,7 +33,7 @@ fn panel_header(ui: &mut Ui, title: &str) {
     let t = Tokens::current();
     let (r, _) = ui.allocate_exact_size(vec2(ui.available_width(), 22.0), Sense::hover());
     ui.painter().rect_filled(r, 0.0, t.panel_bg2);
-    ui.painter().text(pos2(r.min.x + 8.0, r.center().y), Align2::LEFT_CENTER, title, bold(11.5), t.header_text);
+    ui.painter().text(pos2(r.min.x + 8.0, r.center().y), Align2::LEFT_CENTER, crate::localization::text(title), bold(11.5), t.header_text);
     ui.painter().line_segment([pos2(r.min.x, r.max.y), pos2(r.max.x, r.max.y)], Stroke::new(1.0, t.border));
 }
 
@@ -90,6 +90,7 @@ pub fn floating(app: &mut SoundApp, ctx: &egui::Context) {
     big_counter(app, ctx);
     plugin_windows(app, ctx);
     crate::mix_window::send_window(app, ctx);
+    crate::mix_window::output_window(app, ctx);
     about(app, ctx);
     session_info(app, ctx);
 }

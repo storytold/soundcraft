@@ -1,4 +1,5 @@
 use super::clips::Key;
+use super::live_midi::LiveNotes;
 use super::strip::{PluginSlot, Strip};
 use super::{ClipContent, CtrlKind, Range, SampleSource, Samples, Session, SourceAudio, Track};
 use std::sync::Arc;
@@ -18,7 +19,12 @@ fn midi_offset(s: &Session, t: &Track) -> i64 {
 }
 
 /// Send note on/offs and controllers for MIDI clips overlapping the block.
-pub(crate) fn schedule_notes(s: &Session, t: &Track, pos: Samples, frames: usize, inst: &mut PluginSlot, held: &mut Vec<u8>) {
+///
+/// `live` holds the notes played live on the same instrument. Instruments end notes by pitch, so
+/// a clip note-off is not sent while a live key holds that pitch: the key's own release ends it.
+/// A note-off held back that way is told to `live`: when the key goes up earlier in the same
+/// block, the note still lasts until the clip's note-off.
+pub(crate) fn schedule_notes(s: &Session, t: &Track, pos: Samples, frames: usize, inst: &mut PluginSlot, held: &mut Vec<u8>, live: &mut LiveNotes) {
     let sr = s.sample_rate;
     // MIDI Track Offsets: the track's notes sound `offset` samples later (earlier if negative), so
     // the block looks that far back into the clips.
@@ -46,12 +52,20 @@ pub(crate) fn schedule_notes(s: &Session, t: &Track, pos: Samples, frames: usize
                 rtp("delay", 0.0).clamp(-1e7, 1e7) as i64,
             )
         };
+        // The block in clip ticks, one tick wider on each side so rounding never drops an event.
+        let near = s.tempo.samples_to_ticks(pos, sr).saturating_sub(base).saturating_sub(1)
+            ..=s.tempo.samples_to_ticks(end, sr).saturating_sub(base).saturating_add(1);
         for n0 in &sequence.notes {
             let mut n = *n0;
             n.velocity = (i64::from(n.velocity) + dv).clamp(1, 127) as u8;
             n.pitch = (i64::from(n.pitch) + dp).clamp(0, 127) as u8;
             n.length = ((n.length as f64 * dur) as i64).max(1);
             n.start = n.start.saturating_add(delay).max(0);
+            // A note whose on and off both fall outside the block sends nothing: skip it before
+            // converting its positions, so a long sequence costs a comparison per note per block.
+            if n.start > *near.end() || n.start.saturating_add(n.length) < *near.start() {
+                continue;
+            }
             let on = s.tempo.tick_to_samples(base.saturating_add(n.start), sr);
             let off = s.tempo.tick_to_samples(base.saturating_add(n.start).saturating_add(n.length), sr).min(clip.end());
             if on >= clip.end() {
@@ -64,12 +78,15 @@ pub(crate) fn schedule_notes(s: &Session, t: &Track, pos: Samples, frames: usize
                 }
             }
             if off >= pos && off < end {
-                inst.plugin.note_off(usize::try_from(off - pos).unwrap_or(0), n.pitch);
+                let at = usize::try_from(off - pos).unwrap_or(0);
+                if live.holds(n.pitch) {
+                    live.clip_off_held_back(n.pitch, at);
+                } else {
+                    inst.plugin.note_off(at, n.pitch);
+                }
                 held.retain(|p| *p != n.pitch);
             }
         }
-        let near = s.tempo.samples_to_ticks(pos, sr).saturating_sub(base).saturating_sub(1)
-            ..=s.tempo.samples_to_ticks(end, sr).saturating_sub(base).saturating_add(1);
         // Events before tick 0 are what a start trim hid: they don't play.
         for c in sequence.ctrls.iter().filter(|c| c.tick >= 0) {
             let tick = c.tick.saturating_add(delay).max(0);
@@ -101,14 +118,23 @@ fn ctrl_message(kind: CtrlKind, value: i32, transpose: i64) -> [u8; 3] {
 }
 
 /// Before an instrument plays from `pos`: reset its controllers, then send each one the last value
-/// it had on this track before `pos`.
-pub(crate) fn chase_controllers(s: &Session, t: &Track, pos: Samples, inst: &mut PluginSlot) {
+/// it had on this track before `pos`. Returns the control changes that were given a value, bit
+/// `n` for CC `n`.
+pub(crate) fn chase_controllers(s: &Session, t: &Track, pos: Samples, inst: &mut PluginSlot) -> u128 {
     inst.plugin.midi(0, [0xB0, 121, 0]);
     let pos = pos.saturating_sub(midi_offset(s, t));
     const BEND: usize = 128;
     const PRESSURE: usize = 129;
     const PROGRAM: usize = 130;
+    // MIDI Real-Time Properties: the delay moves the track's controllers as it does when they
+    // are played (`schedule_notes`), so a value is in the past here when it was already sent.
+    let delay = if s.edit.values.is_empty() {
+        0i64
+    } else {
+        Key::new(format_args!("rtp.{}.delay", t.id.0)).map_or(0.0, |k| s.edit.value(k.as_str(), 0.0)).clamp(-1e7, 1e7) as i64
+    };
     let mut last = [(i64::MIN, 0i32); 131];
+    let mut sent = 0u128;
     let sr = s.sample_rate;
     for clip in t.clips() {
         let ClipContent::Midi { sequence } = &clip.content else { continue };
@@ -125,7 +151,7 @@ pub(crate) fn chase_controllers(s: &Session, t: &Track, pos: Samples, inst: &mut
                 CtrlKind::Program => PROGRAM,
                 CtrlKind::PolyPressure(_) => continue,
             };
-            let at = s.tempo.tick_to_samples(base.saturating_add(c.tick), sr);
+            let at = s.tempo.tick_to_samples(base.saturating_add(c.tick.saturating_add(delay).max(0)), sr);
             if at < until
                 && let Some(l) = last.get_mut(slot)
                 && at >= l.0
@@ -143,8 +169,12 @@ pub(crate) fn chase_controllers(s: &Session, t: &Track, pos: Samples, inst: &mut
         };
         if at != i64::MIN {
             inst.plugin.midi(0, ctrl_message(kind, value, 0));
+            if slot < 128 {
+                sent |= 1u128 << slot;
+            }
         }
     }
+    sent
 }
 
 /// Session audio shared with a sample-playing instrument.
@@ -155,7 +185,7 @@ impl SampleSource for PoolSample {
         self.0.buffer.sample_rate as f32
     }
     fn num_channels(&self) -> usize {
-        self.0.buffer.num_channels()
+        self.0.buffer.channels.len()
     }
     fn channel(&self, ch: usize) -> Option<&[f32]> {
         self.0.channel(ch)

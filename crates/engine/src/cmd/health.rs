@@ -96,7 +96,7 @@ fn report(e: &mut Engine, _: &Value) -> Result<Value> {
 #[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
-    use soundcraft_audio_io::AudioBuffer;
+    use craft_audio::AudioBuffer;
     use soundcraft_model::{Clip, ClipId, SourceAudio, SourceId};
     use std::sync::Arc;
 

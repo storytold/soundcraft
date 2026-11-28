@@ -21,9 +21,11 @@
 //! [`Plugin::load_state`] as an opaque blob. Plugin editors (`clap.gui`) open as the plugin's own
 //! floating window ([`Plugin::open_editor`], or [`Plugin::editor`] for a handle usable on the main
 //! thread while the instance processes on the audio thread). Plugins that offer only an embedded
-//! editor get a host window of SoundCraft's on Windows (resized on `request_resize`, closed by
-//! its title bar); elsewhere they are not hosted yet, and SoundCraft's generic parameter editor
-//! still works for them.
+//! editor get a host window of SoundCraft's on Windows and on X11 (Linux, BSDs; resized on
+//! `request_resize`, closed by its title bar); on macOS they are not hosted yet, and SoundCraft's
+//! generic parameter editor still works for them. On X11 the host also offers
+//! `clap.timer-support` and `clap.posix-fd-support`, serviced by the editor's `idle`, since X11
+//! editors have no event loop of their own.
 //! Parameter changes made in the plugin's GUI arrive as output events while the plugin processes
 //! and are reported by the editor's `idle`.
 
@@ -260,6 +262,19 @@ mod tests {
         assert!(create("clap:does.not.exist").is_none());
         assert!(plugin_info("clap:does.not.exist").is_none());
         assert!(instantiate("clap:does.not.exist").is_err());
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// A binary the system refuses to load reports the system's reason (missing library, wrong
+    /// glibc, not an ELF file), not just "dlopen failed".
+    #[test]
+    fn a_binary_that_does_not_load_says_why() {
+        let d = fresh_private_dir("soundcraft-clap-reason");
+        let f = d.join("garbage.clap");
+        std::fs::write(&f, b"\x7fELF this is not a plugin \x00\x01\x02").unwrap();
+        let msg = load_bundle(&f).err().map(|e| e.to_string()).unwrap_or_default();
+        let reason = msg.split_once("failed: ").map_or("", |(_, r)| r.trim());
+        assert!(!reason.is_empty(), "no reason in: {msg}");
         let _ = std::fs::remove_dir_all(&d);
     }
 }

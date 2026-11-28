@@ -170,7 +170,7 @@ fn batch_rejects_non_array_calls() {
     let r = rpc(&mut s, 1, "tools/call", json!({"name": "batch", "arguments": {"calls": {"command": "track.new"}}}));
     assert_eq!(r["result"]["isError"], true, "{r}");
     let text = r["result"]["content"][0]["text"].as_str().unwrap();
-    assert!(text.contains("`calls` must be an array"), "{text}");
+    assert!(text.contains("`calls` must be of type \"array\""), "{text}");
     assert_eq!(session(&mut s)["tracks"].as_array().unwrap().len(), 0);
 }
 
@@ -183,8 +183,8 @@ fn batch_rejects_oversize_calls_before_any_mutation() {
         calls[0] = json!({"command": "track.new", "params": {"name": "Must not be created"}});
         let r = rpc(&mut s, 1, "tools/call", json!({"name": "batch", "arguments": {"calls": calls, "keep_going": keep_going}}));
         assert_eq!(session(&mut s), before, "oversize batch mutated the session (keep_going={keep_going})");
-        assert!(s.backend.engine.journal.is_empty());
-        assert!(!s.backend.engine.can_undo());
+        assert!(s.backend().engine.journal.is_empty());
+        assert!(!s.backend().engine.can_undo());
         assert_eq!(r["result"]["isError"], true);
         let text = r["result"]["content"][0]["text"].as_str().unwrap();
         assert!(text.contains("1000"), "{text}");
