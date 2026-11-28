@@ -73,10 +73,11 @@ fn at_rate(pos: u64, from: u32, to: u32) -> u64 {
 fn write_replacing(target: &std::path::Path, bytes: &[u8]) -> std::io::Result<()> {
     let name = target.file_name().map_or_else(|| "output".into(), |n| n.to_string_lossy().into_owned());
     let tmp = target.with_file_name(format!(".{name}.{}.part", std::process::id()));
+    let mut file = std::fs::OpenOptions::new().write(true).create_new(true).open(&tmp)?;
     let written = (|| {
-        let mut file = std::fs::OpenOptions::new().write(true).create_new(true).open(&tmp)?;
         file.write_all(bytes)?;
         file.sync_all()?;
+        drop(file);
         std::fs::rename(&tmp, target)
     })();
     if written.is_err() {

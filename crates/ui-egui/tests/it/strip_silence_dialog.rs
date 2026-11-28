@@ -123,7 +123,7 @@ fn enter_right_after_switching_between_strip_silence_and_rename_presses_the_new_
 #[test]
 fn strip_silence_strip_removes_the_silence() {
     let (mut h, track, before) = strip_silence_dialog();
-    h.get_by_role_and_label(Role::Button, "Strip").click();
+    h.get_by_role_and_label(Role::Button, "Strip Silence").click();
     h.run_steps(2);
     assert_eq!(h.state().dialogs.open_name(), None);
     let strip = clips(&h, track);
@@ -167,7 +167,7 @@ fn strip_silence_opens_with_the_values_escape_closed_it_with() {
 fn strip_silence_opens_with_the_values_strip_used() {
     let (mut h, _, _) = strip_silence_dialog();
     set_values(&mut h, CHANGED);
-    h.get_by_role_and_label(Role::Button, "Strip").click();
+    h.get_by_role_and_label(Role::Button, "Strip Silence").click();
     h.run_steps(2);
     assert_eq!(reopen(&mut h), CHANGED);
 }
