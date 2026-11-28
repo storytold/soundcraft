@@ -192,6 +192,9 @@ struct ThruLink {
     waker: Mutex<Option<std::thread::Thread>>,
     /// Ports ([`midi_port_bit`]) whose events did not all reach the worker, until it asks.
     lost: AtomicU64,
+    /// When each port last lost input, on the clock of the events' stamps
+    /// ([`MidiFeed::lost_at`] keeps the same for the audio thread).
+    lost_at: Vec<AtomicI64>,
     /// What was sent lately to outputs that are also inputs, for the echo check.
     sent: Mutex<Sent>,
     /// Echoes thru did not send on so far.
@@ -205,6 +208,7 @@ impl Default for ThruLink {
             attached: AtomicBool::new(false),
             waker: Mutex::new(None),
             lost: AtomicU64::new(0),
+            lost_at: (0..64).map(|_| AtomicI64::new(i64::MIN)).collect(),
             sent: Mutex::new(Sent::default()),
             echoes: AtomicU64::new(0),
         }
@@ -218,8 +222,13 @@ impl ThruLink {
         }
     }
 
-    /// The worker has to let go of what `port` holds.
-    fn port_lost(&self, port: u8) {
+    /// The worker has to let go of what `port` holds: input lost at `now`. What the port queued
+    /// up to then is not sent on ([`MidiFeed::next_thru`]); the release does not cover it.
+    fn port_lost(&self, port: u8, now: i64) {
+        // The time first: whoever sees the port's bit also sees a time that covers this loss.
+        if let Some(at) = self.lost_at.get(lost_bit(port)) {
+            at.fetch_max(now, Ordering::AcqRel);
+        }
         if self.attached.load(Ordering::Acquire) {
             self.lost.fetch_or(midi_port_bit(port), Ordering::Release);
             self.wake();
@@ -474,7 +483,7 @@ impl MidiFeed {
                     thru = true;
                 } else {
                     // The worker is far behind: what the port holds there has to go.
-                    self.thru.port_lost(port);
+                    self.thru.port_lost(port, now);
                 }
             }
         }
@@ -511,8 +520,11 @@ impl MidiFeed {
 
     /// The worker on `worker` stops taking live input. Nothing changes when another worker has
     /// attached since (a new audio device brings a new worker, which may attach before the old
-    /// one has ended).
+    /// one has ended). Under the device threads' lock: one that saw the worker attached has
+    /// queued its message before the queue is emptied, so no Note-On whose Note-Off will not be
+    /// queued is left there for the next attach.
     pub(crate) fn detach_thru(&self, worker: std::thread::ThreadId) {
+        let _writers = self.writers.lock().unwrap_or_else(PoisonError::into_inner);
         let mut waker = self.thru.waker.lock().unwrap_or_else(PoisonError::into_inner);
         if waker.as_ref().is_some_and(|t| t.id() == worker) {
             self.thru.attached.store(false, Ordering::Release);
@@ -521,9 +533,26 @@ impl MidiFeed {
         }
     }
 
-    /// Worker: the next live event for MIDI Thru and when it arrived ([`Self::clock`]).
+    /// Worker: the next live event for MIDI Thru and when it arrived ([`Self::clock`]). Only the
+    /// worker attached last takes them (the queue has one reader): an old one that has not ended
+    /// yet gets nothing. An event of a port that lost input after it was queued is skipped: the
+    /// loss releases what the port holds through thru ([`Self::take_thru_lost`]), and a Note-On
+    /// from before it would sound for good. As for the audio thread ([`Self::lost_at`]), one with
+    /// the stamp of the loss counts as before it.
     pub(crate) fn next_thru(&self) -> Option<(i64, LiveMidi)> {
-        self.thru.events.pop().map(|(stamp, e)| (stamp, unpack(e)))
+        let me = std::thread::current().id();
+        let worker = self.thru.waker.lock().unwrap_or_else(PoisonError::into_inner);
+        if !worker.as_ref().is_some_and(|t| t.id() == me) {
+            return None;
+        }
+        while let Some((stamp, e)) = self.thru.events.pop() {
+            let e = unpack(e);
+            let lost = self.thru.lost_at.get(lost_bit(e.port)).map_or(i64::MIN, |at| at.load(Ordering::Acquire));
+            if stamp > lost {
+                return Some((stamp, e));
+            }
+        }
+        None
     }
 
     /// Worker: whether live events are waiting for it.
@@ -591,8 +620,9 @@ impl MidiFeed {
     /// Events of `port` did not (or will not) reach the audio thread: it releases what the port
     /// holds. Called when the queue is full and when a port closes.
     pub fn port_lost(&self, port: u8) {
-        self.port_lost_at(port, self.now());
-        self.thru.port_lost(port);
+        let now = self.now();
+        self.port_lost_at(port, now);
+        self.thru.port_lost(port, now);
     }
 
     /// [`Self::port_lost`] at the time `now`.
@@ -1401,6 +1431,60 @@ mod tests {
         // Written once.
         f.receive(0, &[0x80, 64, 0]);
         assert_eq!(std::iter::from_fn(|| f.next()).map(|(_, e)| e.status).collect::<Vec<_>>(), [0x80]);
+    }
+
+    #[test]
+    fn a_detach_waits_for_a_device_thread_queueing_for_thru() {
+        let feed = Arc::new(MidiFeed::default());
+        feed.attach_thru(std::thread::current());
+        // A device thread saw thru attached and is about to queue a Note-On, under the writers lock.
+        let writers = feed.writers.lock().unwrap();
+        let (f, me) = (feed.clone(), std::thread::current().id());
+        let detach = std::thread::spawn(move || f.detach_thru(me));
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        assert!(feed.thru.events.push(0, pack(&LiveMidi { offset: 0, port: 0, status: 0x90, data1: 60, data2: 100, echo: false })));
+        drop(writers);
+        detach.join().unwrap();
+        feed.attach_thru(std::thread::current());
+        assert!(feed.next_thru().is_none(), "the detach let go of it: its Note-Off will not be queued");
+    }
+
+    #[test]
+    fn only_the_attached_worker_takes_thru_events() {
+        let feed = Arc::new(MidiFeed::default());
+        let f = feed.clone();
+        let old = std::thread::spawn(move || {
+            f.attach_thru(std::thread::current());
+            std::thread::park();
+            f.next_thru()
+        });
+        while !feed.thru_attached() {
+            std::thread::yield_now();
+        }
+        // A new worker attaches while the old one has not ended yet.
+        feed.attach_thru(std::thread::current());
+        feed.receive(0, &[0x90, 60, 100]);
+        old.thread().unpark();
+        assert!(old.join().unwrap().is_none(), "the old worker gets nothing");
+        assert_eq!(feed.next_thru().map(|(_, e)| e.data1), Some(60));
+    }
+
+    #[test]
+    fn thru_events_queued_before_their_port_was_lost_are_not_sent_on() {
+        let feed = MidiFeed::default();
+        feed.attach_thru(std::thread::current());
+        feed.set_clock(10);
+        feed.receive(0, &[0x90, 60, 100]);
+        feed.receive(1, &[0x90, 61, 100]);
+        feed.set_clock(20);
+        feed.port_lost(0);
+        feed.set_clock(30);
+        feed.receive(0, &[0x90, 62, 100]);
+        // The worker releases port 0's notes, then takes what is queued: the Note-On from before
+        // the loss would sound for good, as its release will not come.
+        assert_eq!(feed.take_thru_lost(), midi_port_bit(0));
+        let got: Vec<(u8, u8)> = std::iter::from_fn(|| feed.next_thru()).map(|(_, e)| (e.port, e.data1)).collect();
+        assert_eq!(got, [(1, 61), (0, 62)], "another port's note, and what came after the loss, play");
     }
 
     #[test]
