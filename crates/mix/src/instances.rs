@@ -111,7 +111,7 @@ impl PluginFailures {
 }
 
 /// A built-in plugin, else a hosted CLAP plugin (`clap:<id>`).
-fn create_plugin(id: &str) -> Option<Box<dyn Plugin>> {
+pub(crate) fn create_plugin(id: &str) -> Option<Box<dyn Plugin>> {
     // Tests never load real plug-ins; adopt a fake instead. Scanning the machine's plug-in folders
     // loads every installed plug-in in-process, and some never unload, so a test that reached the
     // real hosts would hang on a developer machine (CI has none installed).

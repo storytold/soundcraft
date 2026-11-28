@@ -66,7 +66,14 @@ fn clap_insert_renders_through_the_mix() {
     e.execute("mix.insert_param", &json!({"track": t.0, "slot": 0, "param": "7", "value": 0.5})).unwrap();
     let half = soundcraft_mix::render_range(e.session(), Range::new(0, 4800), 512)[0][2000];
     assert!((half - 0.5 * dry).abs() < 1e-4, "dry {dry} half {half}");
-    assert!(e.execute("mix.insert_param", &json!({"track": t.0, "slot": 0, "param": "Gain", "value": 1.0})).is_err());
+    // The parameter's name resolves to its id. The session stores "7", not "Gain".
+    let by_name = e.execute("mix.insert_param", &json!({"track": t.0, "slot": 0, "param": "Gain", "value": 1.0})).unwrap();
+    assert_eq!(by_name["id"], "7");
+    let stored = e.session().track(t).and_then(|tr| tr.mixer.inserts[0].as_ref()).and_then(|ins| ins.params.get("7").copied());
+    assert_eq!(stored, Some(1.0));
+    assert!(e.session().track(t).and_then(|tr| tr.mixer.inserts[0].as_ref()).is_some_and(|ins| !ins.params.contains_key("Gain")));
+    let unity = soundcraft_mix::render_range(e.session(), Range::new(0, 4800), 512)[0][2000];
+    assert!((unity - dry).abs() < 1e-4, "dry {dry} unity {unity}");
 }
 
 #[test]
@@ -126,4 +133,75 @@ fn clap_state_is_captured_stored_and_restored_before_the_first_block() {
     e.execute("mix.insert_param", &json!({"track": t.0, "slot": 0, "param": "7", "value": 0.5})).unwrap();
     let half = gain_of(e.session());
     assert!((half - reference / 3.0).abs() < 1e-5, "{half} vs {}", reference / 3.0);
+}
+
+/// Automation into a hosted plugin through the commands a user runs: a lane addressed by the
+/// parameter's name drives the plugin at its breakpoint in any block size, and clearing the lane
+/// gives the parameter back.
+#[test]
+fn a_lane_by_name_automates_a_hosted_insert() {
+    install_fixture();
+    const LEN: i64 = 9600;
+    const HALF: i64 = LEN / 2;
+    let mut e = Engine::default();
+    let s = e.session_mut();
+    let t = s.add_track(TrackKind::Audio, ChannelFormat::Mono, None);
+    s.pool.insert(SourceId(78), Arc::new(SourceAudio::new(AudioBuffer { sample_rate: 48_000, channels: vec![vec![0.25; LEN as usize]] })));
+    let id = s.new_clip_id();
+    s.track_mut(t).unwrap().playlist_mut().unwrap().clips.push(Clip::audio(id, "dc", SourceId(78), 0, 0, LEN));
+    e.execute("mix.insert", &json!({"track": t.0, "plugin": "clap:org.soundcraft.test.gain"})).unwrap();
+    let at = |s: &soundcraft_model::Session, block: usize, i: i64| soundcraft_mix::render_range(s, Range::new(0, LEN), block)[0][i as usize];
+    let unity = at(e.session(), 512, HALF);
+    assert!(unity.abs() > 0.01);
+
+    // "Gain" resolves to the plugin's id "7"; values are the parameter's own units (linear gain).
+    for (at_frame, value) in [(0, 0.5), (HALF - 1, 0.5), (HALF, 2.0)] {
+        e.execute("automation.set_point", &json!({"track": t.0, "param": "plugin:a:Gain", "at": at_frame, "value": value})).unwrap();
+    }
+    let lanes: Vec<String> = e.session().track(t).unwrap().automation.iter().map(|l| soundcraft_model::auto_param_label(&l.param)).collect();
+    assert_eq!(lanes.len(), 1, "one lane, whatever the key: {lanes:?}");
+
+    for block in [64, 512, 1000] {
+        let (low, high) = (at(e.session(), block, HALF / 2), at(e.session(), block, HALF + HALF / 2));
+        assert!((low - 0.5 * unity).abs() < 1e-4, "block {block}: first half at 0.5: {low} vs {unity}");
+        assert!((high - 2.0 * unity).abs() < 1e-4, "block {block}: second half at 2.0: {high} vs {unity}");
+    }
+
+    e.execute("automation.clear", &json!({"track": t.0, "param": "plugin:a:Gain", "start": 0, "end": LEN})).unwrap();
+    let after = at(e.session(), 512, HALF + HALF / 2);
+    assert!((after - unity).abs() < 1e-4, "with the lane cleared the plugin is back at its own value: {after} vs {unity}");
+}
+
+/// The same through a hosted instrument: `mix.instrument` loads the CLAP synth, and a
+/// `plugin:instrument:<name>` lane drives its Volume while a MIDI note plays.
+#[test]
+fn a_lane_by_name_automates_a_hosted_instrument() {
+    use soundcraft_midi::{Note, Sequence};
+    install_fixture();
+    const LEN: i64 = 9600;
+    const HALF: i64 = LEN / 2;
+    let mut e = Engine::default();
+    e.execute("track.new", &json!({"kind": "instrument"})).unwrap();
+    let t = e.session().tracks[0].id;
+    e.execute("mix.instrument", &json!({"track": t.0, "plugin": "clap:org.soundcraft.test.synth"})).unwrap();
+    let mut seq = Sequence::default();
+    seq.notes.push(Note { pitch: 60, velocity: 100, release_velocity: 64, channel: 0, start: 0, length: 960 * 16 });
+    let s = e.session_mut();
+    let cid = s.new_clip_id();
+    s.track_mut(t).unwrap().playlist_mut().unwrap().clips.push(Clip::midi(cid, "n", 0, LEN, seq));
+    let at = |s: &soundcraft_model::Session, block: usize, i: i64| soundcraft_mix::render_range(s, Range::new(0, LEN), block)[0][i as usize];
+    let unity = at(e.session(), 512, HALF);
+    assert!(unity.abs() > 0.01, "the note sounds through the hosted synth: {unity}");
+
+    for (at_frame, value) in [(0, 0.5), (HALF - 1, 0.5), (HALF, 2.0)] {
+        e.execute("automation.set_point", &json!({"track": t.0, "param": "plugin:instrument:Volume", "at": at_frame, "value": value})).unwrap();
+    }
+    for block in [64, 512, 1000] {
+        let (low, high) = (at(e.session(), block, HALF / 2), at(e.session(), block, HALF + HALF / 2));
+        assert!((low - 0.5 * unity).abs() < 1e-4, "block {block}: first half at 0.5: {low} vs {unity}");
+        assert!((high - 2.0 * unity).abs() < 1e-4, "block {block}: second half at 2.0: {high} vs {unity}");
+    }
+    e.execute("automation.clear", &json!({"track": t.0, "param": "plugin:instrument:Volume", "start": 0, "end": LEN})).unwrap();
+    let after = at(e.session(), 512, HALF + HALF / 2);
+    assert!((after - unity).abs() < 1e-4, "with the lane cleared the synth is back at its own value: {after} vs {unity}");
 }

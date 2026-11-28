@@ -2,8 +2,8 @@ use super::drag::fade_drag_preview;
 use super::input::{clip_gain_icon, near_fade_midpoint};
 use super::layout::{sample_at, x_of};
 use super::{
-    Align2, AutoParam, Clip, ClipContent, Color32, CornerRadius, Gesture, GridValue, NoteValue, Pos2, Range, Rect, Samples, Session, Shape, SoundApp,
-    Stroke, StrokeKind, TimeFormat, Tokens, Tool, Track, bold, clip_colors, format_position, pos2, regular, vec2,
+    Align2, Clip, ClipContent, Color32, CornerRadius, Gesture, GridValue, NoteValue, Pos2, Range, Rect, Samples, Session, Shape, SoundApp, Stroke,
+    StrokeKind, TimeFormat, Tokens, Tool, Track, bold, clip_colors, format_position, pos2, regular, vec2,
 };
 use std::sync::Arc;
 
@@ -370,7 +370,8 @@ fn draw_fades(cl: &ClipLane<'_>, clip: &Clip, g: &ClipGeom<'_>) {
         let midpoint = fade_control_position(fade, a, b, body_r);
         let active = matches!(app.gesture, Some(Gesture::FadeCurve { clip: id, fade_in, .. }) if id == clip.id && fade_in == side);
         let hovered = painter.ctx().input(|i| i.pointer.hover_pos()).is_some_and(|p| near_fade_midpoint(p, midpoint));
-        if !dim && s.edit.tool == Tool::Smart && AutoParam::parse(&track.view).is_none() && b - a >= 32.0 && vis.contains(midpoint) {
+        if !dim && s.edit.tool == Tool::Smart && soundcraft_model::parse_auto_param(&track.view).is_none() && b - a >= 32.0 && vis.contains(midpoint)
+        {
             let col = Color32::from_rgba_unmultiplied(255, 255, 255, if active || hovered { 230 } else { 200 });
             painter.with_clip_rect(vis).circle(midpoint, 3.5, body, Stroke::new(1.0, col));
         }

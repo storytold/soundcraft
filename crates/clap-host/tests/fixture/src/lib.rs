@@ -4,7 +4,8 @@
 //!   (stepped enum A/B/C), hidden param 9, latency 3 samples.
 //! - `org.soundcraft.test.synth`: instrument, stereo out, CLAP note port; outputs a constant equal
 //!   to the velocity of the held note (0 when none), switching at the event's sample offset. A
-//!   MIDI CC 7 (volume) sets the constant to its value / 127. `reset` leaves the note sounding.
+//!   MIDI CC 7 (volume) sets the constant to its value / 127. Automatable param 12 "Volume"
+//!   (0..2, default 1) scales the output. `reset` leaves the note sounding.
 //!
 //! - `org.soundcraft.test.wide16`, `.wide17ports`, `.wide65ch`: effects advertising wide layouts
 //!   (16 ports of 64 channels, 17 ports of 2 channels, one port of 65 channels per direction).
@@ -178,7 +179,7 @@ fn apply(f: &mut Fx, h: &clap_event_header) {
         CLAP_EVENT_PARAM_VALUE => {
             let e = unsafe { &*(h as *const clap_event_header as *const clap_event_param_value) };
             match e.param_id {
-                7 => f.gain = e.value,
+                7 | 12 => f.gain = e.value,
                 3 => f.mode = e.value,
                 _ => {}
             }
@@ -305,7 +306,7 @@ unsafe extern "C" fn process(p: *const clap_plugin, pr: *const clap_process) -> 
                     let x = unsafe { *(*inp.data32.add(c.min(inp.channel_count as usize - 1))).add(i) };
                     x * f.gain as f32
                 }
-                None => f.level as f32,
+                None => (f.level * f.gain) as f32,
             };
             unsafe { *o.add(i) = v };
         }
@@ -316,7 +317,7 @@ unsafe extern "C" fn process(p: *const clap_plugin, pr: *const clap_process) -> 
 // ---- extensions ----
 
 unsafe extern "C" fn params_count(p: *const clap_plugin) -> u32 {
-    if unsafe { fx(p) }.synth { 0 } else { 3 }
+    if unsafe { fx(p) }.synth { 1 } else { 3 }
 }
 
 fn write_name(dst: &mut [c_char], s: &CStr) {
@@ -325,9 +326,12 @@ fn write_name(dst: &mut [c_char], s: &CStr) {
     }
 }
 
-unsafe extern "C" fn params_get_info(_p: *const clap_plugin, index: u32, info: *mut clap_param_info) -> bool {
+unsafe extern "C" fn params_get_info(p: *const clap_plugin, index: u32, info: *mut clap_param_info) -> bool {
     let info = unsafe { &mut *info };
+    let synth = unsafe { fx(p) }.synth;
     let (id, name, flags, min, max, def): (clap_id, &CStr, u32, f64, f64, f64) = match index {
+        0 if synth => (12, c"Volume", CLAP_PARAM_IS_AUTOMATABLE, 0.0, 2.0, 1.0),
+        _ if synth => return false,
         0 => (7, c"Gain", CLAP_PARAM_IS_AUTOMATABLE, 0.0, 2.0, 1.0),
         1 => (3, c"Mode", CLAP_PARAM_IS_STEPPED | CLAP_PARAM_IS_ENUM, 0.0, 2.0, 0.0),
         2 => (9, c"Secret", CLAP_PARAM_IS_HIDDEN, 0.0, 1.0, 0.0),
@@ -347,7 +351,8 @@ unsafe extern "C" fn params_get_info(_p: *const clap_plugin, index: u32, info: *
 unsafe extern "C" fn params_get_value(p: *const clap_plugin, id: clap_id, out: *mut f64) -> bool {
     let f = unsafe { fx(p) };
     let v = match id {
-        7 => f.gain,
+        7 if !f.synth => f.gain,
+        12 if f.synth => f.gain,
         3 => f.mode,
         9 => 0.0,
         _ => return false,
@@ -368,6 +373,21 @@ unsafe extern "C" fn params_value_to_text(_p: *const clap_plugin, id: clap_id, v
     true
 }
 
+unsafe extern "C" fn params_text_to_value(_p: *const clap_plugin, id: clap_id, text: *const c_char, out: *mut f64) -> bool {
+    if id != 3 || text.is_null() || out.is_null() {
+        return false;
+    }
+    let Ok(text) = unsafe { CStr::from_ptr(text) }.to_str() else { return false };
+    let value = match text.trim().to_ascii_uppercase().as_str() {
+        "A" => 0.0,
+        "B" => 1.0,
+        "C" => 2.0,
+        _ => return false,
+    };
+    unsafe { *out = value };
+    true
+}
+
 unsafe extern "C" fn params_flush(p: *const clap_plugin, inp: *const clap_input_events, _out: *const clap_output_events) {
     let f = unsafe { fx(p) };
     let ev = unsafe { &*inp };
@@ -382,7 +402,7 @@ static PARAMS: clap_plugin_params = clap_plugin_params {
     get_info: Some(params_get_info),
     get_value: Some(params_get_value),
     value_to_text: Some(params_value_to_text),
-    text_to_value: None,
+    text_to_value: Some(params_text_to_value),
     flush: Some(params_flush),
 };
 

@@ -204,6 +204,19 @@ pub trait Plugin: Send {
     /// Sets a parameter (clamped into range; NaN becomes the default). `false` if `id` is unknown.
     fn set_param(&mut self, id: &str, value: f32) -> bool;
     fn param(&self, id: &str) -> Option<f32>;
+    /// The plugin's own text for a parameter value (SoundCraft units); `None` means format it
+    /// with [`ParamInfo::format`]. Call it on the main thread, as the plugin formats expect:
+    /// the CLAP host answers `None` on any other thread.
+    fn value_text(&mut self, _id: &str, _value: f32) -> Option<String> {
+        None
+    }
+    /// Parses the plugin's own text into a parameter value in SoundCraft units. Threading as
+    /// for [`Plugin::value_text`]. `text` is hostile input: the hosts refuse an embedded NUL and
+    /// more than 256 Unicode scalars before it crosses FFI (VST3 also refuses text that does not
+    /// fit its 128-unit UTF-16 string).
+    fn value_from_text(&mut self, _id: &str, _text: &str) -> Option<f32> {
+        None
+    }
     /// In-place processing of `channels` planar buffers each `frames` long.
     fn process(&mut self, io: &mut [Vec<f32>], frames: usize);
     /// Processing latency in samples (for delay compensation).
@@ -290,6 +303,21 @@ pub trait PluginEditor: Send {
     /// yourself".
     fn value_text(&mut self, _id: &str, _value: f32) -> Option<String> {
         None
+    }
+    /// Parses the plugin's own text for a parameter into a value in SoundCraft units. Main thread
+    /// only; `None` means the text is not a value of that parameter (or the instance is gone).
+    fn value_from_text(&mut self, _id: &str, _text: &str) -> Option<f32> {
+        None
+    }
+    /// The parameter's current value on the live instance, in SoundCraft units. Main thread only;
+    /// `None` when the instance is gone or the id is unknown.
+    fn param(&self, _id: &str) -> Option<f32> {
+        None
+    }
+    /// Whether this handle can open a window. Parameter-only handles (Audio Units, whose Cocoa
+    /// views are not hosted) return false so the UI does not offer an editor button.
+    fn has_window(&self) -> bool {
+        true
     }
 }
 
