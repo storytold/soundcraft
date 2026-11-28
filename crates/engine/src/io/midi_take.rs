@@ -87,7 +87,7 @@ fn lost_covers(lost: u8, device: u8) -> bool {
 }
 
 /// What `track` recorded of `events` over `range`, in ticks from the start of the range. A key
-/// already down when the range starts is left out; one still down at its end ends there, and one
+/// already down when the range starts sounds from its start, as long as it is held; one still down at its end ends there, and one
 /// whose device lost input ends where that happened. Keys are told apart by device, channel and
 /// pitch: the same pitch held on two devices gives two notes. A key held while loop recording
 /// goes round ([`MidiTakeEvent::WRAP`]) is two notes: to the end of the loop, and from its start;
@@ -108,9 +108,10 @@ fn midi_take_sequence(s: &Session, input: &MidiInput<'_>, range: Range, pass: Mi
     // The round of the loop being played: it goes up at every `WRAP`.
     let mut round = 0u32;
     // Keys down: (device, channel, pitch) -> (start tick, velocity, round, the sample the key was
-    // pressed at). Whether the loop went round between a press and its release is judged by
-    // their samples: two positions a few samples apart may share a tick, and a press in the
-    // last samples of the range starts its note a tick earlier so that it plays.
+    // pressed at, which is before the range only for a key held into it). Whether the loop went
+    // round between a press and its release is judged by their samples: two positions a few
+    // samples apart may share a tick, and a press in the last samples of the range starts its
+    // note a tick earlier so that it plays.
     let mut down: HashMap<(u8, u8, u8), (i64, u8, u32, Samples)> = HashMap::new();
     let close = |seq: &mut Sequence,
                  (_, channel, pitch): (u8, u8, u8),
@@ -152,7 +153,16 @@ fn midi_take_sequence(s: &Session, input: &MidiInput<'_>, range: Range, pass: Mi
             round = round.saturating_add(1);
             continue;
         }
-        if e.at < range.start || e.at >= range.end {
+        if e.at < range.start {
+            // Before the range (the pre-roll, or before the punch-in): a key pressed there and
+            // still down when the range starts is recorded from the start of the range, "the
+            // start of the note is quantized to the punch-in point" (Reference Guide p.822).
+            // An entry there that ends a note pressed in the range is a late callback, as below.
+            if round > 0 || held_into_range(s, input, devices, e, &mut down, range.start) {
+                continue;
+            }
+        }
+        if e.at >= range.end {
             continue;
         }
         let at = tick(e.at);
@@ -175,7 +185,7 @@ fn midi_take_sequence(s: &Session, input: &MidiInput<'_>, range: Range, pass: Mi
         match e.status & 0xF0 {
             0x90 if d2 > 0 => {
                 // The same key again without a release: the first note ends here.
-                if let Some(open) = down.insert(key, (at.min(last_start), d2, round, e.at)) {
+                if let Some(open) = down.insert(key, (at.min(last_start), d2, round, e.at.max(range.start))) {
                     close(&mut seq, key, open, at, 64, round, e.at);
                 }
             }
@@ -207,6 +217,45 @@ fn midi_take_sequence(s: &Session, input: &MidiInput<'_>, range: Range, pass: Mi
     }
     seq.sort();
     seq
+}
+
+/// Follow the keys pressed and released before a record range starts, in `down` (as the take
+/// builder keeps them: start tick, velocity, round, the sample the key was pressed at, which for
+/// these keys alone is before `start`). A key still down when the range starts goes on from its
+/// first tick; one released before it, or whose device lost input, leaves nothing. Returns
+/// false when `e` is left to the range: a lost-input entry (for the keys pressed in the range),
+/// or an entry for a key pressed in the range, stamped early by a late audio callback.
+fn held_into_range(
+    s: &Session,
+    input: &MidiInput<'_>,
+    devices: &[String],
+    e: &MidiTakeEvent,
+    down: &mut HashMap<(u8, u8, u8), (i64, u8, u32, Samples)>,
+    start: Samples,
+) -> bool {
+    if e.status == MidiTakeEvent::LOST {
+        down.retain(|k, open| open.3 >= start || !lost_covers(e.device, k.0));
+        return false;
+    }
+    let channel = e.status & 0x0F;
+    if midi_filtered(s, e.status) || !input.accepts(devices.get(usize::from(e.device)).map(String::as_str), channel) {
+        return true;
+    }
+    let key = (e.device, channel, e.data1 & 0x7F);
+    let note = matches!(e.status & 0xF0, 0x80 | 0x90);
+    if note && down.get(&key).is_some_and(|open| open.3 >= start) {
+        return false;
+    }
+    match e.status & 0xF0 {
+        0x90 if e.data2 & 0x7F > 0 => {
+            down.insert(key, (0, e.data2 & 0x7F, 0, e.at));
+        }
+        0x80 | 0x90 => {
+            down.remove(&key);
+        }
+        _ => {}
+    }
+    true
 }
 
 /// Most events of one MIDI record pass that are kept.
@@ -310,7 +359,7 @@ mod tests {
         assert_eq!(e.session().busses.len(), 0, "a MIDI input is not a bus name");
         assert!(records_midi(&e));
         let events = [
-            ev(40_000, 0, 0x90, 59, 80),  // before the pass: left out, and so is its release
+            ev(40_000, 0, 0x90, 59, 80),  // before the pass, released inside it: from the pass start
             ev(48_000, 0, 0x90, 60, 100), // one beat at 120 bpm, 48 kHz: 24 000 samples = 960 ticks
             ev(50_000, 0, 0x80, 59, 0),
             ev(60_000, 1, 0x99, 36, 127),
@@ -328,7 +377,7 @@ mod tests {
         assert_eq!((before, take.clips.len(), take.gaps), (0, 2, 0), "the track whose device was silent gets no clip");
         let keys = sequence(&e, all, range);
         let notes: Vec<(u8, u8, i64, i64, u8)> = keys.notes.iter().map(|n| (n.channel, n.pitch, n.start, n.length, n.release_velocity)).collect();
-        assert_eq!(notes, [(0, 60, 0, 960, 30), (9, 36, 480, 960, 64), (0, 67, 1880, 40, 64)]);
+        assert_eq!(notes, [(0, 59, 0, 80, 0), (0, 60, 0, 960, 30), (9, 36, 480, 960, 64), (0, 67, 1880, 40, 64)]);
         assert_eq!(
             keys.ctrls.iter().map(|c| (c.tick, c.kind, c.value)).collect::<Vec<_>>(),
             [(960, CtrlKind::PitchBend, 4096), (1680, CtrlKind::Cc(64), 127)]
@@ -343,6 +392,28 @@ mod tests {
         add_midi_recording(&mut e, range, &events, &devices, false);
         assert!(sequence(&e, all, range).ctrls.is_empty());
         assert!(add_midi_recording(&mut e, Range::new(5, 5), &events, &devices, false).clips.is_empty());
+    }
+
+    #[test]
+    fn a_key_held_into_the_punch_in_is_recorded_from_the_punch_in() {
+        // Reference Guide p.822: played before the punch-in point, released after it.
+        let s = Session::default();
+        let range = Range::new(48_000, 144_000);
+        let events = [
+            ev(24_000, 0, 0x90, 60, 100), // held into the range
+            ev(30_000, 0, 0x90, 62, 100), // pressed and released before it: nothing
+            ev(36_000, 0, 0x80, 62, 0),
+            ev(40_000, 0, 0x90, 64, 90), // another one released before it
+            ev(44_000, 0, 0x80, 64, 0),
+            ev(72_000, 0, 0x80, 60, 30), // the held key, released one quarter into the range
+            ev(96_000, 0, 0x90, 67, 100),
+            ev(120_000, 0, 0x80, 67, 0),
+        ];
+        let got = notes_of(&midi_take_sequence(&s, &MidiInput::default(), range, MidiPass::Linear, &events, &[]));
+        assert_eq!(got, [(0, 60, 0, 960, 100, 30), (0, 67, 1920, 960, 100, 0)]);
+        // A key still down at the end of the range covers all of it.
+        let got = notes_of(&midi_take_sequence(&s, &MidiInput::default(), range, MidiPass::Linear, &events[..1], &[]));
+        assert_eq!(got, [(0, 60, 0, 3840, 100, 64)]);
     }
 
     #[test]
@@ -550,6 +621,21 @@ mod tests {
         let marked = [ev(24_000, 0, 0x90, 60, 100), ev(96_000, u8::MAX, MidiTakeEvent::WRAP, 0, 0), ev(48_000, 0, 0x80, 60, 0)];
         let got = notes_of(&midi_take_sequence(&s, &MidiInput::default(), range, MidiPass::Linear, &marked, &[]));
         assert_eq!(got.iter().map(|n| (n.2, n.3)).collect::<Vec<_>>(), [(960, 960)]);
+        // A punch range: a key pressed in it whose release is stamped before its start is one
+        // short note at the press too, and a key pressed and released before it stays out.
+        let punch = Range::new(48_000, 144_000);
+        let events = [
+            ev(30_000, 0, 0x90, 62, 100),
+            ev(36_000, 0, 0x80, 62, 0),
+            ev(49_000, 0, 0x90, 60, 100),
+            ev(47_000, 0, 0x80, 60, 40),
+            ev(72_000, 0, 0x90, 64, 100),
+            ev(47_400, 0, 0xB0, 64, 127), // a controller stamped there is still left out
+            ev(47_500, u8::MAX, MidiTakeEvent::LOST, 0, 0),
+        ];
+        let seq = midi_take_sequence(&s, &MidiInput::default(), punch, MidiPass::Linear, &events, &[]);
+        assert_eq!(notes_of(&seq), [(0, 60, 40, 1, 100, 40), (0, 64, 960, 1, 100, 64)]);
+        assert!(seq.ctrls.is_empty());
     }
 
     #[test]
