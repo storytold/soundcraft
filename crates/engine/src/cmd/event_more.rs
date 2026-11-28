@@ -140,7 +140,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Identify Beat...",
             ["Event"],
             Some("Cmd+I"),
-            "{start?, end?, bars?: 1, beats?: 0} — sets the tempo so the selection lasts that many bars",
+            "{start?, end?, bars?: 1, beats?: 0, numerator?, denominator?} — sets the tempo so the selection lasts that many bars; a meter writes a meter event on the selection's bar first",
             has_range,
             identify_beat
         ),
@@ -732,6 +732,52 @@ fn beat_detective(e: &mut Engine, p: &Value) -> Result<Value> {
 fn identify_beat(e: &mut Engine, p: &Value) -> Result<Value> {
     let id = "event.identify_beat";
     let (r, t0, _) = selection_ticks(e, p, id)?;
+    // A declared meter writes its event first (snapped to the containing bar line, where
+    // meter changes live): Pro Tools' Identify Beat writes meter and tempo together, and
+    // the tempo below is computed in that meter.
+    if p.get("numerator").is_some() || p.get("denominator").is_some() {
+        let num = i64_or(p, "numerator", 4).clamp(1, 64) as u32;
+        let den = i64_or(p, "denominator", 4).clamp(1, 64) as u32;
+        let snap = if t0 <= 0 { 0 } else { e.session().tempo.bar_start_tick(e.session().tempo.bar_beat_at_tick(t0).bar) };
+        e.session_mut().tempo.set_meter(t0, num, den).map_err(|err| bad(id, err.to_string()))?;
+        // set_meter re-anchors later meter changes at their bar numbers under the new meter; one
+        // can land at or before the selection start — even on the snapped line itself — and
+        // displace the declared meter there. Move every such change to a free bar line past t0,
+        // so the declared meter stays in effect at t0 for the tempo computed below.
+        let bound = e.session().tempo.meters().len().saturating_mul(2).saturating_add(2);
+        for _ in 0..bound {
+            let stray = e
+                .session()
+                .tempo
+                .meters()
+                .iter()
+                .filter(|m| m.tick >= snap && m.tick <= t0)
+                .find(|m| !(m.tick == snap && m.numerator == num && m.denominator == den))
+                .copied();
+            let Some(stray) = stray else { break };
+            let dest = {
+                let tempo = &e.session().tempo;
+                let mut bar = tempo.bar_beat_at_tick(t0).bar + 1;
+                while tempo.meters().iter().any(|m| m.tick == tempo.bar_start_tick(bar)) {
+                    bar += 1;
+                }
+                tempo.bar_start_tick(bar)
+            };
+            if stray.tick == 0 {
+                // remove_meter leaves tick 0 alone: copy the stray past t0 and let the
+                // re-declare below take its place at 0.
+                e.session_mut().tempo.set_meter(dest, stray.numerator, stray.denominator).map_err(|err| bad(id, err.to_string()))?;
+            } else {
+                e.session_mut().tempo.remove_meter(stray.tick);
+                e.session_mut().tempo.set_meter(dest, stray.numerator, stray.denominator).map_err(|err| bad(id, err.to_string()))?;
+            }
+            // A stray restored onto the snapped line wiped the declared event out; put it back.
+            let declared = e.session().tempo.meters().iter().any(|m| m.tick == snap && m.numerator == num && m.denominator == den);
+            if !declared {
+                e.session_mut().tempo.set_meter(t0, num, den).map_err(|err| bad(id, err.to_string()))?;
+            }
+        }
+    }
     let s = e.session();
     let m = s.tempo.meter_at_tick(t0);
     let bars = f64_or(p, "bars", 1.0).max(0.0);
@@ -941,6 +987,34 @@ mod tests {
         assert!((e.session().tempo.tempo_at_tick(0) - 120.0).abs() < 1e-9);
         e.execute("event.identify_beat", &json!({"start": 0, "end": 192_000, "bars": 1})).unwrap();
         assert!((e.session().tempo.tempo_at_tick(0) - 60.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn identify_beat_writes_the_declared_meter() {
+        let mut e = Engine::default();
+        e.execute("event.identify_beat", &json!({"start": 0, "end": 96_000, "bars": 1, "numerator": 6, "denominator": 8})).unwrap();
+        // 2 s = 1 bar of 6/8 = 3 quarter notes -> 90 bpm; the meter event lands at the selection's start.
+        assert!((e.session().tempo.tempo_at_tick(0) - 90.0).abs() < 1e-9);
+        assert_eq!(e.session().tempo.meter_at_tick(0).numerator, 6);
+        assert_eq!(e.session().tempo.meter_at_tick(0).denominator, 8);
+        // Beats without bars still describe a positive length.
+        let mut e = Engine::default();
+        e.execute("event.identify_beat", &json!({"start": 0, "end": 96_000, "bars": 0, "beats": 4})).unwrap();
+        assert!((e.session().tempo.tempo_at_tick(0) - 120.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn identify_beat_keeps_the_declared_meter_past_a_later_change() {
+        let mut e = Engine::default();
+        // A 5/4 change sits inside the selection (tick 3840 > start tick 3360); declaring 6/8
+        // must not let it slide back over the selection start.
+        e.session_mut().tempo.set_meter(3840, 5, 4).unwrap();
+        e.execute("event.identify_beat", &json!({"start": 84_000, "end": 180_000, "bars": 1, "numerator": 6, "denominator": 8})).unwrap();
+        // The 2 s selection is one bar of 6/8: 90 bpm, computed in the declared meter.
+        assert!((e.session().tempo.tempo_at_tick(3360) - 90.0).abs() < 1e-9);
+        let m = e.session().tempo.meter_at_tick(3360);
+        assert_eq!((m.numerator, m.denominator), (6, 8));
+        assert!(e.session().tempo.meters().iter().any(|m| m.numerator == 5 && m.denominator == 4 && m.tick > 3360));
     }
 
     #[test]

@@ -35,6 +35,11 @@ pub struct OpsState {
     pub rtp_targets: Vec<soundcraft_model::TrackId>,
     pub rtp_loaded: Option<RtpValues>,
     pub identify_bars: u32,
+    pub identify_beats: u32,
+    pub identify_meter_num: u32,
+    pub identify_meter_den: u32,
+    /// The selection start the meter fields were last read from (they follow the selection).
+    pub identify_meter_sel: Option<i64>,
 }
 
 impl Default for OpsState {
@@ -64,6 +69,10 @@ impl Default for OpsState {
             rtp_targets: Vec::new(),
             rtp_loaded: None,
             identify_bars: 1,
+            identify_beats: 0,
+            identify_meter_num: 4,
+            identify_meter_den: 4,
+            identify_meter_sel: None,
         }
     }
 }
@@ -117,13 +126,45 @@ fn beat_detective(app: &mut SoundApp, ctx: &egui::Context) {
                 }
             });
             ui.separator();
+            // The meter fields mirror the meter at the selection start (on open and whenever
+            // the selection moves), so untouched controls send the meter already there and
+            // Set Tempo writes no redundant meter event.
+            let sel_start = app.engine.session().edit.selection.start;
+            if app.ops.identify_meter_sel != Some(sel_start) {
+                let s = app.engine.session();
+                let t0 = s.tempo.samples_to_ticks(sel_start.max(0), s.sample_rate);
+                let m = s.tempo.meter_at_tick(t0);
+                app.ops.identify_meter_num = m.numerator;
+                app.ops.identify_meter_den = m.denominator;
+                app.ops.identify_meter_sel = Some(sel_start);
+            }
             ui.horizontal(|ui| {
                 ui.label(crate::localization::text("Identify Beat: selection is"));
-                ui.add(egui::DragValue::new(&mut app.ops.identify_bars).range(1..=64))
+                ui.add(egui::DragValue::new(&mut app.ops.identify_bars).range(0..=999))
                     .accessible_name(crate::localization::text("Identify beat bars"));
                 ui.label(crate::localization::text("bar(s)"));
+                ui.add(egui::DragValue::new(&mut app.ops.identify_beats).range(0..=63))
+                    .accessible_name(crate::localization::text("Identify beat beats"));
+                ui.label(crate::localization::text("beat(s) at"));
+                ui.add(egui::DragValue::new(&mut app.ops.identify_meter_num).range(1..=64))
+                    .accessible_name(crate::localization::text("Identify meter numerator"));
+                ui.label(crate::localization::text("/"));
+                let den = craft_ui::ComboBox::from_id_salt("identify_den").selected_text(app.ops.identify_meter_den.to_string()).show_ui(ui, |ui| {
+                    for d in [2u32, 4, 8, 16] {
+                        ui.selectable_value(&mut app.ops.identify_meter_den, d, d.to_string());
+                    }
+                });
+                den.response.accessible_name(crate::localization::text("Identify meter denominator"));
                 if ui.button(crate::localization::text("Set Tempo")).clicked() {
-                    let r = app.run("event.identify_beat", json!({"bars": app.ops.identify_bars}));
+                    let s = app.engine.session();
+                    let t0 = s.tempo.samples_to_ticks(s.edit.selection.start.max(0), s.sample_rate);
+                    let m = s.tempo.meter_at_tick(t0);
+                    let mut p = json!({"bars": app.ops.identify_bars, "beats": app.ops.identify_beats});
+                    if app.ops.identify_meter_num != m.numerator || app.ops.identify_meter_den != m.denominator {
+                        p["numerator"] = json!(app.ops.identify_meter_num);
+                        p["denominator"] = json!(app.ops.identify_meter_den);
+                    }
+                    let r = app.run("event.identify_beat", p);
                     app.ops.beat_result = r.map_or_else(|e| e, |v| v.to_string());
                 }
             });
