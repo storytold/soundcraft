@@ -1,6 +1,6 @@
 //! Transport commands. They update the session's stopped playhead and queue requests for the
 //! host's audio engine (which may be absent when headless).
-use super::{CommandSpec, always, bad, f64_or, position_param};
+use super::{CommandSpec, always, bad, bool_or, f64_or, position_param};
 
 use crate::{Engine, Result, TransportRequest, cmd};
 use serde_json::{Value, json};
@@ -35,9 +35,12 @@ pub fn specs() -> Vec<CommandSpec> {
             let at = cur(e) + d;
             locate(e, at)
         }),
-        cmd!(noundo "transport.locate", "Locate", [], None, "{at: position}", always, |e, p| {
-            let at = position_param(e, "transport.locate", p, "at")?.ok_or_else(|| bad("transport.locate", "`at` required"))?;
-            locate(e, at.max(0))
+        cmd!(noundo "transport.locate", "Locate", [], None, "{at: position, collapse_selection?: bool}", always, |e, p| {
+            let at = position_param(e, "transport.locate", p, "at")?.ok_or_else(|| bad("transport.locate", "`at` required"))?.max(0);
+            if bool_or(p, "collapse_selection", false) {
+                e.session_mut().edit.selection = soundcraft_time::Range::point(at);
+            }
+            locate(e, at)
         }),
         cmd!(noundo "transport.status", "Transport Status", [], None, "{}", always, |e, _| Ok(json!(e.transport))),
     ]

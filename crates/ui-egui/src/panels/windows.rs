@@ -323,7 +323,7 @@ fn midi_keyboard(app: &mut SoundApp, ctx: &egui::Context) {
             let _ = app.run("midi.note_add", json!({"clip": cid.0, "pitch": p, "start_ticks": rel.max(0), "length_ticks": len}));
             let s = app.engine.session();
             let next = s.tempo.tick_to_samples(s.tempo.samples_to_ticks(at, s.sample_rate) + len, s.sample_rate);
-            let _ = app.run("transport.locate", json!({"at": next}));
+            let _ = app.run("transport.locate", json!({"at": next, "collapse_selection": true}));
         }
         ui.label(
             egui::RichText::new(crate::localization::text("Click keys to step-enter notes into the selected MIDI clip at the insertion point."))
