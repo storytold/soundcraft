@@ -268,20 +268,15 @@ fn clear_message(s: &Session, clips: &[ClipId], sources: &[SourceId]) -> Option<
     let listed: std::collections::BTreeSet<ClipId> = clips.iter().copied().collect();
     let names: Vec<&str> = s.tracks.iter().flat_map(|t| t.clips()).filter(|c| listed.contains(&c.id)).map(|c| c.name.as_str()).collect();
     let files: Vec<_> = sources.iter().filter_map(|id| s.source(*id)).collect();
-    let count = |n: usize, what: &str| {
-        if n == 1 { crate::localized_format!("1 {what}", what = what) } else { crate::localized_format!("{n} {what}s", n = n, what = what) }
-    };
+    let clip_count = |n: usize| if n == 1 { crate::localized_format!("1 clip") } else { crate::localized_format!("{n} clips", n = n) };
+    let file_count = |n: usize| if n == 1 { crate::localized_format!("1 file") } else { crate::localized_format!("{n} files", n = n) };
     let what = match (names.as_slice(), files.as_slice()) {
         ([], []) => return None,
         ([name], []) => crate::localized_format!("the clip \"{name}\"", name = name),
         ([], [f]) => crate::localized_format!("the file \"{name}\"", name = f.name),
-        (c, []) => count(c.len(), crate::localization::text("clip")),
-        ([], f) => count(f.len(), crate::localization::text("file")),
-        (c, f) => crate::localized_format!(
-            "{clips} and {files}",
-            clips = count(c.len(), crate::localization::text("clip")),
-            files = count(f.len(), crate::localization::text("file"))
-        ),
+        (c, []) => clip_count(c.len()),
+        ([], f) => file_count(f.len()),
+        (c, f) => crate::localized_format!("{clips} and {files}", clips = clip_count(c.len()), files = file_count(f.len())),
     };
     let mut text = crate::localized_format!("Remove {what} from the session?", what = what);
     let used: Vec<(&str, usize)> =
@@ -1339,6 +1334,18 @@ mod tests {
             message(&d),
             "Remover o arquivo \"Kick\" da sessão? Ele é usado por 3 clipes na linha do tempo, que também serão removidos. O arquivo permanece no disco."
         );
+    }
+
+    #[test]
+    fn clear_question_counts_swedish_clips_and_files() {
+        let _scope = crate::localization::enter(crate::localization::Language::Swedish);
+        let e = soundcraft_engine::demo::demo_engine();
+        let s = e.session();
+        let kick = s.sources.iter().find(|f| f.name == "Kick").unwrap().id;
+        let hats = s.sources.iter().find(|f| f.name == "Hats").unwrap().id;
+        let clips: Vec<ClipId> = s.clips_using(kick).map(|c| c.id).collect();
+        assert!(clear_message(s, &clips, &[kick, hats]).unwrap().contains("3 klipp och 2 filer"));
+        assert!(clear_message(s, &clips[..1], &[kick]).unwrap().contains("1 klipp och 1 fil"));
     }
 
     #[test]
