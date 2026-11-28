@@ -27,6 +27,8 @@ pub(crate) const PARAM_READ_ONLY: i32 = sv::ParameterInfo_::ParameterFlags_::kIs
 
 pub(crate) const PARAM_BYPASS: i32 = sv::ParameterInfo_::ParameterFlags_::kIsBypass;
 
+pub(crate) const PARAM_AUTOMATABLE: i32 = sv::ParameterInfo_::ParameterFlags_::kCanAutomate;
+
 /// The audio bus layout chosen by [`Instance::configure`].
 #[derive(Debug, Clone, Default, PartialEq)]
 pub(crate) struct Layout {

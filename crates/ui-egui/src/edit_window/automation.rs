@@ -83,7 +83,7 @@ pub(super) fn breakpoint_at(s: &Session, tl: Rect, lane: Rect, track: &Track, p:
 pub(super) fn plugin_range(track: &Track, p: &AutoParam) -> (f32, f32) {
     if let AutoParam::Plugin { slot, param } = p
         && let Some(Some(ins)) = track.mixer.inserts.get(usize::from(*slot))
-        && let Some(info) = soundcraft_dsp::plugin_info(&ins.plugin)
+        && let Some(info) = crate::mix_window::plugin_info(&ins.plugin)
         && let Some(pi) = info.param(param)
     {
         return (pi.min, pi.max);

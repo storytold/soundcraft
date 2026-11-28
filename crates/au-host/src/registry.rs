@@ -1,6 +1,6 @@
 //! The process-wide Audio Unit registry: scan cache, leaked `PluginInfo`s, instantiation.
 
-use crate::ffi::{self, Instance, PARAM_FLAG_DISPLAY_LOG, PARAM_FLAG_METER_READ_ONLY, PARAM_FLAG_WRITABLE, RawParam};
+use crate::ffi::{self, Instance, PARAM_FLAG_DISPLAY_LOG, PARAM_FLAG_METER_READ_ONLY, PARAM_FLAG_NON_REAL_TIME, PARAM_FLAG_WRITABLE, RawParam};
 use crate::plugin::AuPlugin;
 use crate::{AuDescriptor, AuError, SUPPORTED_TYPES, TYPE_EFFECT, TYPE_INSTRUMENT, TYPE_MUSIC_EFFECT, parse_id};
 use soundcraft_dsp::{ParamInfo, Plugin, PluginInfo, Taper, Unit};
@@ -133,6 +133,7 @@ pub(crate) fn param_info(p: &RawParam) -> Option<ParamInfo> {
         unit: Unit::None,
         taper: Taper::Linear,
         choices: &[],
+        automatable: p.flags & PARAM_FLAG_NON_REAL_TIME == 0,
     };
     if p.unit == U_BOOLEAN && p.min == 0.0 && p.max == 1.0 {
         return Some(ParamInfo { unit: Unit::Toggle, default: default.round(), ..base });
@@ -277,5 +278,12 @@ mod tests {
         ro.flags &= !PARAM_FLAG_WRITABLE;
         assert!(param_info(&ro).is_none());
         assert_eq!(version_string(0x0001_0203), "1.2.3");
+    }
+
+    #[test]
+    fn non_real_time_params_stay_editable_but_not_automatable() {
+        assert!(param_info(&raw(U_PERCENT, 0.0, 100.0, 50.0, 0)).unwrap().automatable);
+        let nrt = param_info(&raw(U_PERCENT, 0.0, 100.0, 50.0, PARAM_FLAG_NON_REAL_TIME)).unwrap();
+        assert!(!nrt.automatable);
     }
 }

@@ -139,6 +139,62 @@ fn short_tracks_show_insert_slots_as_squares() {
     assert!(h.query_by_label(&format!("{:?}", plugin.category)).is_some());
 }
 
+/// A plugin's parameter submenu in the track view selector is a bounded scroll list, so a
+/// parameter near the end of a long table stays reachable (the #1703 review's window-height case).
+#[test]
+fn a_long_param_submenu_scrolls_to_its_last_item() {
+    let size = vec2(1600.0, 420.0);
+    let mut app = SoundApp::new(soundcraft_engine::demo::demo_engine(), None, Services::default());
+    app.run("view.edit_inserts_ae", json!({})).unwrap();
+    app.run("track.height", json!({"tracks": ["Kick"], "height": "medium"})).unwrap();
+    let id = app.engine.session().track_by_name("Kick").unwrap().id;
+    let mut h = Harness::builder().with_size(size).build_ui_state(
+        |ui, app: &mut SoundApp| {
+            let ctx = ui.ctx().clone();
+            app.logic(&ctx);
+            app.ui(ui);
+        },
+        app,
+    );
+    for _ in 0..6 {
+        step(&mut h);
+    }
+    let row = h.state().edit_layout.rows.iter().find(|(t, _)| *t == id.0).map(|(_, r)| *r).unwrap();
+    let last = soundcraft_dsp::plugin_info("eq_7band").unwrap().params.last().unwrap().name;
+
+    click(&mut h, pos2(row[0] + 69.5, row[1] + 47.5));
+    let item = h.get_by_label("EQ 7-Band").rect().center();
+    h.state_mut().synthetic.push(Event::PointerMoved(item));
+    for _ in 0..6 {
+        step(&mut h);
+    }
+    let bottom = |h: &Harness<'_, SoundApp>| h.query_by_label_contains(last).map(|n| n.rect().bottom());
+    assert!(bottom(&h).is_none_or(|b| b > size.y), "`{last}` starts out of view: {bottom:?}", bottom = bottom(&h));
+
+    // Scroll inside the submenu, whose first row is the pointer's hover target.
+    let over = h.get_by_label("Input").rect().center();
+    h.state_mut().synthetic.push(Event::PointerMoved(over));
+    step(&mut h);
+    for _ in 0..40 {
+        h.state_mut().synthetic.push(Event::MouseWheel {
+            unit: egui::MouseWheelUnit::Line,
+            delta: vec2(0.0, -3.0),
+            modifiers: Modifiers::NONE,
+            phase: egui::TouchPhase::Move,
+            source: egui::MouseWheelSource::Wheel,
+        });
+        step(&mut h);
+    }
+    for _ in 0..6 {
+        step(&mut h);
+    }
+    assert!(bottom(&h).is_some_and(|b| b <= size.y), "scrolling the submenu brings `{last}` into view");
+
+    let at = h.get_by_label(last).rect().center();
+    click(&mut h, at);
+    assert_eq!(kick(&h).view, format!("plugin:a:{}", soundcraft_dsp::plugin_info("eq_7band").unwrap().params.last().unwrap().id));
+}
+
 #[test]
 fn the_views_menu_stays_open_until_a_click_elsewhere() {
     let (mut h, _, _) = harness("Kick", "medium", "view.edit_inserts_ae");

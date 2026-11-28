@@ -191,14 +191,18 @@ pub(super) fn view_menu(app: &mut SoundApp, ui: &mut Ui, track: &Track) {
     }
     for (slot, ins) in track.mixer.inserts.iter().enumerate() {
         let Some(ins) = ins else { continue };
-        let Some(info) = soundcraft_dsp::plugin_info(&ins.plugin) else { continue };
+        let Some(info) = crate::mix_window::plugin_info(&ins.plugin) else { continue };
         ui.menu_button(info.name, |ui| {
-            for p in info.params {
-                let v = format!("plugin:{}:{}", (b'a' + slot as u8) as char, p.id);
-                if ui.button(p.name).clicked() {
-                    let _ = app.run("track.view", json!({"track": id, "view": v}));
+            // A hosted plugin can report hundreds of parameters; bound the list to the window.
+            let max_h = (ui.ctx().content_rect().height() - 40.0).max(120.0);
+            egui::ScrollArea::vertical().id_salt((id, slot)).max_height(max_h).show(ui, |ui| {
+                for p in info.params.iter().filter(|p| p.automatable) {
+                    let v = format!("plugin:{}:{}", (b'a' + slot as u8) as char, p.id);
+                    if ui.button(p.name).clicked() {
+                        let _ = app.run("track.view", json!({"track": id, "view": v}));
+                    }
                 }
-            }
+            });
         });
     }
 }
