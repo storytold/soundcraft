@@ -221,6 +221,37 @@ pub struct Tokens {
     pub slot_face: [Color32; 2],
     pub slot_bypassed: [Color32; 2],
     pub slot_mark: Color32,
+    /// The MIDI Editor's piano roll.
+    pub midi: MidiRollTokens,
+}
+
+/// Colours of the MIDI Editor's piano roll.
+#[derive(Clone, Copy, Debug)]
+pub struct MidiRollTokens {
+    /// Rows of white and black keys when no scale is highlighted.
+    pub row_white: Color32,
+    pub row_black: Color32,
+    /// Rows of pitches in the highlighted scale, and outside it: neutral greys, so any track colour
+    /// reads on them, a mild difference that is not the only signal.
+    pub row_in_scale: Color32,
+    pub row_out_scale: Color32,
+    /// The strip marking each in-scale row and the line under the root's rows (at least 3:1
+    /// against the rows they are drawn on).
+    pub scale_mark: Color32,
+    pub key_white: Color32,
+    pub key_black: Color32,
+    /// Note names on white and black keys.
+    pub key_label: Color32,
+    pub key_label_on_black: Color32,
+    /// The line under each C, and the grid's beat and bar lines.
+    pub octave_line: Color32,
+    pub grid_line: Color32,
+    pub bar_line: Color32,
+    /// The velocity lane's background.
+    pub lane_bg: Color32,
+    /// Selected notes and velocity stems, and every note's outline.
+    pub note_selected: Color32,
+    pub note_outline: Color32,
 }
 
 impl Tokens {
@@ -313,6 +344,23 @@ impl Tokens {
         slot_face: [Color32::from_rgb(92, 92, 92), Color32::from_rgb(75, 75, 75)],
         slot_bypassed: [Color32::from_rgb(66, 96, 146), Color32::from_rgb(50, 76, 120)],
         slot_mark: Color32::from_rgb(159, 159, 159),
+        midi: MidiRollTokens {
+            row_white: Color32::from_rgb(40, 40, 42),
+            row_black: Color32::from_rgb(30, 30, 32),
+            row_in_scale: Color32::from_rgb(44, 44, 48),
+            row_out_scale: Color32::from_rgb(27, 27, 30),
+            scale_mark: Color32::from_rgb(150, 150, 158),
+            key_white: Color32::from_rgb(225, 225, 225),
+            key_black: Color32::from_rgb(20, 20, 20),
+            key_label: Color32::from_rgb(40, 40, 40),
+            key_label_on_black: Color32::from_rgb(232, 232, 232),
+            octave_line: Color32::from_rgb(64, 64, 68),
+            grid_line: Color32::from_rgb(50, 50, 54),
+            bar_line: Color32::from_rgb(80, 80, 86),
+            lane_bg: Color32::from_rgb(28, 28, 30),
+            note_selected: Color32::WHITE,
+            note_outline: Color32::BLACK,
+        },
     };
 
     pub const LIGHT: Tokens = Tokens {
@@ -404,6 +452,23 @@ impl Tokens {
         slot_face: [Color32::from_rgb(244, 245, 247), Color32::from_rgb(214, 216, 220)],
         slot_bypassed: [Color32::from_rgb(190, 210, 240), Color32::from_rgb(160, 186, 228)],
         slot_mark: Color32::from_rgb(92, 95, 102),
+        midi: MidiRollTokens {
+            row_white: Color32::from_rgb(236, 236, 238),
+            row_black: Color32::from_rgb(222, 222, 226),
+            row_in_scale: Color32::from_rgb(220, 220, 224),
+            row_out_scale: Color32::from_rgb(242, 242, 243),
+            scale_mark: Color32::from_rgb(112, 112, 120),
+            key_white: Color32::from_rgb(250, 250, 250),
+            key_black: Color32::from_rgb(60, 60, 64),
+            key_label: Color32::from_rgb(60, 60, 60),
+            key_label_on_black: Color32::from_rgb(240, 240, 240),
+            octave_line: Color32::from_rgb(168, 168, 176),
+            grid_line: Color32::from_rgb(200, 200, 208),
+            bar_line: Color32::from_rgb(160, 160, 170),
+            lane_bg: Color32::from_rgb(226, 226, 230),
+            note_selected: Color32::from_rgb(36, 36, 44),
+            note_outline: Color32::from_rgb(40, 40, 48),
+        },
     };
 
     pub fn current() -> Tokens {
@@ -688,20 +753,38 @@ mod tests {
         }
     }
 
+    /// WCAG relative luminance.
+    fn lum(c: Color32) -> f64 {
+        let lin = |v: u8| {
+            let v = f64::from(v) / 255.0;
+            if v <= 0.04045 { v / 12.92 } else { ((v + 0.055) / 1.055).powf(2.4) }
+        };
+        0.2126 * lin(c.r()) + 0.7152 * lin(c.g()) + 0.0722 * lin(c.b())
+    }
+
+    /// WCAG contrast ratio.
+    fn contrast(a: Color32, b: Color32) -> f64 {
+        let (a, b) = (lum(a), lum(b));
+        (a.max(b) + 0.05) / (a.min(b) + 0.05)
+    }
+
+    #[test]
+    fn midi_scale_rows_are_marked_by_more_than_their_tint() {
+        for (name, t) in [("dark", Tokens::DARK), ("light", Tokens::LIGHT)] {
+            let m = t.midi;
+            assert_ne!(m.row_in_scale, m.row_out_scale, "{name}");
+            // The in-scale strip and the root line are drawn on in-scale rows.
+            let mark = contrast(m.scale_mark, m.row_in_scale);
+            assert!(mark >= 3.0, "{name}: scale mark against in-scale rows {mark:.2} is below 3:1");
+            for (what, fg, bg) in [("white", m.key_label, m.key_white), ("black", m.key_label_on_black, m.key_black)] {
+                let label = contrast(fg, bg);
+                assert!(label >= 4.5, "{name}: note name on a {what} key {label:.2} is below 4.5:1");
+            }
+        }
+    }
+
     #[test]
     fn each_edit_mode_has_its_own_readable_active_colour() {
-        // WCAG relative luminance and contrast ratio.
-        fn lum(c: Color32) -> f64 {
-            let lin = |v: u8| {
-                let v = f64::from(v) / 255.0;
-                if v <= 0.04045 { v / 12.92 } else { ((v + 0.055) / 1.055).powf(2.4) }
-            };
-            0.2126 * lin(c.r()) + 0.7152 * lin(c.g()) + 0.0722 * lin(c.b())
-        }
-        fn contrast(a: Color32, b: Color32) -> f64 {
-            let (a, b) = (lum(a), lum(b));
-            (a.max(b) + 0.05) / (a.min(b) + 0.05)
-        }
         let modes = [EditMode::Shuffle, EditMode::Spot, EditMode::Slip, EditMode::Grid, EditMode::GridRelative];
         for (name, t) in [("dark", Tokens::DARK), ("light", Tokens::LIGHT)] {
             for (i, a) in modes.into_iter().enumerate() {

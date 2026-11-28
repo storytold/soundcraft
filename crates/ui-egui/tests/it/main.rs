@@ -33,6 +33,7 @@ mod midi_front_visibility;
 mod midi_inputs;
 mod midi_panel;
 mod midi_quantize;
+mod midi_scale;
 mod mix_narrow_headers;
 mod mix_separate;
 mod new_midi_clip;

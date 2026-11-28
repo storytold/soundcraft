@@ -1,11 +1,12 @@
 //! MIDI note editing (MIDI Editor, pencil on MIDI tracks).
 use super::{CommandSpec, always, bad, clip_id, has_tracks, i64_or, range_param, tracks_required};
 
+use super::more_util::{set_text, text};
 use crate::{Engine, Result, cmd};
 use serde_json::{Value, json};
-use soundcraft_midi::{Note, Sequence};
-use soundcraft_model::{Clip, ClipContent, ClipId};
-use soundcraft_time::TICKS_PER_QUARTER;
+use soundcraft_midi::{KeyScale, Note, Scale, Sequence, parse_pitch_class};
+use soundcraft_model::{Clip, ClipContent, ClipId, EditState, Session};
+use soundcraft_time::{Samples, TICKS_PER_QUARTER};
 
 pub fn specs() -> Vec<CommandSpec> {
     vec![
@@ -23,7 +24,104 @@ pub fn specs() -> Vec<CommandSpec> {
         cmd!("midi.note_edit", "Edit Note", [], None, "{clip, index, pitch?, start_ticks?, length_ticks?, velocity?}", always, note_edit),
         cmd!("midi.note_delete", "Delete Notes", [], None, "{clip, indices: [n]}", always, note_delete),
         cmd!("midi.notes_move", "Move Notes", [], None, "{clip, indices: [n], ticks?: 0, semitones?: 0}", always, notes_move),
+        cmd!(
+            noundo "midi.scale",
+            "MIDI Editor Scale",
+            [],
+            None,
+            "{scale: 'follow'|'none'|'major'|'natural_minor'|…, root?: 'C'…'B' or 0–11} — rows the MIDI Editor highlights; 'follow' uses the session key at the edited clip's start",
+            always,
+            set_scale
+        ),
     ]
+}
+
+/// `edit.flags` text setting holding the MIDI Editor's scale: absent follows the session key.
+const SCALE_SETTING: &str = "midi_editor.scale";
+
+/// The scale the MIDI Editor highlights, as chosen by the user.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ScaleChoice {
+    /// Not chosen: use the session key at the edited clip's start.
+    Follow,
+    /// Highlighting turned off.
+    Off,
+    Fixed(KeyScale),
+}
+
+impl ScaleChoice {
+    /// The scale to highlight for a clip starting at `at`.
+    pub fn resolve(self, s: &Session, at: Samples) -> Option<KeyScale> {
+        match self {
+            ScaleChoice::Follow => session_key_at(s, at),
+            ScaleChoice::Off => None,
+            ScaleChoice::Fixed(k) => Some(k),
+        }
+    }
+}
+
+/// The stored scale setting as it is, absent when following; Undo and Redo carry it over.
+pub(crate) fn scale_setting(edit: &EditState) -> Option<String> {
+    text(edit, SCALE_SETTING)
+}
+
+pub(crate) fn set_scale_setting(edit: &mut EditState, value: Option<&str>) {
+    set_text(edit, SCALE_SETTING, value);
+}
+
+/// The MIDI Editor's scale choice. A saved value it can't read counts as not chosen.
+pub fn midi_editor_scale(s: &Session) -> ScaleChoice {
+    match text(&s.edit, SCALE_SETTING).as_deref() {
+        None => ScaleChoice::Follow,
+        Some("none") => ScaleChoice::Off,
+        Some(v) => KeyScale::parse(v).map_or(ScaleChoice::Follow, ScaleChoice::Fixed),
+    }
+}
+
+/// The session key in effect at `at`, if its text reads as a key ("D minor"); otherwise no key.
+pub fn session_key_at(s: &Session, at: Samples) -> Option<KeyScale> {
+    s.key_signatures.iter().rev().find(|(t, _)| *t <= at).and_then(|(_, k)| KeyScale::parse(k))
+}
+
+fn set_scale(e: &mut Engine, p: &Value) -> Result<Value> {
+    const CMD: &str = "midi.scale";
+    let scale = p.get("scale").and_then(Value::as_str).ok_or_else(|| bad(CMD, "`scale` is required: follow, none or a scale id"))?;
+    let root = match p.get("root") {
+        None | Some(Value::Null) => None,
+        Some(v) => Some(
+            v.as_u64()
+                .filter(|n| *n < 12)
+                .and_then(|n| u8::try_from(n).ok())
+                .or_else(|| v.as_str().and_then(parse_pitch_class))
+                .ok_or_else(|| bad(CMD, "`root` must be a note name C to B or a number 0 to 11"))?,
+        ),
+    };
+    let value = match scale {
+        "follow" | "none" if root.is_some() => return Err(bad(CMD, format!("`root` does not apply to `{scale}`"))),
+        "follow" => None,
+        "none" => Some("none".to_string()),
+        id => {
+            let scale = Scale::from_id(id).ok_or_else(|| {
+                let ids: Vec<_> = Scale::ALL.iter().map(|s| s.id()).collect();
+                bad(CMD, format!("unknown scale `{id}`; use follow, none or one of {}", ids.join(", ")))
+            })?;
+            let root = root.unwrap_or(match midi_editor_scale(e.session()) {
+                ScaleChoice::Fixed(k) => k.root,
+                _ => 0,
+            });
+            Some(KeyScale::new(root, scale).storage())
+        }
+    };
+    set_text(&mut e.session_mut().edit, SCALE_SETTING, value.as_deref());
+    Ok(json!({"choice": choice_text(midi_editor_scale(e.session())), "scales": Scale::ALL.map(Scale::id)}))
+}
+
+fn choice_text(c: ScaleChoice) -> String {
+    match c {
+        ScaleChoice::Follow => "follow".into(),
+        ScaleChoice::Off => "none".into(),
+        ScaleChoice::Fixed(k) => k.storage(),
+    }
 }
 
 fn seq_mut<'a>(e: &'a mut Engine, id: ClipId, cmd: &str) -> Result<&'a mut Sequence> {
@@ -155,6 +253,70 @@ fn notes_move(e: &mut Engine, p: &Value) -> Result<Value> {
 mod tests {
     use super::*;
     use soundcraft_model::{ChannelFormat, TrackKind};
+
+    #[test]
+    fn the_scale_choice_is_saved_and_can_follow_the_session_key_again() {
+        let mut e = Engine::default();
+        assert_eq!(midi_editor_scale(e.session()), ScaleChoice::Follow);
+        let r = e.execute("midi.scale", &json!({"scale": "dorian", "root": "D"})).unwrap();
+        assert_eq!(r["choice"], "D dorian");
+        let dorian = ScaleChoice::Fixed(KeyScale::new(2, Scale::Dorian));
+        let back = Session::from_json(&e.session().to_json().unwrap()).unwrap();
+        assert_eq!(midi_editor_scale(&back), dorian, "the choice is saved with the session");
+        // A new scale keeps the chosen root; a flat name picks the same root as its sharp.
+        e.execute("midi.scale", &json!({"scale": "blues"})).unwrap();
+        assert_eq!(midi_editor_scale(e.session()), ScaleChoice::Fixed(KeyScale::new(2, Scale::Blues)));
+        e.execute("midi.scale", &json!({"scale": "major", "root": "Eb"})).unwrap();
+        assert_eq!(midi_editor_scale(e.session()), ScaleChoice::Fixed(KeyScale::new(3, Scale::Major)));
+        e.execute("midi.scale", &json!({"scale": "none"})).unwrap();
+        assert_eq!(midi_editor_scale(e.session()), ScaleChoice::Off);
+        e.execute("midi.scale", &json!({"scale": "follow"})).unwrap();
+        assert_eq!(midi_editor_scale(e.session()), ScaleChoice::Follow);
+    }
+
+    #[test]
+    fn undo_and_redo_keep_the_scale_choice() {
+        let mut e = Engine::default();
+        let t = e.session_mut().add_track(TrackKind::Instrument, ChannelFormat::Stereo, Some("Keys"));
+        e.execute("midi.new_clip", &json!({"track": t.0})).unwrap();
+        e.execute("midi.scale", &json!({"scale": "dorian", "root": "D"})).unwrap();
+        let dorian = ScaleChoice::Fixed(KeyScale::new(2, Scale::Dorian));
+        assert!(e.undo());
+        assert_eq!(midi_editor_scale(e.session()), dorian, "undoing an edit keeps the scale");
+        e.execute("midi.scale", &json!({"scale": "follow"})).unwrap();
+        assert!(e.redo());
+        assert_eq!(midi_editor_scale(e.session()), ScaleChoice::Follow, "redoing an edit keeps following");
+    }
+
+    #[test]
+    fn a_bad_scale_or_root_changes_nothing() {
+        let mut e = Engine::default();
+        e.execute("midi.scale", &json!({"scale": "lydian", "root": 5})).unwrap();
+        let before = e.session().edit.flags.clone();
+        for p in [
+            json!({}),
+            json!({"scale": "klezmer"}),
+            json!({"scale": "major", "root": "H"}),
+            json!({"scale": "major", "root": 12}),
+            json!({"scale": "none", "root": "C"}),
+        ] {
+            assert!(e.execute("midi.scale", &p).is_err(), "{p}");
+            assert_eq!(e.session().edit.flags, before, "{p}");
+        }
+    }
+
+    #[test]
+    fn following_uses_the_key_in_effect_and_ignores_unreadable_keys() {
+        let mut e = Engine::default();
+        e.execute("event.add_key_change", &json!({"key": "D minor", "at": 0})).unwrap();
+        e.execute("event.add_key_change", &json!({"key": "my own key", "at": 48000})).unwrap();
+        e.execute("event.add_key_change", &json!({"key": "Bb major", "at": 96000})).unwrap();
+        let s = e.session();
+        assert_eq!(session_key_at(s, 47999), Some(KeyScale::new(2, Scale::NaturalMinor)));
+        assert_eq!(session_key_at(s, 48000), None, "unreadable key text is no key");
+        assert_eq!(ScaleChoice::Follow.resolve(s, 96000), Some(KeyScale::new(10, Scale::Major)));
+        assert_eq!(ScaleChoice::Off.resolve(s, 96000), None);
+    }
 
     #[test]
     fn create_clip_add_edit_move_delete() {

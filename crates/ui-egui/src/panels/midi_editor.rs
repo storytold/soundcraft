@@ -2,14 +2,19 @@
 
 use crate::SoundApp;
 use crate::theme::{Tokens, bold, regular};
+use crate::widgets::{SelectorLabels, selector_box_named};
 use egui::{Align2, Color32, Rect, Sense, Stroke, StrokeKind, Ui, pos2, vec2};
 use serde_json::json;
+use soundcraft_engine::cmd::{ScaleChoice, midi_editor_scale, session_key_at};
+use soundcraft_midi::{KeyScale, Scale, pitch_class_name};
 use soundcraft_model::{ClipContent, ClipId, Tool};
 use soundcraft_time::TICKS_PER_QUARTER;
 
 const KEY_W: f32 = 48.0;
 const ROW_H: f32 = 9.0;
 const VEL_H: f32 = 64.0;
+/// Width of the header's whole-clip toolbar.
+const TOOLBAR_W: f32 = 330.0;
 
 #[derive(Debug, Clone, Default)]
 pub struct MidiEditorState {
@@ -149,7 +154,13 @@ pub fn show(app: &mut SoundApp, ui: &mut Ui) {
         t.text_dim,
     );
     let grid_ticks = grid_ticks_of(app);
+    let (choice, followed, scale) = {
+        let s = app.engine.session();
+        let choice = midi_editor_scale(s);
+        (choice, session_key_at(s, clip.start), choice.resolve(s, clip.start))
+    };
     midi_toolbar(app, ui, header, cid, grid_ticks);
+    scale_picker(app, ui, header, ScaleState { choice, followed, shown: scale });
     let s = app.engine.session_arc();
     let sr = s.sample_rate;
     let base_tick = s.tempo.samples_to_ticks(clip.start, sr);
@@ -173,7 +184,7 @@ pub fn show(app: &mut SoundApp, ui: &mut Ui) {
     let px_per_tick = roll.width() / len_ticks as f32;
     let g = Roll { sequence, roll, keys, vel, px_per_tick, len_ticks, scroll, grid_ticks, rows };
     let painter = ui.painter().with_clip_rect(roll.union(keys));
-    draw_roll_background(&painter, &g);
+    draw_roll_background(&painter, &g, scale);
     // Notes.
     let base = egui::Color32::from_rgb(track_color[0], track_color[1], track_color[2]);
     draw_notes(app, &painter, &g, base);
@@ -225,7 +236,7 @@ fn grid_ticks_of(app: &SoundApp) -> i64 {
 /// The header toolbar: whole-clip MIDI operations.
 fn midi_toolbar(app: &mut SoundApp, ui: &mut Ui, header: Rect, cid: ClipId, grid_ticks: i64) {
     // Header toolbar: whole-clip MIDI operations.
-    let bar = Rect::from_min_max(pos2(header.max.x - 330.0, header.min.y + 1.0), pos2(header.max.x - 6.0, header.max.y - 1.0));
+    let bar = Rect::from_min_max(pos2(header.max.x - TOOLBAR_W, header.min.y + 1.0), pos2(header.max.x - 6.0, header.max.y - 1.0));
     let mut tb = ui.new_child(egui::UiBuilder::new().max_rect(bar).layout(egui::Layout::right_to_left(egui::Align::Center)));
     tb.spacing_mut().item_spacing.x = 4.0;
     let mut op: Option<(&str, serde_json::Value)> = None;
@@ -247,8 +258,101 @@ fn midi_toolbar(app: &mut SoundApp, ui: &mut Ui, header: Rect, cid: ClipId, grid
     }
 }
 
-/// Background rows, piano keys and the grid.
-fn draw_roll_background(painter: &egui::Painter, g: &Roll<'_>) {
+/// What the scale picker shows: the user's choice, the session key it would follow, and the
+/// scale highlighted.
+#[derive(Clone, Copy)]
+struct ScaleState {
+    choice: ScaleChoice,
+    followed: Option<KeyScale>,
+    shown: Option<KeyScale>,
+}
+
+/// The scale picker in the header, left of the toolbar: a root and a scale, or follow the
+/// session key, or none.
+fn scale_picker(app: &mut SoundApp, ui: &mut Ui, header: Rect, state: ScaleState) {
+    let ScaleState { choice, followed, shown } = state;
+    let t = Tokens::current();
+    let (root_w, scale_w, h) = (34.0, 200.0, header.height() - 4.0);
+    let right = header.max.x - TOOLBAR_W - 10.0;
+    let scale_r = Rect::from_min_size(pos2(right - scale_w, header.min.y + 2.0), vec2(scale_w, h));
+    let root_r = Rect::from_min_size(pos2(scale_r.min.x - 4.0 - root_w, scale_r.min.y), vec2(root_w, h));
+    let scale_value = match (choice, followed) {
+        (ScaleChoice::Follow, Some(k)) => {
+            let key = format!("{} {}", pitch_class_name(k.root), crate::localization::text(k.scale.label()));
+            crate::localized_format!("Session key: {key}", key = key)
+        }
+        (ScaleChoice::Follow, None) => crate::localization::text("Session key: none").to_owned(),
+        (ScaleChoice::Off, _) => crate::localization::text("None").to_owned(),
+        (ScaleChoice::Fixed(k), _) => crate::localization::text(k.scale.label()).to_owned(),
+    };
+    let root_value = shown.map_or("–", |k| pitch_class_name(k.root));
+    let mut pick: Option<serde_json::Value> = None;
+    let mut c = ui.new_child(egui::UiBuilder::new().max_rect(root_r.union(scale_r)));
+    c.scope_builder(egui::UiBuilder::new().max_rect(root_r), |ui| {
+        let name = crate::localization::text("Scale root");
+        let resp = selector_box_named(ui, root_w, h, root_value, t.text, SelectorLabels { name, value: root_value, tooltip: name });
+        picker_menu(&resp, |ui| {
+            for pc in 0..12u8 {
+                if ui.selectable_label(shown.is_some_and(|k| k.root == pc), pitch_class_name(pc)).clicked() {
+                    // A root on its own keeps the scale shown, or starts at Major.
+                    let scale = shown.map_or(Scale::Major, |k| k.scale);
+                    pick = Some(json!({"scale": scale.id(), "root": pc}));
+                }
+            }
+            if pick.is_some() {
+                // A choice by Enter is not a pointer click, so close the menu here.
+                ui.close();
+            }
+        });
+    });
+    c.scope_builder(egui::UiBuilder::new().max_rect(scale_r), |ui| {
+        let name = crate::localization::text("Scale");
+        let resp = selector_box_named(ui, scale_w, h, &scale_value, t.text, SelectorLabels { name, value: &scale_value, tooltip: &scale_value });
+        picker_menu(&resp, |ui| {
+            if ui.selectable_label(choice == ScaleChoice::Follow, crate::localization::text("Follow Session Key")).clicked() {
+                pick = Some(json!({"scale": "follow"}));
+            }
+            if ui.selectable_label(choice == ScaleChoice::Off, crate::localization::text("None")).clicked() {
+                pick = Some(json!({"scale": "none"}));
+            }
+            ui.separator();
+            for scale in Scale::ALL {
+                let on = matches!(choice, ScaleChoice::Fixed(k) if k.scale == scale);
+                if ui.selectable_label(on, crate::localization::text(scale.label())).clicked() {
+                    // Choosing a scale while following keeps the followed root.
+                    let root = shown.map_or(0, |k| k.root);
+                    pick = Some(json!({"scale": scale.id(), "root": root}));
+                }
+            }
+            if pick.is_some() {
+                // A choice by Enter is not a pointer click, so close the menu here.
+                ui.close();
+            }
+        });
+    });
+    if let Some(p) = pick {
+        let _ = app.run("midi.scale", p);
+    }
+}
+
+/// Show `menu` under the selector `resp`, handing focus back to the selector when the menu
+/// closes (by a choice or Escape), so the keyboard stays on the picker.
+fn picker_menu(resp: &egui::Response, menu: impl FnOnce(&mut Ui)) {
+    let id = egui::Popup::default_response_id(resp);
+    let was_open = egui::Popup::is_id_open(&resp.ctx, id);
+    egui::Popup::menu(resp).show(menu);
+    if was_open && !egui::Popup::is_id_open(&resp.ctx, id) {
+        resp.request_focus();
+    }
+}
+
+/// Width of the strip that marks an in-scale row at the roll's left edge.
+const SCALE_STRIP_W: f32 = 4.0;
+
+/// Background rows, piano keys and the grid. With a scale, rows in it are tinted and marked by a
+/// strip at the left edge, and the root's rows are underlined and named on their key.
+fn draw_roll_background(painter: &egui::Painter, g: &Roll<'_>, scale: Option<KeyScale>) {
+    let m = Tokens::current().midi;
     let Roll { roll, keys, px_per_tick, len_ticks, grid_ticks, rows, .. } = *g;
     // Background rows and keys.
     let top = g.pitch_at(roll.min.y);
@@ -256,18 +360,38 @@ fn draw_roll_background(painter: &egui::Painter, g: &Roll<'_>) {
         let pitch = top - r;
         let y = g.y_of(pitch);
         let row = Rect::from_min_size(pos2(roll.min.x, y), vec2(roll.width(), ROW_H));
-        painter.rect_filled(row, 0.0, if is_black(pitch) { Color32::from_rgb(30, 30, 32) } else { Color32::from_rgb(40, 40, 42) });
+        let fill = match scale {
+            Some(k) if k.contains(pitch) => m.row_in_scale,
+            Some(_) => m.row_out_scale,
+            None if is_black(pitch) => m.row_black,
+            None => m.row_white,
+        };
+        painter.rect_filled(row, 0.0, fill);
+        if scale.is_some_and(|k| k.contains(pitch)) {
+            painter.rect_filled(Rect::from_min_size(row.min, vec2(SCALE_STRIP_W, ROW_H)), 0.0, m.scale_mark);
+        }
         let key = Rect::from_min_size(pos2(keys.min.x, y), vec2(KEY_W - 2.0, ROW_H - 1.0));
-        painter.rect_filled(key, 1.0, if is_black(pitch) { Color32::from_rgb(20, 20, 20) } else { Color32::from_rgb(225, 225, 225) });
+        painter.rect_filled(key, 1.0, if is_black(pitch) { m.key_black } else { m.key_white });
+        let root = scale.is_some_and(|k| k.is_root(pitch));
+        if (pitch.rem_euclid(12) == 0 || root)
+            && let Ok(p) = u8::try_from(pitch)
+            && p <= 127
+        {
+            let ink = if is_black(pitch) { m.key_label_on_black } else { m.key_label };
+            painter.text(pos2(key.max.x - 3.0, key.center().y), Align2::RIGHT_CENTER, soundcraft_midi::note_name(p), regular(8.0), ink);
+        }
         if pitch.rem_euclid(12) == 0 && (0..=127).contains(&pitch) {
-            painter.text(
-                pos2(key.max.x - 3.0, key.center().y),
-                Align2::RIGHT_CENTER,
-                soundcraft_midi::note_name(pitch as u8),
-                regular(8.0),
-                Color32::from_rgb(40, 40, 40),
-            );
-            painter.line_segment([pos2(roll.min.x, y + ROW_H), pos2(roll.max.x, y + ROW_H)], Stroke::new(1.0, Color32::from_rgb(64, 64, 68)));
+            painter.line_segment([pos2(roll.min.x, y + ROW_H), pos2(roll.max.x, y + ROW_H)], Stroke::new(1.0, m.octave_line));
+        }
+    }
+    // Root rows are underlined inside their own row, after every row is filled.
+    if let Some(k) = scale {
+        for r in 0..=rows + 1 {
+            let pitch = top - r;
+            if k.is_root(pitch) && (0..=127).contains(&pitch) {
+                let y = g.y_of(pitch) + ROW_H - 1.0;
+                painter.line_segment([pos2(roll.min.x, y), pos2(roll.max.x, y)], Stroke::new(2.0, m.scale_mark));
+            }
         }
     }
     // Grid.
@@ -276,10 +400,7 @@ fn draw_roll_background(painter: &egui::Painter, g: &Roll<'_>) {
     while tick <= len_ticks {
         let bar = tick % (TICKS_PER_QUARTER * 4) == 0;
         let x = g.x_of(tick);
-        painter.line_segment(
-            [pos2(x, roll.min.y), pos2(x, roll.max.y)],
-            Stroke::new(1.0, if bar { Color32::from_rgb(80, 80, 86) } else { Color32::from_rgb(50, 50, 54) }),
-        );
+        painter.line_segment([pos2(x, roll.min.y), pos2(x, roll.max.y)], Stroke::new(1.0, if bar { m.bar_line } else { m.grid_line }));
         tick = tick.saturating_add(step);
     }
 }
@@ -310,6 +431,7 @@ fn grid_stride(grid_ticks: i64, px_per_tick: f32) -> i64 {
 /// The notes, with a drag in progress applied.
 fn draw_notes(app: &SoundApp, painter: &egui::Painter, g: &Roll<'_>, base: Color32) {
     let Roll { sequence, grid_ticks, .. } = *g;
+    let m = Tokens::current().midi;
     // Notes.
     let drag = app.midi.drag.clone();
     for (i, n) in sequence.notes.iter().enumerate() {
@@ -330,11 +452,11 @@ fn draw_notes(app: &SoundApp, painter: &egui::Painter, g: &Roll<'_>, base: Color
         let sel = app.midi.selected.contains(&i);
         let k = 0.45 + 0.55 * f32::from(n.velocity) / 127.0;
         let fill = if sel {
-            Color32::WHITE
+            m.note_selected
         } else {
             Color32::from_rgb((f32::from(base.r()) * k) as u8, (f32::from(base.g()) * k) as u8, (f32::from(base.b()) * k) as u8)
         };
-        painter.rect(r, 2.0, fill, Stroke::new(1.0, Color32::BLACK), StrokeKind::Inside);
+        painter.rect(r, 2.0, fill, Stroke::new(1.0, m.note_outline), StrokeKind::Inside);
     }
 }
 
@@ -358,13 +480,8 @@ fn note_pointer(app: &mut SoundApp, ui: &mut Ui, g: &Roll<'_>, cid: ClipId, penc
     // Rubber-band selection on empty space.
     if let (Some(a), Some(b)) = (app.midi.band, ui.ctx().pointer_latest_pos()) {
         let band = Rect::from_two_pos(a, b);
-        ui.painter().rect(
-            band,
-            0.0,
-            Color32::from_rgba_unmultiplied(120, 170, 255, 40),
-            Stroke::new(1.0, Color32::from_rgb(120, 170, 255)),
-            StrokeKind::Inside,
-        );
+        let accent = Tokens::current().accent;
+        ui.painter().rect(band, 0.0, accent.gamma_multiply(0.16), Stroke::new(1.0, accent), StrokeKind::Inside);
         if resp.drag_stopped() {
             app.midi.selected = sequence
                 .notes
@@ -482,13 +599,13 @@ fn velocity_lane(app: &mut SoundApp, ui: &mut Ui, g: &Roll<'_>, cid: ClipId, bas
     let Roll { sequence, vel, .. } = *g;
     let t = Tokens::current();
     // Velocity lane.
-    ui.painter().rect_filled(vel, 0.0, Color32::from_rgb(28, 28, 30));
+    ui.painter().rect_filled(vel, 0.0, t.midi.lane_bg);
     ui.painter().text(pos2(label_x, vel.center().y), Align2::LEFT_CENTER, crate::localization::text("Velocity"), regular(10.0), t.text_dim);
     let vresp = ui.interact(vel, ui.scope_id().with(("vel", cid.0)), Sense::click_and_drag());
     for (i, n) in sequence.notes.iter().enumerate() {
         let x = g.x_of(n.start);
         let h = (vel.height() - 4.0) * f32::from(n.velocity) / 127.0;
-        let col = if app.midi.selected.contains(&i) { Color32::WHITE } else { base };
+        let col = if app.midi.selected.contains(&i) { t.midi.note_selected } else { base };
         ui.painter().line_segment([pos2(x + 1.0, vel.max.y - 2.0), pos2(x + 1.0, vel.max.y - 2.0 - h)], Stroke::new(3.0, col));
         ui.painter().circle_filled(pos2(x + 1.0, vel.max.y - 2.0 - h), 2.5, col);
     }

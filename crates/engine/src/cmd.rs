@@ -63,6 +63,8 @@ mod panic_probe {
 }
 
 pub use file::bounce_job;
+pub use midi::{ScaleChoice, midi_editor_scale, session_key_at};
+pub(crate) use midi::{scale_setting, set_scale_setting};
 
 pub(crate) use edit::remember_selection;
 pub use strip_silence::strip_silence_scan;
