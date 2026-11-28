@@ -890,14 +890,26 @@ fn live_input_goes_out_at_once_on_the_track_output_and_stop_or_disarm_end_it() {
     }
     // Generous for a loaded test machine; the live test measures the real figure.
     assert!(latency.iter().all(|l| *l < Duration::from_millis(50)), "{latency:?}");
+    // Counted after the send returns, which may be after the sink got the message.
+    let counted = Instant::now() + Duration::from_secs(2);
+    while stats.thru_sent.load(Relaxed) < 3 && Instant::now() < counted {
+        std::thread::sleep(Duration::from_millis(1));
+    }
     assert_eq!(stats.thru_sent.load(Relaxed), 3);
     feed.receive(0, &[0x80, 60, 0]);
     assert_eq!(next(Duration::from_secs(2)).unwrap().1, [0x83, 60, 0]);
-    // A Stop ends keys 61 and 62.
+    // A Stop ends keys 61 and 62. The worker keeps only the latest transport state, so the Stop
+    // is published once its MIDI Thru step has seen the transport roll: a pulse shows that the
+    // rolling block reached the worker, and the next whole iteration's step then saw it.
     let base = Instant::now();
     view.lock().unwrap().push(block(base, 0., 480., Duration::ZERO));
     worker.unpark();
-    std::thread::sleep(Duration::from_millis(30));
+    while got.recv_timeout(Duration::from_secs(2)).unwrap().1.get(..2) != Some(&[0xb0, 1][..]) {}
+    let seen = stats.iterations.load(Relaxed) + 2;
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while stats.iterations.load(Relaxed) < seen && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(1));
+    }
     view.lock().unwrap().push(Presentation { playing: false, ..block(base, 480., 480., Duration::ZERO) });
     worker.unpark();
     let mut ended = [next(Duration::from_secs(2)).unwrap().1, next(Duration::from_secs(2)).unwrap().1];
