@@ -1,6 +1,6 @@
 # UI parity
 
-> **Last reviewed:** 2026-10-25 · **Last updated:** 2026-10-27 · **Change:** minor (Cancel Zoom Toggle; Tracks and Groups and Clips in dock columns; Alt-click returns a plugin parameter to its default) · **Target:** Avid Pro Tools Ultimate 2026.4.1
+> **Last reviewed:** 2026-11-19 · **Last updated:** 2026-11-19 · **Change:** minor (theme editor with three editable palettes; per-track Mix and insert controls beside Freeze) · **Target:** Avid Pro Tools Ultimate 2026.4.1
 
 How SoundCraft feels in the hands of a Pro Tools user: tools, modes, modifiers, shortcuts,
 windows, meters. Measured from `crates/model/src/session.rs` (tools, modes), the command
@@ -59,7 +59,8 @@ Legend: ✅ matches · 🟡 partial · ❌ missing.
 
 | Feature | Status | Notes |
 |---|---|---|
-| Dark theme close to Pro Tools' | ✅ | Light theme (#32) and live system appearance (#85) beyond Pro Tools |
+| Dark theme close to Pro Tools' | ✅ | Light theme (#32), live system appearance (#85), and an editor for Studio, Ocean, and Amber palettes with custom accent color |
+| Per-track Mix and effect access | ✅ | Mix window shortcut and Insert A slot in each playlist track header, beside Freeze |
 | Interface scaling | 🟡 | Slider in PR #147 |
 | Meter types and ballistics (peak, RMS, VU, K-scales, gain reduction) | 🟡 | Peak/RMS; meter type choice and GR meters partial |
 | Clip indicators, track colours, waveform views (peak/power/rectified/outlines) | ✅ | |
@@ -70,6 +71,7 @@ Legend: ✅ matches · 🟡 partial · ❌ missing.
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-11-19 | minor | Appearance theme editor adds three color palettes and a custom accent color; playlist track headers add Mix and Insert A controls beside Freeze |
 | 2026-10-27 | minor | Clip Effects gain supports Alt/Option-click reset to 0 dB and Ctrl/Cmd fine adjustment. Readiness estimate unchanged |
 | 2026-10-25 | minor | Zoom Toggle row: Alt+Shift+E and Alt-click cancel Zoom Toggle and keep the view. Readiness estimate unchanged |
 | 2026-10-25 | minor | Edit and Mix windows: Tracks and Groups and Clips in full-height dock columns. Readiness estimate unchanged |

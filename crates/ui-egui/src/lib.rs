@@ -174,6 +174,12 @@ pub struct UiState {
     pub language: localization::Language,
     /// Appearance (`ui.theme`): dark by default, light or follow the system on request.
     pub theme: theme::ThemeMode,
+    /// Accent palette selected in the Appearance theme editor.
+    #[serde(default)]
+    pub theme_preset: theme::ThemePreset,
+    /// Editable accent color, persisted as RGB for compatibility across egui versions.
+    #[serde(default = "default_theme_accent")]
+    pub theme_accent: [u8; 3],
     /// The main window's size (logical points) and maximized state, and the interface scale, as
     /// the desktop app last saw them; it restores them at launch.
     pub window_size: [f32; 2],
@@ -246,12 +252,18 @@ impl Default for UiState {
             configurations: Vec::new(),
             language: localization::Language::default(),
             theme: theme::ThemeMode::Dark,
+            theme_preset: theme::ThemePreset::default(),
+            theme_accent: theme::ThemePreset::default().accent(),
             window_size: [1600.0, 1000.0],
             window_maximized: false,
             ui_scale: 1.0,
             midi_inputs_off: Vec::new(),
         }
     }
+}
+
+fn default_theme_accent() -> [u8; 3] {
+    theme::ThemePreset::default().accent()
 }
 
 /// File-system-safe folder name for a plugin id (`clap:com.x.y` → `clap_com.x.y`).
@@ -447,8 +459,8 @@ pub struct SoundApp {
     fonts_installed: bool,
     /// Whether the system fonts are loaded next to the bundled ones; set before the first frame.
     system_fonts: bool,
-    /// The palette last applied to the context (light?), so visuals are set only on a change.
-    theme_applied: Option<bool>,
+    /// The palette last applied to the context, so visuals are set only on a change.
+    theme_applied: Option<(bool, theme::ThemePreset, [u8; 3])>,
     /// Last panel host context, used to cancel renderer-owned gestures on explicit replacement.
     pub(crate) docking_context: Option<egui::Context>,
     /// The workspaces and panel specs the Edit and Mix docks show.

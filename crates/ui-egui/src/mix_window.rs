@@ -24,7 +24,7 @@ pub(crate) use routing::{input_name, route_name, route_popup};
 use sends::dragged_send_db;
 pub(crate) use sends::{Readout, editable_readout, parse_db, parse_pan};
 pub(crate) use sends::{send_slot, send_window};
-pub(crate) use slots::{insert_slot, instrument_slot};
+pub(crate) use slots::{insert_slot, insert_slot_named, instrument_slot};
 
 pub fn strip_width(narrow: bool) -> f32 {
     if narrow { 64.0 } else { 98.0 }

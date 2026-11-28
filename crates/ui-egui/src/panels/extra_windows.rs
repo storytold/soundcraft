@@ -159,7 +159,7 @@ fn renderer(app: &mut SoundApp, ctx: &egui::Context) {
     app.extra.show_renderer = open;
 }
 
-/// Appearance window: interface scale, reduce visual effects, theme, language, auto-update configuration and Reset.
+/// Appearance window: interface scale, theme editor, language, auto-update configuration and Reset.
 fn ui_customization(app: &mut SoundApp, ctx: &egui::Context) {
     let mut open = app.extra.show_ui_customization;
     if !open {
@@ -169,7 +169,7 @@ fn ui_customization(app: &mut SoundApp, ctx: &egui::Context) {
     egui::Window::new(egui::RichText::new(crate::localization::text("Appearance")).font(bold(13.0)))
         .id(egui::Id::unique("Appearance"))
         .open(&mut open)
-        .default_size(vec2(320.0, 210.0))
+        .default_size(vec2(320.0, 290.0))
         .resizable(false)
         .show(ctx, |ui| {
             // Each control carries its own visible label, which is also its accessible name. A
@@ -221,12 +221,40 @@ fn ui_customization(app: &mut SoundApp, ctx: &egui::Context) {
             if let Some(mode) = chosen {
                 let _ = app.run("ui.theme", json!({"mode": mode.id()}));
             }
+            ui.separator();
+            ui.label(egui::RichText::new(crate::localization::text("Theme Editor")).strong());
+            let mut selected_preset = None;
+            craft_ui::ComboBox::from_label(crate::localization::text("Theme preset"))
+                .selected_text(crate::localization::text(app.ui.theme_preset.label()))
+                .show_ui(ui, |ui| {
+                    for preset in crate::theme::ThemePreset::ALL {
+                        if ui.selectable_label(app.ui.theme_preset == preset, crate::localization::text(preset.label())).clicked() {
+                            selected_preset = Some(preset);
+                        }
+                    }
+                });
+            if let Some(preset) = selected_preset {
+                let _ = app.run("ui.theme", json!({"palette": preset.id(), "accent": preset.accent()}));
+            }
+            let [r, g, b] = app.ui.theme_accent;
+            let mut accent = egui::Color32::from_rgb(r, g, b);
+            ui.horizontal(|ui| {
+                ui.label(crate::localization::text("Accent color"));
+                let picker = ui.color_edit_button_srgba(&mut accent);
+                picker.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, crate::localization::text("Accent color")));
+                if picker.changed() {
+                    let [r, g, b, _] = accent.to_array();
+                    let _ = app.run("ui.theme", json!({"accent": [r, g, b]}));
+                }
+            });
             crate::widgets::checkbox(ui, &mut app.extra.auto_update_config, crate::localization::text("Auto-update configuration"));
             ui.add_space(4.0);
             if ui.button(crate::localization::text("Reset")).clicked() {
                 app.extra.ui_scale = 1.0;
                 let _ = app.run("ui.reduce_visual_effects", json!({"mode": "never"}));
-                let _ = app.run("ui.theme", json!({"mode": crate::theme::ThemeMode::default().id()}));
+                let preset = crate::theme::ThemePreset::default();
+                let _ =
+                    app.run("ui.theme", json!({"mode": crate::theme::ThemeMode::default().id(), "palette": preset.id(), "accent": preset.accent()}));
             }
         });
     app.extra.show_ui_customization = open;

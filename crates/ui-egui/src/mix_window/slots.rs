@@ -100,13 +100,17 @@ pub(super) fn level_icon(r: Rect) -> Rect {
 
 /// Draw one insert slot. Clicking a filled slot opens its plugin window; Cmd/Ctrl-click toggles bypass.
 pub(crate) fn insert_slot(app: &mut SoundApp, ui: &mut Ui, track: &Track, slot: usize, r: Rect) {
+    let name = crate::localized_format!("Insert {} for {}", (b'A' + slot as u8) as char, track.name);
+    insert_slot_named(app, ui, track, slot, r, name);
+}
+
+/// Draw an insert cell with a caller-provided accessible name for compact alternate entry points.
+pub(crate) fn insert_slot_named(app: &mut SoundApp, ui: &mut Ui, track: &Track, slot: usize, r: Rect, accessible_name: String) {
     let t = Tokens::current();
     let id = track.id;
     let ins = track.mixer.inserts.get(slot).cloned().flatten();
     let resp = ui.interact(r, ui.scope_id().with(("ins", id.0, slot)), Sense::click());
-    resp.widget_info(|| {
-        egui::WidgetInfo::labeled(egui::Role::Button, true, crate::localized_format!("Insert {} for {}", (b'A' + slot as u8) as char, track.name))
-    });
+    resp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, accessible_name.clone()));
     let info = ins.as_ref().and_then(|i| plugin_info(&i.plugin));
     let name = ins.as_ref().map(|i| info.map_or(i.plugin.as_str(), |p| p.short_name)).unwrap_or_default();
     match &ins {

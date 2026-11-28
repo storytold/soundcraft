@@ -823,14 +823,45 @@ pub fn run_ui_command(app: &mut SoundApp, id: &str, p: &Value) -> Option<Result<
             return Some(Err("ui.bounce_dialog opens a dialog from the menu only; call file.bounce_mix with a path".into()));
         }
         "ui.theme" => {
-            let Some(mode) = p.get("mode").and_then(Value::as_str) else {
+            let mut changed_palette = false;
+            if let Some(value) = p.get("mode").and_then(Value::as_str) {
+                let Some(mode) = crate::theme::ThemeMode::parse(value) else {
+                    return Some(Err(format!("unknown theme `{value}` (system, light or dark)")));
+                };
+                app.ui.theme = mode;
+            }
+            if let Some(value) = p.get("palette").and_then(Value::as_str) {
+                let Some(preset) = crate::theme::ThemePreset::parse(value) else {
+                    return Some(Err(format!("unknown theme palette `{value}` (studio, ocean or amber)")));
+                };
+                app.ui.theme_preset = preset;
+                if p.get("accent").is_none() {
+                    app.ui.theme_accent = preset.accent();
+                }
+                changed_palette = true;
+            }
+            if let Some(value) = p.get("accent") {
+                let Some(values) = value.as_array().filter(|values| values.len() == 3) else {
+                    return Some(Err("theme accent must be an RGB array of three integers from 0 to 255".into()));
+                };
+                let Some(color) =
+                    values.iter().map(|value| value.as_u64().and_then(|component| u8::try_from(component).ok())).collect::<Option<Vec<_>>>()
+                else {
+                    return Some(Err("theme accent must be an RGB array of three integers from 0 to 255".into()));
+                };
+                if let [r, g, b] = color.as_slice() {
+                    app.ui.theme_accent = [*r, *g, *b];
+                    changed_palette = true;
+                }
+            }
+            if p.get("mode").is_none() && !changed_palette {
                 return Some(Ok(json!({"mode": app.ui.theme.id()})));
-            };
-            let Some(mode) = crate::theme::ThemeMode::parse(mode) else {
-                return Some(Err(format!("unknown theme `{mode}` (system, light or dark)")));
-            };
-            app.ui.theme = mode;
-            json!({"mode": mode.id()})
+            }
+            if changed_palette {
+                json!({"mode": app.ui.theme.id(), "palette": app.ui.theme_preset.id(), "accent": app.ui.theme_accent})
+            } else {
+                json!({"mode": app.ui.theme.id()})
+            }
         }
         "ui.reduce_visual_effects" => {
             let Some(mode) = p.get("mode").and_then(Value::as_str) else {

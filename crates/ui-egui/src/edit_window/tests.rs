@@ -56,6 +56,10 @@ fn repeated_track_controls_are_named_and_valued_per_track() {
         }
     }
     assert!(h.query_all_by_label_contains("Track view for").count() >= 2, "both visible tracks expose their own control");
+    for name in ["Kick", "Snare"] {
+        assert!(h.query_by_role_and_label(Role::Button, &format!("Mixer for {name}")).is_some(), "missing Mix control for {name}");
+        assert!(h.query_by_role_and_label(Role::Button, &format!("Effect slot for {name}")).is_some(), "missing effect slot for {name}");
+    }
 
     // The Mix window repeats the same controls per strip; those names must be track-qualified
     // too, and the automation selector must publish its value rather than only a tooltip.
