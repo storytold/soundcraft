@@ -1,4 +1,5 @@
 use egui::{Event, Id, PointerButton, Pos2, RawInput, Rect, pos2, vec2};
+use egui_kittest::{Harness, kittest::Queryable};
 use serde_json::json;
 use soundcraft_ui_egui::{Services, SoundApp, midi_editor};
 
@@ -71,4 +72,47 @@ fn only_pencil_inserts_notes_in_the_midi_roll() {
         }
         assert!(*app.engine.session() == before, "{tool:?} click must not change the session");
     }
+}
+
+/// Step entry advances from a selected clip's range instead of putting every note at its start (#1878).
+#[test]
+fn midi_keyboard_step_entry_advances_from_a_clip_range_selection() {
+    use soundcraft_model::ClipContent;
+
+    let mut engine = soundcraft_engine::Engine::default();
+    engine.execute("track.new", &json!({"kind": "instrument"})).unwrap();
+    let track = engine.session().tracks[0].id.0;
+    let mut app = SoundApp::new(engine, None, Services::default());
+    let clip = app.run("midi.new_clip", json!({"track": track, "start": 48_000, "length": 192_000})).unwrap()["clip"].as_u64().unwrap();
+    app.run("edit.select", json!({"clips": [clip]})).unwrap();
+    let selection = &app.engine.session().edit.selection;
+    assert_eq!((selection.start, selection.end), (48_000, 240_000), "step entry starts from the selected clip's whole range");
+    app.ui.show_midi_keyboard = true;
+    let mut h =
+        Harness::builder().with_context_setup(soundcraft_ui_egui::framework::install_headless).with_size(vec2(1600.0, 1000.0)).build_ui_state(
+            |ui, app: &mut SoundApp| {
+                app.logic(&ui.ctx().clone());
+                app.ui(ui);
+            },
+            app,
+        );
+    h.run_steps(3);
+
+    let hint = h.get_by_label("Click keys to step-enter notes into the selected MIDI clip at the insertion point.").rect();
+    // The first white key, low enough to miss the black keys. Its area is immediately above the hint.
+    let at = pos2(hint.min.x + 5.0, hint.min.y - 5.0);
+    for _ in 0..3 {
+        h.event(Event::PointerMoved(at));
+        h.event(button(at, true));
+        h.event(button(at, false));
+        h.run_steps(2);
+    }
+
+    let s = h.state().engine.session();
+    let (_, clip_data) = s.find_clip(soundcraft_model::ClipId(clip)).unwrap();
+    let ClipContent::Midi { sequence } = &clip_data.content else { panic!("MIDI clip required") };
+    let starts: Vec<_> = sequence.notes.iter().map(|note| note.start).collect();
+    assert_eq!(starts, [0, 480, 960], "each click advances by the window's eighth-note step");
+    assert!(s.edit.selection.is_empty(), "step entry leaves a point insertion, not the original clip range");
+    assert!(s.edit.selected_clips.contains(&soundcraft_model::ClipId(clip)), "step entry retains the selected clip as the next target");
 }
