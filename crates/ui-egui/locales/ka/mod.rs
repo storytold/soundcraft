@@ -112,6 +112,8 @@ pub(super) fn translate(source: &str) -> Option<&'static str> {
         "End" => "დასასრული",
         "Extract" => "ამოღება",
         "File" => "ფაილი",
+        "File path" => "ფაილის მისამართი",
+        "Folder path" => "საქაღალდის მისამართი",
         "Format" => "ფორმატი",
         "Grab bag" => "სხვადასხვა",
         "Grid" => "ბადე",
@@ -319,6 +321,19 @@ pub(super) fn translate(source: &str) -> Option<&'static str> {
         }
         "No engine" => "ძრავა არ არის",
         "default buffer" => "ნაგულისხმევი ბუფერი",
+        "The audio settings were changed outside this window; your unapplied changes were replaced." => {
+            "აუდიოს პარამეტრები ამ ფანჯრის გარეთ შეიცვალა; თქვენი გამოუყენებელი ცვლილებები ჩანაცვლდა."
+        }
+        "The device allows {}–{} samples; it runs at its default buffer." => "მოწყობილობა {}–{} სემპლს იღებს; ის ნაგულისხმევი ბუფერით მუშაობს.",
+        "The device did not take {} samples; it runs at its default buffer." => "მოწყობილობამ {} სემპლი არ მიიღო; ის ნაგულისხმევი ბუფერით მუშაობს.",
+        "The device runs only at {} samples." => "მოწყობილობა მხოლოდ {} სემპლით მუშაობს.",
+        "The device runs at {} samples, not {}." => "მოწყობილობა {} სემპლით მუშაობს და არა {} სემპლით.",
+        "The device allows {}–{} samples; it runs at its default buffer, {} samples." => {
+            "მოწყობილობა {}–{} სემპლს იღებს; ის ნაგულისხმევი ბუფერით მუშაობს ({} სემპლი)."
+        }
+        "The device did not take {} samples; it runs at its default buffer, {} samples." => {
+            "მოწყობილობამ {} სემპლი არ მიიღო; ის ნაგულისხმევი ბუფერით მუშაობს ({} სემპლი)."
+        }
         "Bus name: {name}" => "ბუსის სახელი: {name}",
         "Model" => "მოდელი",
         "Version" => "ვერსია",
@@ -1196,7 +1211,7 @@ fn menu_translate(source: &str) -> Option<&'static str> {
         "MIDI Merge" => "MIDI შერწყმა",
         "Pre/Post" => "პრე/პოსტ",
         "0.5 seconds" => "0,5 წამი",
-        "Path" => "გზა",
+        "Path" => "ტრაექტორია",
         "1 bar" => "1 ტაქტი",
         "1 foot" => "1 ფუტი",
         "1 frame" => "1 კადრი",
