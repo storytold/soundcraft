@@ -225,6 +225,7 @@ impl Bundle {
             inner: Mutex::new(GuiInner {
                 plugin,
                 gui,
+                params: inst.params,
                 state: inst.state_ext,
                 alive: true,
                 created: false,

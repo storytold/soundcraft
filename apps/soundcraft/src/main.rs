@@ -116,7 +116,7 @@ impl eframe::App for App {
         // The system Quit (⌘Q) ends the process from inside the event loop, so `run_native` never
         // returns: release the player's plugin instances and shut plugin hosting down here, and
         // start the helper of an update that waits for the app to close.
-        self.0.player = None;
+        self.0.set_player(None);
         soundcraft_engine::shutdown_plugin_hosts();
         self.0.start_pending_update();
         // The binary's last step: on Nightly, finishing the session-health record. macOS ends the

@@ -177,7 +177,7 @@ fn system_usage(app: &mut SoundApp, ctx: &egui::Context) {
         ui.label(crate::localized_format!("UI frame time: {:.1} ms", app.frame_ms));
         ui.label(crate::localized_format!(
             "Audio: {}",
-            app.player.as_ref().map_or_else(
+            app.player().map_or_else(
                 || crate::localization::text("No engine").to_owned(),
                 |p| crate::localized_format!("{} @ {} Hz", p.device_name, p.device_rate)
             )
@@ -661,7 +661,7 @@ pub fn playback_engine(app: &mut SoundApp, ctx: &egui::Context) {
         ui.separator();
         egui::Grid::new("pe-state").num_columns(2).show(ui, |ui| {
             ui.label(crate::localization::text("Output"));
-            ui.label(app.player.as_ref().map_or(crate::localization::text("none").to_string(), |p| {
+            ui.label(app.player().map_or(crate::localization::text("none").to_string(), |p| {
                 if p.silent {
                     crate::localization::text("no device (silent clock)").to_string()
                 } else {
@@ -680,8 +680,7 @@ pub fn playback_engine(app: &mut SoundApp, ctx: &egui::Context) {
             ui.label(crate::localization::text("Session rate"));
             let sr = app.engine.session().sample_rate.hz();
             let note = app
-                .player
-                .as_ref()
+                .player()
                 .filter(|p| !p.silent && p.device_rate != sr)
                 .map_or(String::new(), |_| crate::localization::text(" (resampled to the device rate)").to_string());
             ui.label(crate::localized_format!("{sr} Hz{note}", sr = sr, note = note));
@@ -745,7 +744,7 @@ pub fn audio_device_command(app: &mut SoundApp, p: &serde_json::Value) -> Result
     if changed {
         app.apply_audio_config(cfg)?;
     }
-    let device = app.player.as_ref().map(|pl| {
+    let device = app.player().map(|pl| {
         json!({"name": pl.device_name, "sample_rate": pl.device_rate, "channels": pl.device_channels, "buffer_size": pl.device_buffer, "silent": pl.silent})
     });
     let mut out = json!({"config": app.ui.audio, "device": device});

@@ -59,7 +59,7 @@ fn track_json(e: &Engine, t: &Track, full: bool) -> Value {
         "clips": t.clips().iter().map(|c| clip_json(e, c)).collect::<Vec<_>>(),
         "playlist": t.playlist().map(|p| p.name.clone()), "playlists": t.playlists.len(),
         "hidden": t.hidden, "inactive": t.inactive, "view": t.view, "height": t.height.label(),
-        "automation": t.automation.iter().filter(|l| !l.points.is_empty()).map(|l| json!({"param": l.param.label(), "points": if full { json!(l.points) } else { json!(l.points.len()) }})).collect::<Vec<_>>(),
+        "automation": t.automation.iter().filter(|l| !l.points.is_empty()).map(|l| json!({"param": soundcraft_model::auto_param_label(&l.param), "points": if full { json!(l.points) } else { json!(l.points.len()) }})).collect::<Vec<_>>(),
     });
     if let Some(i) = &t.instrument {
         v["instrument"] = json!(i.plugin);

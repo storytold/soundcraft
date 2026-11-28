@@ -1,5 +1,6 @@
 use super::layout::{sample_at, x_of};
 use super::{Align2, AutoParam, Color32, Pos2, Rect, Samples, Session, Shape, Stroke, Tokens, Track, TrackKind, pos2, regular};
+use soundcraft_model::TrackPlugins;
 
 pub(super) fn draw_automation(painter: &egui::Painter, s: &Session, track: &Track, p: &AutoParam, tl: Rect, lane: Rect) {
     let t = Tokens::current();
@@ -36,7 +37,7 @@ pub(super) fn draw_automation(painter: &egui::Painter, s: &Session, track: &Trac
             }
         }
     }
-    painter.text(pos2(lane.min.x + 6.0, lane.min.y + 9.0), Align2::LEFT_CENTER, p.label(), regular(10.0), t.text_dim);
+    painter.text(pos2(lane.min.x + 6.0, lane.min.y + 9.0), Align2::LEFT_CENTER, soundcraft_model::auto_param_label(p), regular(10.0), t.text_dim);
 }
 
 /// The values an automation lane spans, bottom to top.
@@ -63,7 +64,8 @@ pub(super) fn auto_value(lane: Rect, (lo, hi): (f32, f32), y: f32) -> f32 {
 
 /// The automation a track's lane draws: its view's, or volume on the tracks that always show it.
 pub(super) fn shown_automation(track: &Track) -> Option<AutoParam> {
-    AutoParam::parse(&track.view).or_else(|| matches!(track.kind, TrackKind::Master | TrackKind::Aux | TrackKind::Vca).then_some(AutoParam::Volume))
+    soundcraft_model::parse_auto_param(&track.view)
+        .or_else(|| matches!(track.kind, TrackKind::Master | TrackKind::Aux | TrackKind::Vca).then_some(AutoParam::Volume))
 }
 
 /// The drawn breakpoint nearest `pos`, within grabbing distance.
@@ -82,8 +84,8 @@ pub(super) fn breakpoint_at(s: &Session, tl: Rect, lane: Rect, track: &Track, p:
 
 pub(super) fn plugin_range(track: &Track, p: &AutoParam) -> (f32, f32) {
     if let AutoParam::Plugin { slot, param } = p
-        && let Some(Some(ins)) = track.mixer.inserts.get(usize::from(*slot))
-        && let Some(info) = soundcraft_dsp::plugin_info(&ins.plugin)
+        && let Some(ins) = track.plugin_at(*slot)
+        && let Some(info) = crate::mix_window::plugin_info(&ins.plugin)
         && let Some(pi) = info.param(param)
     {
         return (pi.min, pi.max);
@@ -104,7 +106,10 @@ pub(super) fn automation_id(p: &AutoParam) -> String {
     }
 }
 
-/// A slot as `AutoParam::parse` reads it: a letter for 0..=25, the number beyond that.
+/// A slot as `soundcraft_model::parse_auto_param` reads it: a letter for 0..=25, the number beyond that.
 fn slot_id(i: u8) -> String {
+    if i == soundcraft_model::INSTRUMENT_AUTO_SLOT {
+        return "instrument".into();
+    }
     if i < 26 { char::from(b'a' + i).to_string() } else { i.to_string() }
 }

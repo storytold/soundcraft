@@ -368,6 +368,21 @@ unsafe extern "C" fn params_value_to_text(_p: *const clap_plugin, id: clap_id, v
     true
 }
 
+unsafe extern "C" fn params_text_to_value(_p: *const clap_plugin, id: clap_id, text: *const c_char, out: *mut f64) -> bool {
+    if id != 3 || text.is_null() || out.is_null() {
+        return false;
+    }
+    let Ok(text) = unsafe { CStr::from_ptr(text) }.to_str() else { return false };
+    let value = match text.trim().to_ascii_uppercase().as_str() {
+        "A" => 0.0,
+        "B" => 1.0,
+        "C" => 2.0,
+        _ => return false,
+    };
+    unsafe { *out = value };
+    true
+}
+
 unsafe extern "C" fn params_flush(p: *const clap_plugin, inp: *const clap_input_events, _out: *const clap_output_events) {
     let f = unsafe { fx(p) };
     let ev = unsafe { &*inp };
@@ -382,7 +397,7 @@ static PARAMS: clap_plugin_params = clap_plugin_params {
     get_info: Some(params_get_info),
     get_value: Some(params_get_value),
     value_to_text: Some(params_value_to_text),
-    text_to_value: None,
+    text_to_value: Some(params_text_to_value),
     flush: Some(params_flush),
 };
 

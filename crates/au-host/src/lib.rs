@@ -25,8 +25,9 @@
 //!
 //! Host callbacks report the session's tempo, meter, position and play state.
 //!
-//! Not hosted yet: Audio Unit editor views (Cocoa `AUCocoaUIBase`), sidechain/extra buses, and
-//! parameters outside the global scope.
+//! Parameter text and the current value are available on the UI thread through the editor handle
+//! while the unit renders. Not hosted yet: Audio Unit editor views (Cocoa `AUCocoaUIBase`),
+//! sidechain/extra buses, and parameters outside the global scope.
 //!
 //! Off macOS (and on `wasm32`) the crate compiles to stubs: scans are empty and nothing can be
 //! created.
