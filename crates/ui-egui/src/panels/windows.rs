@@ -282,55 +282,76 @@ fn event_list(app: &mut SoundApp, ctx: &egui::Context) {
 
 fn midi_keyboard(app: &mut SoundApp, ctx: &egui::Context) {
     let mut open = app.ui.show_midi_keyboard;
+    let (mut down, mut tapped) = (None, None);
     win(ctx, &mut open, "MIDI Keyboard", vec2(640.0, 110.0), |ui| {
-        let (r, resp) = ui.allocate_exact_size(vec2(ui.available_width().max(400.0), 80.0), Sense::click());
-        let whites = 28;
-        let w = r.width() / whites as f32;
-        let mut wi = 0;
-        let base = 48u8;
-        let mut clicked: Option<u8> = None;
-        let pos = resp.interact_pointer_pos();
-        for p in base..base + 48 {
-            if !matches!(p % 12, 1 | 3 | 6 | 8 | 10) {
-                let kr = egui::Rect::from_min_size(egui::pos2(r.min.x + wi as f32 * w, r.min.y), vec2(w - 1.0, r.height()));
-                ui.painter().rect_filled(kr, 2.0, Color32::from_rgb(235, 235, 235));
-                if resp.clicked() && pos.is_some_and(|q| kr.contains(q)) {
-                    clicked = Some(p);
-                }
-                wi += 1;
-            }
+        let (r, resp) = ui.allocate_exact_size(vec2(ui.available_width().max(400.0), 80.0), Sense::click_and_drag());
+        let keys = keyboard_keys(r);
+        for (_, kr, black) in &keys {
+            let fill = if *black { Color32::from_rgb(20, 20, 20) } else { Color32::from_rgb(235, 235, 235) };
+            ui.painter().rect_filled(*kr, 2.0, fill);
         }
-        wi = 0;
-        for p in base..base + 48 {
-            if matches!(p % 12, 1 | 3 | 6 | 8 | 10) {
-                let kr = egui::Rect::from_min_size(egui::pos2(r.min.x + wi as f32 * w - w * 0.3, r.min.y), vec2(w * 0.6, r.height() * 0.6));
-                ui.painter().rect_filled(kr, 2.0, Color32::from_rgb(20, 20, 20));
-                if resp.clicked() && pos.is_some_and(|q| kr.contains(q)) {
-                    clicked = Some(p);
-                }
-            } else {
-                wi += 1;
-            }
+        let under = resp.interact_pointer_pos().and_then(|q| key_at(&keys, q));
+        if resp.is_pointer_button_down_on() {
+            down = under;
         }
-        if let Some(p) = clicked
-            && let Some(cid) = crate::midi_editor::target_clip(app)
-        {
-            // Step input: add the note at the insertion point (relative to the clip) and advance.
-            let s = app.engine.session();
-            let (clip_start, at) = (s.find_clip(cid).map_or(0, |(_, c)| c.start), s.edit.selection.start);
-            let rel = s.tempo.samples_to_ticks(at, s.sample_rate) - s.tempo.samples_to_ticks(clip_start, s.sample_rate);
-            let len = soundcraft_time::TICKS_PER_QUARTER / 2;
-            let _ = app.run("midi.note_add", json!({"clip": cid.0, "pitch": p, "start_ticks": rel.max(0), "length_ticks": len}));
-            let s = app.engine.session();
-            let next = s.tempo.tick_to_samples(s.tempo.samples_to_ticks(at, s.sample_rate) + len, s.sample_rate);
-            let _ = app.run("transport.locate", json!({"at": next}));
+        if resp.clicked() {
+            tapped = under;
         }
         ui.label(
-            egui::RichText::new(crate::localization::text("Click keys to step-enter notes into the selected MIDI clip at the insertion point."))
-                .small(),
+            egui::RichText::new(crate::localization::text(
+                "Click keys to play the record-enabled and input-monitored tracks whose MIDI input is All devices. With no MIDI or instrument track record-enabled, a click step-enters the note into the selected MIDI clip at the insertion point.",
+            ))
+            .small(),
         );
     });
     app.ui.show_midi_keyboard = open;
+    // Played live like a hardware keyboard; a closed window lets go of its key.
+    app.play_midi_keyboard(down.filter(|_| open), tapped.filter(|_| open));
+    // Step input, when no track records what is played (Pro Tools takes the tracks out of record
+    // for Step Input, Reference Guide p.1435).
+    if let Some(p) = tapped
+        && !soundcraft_engine::io::records_midi(&app.engine)
+        && let Some(cid) = crate::midi_editor::target_clip(app)
+    {
+        // Add the note at the insertion point (relative to the clip) and advance.
+        let s = app.engine.session();
+        let (clip_start, at) = (s.find_clip(cid).map_or(0, |(_, c)| c.start), s.edit.selection.start);
+        let rel = s.tempo.samples_to_ticks(at, s.sample_rate) - s.tempo.samples_to_ticks(clip_start, s.sample_rate);
+        let len = soundcraft_time::TICKS_PER_QUARTER / 2;
+        let _ = app.run("midi.note_add", json!({"clip": cid.0, "pitch": p, "start_ticks": rel.max(0), "length_ticks": len}));
+        let s = app.engine.session();
+        let next = s.tempo.tick_to_samples(s.tempo.samples_to_ticks(at, s.sample_rate) + len, s.sample_rate);
+        let _ = app.run("transport.locate", json!({"at": next}));
+    }
+}
+
+/// The 48 keys of the MIDI Keyboard window from C3 (MIDI 48) in `r`: pitch, rectangle, black.
+/// White keys first, then the black ones drawn over them.
+fn keyboard_keys(r: egui::Rect) -> Vec<(u8, egui::Rect, bool)> {
+    let w = r.width() / 28.0;
+    let is_black = |p: u8| matches!(p % 12, 1 | 3 | 6 | 8 | 10);
+    let mut keys = Vec::with_capacity(48);
+    let mut wi = 0.0;
+    for p in 48u8..96 {
+        if !is_black(p) {
+            keys.push((p, egui::Rect::from_min_size(egui::pos2(r.min.x + wi * w, r.min.y), vec2(w - 1.0, r.height())), false));
+            wi += 1.0;
+        }
+    }
+    wi = 0.0;
+    for p in 48u8..96 {
+        if is_black(p) {
+            keys.push((p, egui::Rect::from_min_size(egui::pos2(r.min.x + wi * w - w * 0.3, r.min.y), vec2(w * 0.6, r.height() * 0.6)), true));
+        } else {
+            wi += 1.0;
+        }
+    }
+    keys
+}
+
+/// The key under `q`: a black key over the white one it covers.
+fn key_at(keys: &[(u8, egui::Rect, bool)], q: egui::Pos2) -> Option<u8> {
+    keys.iter().rev().find(|(_, kr, _)| kr.contains(q)).map(|(p, _, _)| *p)
 }
 
 fn workspace(app: &mut SoundApp, ctx: &egui::Context) {
@@ -447,6 +468,9 @@ pub fn recall_configuration(app: &mut SoundApp, saved: &Value) -> Result<(), Str
     st.preferences_window_pos = app.ui.preferences_window_pos;
     st.reduce_visual_effects = app.ui.reduce_visual_effects;
     st.undo_levels = app.ui.undo_levels.clamp(1, 64);
+    // The MIDI output ports' bindings and delay compensation belong to this machine, not to a
+    // window layout.
+    st.midi_sync = app.ui.midi_sync.clone();
     st.show_configurations = true;
     crate::docking::cancel_replaced_state(app, &st);
     app.engine.set_history_limit(st.undo_levels);

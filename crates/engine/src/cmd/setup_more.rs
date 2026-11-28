@@ -15,6 +15,17 @@ macro_rules! option {
     };
 }
 
+/// Options › MIDI Thru: on unless the session holds [`soundcraft_mix::NO_MIDI_THRU`], so it is
+/// on by default (Pro Tools Reference Guide p.810–811).
+fn midi_thru(e: &mut Engine, p: &Value) -> Result<Value> {
+    let s = e.session_mut();
+    let on = p.get("value").and_then(Value::as_bool).unwrap_or(!soundcraft_mix::midi_thru_enabled(s));
+    s.edit.set_flag(soundcraft_mix::NO_MIDI_THRU, !on);
+    // The flag this option was stored as before it did anything.
+    s.edit.set_flag("options.midi_thru", false);
+    Ok(json!({"value": on}))
+}
+
 const MIDI_FILTER_KINDS: [&str; 8] = ["notes", "pitch_bend", "mono_aftertouch", "poly_aftertouch", "program", "cc", "sysex", "realtime"];
 
 pub fn specs() -> Vec<CommandSpec> {
@@ -27,7 +38,15 @@ pub fn specs() -> Vec<CommandSpec> {
             "Marker Target Follows First Selected Track",
             "options.marker_target_follows_first_selected_track"
         ),
-        option!("options.midi_thru", "MIDI Thru", "options.midi_thru"),
+        cmd!(
+            noundo "options.midi_thru",
+            "MIDI Thru",
+            ["Options"],
+            None,
+            "{value?: bool} (toggles when omitted; on by default) — live MIDI input plays through record-enabled and input-monitored MIDI and instrument tracks: their instrument and their MIDI output. Recording does not depend on it",
+            always,
+            midi_thru
+        ),
         option!("options.auto_spot_clips", "Auto-Spot Clips", "options.auto_spot_clips"),
         option!("options.keyboard_lock", "Edit/Tool Mode Keyboard Lock", "options.edit_tool_mode_keyboard_lock"),
         option!("options.calibration_mode", "Calibration Mode", "options.calibration_mode"),
@@ -534,7 +553,12 @@ fn import_session_data(e: &mut Engine, p: &Value) -> Result<Value> {
     // The donor's Auto Rename schemes come along under new keys, shared as they were.
     let mut names: std::collections::BTreeMap<u64, u64> = Default::default();
     for mut tr in picked {
+        // The MIDI output lives in the donor's edit flags under its track id, not in the track.
+        let midi_output = soundcraft_model::MidiOutput::of(&other.edit, tr.id);
         tr.id = TrackId(s.alloc());
+        if midi_output.is_some() {
+            soundcraft_model::MidiOutput::store(&mut s.edit, tr.id, midi_output);
+        }
         tr.name = s.unique_track_name(&tr.name);
         tr.folder = None;
         tr.mixer.vca = None;
@@ -586,10 +610,26 @@ mod tests {
     #[test]
     fn option_flags_toggle() {
         let mut e = Engine::default();
-        assert_eq!(e.execute("options.midi_thru", &json!({})).unwrap()["value"], true);
-        assert!(e.session().edit.flag("options.midi_thru"));
+        assert!(soundcraft_mix::midi_thru_enabled(e.session()), "MIDI Thru is on by default");
+        assert_eq!(e.execute("options.midi_thru", &json!({})).unwrap()["value"], false);
+        assert!(!soundcraft_mix::midi_thru_enabled(e.session()));
+        assert_eq!(e.execute("options.midi_thru", &json!({"value": true})).unwrap()["value"], true);
+        assert!(soundcraft_mix::midi_thru_enabled(e.session()));
+        assert_eq!(e.execute("options.midi_thru", &json!({})).unwrap()["value"], false);
+        e.execute("options.calibration_mode", &json!({})).unwrap();
+        assert!(e.session().edit.flag("options.calibration_mode"));
+    }
+
+    #[test]
+    fn undo_and_redo_keep_the_midi_thru_option() {
+        let mut e = crate::demo::demo_engine();
+        e.execute("track.new", &json!({"kind": "midi"})).unwrap();
         e.execute("options.midi_thru", &json!({"value": false})).unwrap();
-        assert!(!e.session().edit.flag("options.midi_thru"));
+        assert!(e.undo());
+        assert!(!soundcraft_mix::midi_thru_enabled(e.session()), "Undo does not switch MIDI Thru back on");
+        e.execute("options.midi_thru", &json!({"value": true})).unwrap();
+        assert!(e.redo());
+        assert!(soundcraft_mix::midi_thru_enabled(e.session()), "nor Redo off");
     }
 
     #[test]
@@ -777,6 +817,29 @@ mod tests {
         let src = e.session().source(sample).unwrap();
         assert_eq!(src.name, "hit");
         assert!(e.session().pool.get(sample).is_some());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Like Pro Tools' Include Instrument/MIDI output (Reference Guide, "Track Data to Import"),
+    /// an imported track keeps the donor track's MIDI output; one without an output gets none.
+    #[test]
+    fn import_session_data_brings_the_tracks_midi_output() {
+        use soundcraft_model::MidiOutput;
+        let dir = std::env::temp_dir().join(format!("sc-import-midi-out-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut donor = Engine::default();
+        donor.execute("track.new", &json!({"count": 1, "name": "Synth", "kind": "midi"})).unwrap();
+        donor.execute("track.new", &json!({"count": 1, "name": "Keys", "kind": "instrument"})).unwrap();
+        donor.execute("track.midi_output", &json!({"tracks": ["Synth"], "output": "MIDI:3:DIN"})).unwrap();
+        let path = dir.join("donor.scraft").to_string_lossy().into_owned();
+        crate::io::save_session(&mut donor, &path).unwrap();
+        let mut e = crate::demo::demo_engine();
+        let r = e.execute("file.import_session_data", &json!({"path": path, "tracks": ["Synth", "Keys"]})).unwrap();
+        let ids: Vec<TrackId> = r["tracks"].as_array().unwrap().iter().map(|t| TrackId(t.as_u64().unwrap())).collect();
+        let s = e.session();
+        assert_eq!(MidiOutput::of(&s.edit, ids[0]), Some(MidiOutput { device: "DIN", channel: 2 }));
+        assert_eq!(MidiOutput::of(&s.edit, ids[1]), None);
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

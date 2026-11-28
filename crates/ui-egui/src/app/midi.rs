@@ -6,9 +6,27 @@ use soundcraft_engine::io::{MidiPass, MidiTakeEvent};
 use soundcraft_playback::midi::MidiInputs;
 
 impl SoundApp {
-    /// Whether a MIDI input port is open.
+    /// Whether live MIDI can come in: an input port is open, or the MIDI Keyboard window is.
     pub(crate) fn midi_connected(&self) -> bool {
-        self.midi_inputs.as_ref().is_some_and(|m| m.feed().connected() > 0)
+        self.midi_inputs.as_ref().is_some_and(|m| m.feed().connected() > 0) || (self.ui.show_midi_keyboard && self.midi_inputs.is_some())
+    }
+
+    /// Follow the MIDI Keyboard window: `down` is the key the pointer holds down now (`None`
+    /// when none is, or the window is closed), `tapped` a key clicked within one frame (pressed
+    /// and let go before the window saw it held). A key that is let go, or left for another,
+    /// ends with a Note-Off before the next one starts. The notes go into the MIDI input as from
+    /// a port of their own ([`soundcraft_playback::midi::KEYBOARD_PORT`], channel 1): they play
+    /// the instruments and thru to the MIDI outputs of the record-enabled and input-monitored
+    /// tracks whose input takes All devices, and are recorded on the record-enabled ones, as
+    /// from a hardware keyboard (Pro Tools Reference Guide p.828).
+    pub(crate) fn play_midi_keyboard(&mut self, down: Option<u8>, tapped: Option<u8>) {
+        let messages = midi_keyboard_messages(self.midi_keyboard_held, down, tapped);
+        self.midi_keyboard_held = down;
+        if let Some(m) = &self.midi_inputs {
+            for bytes in messages {
+                m.feed().receive_keyboard(&bytes);
+            }
+        }
     }
 
     /// Hand the MIDI inputs to a (new) audio engine.
@@ -114,6 +132,7 @@ impl SoundApp {
                 },
                 data1: e.data1,
                 data2: e.data2,
+                echo: e.echo,
             })
             .collect();
         let devices: Vec<String> = (0..soundcraft_mix::MAX_MIDI_PORTS)
@@ -137,6 +156,8 @@ impl SoundApp {
                 self.midi_scan_at = now;
             }
             Some(m) => {
+                // The window's keys play live while it is open, with or without a device.
+                m.feed().set_keyboard_open(self.ui.show_midi_keyboard);
                 if (now - self.midi_scan_at).abs() >= 2.0 {
                     self.midi_scan_at = now;
                     m.rescan();
@@ -164,6 +185,22 @@ impl SoundApp {
         // The session's own record of the devices in use follows the switch.
         let _ = self.run("setup.midi_input_devices", json!({ if on { "enable" } else { "disable" }: [name] }));
     }
+}
+
+/// The velocity of the notes the MIDI Keyboard window plays.
+const MIDI_KEYBOARD_VELOCITY: u8 = 100;
+
+/// What the MIDI Keyboard window sends, in order, when the key held goes from `held` to `down`
+/// with `tapped` clicked within the frame ([`SoundApp::play_midi_keyboard`]).
+fn midi_keyboard_messages(held: Option<u8>, down: Option<u8>, tapped: Option<u8>) -> Vec<[u8; 3]> {
+    let mut out = Vec::new();
+    if held != down {
+        out.extend(held.map(|k| [0x80, k, 0]));
+        out.extend(down.map(|k| [0x90, k, MIDI_KEYBOARD_VELOCITY]));
+    } else if let (Some(k), None) = (tapped, held) {
+        out.extend([[0x90, k, MIDI_KEYBOARD_VELOCITY], [0x80, k, 0]]);
+    }
+    out
 }
 
 /// Whether the end of a record pass waits for the audio engine's answer: there is an engine
@@ -231,7 +268,18 @@ fn midi_take_problem(gaps: usize, uncollected: u64, confirmed: bool) -> Option<S
 
 #[cfg(test)]
 mod tests {
-    use super::{MidiPass, Range, midi_pass_waits, midi_take_problem, midi_take_span, pass_stop, pass_with_known_stop};
+    use super::{MidiPass, Range, midi_keyboard_messages, midi_pass_waits, midi_take_problem, midi_take_span, pass_stop, pass_with_known_stop};
+
+    #[test]
+    fn the_midi_keyboard_ends_a_key_before_the_next_and_a_tap_plays_then_ends_it() {
+        let (on, off) = (|k| [0x90, k, 100], |k| [0x80, k, 0]);
+        assert_eq!(midi_keyboard_messages(None, Some(48), None), [on(48)]);
+        assert!(midi_keyboard_messages(Some(48), Some(48), None).is_empty(), "held");
+        assert_eq!(midi_keyboard_messages(Some(48), Some(50), None), [off(48), on(50)], "slid onto the next key");
+        assert_eq!(midi_keyboard_messages(Some(50), None, None), [off(50)]);
+        assert_eq!(midi_keyboard_messages(None, None, Some(48)), [on(48), off(48)], "pressed and let go within a frame");
+        assert!(midi_keyboard_messages(Some(48), Some(48), Some(48)).is_empty(), "a tap of the held key adds nothing");
+    }
 
     #[test]
     fn the_stop_of_a_loop_pass_is_not_used_when_entries_of_the_take_went_missing() {

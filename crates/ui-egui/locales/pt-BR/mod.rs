@@ -74,8 +74,8 @@ pub(super) fn translate(source: &str) -> Option<&'static str> {
         "Click a take (or the selection) to promote it to the main playlist" => {
             "Clique em uma tomada (ou na seleção) para promovê-la à playlist principal"
         }
-        "Click keys to step-enter notes into the selected MIDI clip at the insertion point." => {
-            "Clique nas teclas para inserir notas passo a passo no clipe MIDI selecionado, no ponto de inserção."
+        "Click keys to play the record-enabled and input-monitored tracks whose MIDI input is All devices. With no MIDI or instrument track record-enabled, a click step-enters the note into the selected MIDI clip at the insertion point." => {
+            "Clique nas teclas para tocar as faixas habilitadas para gravação e com monitoração de entrada cuja entrada MIDI é Todos os dispositivos. Sem faixa MIDI ou de instrumento habilitada para gravação, um clique insere a nota passo a passo no clipe MIDI selecionado, no ponto de inserção."
         }
         "Click: open instrument · right-click: change" => "Clique: abrir instrumento · botão direito: alterar",
         "Clip effects gain (dB)" => "Ganho dos efeitos do clipe (dB)",
@@ -1172,6 +1172,8 @@ fn menu_translate(source: &str) -> Option<&'static str> {
         "Track Comments" => "Comentários da faixa",
         "Track Input" => "Entrada da faixa",
         "Track Output" => "Saída da faixa",
+        "Track MIDI Output" => "Saída MIDI da faixa",
+        "Delay Compensation for External MIDI Notes" => "Compensação de atraso para notas MIDI externas",
         "Track Timebase" => "Base de tempo da faixa",
         "Track View" => "Visualização da faixa",
         "Transport Status" => "Status do transporte",
@@ -1551,7 +1553,22 @@ fn menu_translate(source: &str) -> Option<&'static str> {
         "MIDI input" => "Entrada MIDI",
         "All devices" => "Todos os dispositivos",
         "No MIDI input device found" => "Nenhum dispositivo de entrada MIDI encontrado",
-        "{name} (not connected)" => "{name} (não conectado)",
+        "{name} (unavailable)" => "{name} (indisponível)",
+        "MIDI output" => "Saída MIDI",
+        "No MIDI output" => "Sem saída MIDI",
+        "No MIDI output port found" => "Nenhuma porta de saída MIDI encontrada",
+        "{n} (in use)" => "{n} (em uso)",
+        "MIDI output for {}" => "Saída MIDI de {}",
+        "MIDI output: {output}" => "Saída MIDI: {output}",
+        "Delay what the clips of MIDI and instrument tracks play to external MIDI outputs by the audio output latency and the mixer's plug-in delay, so it sounds with the audio. MIDI Thru is never delayed." => {
+            "Atrasa o que os clipes das faixas MIDI e de instrumento tocam nas saídas MIDI externas pela latência da saída de áudio e pelo atraso dos plug-ins do mixer, para que soe junto com o áudio. O MIDI Thru nunca é atrasado."
+        }
+        "MIDI output is not delay-compensated: the audio device reports no output timing." => {
+            "A saída MIDI não tem compensação de atraso: o dispositivo de áudio não informa a temporização da saída."
+        }
+        "The audio driver stopped reporting output timing. Compensated MIDI outputs use the last measured lead ({ms} ms)." => {
+            "O driver de áudio parou de informar a temporização da saída. As saídas MIDI compensadas usam a última antecipação medida ({ms} ms)."
+        }
         "Click to add a MIDI clip to {name} at the insertion point." => "Clique para adicionar um clipe MIDI a {name} no ponto de inserção.",
         "Could not open {path}: {e}" => "Não foi possível abrir {path}: {e}",
         "Couldn't recover “{name}”: {e}" => "Não foi possível recuperar “{name}”: {e}",
@@ -2087,6 +2104,9 @@ macro_rules! error_templates {
 }
 
 error_templates! {
+    "MIDI output {name} unavailable" => "Saída MIDI {name} indisponível",
+    "MIDI output {name} unavailable for {tracks}" => "Saída MIDI {name} indisponível para {tracks}",
+    "MIDI output is not available on this system" => "A saída MIDI não está disponível neste sistema",
     "{path} is not valid Unicode" => "{path} não é Unicode válido",
     "unknown command `{c}`" => "comando desconhecido `{c}`",
     "`{c}` is not available: {why}" => "`{c}` não está disponível: {why}",

@@ -28,6 +28,39 @@ pub fn loops(range: Range) -> bool {
     range.len() > 64
 }
 
+#[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+pub mod sync_clock;
+#[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+mod sync_output;
+mod sync_status;
+#[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+mod thru;
+#[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+mod track_midi;
+pub use sync_status::{MidiSyncStatus, OutputLeadSource, OutputTimingIssue, ThruStatus};
+
+/// Bound per-device compensation in time when a session changes sample rate.
+pub fn max_sync_offset_samples(sr: soundcraft_time::SampleRate) -> i64 {
+    sr.samples(0.25)
+}
+/// Labels of the MIDI output ports a track can play to. Two ports with the same name get
+/// numbered labels ("DIN", "DIN (2)").
+pub fn midi_sync_outputs() -> Result<Vec<String>, String> {
+    Ok(midi_sync_output_ids(&BTreeMap::new())?.into_keys().collect())
+}
+
+/// Resolve output labels while reserving the identity of saved, offline devices.
+pub fn midi_sync_output_ids(saved: &BTreeMap<String, String>) -> Result<BTreeMap<String, String>, String> {
+    #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+    {
+        sync_output::output_ids(saved)
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
+    {
+        let _ = saved;
+        Err("MIDI output is not available on this system".into())
+    }
+}
 pub mod devices;
 pub mod midi;
 pub mod record;
@@ -120,8 +153,11 @@ pub type PluginStates = Vec<(TrackId, usize, Vec<u8>)>;
 pub type EditorEdit = (TrackId, usize, String, f32);
 
 enum Cmd {
-    /// A new snapshot plus the third-party instances it needs (created on the UI thread).
-    Session(Arc<Session>, Vec<PreparedInstance>),
+    #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+    Clock(Option<sync_clock::Publisher>),
+    /// A new snapshot (with the revision the MIDI outputs know it by) plus the third-party
+    /// instances it needs (created on the UI thread).
+    Session(u64, Arc<Session>, Vec<PreparedInstance>),
     /// Where the callback sends the snapshots it replaces (freeing one takes thousands of frees).
     OldSessions(SyncSender<Arc<Session>>),
     Input(Arc<record::InputRing>),
@@ -172,6 +208,9 @@ pub struct Player {
     _stream: Option<cpal::Stream>,
     #[cfg(target_arch = "wasm32")]
     _stream: Option<cpal::Stream>,
+    // Hold the publication storage until the native callback has shut down.
+    #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+    sync_output: Mutex<sync_output::Output>,
     pub device_name: String,
     pub device_rate: u32,
     /// Output channels the device was opened with (0 for the silent clock).
@@ -278,6 +317,8 @@ impl Player {
                             tx,
                             side: new_side(grx),
                             _stream: Some(stream),
+                            #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+                            sync_output: Mutex::default(),
                             device_name: name,
                             device_rate: rate,
                             device_channels: config.channels,
@@ -355,6 +396,8 @@ impl Player {
             tx,
             side,
             _stream: None,
+            #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+            sync_output: Mutex::default(),
             device_name: "No audio device (silent)".into(),
             device_rate: rate,
             device_channels: 0,
@@ -389,11 +432,15 @@ impl Player {
     /// Sends a new session snapshot to the audio thread, with freshly created (state-restored,
     /// prepared) instances of any third-party plugin it newly needs. Call on the UI thread.
     pub fn update_session(&self, s: Arc<Session>) {
+        #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+        let generation = self.sync_output.lock().unwrap_or_else(PoisonError::into_inner).configure(&s, &self.tx);
+        #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
+        let generation = 0;
         let (instances, gone) = {
             let mut side = self.side();
             (side.prepare(&s), side.gone_tracks(&s))
         };
-        let _ = self.tx.send(Cmd::Session(s, instances));
+        let _ = self.tx.send(Cmd::Session(generation, s, instances));
         if !gone.is_empty() {
             let _ = self.tx.send(Cmd::Forget(gone));
         }
@@ -474,11 +521,118 @@ impl Player {
         self.side().editors.get_mut(&(track, slot))?.value_text(id, value)
     }
 
+    pub fn restore_sync_output_ids(&self, ids: &BTreeMap<String, String>) {
+        #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+        self.sync_output.lock().unwrap_or_else(PoisonError::into_inner).restore_port_ids(ids);
+        #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
+        let _ = ids;
+    }
+
+    pub fn take_opened_sync_output_ids(&self) -> Option<BTreeMap<String, String>> {
+        #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+        return self.sync_output.lock().unwrap_or_else(PoisonError::into_inner).opened_port_ids();
+        #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
+        None
+    }
+
+    /// The MIDI output ports that MIDI and instrument tracks play their clips to (each track's
+    /// port and channel are in the session, `soundcraft_model::MidiOutput`). `compensate` delays
+    /// them by the audio output latency and the mixer's plug-in delay, so the notes sound with
+    /// the audio. Whether the worker accepted them: a transient startup failure can be retried.
+    pub fn try_set_midi_note_outputs(&self, ports: Vec<String>, compensate: bool) -> bool {
+        #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+        {
+            let ports = ports.into_iter().map(|name| (name, 0)).collect();
+            self.sync_output.lock().unwrap_or_else(PoisonError::into_inner).set_routes(
+                sync_output::RouteKind::Notes,
+                ports,
+                compensate,
+                track_midi::TrackMidi::boxed,
+            )
+        }
+        #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
+        {
+            let _ = compensate;
+            ports.is_empty()
+        }
+    }
+
+    /// All MIDI Notes Off on the MIDI output ports: a Note-Off for every note the tracks hold,
+    /// then, on every channel, sustain pedal up, All Notes Off and All Sound Off. Returns the
+    /// number of connected ports.
+    pub fn midi_output_panic(&self) -> usize {
+        #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+        {
+            self.sync_output.lock().unwrap_or_else(PoisonError::into_inner).panic(track_midi::panic_messages)
+        }
+        #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
+        {
+            0
+        }
+    }
+
+    pub fn midi_sync_status(&self) -> MidiSyncStatus {
+        #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+        {
+            self.sync_output.lock().unwrap_or_else(PoisonError::into_inner).status()
+        }
+        #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
+        {
+            MidiSyncStatus::default()
+        }
+    }
+
+    /// Whether the audio device has reported no output timing since it was opened. Compensated
+    /// MIDI output cannot be timed then; the UI sends it uncompensated instead, as with the silent
+    /// clock.
+    pub fn output_timing_unknown(&self) -> bool {
+        #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+        {
+            self.sync_output.lock().unwrap_or_else(PoisonError::into_inner).timing_unknown()
+        }
+        #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
+        {
+            false
+        }
+    }
+
+    /// An unusable output timestamp affecting a configured, latency-compensated MIDI destination.
+    pub fn output_timing_issue(&self) -> Option<OutputTimingIssue> {
+        #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+        {
+            self.sync_output.lock().unwrap_or_else(PoisonError::into_inner).timing_issue()
+        }
+        #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
+        {
+            None
+        }
+    }
+
+    /// Current MIDI output errors: every failing destination joined with `"; "`, or a worker
+    /// startup error.
+    pub fn midi_output_error(&self) -> Option<String> {
+        #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+        {
+            self.sync_output.lock().unwrap_or_else(PoisonError::into_inner).trouble()
+        }
+        #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
+        {
+            None
+        }
+    }
+
+    fn send_transport(&self, command: Cmd) {
+        #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+        self.sync_output.lock().unwrap_or_else(PoisonError::into_inner).send_transport(&self.tx, command);
+        #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
+        let _ = self.tx.send(command);
+    }
+
     /// Start playback at `from`, stopping at `end`, or looping `looped`.
     pub fn play(&self, from: Samples, end: Option<Samples>, looped: Option<Range>) {
         self.shared.position.store(from, Ordering::Relaxed);
-        self.shared.playing.store(true, Ordering::Relaxed);
-        let _ = self.tx.send(Cmd::Play { from, end, looped });
+        self.shared.playing.store(true, Ordering::Release);
+        self.send_transport(Cmd::Play { from, end, looped });
     }
 
     /// Feed live input (from a `record::Recorder`) into the mix for input monitoring.
@@ -487,7 +641,10 @@ impl Player {
     }
 
     /// Play MIDI devices through record-enabled and input-monitored MIDI and instrument tracks.
+    /// Its input also goes out on the MIDI output of those tracks (MIDI Thru).
     pub fn set_midi(&self, feed: Arc<midi::MidiFeed>) {
+        #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+        self.sync_output.lock().unwrap_or_else(PoisonError::into_inner).set_feed(feed.clone());
         let _ = self.tx.send(Cmd::Midi(feed));
     }
 
@@ -504,12 +661,12 @@ impl Player {
 
     pub fn stop(&self) {
         self.shared.playing.store(false, Ordering::Relaxed);
-        let _ = self.tx.send(Cmd::Stop);
+        self.send_transport(Cmd::Stop);
     }
 
     pub fn locate(&self, at: Samples) {
         self.shared.position.store(at, Ordering::Relaxed);
-        let _ = self.tx.send(Cmd::Locate(at));
+        self.send_transport(Cmd::Locate(at));
     }
 
     pub fn set_speed(&self, speed: f32) {

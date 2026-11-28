@@ -1,6 +1,6 @@
 # Where SoundCraft falls short of Pro Tools
 
-> **Last reviewed:** 2026-11-14 · **Last updated:** 2026-11-23 · **Change:** trivial (G-04: Number of Loops accepts up to 1,000; crossfade remains open; previously minor: G-06: recording to disk is done (#84, long takes #888); streaming sources remain; previously minor: G-02 shrunk: MIDI input devices work; G-03: strict external-WAV AAF import; previously minor: G-05: plugin editors on Linux/X11; previously trivial: G-09: the pt-BR catalog now covers helper-passed tooltips, the status bar, the remove-session prompt and engine error text; G-08: Frequency Shifter, 28 processors; G-04: volume automation read at every sample, #1354; G-01: `setup.playback_engine` applies the device buffer in the desktop app; G-04: Clip Looping crossfade and loop count) · **Target:** Avid Pro Tools Ultimate 2026.4.1
+> **Last reviewed:** 2026-11-14 · **Last updated:** 2026-11-26 · **Change:** minor (G-02 shrunk: MIDI Thru plays a keyboard through to external MIDI outputs; previously minor: G-02 shrunk: MIDI and instrument tracks play to external MIDI ports; previously trivial: G-04: Number of Loops accepts up to 1,000; crossfade remains open; previously minor: G-06: recording to disk is done (#84, long takes #888); streaming sources remain; previously minor: G-02 shrunk: MIDI input devices work; G-03: strict external-WAV AAF import; previously minor: G-05: plugin editors on Linux/X11; previously trivial: G-09: the pt-BR catalog now covers helper-passed tooltips, the status bar, the remove-session prompt and engine error text; G-08: Frequency Shifter, 28 processors; G-04: volume automation read at every sample, #1354; G-01: `setup.playback_engine` applies the device buffer in the desktop app; G-04: Clip Looping crossfade and loop count) · **Target:** Avid Pro Tools Ultimate 2026.4.1
 
 Every known shortfall, one entry each, ranked by how much it stops a Pro Tools user from doing
 real work in SoundCraft. This is the work list: pick from the top. Rows marked **alpha blocker**
@@ -16,7 +16,7 @@ When you close a gap, delete its entry (or shrink it) in the same PR, and bump t
 | # | Gap | Dimension | Doc | Est. (h) |
 |---|---|---|---|---:|
 | G-01 | **Alpha blocker.** No channel routing or duplex low-latency path (device, rate and buffer choice done; ASIO opt-in) | Hardware | [hardware-parity.md](hardware-parity.md) | 15–25 |
-| G-02 | **Alpha blocker.** MIDI devices: input works (checked on Linux only); no output, clock or loop/merge recording | Hardware / MIDI | [hardware-parity.md](hardware-parity.md) | 12–22 |
+| G-02 | **Alpha blocker.** MIDI devices: input works (checked on Linux; on macOS through the IAC bus), tracks play to external MIDI ports (checked on macOS and Windows) and MIDI Thru plays a keyboard through to them (checked on macOS); no clock or loop/merge recording | Hardware / MIDI | [hardware-parity.md](hardware-parity.md) | 6–12 |
 | G-03 | **Alpha blocker.** Session exchange remains incomplete (strict external-WAV AAF import only; no AAF/OMF export, OMF import or `.ptx`) | File formats | [file-format-parity.md](file-format-parity.md) | 50–90 |
 | G-04 | Open correctness bugs in features counted as done (~25 issues) | Stability | this file | 25–40 |
 | G-05 | (Entitlement part: alpha blocker for the mix row) Third-party VST3s blocked in the signed macOS build; AU editors missing | Ecosystem | [plugin-parity.md](plugin-parity.md) | 10–15 |
@@ -74,13 +74,43 @@ When you close a gap, delete its entry (or shrink it) in the same PR, and bump t
   preferences. User guide: [midi-input.md](midi-input.md). On Linux, live play was checked with
   a hardware keyboard (Akai MPK mini 3) and recording with a virtual one;
   **not yet on macOS or Windows** (type-checked only).
-- **Missing:** MIDI output (external synths, MIDI tracks without an instrument), MIDI clock/MTC
-  out, loop and merge recording (a MIDI take replaces what it covers; a loop pass piles every
-  pass into one clip), audition from the MIDI editor (`midi_editor.rs:288`), MIDI
+- **Done (2026-11-26):** MIDI output to external gear: MIDI and instrument tracks play their clips
+  to one port and channel each (`track.midi_output`, session flags `midi.out.<track id>`), through
+  the clip walk the instrument path uses, on the shared MIDI output worker
+  (`crates/playback/src/sync_output.rs`, `track_midi.rs`). MIDI Track Offsets and delay
+  compensation apply; start and locate chase controllers and programs; Stop sends Note-Offs,
+  pedal up and All Notes Off; MIDI-track mute, solo and mute automation silence the output;
+  All MIDI Notes Off reaches the ports; routing changes while playing lift a pedal left behind
+  and chase the arriving track; a missing port reads "unavailable" on the selector and in the
+  status line, with its tracks named, and an unplugged port is noticed and reopened. User guide:
+  [midi-output.md](midi-output.md). Played on macOS to a Kurzweil PC1X through a Roland UM-ONE and
+  to the IAC bus, and on Windows to a virtual port and a TASCAM Model 12 over USB; **not yet on
+  Linux**.
+- **Done (2026-11-26):** MIDI Thru to external gear: record-enabled and input-monitored MIDI and
+  instrument tracks send what their MIDI input takes to their MIDI output port, on the output
+  channel, as soon as it arrives (the input threads wake the output worker; no offsets, no delay
+  compensation, Pro Tools p.810). Options › MIDI Thru (on by default) switches live input on and
+  off for instruments and external outputs alike. Thru notes and pedals end on disarm, routing,
+  input or mute changes, MIDI Thru off, a lost input port, Stop and All MIDI Notes Off; one
+  message reaches a port and channel once; an echo from a MIDI loop (the same bytes back on an
+  input of the device they were sent to) is dropped before it is played or recorded, and the
+  clips' own echo is neither thru'd nor recorded on the track that played it; a reopened port
+  is quieted on every channel played on since it was opened (`crates/playback/src/thru.rs`). User guide:
+  [midi-output.md](midi-output.md) section 5. Measured on macOS from the IAC bus to a virtual
+  CoreMIDI port, and tried on Windows 11 between two virtual ports (the fixes that test called
+  for are not yet re-run there); **not yet with hardware or on Linux**.
+- **Missing:** system exclusive and Real-Time Properties through MIDI Thru, MIDI Input
+  Monitoring Follows Selected Track, MIDI activity on a MIDI track's meter, note chasing, a default program and bank per track,
+  several destinations per track, MIDI mute and solo on instrument tracks, the Global MIDI
+  Playback Offset, MIDI clock/MTC out, loop and merge recording (a MIDI take replaces what it covers; a loop pass piles every
+  pass into one clip), audition from the MIDI editor (`midi_editor.rs:288`), computer-keyboard
+  keys in the MIDI Keyboard window (clicked keys play live), MIDI
   input on FreeBSD and the web. `setup.midi_input_devices` and `setup.midi_studio` still only
   store names in the session; the real device switches are app preferences.
-- **Impact:** you can play and record a keyboard, not drive hardware synths or sync other gear.
-- **Estimate:** ≈ 12–22 h (output tracks and thru, clock out, merge/loop takes, controller path).
+- **Impact:** you can play and record a keyboard, play hardware synths from tracks and play them
+  live through SoundCraft, but not sync other gear.
+- **Estimate:** ≈ 6–12 h (note chasing and default programs, clock out, merge/loop takes,
+  controller path).
 
 ### G-03. Session interchange with Pro Tools
 
@@ -252,6 +282,8 @@ missing. Out of scope unless the owner decides otherwise.
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-11-26 | minor | G-02 shrunk: MIDI Thru plays a keyboard through to the tracks' external MIDI outputs (macOS, IAC bus); Options › MIDI Thru works; estimate 6–12 h |
+| 2026-11-26 | minor | G-02 shrunk: MIDI and instrument tracks play to external MIDI ports (macOS checked); thru, note chasing, default programs, clock and loop/merge recording remain; estimate 8–15 h |
 | 2026-11-23 | trivial | G-04: Clip Looping Number of Loops accepts up to 1,000; crossfade remains open; estimates unchanged |
 | 2026-11-14 | minor | G-03: strict external-WAV AAF import with bounded property caching; AAF/OMF export, OMF import and `.ptx` remain; estimates unchanged |
 | 2026-11-13 | trivial | G-09: the pt-BR catalog now covers tooltips localized inside buttons and toggles, the Edit-window status bar, the remove-session question, the send help text and engine errors shown in the status line; estimates unchanged |

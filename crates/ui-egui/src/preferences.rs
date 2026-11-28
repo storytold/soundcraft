@@ -121,9 +121,11 @@ struct PreferencesDraft {
     theme: ThemeMode,
     reduce_visual_effects: ReduceVisualEffects,
     undo_levels: usize,
+    midi_note_compensation: bool,
     theme_edited: bool,
     reduce_visual_effects_edited: bool,
     undo_levels_edited: bool,
+    midi_note_compensation_edited: bool,
 }
 
 impl PreferencesDraft {
@@ -133,9 +135,11 @@ impl PreferencesDraft {
             theme: app.ui.theme,
             reduce_visual_effects: app.ui.reduce_visual_effects,
             undo_levels: app.ui.undo_levels,
+            midi_note_compensation: app.ui.midi_sync.compensation.notes,
             theme_edited: false,
             reduce_visual_effects_edited: false,
             undo_levels_edited: false,
+            midi_note_compensation_edited: false,
         }
     }
 
@@ -150,6 +154,9 @@ impl PreferencesDraft {
         if !self.undo_levels_edited {
             self.undo_levels = app.ui.undo_levels;
         }
+        if !self.midi_note_compensation_edited {
+            self.midi_note_compensation = app.ui.midi_sync.compensation.notes;
+        }
     }
 
     /// Remembers which values the user changed during the current UI frame.
@@ -157,6 +164,7 @@ impl PreferencesDraft {
         self.theme_edited |= self.theme != before.theme;
         self.reduce_visual_effects_edited |= self.reduce_visual_effects != before.reduce_visual_effects;
         self.undo_levels_edited |= self.undo_levels != before.undo_levels;
+        self.midi_note_compensation_edited |= self.midi_note_compensation != before.midi_note_compensation;
     }
 }
 
@@ -814,6 +822,7 @@ pub fn show(app: &mut SoundApp, ctx: &egui::Context) {
             let _ = app.run("ui.theme", json!({"mode": draft.theme.id()}));
             let _ = app.run("ui.reduce_visual_effects", json!({"mode": draft.reduce_visual_effects.id()}));
             let _ = app.run("ui.undo_levels", json!({"levels": draft.undo_levels}));
+            let _ = app.run("ui.midi_output_compensation", json!({"value": draft.midi_note_compensation}));
             open = false;
             app.preferences.discard_draft();
         }
@@ -962,6 +971,11 @@ fn control_ui(ui: &mut egui::Ui, page: PreferencesPage, section: &str, index: us
                 ui.add(egui::DragValue::new(&mut draft.undo_levels).range(1..=64));
             });
         }
+        Control::Check(text @ "MIDI Notes and Controllers") if section == "Delay Compensation for External Devices" => {
+            ui.checkbox(&mut draft.midi_note_compensation, label(text)).on_hover_text(crate::localization::text(
+                "Delay what the clips of MIDI and instrument tracks play to external MIDI outputs by the audio output latency and the mixer's plug-in delay, so it sounds with the audio. MIDI Thru is never delayed.",
+            ));
+        }
         Control::Check(text) => {
             let mut value = false;
             ui.add_enabled(false, egui::Checkbox::new(&mut value, label(text)))
@@ -1058,6 +1072,22 @@ mod tests {
     use egui_kittest::Harness;
     use egui_kittest::kittest::{NodeT, Queryable};
     use soundcraft_engine::Engine;
+
+    #[test]
+    fn external_midi_note_compensation_is_a_working_checkbox_on_the_midi_page() {
+        let app = SoundApp::new(Engine::default(), None, crate::Services::default());
+        let draft = PreferencesDraft::from_live(&app);
+        assert!(draft.midi_note_compensation, "on by default");
+        let mut harness =
+            Harness::builder().with_size(egui::vec2(1000., 1200.)).build_ui_state(|ui, draft| page_body(ui, PreferencesPage::Midi, "", draft), draft);
+        harness.run_steps(2);
+        let node = harness.get_by_label("MIDI Notes and Controllers");
+        assert!(!node.accesskit_node().is_disabled());
+        node.click();
+        harness.run_steps(2);
+        assert!(!harness.state().midi_note_compensation);
+        assert!(harness.get_by_label("MIDI Beat Clock").accesskit_node().is_disabled(), "the clock options are not available yet");
+    }
 
     /// Whether a preference value is a plain number or unit amount that needs no translation.
     fn is_numeric(value: &str) -> bool {

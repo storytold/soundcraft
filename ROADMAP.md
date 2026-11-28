@@ -105,7 +105,7 @@ Other languages shipped: 0 complete. Brazilian Portuguese covers the fixed UI st
 Ranked; the alpha gate, the alpha checklist and the beta plan are in [docs/roadmap.md](docs/roadmap.md).
 
 1. **Alpha blocker:** audio interfaces: device and buffer-size choice, duplex stream, ASIO (G-01). 35–55 h.
-2. **Alpha blocker:** MIDI devices: keyboard input, live play and recording are in (checked on Linux only; macOS and Windows type-checked, none on FreeBSD or the web); output, clock and loop/merge recording remain (G-02). 12–22 h.
+2. **Alpha blocker:** MIDI devices: keyboard input, live play and recording are in (checked on Linux only; macOS and Windows type-checked, none on FreeBSD or the web); tracks play to external MIDI ports and MIDI Thru plays a keyboard through to them (checked on macOS); clock and loop/merge recording remain (G-02). 6–12 h.
 3. **Alpha blocker:** complete AAF/OMF interchange (G-03): strict external-WAV AAF import works; AAF export and OMF import/export remain. 50–90 h.
 4. macOS plugin entitlement (#153), then AU editors and embedded CLAP editors on macOS (G-05). 1 h for the entitlement (needed for the mix row), then 10–15 h.
 5. Land the open bug-fix PRs and clear the correctness backlog (G-04). 15–25 h.

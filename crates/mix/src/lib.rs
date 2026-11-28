@@ -75,16 +75,17 @@ mod threads;
 
 use automation::{copy_with_gain, pan_at, pan_segment, send_level, transport_at, volume_level};
 pub use instances::{INSTRUMENT_SLOT, InstanceSpec, NewInstance, PluginFailures, PreparedInstance, create_instance, instance_specs, is_third_party};
-pub use live_midi::{LiveMidi, MAX_MIDI_PORTS, MAX_OWNERS, MidiPorts, midi_port_bit, midi_thru};
+pub use live_midi::{LiveMidi, MAX_MIDI_PORTS, MAX_OWNERS, MidiPorts, NO_MIDI_THRU, midi_port_bit, midi_thru, midi_thru_enabled, own_echo};
 pub use meter::StripMeter;
 use midi::sync_sample;
+pub use midi::{ClipEvent, chase_events, clip_events, midi_offset};
 pub use offline::{
     MAX_RENDER_SAMPLES, RangeRender, fold_down_stereo, render_bus, render_clips, render_range, render_track_pre_fader, source_channels,
 };
 pub use pan::itu_stereo_fold;
 use pan::{PanSpec, apply_matrix, apply_matrix_span, build_matrix};
-pub use routing::solo_mutes;
 use routing::{any_solo, processing_order, structure_fingerprint};
+pub use routing::{midi_output_muted, solo_mutes};
 use strip::{
     Block, BusBuf, LiveInput, SlotCtx, Strip, apply_params, contain_failure, note_insert_latency, process_strip, strip_channels, strip_format,
 };

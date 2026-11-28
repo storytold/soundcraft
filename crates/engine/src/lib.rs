@@ -379,10 +379,11 @@ impl Engine {
         true
     }
 
-    /// Undo and Redo never change the Edit mode or its settings (Shuffle Lock above all).
+    /// Undo and Redo never change the Edit mode or its settings (Shuffle Lock above all), nor
+    /// Options › MIDI Thru, which makes no undo step and decides whether live input sounds.
     fn keep_edit_mode(&mut self, from: &Session) {
         use edit::{RELATIVE_GRID, SHUFFLE_LOCK, SNAP_TO_GRID};
-        let flags = [SNAP_TO_GRID, SHUFFLE_LOCK, RELATIVE_GRID];
+        let flags = [SNAP_TO_GRID, SHUFFLE_LOCK, RELATIVE_GRID, soundcraft_mix::NO_MIDI_THRU];
         let ed = &self.doc.edit;
         if ed.edit_mode != from.edit.edit_mode || flags.iter().any(|f| ed.flag(f) != from.edit.flag(f)) {
             let ed = &mut Arc::make_mut(&mut self.doc).edit;

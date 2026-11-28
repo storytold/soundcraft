@@ -55,7 +55,7 @@
 //! what was lost. A key that is still down stays silent until it is played again.
 
 use soundcraft_dsp::Plugin;
-use soundcraft_model::{MidiInput, Track};
+use soundcraft_model::{MidiInput, MidiOutput, Session, Track, same_midi_device};
 use std::sync::OnceLock;
 
 /// Most input ports one engine tells apart; later ones still reach tracks that listen to all.
@@ -71,6 +71,11 @@ pub struct LiveMidi {
     pub status: u8,
     pub data1: u8,
     pub data2: u8,
+    /// The message is what SoundCraft's own clip output just sent to the output port of this
+    /// input's device, come straight back (a loop through an IAC bus or a device that echoes).
+    /// A track whose MIDI output is that device and channel does not play it: it is its own
+    /// playback. Other tracks play it as any input.
+    pub echo: bool,
 }
 
 impl LiveMidi {
@@ -110,9 +115,27 @@ impl MidiPorts {
     }
 }
 
-/// Whether a track plays live MIDI input: record-enabled or input-monitored.
-pub fn midi_thru(t: &Track) -> bool {
-    !t.inactive && (t.mixer.record_arm || t.mixer.input_monitor)
+/// The session flag that switches Options › MIDI Thru off. Thru is on unless the flag is there,
+/// so a session made before the option did anything plays as it did.
+pub const NO_MIDI_THRU: &str = "options.no_midi_thru";
+
+/// Whether Options › MIDI Thru is on: live MIDI input plays through the tracks (their instrument
+/// and their MIDI output). Recording does not depend on it (Pro Tools Reference Guide p.810–811).
+pub fn midi_thru_enabled(s: &Session) -> bool {
+    !s.edit.flag(NO_MIDI_THRU)
+}
+
+/// Whether a track plays live MIDI input: Options › MIDI Thru is on and the track is active and
+/// record-enabled or input-monitored.
+pub fn midi_thru(s: &Session, t: &Track) -> bool {
+    midi_thru_enabled(s) && !t.inactive && (t.mixer.record_arm || t.mixer.input_monitor)
+}
+
+/// Whether an echo of SoundCraft's clip output ([`LiveMidi::echo`]) that arrived from the input
+/// port `input` on `channel` is the playback of a track whose MIDI output is `own`: the same
+/// device and channel. Such a track neither plays nor records it again; other tracks do.
+pub fn own_echo(own: Option<MidiOutput<'_>>, input: Option<&str>, channel: u8) -> bool {
+    own.is_some_and(|o| o.channel == channel && input.is_some_and(|i| same_midi_device(i, o.device)))
 }
 
 /// The bit of `port` in [`crate::MixEngine::midi_lost`]. Ports without an index of their own
@@ -650,12 +673,28 @@ impl LiveNotes {
         self.forget_controllers(|c| lost & midi_port_bit(c.port) != 0) || forgotten
     }
 
-    /// Play the block's events that `t` listens to, after [`Self::reconcile`].
-    pub(crate) fn play(&mut self, t: &Track, inst: &mut dyn Plugin, events: &[LiveMidi], ports: Option<&MidiPorts>, frames: usize) {
+    /// Play the block's events that `t` listens to, after [`Self::reconcile`]. `own` is the
+    /// track's MIDI output: an echo of the clip output ([`LiveMidi::echo`]) that came back from
+    /// that device on that channel is the track's own playback and is not played again, except
+    /// a Note-Off or pedal up that ends what an owner holds.
+    pub(crate) fn play(
+        &mut self,
+        t: &Track,
+        own: Option<MidiOutput<'_>>,
+        inst: &mut dyn Plugin,
+        events: &[LiveMidi],
+        ports: Option<&MidiPorts>,
+        frames: usize,
+    ) {
         let input = MidiInput::of(&t.mixer.input);
         for e in events {
             let channel = e.channel();
-            if !input.accepts(ports.and_then(|p| p.name(e.port)), channel) {
+            let name = ports.and_then(|p| p.name(e.port));
+            // The track's own playback is not played again. A release still reaches the owner:
+            // the note or pedal it ends may be held from before the output moved to this device
+            // and channel, and only takes effect where an owner holds it.
+            let release = matches!((e.status & 0xF0, e.data1 & 0x7F, e.data2 & 0x7F), (0x80, _, _) | (0x90, _, 0) | (0xB0, 64, 0..=63));
+            if !input.accepts(name, channel) || (e.echo && !release && own_echo(own, name, channel)) {
                 continue;
             }
             let at = usize::try_from(e.offset).unwrap_or(0).min(frames.saturating_sub(1));
@@ -758,7 +797,7 @@ mod tests {
     }
 
     fn ev(port: u8, status: u8, data1: u8, data2: u8) -> LiveMidi {
-        LiveMidi { offset: 0, port, status, data1, data2 }
+        LiveMidi { offset: 0, port, status, data1, data2, echo: false }
     }
 
     /// Plays `events` on a track that listens to everything and returns what the instrument got.
@@ -766,8 +805,51 @@ mod tests {
         let mut s = soundcraft_model::Session::default();
         let id = s.add_track(soundcraft_model::TrackKind::Instrument, soundcraft_model::ChannelFormat::Stereo, None);
         let mut log = Log::default();
-        live.play(s.track(id).unwrap(), &mut log, events, None, 512);
+        live.play(s.track(id).unwrap(), None, &mut log, events, None, 512);
         log.0
+    }
+
+    #[test]
+    fn an_echo_of_the_clip_output_is_not_played_again_on_the_track_that_sent_it() {
+        let ports = MidiPorts::default();
+        let syn = ports.assign("SYN");
+        let mut s = soundcraft_model::Session::default();
+        let id = s.add_track(soundcraft_model::TrackKind::Instrument, soundcraft_model::ChannelFormat::Stereo, None);
+        let t = s.track(id).unwrap();
+        let echo = |status| LiveMidi { echo: true, ..ev(syn, status, 60, 100) };
+        let heard = |own: Option<MidiOutput<'_>>, events: &[LiveMidi]| {
+            let mut log = Log::default();
+            LiveNotes::default().play(t, own, &mut log, events, Some(&ports), 512);
+            log.0
+        };
+        let own = MidiOutput { device: "SYN", channel: 2 };
+        assert!(heard(Some(own), &[echo(0x92)]).is_empty(), "its own playback, back from SYN on its channel");
+        assert_eq!(heard(Some(own), &[echo(0x93)]), [(true, 60)], "another channel is another track's");
+        assert_eq!(heard(Some(MidiOutput { device: "Synth", channel: 2 }), &[echo(0x92)]), [(true, 60)], "another device's output");
+        assert_eq!(heard(None, &[echo(0x92)]), [(true, 60)]);
+        assert_eq!(heard(Some(own), &[ev(syn, 0x92, 60, 100)]), [(true, 60)], "input that is no echo plays");
+    }
+
+    #[test]
+    fn a_held_echo_ends_on_its_note_off_after_the_track_output_moved_to_its_device() {
+        let ports = MidiPorts::default();
+        let syn = ports.assign("SYN");
+        let mut s = soundcraft_model::Session::default();
+        let id = s.add_track(soundcraft_model::TrackKind::Instrument, soundcraft_model::ChannelFormat::Stereo, None);
+        let t = s.track(id).unwrap();
+        let echo = |status, data2| LiveMidi { echo: true, ..ev(syn, status, 60, data2) };
+        let mut live = LiveNotes::default();
+        let mut heard = |own: MidiOutput<'_>, events: &[LiveMidi]| {
+            let mut log = Log::default();
+            live.play(t, Some(own), &mut log, events, Some(&ports), 512);
+            log.0
+        };
+        // Another track's playback, back from SYN on channel 3: this track plays it.
+        assert_eq!(heard(MidiOutput { device: "Synth", channel: 2 }, &[echo(0x92, 100)]), [(true, 60)]);
+        // Its output moves to SYN channel 3: the Note-Off of the note it holds still ends it.
+        let own = MidiOutput { device: "SYN", channel: 2 };
+        assert_eq!(heard(own, &[echo(0x82, 0)]), [(false, 60)]);
+        assert!(heard(own, &[echo(0x92, 100), echo(0x82, 0)]).is_empty(), "its own playback is still not played");
     }
 
     #[test]
@@ -780,7 +862,7 @@ mod tests {
         let mut step = |s: &soundcraft_model::Session, events: &[LiveMidi]| {
             let mut log = Log::default();
             live.reconcile(s.track(id).unwrap(), 0, Some(&ports), &mut log);
-            live.play(s.track(id).unwrap(), &mut log, events, Some(&ports), 512);
+            live.play(s.track(id).unwrap(), None, &mut log, events, Some(&ports), 512);
             log.0
         };
         // All devices: Keys holds 60 (with its pedal down, and 61 sustained), Pad holds 62 and 60.
@@ -844,11 +926,11 @@ mod tests {
         for (release, ends) in [(32, 400), (450, 450)] {
             let (mut live, mut log) = (LiveNotes::default(), Log::default());
             live.set_clip_notes(&[60]);
-            live.play(t, &mut log, &[at(0, 0x90)], None, 512);
+            live.play(t, None, &mut log, &[at(0, 0x90)], None, 512);
             live.begin_block();
             live.clip_off_held_back(60, 400);
             live.set_clip_notes(&[]);
-            live.play(t, &mut log, &[at(release, 0x80)], None, 512);
+            live.play(t, None, &mut log, &[at(release, 0x80)], None, 512);
             assert_eq!((log.0.last(), log.2.as_slice()), (Some(&(false, 60)), &[ends][..]), "key up at {release}");
         }
         // What the clips' note-offs at `offs` and the live events of one block come to: the
@@ -856,11 +938,11 @@ mod tests {
         let block = |offs: &[usize], events: &[LiveMidi]| {
             let (mut live, mut log) = (LiveNotes::default(), Log::default());
             live.set_clip_notes(&[60]);
-            live.play(t, &mut log, &[at(0, 0x90)], None, 512);
+            live.play(t, None, &mut log, &[at(0, 0x90)], None, 512);
             live.begin_block();
             offs.iter().for_each(|off| live.clip_off_held_back(60, *off));
             live.set_clip_notes(&[]);
-            live.play(t, &mut log, events, None, 512);
+            live.play(t, None, &mut log, events, None, 512);
             (log.2, live.holds(60))
         };
         // The key goes up and down again before the clip's note would have ended: no note-off,
@@ -882,10 +964,10 @@ mod tests {
         assert_eq!(block(&[100, 400], &[at(50, 0x80)]), (vec![100, 400], false));
         // Nothing is carried into the next block: a release there ends the note where it is.
         let (mut live, mut log) = (LiveNotes::default(), Log::default());
-        live.play(t, &mut log, &[at(0, 0x90)], None, 512);
+        live.play(t, None, &mut log, &[at(0, 0x90)], None, 512);
         live.clip_off_held_back(60, 400);
         live.begin_block();
-        live.play(t, &mut log, &[at(32, 0x80)], None, 512);
+        live.play(t, None, &mut log, &[at(32, 0x80)], None, 512);
         assert_eq!(log.2, [32]);
     }
 
@@ -1017,7 +1099,7 @@ mod tests {
         let mut step = |s: &soundcraft_model::Session, events: &[LiveMidi]| {
             let mut log = Log::default();
             live.reconcile(s.track(id).unwrap(), 0, Some(&ports), &mut log);
-            live.play(s.track(id).unwrap(), &mut log, events, Some(&ports), 512);
+            live.play(s.track(id).unwrap(), None, &mut log, events, Some(&ports), 512);
             log.0
         };
         // Keys fills the table; the last place is its channel 16, and Pad then Wind share it.
@@ -1047,7 +1129,7 @@ mod tests {
         let mut log = Log::default();
         // Keys bends and moves the mod wheel; Pad then takes the mod wheel over and sets the volume.
         let events = [ev(keys, 0xE0, 0, 0x7F), ev(keys, 0xB0, 1, 20), ev(pad, 0xB1, 1, 90), ev(pad, 0xB1, 7, 100), ev(pad, 0xA1, 60, 9)];
-        live.play(s.track(id).unwrap(), &mut log, &events, Some(&ports), 512);
+        live.play(s.track(id).unwrap(), None, &mut log, &events, Some(&ports), 512);
         assert_eq!(log.1.len(), 5);
         // Pad lost input: Keys' bend and its mod wheel value are left. The strip resets the
         // instrument's controllers and sends those again.
@@ -1060,7 +1142,7 @@ mod tests {
         // Both set the mod wheel, Pad last. When Pad goes, the wheel is Keys' again; while
         // both are there, what is sent again ends at the newer value.
         let mut log = Log::default();
-        live.play(s.track(id).unwrap(), &mut log, &[ev(keys, 0xB0, 1, 20), ev(pad, 0xB1, 1, 90)], Some(&ports), 512);
+        live.play(s.track(id).unwrap(), None, &mut log, &[ev(keys, 0xB0, 1, 20), ev(pad, 0xB1, 1, 90)], Some(&ports), 512);
         let mut log = Log::default();
         live.resend_controllers(&mut log);
         assert_eq!(log.1, [[0xE0, 0, 0x7F], [0xB0, 1, 20], [0xB0, 1, 90]], "oldest first");
@@ -1086,7 +1168,7 @@ mod tests {
         // handles it), then one of them again: it is kept once.
         let mut events: Vec<LiveMidi> = (0..=MAX_LIVE_CTRLS + 1).map(|n| ev(0, 0xB0, n as u8, 1)).collect();
         events.push(ev(0, 0xB0, 5, 99));
-        live.play(s.track(id).unwrap(), &mut log, &events, None, 512);
+        live.play(s.track(id).unwrap(), None, &mut log, &events, None, 512);
         let mut log = Log::default();
         live.resend_controllers(&mut log);
         assert_eq!(log.1.len(), MAX_LIVE_CTRLS);
@@ -1105,7 +1187,7 @@ mod tests {
         let filled = |live: &mut LiveNotes| {
             let mut events = vec![ev(keys, 0xE0, 0, 0x7F)];
             events.extend((0..MAX_LIVE_CTRLS).map(|n| ev(pad, 0xB1, n as u8, 1)));
-            live.play(s.track(id).unwrap(), &mut Log::default(), &events, Some(&ports), 512);
+            live.play(s.track(id).unwrap(), None, &mut Log::default(), &events, Some(&ports), 512);
         };
         let mut live = LiveNotes::default();
         filled(&mut live);

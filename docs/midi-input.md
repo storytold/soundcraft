@@ -4,9 +4,12 @@ SoundCraft plays MIDI keyboards and pads through its instruments and records wha
 MIDI clips.
 
 **Where it works.** Linux (ALSA sequencer), macOS (CoreMIDI) and Windows (WinMM). It has been
-played and recorded on Linux only; on macOS and Windows the code builds but has not been tried
-with a device yet. There is no MIDI input on FreeBSD or in the web version. MIDI output, MIDI
-clock and loop or merge recording are not there yet (see [gaps.md](gaps.md), G-02).
+played and recorded on Linux with a keyboard, and on macOS from the IAC bus (a scripted player,
+not yet a hardware keyboard); on Windows the code builds but has not been tried with a device
+yet. There is no MIDI input on FreeBSD or in the web version. To play external
+synths from MIDI and instrument tracks, and to play them live from a keyboard (MIDI Thru), see
+[midi-output.md](midi-output.md). MIDI clock and loop or merge recording are not there yet (see
+[gaps.md](gaps.md), G-02).
 
 ## 1. Switch a device on
 
@@ -36,7 +39,8 @@ input selector reads *All MIDI*.
 
 Click the track's input selector (in the Mix window, or the I/O column of the Edit window) to
 choose one device, one channel (1–16), or both. A device the track listens to stays in the list
-while it is unplugged, marked *not connected*.
+while it is unplugged, marked *unavailable*, the word the MIDI output selector and the audio
+device messages use too.
 
 Scripts and agents set the same thing with the `track.input` command. The input is written
 `MIDI:<channel>:<device>`, with `*` for all:
@@ -58,7 +62,10 @@ channel.
 ## 3. Play
 
 Record-enable the track (its **R** button) or switch its input monitor on. The keyboard now plays
-the track's instrument, with the transport stopped or running.
+the track's instrument, and its MIDI output if it has one (MIDI Thru, see
+[midi-output.md](midi-output.md#5-midi-thru-playing-the-synth-from-a-keyboard)), with the
+transport stopped or running. **Options › MIDI Thru** (on by default) switches this off for every
+track; recording goes on regardless.
 
 - Notes, the sustain pedal, the other controllers, pitch bend, aftertouch and program changes
   reach the instrument.
