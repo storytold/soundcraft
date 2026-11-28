@@ -11,7 +11,7 @@ use std::path::Path;
 
 macro_rules! option {
     ($id:literal, $label:literal, $flag:literal) => {
-        cmd!(noundo $id, $label, ["Options"], None, "{value?: bool} (toggles when omitted)", always, |e, p| toggle_flag(e, p, $flag))
+        cmd!(checked $flag, $id, $label, ["Options"], None, "{value?: bool} (toggles when omitted)", always, |e, p| toggle_flag(e, p, $flag))
     };
 }
 

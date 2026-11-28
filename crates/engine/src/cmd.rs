@@ -87,6 +87,9 @@ pub struct CommandSpec {
     pub undoable: bool,
     /// Only touches `edit.zoom`, through `Engine::zoom_mut`.
     pub view: bool,
+    /// For a `flag!`/`radio!` view toggle: the `edit.flags` (or `edit.rulers`) id the item is
+    /// checked from, so menus mark it without per-item arms.
+    pub checked_flag: Option<&'static str>,
 }
 
 /// Serializable description of a command.
@@ -119,13 +122,14 @@ impl CommandSpec {
 /// `cmd!(id, label, [menu…], shortcut, params, enabled, run)`; `query`/`noundo`/`view` variants.
 #[macro_export]
 macro_rules! cmd {
-    (query $($t:tt)*) => { $crate::cmd!(@spec false, false, false; $($t)*) };
-    (noundo $($t:tt)*) => { $crate::cmd!(@spec true, false, false; $($t)*) };
-    (view $($t:tt)*) => { $crate::cmd!(@spec false, false, true; $($t)*) };
-    (@spec $journal:literal, $undoable:literal, $view:literal; $id:literal, $label:literal, [$($m:literal),*], $sc:expr, $params:literal, $en:expr, $run:expr) => {
-        $crate::cmd::CommandSpec { id: $id, label: $label, menu: &[$($m),*], shortcut: $sc, params: $params, enabled: $en, run: $run, journal: $journal, undoable: $undoable, view: $view }
+    (query $($t:tt)*) => { $crate::cmd!(@spec false, false, false, None; $($t)*) };
+    (noundo $($t:tt)*) => { $crate::cmd!(@spec true, false, false, None; $($t)*) };
+    (view $($t:tt)*) => { $crate::cmd!(@spec false, false, true, None; $($t)*) };
+    (checked $f:literal, $($t:tt)*) => { $crate::cmd!(@spec true, false, false, Some($f); $($t)*) };
+    (@spec $journal:literal, $undoable:literal, $view:literal, $checked:expr; $id:literal, $label:literal, [$($m:literal),*], $sc:expr, $params:literal, $en:expr, $run:expr) => {
+        $crate::cmd::CommandSpec { id: $id, label: $label, menu: &[$($m),*], shortcut: $sc, params: $params, enabled: $en, run: $run, journal: $journal, undoable: $undoable, view: $view, checked_flag: $checked }
     };
-    ($id:literal, $($t:tt)*) => { $crate::cmd!(@spec true, true, false; $id, $($t)*) };
+    ($id:literal, $($t:tt)*) => { $crate::cmd!(@spec true, true, false, None; $id, $($t)*) };
 }
 
 pub fn command_specs() -> &'static [CommandSpec] {

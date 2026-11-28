@@ -19,6 +19,7 @@ pub fn specs() -> Vec<CommandSpec> {
         journal: false,
         undoable: false,
         view: false,
+        checked_flag: None,
     }]
 }
 

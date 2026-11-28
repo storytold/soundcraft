@@ -10,14 +10,14 @@ use serde_json::{Value, json};
 /// A view toggle: `{value?: bool}` sets it, otherwise it flips.
 macro_rules! flag {
     ($id:literal, $label:literal, [$($m:literal),*], $flag:literal) => {
-        cmd!(noundo $id, $label, [$($m),*], None, "{value?: bool} (toggles when omitted)", always, |e, p| toggle_flag(e, p, $flag))
+        cmd!(checked $flag, $id, $label, [$($m),*], None, "{value?: bool} (toggles when omitted)", always, |e, p| toggle_flag(e, p, $flag))
     };
 }
 
 /// A radio item: turns its flag on and the rest of its group off.
 macro_rules! radio {
     ($id:literal, $label:literal, [$($m:literal),*], $flag:literal, $group:expr) => {
-        cmd!(noundo $id, $label, [$($m),*], None, "{}", always, |e, _| exclusive_flag(e, $flag, $group))
+        cmd!(checked $flag, $id, $label, [$($m),*], None, "{}", always, |e, _| exclusive_flag(e, $flag, $group))
     };
 }
 
@@ -93,11 +93,11 @@ pub fn specs() -> Vec<CommandSpec> {
         cmd!(noundo "view.edit_all", "All", ["View", "Edit Window Views"], None, "{} — shows every Edit window column", always, |e, _| Ok(set_flags(e, &EDIT_VIEWS, true))),
         cmd!(noundo "view.edit_minimal", "Minimal", ["View", "Edit Window Views"], None, "{} — hides every optional Edit window column", always, |e, _| Ok(set_flags(e, &EDIT_VIEWS, false))),
         // Rulers.
-        cmd!(noundo "view.ruler_timecode2", "Timecode 2", ["View", "Rulers"], None, "{visible?: bool}", always, |e, p| toggle_ruler(e, p, "timecode2")),
-        cmd!(noundo "view.ruler_markers2", "Markers 2", ["View", "Rulers"], None, "{visible?: bool}", always, |e, p| toggle_ruler(e, p, "markers2")),
-        cmd!(noundo "view.ruler_markers3", "Markers 3", ["View", "Rulers"], None, "{visible?: bool}", always, |e, p| toggle_ruler(e, p, "markers3")),
-        cmd!(noundo "view.ruler_markers4", "Markers 4", ["View", "Rulers"], None, "{visible?: bool}", always, |e, p| toggle_ruler(e, p, "markers4")),
-        cmd!(noundo "view.ruler_markers5", "Markers 5", ["View", "Rulers"], None, "{visible?: bool}", always, |e, p| toggle_ruler(e, p, "markers5")),
+        cmd!(checked "timecode2", "view.ruler_timecode2", "Timecode 2", ["View", "Rulers"], None, "{visible?: bool}", always, |e, p| toggle_ruler(e, p, "timecode2")),
+        cmd!(checked "markers2", "view.ruler_markers2", "Markers 2", ["View", "Rulers"], None, "{visible?: bool}", always, |e, p| toggle_ruler(e, p, "markers2")),
+        cmd!(checked "markers3", "view.ruler_markers3", "Markers 3", ["View", "Rulers"], None, "{visible?: bool}", always, |e, p| toggle_ruler(e, p, "markers3")),
+        cmd!(checked "markers4", "view.ruler_markers4", "Markers 4", ["View", "Rulers"], None, "{visible?: bool}", always, |e, p| toggle_ruler(e, p, "markers4")),
+        cmd!(checked "markers5", "view.ruler_markers5", "Markers 5", ["View", "Rulers"], None, "{visible?: bool}", always, |e, p| toggle_ruler(e, p, "markers5")),
         cmd!(noundo "view.ruler_all_markers", "All Marker Rulers", ["View", "Rulers"], None, "{visible?: bool} — shows (or hides) all five marker rulers", always, |e, p| {
             let s = e.session_mut();
             let vis = p.get("visible").and_then(Value::as_bool).unwrap_or(!MARKER_RULERS.iter().all(|r| s.edit.rulers.iter().any(|x| x == r)));
