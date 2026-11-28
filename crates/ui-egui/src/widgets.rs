@@ -333,7 +333,7 @@ pub(crate) fn selector_box_named(ui: &mut Ui, width: f32, height: f32, text: &st
     resp.on_hover_text(tooltip)
 }
 
-/// Rotary knob for pan / send pan (-1..1). Drag vertically; double-click resets.
+/// Rotary knob for pan / send pan (-1..1). Drag vertically; Alt-click resets.
 pub fn pan_knob(ui: &mut Ui, size: f32, value: &mut f32, tip: &str) -> Response {
     let t = Tokens::current();
     let (r, resp) = ui.allocate_exact_size(vec2(size, size), Sense::click_and_drag());
@@ -342,7 +342,7 @@ pub fn pan_knob(ui: &mut Ui, size: f32, value: &mut f32, tip: &str) -> Response 
         let d = resp.drag_delta();
         *value = (*value + (d.x - d.y) * 0.01).clamp(-1.0, 1.0);
     }
-    if resp.double_clicked() {
+    if resp.clicked() && ui.input(|i| i.modifiers.alt) {
         *value = 0.0;
     }
     let p = ui.painter();
@@ -519,7 +519,7 @@ pub fn fader(ui: &mut Ui, r: Rect, db: f32, id: egui::Id, name: &str) -> Option<
     for (x, dx) in [(cap.min.x, 2.5), (cap.max.x, -2.5)] {
         p.add(egui::Shape::convex_polygon(vec![pos2(x, y - 3.0), pos2(x + dx, y), pos2(x, y + 3.0)], g(34), Stroke::NONE));
     }
-    if resp.double_clicked() || (resp.clicked() && ui.input(|i| i.modifiers.alt)) {
+    if resp.clicked() && ui.input(|i| i.modifiers.alt) {
         return Some(0.0);
     }
     if resp.dragged() {
@@ -756,7 +756,7 @@ pub fn surround_panner(ui: &mut Ui, size: f32, speakers: &[PannerSpeaker], puck:
         }
     }
     let alt = ui.input(|i| i.modifiers.alt);
-    if resp.double_clicked() {
+    if resp.clicked() && alt {
         edit = Some(PannerEdit::Position(0.0, 1.0));
     } else if resp.dragged() && alt {
         let d = (divergence - resp.drag_delta().y * 0.01).clamp(0.0, 1.0);
@@ -805,7 +805,7 @@ pub fn surround_panner(ui: &mut Ui, size: f32, speakers: &[PannerSpeaker], puck:
             let nv = ((p.x - track.min.x) / track.width().max(1.0)).clamp(0.0, 1.0);
             edit = Some(if kind == 0 { PannerEdit::Divergence(nv) } else { PannerEdit::Height(nv) });
         }
-        if sresp.double_clicked() {
+        if sresp.clicked() && ui.input(|i| i.modifiers.alt) {
             edit = Some(if kind == 0 { PannerEdit::Divergence(0.0) } else { PannerEdit::Height(0.0) });
         }
         let _ =
@@ -899,6 +899,62 @@ mod tests {
         h.run();
         let at = h.get_all_by_label("Box").map(|n| n.rect().center()).collect();
         (h, at)
+    }
+
+    /// #1393: a control's reset is Alt-click (as Pro Tools' Option-click); a double click
+    /// leaves the value alone, so double-clicking a parameter to type it doesn't reset it.
+    /// Four button events in one frame register as a double click; Alt is held across
+    /// another by `ModifiersChanged`, as a real click carries the held keys' state.
+    fn double_click<T>(h: &mut Harness<'_, T>, at: Pos2) {
+        for pressed in [true, false, true, false] {
+            h.event(Event::PointerButton { pos: at, button: PointerButton::Primary, pressed, modifiers: Modifiers::NONE });
+        }
+        h.run_steps(1);
+    }
+
+    fn alt_click<T>(h: &mut Harness<'_, T>, at: Pos2) {
+        h.event(Event::ModifiersChanged(Modifiers::ALT));
+        for pressed in [true, false] {
+            h.event(Event::PointerButton { pos: at, button: PointerButton::Primary, pressed, modifiers: Modifiers::ALT });
+        }
+        h.run_steps(1);
+        h.event(Event::ModifiersChanged(Modifiers::NONE));
+    }
+
+    #[test]
+    fn alt_click_resets_the_pan_knob_and_a_double_click_does_not() {
+        let mut h = Harness::new_ui_state(
+            |ui, v: &mut f32| {
+                super::pan_knob(ui, 24.0, v, "pan");
+            },
+            0.7,
+        );
+        h.run();
+        let at = h.get_by_role_and_label(egui::accesskit::Role::Slider, "pan").rect().center();
+        double_click(&mut h, at);
+        assert_eq!(*h.state(), 0.7, "a double click does not reset");
+        alt_click(&mut h, at);
+        assert_eq!(*h.state(), 0.0, "Alt-click resets");
+    }
+
+    /// The same reset gesture on the fader cap: Alt-click zeroes, a double click does not.
+    #[test]
+    fn alt_click_resets_the_fader_and_a_double_click_does_not() {
+        let mut h = Harness::new_ui_state(
+            |ui, db: &mut Option<f32>| {
+                let r = super::fader_slot(egui::Rect::from_min_size(ui.cursor().min, egui::vec2(20.0, 120.0)));
+                if let Some(v) = super::fader(ui, r, -6.0, ui.scope_id(), "vol") {
+                    *db = Some(v);
+                }
+            },
+            None,
+        );
+        h.run();
+        let at = h.get_by_role_and_label(egui::accesskit::Role::Slider, "vol").rect().center();
+        double_click(&mut h, at);
+        assert_eq!(*h.state(), None, "a double click does not reset");
+        alt_click(&mut h, at);
+        assert_eq!(*h.state(), Some(0.0), "Alt-click resets to 0 dB");
     }
 
     /// Close/delete controls are painted crosses with an accessible name, not a glyph that depends
