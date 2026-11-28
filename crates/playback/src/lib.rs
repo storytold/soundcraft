@@ -7,10 +7,19 @@
 //! `try_lock`ed snapshot, so the callback never blocks. When no device is available the player
 //! falls back to a silent clock thread so the transport, meters and automation still run.
 //!
+//! Rate: the device is opened at the chosen rate (else the session rate) when it offers it; if it
+//! does not, or a stream at that rate will not build or start, at its default configuration, and
+//! the mix resamples. On Core Audio, a device that runs at another rate is first switched by a
+//! throwaway stream, whose late report of the switch is waited for, so the stream that plays opens
+//! with no switch. Other hosts open without that step.
+//!
 //! Surround: the device is opened with as many output channels as it offers, up to the width of
-//! the session's main format. Main channels (SMPTE/WAV order) go to device channels in order; when
-//! the device has fewer channels than the main mix, surround is folded down to stereo (ITU-R
-//! BS.775). A mono device receives the average of the stereo channels, before output clipping.
+//! the session's main format; a device that offers the rate only wider than the mix (some
+//! multichannel interfaces list just their full width) is opened with the fewest such channels,
+//! and the channels past the mix stay silent. Main channels (SMPTE/WAV order) go to device
+//! channels in order; when the device has fewer channels than the main mix, surround is folded
+//! down to stereo (ITU-R BS.775). A mono device receives the average of the stereo channels,
+//! before output clipping.
 //!
 //! Plugins and threads: hosted third-party plugins (CLAP/VST3) are created, given their stored
 //! state and prepared on the thread that calls [`Player::update_session`] (the UI thread), and
@@ -60,9 +69,9 @@ use callback::{AudioState, Fault, Side, take_meter_snapshot};
 use callback::{STALL, copy_meter_snapshot};
 #[cfg(not(target_arch = "wasm32"))]
 use callback::{guarded_block, stalled};
+use stream::{Opened, OutputAttempt, RATE_SETTLE, build_output, first_started, open_device, settle_rate_switch, start_stream, throwaway_output};
 #[cfg(test)]
-use stream::pick_output_config;
-use stream::{Opened, build_output, first_started, open_device, start_stream};
+use stream::{output_attempts, pick_output_config, pick_wider_output_config};
 
 /// Meter values for the UI: the highest peak (and gain reduction) of every block rendered since
 /// the UI last took them with [`Player::take_meters`]. The audio thread renders blocks faster than
@@ -215,9 +224,10 @@ impl Player {
         self.side.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
-    /// Open the output device for `session`, trying the requested buffer size before the device default, then build
-    /// the shared player state. If no configuration starts or the device cannot open, fall back to a silent clock at
-    /// the session rate.
+    /// Open the output device for `session`, trying the configuration picked for the chosen rate before the device's
+    /// default configuration, and the requested buffer size before the device's, then build the shared player state.
+    /// On Core Audio, a device at another rate than the picked configuration is switched first (`settle_rate_switch`).
+    /// If no configuration starts or the device cannot open, fall back to a silent clock at the session rate.
     fn open(session: Arc<Session>, cfg: &AudioConfig) -> Player {
         let shared = Arc::new(Shared {
             position: AtomicI64::new(0),
@@ -234,32 +244,42 @@ impl Player {
             Mutex::new(side)
         };
         match open_device(want, want_ch, cfg) {
-            Ok((device, config, format, name)) => {
-                // The chosen buffer size first; if the device refuses it, its default.
-                let mut attempts = vec![config];
-                if config.buffer_size != cpal::BufferSize::Default {
-                    attempts.push(cpal::StreamConfig { buffer_size: cpal::BufferSize::Default, ..config });
+            Ok((device, attempts, name)) => {
+                // On Core Audio, a device at another rate switches on a throwaway stream first,
+                // so the stream that plays does not end on the device's late report of its own
+                // switch. `settle_rate_switch` does nothing on other hosts, which open as before.
+                if let Some(first) = attempts.first().filter(|a| !a.default) {
+                    use cpal::traits::DeviceTrait;
+                    let current = || device.default_output_config().ok().map(|c| c.sample_rate());
+                    let target = first.config.sample_rate;
+                    let build = |report| throwaway_output(&device, first.config, first.format, report);
+                    if settle_rate_switch(std::env::consts::OS, current, target, build, RATE_SETTLE) {
+                        log::info!("audio device: {name} switched to {target} Hz before opening");
+                    }
                 }
+                // The config picked for the chosen rate first, then the device default, each with
+                // the chosen buffer size and then the device's (see `output_attempts`).
                 let opened = first_started(
                     attempts,
-                    |config: &cpal::StreamConfig| -> Result<Opened, cpal::Error> {
+                    |attempt: &OutputAttempt| -> Result<Opened, cpal::Error> {
+                        let config = attempt.config;
                         let rate = config.sample_rate;
                         let channels = usize::from(config.channels);
                         let (tx, rx) = channel();
                         let (gtx, grx) = channel();
                         let state = AudioState::new(rx, Arc::clone(&shared), Arc::clone(&session), f64::from(rate), gtx);
                         let fault = Arc::new(Fault::default());
-                        let stream = match format {
-                            cpal::SampleFormat::I32 => build_output::<i32>(&device, *config, state, channels, &fault, &shared),
-                            cpal::SampleFormat::I16 => build_output::<i16>(&device, *config, state, channels, &fault, &shared),
-                            _ => build_output::<f32>(&device, *config, state, channels, &fault, &shared),
+                        let stream = match attempt.format {
+                            cpal::SampleFormat::I32 => build_output::<i32>(&device, config, state, channels, &fault, &shared),
+                            cpal::SampleFormat::I16 => build_output::<i16>(&device, config, state, channels, &fault, &shared),
+                            _ => build_output::<f32>(&device, config, state, channels, &fault, &shared),
                         }?;
                         Ok(Opened { stream, tx, grx, fault })
                     },
                     |opened| start_stream(&opened.stream),
                 );
                 match opened {
-                    Some((config, Opened { stream, tx, grx, fault })) => {
+                    Some((OutputAttempt { config, format, default }, Opened { stream, tx, grx, fault })) => {
                         let rate = config.sample_rate;
                         let channels = usize::from(config.channels);
                         let buffer = match config.buffer_size {
@@ -267,8 +287,9 @@ impl Player {
                             cpal::BufferSize::Default => None,
                         };
                         log::info!(
-                            "audio device: {name} @ {rate} Hz, {channels} ch, {format}, buffer {}",
-                            buffer.map_or("default".to_string(), |n| n.to_string())
+                            "audio device: {name} @ {rate} Hz, {channels} ch, {format}, buffer {} ({} config)",
+                            buffer.map_or("default".to_string(), |n| n.to_string()),
+                            if default { "device default" } else { "chosen-rate" }
                         );
                         Player {
                             shared,

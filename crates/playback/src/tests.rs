@@ -77,8 +77,72 @@ fn output_config_uses_the_first_requested_rate_the_device_offers() {
     assert!(pick_output_config(&configs, &[192_000], 8).is_none());
 }
 
+/// An interface that offers only more channels than the mix (an RME Fireface UFX on Core Audio
+/// lists one 30-channel configuration) still opens at the chosen rate. The device default would
+/// be the rate the interface happens to run at; opening the input at the chosen rate then
+/// switches the device and ends the output stream.
+#[test]
+fn a_wider_only_device_still_opens_at_the_chosen_rate() {
+    let ufx = [range(30, 44_100, 192_000, cpal::SampleFormat::F32)];
+    assert!(pick_output_config(&ufx, &[48_000], 2).is_none(), "the main-width pick leaves it to the fallback");
+    let (config, buffers, format) = pick_wider_output_config(&ufx, &[48_000]).unwrap();
+    assert_eq!((config.sample_rate, config.channels, format), (48_000, 30, cpal::SampleFormat::F32));
+    assert_eq!(buffers, cpal::SupportedBufferSize::Range { min: 64, max: 1024 });
+    // The fewest channels above the mix win, then a preferred format; rates are tried in order.
+    let configs = [
+        range(16, 44_100, 48_000, cpal::SampleFormat::F32),
+        range(8, 44_100, 48_000, cpal::SampleFormat::I16),
+        range(8, 44_100, 48_000, cpal::SampleFormat::F32),
+        range(4, 96_000, 96_000, cpal::SampleFormat::F32),
+    ];
+    let (config, _, format) = pick_wider_output_config(&configs, &[192_000, 48_000]).unwrap();
+    assert_eq!((config.sample_rate, config.channels, format), (48_000, 8, cpal::SampleFormat::F32));
+    // Mono only, or no requested rate: the device default after all.
+    assert!(pick_wider_output_config(&[range(1, 44_100, 48_000, cpal::SampleFormat::F32)], &[48_000]).is_none());
+    assert!(pick_wider_output_config(&ufx, &[22_050]).is_none());
+}
+
+/// When the stream at the picked rate will not build (a device that refuses the rate change or
+/// does not settle in time), the device default is tried last, before the silent clock, with the
+/// chosen buffer size first. A default equal to the picked config is not tried twice.
+#[test]
+fn a_device_that_refuses_the_picked_rate_falls_back_to_its_default_config() {
+    let config = |rate, channels, buffer| cpal::StreamConfig { channels, sample_rate: rate, buffer_size: buffer };
+    let picked = (config(48_000, 30, cpal::BufferSize::Fixed(256)), cpal::SampleFormat::F32);
+    let default = (config(44_100, 30, cpal::BufferSize::Fixed(256)), cpal::SampleFormat::I32);
+    let attempts = output_attempts(Some(picked), Some(default));
+    let summary: Vec<_> = attempts.iter().map(|a| (a.config.sample_rate, a.config.buffer_size, a.default)).collect();
+    assert_eq!(
+        summary,
+        vec![
+            (48_000, cpal::BufferSize::Fixed(256), false),
+            (48_000, cpal::BufferSize::Default, false),
+            (44_100, cpal::BufferSize::Fixed(256), true),
+            (44_100, cpal::BufferSize::Default, true),
+        ]
+    );
+    let mut tried = Vec::new();
+    let won = first_started(
+        attempts,
+        |a: &OutputAttempt| {
+            tried.push(a.config.sample_rate);
+            if a.config.sample_rate == 48_000 { Err("the device did not settle at 48000 Hz".to_string()) } else { Ok(Fake { starts: true }) }
+        },
+        start_stream,
+    );
+    let (won, _) = won.expect("the default config opens");
+    assert_eq!((won.config.sample_rate, won.format, won.default), (44_100, cpal::SampleFormat::I32, true));
+    assert_eq!(won.config.buffer_size, cpal::BufferSize::Fixed(256), "the chosen buffer size still comes first");
+    assert_eq!(tried, vec![48_000, 48_000, 44_100]);
+    // A default that is the picked config adds nothing; without a pick the default is all there is.
+    assert_eq!(output_attempts(Some(picked), Some(picked)).len(), 2);
+    let only_default = output_attempts(None, Some(default));
+    assert!(only_default.iter().all(|a| a.default && a.config.sample_rate == 44_100) && only_default.len() == 2);
+}
+
 /// At a supported rate, a preferred sample format wins over more channels; output stays between stereo and the
-/// requested channel cap, and mono-only or wider devices take the default path.
+/// requested channel cap. A mono-only device takes the default path, and a wider one is left to
+/// `pick_wider_output_config`.
 #[test]
 fn output_config_prefers_format_over_channels_and_needs_stereo_within_the_cap() {
     let configs = [range(8, 44_100, 48_000, cpal::SampleFormat::I16), range(2, 44_100, 48_000, cpal::SampleFormat::F32)];
@@ -1892,4 +1956,92 @@ fn a_pass_started_and_ended_by_the_commands_of_one_callback_keeps_what_was_playe
     rec.clear();
     feed.take_recorded(&mut rec);
     assert!(rec.is_empty(), "{rec:?}");
+}
+
+/// Core Audio can report a rate switch only after the stream that caused it is listening for it,
+/// which then ends that stream ("Device sample rate changed", seen on a Fireface UFX, BlackHole and
+/// the built-in speakers). There, a device that runs at another rate is switched by a throwaway
+/// stream first, and its late report is waited for, so the stream that plays opens with no switch.
+#[test]
+fn a_rate_switch_settles_on_a_throwaway_stream_before_the_stream_that_plays() {
+    use std::time::{Duration, Instant};
+    // Already at the rate, or a rate that cannot be read: nothing is built.
+    let mut built = 0;
+    assert!(!settle_rate_switch(
+        "macos",
+        || Some(48_000),
+        48_000,
+        |_| {
+            built += 1;
+            Some(())
+        },
+        Duration::from_secs(5)
+    ));
+    assert!(!settle_rate_switch(
+        "macos",
+        || None,
+        48_000,
+        |_| {
+            built += 1;
+            Some(())
+        },
+        Duration::from_secs(5)
+    ));
+    assert_eq!(built, 0);
+    // At another rate: the throwaway is built, and its late report ends the wait early.
+    let start = Instant::now();
+    let switched = settle_rate_switch(
+        "macos",
+        || Some(44_100),
+        48_000,
+        |report| {
+            std::thread::spawn(move || {
+                std::thread::sleep(Duration::from_millis(50));
+                let _ = report.send(());
+            });
+            Some(())
+        },
+        Duration::from_secs(5),
+    );
+    assert!(switched);
+    assert!(start.elapsed() < Duration::from_secs(2), "waited {:?} after the report", start.elapsed());
+    // No report comes (the throwaway keeps its sender): the wait ends after its limit.
+    let start = Instant::now();
+    assert!(settle_rate_switch("macos", || Some(44_100), 48_000, Some, Duration::from_millis(100)));
+    assert!(start.elapsed() >= Duration::from_millis(100));
+    // A throwaway that will not build switched nothing.
+    assert!(!settle_rate_switch("macos", || Some(44_100), 48_000, |_| None::<()>, Duration::from_secs(5)));
+}
+
+/// Only Core Audio reports a device's own rate switch late (see `settle_rate_switch` and the #1749
+/// review). WASAPI shared mode and ALSA send no such report, so a settle there would wait its whole
+/// budget on the UI thread for nothing and build an extra stream. The host is passed as a value, so
+/// this runs every host's case on whichever system runs the tests.
+#[test]
+fn a_rate_switch_reads_and_builds_nothing_off_core_audio() {
+    use std::cell::Cell;
+    use std::time::Duration;
+    let settle = |os: &str| {
+        let (read, built) = (Cell::new(0), Cell::new(0));
+        let switched = settle_rate_switch(
+            os,
+            || {
+                read.set(read.get() + 1);
+                Some(44_100)
+            },
+            48_000,
+            |report| {
+                built.set(built.get() + 1);
+                Some(report)
+            },
+            Duration::ZERO,
+        );
+        (switched, read.get(), built.get())
+    };
+    // The same device at another rate: Core Audio switches it on a throwaway stream...
+    assert_eq!(settle("macos"), (true, 1, 1));
+    // ...and every other host neither reads its rate nor builds a stream.
+    for os in ["windows", "linux", "freebsd", "android"] {
+        assert_eq!(settle(os), (false, 0, 0), "{os} must not settle a rate switch");
+    }
 }
