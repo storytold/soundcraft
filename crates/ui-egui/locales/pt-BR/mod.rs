@@ -115,6 +115,7 @@ pub(super) fn translate(source: &str) -> Option<&'static str> {
         "Extract" => "Extrair",
         "File" => "Arquivo",
         "File path" => "Caminho do arquivo",
+        "Folder path" => "Caminho da pasta",
         "Format" => "Formato",
         "Grab bag" => "Diversos",
         "Grid" => "Grade",
@@ -219,6 +220,7 @@ pub(super) fn translate(source: &str) -> Option<&'static str> {
             "Renderizações e processos do AudioSuite são concluídos antes de retornar."
         }
         "Reopen the audio devices with these settings" => "Reabrir os dispositivos de áudio com estas configurações",
+        "Report a problem" => "Relatar um problema",
         "Reset" => "Redefinir",
         "Reverse the order" => "Inverter a ordem",
         "Revert" => "Reverter",
@@ -289,6 +291,7 @@ pub(super) fn translate(source: &str) -> Option<&'static str> {
         "Transpose" => "Transpor",
         "Unknown label" => "Rótulo desconhecido",
         "Update check is not supported in the web browser." => "A verificação de atualizações não é compatível com o navegador.",
+        "Updated by ArtCraft Launcher." => "Atualizado pelo ArtCraft Launcher.",
         "Use" => "Usar",
         "User presets need the desktop app." => "As predefinições do usuário exigem o aplicativo para desktop.",
         "Uses the edit selection." => "Usa a seleção de edição.",
@@ -322,6 +325,23 @@ pub(super) fn translate(source: &str) -> Option<&'static str> {
         }
         "No engine" => "Sem mecanismo de áudio",
         "default buffer" => "buffer padrão",
+        "The audio settings were changed outside this window; your unapplied changes were replaced." => {
+            "As configurações de áudio foram alteradas fora desta janela; suas alterações não aplicadas foram substituídas."
+        }
+        "The device allows {}–{} samples; it runs at its default buffer." => {
+            "O dispositivo aceita {}–{} amostras; ele funciona com o buffer padrão."
+        }
+        "The device did not take {} samples; it runs at its default buffer." => {
+            "O dispositivo não aceitou {} amostras; ele funciona com o buffer padrão."
+        }
+        "The device runs only at {} samples." => "O dispositivo funciona apenas com {} amostras.",
+        "The device runs at {} samples, not {}." => "O dispositivo funciona com {} amostras, não {}.",
+        "The device allows {}–{} samples; it runs at its default buffer, {} samples." => {
+            "O dispositivo aceita {}–{} amostras; ele funciona com o buffer padrão, {} amostras."
+        }
+        "The device did not take {} samples; it runs at its default buffer, {} samples." => {
+            "O dispositivo não aceitou {} amostras; ele funciona com o buffer padrão, {} amostras."
+        }
         "Bus name: {name}" => "Nome do bus: {name}",
         "Model" => "Modelo",
         "Version" => "Versão",

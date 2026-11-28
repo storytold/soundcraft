@@ -5,7 +5,6 @@ use super::{
     Align2, Rect, Route, Sense, SoundApp, Stroke, StrokeKind, Tokens, Track, TrackId, TrackKind, Ui, db_text, fader, json, pan_knob, pan_text, pos2,
     regular, text_toggle, vec2,
 };
-use craft_ui::combo::Menu;
 
 /// Draw one send slot: the route area picks a destination, while the level area opens or edits the send level.
 pub(crate) fn send_slot(app: &mut SoundApp, ui: &mut Ui, track: &Track, slot: usize, r: Rect) {
@@ -78,7 +77,7 @@ pub(crate) fn send_window(app: &mut SoundApp, ctx: &egui::Context) {
     // was theirs comes from the last frame. A dialog or the search on top takes it too.
     let busy_id = egui::Id::unique("send_window_escape");
     let busy = ctx.data(|d| d.get_temp(busy_id)).unwrap_or(false) || app.dialogs.open.is_some() || app.ui.show_search;
-    if !busy && ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+    if !busy && crate::framework::escape_pressed(ctx) {
         app.ui.send_window = None;
     }
     send_window_contents(app, ctx);
@@ -334,6 +333,65 @@ fn send_level_scale(ui: &mut Ui, db: f32) {
     ui.painter().line_segment([pos2(x, r.min.y), pos2(x, line_y + 3.0)], Stroke::new(2.0, t.counter_text));
 }
 
+/// The most height of the send menu's contents.
+const SEND_MENU_HEIGHT: f32 = 260.0;
+
+/// A menu under `field` that opens and closes on its clicks and closes on a click outside it: `header` stays at the
+/// top, `total_rows` rows of `row_height` scroll under it (only the rows in view are laid out) and `footer` stays under
+/// the list. The menu is up to [`SEND_MENU_HEIGHT`] tall and the room on its side of the field, at least as wide as
+/// the field, and opens below the field or above it, never beside it. Returns what `rows` and `footer` returned, or
+/// `None` while the menu is closed.
+fn header_footer_menu<H, R, F>(
+    ui: &Ui,
+    field: &egui::Response,
+    header: impl FnOnce(&mut Ui) -> H,
+    row_height: f32,
+    total_rows: impl FnOnce(&H) -> usize,
+    rows: impl FnOnce(&mut Ui, std::ops::Range<usize>, H) -> R,
+    footer: impl FnOnce(&mut Ui) -> F,
+) -> Option<(R, F)> {
+    let screen = ui.ctx().content_rect();
+    let room = (screen.bottom() - field.rect.bottom()).max(field.rect.top() - screen.top());
+    let frame = egui::Frame::popup(ui.style()).total_margin().sum().y;
+    let height = SEND_MENU_HEIGHT.min(room - frame).max(0.0);
+    let flipped: &'static [egui::RectAlign] =
+        if ui.ctx().global_style().right_to_left { &[egui::RectAlign::TOP_END] } else { &[egui::RectAlign::TOP_START] };
+    let popup = egui::Popup::menu(field);
+    let id = popup.get_id();
+    let footer_id = id.with("footer-height");
+    let shown = popup
+        .align_alternatives(flipped)
+        .max_height_from_constrain(true)
+        .width(field.rect.width())
+        .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
+        .show(|ui| {
+            ui.set_min_width(ui.available_width());
+            // egui offers the popup last pass's height; offer the full height so a list that shrank (a search with
+            // no matches) grows back.
+            ui.set_max_height(height.min(ui.available_height()));
+            let header = header(ui);
+            // The footer comes after the list; keep the room it took last pass.
+            let footer_room = ui.data(|d| d.get_temp::<f32>(footer_id)).unwrap_or(0.0) + ui.spacing().item_spacing.y;
+            // Labels widen a narrow menu rather than wrap early, as in egui's combo box.
+            ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Extend);
+            let total = total_rows(&header);
+            let list = egui::ScrollArea::vertical()
+                .max_height((ui.available_height() - footer_room).max(0.0))
+                .show_rows(ui, row_height, total, |ui, range| rows(ui, range, header))
+                .inner;
+            let top = ui.cursor().top();
+            let footer = footer(ui);
+            let footer_height = ui.min_rect().bottom() - top;
+            ui.data_mut(|d| d.insert_temp(footer_id, footer_height));
+            (list, footer)
+        })
+        .map(|shown| shown.inner);
+    if shown.is_some() {
+        ui.ctx().accesskit_node_builder(id, |node| node.set_role(egui::accesskit::Role::ListBox));
+    }
+    shown
+}
+
 /// What the send menu's footer was used for.
 enum SendFooter {
     NewBus,
@@ -369,7 +427,9 @@ fn send_route_menu(app: &mut SoundApp, ui: &Ui, field: &egui::Response, id: Trac
     };
     let target = current.as_ref().map(|(route, _)| route);
     let row_h = ui.spacing().interact_size.y;
-    let shown = Menu::new(ui, field).height(260.0).close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside).show_rows_with_header_footer(
+    let shown = header_footer_menu(
+        ui,
+        field,
         header,
         row_h,
         |(_, visible)| visible.len(),
@@ -404,8 +464,16 @@ fn send_route_menu(app: &mut SoundApp, ui: &Ui, field: &egui::Response, id: Trac
             app.ui.send_window = Some((id, slot));
         }
     };
+    // A new send starts at the Sends Default to preference; re-targeting keeps the send's level.
+    let send_params = |app: &SoundApp, bus: &str| {
+        let mut p = json!({"track": id.0, "slot": slot, "bus": bus});
+        if !has_send {
+            p["level_db"] = json!(app.ui.sends_default.level_db());
+        }
+        p
+    };
     if let Some(bus) = picked
-        && app.run("mix.send", json!({"track": id.0, "slot": slot, "bus": bus})).is_ok()
+        && app.run("mix.send", send_params(app, &bus)).is_ok()
     {
         show_new_send(app);
     }
@@ -419,7 +487,7 @@ fn send_route_menu(app: &mut SoundApp, ui: &Ui, field: &egui::Response, id: Trac
                 n += 1;
             }
             if app.run("mix.new_bus", json!({"name": format!("Bus {n}")})).is_ok()
-                && app.run("mix.send", json!({"track": id.0, "slot": slot, "bus": format!("Bus {n}")})).is_ok()
+                && app.run("mix.send", send_params(app, &format!("Bus {n}"))).is_ok()
             {
                 show_new_send(app);
             }
@@ -435,6 +503,7 @@ fn send_route_menu(app: &mut SoundApp, ui: &Ui, field: &egui::Response, id: Trac
 mod tests {
     use super::*;
     use crate::Services;
+    use crate::preferences::SendsDefault;
     use egui_kittest::{Harness, kittest::Queryable};
 
     /// Filtering the destination list to nothing shrinks the menu; clearing the filter grows it
@@ -559,5 +628,39 @@ mod tests {
         let target = app.engine.session().track(kick).and_then(|t| t.mixer.sends.first().cloned().flatten()).map(|s| route_name(app, &s.target));
         assert_eq!(target.as_deref(), Some("Aux"), "the send moved");
         assert_eq!(app.ui.send_window, None, "no window opened");
+    }
+
+    /// Picks `item` from Kick's send A menu with the Sends Default to preference set to `default`,
+    /// and returns the send's level.
+    fn level_after_picking(existing_send: bool, default: SendsDefault, item: &str) -> Option<f32> {
+        let (mut h, kick) = kick_send_harness(existing_send);
+        h.state_mut().0.ui.sends_default = default;
+        if existing_send {
+            h.state_mut().0.run("mix.send_level", json!({"track": kick.0, "slot": 0, "db": -9.0})).unwrap();
+        }
+        h.run();
+        h.get_by_label("Send A for Kick").click();
+        h.run();
+        h.get_by_label(item).click();
+        h.run();
+        let (app, _) = h.state();
+        app.engine.session().track(kick).and_then(|t| t.mixer.sends.first().cloned().flatten()).map(|s| s.level_db)
+    }
+
+    /// A new send starts at the level set in Preferences › Mixing › Sends Default to (#1423).
+    #[test]
+    fn a_new_send_starts_at_the_sends_default_preference() {
+        let _palette = crate::theme::lock_test_palette();
+        assert_eq!(level_after_picking(false, SendsDefault::NegativeInfinity, "Aux"), Some(-144.0));
+        assert_eq!(level_after_picking(false, SendsDefault::Unity, "Aux"), Some(0.0));
+        assert_eq!(level_after_picking(false, SendsDefault::Unity, "new bus..."), Some(0.0));
+    }
+
+    /// Moving an existing send to another bus keeps its level, whatever the preference says.
+    #[test]
+    fn changing_a_sends_destination_keeps_its_level() {
+        let _palette = crate::theme::lock_test_palette();
+        assert_eq!(level_after_picking(true, SendsDefault::Unity, "Aux"), Some(-9.0));
+        assert_eq!(level_after_picking(true, SendsDefault::NegativeInfinity, "Aux"), Some(-9.0));
     }
 }

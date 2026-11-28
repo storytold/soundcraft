@@ -1,6 +1,6 @@
 # Where SoundCraft falls short of Pro Tools
 
-> **Last reviewed:** 2026-11-14 · **Last updated:** 2026-11-18 · **Change:** minor (G-06: recording to disk is done (#84, long takes #888); streaming sources remain; previously minor: G-02 shrunk: MIDI input devices work; G-03: strict external-WAV AAF import; previously minor: G-05: plugin editors on Linux/X11; previously trivial: G-09: the pt-BR catalog now covers helper-passed tooltips, the status bar, the remove-session prompt and engine error text; G-08: Frequency Shifter, 28 processors; G-04: volume automation read at every sample, #1354; G-01: `setup.playback_engine` applies the device buffer in the desktop app; G-04: Clip Looping crossfade and loop count) · **Target:** Avid Pro Tools Ultimate 2026.4.1
+> **Last reviewed:** 2026-11-14 · **Last updated:** 2026-11-25 · **Change:** minor (G-01: the Playback Engine shows the current device choice after a command changes it, and a buffer size the driver does not take is reported; previously trivial: G-04: Number of Loops accepts up to 1,000; crossfade remains open; previously minor: G-06: recording to disk is done (#84, long takes #888); streaming sources remain; previously minor: G-02 shrunk: MIDI input devices work; G-03: strict external-WAV AAF import; previously minor: G-05: plugin editors on Linux/X11; previously trivial: G-09: the pt-BR catalog now covers helper-passed tooltips, the status bar, the remove-session prompt and engine error text; G-08: Frequency Shifter, 28 processors; G-04: volume automation read at every sample, #1354; G-01: `setup.playback_engine` applies the device buffer in the desktop app; G-04: Clip Looping crossfade and loop count) · **Target:** Avid Pro Tools Ultimate 2026.4.1
 
 Every known shortfall, one entry each, ranked by how much it stops a Pro Tools user from doing
 real work in SoundCraft. This is the work list: pick from the top. Rows marked **alpha blocker**
@@ -52,10 +52,24 @@ When you close a gap, delete its entry (or shrink it) in the same PR, and bump t
   not rounded onto the window's power-of-two list. Headless (CLI, no app) still stores the request
   and returns `applied: false`, with `buffer_size` null when unset; playback does not read those
   session values.
+- **Done (2026-11-25):** the Playback Engine shows the current choice when `ui.audio_device` or
+  `setup.playback_engine` changed it while the window was closed or open, and Apply no longer puts
+  an earlier choice back. Closing the window from the menu discards unapplied edits, as its close
+  button does. A change made elsewhere that replaces unapplied edits is said in the window and the
+  status line (Pro Tools' dialog is modal, so it never meets this case). Checked on macOS (Core
+  Audio, RME UFX and a second input device).
+- **Done (2026-11-25):** a buffer size the driver does not take is reported: `ui.audio_device`,
+  `setup.playback_engine` and `setup.hardware` return a `buffer_note`, `ui.audio_device` also
+  returns the driver's range as `device.buffer_range`, and the Playback Engine shows the note under
+  Output (#1757). On macOS an RME UFX's driver allows 15–3072 frames; 4096 opens at its default
+  buffer. The note says the size the device runs at (`device.buffer_running`, from the open
+  stream), and a device that reports one size (shared-mode WASAPI reports its period, 480 frames at
+  48 kHz) is said to run only at that size. A size the driver takes while the stream runs at
+  another (a host may round it) is said too.
 - **Missing:** routing to physical channels (I/O Setup), one duplex stream on one clock (input and
   output are still separate cpal streams), latency reporting and record-offset compensation, ASIO
   in official builds (owner decision: Steinberg's SDK is proprietary or GPLv3), JACK, and
-  verification on macOS and Linux. The mix still runs in fixed 512-sample blocks.
+  verification on Linux. The mix still runs in fixed 512-sample blocks.
 - **Evidence:** code above; Playback Engine window says "Mix block size: 512 samples"; issue #42
   (no input device selection, forced monitoring feedback with virtual routing).
 - **Impact:** blocks tracking with any multichannel interface; latency makes overdubs hard.
@@ -122,8 +136,7 @@ including surround channels, instead of repeating channel zero. Clip edits, sour
 Undo/Redo and save/reopen are covered by regression tests; missing or empty media fails atomically.
 
 **Open (2026-10-25):** the Clip Looping dialog (#1030) has no option to crossfade the loops into
-each other, and its Number of Loops field stops at 512, while Loop Length and Loop Until End of
-Session or Next Clip make up to 1000 loops.
+each other.
 
 Open on 2026-10-10 (several have PRs open):
 editing #3, #5, #140, #144; clip/session #86 (PR #123), #88 (PR #130), #91 (PR #124), #92 (PR #132);
@@ -253,6 +266,8 @@ missing. Out of scope unless the owner decides otherwise.
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-11-25 | minor | G-01: the Playback Engine shows the current device choice after a command changes it, and Apply keeps it; a buffer size the driver does not take is reported, with the driver's range (#1757); estimates unchanged |
+| 2026-11-23 | trivial | G-04: Clip Looping Number of Loops accepts up to 1,000; crossfade remains open; estimates unchanged |
 | 2026-11-14 | minor | G-03: strict external-WAV AAF import with bounded property caching; AAF/OMF export, OMF import and `.ptx` remain; estimates unchanged |
 | 2026-11-13 | trivial | G-09: the pt-BR catalog now covers tooltips localized inside buttons and toggles, the Edit-window status bar, the remove-session question, the send help text and engine errors shown in the status line; estimates unchanged |
 | 2026-11-09 | trivial | G-08: 28 processors + 3 instruments with the Frequency Shifter |

@@ -16,17 +16,20 @@ pub const UPDATE_APP: craft_update::app::App = craft_update::app::App {
 pub mod aaf_import;
 pub mod appearance;
 pub mod bounce;
+pub mod channel_titles;
 pub mod control;
 pub mod credits;
 pub mod dialogs;
 pub mod docking;
 pub mod edit_window;
 pub mod fonts;
+pub mod framework;
 pub mod icons;
 pub mod import;
 pub mod localization;
 pub mod menus;
 pub mod mix_window;
+pub mod os_window;
 pub mod palette;
 pub mod panels;
 pub mod preferences;
@@ -60,13 +63,32 @@ pub use panels::video_window;
 pub use panels::windows;
 
 mod app;
+mod capture;
 mod services;
 mod state;
 
 #[cfg(test)]
+mod exit_hook_tests;
+
+#[cfg(test)]
 use app::{automation_step_due, editor_changes, editor_states_due, failed_plugin_status};
+pub use channel_titles::{os_title, os_title_with_section};
 pub use services::Services;
 pub use state::{DragSource, MainWindow};
+
+/// The version line this build reports: the app binary sets the compiled identity once at start-up
+/// (a Nightly build's exact feed version), so About and diagnostics never guess it.
+static BUILD_VERSION: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+
+/// Record the compiled version. Later calls are ignored: the first value is the process's build.
+pub fn set_build_version(version: String) {
+    let _ = BUILD_VERSION.set(version);
+}
+
+/// The compiled version, or the crate's own when no binary recorded one (tests, the web build).
+pub fn build_version() -> &'static str {
+    BUILD_VERSION.get().map_or(env!("CARGO_PKG_VERSION"), String::as_str)
+}
 
 /// UI state (serde, so agents can read and set it).
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -127,6 +149,8 @@ pub struct UiState {
     pub preferences_window_pos: Option<[f32; 2]>,
     pub reduce_visual_effects: preferences::ReduceVisualEffects,
     pub undo_levels: usize,
+    /// The level a send made in the Mix window starts at (Preferences › Mixing).
+    pub sends_default: preferences::SendsDefault,
     /// The audio device choice (Setup › Playback Engine), kept with the preferences: per machine.
     pub audio: soundcraft_playback::AudioConfig,
     /// The Mix window lives in its own native window (Window › Mix in Separate Window); the main
@@ -205,6 +229,7 @@ impl Default for UiState {
             preferences_window_pos: None,
             reduce_visual_effects: preferences::ReduceVisualEffects::default(),
             undo_levels: 64,
+            sends_default: preferences::SendsDefault::default(),
             audio: soundcraft_playback::AudioConfig::default(),
             mix_separate: false,
             show_io_setup: false,
@@ -358,6 +383,8 @@ pub struct SoundApp {
     synthetic_pointer_active: bool,
     /// Cancel that press before the next egui input pass, without a release click/drop.
     cancel_synthetic_pointer: bool,
+    /// `ui.key` requests waiting for the framework's injected input to run.
+    injected_acks: VecDeque<control::InjectedAck>,
     /// A key/text batch crossed its deadline after [`Self::raw_input_hook`] had already appended it
     /// to the pass. Do not dispatch that stale copy through shortcuts or widgets.
     cancel_synthetic_keys: bool,
@@ -427,6 +454,12 @@ pub struct SoundApp {
     theme_applied: Option<bool>,
     /// Last panel host context, used to cancel renderer-owned gestures on explicit replacement.
     pub(crate) docking_context: Option<egui::Context>,
+    /// The workspaces and panel specs the Edit and Mix docks show.
+    pub(crate) docks: docking::LiveDocks,
+    /// The framework dialogs (update check and prompt); they run once per pass after the app's own UI.
+    pub framework_dialogs: craft_ui::dialog::DialogHost,
+    /// Who SoundCraft is to the framework's components.
+    pub(crate) framework_host: std::sync::Arc<craft_host::Host>,
     /// Transport simulation when there is no player (tests, offscreen renders).
     sim: Option<(Samples, Option<Samples>, Option<Range>)>,
     /// When Record last found nothing to record on, and why: the Record buttons show it for a moment.
@@ -451,6 +484,8 @@ pub struct SoundApp {
     pub frame_ms: f32,
     last_frame: Option<f64>,
     last_meter_poll: f64,
+    /// When a meter take last brought new audio blocks (uptime, seconds).
+    last_meter_block: f64,
     /// Movies for the Video window and Video track (decoded in the background).
     pub video: video_track::VideoPool,
     /// The Bounce Mix in progress, rendered a slice per frame.

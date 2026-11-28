@@ -613,13 +613,23 @@ mod tests {
         });
         let (stream, _) = remote.connection().unwrap();
         writeln!(stream, "bytes the app never reads").unwrap();
-        // Wait until the reset has arrived (the read stops timing out).
+        // Wait until the reset has arrived (the read stops timing out) and a write on
+        // this socket fails, so the call below cannot be counted as already sent on it.
+        // On some stacks (FreeBSD among them) a read can see the close while a later
+        // write still succeeds, which made the client report the mutation unconfirmed
+        // without opening the second connection the test is checking.
         let mut byte = [0u8; 1];
         for _ in 0..20 {
             match stream.read(&mut byte) {
                 Err(e) if matches!(e.kind(), io::ErrorKind::TimedOut | io::ErrorKind::WouldBlock) => {}
                 _ => break,
             }
+        }
+        for _ in 0..20 {
+            if writeln!(stream, "probe").is_err() {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(20));
         }
         let error = remote.call("engine.execute", json!({"command": "track.new"})).unwrap_err();
         assert_eq!(seen.load(Ordering::SeqCst), 1, "the call went out once, on the second connection: {error}");

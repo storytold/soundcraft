@@ -512,16 +512,23 @@ mod tests {
         }
     }
 
-    /// The path prompt's field label and the Auto Pan "Path" choice are different strings
-    /// (a file path and a panning trajectory), as are the Strip Silence button and the
-    /// Channel Strip plug-in's short name: each pair translates as its own key (#1610, #1611).
+    /// The Strip Silence dialog's action button and the Channel Strip plug-in's short name are
+    /// different strings ("remove" vs a channel strip): the button keeps the dialog's own key,
+    /// so a translation gives each its word (#1610).
     #[test]
-    fn prompt_field_and_strip_button_translate_as_their_own_keys() {
+    fn strip_button_translates_as_its_own_key() {
+        let pt = Language::PortugueseBrazil;
+        assert_eq!(pt.text("Strip Silence"), "Remover silêncio", "the dialog's action button");
+        assert_eq!(pt.text("Strip"), "Canal", "the Channel Strip plug-in's short name keeps its own key");
+    }
+
+    /// The path prompt's field label and the Auto Pan "Path" choice are different strings
+    /// (a file path and a panning trajectory): each translates as its own key (#1611).
+    #[test]
+    fn prompt_field_translates_as_its_own_key() {
         let pt = Language::PortugueseBrazil;
         assert_eq!(pt.text("File path"), "Caminho do arquivo", "the prompt's field, not the Auto Pan choice");
         assert_eq!(pt.text("Path"), "Caminho", "the Auto Pan choice keeps its own key");
-        assert_eq!(pt.text("Strip Silence"), "Remover silêncio", "the dialog's action button");
-        assert_eq!(pt.text("Strip"), "Canal", "the Channel Strip plug-in's short name keeps its own key");
     }
 
     #[test]

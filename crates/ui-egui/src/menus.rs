@@ -82,6 +82,7 @@ pub const UI_COMMANDS: &[(&str, &str, &str, Option<&str>)] = &[
     ("ui.theme", "Appearance", "", None),
     ("ui.reduce_visual_effects", "Reduce Visual Effects", "", None),
     ("ui.undo_levels", "Levels of Undo", "", None),
+    ("ui.sends_default", "Sends Default to", "", None),
 ];
 
 /// Extra catalog mappings handled by the UI layer.
@@ -282,7 +283,8 @@ pub fn menu_bar(app: &mut SoundApp, ui: &mut egui::Ui) {
                         if ui.add_enabled(preferences_enabled, egui::Button::new(crate::localization::text("Preferences..."))).clicked() {
                             let _ = app.run("setup.preferences", json!({"value": true}));
                         }
-                        if ui.button(crate::localization::text("Check for Updates…")).clicked() {
+                        // Nightly has no in-app updater: ArtCraft Launcher installs and updates it.
+                        if app.update_services_allowed() && ui.button(crate::localization::text("Check for Updates…")).clicked() {
                             let _ = app.run("app.checkForUpdates", json!({}));
                         }
                         if ui.button(crate::localization::text("Session Info")).clicked() {
@@ -647,6 +649,13 @@ pub fn run_ui_command(app: &mut SoundApp, id: &str, p: &Value) -> Option<Result<
             json!({"language": language.id()})
         }
         "app.checkForUpdates" | "help.checkForUpdates" => {
+            // A Nightly launch has no in-app updater, so say where its updates come from instead of
+            // reporting a check that will never run.
+            if !app.update_services_allowed() {
+                let message = "SoundCraft Nightly is updated by ArtCraft Launcher; this build has no update check".to_owned();
+                app.ui.status = message.clone();
+                return Some(Err(message));
+            }
             crate::updates_ui::check(app);
             json!({})
         }
@@ -841,6 +850,20 @@ pub fn run_ui_command(app: &mut SoundApp, id: &str, p: &Value) -> Option<Result<
             }
             json!({"levels": app.ui.undo_levels})
         }
+        "ui.sends_default" => {
+            // No `level` reads the value back; a `level` that is not a string is an error, so
+            // `{"level": 0}` cannot look like it set 0 dB while changing nothing.
+            let level = match p.get("level") {
+                None => return Some(Ok(json!({"level": app.ui.sends_default.id()}))),
+                Some(Value::String(level)) => level.as_str(),
+                Some(other) => return Some(Err(format!("send default must be the string \"-inf\" or \"0\", not {other}"))),
+            };
+            let Some(level) = crate::preferences::SendsDefault::parse(level) else {
+                return Some(Err(format!("unknown send default `{level}` (-inf or 0)")));
+            };
+            app.ui.sends_default = level;
+            json!({"level": level.id()})
+        }
         "ui.set" => match serde_json::to_value(&app.ui) {
             Ok(mut cur) => {
                 if let (Some(obj), Some(patch)) = (cur.as_object_mut(), p.as_object()) {
@@ -858,6 +881,8 @@ pub fn run_ui_command(app: &mut SoundApp, id: &str, p: &Value) -> Option<Result<
                         app.ui = ns;
                         app.ui.undo_levels = app.ui.undo_levels.clamp(1, 64);
                         app.engine.set_history_limit(app.ui.undo_levels);
+                        // The list is newest first, so this keeps the newest, as `recent::note` does.
+                        app.ui.recent_sessions.truncate(crate::dialogs::recent::MAX_RECENT);
                         if closed_preferences {
                             app.preferences.discard_draft();
                         }
@@ -903,6 +928,22 @@ mod tests {
         assert!(!item_state(&app, "File > Save Session", Some("session.save")).0);
     }
 
+    /// A Nightly launch has no in-app updater: the command says where its updates come from instead
+    /// of reporting a check that can never run, whichever surface (menu, palette, automation) sent it.
+    #[test]
+    fn a_nightly_launch_refuses_the_update_check_command() {
+        let mut app = SoundApp::new(soundcraft_engine::Engine::default(), None, Services::default());
+        // Stable, the tests' launch identity, still queues the check.
+        assert!(app.run("app.checkForUpdates", json!({})).is_ok());
+
+        app.set_update_services_for_test(false);
+        let refused = app.run("app.checkForUpdates", json!({}));
+        let message = refused.unwrap_err();
+        assert!(message.contains("ArtCraft Launcher"), "unexpected refusal: {message}");
+        assert_eq!(app.ui.status, message);
+        assert!(app.run("help.checkForUpdates", json!({})).is_err());
+    }
+
     /// Re-selecting Preferences through either menu keeps its modal window open.
     #[test]
     fn preferences_menu_always_opens_instead_of_toggling() {
@@ -925,6 +966,103 @@ mod tests {
         let result = app.run("ui.set", json!({"undo_levels": 100})).unwrap();
         assert_eq!(result["ui"]["undo_levels"], 64);
         assert_eq!((app.ui.undo_levels, app.engine.history_limit), (64, 64));
+    }
+
+    /// The Sends Default to preference reads back, takes -inf or 0, and rejects anything else.
+    #[test]
+    fn sends_default_sets_reads_and_rejects_unknown_levels() {
+        use crate::preferences::SendsDefault;
+        let mut app = SoundApp::new(soundcraft_engine::Engine::default(), None, Services::default());
+        assert_eq!(app.run("ui.sends_default", json!({})).unwrap(), json!({"level": "-inf"}));
+        assert_eq!(app.run("ui.sends_default", json!({"level": "0"})).unwrap(), json!({"level": "0"}));
+        assert_eq!(app.ui.sends_default, SendsDefault::Unity);
+        assert!(app.run("ui.sends_default", json!({"level": "-6"})).is_err());
+        assert_eq!(app.ui.sends_default, SendsDefault::Unity, "a rejected level changes nothing");
+        assert_eq!(app.run("ui.sends_default", json!({"level": "-inf"})).unwrap(), json!({"level": "-inf"}));
+        assert_eq!(app.ui.sends_default, SendsDefault::NegativeInfinity, "switching back to −∞ dB works");
+        assert!(!app.engine.is_dirty(), "a preference is not a document edit");
+    }
+
+    /// A `level` that is present but not a string is an error, not a read-back: `{"level": 0}` must
+    /// not look like it set 0 dB while changing nothing.
+    #[test]
+    fn sends_default_rejects_a_non_string_level() {
+        use crate::preferences::SendsDefault;
+        let mut app = SoundApp::new(soundcraft_engine::Engine::default(), None, Services::default());
+        for bad in [json!(0), json!(null), json!(false), json!(["0"])] {
+            assert!(app.run("ui.sends_default", json!({"level": bad})).is_err(), "{bad} accepted");
+            assert_eq!(app.ui.sends_default, SendsDefault::NegativeInfinity, "{bad} changed the setting");
+        }
+    }
+
+    /// `ui.set` takes the same `-inf` and `0` as `ui.sends_default`, and a bad value changes nothing.
+    #[test]
+    fn ui_set_takes_the_same_sends_default_levels() {
+        use crate::preferences::SendsDefault;
+        let mut app = SoundApp::new(soundcraft_engine::Engine::default(), None, Services::default());
+        let result = app.run("ui.set", json!({"sends_default": "0"})).unwrap();
+        assert_eq!((result["ui"]["sends_default"].clone(), app.ui.sends_default), (json!("0"), SendsDefault::Unity));
+        let result = app.run("ui.set", json!({"sends_default": "-inf"})).unwrap();
+        assert_eq!((result["ui"]["sends_default"].clone(), app.ui.sends_default), (json!("-inf"), SendsDefault::NegativeInfinity));
+        app.run("ui.set", json!({"sends_default": "0"})).unwrap();
+        for bad in [json!("unity"), json!("-6"), json!(0)] {
+            assert!(app.run("ui.set", json!({"sends_default": bad})).is_err(), "{bad} accepted");
+            assert_eq!(app.ui.sends_default, SendsDefault::Unity, "{bad} changed the setting");
+        }
+    }
+
+    fn recent_paths(count: usize) -> Vec<String> {
+        (0..count).map(|i| format!("{i}.scraft")).collect()
+    }
+
+    /// `ui.set` keeps the newest `MAX_RECENT` recent sessions, in order, and answers with that list.
+    #[test]
+    fn ui_set_keeps_at_most_ten_recent_sessions() {
+        use crate::dialogs::recent::MAX_RECENT;
+        let mut app = SoundApp::new(soundcraft_engine::Engine::default(), None, Services::default());
+        for count in [MAX_RECENT + 1, 1000] {
+            let result = app.run("ui.set", json!({"recent_sessions": recent_paths(count)})).unwrap();
+            assert_eq!(app.ui.recent_sessions, recent_paths(MAX_RECENT), "{count} entries: the first ten, in order");
+            assert_eq!(result["ui"]["recent_sessions"], json!(recent_paths(MAX_RECENT)), "{count} entries: the answer shows the kept list");
+        }
+    }
+
+    /// A list within the limit, an empty one included, is stored as given.
+    #[test]
+    fn ui_set_leaves_a_recent_list_within_the_limit_alone() {
+        use crate::dialogs::recent::MAX_RECENT;
+        let mut app = SoundApp::new(soundcraft_engine::Engine::default(), None, Services::default());
+        for count in [MAX_RECENT, MAX_RECENT - 1, 1, 0] {
+            let result = app.run("ui.set", json!({"recent_sessions": recent_paths(count)})).unwrap();
+            assert_eq!(app.ui.recent_sessions, recent_paths(count), "{count} entries");
+            assert_eq!(result["ui"]["recent_sessions"], json!(recent_paths(count)), "{count} entries");
+        }
+    }
+
+    /// Capping the list does not drop the other fields of the same call.
+    #[test]
+    fn ui_set_applies_other_fields_beside_a_capped_recent_list() {
+        use crate::dialogs::recent::MAX_RECENT;
+        let mut app = SoundApp::new(soundcraft_engine::Engine::default(), None, Services::default());
+        let result = app.run("ui.set", json!({"recent_sessions": recent_paths(25), "undo_levels": 7})).unwrap();
+        assert_eq!((app.ui.recent_sessions.len(), app.ui.undo_levels, app.engine.history_limit), (MAX_RECENT, 7, 7));
+        assert_eq!(result["ui"]["undo_levels"], 7);
+        // A call that does not name the list leaves it as it was.
+        app.run("ui.set", json!({"undo_levels": 9})).unwrap();
+        assert_eq!(app.ui.recent_sessions, recent_paths(MAX_RECENT));
+    }
+
+    /// A list that is not an array of strings is refused, however long, and nothing changes.
+    #[test]
+    fn ui_set_refuses_a_recent_list_of_the_wrong_type() {
+        let mut app = SoundApp::new(soundcraft_engine::Engine::default(), None, Services::default());
+        app.run("ui.set", json!({"recent_sessions": recent_paths(3), "undo_levels": 7})).unwrap();
+        let numbers: Vec<u32> = (0..25).collect();
+        for bad in [json!("a.scraft"), json!(5), json!(null), json!({"0": "a.scraft"}), json!(["a.scraft", 5]), json!(numbers)] {
+            let error = app.run("ui.set", json!({"recent_sessions": bad, "undo_levels": 20})).unwrap_err();
+            assert!(error.starts_with("bad ui state"), "{bad}: {error}");
+            assert_eq!((app.ui.recent_sessions.clone(), app.ui.undo_levels), (recent_paths(3), 7), "{bad} changed the state");
+        }
     }
 
     #[test]

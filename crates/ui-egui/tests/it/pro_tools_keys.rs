@@ -202,6 +202,7 @@ fn the_piano_roll_leaves_modified_arrows_to_the_shortcuts() {
     app.ui.show_midi_editor = true;
     app.run("edit.select", json!({"tracks": ["Keys"]})).unwrap();
     let ctx = egui::Context::default();
+    soundcraft_ui_egui::framework::install_headless(&ctx);
     let frame = |app: &mut SoundApp, events: Vec<Event>| {
         let raw = RawInput { screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(1600.0, 1000.0))), events, ..Default::default() };
         ctx.run_ui(raw, |ui| {
@@ -241,6 +242,7 @@ fn the_piano_roll_selection_follows_notes_the_arrows_move_past_others() {
     app.ui.show_midi_editor = true;
     app.run("edit.select", json!({"tracks": ["Keys"]})).unwrap();
     let ctx = egui::Context::default();
+    soundcraft_ui_egui::framework::install_headless(&ctx);
     let frame = |app: &mut SoundApp, events: Vec<Event>| {
         let raw = RawInput { screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(1600.0, 1000.0))), events, ..Default::default() };
         ctx.run_ui(raw, |ui| {
@@ -313,5 +315,59 @@ fn cmd_6_and_7_choose_the_pencil_and_the_smart_tool() {
         }
         press(&ctx, &mut app, Key::Num7, cmd);
         assert_eq!(app.engine.session().edit.tool.id(), "smart", "{os:?}");
+    }
+}
+
+/// What egui-winit sends for a real press of the `key` key with Shift and Cmd (Ctrl off macOS) held: the
+/// modifier keys first, each with its own `ModifiersChanged`, then the key by the name the layout gives
+/// it, with its US-layout position as `physical_key`, and no `Text` while Cmd or Ctrl is down.
+fn host_chord(os: OperatingSystem, cmd: Modifiers, logical: Key, physical: Key) -> Vec<Event> {
+    let command_key = if os == OperatingSystem::Mac { Key::SuperLeft } else { Key::ControlLeft };
+    let shift_held = Modifiers { shift: true, ..cmd };
+    let key = |key, physical_key, pressed, modifiers| Event::Key { key, physical_key, pressed, repeat: false, modifiers };
+    vec![
+        key(command_key, Some(command_key), true, Modifiers::NONE),
+        Event::ModifiersChanged(cmd),
+        key(Key::ShiftLeft, Some(Key::ShiftLeft), true, cmd),
+        Event::ModifiersChanged(shift_held),
+        key(logical, Some(physical), true, shift_held),
+        key(logical, Some(physical), false, shift_held),
+    ]
+}
+
+fn host_pass(ctx: &egui::Context, app: &mut SoundApp, events: Vec<Event>) {
+    ctx.run_ui(RawInput { events, ..Default::default() }, |ui| shortcuts::handle(app, ui.ctx())).textures_delta.clear();
+}
+
+/// Cmd+Shift+. is All MIDI Notes Off (Pro Tools p.1061), also under Commands Keyboard Focus, where a
+/// bare `.` nudges. macOS reports the key from the layout's Cmd table as `.`; Windows and Linux report
+/// `>`, which egui has no key for, so the key arrives by its position.
+#[test]
+fn a_host_cmd_shift_period_turns_all_notes_off_and_does_not_nudge() {
+    for (os, cmd) in OSES {
+        let (ctx, mut app) = rig(os);
+        app.run("options.keyboard_focus", json!({"focus": "commands"})).unwrap();
+        app.run("edit.select", json!({"tracks": ["Kick"], "start": 48_000, "end": 96_000})).unwrap();
+        app.engine.transport_requests.clear();
+        host_pass(&ctx, &mut app, host_chord(os, cmd, Key::Period, Key::Period));
+        assert_eq!(app.engine.transport_requests, [TransportRequest::AllNotesOff], "{os:?}");
+        assert_eq!(start(&app), 48_000, "{os:?}: the chord nudged the selection");
+    }
+}
+
+/// Shift+/ is Link Timeline and Edit Selection. Every platform reports that press as `?`.
+#[test]
+fn a_host_shift_slash_toggles_link_timeline_and_edit_selection() {
+    for (os, _) in OSES {
+        let (ctx, mut app) = rig(os);
+        let linked = app.engine.session().edit.link_timeline_edit;
+        let shift = Modifiers::SHIFT;
+        let key = |key, physical_key, pressed| Event::Key { key, physical_key, pressed, repeat: false, modifiers: shift };
+        host_pass(
+            &ctx,
+            &mut app,
+            vec![Event::ModifiersChanged(shift), key(Key::Questionmark, Some(Key::Slash), true), key(Key::Questionmark, Some(Key::Slash), false)],
+        );
+        assert_ne!(app.engine.session().edit.link_timeline_edit, linked, "{os:?}");
     }
 }

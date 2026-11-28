@@ -59,12 +59,22 @@ fn search_chord(m: Modifiers, mac: bool) -> bool {
 /// resolves to, not by its keys.
 const REPEATING: [&str; 3] = ["view.zoom_in", "view.zoom_out", "view.waveform_zoom"];
 
+/// Whether a dialog that holds back the shortcuts is open.
+fn dialog_open(app: &SoundApp) -> bool {
+    app.dialogs.open.is_some() || app.ui.show_preferences
+}
+
+/// Whether Tab has something to do in the focused session view: the shortcuts run and `edit.tab` has a stop ahead.
+pub(crate) fn tab_has_work(app: &SoundApp) -> bool {
+    !dialog_open(app) && soundcraft_engine::cmd::tab_stop_ahead(app.engine.session())
+}
+
 /// Dispatch global keyboard shortcuts once no text field or dialog wants input, ignoring non-scripted auto-repeats
 /// (except the [`REPEATING`] zoom commands) while still running a host press alongside a scripted one.
 pub fn handle(app: &mut SoundApp, ctx: &egui::Context) {
     // Cmd+= and Cmd+0 are Mix/Edit and Quantize to Grid, not egui's built-in interface zoom.
     ctx.options_mut(|o| o.zoom_with_keyboard = false);
-    if ctx.egui_wants_keyboard_input() || app.dialogs.open.is_some() || app.ui.show_preferences {
+    if crate::framework::widget_has_keyboard(ctx) || dialog_open(app) {
         return;
     }
     // A scripted press is identified by its exact position in this pass's events, not by matching
@@ -73,19 +83,21 @@ pub fn handle(app: &mut SoundApp, ctx: &egui::Context) {
     // an event's `repeat` flag from the physical key state, which says nothing about whether that
     // particular event was injected.
     let scripted = app.scripted_key_press_indices();
-    let events: Vec<(Key, Modifiers, bool)> = ctx.input(|i| {
+    let events: Vec<(Key, Option<Key>, Modifiers, bool)> = ctx.input(|i| {
         i.events
             .iter()
             .enumerate()
             .filter_map(|(index, e)| match e {
-                egui::Event::Key { key, pressed: true, repeat, modifiers, .. } => Some((*key, *modifiers, *repeat && !scripted.contains(&index))),
+                egui::Event::Key { key, physical_key, pressed: true, repeat, modifiers } => {
+                    Some((*key, *physical_key, *modifiers, *repeat && !scripted.contains(&index)))
+                }
                 _ => None,
             })
             .collect()
     });
     // Cmd and Ctrl are separate keys only on macOS (asked at runtime so the web build in a Mac browser agrees).
     let mac = ctx.os() == egui::os::OperatingSystem::Mac;
-    for (key, mods, repeat) in events {
+    for (key, physical, mods, repeat) in events {
         if repeat {
             if let Some((id, params)) = repeating_command(key, mods, mac) {
                 let _ = app.run(id, params);
@@ -95,19 +107,55 @@ pub fn handle(app: &mut SoundApp, ctx: &egui::Context) {
         if fixed(app, key, mods, mac) {
             continue;
         }
-        if let Some(id) = command_for(key, mods, mac) {
-            if crate::menus::invoke_shortcut_dialog(app, id) {
-                continue;
-            }
-            let _ = app.run(id, json!({}));
-        } else if let Some(c) =
-            crate::menus::UI_COMMANDS.iter().find(|c| c.3.and_then(parse).is_some_and(|(m, k)| k == key && mods_match(m, mods, mac)))
+        if !registered(app, key, mods, mac)
+            && let Some(base) = shifted_symbol_base(key, physical, mods)
         {
-            let _ = app.run(c.0, json!({}));
+            registered(app, base, mods, mac);
         }
     }
-    // Tab moves the insertion point here, so egui must not also hand focus to the first widget: that would block every shortcut.
-    ctx.memory_mut(|m| m.move_focus(egui::FocusDirection::None));
+}
+
+/// Run the registry or UI command whose shortcut is this chord. Returns whether one matched.
+fn registered(app: &mut SoundApp, key: Key, mods: Modifiers, mac: bool) -> bool {
+    if let Some(id) = command_for(key, mods, mac) {
+        if !crate::menus::invoke_shortcut_dialog(app, id) {
+            let _ = app.run(id, json!({}));
+        }
+        true
+    } else if let Some(c) = crate::menus::UI_COMMANDS.iter().find(|c| c.3.and_then(parse).is_some_and(|(m, k)| k == key && mods_match(m, mods, mac)))
+    {
+        let _ = app.run(c.0, json!({}));
+        true
+    } else {
+        false
+    }
+}
+
+/// The key a shortcut names for a Shift chord the layout reports by its shifted character. With
+/// Shift held the platform reports the `/` key as `?` (and `\` as `|`, `[` as `{`, ...), so
+/// "Shift+/" never matched a real press, only a scripted one built from the shortcut string. The key's
+/// position (`physical_key`, named after the US layout) gives the key back. Only punctuation: a letter
+/// or digit position must not stand in for a symbol another layout types there.
+fn shifted_symbol_base(key: Key, physical: Option<Key>, mods: Modifiers) -> Option<Key> {
+    let shifted = matches!(key, Key::Questionmark | Key::Pipe | Key::OpenCurlyBracket | Key::CloseCurlyBracket | Key::Colon | Key::Plus);
+    physical.filter(|p| {
+        mods.shift
+            && shifted
+            && matches!(
+                p,
+                Key::Slash
+                    | Key::Backslash
+                    | Key::OpenBracket
+                    | Key::CloseBracket
+                    | Key::Semicolon
+                    | Key::Equals
+                    | Key::Comma
+                    | Key::Period
+                    | Key::Quote
+                    | Key::Minus
+                    | Key::Backtick
+            )
+    })
 }
 
 /// The command a host auto-repeat of this chord runs, if it is one of [`REPEATING`]. A repeat
@@ -158,7 +206,7 @@ fn fixed(app: &mut SoundApp, key: Key, m: Modifiers, mac: bool) -> bool {
                 // No MIDI target can consume the notes any more: drop the stale selection.
                 app.midi.selected.clear();
             }
-            if app.ui.show_midi_editor && !app.midi.selected.is_empty() {
+            if midi_editor_drawn(app) && !app.midi.selected.is_empty() {
                 return false;
             }
             let _ = app.run("edit.clear", json!({}));
@@ -461,6 +509,17 @@ fn centre_on_selection(app: &mut SoundApp, end: bool) -> bool {
     let at = if end { sel.end } else { sel.start };
     let _ = app.run("view.scroll", json!({"to": at.saturating_sub(soundcraft_time::to_samples(half)).max(0)}));
     true
+}
+
+/// Whether the MIDI editor's body was drawn on the last frame, and is still in front: docking
+/// records its rect only when it draws the body (shortcuts run before the panels draw), and a
+/// layout change since, such as a tab moved over it, has not redrawn the dock yet. Open behind
+/// another tab, its notes aren't on screen and its keys aren't read, so Delete is the Edit
+/// window's Clear there (#1627).
+fn midi_editor_drawn(app: &SoundApp) -> bool {
+    app.ui.show_midi_editor
+        && app.ui.docking.layout().panel_state(&crate::docking::Panel::Midi) == craft_behavior::dock::PanelState::Front
+        && app.docking_context.as_ref().is_some_and(|c| c.data(|d| d.get_temp::<egui::Rect>(egui::Id::unique("soundcraft-midi-body"))).is_some())
 }
 
 /// Whether the pointer is over the MIDI editor, whose piano roll moves the selected notes with the arrow keys.
