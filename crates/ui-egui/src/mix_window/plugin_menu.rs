@@ -1,8 +1,42 @@
 use super::{Color32, Rect, SoundApp, TrackId, Ui, json, pos2, vec2};
 
+/// The first plugin menu or search opens a one-time background scan; until it lands the menus read
+/// `cached()` and say so, so a large collection never freezes the UI thread (#596). 0 idle, 1
+/// running, 2 done — the guard flips it to done even if a scan unwinds, so the Scan button can retry.
+static HOSTED_SCAN: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
+
+struct HostedScanDone;
+
+impl Drop for HostedScanDone {
+    fn drop(&mut self) {
+        HOSTED_SCAN.store(2, std::sync::atomic::Ordering::Relaxed);
+    }
+}
+
+fn start_hosted_scan(ui: &Ui) {
+    use std::sync::atomic::Ordering::Relaxed;
+    if HOSTED_SCAN.compare_exchange(0, 1, Relaxed, Relaxed).is_err() {
+        return;
+    }
+    let ctx = ui.ctx().clone();
+    if std::thread::Builder::new()
+        .name("plugin-scan".into())
+        .spawn(move || {
+            let _done = HostedScanDone;
+            soundcraft_clap_host::scan();
+            soundcraft_vst3_host::scan();
+            ctx.request_repaint();
+        })
+        .is_err()
+    {
+        HOSTED_SCAN.store(0, Relaxed);
+    }
+}
+
 /// An insert's menu: a search field that takes typing at once, then (until something is typed)
 /// Bypass and removal and the plugins by category and format.
 pub fn plugin_menu(app: &mut SoundApp, ui: &mut Ui, id: TrackId, slot: usize, occupied: bool) {
+    start_hosted_scan(ui);
     let search = MenuSearch::show(ui, egui::Id::unique(("plugin-search", id.0, slot)), crate::localization::text("Search plugins…"));
     if search.typing() {
         if let Some(plugin) = plugin_search(ui, &search, false) {
@@ -43,6 +77,7 @@ pub fn plugin_menu(app: &mut SoundApp, ui: &mut Ui, id: TrackId, slot: usize, oc
 /// (until something is typed) its instrument's editor and the built-in, CLAP, VST3 and Audio Units
 /// instruments.
 pub fn instrument_menu(app: &mut SoundApp, ui: &mut Ui, id: TrackId) {
+    start_hosted_scan(ui);
     let slot = soundcraft_mix::INSTRUMENT_SLOT;
     let search = MenuSearch::show(ui, egui::Id::unique(("instrument-search", id.0)), crate::localization::text("Search instruments…"));
     if search.typing() {
@@ -148,11 +183,10 @@ fn plugin_search(ui: &mut Ui, search: &MenuSearch, instruments: bool) -> Option<
     if clap.is_none() || vst3.is_none() {
         ui.separator();
         ui.horizontal(|ui| {
-            if clap.is_none() && ui.small_button(crate::localization::text("Scan CLAP")).clicked() {
-                soundcraft_clap_host::scan();
-            }
-            if vst3.is_none() && ui.small_button(crate::localization::text("Scan VST3")).clicked() {
-                soundcraft_vst3_host::scan();
+            if ui.small_button(crate::localization::text("Scan CLAP/VST3")).clicked() {
+                // an explicit ask retries a scan that finished without caching (never while one runs)
+                HOSTED_SCAN.compare_exchange(2, 0, std::sync::atomic::Ordering::Relaxed, std::sync::atomic::Ordering::Relaxed).ok();
+                start_hosted_scan(ui);
             }
         });
     }
@@ -255,19 +289,34 @@ struct MenuPlugin {
 }
 
 /// The CLAP, VST3 and (on macOS) Audio Units submenus, of effects or of instruments; returns the
-/// id picked. Each format is scanned the first time its submenu opens, then cached by its host.
+/// id picked. CLAP/VST3 scans run on the background thread `start_hosted_scan` spawns (#596), so a
+/// submenu says the scan is still running until `cached()` fills in.
 fn hosted_menus(ui: &mut Ui, instruments: bool) -> Option<String> {
     let mut picked = None;
-    ui.menu_button(crate::localization::text("CLAP"), |ui| {
-        let list = soundcraft_clap_host::scan().into_iter().filter(|d| d.is_instrument == instruments);
-        if let Some(p) = vendor_menus(ui, list.map(|d| MenuPlugin { id: d.id, name: d.name, vendor: d.vendor }).collect(), "No CLAP plugins found") {
-            picked = Some(p);
+    ui.menu_button(crate::localization::text("CLAP"), |ui| match soundcraft_clap_host::cached() {
+        Some(list) => {
+            let list = list.into_iter().filter(|d| d.is_instrument == instruments);
+            if let Some(p) =
+                vendor_menus(ui, list.map(|d| MenuPlugin { id: d.id, name: d.name, vendor: d.vendor }).collect(), "No CLAP plugins found")
+            {
+                picked = Some(p);
+            }
+        }
+        None => {
+            ui.weak(crate::localization::text("Scanning plugins…"));
         }
     });
-    ui.menu_button(crate::localization::text("VST3"), |ui| {
-        let list = soundcraft_vst3_host::scan().into_iter().filter(|d| d.is_instrument == instruments);
-        if let Some(p) = vendor_menus(ui, list.map(|d| MenuPlugin { id: d.id, name: d.name, vendor: d.vendor }).collect(), "No VST3 plugins found") {
-            picked = Some(p);
+    ui.menu_button(crate::localization::text("VST3"), |ui| match soundcraft_vst3_host::cached() {
+        Some(list) => {
+            let list = list.into_iter().filter(|d| d.is_instrument == instruments);
+            if let Some(p) =
+                vendor_menus(ui, list.map(|d| MenuPlugin { id: d.id, name: d.name, vendor: d.vendor }).collect(), "No VST3 plugins found")
+            {
+                picked = Some(p);
+            }
+        }
+        None => {
+            ui.weak(crate::localization::text("Scanning plugins…"));
         }
     });
     if cfg!(target_os = "macos") {

@@ -7,7 +7,7 @@ use crate::{AUDIO_MODULE_CLASS, Vst3Descriptor, Vst3Error, parse_id};
 use soundcraft_dsp::{ParamInfo, Plugin, PluginInfo, Taper, Unit};
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
-use std::sync::{Mutex, OnceLock, PoisonError};
+use std::sync::{Mutex, OnceLock, PoisonError, TryLockError};
 
 /// Most labels read for a stepped parameter (more steps are shown as a plain range).
 const MAX_CHOICES: i32 = 128;
@@ -87,8 +87,14 @@ pub fn scan() -> Vec<Vst3Descriptor> {
     ensure_scanned(&mut r).clone()
 }
 
+/// The last completed scan, or `None` before one lands and while the registry is busy — a scan
+/// or instantiate holds the mutex, and a UI frame must not wait on it (#596).
 pub fn cached() -> Option<Vec<Vst3Descriptor>> {
-    registry().lock().unwrap_or_else(PoisonError::into_inner).scanned.clone()
+    match registry().try_lock() {
+        Ok(r) => r.scanned.clone(),
+        Err(TryLockError::Poisoned(p)) => p.into_inner().scanned.clone(),
+        Err(TryLockError::WouldBlock) => None,
+    }
 }
 
 pub fn rescan() -> Vec<Vst3Descriptor> {
@@ -257,6 +263,18 @@ pub fn plugin_info(id: &str) -> Option<&'static PluginInfo> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cached_does_not_block_behind_a_held_registry_lock() {
+        // #596: the UI reads cached() every frame while the scan thread holds the registry.
+        let guard = registry().lock().unwrap_or_else(PoisonError::into_inner);
+        let (tx, rx) = std::sync::mpsc::channel();
+        let probe = std::thread::spawn(move || tx.send(cached()));
+        let answered = rx.recv_timeout(std::time::Duration::from_secs(5)).is_ok();
+        drop(guard);
+        let _ = probe.join();
+        assert!(answered, "cached() blocked behind a held registry lock");
+    }
 
     #[test]
     fn unit_labels_map() {
