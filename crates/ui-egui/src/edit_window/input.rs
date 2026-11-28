@@ -432,7 +432,7 @@ pub(super) fn lane_interaction(app: &mut SoundApp, ui: &mut Ui, track: &Track, l
     let at = sample_at(&s, tl, p.x).max(0);
     let origin = if resp.drag_started() { ui.input(|i| i.pointer.press_origin()).unwrap_or(p) } else { p };
     let at_origin = sample_at(&s, tl, origin.x).max(0);
-    let auto_view = AutoParam::parse(&track.view);
+    let auto_view = soundcraft_model::parse_auto_param(&track.view);
     let inp = LaneInput { track, lane, tl, s: &s, tool, origin, at_origin, auto_view };
     // Command changes a click's target, while a drag retains the active tool's normal hits.
     let command_click = mods.command && !resp.drag_started() && !resp.dragged();

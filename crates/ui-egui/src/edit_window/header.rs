@@ -1,8 +1,8 @@
 use super::layout::STRIP_W;
 use super::tracks::{click_track, folder_depth, height_targets, in_edit_window, track_context_menu, view_label, view_menu};
 use super::{
-    Align2, AutoParam, Color32, Gesture, Pos2, Rect, Sense, Shape, SoundApp, Stroke, StrokeKind, Tokens, Track, TrackHeight, TrackId, TrackKind, Ui,
-    bold, groove, json, level_pos, meter_pos, pos2, raised_key, regular, rgb, shade, vec2,
+    Align2, Color32, Gesture, Pos2, Rect, Sense, Shape, SoundApp, Stroke, StrokeKind, Tokens, Track, TrackHeight, TrackId, TrackKind, Ui, bold,
+    groove, json, level_pos, meter_pos, pos2, raised_key, regular, rgb, shade, vec2,
 };
 
 /// Draw one track header: resize edge, selection and context menu, folder/options control, automation-lane toggle,
@@ -103,7 +103,7 @@ fn strip_buttons(app: &mut SoundApp, ui: &mut Ui, track: &Track, head: Rect) {
     if h >= 40.0 && track.kind.has_playlist() {
         let ar = at(3.0, h - 12.0, 9.0, 9.0);
         let aresp = ui.interact(ar, ui.scope_id().with(("auto_lane", id.0)), Sense::click());
-        let showing = AutoParam::parse(&track.view).is_some();
+        let showing = soundcraft_model::parse_auto_param(&track.view).is_some();
         ui.painter().rect_filled(ar, 1.5, shade(strip, if aresp.hovered() || showing { 0.6 } else { 0.45 }));
         let (a, b) = (ar.min + vec2(2.5, 2.5), ar.max - vec2(2.5, 2.5));
         ui.painter().line_segment([a, b], Stroke::new(1.0, ink));
