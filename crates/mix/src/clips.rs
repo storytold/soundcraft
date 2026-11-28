@@ -137,10 +137,40 @@ pub(crate) fn render_clip(s: &Session, clip: &Clip, pos: Samples, frames: usize,
     let stretch = if clip.stretch.is_finite() && clip.stretch > 0.0 { clip.stretch } else { 1.0 };
     let i0 = usize::try_from(isect.start - pos).unwrap_or(0);
     let i1 = usize::try_from(isect.end - pos).unwrap_or(0).min(frames);
-    // Gain is evaluated every 32 samples and interpolated (fades and envelopes stay smooth).
-    const STEP: usize = 32;
+    let span = Span { clip, pos, i0, i1, offset, stretch };
+    let first = (offset as f64 + isect.start.saturating_sub(clip.start) as f64 / stretch).floor() as i64;
+    let streamed = crate::stream::render_streamed(
+        audio,
+        |at| {
+            for (ch, dst) in buf.iter_mut().enumerate() {
+                span.mix(dst, |x| at(ch % nsrc, x));
+            }
+        },
+        first,
+    );
+    if streamed {
+        return;
+    }
     for (ch, dst) in buf.iter_mut().enumerate() {
         let src = audio.buffer.channels.get(ch % nsrc).map(Vec::as_slice).unwrap_or(&[]);
+        span.mix(dst, |x| usize::try_from(x).ok().and_then(|x| src.get(x)).copied().unwrap_or(0.0));
+    }
+}
+
+struct Span<'a> {
+    clip: &'a Clip,
+    pos: Samples,
+    i0: usize,
+    i1: usize,
+    offset: Samples,
+    stretch: f64,
+}
+
+impl Span<'_> {
+    fn mix(&self, dst: &mut [f32], mut at: impl FnMut(i64) -> f32) {
+        let Span { clip, pos, i0, i1, offset, stretch } = *self;
+        // Gain is evaluated every 32 samples and interpolated (fades and envelopes stay smooth).
+        const STEP: usize = 32;
         let mut i = i0;
         while i < i1 {
             let seg_end = (i + STEP).min(i1);
@@ -154,13 +184,13 @@ pub(crate) fn render_clip(s: &Session, clip: &Clip, pos: Samples, frames: usize,
             for k in i..seg_end {
                 let rel = pos.saturating_add(k as i64).saturating_sub(clip.start);
                 let v = if (stretch - 1.0).abs() < 1e-9 {
-                    usize::try_from(offset.saturating_add(rel)).ok().and_then(|x| src.get(x)).copied().unwrap_or(0.0)
+                    at(offset.saturating_add(rel))
                 } else {
                     let f = offset as f64 + rel as f64 / stretch;
                     let x0 = f.floor();
                     let fr = (f - x0) as f32;
-                    let a = if x0 >= 0.0 { src.get(x0 as usize).copied().unwrap_or(0.0) } else { 0.0 };
-                    let b = if x0 + 1.0 >= 0.0 { src.get((x0 + 1.0) as usize).copied().unwrap_or(0.0) } else { 0.0 };
+                    let a = if x0 >= 0.0 { at(x0 as i64) } else { 0.0 };
+                    let b = if x0 + 1.0 >= 0.0 { at((x0 + 1.0) as i64) } else { 0.0 };
                     a + (b - a) * fr
                 };
                 let t = (k - i) as f32 / n;

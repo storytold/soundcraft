@@ -43,11 +43,12 @@ fn check_audio_clip(
     if audio.buffer.sample_rate != ctx.session_sample_rate {
         add("sample_rate_mismatch", "Loaded audio differs from the session sample rate. Reimport it to convert to the session rate.");
     }
-    if audio.buffer.channels.is_empty() || audio.frames() == 0 {
+    let frames = soundcraft_mix::source_frames(audio);
+    if audio.buffer.channels.is_empty() || frames == 0 {
         add("empty_audio", "Loaded audio has no playable frames. Reimport a valid audio file.");
         return;
     }
-    if audio.buffer.channels.iter().any(|channel| channel.len() != audio.frames()) {
+    if soundcraft_mix::streamed(audio).is_none() && audio.buffer.channels.iter().any(|channel| channel.len() != frames) {
         add("uneven_channels", "Loaded audio channels have different lengths. Reimport a valid audio file; bounds below use the shortest channel.");
     }
     if !clip.stretch.is_finite() || clip.stretch <= 0.0 || clip.length <= 0 {
@@ -56,7 +57,7 @@ fn check_audio_clip(
     let stretch = if clip.stretch.is_finite() && clip.stretch > 0.0 { clip.stretch } else { 1.0 };
     // Match the mixer's last requested source sample, including elastic playback.
     let last = offset as f64 + clip.length.saturating_sub(1).max(0) as f64 / stretch;
-    if offset < 0 || last >= audio.frames() as f64 {
+    if offset < 0 || last >= frames as f64 {
         add("source_bounds", "Clip extends outside the loaded audio; part will be silent. Trim the clip or replace its source.");
     }
 }

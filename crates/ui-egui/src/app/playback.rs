@@ -32,6 +32,10 @@ impl SoundApp {
     fn start_play(&mut self, from: Samples, end: Option<Samples>, looped: Option<Range>) {
         if let Some(p) = &self.player {
             p.update_session(self.engine.session_arc());
+            soundcraft_mix::cue_streams(self.engine.session(), from);
+            if let Some(l) = looped {
+                soundcraft_mix::cue_streams(self.engine.session(), l.start);
+            }
             p.play(from, end, looped);
         } else {
             self.sim = Some((from, end, looped));
@@ -441,6 +445,7 @@ impl SoundApp {
                     if self.is_playing() {
                         // Playing on from `at` drops the end and loop of the earlier selection.
                         if let Some(p) = &self.player {
+                            soundcraft_mix::cue_streams(self.engine.session(), at);
                             p.play(at, None, None);
                         }
                         if let Some(sim) = &mut self.sim {

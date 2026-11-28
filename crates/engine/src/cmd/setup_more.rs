@@ -496,7 +496,8 @@ fn import_session_data(e: &mut Engine, p: &Value) -> Result<Value> {
         picked.iter().flat_map(|t| t.playlists.iter().flat_map(|pl| pl.clips.iter().filter_map(|c| c.source()))).collect();
     // A Sampler's sample is session audio too.
     needed.extend(picked.iter().filter_map(|t| t.instrument.as_ref().and_then(|i| i.sample)));
-    needed.sort_by_key(|x| x.0);
+    let samples: Vec<SourceId> = picked.iter().filter_map(|t| t.instrument.as_ref().and_then(|i| i.sample)).collect();
+    needed.sort_by_key(|x| (!samples.contains(x), x.0));
     needed.dedup();
     let sr = e.session().sample_rate.hz();
     let s = e.session_mut();
@@ -509,9 +510,9 @@ fn import_session_data(e: &mut Engine, p: &Value) -> Result<Value> {
         match crate::io::stored_path(&src.path, Path::new(&path)) {
             Ok(abs) => {
                 ns.path = abs.to_string_lossy().into_owned();
-                match crate::io::decode_file(&mut files, &abs, sr) {
+                match crate::io::decode_file(&mut files, &abs, sr, samples.contains(&src.id)) {
                     Ok(audio) => {
-                        ns.frames = audio.buffer.frames() as u64;
+                        ns.frames = soundcraft_mix::source_frames(&audio) as u64;
                         ns.sample_rate = sr;
                         ns.unsaved = true;
                         s.pool.insert(ns.id, audio);

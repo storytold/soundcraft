@@ -70,6 +70,11 @@ mod midi;
 mod offline;
 mod pan;
 mod routing;
+#[cfg(not(target_arch = "wasm32"))]
+mod stream;
+#[cfg(target_arch = "wasm32")]
+#[path = "stream_wasm.rs"]
+mod stream;
 mod strip;
 mod threads;
 
@@ -85,6 +90,9 @@ pub use pan::itu_stereo_fold;
 use pan::{PanSpec, apply_matrix, apply_matrix_span, build_matrix};
 pub use routing::solo_mutes;
 use routing::{any_solo, processing_order, structure_fingerprint};
+pub use stream::{
+    OVERVIEW_FRAMES, STREAM_BLOCK, STREAM_CACHE_BLOCKS, StreamedAudio, cue_streams, open_streamed, source_frames, source_span, streamed, whole,
+};
 use strip::{
     Block, BusBuf, LiveInput, SlotCtx, Strip, apply_params, contain_failure, note_insert_latency, process_strip, strip_channels, strip_format,
 };

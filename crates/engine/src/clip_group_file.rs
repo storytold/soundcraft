@@ -67,6 +67,7 @@ pub fn export(e: &Engine, ids: &[ClipId], path: &str) -> Result<usize> {
                 let rel = format!("{audio_dir_name}/{}_{}.wav", crate::io::sanitize_name(&src.name), source.0);
                 crate::io::make_dir(dir.join(&audio_dir_name))?;
                 let opts = EncodeOptions::new(craft_audio::EncodeFormat::Wav).with_bit_depth(craft_audio::BitDepth::Float32);
+                let buf = soundcraft_mix::whole(buf).map_err(EngineError::Io)?;
                 let bytes = craft_audio::encode(&buf.buffer, &opts).map_err(|err| EngineError::Io(err.to_string()))?;
                 crate::io::write_path(dir.join(&rel), bytes)?;
                 slot.insert(rel);

@@ -166,16 +166,8 @@ pub fn render_stretched(s: &mut Session, cmd: &str, c: &Clip, out_len: Samples) 
     }
     let a = usize::try_from(offset.max(0)).unwrap_or(0);
     let n = src_len as usize;
-    let ch: Vec<Vec<f32>> = audio
-        .buffer
-        .channels
-        .iter()
-        .map(|x| {
-            let mut v: Vec<f32> = x.iter().skip(a).take(n).copied().collect();
-            v.resize(n, 0.0);
-            v
-        })
-        .collect();
+    let mut ch = soundcraft_mix::source_span(&audio, a, n).map_err(|err| bad(cmd, err))?;
+    ch.iter_mut().for_each(|v| v.resize(n, 0.0));
     let sr = s.sample_rate;
     let mut out = soundcraft_dsp::offline::time_stretch(&ch, ratio, sr.as_f64() as f32);
     let want = usize::try_from(out_len).unwrap_or(0);

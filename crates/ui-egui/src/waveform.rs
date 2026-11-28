@@ -14,8 +14,47 @@ pub struct Canvas<'a> {
 
 /// Draw a clip's audio across `body`, one band per channel, `channels` of them at most.
 pub fn draw(canvas: Canvas<'_>, clip: &Clip, audio: &SourceAudio, channels: usize, body: Rect, wave: Color32) {
+    if let Some(st) = soundcraft_mix::streamed(audio) {
+        overview(canvas, clip, st.overview(), channels, body, wave);
+        return;
+    }
     for (ch, band) in bands(body, channels.min(audio.peaks.len()).max(1)).enumerate() {
         channel(canvas, clip, audio, ch, band, wave);
+    }
+}
+
+/// How many channel bands [`draw`] splits `audio` into.
+pub fn lanes(audio: &SourceAudio) -> usize {
+    soundcraft_mix::streamed(audio).map_or(audio.peaks.len(), |st| st.channels())
+}
+
+fn overview(canvas: Canvas<'_>, clip: &Clip, blocks: &[Vec<(f32, f32)>], channels: usize, body: Rect, wave: Color32) {
+    let Canvas { painter, s, tl } = canvas;
+    let (rectified, outlines) = (s.edit.flag("waveform.rectified"), s.edit.flag("waveform.outlines"));
+    let origin = clip.start.saturating_sub(clip.source_offset()) as f64;
+    let len = soundcraft_mix::OVERVIEW_FRAMES as f64;
+    let gain = |pos: f64| clip.gain_at((pos as Samples).saturating_sub(clip.start).min(clip.length).max(0)) * s.edit.zoom.waveform_zoom;
+    for (blocks, band) in blocks.iter().zip(bands(body, channels.min(blocks.len()).max(1))) {
+        let Some(g) = Grid::new(painter, s, tl, band) else { continue };
+        let base = g.cy + g.half;
+        let ys: Vec<Option<(f32, f32)>> = (0..g.cols)
+            .map(|c| {
+                let a = g.start() + c as f64 * g.step - origin;
+                let (i, j) = ((a / len).floor().max(0.0) as usize, ((a + g.step + g.overlap()) / len).ceil().max(0.0) as usize);
+                let (lo, hi) =
+                    blocks.get(i..j.min(blocks.len()))?.iter().fold((f32::INFINITY, f32::NEG_INFINITY), |(lo, hi), b| (lo.min(b.0), hi.max(b.1)));
+                if lo > hi {
+                    return None;
+                }
+                let k = gain((g.k0 + c as f64 + 0.5) * g.step);
+                Some(if rectified {
+                    (base - level(lo.abs().max(hi.abs()) * k) * g.half * 2.0, base)
+                } else {
+                    (g.cy - level(hi * k) * g.half, g.cy - level(lo * k) * g.half)
+                })
+            })
+            .collect();
+        g.paint(painter, &ys, wave, outlines, rectified);
     }
 }
 
