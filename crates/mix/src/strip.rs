@@ -238,9 +238,11 @@ fn zero_buf(buf: &mut [Vec<f32>], frames: usize) {
     }
 }
 
-/// Input monitoring: the track hears its hardware input instead of its clips.
+/// Input monitoring: the track hears its hardware input instead of its clips. With no input
+/// (`Route::None`) it hears nothing.
 fn monitor_input(t: &Track, strip: &mut Strip, live: &LiveInput<'_>, frames: usize) {
     let first = match &t.mixer.input {
+        Route::None => return,
         Route::Hardware(h) => {
             h.trim_start_matches("In ").split(['-', ' ']).next().and_then(|n| n.parse::<usize>().ok()).map_or(0, |n| n.saturating_sub(1))
         }
