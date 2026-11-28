@@ -1,0 +1,174 @@
+//! `soundcraft-cli convert` dithers only when the output loses resolution (#548), run as the real binary.
+// Integration tests: unwrapping and panicking on failure is fine here, unlike in shipped code (AGENTS.md).
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+
+use std::path::{Path, PathBuf};
+use std::process::Command;
+
+use craft_audio::{AudioBuffer, BitDepth, BwfInfo, EncodeOptions};
+
+mod common;
+
+fn tmpdir(tag: &str) -> PathBuf {
+    let dir = std::env::temp_dir().join(format!("sc-cli-convert-{tag}-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    dir
+}
+
+/// A 16-bit mono WAV of `samples`, written without dither so the file holds exactly these values.
+fn write_wav16(path: &Path, samples: &[i16]) {
+    let mut buf = AudioBuffer::new(48_000, 1, samples.len());
+    for (d, s) in buf.channels[0].iter_mut().zip(samples) {
+        *d = f32::from(*s) / 32768.0;
+    }
+    let opts = EncodeOptions::new(craft_audio::EncodeFormat::Wav).with_bit_depth(BitDepth::Int16);
+    std::fs::write(path, craft_audio::encode(&buf, &opts).unwrap()).unwrap();
+}
+
+fn convert(input: &Path, output: &Path, extra: &[&str]) {
+    let o = Command::new(common::soundcraft_cli_binary())
+        .env("SOUNDCRAFT_NO_PREFS", "1")
+        .arg("convert")
+        .arg(input)
+        .arg(output)
+        .args(extra)
+        .output()
+        .unwrap();
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+}
+
+/// The decoded samples of `path`, scaled to 16-bit steps.
+fn steps16(path: &Path) -> Vec<f64> {
+    let (_, buf) = craft_audio::decode(&std::fs::read(path).unwrap(), None).unwrap();
+    buf.channels[0].iter().map(|s| f64::from(*s) * 32768.0).collect()
+}
+
+#[test]
+fn convert_copies_samples_when_nothing_is_lost() {
+    let dir = tmpdir("exact");
+    let (silence, tone) = (dir.join("silence.wav"), dir.join("tone.wav"));
+    let tone_samples: Vec<i16> = (0..4800).map(|i| (8000.0 * (f64::from(i) * 0.05).sin()) as i16).collect();
+    write_wav16(&silence, &[0; 4800]);
+    write_wav16(&tone, &tone_samples);
+    let want: Vec<f64> = tone_samples.iter().map(|s| f64::from(*s)).collect();
+
+    // Same depth, wider and float: every sample comes back unchanged, silence stays silent.
+    for (depth, name) in [("16", "s16.wav"), ("24", "s24.wav"), ("32f", "s32.wav")] {
+        let out = dir.join(name);
+        convert(&silence, &out, &["--bit-depth", depth]);
+        assert!(steps16(&out).iter().all(|s| *s == 0.0), "silence at {depth} is not silent");
+        let out = dir.join(format!("t{name}"));
+        convert(&tone, &out, &["--bit-depth", depth]);
+        assert_eq!(steps16(&out), want, "tone at {depth} changed");
+    }
+    // The default output depth (24-bit) too.
+    let out = dir.join("default.wav");
+    convert(&tone, &out, &[]);
+    assert_eq!(steps16(&out), want);
+
+    // Asked for, dither is still applied.
+    let out = dir.join("forced.wav");
+    convert(&silence, &out, &["--bit-depth", "16", "--dither"]);
+    assert!(steps16(&out).iter().any(|s| *s != 0.0), "--dither did not dither");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn convert_dithers_when_reducing_depth_unless_told_not_to() {
+    let dir = tmpdir("reduce");
+    let src = dir.join("src24.wav");
+    // A 24-bit file with detail below one 16-bit step.
+    let mut buf = AudioBuffer::new(48_000, 1, 4800);
+    for (i, s) in buf.channels[0].iter_mut().enumerate() {
+        *s = 0.3 / 32768.0 * (i as f32 * 0.01).sin();
+    }
+    let opts = EncodeOptions::new(craft_audio::EncodeFormat::Wav).with_bit_depth(BitDepth::Int24);
+    std::fs::write(&src, craft_audio::encode(&buf, &opts).unwrap()).unwrap();
+
+    let dithered = dir.join("d16.wav");
+    convert(&src, &dithered, &["--bit-depth", "16"]);
+    assert!(steps16(&dithered).iter().any(|s| *s != 0.0), "24 to 16-bit was not dithered");
+    // Plain rounding: everything is below half a step, so it all rounds to zero.
+    let plain = dir.join("p16.wav");
+    convert(&src, &plain, &["--bit-depth", "16", "--no-dither"]);
+    assert!(steps16(&plain).iter().all(|s| *s == 0.0), "--no-dither still dithered");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn convert_keeps_the_bwf_time_stamp() {
+    let dir = tmpdir("bext");
+    let src = dir.join("take.wav");
+    // 01:00:00:00 at 48 kHz.
+    let bwf = BwfInfo::default()
+        .with_description("take 3")
+        .with_originator("recorder")
+        .with_origination("2026-11-03", "10:00:00")
+        .with_time_reference(172_800_000);
+    let buf = AudioBuffer::new(48_000, 1, 4800);
+    let opts = EncodeOptions::default().with_bwf(bwf.clone());
+    std::fs::write(&src, craft_audio::encode(&buf, &opts).unwrap()).unwrap();
+    let bext = |p: &Path| craft_audio::probe(&std::fs::read(p).unwrap(), None).unwrap().bwf;
+
+    let out = dir.join("16.wav");
+    convert(&src, &out, &["--bit-depth", "16"]);
+    assert_eq!(bext(&out), Some(bwf.clone()));
+    // Resampled, the stamp still points at 01:00:00:00: 158,760,000 samples at 44.1 kHz.
+    let out = dir.join("44k.wav");
+    convert(&src, &out, &["--rate", "44100"]);
+    assert_eq!(bext(&out), Some(bwf.with_time_reference(158_760_000)));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Twelve MPEG-1 Layer I frames (mono, 32 kHz, 48 bytes each) of silence. The seventh has the
+/// forbidden bit allocation 15 in every subband: the decoder writes silence for it and counts it.
+fn mp1_with_a_damaged_frame() -> Vec<u8> {
+    let header = [0xFF, 0xFF, 0x18, 0xC0];
+    let good = [&header[..], &[0; 44]].concat();
+    let bad = [&header[..], &[0xFF; 16], &[0; 28]].concat();
+    (0..12).flat_map(|i| if i == 6 { bad.clone() } else { good.clone() }).collect()
+}
+
+#[test]
+fn convert_warns_about_damaged_packets_and_never_replaces_the_source_with_them() {
+    let dir = tmpdir("damaged");
+    let src = dir.join("take.mp1");
+    let bytes = mp1_with_a_damaged_frame();
+    std::fs::write(&src, &bytes).unwrap();
+    let run = |args: &[&std::ffi::OsStr]| {
+        Command::new(common::soundcraft_cli_binary()).env("SOUNDCRAFT_NO_PREFS", "1").arg("convert").args(args).output().unwrap()
+    };
+    // To another file: written, with a warning that says how much was lost.
+    let out = dir.join("take.wav");
+    let o = run(&[src.as_os_str(), out.as_os_str()]);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    let warning = format!("warning: {}: 1 damaged packet(s) decoded as silence\n", src.display());
+    assert_eq!(String::from_utf8_lossy(&o.stderr), warning);
+    assert_eq!(steps16(&out).len(), 12 * 384);
+    // Over the source: refused, and the source is untouched.
+    let o = run(&[src.as_os_str(), src.as_os_str(), "--in-place".as_ref()]);
+    assert_eq!(o.status.code(), Some(1));
+    let stderr = String::from_utf8_lossy(&o.stderr);
+    assert!(stderr.starts_with(&format!("error: {}: 1 damaged packet(s) would be written as silence", src.display())), "{stderr}");
+    assert_eq!(std::fs::read(&src).unwrap(), bytes);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn convert_keeps_the_speaker_layout() {
+    use craft_audio::ChannelLayout;
+    let dir = tmpdir("layout");
+    let (src, out) = (dir.join("side.wav"), dir.join("out.wav"));
+    // 5.1 with side surrounds: not the layout a reader assumes for six channels.
+    let opts = EncodeOptions::default().with_layout(ChannelLayout::SURROUND_5_1_SIDE);
+    std::fs::write(&src, craft_audio::encode(&AudioBuffer::new(48_000, 6, 480), &opts).unwrap()).unwrap();
+    let layout = |p: &Path| craft_audio::probe(&std::fs::read(p).unwrap(), None).unwrap().layout;
+    assert_eq!(layout(&src), ChannelLayout::SURROUND_5_1_SIDE);
+    convert(&src, &out, &[]);
+    assert_eq!(layout(&out), ChannelLayout::SURROUND_5_1_SIDE);
+    let flac = dir.join("out.flac");
+    convert(&src, &flac, &[]);
+    assert_eq!(layout(&flac), ChannelLayout::SURROUND_5_1_SIDE);
+    let _ = std::fs::remove_dir_all(&dir);
+}

@@ -169,6 +169,24 @@ impl PluginInfo {
     }
 }
 
+/// The host's transport at the start of a block, for tempo-synced plugins.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct Transport {
+    pub playing: bool,
+    pub recording: bool,
+    /// Quarter notes per minute.
+    pub tempo: f64,
+    pub numerator: u32,
+    pub denominator: u32,
+    /// Timeline position.
+    pub samples: i64,
+    pub seconds: f64,
+    pub quarters: f64,
+    /// Start of the current bar, in quarter notes, and its number (0 for the first bar).
+    pub bar_start: f64,
+    pub bar: i64,
+}
+
 /// A realtime audio processor or instrument.
 ///
 /// Contract: `process` never allocates or panics. It processes `min(frames, io[c].len())` frames
@@ -177,6 +195,11 @@ impl PluginInfo {
 pub trait Plugin: Send {
     fn info(&self) -> &'static PluginInfo;
     fn prepare(&mut self, sample_rate: f32, max_block: usize, channels: usize);
+    /// The plugin renders offline (a bounce: faster or slower than realtime, no deadline) rather
+    /// than in realtime. Hosted plugins pass it on (VST3 `processMode`, CLAP `clap.render`): some
+    /// use better algorithms then, or wait for what they load instead of playing on without it.
+    /// Called before `prepare`; plugins are realtime until told otherwise.
+    fn set_offline(&mut self, _offline: bool) {}
     fn reset(&mut self);
     /// Sets a parameter (clamped into range; NaN becomes the default). `false` if `id` is unknown.
     fn set_param(&mut self, id: &str, value: f32) -> bool;
@@ -195,9 +218,14 @@ pub trait Plugin: Send {
     fn gain_reduction_db(&self) -> f32 {
         0.0
     }
+    /// The transport for the next block, given before `process`.
+    fn set_transport(&mut self, _transport: &Transport) {}
     /// Instruments: note events at sample offsets within the next block.
     fn note_on(&mut self, _offset: usize, _note: u8, _velocity: u8) {}
     fn note_off(&mut self, _offset: usize, _note: u8) {}
+    /// Instruments: any other MIDI 1.0 channel message (control change, pitch bend, pressure,
+    /// program change) at a sample offset within the next block.
+    fn midi(&mut self, _offset: usize, _msg: [u8; 3]) {}
     fn all_notes_off(&mut self) {}
     /// Sample-playing instruments (the Sampler): the recorded audio to play, `None` to clear it.
     /// `false` when the plugin does not play samples. Does not allocate; sounding voices stop.
@@ -206,11 +234,12 @@ pub trait Plugin: Send {
     fn set_sample(&mut self, _sample: Option<Arc<dyn SampleSource>>) -> bool {
         false
     }
-    /// The plugin's complete internal state as an opaque blob (third-party plugins), for saving
-    /// in the session. `None` when the plugin has no state beyond its parameters (built-ins) or
-    /// the plugin refused. May allocate: never call it in steady-state audio processing.
+    /// The plugin's complete internal state as an opaque blob (third-party plugins), as its
+    /// [`Plugin::state_reader`] reads it. `None` when the plugin has no state beyond its
+    /// parameters (built-ins) or the plugin refused. May allocate: never call it in steady-state
+    /// audio processing.
     fn save_state(&mut self) -> Option<Vec<u8>> {
-        None
+        self.state_reader()?.save_state()
     }
     /// Restores a blob from [`Plugin::save_state`]. `false` if unsupported or the plugin rejected
     /// it (the plugin keeps working with its previous state). The data is hostile input.
@@ -229,6 +258,10 @@ pub trait Plugin: Send {
     fn editor(&mut self) -> Option<Box<dyn PluginEditor>> {
         None
     }
+    /// Reads this instance's state from the UI thread (`None` when it has no state of its own).
+    fn state_reader(&mut self) -> Option<Box<dyn PluginStateReader>> {
+        None
+    }
 }
 
 /// A plugin's editor (GUI), driven from the main (UI) thread. Obtained from
@@ -244,9 +277,33 @@ pub trait PluginEditor: Send {
     /// user closed, and returns parameter edits made in the editor as `(param id, value)` in
     /// SoundCraft units (ids and ranges of [`PluginInfo::params`]).
     fn idle(&mut self) -> Vec<(String, f32)>;
+    /// True once after the plugin said its state changed in a way its parameters don't show
+    /// (CLAP `state.mark_dirty`), so the session stores the new state.
+    fn state_changed(&mut self) -> bool {
+        false
+    }
     /// Tells the editor that a parameter changed elsewhere (generic editor, automation), so the
     /// GUI shows it. Values are in SoundCraft units.
     fn set_param(&mut self, _id: &str, _value: f32) {}
+    /// The plugin's own text for a parameter value (SoundCraft units) when SoundCraft's
+    /// [`ParamInfo::format`] would be wrong for it. Main thread only; `None` means "format it
+    /// yourself".
+    fn value_text(&mut self, _id: &str, _value: f32) -> Option<String> {
+        None
+    }
+}
+
+/// Reads a plugin's state on the main (UI) thread while the instance processes on the audio
+/// thread, as plugin formats allow. Obtained from [`Plugin::state_reader`]; closures are readers.
+pub trait PluginStateReader: Send {
+    /// What [`Plugin::save_state`] would return; `None` once the instance is gone.
+    fn save_state(&mut self) -> Option<Vec<u8>>;
+}
+
+impl<F: FnMut() -> Option<Vec<u8>> + Send> PluginStateReader for F {
+    fn save_state(&mut self) -> Option<Vec<u8>> {
+        self()
+    }
 }
 
 /// Recorded audio a sample-playing instrument reads: planar `f32` at its own sample rate (the
@@ -299,6 +356,11 @@ pub fn create(id: &str) -> Option<Box<dyn Plugin>> {
 /// Looks up a plugin description by id.
 pub fn plugin_info(id: &str) -> Option<&'static PluginInfo> {
     plugins::REGISTRY.iter().copied().find(|i| i.id == id)
+}
+
+/// Whether a plugin makes sound instead of processing its input (it ignores the input).
+pub fn is_generator(id: &str) -> bool {
+    id == "signal_generator"
 }
 
 /// Silence floor used by the dB helpers.

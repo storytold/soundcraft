@@ -2,8 +2,9 @@
 //! a 24-bar groove at 104 BPM with drums, bass, keys, pad, lead, a reverb aux and a master.
 
 use crate::Engine;
-use soundcraft_audio_io::{AudioBuffer, FileFormat};
+use craft_audio::AudioBuffer;
 use soundcraft_midi::{Note, Sequence};
+use soundcraft_model::FileFormat;
 use soundcraft_model::{ChannelFormat, Clip, Fade, FadeShape, Insert, MarkerKind, Route, SendSlot, Session, TrackKind};
 use soundcraft_time::{SampleRate, TICKS_PER_QUARTER};
 
@@ -228,7 +229,7 @@ pub fn demo_session() -> Session {
         let len = total as i64 - start;
         let cid = s.new_clip_id();
         let mut clip = Clip::audio(cid, name, src, start, start, len - (srf * 1.5) as i64);
-        clip.fade_out = Fade { len: (srf * 0.5) as i64, shape: FadeShape::SCurve };
+        clip.fade_out = Fade { len: (srf * 0.5) as i64, shape: FadeShape::SCurve, curvature: 0.0 };
         crate::edit::place_clip(s, t, clip);
         t
     };

@@ -34,7 +34,8 @@ pub(crate) fn time_coef(ms: f32, sr: f32) -> f32 {
 /// Flushes denormals and non-finite values in feedback paths to zero.
 #[inline]
 pub(crate) fn flush(x: f32) -> f32 {
-    if x.is_finite() && x.abs() > 1.0e-25 { x } else { 0.0 }
+    let a = x.abs();
+    if (a > 1.0e-25) & (a < f32::INFINITY) { x } else { 0.0 }
 }
 
 /// Number of frames a plugin may safely touch.
@@ -308,4 +309,18 @@ pub(crate) fn sort_events<T: Copy>(ev: &mut [T], key: impl Fn(&T) -> usize) {
 #[inline]
 pub(crate) fn note_hz(note: f32) -> f32 {
     440.0 * 2f32.powf((note - 69.0) / 12.0)
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn flush_matches_the_finite_and_magnitude_test() {
+        let edge = 1.0e-25f32.to_bits();
+        let special = [0, 0x8000_0000, 1, edge - 1, edge, edge + 1, 0x7f7f_ffff, 0x7f80_0000, 0xff80_0000, 0x7fc0_0000, 0xffc0_0001];
+        for b in (0..=u32::MAX).step_by(997).chain(special).chain(special.map(|b| b | 0x8000_0000)) {
+            let x = f32::from_bits(b);
+            let want = if x.is_finite() && x.abs() > 1.0e-25 { x } else { 0.0 };
+            assert_eq!(super::flush(x).to_bits(), want.to_bits(), "{b:#x}");
+        }
+    }
 }

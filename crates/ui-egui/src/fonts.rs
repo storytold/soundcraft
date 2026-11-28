@@ -12,8 +12,10 @@ const REGULAR: &[(&str, u32)] = &[
     ("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", 0),
     ("/usr/share/fonts/TTF/DejaVuSans.ttf", 0),
     ("/usr/share/fonts/dejavu/DejaVuSans.ttf", 0),
+    ("/usr/share/fonts/dejavu-sans-fonts/DejaVuSans.ttf", 0),
     ("/usr/local/share/fonts/dejavu/DejaVuSans.ttf", 0),
     ("/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf", 0),
+    ("/usr/share/fonts/liberation-sans-fonts/LiberationSans-Regular.ttf", 0),
 ];
 const BOLD: &[(&str, u32)] = &[
     ("/System/Library/Fonts/HelveticaNeue.ttc", 1),
@@ -22,16 +24,35 @@ const BOLD: &[(&str, u32)] = &[
     ("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 0),
     ("/usr/share/fonts/TTF/DejaVuSans-Bold.ttf", 0),
     ("/usr/share/fonts/dejavu/DejaVuSans-Bold.ttf", 0),
+    ("/usr/share/fonts/dejavu-sans-fonts/DejaVuSans-Bold.ttf", 0),
     ("/usr/local/share/fonts/dejavu/DejaVuSans-Bold.ttf", 0),
     ("/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf", 0),
+    ("/usr/share/fonts/liberation-sans-fonts/LiberationSans-Bold.ttf", 0),
 ];
+/// Hangul fallback, appended after every family so Korean session, track and clip names draw
+/// whatever the interface language. The Noto Sans CJK collection's face 1 is its Korean face.
+const HANGUL: &[(&str, u32)] = &[
+    ("/System/Library/Fonts/AppleSDGothicNeo.ttc", 0),
+    ("/System/Library/Fonts/Supplemental/AppleGothic.ttf", 0),
+    ("C:\\Windows\\Fonts\\malgun.ttf", 0),
+    ("C:\\Windows\\Fonts\\gulim.ttc", 0),
+    ("/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc", 1),
+    ("/usr/share/fonts/noto-cjk/NotoSansCJK-Regular.ttc", 1),
+    ("/usr/share/fonts/google-noto-cjk/NotoSansCJK-Regular.ttc", 1),
+    ("/usr/share/fonts/truetype/nanum/NanumGothic.ttf", 0),
+    ("/usr/share/fonts/naver-nanum/NanumGothic.ttf", 0),
+];
+/// Font files larger than this are skipped: egui keeps the whole file in memory.
+#[cfg(not(target_arch = "wasm32"))]
+const MAX_FONT_BYTES: u64 = 64 << 20;
 
-/// Asks fontconfig for the desktop's UI font. Only TrueType/OpenType results are used: egui cannot
-/// read Type 1 or bitmap fonts, which `fc-match` may return on minimal systems.
+/// Asks fontconfig for the desktop's font matching `pattern`. Only TrueType/OpenType results are
+/// used: egui cannot read Type 1 or bitmap fonts, which `fc-match` may return on minimal systems.
+/// With `lang`, the match must support that language (`fc-match` always returns its best match,
+/// which is a Latin face when no Korean font is installed).
 #[cfg(any(target_os = "linux", target_os = "freebsd"))]
-fn load_from_fontconfig(bold: bool) -> Option<FontData> {
-    let pattern = if bold { "sans-serif:style=Bold" } else { "sans-serif" };
-    let output = std::process::Command::new("fc-match").args(["--format=%{file}\\n%{index}\\n", pattern]).output().ok()?;
+fn load_from_fontconfig(pattern: &str, lang: Option<&str>) -> Option<FontData> {
+    let output = std::process::Command::new("fc-match").args(["--format=%{file}\\n%{index}\\n%{lang}\\n", pattern]).output().ok()?;
     if !output.status.success() {
         return None;
     }
@@ -40,6 +61,14 @@ fn load_from_fontconfig(bold: bool) -> Option<FontData> {
     let path = lines.next()?.trim();
     // The upper 16 bits carry a variable font's named instance; the face index is the lower 16.
     let index = lines.next()?.trim().parse::<u32>().ok()? & 0xFFFF;
+    if let Some(lang) = lang
+        && !lines.next().unwrap_or_default().split('|').any(|l| l.trim() == lang)
+    {
+        return None;
+    }
+    if std::fs::metadata(path).ok()?.len() > MAX_FONT_BYTES {
+        return None;
+    }
     let bytes = std::fs::read(path).ok()?;
     let sfnt = matches!(bytes.get(..4), Some(b"\0\x01\0\0" | b"OTTO" | b"true" | b"ttcf"));
     if !sfnt {
@@ -51,17 +80,20 @@ fn load_from_fontconfig(bold: bool) -> Option<FontData> {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-fn load(cands: &[(&str, u32)], bold: bool) -> Option<FontData> {
-    if std::env::var_os("SOUNDCRAFT_NO_SYSTEM_FONTS").is_some() {
+fn load(cands: &[(&str, u32)], pattern: &str, lang: Option<&str>, system_fonts: bool) -> Option<FontData> {
+    if !system_fonts {
         return None;
     }
     #[cfg(any(target_os = "linux", target_os = "freebsd"))]
-    if let Some(font) = load_from_fontconfig(bold) {
+    if let Some(font) = load_from_fontconfig(pattern, lang) {
         return Some(font);
     }
     #[cfg(not(any(target_os = "linux", target_os = "freebsd")))]
-    let _ = bold;
+    let _ = (pattern, lang);
     for (p, idx) in cands {
+        if std::fs::metadata(p).is_ok_and(|m| m.len() > MAX_FONT_BYTES) {
+            continue;
+        }
         if let Ok(bytes) = std::fs::read(p) {
             let mut fd = FontData::from_owned(bytes);
             fd.index = *idx;
@@ -72,30 +104,126 @@ fn load(cands: &[(&str, u32)], bold: bool) -> Option<FontData> {
 }
 
 #[cfg(target_arch = "wasm32")]
-fn load(_: &[(&str, u32)], _: bool) -> Option<FontData> {
+fn load(_: &[(&str, u32)], _: &str, _: Option<&str>, _: bool) -> Option<FontData> {
     None
 }
 
-pub fn definitions() -> FontDefinitions {
+/// The font set: the bundled faces, plus the system ones when `system_fonts` is true.
+pub fn definitions(system_fonts: bool) -> FontDefinitions {
     let mut fonts = FontDefinitions::default();
     let base: Vec<String> = fonts.families.get(&FontFamily::Proportional).cloned().unwrap_or_default();
     let mut bold_family = base.clone();
-    if let Some(reg) = load(REGULAR, false) {
+    if let Some(reg) = load(REGULAR, "sans-serif", None, system_fonts) {
         fonts.font_data.insert("system-regular".into(), Arc::new(reg));
         if let Some(f) = fonts.families.get_mut(&FontFamily::Proportional) {
             f.insert(0, "system-regular".into());
         }
     }
-    if let Some(b) = load(BOLD, true) {
+    if let Some(b) = load(BOLD, "sans-serif:style=Bold", None, system_fonts) {
         fonts.font_data.insert("system-bold".into(), Arc::new(b));
         bold_family.insert(0, "system-bold".into());
     } else if fonts.font_data.contains_key("system-regular") {
         bold_family.insert(0, "system-regular".into());
     }
     fonts.families.insert(FontFamily::Name("bold".into()), bold_family);
+    if let Some(h) = load(HANGUL, "sans-serif:lang=ko", Some("ko"), system_fonts) {
+        fonts.font_data.insert("system-hangul".into(), Arc::new(h));
+        for family in fonts.families.values_mut() {
+            family.push("system-hangul".into());
+        }
+    }
     fonts
 }
 
-pub fn install(ctx: &egui::Context) {
-    ctx.set_fonts(definitions());
+/// Gives the context [`definitions`] through the framework runtime, which keeps its font providers and layout memory in
+/// step with them. The framework's chrome draws in three families besides the monospace one: the signature family
+/// (follows the proportional one) and the semibold family, which titles and strong text use because the stack the
+/// runtime started with has it; SoundCraft's own bold family serves as that one. A family left out draws missing-glyph
+/// boxes.
+pub fn install(ctx: &egui::Context, system_fonts: bool) {
+    let mut fonts = definitions(system_fonts);
+    let proportional = fonts.families.get(&FontFamily::Proportional).cloned().unwrap_or_default();
+    let bold = fonts.families.get(&FontFamily::Name("bold".into())).cloned().unwrap_or_else(|| proportional.clone());
+    fonts.families.entry(craft_ui::fonts::FontRef::signature().family()).or_insert(proportional);
+    fonts.families.entry(FontFamily::Name(craft_ui::fonts::SEMIBOLD.into())).or_insert(bold);
+    craft_ui::fonts::load(ctx, fonts);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn hangul_candidates_cover_every_desktop_platform() {
+        for prefix in ["/System/Library/Fonts/", "C:\\Windows\\Fonts\\", "/usr/share/fonts/"] {
+            assert!(HANGUL.iter().any(|(p, _)| p.starts_with(prefix)), "no Hangul candidate under {prefix}");
+        }
+        // Face 0 of the Noto Sans CJK collection is Japanese; the Korean face is 1.
+        assert!(HANGUL.iter().filter(|(p, _)| p.ends_with("NotoSansCJK-Regular.ttc")).all(|(_, i)| *i == 1));
+    }
+
+    /// Every literal glyph the UI fixtures paint is covered by the bundled faces in every family,
+    /// without relying on an installed system font. This is the 0.37 font-feature regression test.
+    #[test]
+    fn bundled_faces_cover_the_ui_glyphs_in_every_family() {
+        let mut defs = FontDefinitions::default();
+        let proportional = defs.families.get(&FontFamily::Proportional).cloned().unwrap_or_default();
+        defs.families.insert(FontFamily::Name("bold".into()), proportional);
+        let ctx = egui::Context::default();
+        ctx.set_fonts(defs);
+        let mut output = ctx.run_ui(egui::RawInput::default(), |_| {});
+        output.textures_delta.clear();
+        // Status/menu text, transport/meter symbols, file/audio/search icons, music symbols and
+        // platform key hints used by the UI. Close/delete controls paint a cross in `icons.rs`
+        // instead of typesetting U+2715, which no bundled face covers in every family.
+        let glyphs = ["›", "v", "♩", "𝄞", "⌘", "📁", "🔊", "🔍", "⬆", "−", "∞"];
+        for family in [FontFamily::Proportional, FontFamily::Monospace, FontFamily::Name("bold".into())] {
+            let font = egui::FontId::new(13.0, family.clone());
+            for glyph in glyphs {
+                assert!(ctx.fonts_mut(|f| f.has_glyphs(&font, glyph)), "{family:?} has no glyph for {glyph:?}");
+            }
+        }
+    }
+
+    /// Every family the framework's chrome draws in has a face after `install`, with and without system fonts: the
+    /// dialog title once drew boxes because the semibold family was missing.
+    #[test]
+    fn install_gives_every_chrome_family_a_face() {
+        for system_fonts in [false, true] {
+            let ctx = egui::Context::default();
+            crate::framework::install_headless(&ctx);
+            install(&ctx, system_fonts);
+            let mut output = ctx.run_ui(egui::RawInput::default(), |_| {});
+            output.textures_delta.clear();
+            let families = [
+                FontFamily::Proportional,
+                FontFamily::Monospace,
+                craft_ui::fonts::FontRef::signature().family(),
+                FontFamily::Name(craft_ui::fonts::SEMIBOLD.into()),
+            ];
+            for family in families {
+                let font = egui::FontId::new(14.0, family.clone());
+                assert!(ctx.fonts_mut(|f| f.has_glyphs(&font, "Check for Updates")), "{family:?} has no Latin face (system fonts {system_fonts})");
+            }
+        }
+    }
+
+    /// Korean names draw in every family, not as boxes; skipped when the system has no Korean font.
+    #[test]
+    fn every_family_draws_hangul_with_a_system_korean_font() {
+        let defs = definitions(true);
+        if !defs.font_data.contains_key("system-hangul") {
+            eprintln!("skipping: no Korean system font");
+            return;
+        }
+        let families: Vec<FontFamily> = defs.families.keys().cloned().collect();
+        let ctx = egui::Context::default();
+        ctx.set_fonts(defs);
+        let mut output = ctx.run_ui(egui::RawInput::default(), |_| {});
+        output.textures_delta.clear();
+        for family in families {
+            let font = egui::FontId::new(13.0, family.clone());
+            assert!(ctx.fonts_mut(|f| f.has_glyphs(&font, "가한국어세션")), "{family:?} has no Hangul");
+        }
+    }
 }

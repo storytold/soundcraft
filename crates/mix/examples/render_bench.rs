@@ -1,7 +1,7 @@
 //! Offline mix throughput on a synthetic many-track session:
 //! `cargo run --release -p soundcraft-mix --example render_bench -- [tracks] [seconds]`
 
-use soundcraft_audio_io::AudioBuffer;
+use craft_audio::AudioBuffer;
 use soundcraft_model::{ChannelFormat, Clip, Insert, Session, SourceAudio, SourceId, TrackKind};
 use soundcraft_time::Range;
 use std::sync::Arc;

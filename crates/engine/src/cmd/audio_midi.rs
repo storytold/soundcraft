@@ -1,9 +1,9 @@
 //! Edit › Copy Special › Audio as MIDI: pitch-track the selected audio into MIDI notes on the
 //! clipboard (paste them onto a MIDI or instrument track).
+use super::{CommandSpec, bad, has_range, range_param, tracks_required};
 
-use super::*;
-use crate::{Clipboard, cmd};
-use serde_json::json;
+use crate::{Clipboard, Engine, Result, cmd};
+use serde_json::{Value, json};
 use soundcraft_midi::{Note, Sequence};
 use soundcraft_model::{Clip, ClipId};
 
@@ -40,14 +40,14 @@ fn audio_as_midi(e: &mut Engine, p: &Value) -> Result<Value> {
     seq.sort();
     let count = seq.notes.len();
     let clip = Clip::midi(ClipId(0), "Audio as MIDI", 0, r.len(), seq);
-    e.clipboard = Clipboard { length: r.len(), tracks: vec![vec![clip]], automation: vec![Vec::new()], ..Clipboard::default() };
+    e.clipboard = Clipboard { tracks: vec![vec![clip]], automation: vec![Vec::new()], ..Clipboard::of_range(e.session(), r) };
     Ok(json!({"notes": count, "length": r.len()}))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use soundcraft_audio_io::AudioBuffer;
+    use craft_audio::AudioBuffer;
     use soundcraft_model::{ChannelFormat, TrackKind};
 
     #[test]
@@ -59,7 +59,7 @@ mod tests {
         a.extend(tone(330.0));
         let frames = a.len() as i64;
         let s = e.session_mut();
-        let src = crate::io::add_source(s, "mel", AudioBuffer { sample_rate: 48_000, channels: vec![a] }, None, soundcraft_audio_io::FileFormat::Wav);
+        let src = crate::io::add_source(s, "mel", AudioBuffer { sample_rate: 48_000, channels: vec![a] }, None, soundcraft_model::FileFormat::Wav);
         let t = s.add_track(TrackKind::Audio, ChannelFormat::Mono, None);
         let cid = s.new_clip_id();
         crate::edit::place_clip(s, t, Clip::audio(cid, "mel", src, 0, 0, frames));

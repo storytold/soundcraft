@@ -1,10 +1,13 @@
 //! Track menu commands.
+use super::{
+    CommandSpec, always, bad, bool_or, has_selection, has_tracks, i64_or, range_param, str_param, track_param, tracks_param, tracks_required,
+};
 
-use super::*;
-use crate::cmd;
-use serde_json::json;
-use soundcraft_model::{ChannelFormat, Group, GroupId, Playlist, Route, TrackHeight, TrackKind};
+use crate::{Engine, Result, cmd};
+use serde_json::{Value, json};
+use soundcraft_model::{ChannelFormat, ClipContent, Group, GroupId, Playlist, Route, Session, Track, TrackHeight, TrackId, TrackKind};
 
+/// Returns the track command specifications exposed to UI and automation clients.
 pub fn specs() -> Vec<CommandSpec> {
     vec![
         cmd!(
@@ -12,13 +15,14 @@ pub fn specs() -> Vec<CommandSpec> {
             "New...",
             ["Track"],
             Some("Cmd+Shift+N"),
-            "{count?: 1, format?: mono|stereo|5.1…, kind?: audio|aux|master|midi|instrument|vca|folder, name?, timebase?: samples|ticks, instrument?: plugin id}",
+            "{count?: 1, format?: mono|stereo|5.1…, kind?: audio|aux|master|midi|instrument|vca|folder, name?, timebase?: samples|ticks, instrument?: plugin id, rows?: [objects with the same fields] (1–128 tracks total)}",
             always,
             new_track
         ),
         cmd!("track.group", "Group...", ["Track"], Some("Cmd+G"), "{name?, tracks?, edit?: true, mix?: true}", has_selection, group),
         cmd!("track.ungroup", "Delete Group", [], None, "{group: id|name}", always, delete_group),
         cmd!("track.group_toggle", "Toggle Group Active", [], None, "{group: id|name}", always, toggle_group),
+        cmd!("track.group_modify", "Modify Group", [], None, "{group: id|name, name?, tracks?, edit?, mix?}", always, modify_group),
         cmd!(
             "track.duplicate",
             "Duplicate...",
@@ -45,6 +49,8 @@ pub fn specs() -> Vec<CommandSpec> {
             has_selection,
             move_to_folder
         ),
+        cmd!("track.move_to_folder", "Move to Folder", [], None, "{tracks?, folder}", has_selection, move_into_folder),
+        cmd!("track.remove_from_folder", "Remove from Folder", [], None, "{tracks?}", has_selection, remove_from_folder),
         cmd!(
             "track.change_width",
             "Change Track Width",
@@ -58,7 +64,21 @@ pub fn specs() -> Vec<CommandSpec> {
         cmd!("track.rename", "Rename Track", [], None, "{track, name}", has_tracks, rename),
         cmd!("track.comments", "Track Comments", [], None, "{track, comments}", has_tracks, comments),
         cmd!("track.color", "Track Color", [], None, "{tracks?, color: [r,g,b] | palette index}", has_selection, color),
-        cmd!("track.height", "Track Height", [], None, "{tracks?, height: micro|mini|small|medium|large|jumbo|extreme}", has_selection, height),
+        cmd!(
+            "track.height",
+            "Track Height",
+            [],
+            None,
+            "{tracks?, height: micro|mini|small|medium|large|jumbo|extreme | points}",
+            has_selection,
+            height
+        ),
+        cmd!("track.height_up", "Increase Track Height", [], Some("Ctrl+Up"), "{tracks?} — one preset taller", has_selection, |e, p| height_step(
+            e, p, true
+        )),
+        cmd!("track.height_down", "Decrease Track Height", [], Some("Ctrl+Down"), "{tracks?} — one preset shorter", has_selection, |e, p| {
+            height_step(e, p, false)
+        }),
         cmd!("track.view", "Track View", [], None, "{tracks?, view: waveform|blocks|notes|volume|pan|mute|<automation id>}", has_selection, view),
         cmd!("track.hide", "Hide Track", [], None, "{tracks?, hidden?: bool}", has_selection, |e, p| flag(
             e,
@@ -88,8 +108,8 @@ pub fn specs() -> Vec<CommandSpec> {
             has_selection,
             |e, p| super::track_more::mute_sends_where(e, p, 0, 10)
         ),
-        cmd!("track.set_record_to_input_only", "Set Record Tracks to Input Only", ["Track"], Some("Alt+K"), "{}", always, |e, _| {
-            let s = e.session_mut();
+        cmd!(noundo "track.set_record_to_input_only", "Set Record Tracks to Input Only", ["Track"], Some("Alt+K"), "{}", always, |e, _| {
+            let s = e.runtime_session_mut();
             let mut n = 0;
             for t in &mut s.tracks {
                 if t.mixer.record_arm {
@@ -106,7 +126,7 @@ pub fn specs() -> Vec<CommandSpec> {
             Ok(json!({"track": t}))
         }),
         cmd!("track.clear_clip_indicators", "Clear All Clip Indicators", ["Track"], Some("Alt+C"), "{}", always, |_, _| Ok(json!({"cleared": true}))),
-        cmd!("track.clear_trim_automation", "Clear Trim Automation", ["Track"], None, "{tracks?}", has_selection, |_, _| Ok(json!({}))),
+        cmd!("track.clear_trim_automation", "Clear Trim Automation", ["Track"], None, "{tracks?}", has_selection, super::track_more::clear_trim),
         cmd!("track.create_click", "Create Click Track", ["Track"], None, "{}", always, create_click),
         cmd!("track.playlist_new", "New Playlist", [], None, "{track?, name?}", has_selection, |e, p| new_playlist(e, p, false)),
         cmd!("track.playlist_duplicate", "Duplicate Playlist", [], None, "{track?, name?}", has_selection, |e, p| new_playlist(e, p, true)),
@@ -136,7 +156,10 @@ pub fn specs() -> Vec<CommandSpec> {
         }),
         cmd!("track.vca", "Assign to VCA", [], None, "{tracks?, vca: VCA track id|name | null}", has_selection, |e, p| {
             let tracks = tracks_required(e, "track.vca", p)?;
-            let vca = track_param(e, "track.vca", p, "vca")?;
+            let vca = match p.get("vca") {
+                Some(Value::Null) => None,
+                _ => track_param(e, "track.vca", p, "vca")?,
+            };
             if let Some(v) = vca
                 && e.session().track(v).is_none_or(|t| t.kind != TrackKind::Vca)
             {
@@ -182,11 +205,19 @@ pub fn specs() -> Vec<CommandSpec> {
                     tr.active_playlist = active;
                 }
                 let _ = src;
-                let ids = crate::edit::paste(s, t, r.start, &clips, r.len(), false);
+                let ids = crate::edit::paste(s, t, r.start, &clips, r.len(), false).unwrap_or_default();
                 Ok(json!({"clips": ids}))
             }
         ),
-        cmd!("track.input", "Track Input", [], None, "{tracks?, input: none|bus name|hardware name}", has_selection, |e, p| route(e, p, true)),
+        cmd!(
+            "track.input",
+            "Track Input",
+            [],
+            None,
+            "{tracks?, input: none|bus name|hardware name|MIDI:<channel 1-16 or *>:<device or *> (MIDI and instrument tracks)}",
+            has_selection,
+            |e, p| route(e, p, true)
+        ),
         cmd!("track.output", "Track Output", [], None, "{tracks?, output: main|none|bus name}", has_selection, |e, p| route(e, p, false)),
         cmd!("track.timebase", "Track Timebase", [], None, "{tracks?, ticks: bool}", has_selection, |e, p| flag(
             e,
@@ -217,7 +248,37 @@ pub fn specs() -> Vec<CommandSpec> {
     ]
 }
 
+/// Creates either one legacy row or several validated rows as one command.
 fn new_track(e: &mut Engine, p: &Value) -> Result<Value> {
+    let ids = if let Some(rows) = p.get("rows") {
+        let rows = rows.as_array().ok_or_else(|| bad("track.new", "`rows` must be an array"))?;
+        if rows.is_empty() || rows.len() > 128 {
+            return Err(bad("track.new", "`rows` must contain 1–128 rows"));
+        }
+        let mut total = 0_i64;
+        for row in rows {
+            if !row.is_object() || row.get("rows").is_some() {
+                return Err(bad("track.new", "each row must be an object without nested rows"));
+            }
+            total = total.saturating_add(i64_or(row, "count", 1).clamp(1, 128));
+        }
+        if total > 128 {
+            return Err(bad("track.new", "a single creation is limited to 128 tracks"));
+        }
+        let mut ids = Vec::new();
+        for row in rows {
+            ids.extend(new_track_row(e, row)?);
+        }
+        ids
+    } else {
+        new_track_row(e, p)?
+    };
+    e.session_mut().edit.selected_tracks = ids.clone();
+    Ok(json!({"tracks": ids}))
+}
+
+/// All rows run inside one command, so failures roll back and Undo covers the whole creation.
+fn new_track_row(e: &mut Engine, p: &Value) -> Result<Vec<TrackId>> {
     let count = i64_or(p, "count", 1).clamp(1, 128);
     let kind = match str_param(p, "kind") {
         Some(k) => TrackKind::from_id(k).ok_or_else(|| bad("track.new", format!("unknown kind `{k}`")))?,
@@ -247,10 +308,17 @@ fn new_track(e: &mut Engine, p: &Value) -> Result<Value> {
                 t.instrument = Some(soundcraft_model::Insert::new(instrument.clone().unwrap_or_else(|| "subtractive_synth".into())));
             }
         }
+        if kind == TrackKind::Folder {
+            let folder_name = s.track(id).map(|track| track.name.clone()).unwrap_or_else(|| "Folder".into());
+            let bus_name = unique_folder_bus_name(s, &format!("{folder_name} Bus"), None);
+            let bus = s.add_bus(&bus_name, format);
+            if let Some(track) = s.track_mut(id) {
+                track.mixer.input = Route::Bus(bus);
+            }
+        }
         ids.push(id);
     }
-    s.edit.selected_tracks = ids.clone();
-    Ok(json!({"tracks": ids}))
+    Ok(ids)
 }
 
 fn group(e: &mut Engine, p: &Value) -> Result<Value> {
@@ -301,6 +369,55 @@ fn toggle_group(e: &mut Engine, p: &Value) -> Result<Value> {
     Ok(json!({"active": active}))
 }
 
+/// Change an existing group's name, membership and Edit/Mix linking. Omitted fields keep their value.
+fn modify_group(e: &mut Engine, p: &Value) -> Result<Value> {
+    const CMD: &str = "track.group_modify";
+    let g = find_group(e, p, CMD)?;
+    // Absent `tracks` leaves membership alone; present, it replaces it. Only an array counts, so a
+    // mistyped param can't silently swap the members for whatever happens to be selected.
+    let members = match p.get("tracks") {
+        None => None,
+        Some(Value::Array(_)) => {
+            let mut t = tracks_param(e, CMD, p)?;
+            // A track listed twice would take every linked move twice over.
+            let mut seen = std::collections::HashSet::new();
+            t.retain(|id| seen.insert(*id));
+            if t.is_empty() {
+                return Err(bad(CMD, "a group needs at least one track"));
+            }
+            Some(t)
+        }
+        Some(_) => return Err(bad(CMD, "`tracks` must be an array of track ids or names")),
+    };
+    let name = match str_param(p, "name") {
+        None => None,
+        Some(n) => {
+            let n = n.trim();
+            if n.is_empty() {
+                return Err(bad(CMD, "`name` must not be empty"));
+            }
+            // `find_group` resolves by name, so duplicates would make a group unaddressable.
+            if e.session().groups.iter().any(|x| x.name == n && x.id != g) {
+                return Err(bad(CMD, format!("a group named `{n}` already exists")));
+            }
+            let mut n = n.to_string();
+            soundcraft_model::truncate_chars(&mut n, soundcraft_model::MAX_NAME_CHARS);
+            Some(n)
+        }
+    };
+    let s = e.session_mut();
+    let Some(gr) = s.groups.iter_mut().find(|x| x.id == g) else { return Err(bad(CMD, "unknown `group`")) };
+    if let Some(n) = name {
+        gr.name = n;
+    }
+    if let Some(m) = members {
+        gr.members = m;
+    }
+    gr.edit = bool_or(p, "edit", gr.edit);
+    gr.mix = bool_or(p, "mix", gr.mix);
+    Ok(json!({"group": g, "name": gr.name, "tracks": gr.members, "edit": gr.edit, "mix": gr.mix}))
+}
+
 fn duplicate(e: &mut Engine, p: &Value) -> Result<Value> {
     let tracks = tracks_required(e, "track.duplicate", p)?;
     let (pl, auto, ins, snd) =
@@ -343,6 +460,8 @@ fn split_mono(e: &mut Engine, p: &Value) -> Result<Value> {
     let tracks = tracks_required(e, "track.split_into_mono", p)?;
     let s = e.session_mut();
     let mut out = Vec::new();
+    let mut mono_sources = std::collections::BTreeMap::new();
+    let mut copied_samples = 0usize;
     for t in tracks {
         let Some(src) = s.track(t).cloned() else { continue };
         if src.channels() < 2 || src.kind != TrackKind::Audio {
@@ -358,12 +477,46 @@ fn split_mono(e: &mut Engine, p: &Value) -> Result<Value> {
             let mut clips = src.clips().to_vec();
             for c in &mut clips {
                 c.id = s.new_clip_id();
-                // Mono tracks read channel 0 of the source; record the channel in the name for now.
+                if let ClipContent::Audio { source, .. } = &mut c.content {
+                    let audio =
+                        s.pool.get(*source).ok_or_else(|| bad("track.split_into_mono", format!("audio unavailable for clip `{}`", c.name)))?;
+                    let channels = audio.buffer.channels.len();
+                    if channels == 0 {
+                        return Err(bad("track.split_into_mono", format!("audio has no channels for clip `{}`", c.name)));
+                    }
+                    // Match the renderer's channel wrapping when a track is wider than its source.
+                    // An already-mono source can be shared without copying it.
+                    if channels > 1 {
+                        let key = (*source, ch % channels);
+                        let mono = if let Some(&id) = mono_sources.get(&key) {
+                            id
+                        } else {
+                            let samples =
+                                audio.buffer.channels.get(key.1).ok_or_else(|| bad("track.split_into_mono", "source channel unavailable"))?;
+                            copied_samples = copied_samples
+                                .checked_add(samples.len())
+                                .filter(|&n| n <= crate::io::MAX_IMPORT_SAMPLES)
+                                .ok_or_else(|| bad("track.split_into_mono", "split would copy too much audio"))?;
+                            // Keep the full channel: the cloned clips retain their offsets, stretch,
+                            // gain and fades, and every reader sees genuine mono media (including saves).
+                            let buf = craft_audio::AudioBuffer { sample_rate: s.sample_rate.hz(), channels: vec![samples.clone()] };
+                            let original = s.source(*source);
+                            let name = format!("{}.{suffix}.wav", original.map_or(c.name.as_str(), |source| source.name.as_str()));
+                            let time_reference = original.map_or(0, |source| source.time_reference);
+                            let id = crate::io::add_source(s, &name, buf, None, soundcraft_model::FileFormat::Wav);
+                            if let Some(source) = s.sources.iter_mut().find(|source| source.id == id) {
+                                source.time_reference = time_reference;
+                            }
+                            mono_sources.insert(key, id);
+                            id
+                        };
+                        *source = mono;
+                    }
+                }
                 c.name = format!("{}.{suffix}", c.name);
             }
             if let Some(tr) = s.track_mut(id) {
                 tr.mixer.pan = vec![if ch == 0 { -1.0 } else { 1.0 }];
-                tr.comments = format!("source_channel={ch}");
                 if let Some(pl) = tr.playlist_mut() {
                     pl.clips = clips;
                 }
@@ -393,6 +546,17 @@ fn flag(
     Ok(json!({"value": target, "tracks": tracks}))
 }
 
+/// A routing folder owns its summing bus; never reuse a user bus with the same name.
+fn unique_folder_bus_name(s: &Session, base: &str, own: Option<soundcraft_model::BusId>) -> String {
+    for suffix in 1..=s.busses.len().saturating_add(2) {
+        let candidate = if suffix == 1 { base.to_string() } else { format!("{base} {suffix}") };
+        if !s.busses.iter().any(|bus| bus.name == candidate && Some(bus.id) != own) {
+            return candidate;
+        }
+    }
+    format!("{base} {}", s.busses.len().saturating_add(3))
+}
+
 fn move_to_folder(e: &mut Engine, p: &Value) -> Result<Value> {
     let tracks = tracks_required(e, "track.move_to_new_folder", p)?;
     let name = str_param(p, "name").map(str::to_string);
@@ -406,7 +570,8 @@ fn move_to_folder(e: &mut Engine, p: &Value) -> Result<Value> {
     }
     // A routing folder sums its members through its own bus.
     let fname = s.track(fid).map(|x| x.name.clone()).unwrap_or_else(|| "Folder".into());
-    let bus = s.add_bus(&format!("{fname} Bus"), ChannelFormat::Stereo);
+    let bus_name = unique_folder_bus_name(s, &format!("{fname} Bus"), None);
+    let bus = s.add_bus(&bus_name, ChannelFormat::Stereo);
     if let Some(f) = s.track_mut(fid) {
         f.mixer.input = Route::Bus(bus);
     }
@@ -418,7 +583,139 @@ fn move_to_folder(e: &mut Engine, p: &Value) -> Result<Value> {
             }
         }
     }
+    place_under(s, fid, &tracks);
     Ok(json!({"folder": fid, "bus": bus}))
+}
+
+/// Whether `track` sits inside `folder`, directly or through nested folders.
+fn in_folder(s: &Session, track: TrackId, folder: TrackId) -> bool {
+    let mut current = s.track(track).and_then(|track| track.folder);
+    // The depth cap guards against a cyclic folder chain in a hostile session file.
+    for _ in 0..64 {
+        match current {
+            Some(parent) if parent == folder => return true,
+            Some(parent) => current = s.track(parent).and_then(|track| track.folder),
+            None => return false,
+        }
+    }
+    false
+}
+
+/// Keep a folder's members together immediately below it, preserving their relative order.
+fn place_under(s: &mut Session, folder: TrackId, tracks: &[TrackId]) {
+    // Moving a folder also moves its complete subtree as one stable block.
+    let moved: Vec<_> = s
+        .tracks
+        .iter()
+        .filter(|track| track.id != folder && (tracks.contains(&track.id) || tracks.iter().any(|root| in_folder(s, track.id, *root))))
+        .cloned()
+        .collect();
+    let moved_ids: Vec<_> = moved.iter().map(|track| track.id).collect();
+    s.tracks.retain(|track| !moved_ids.contains(&track.id));
+    let ids: Vec<TrackId> = s.tracks.iter().map(|track| track.id).collect();
+    let Some(folder_index) = ids.iter().position(|track| *track == folder) else { return };
+    let mut insert_at = folder_index + 1;
+    while ids.get(insert_at).is_some_and(|track| in_folder(s, *track, folder)) {
+        insert_at += 1;
+    }
+    for (offset, track) in moved.into_iter().enumerate() {
+        s.tracks.insert((insert_at + offset).min(s.tracks.len()), track);
+    }
+}
+
+fn folder_bus(s: &Session, folder: TrackId) -> Option<Route> {
+    s.track(folder).map(|folder| folder.mixer.input.clone()).filter(|route| matches!(route, Route::Bus(_)))
+}
+
+/// The summing bus owned by a routing folder.
+fn owned_folder_bus(s: &Session, folder: TrackId) -> Option<soundcraft_model::BusId> {
+    let folder = s.track(folder).filter(|track| track.kind == TrackKind::Folder)?;
+    match folder.mixer.input {
+        Route::Bus(id) => Some(id),
+        _ => None,
+    }
+}
+
+/// Whether a bus is still routed through by a track that survives deleting
+/// `deleted`, ignoring the output slots of `folder`'s own members, which the
+/// delete reroutes to the parent folder's bus. A folder owns its input bus
+/// only when this is false: `track.input` or a session file can point a
+/// folder at a bus that other tracks already use (#914).
+fn bus_used_beyond_folder(s: &Session, bus: soundcraft_model::BusId, deleted: &[TrackId], folder: TrackId) -> bool {
+    let route = Route::Bus(bus);
+    s.tracks.iter().filter(|track| !deleted.contains(&track.id)).any(|track| {
+        track.mixer.input == route
+            || track.mixer.sends.iter().flatten().any(|send| send.target == route)
+            || (track.mixer.output == route && !in_folder(s, track.id, folder))
+    })
+}
+
+/// Keep only the selected roots so selecting a folder and one of its children preserves the subtree.
+fn root_tracks(s: &Session, tracks: Vec<TrackId>) -> Vec<TrackId> {
+    tracks.iter().copied().filter(|track| !tracks.iter().any(|root| root != track && in_folder(s, *track, *root))).collect()
+}
+
+fn move_into_folder(e: &mut Engine, p: &Value) -> Result<Value> {
+    let folder = track_param(e, "track.move_to_folder", p, "folder")?.ok_or_else(|| bad("track.move_to_folder", "`folder` required"))?;
+    let tracks = tracks_required(e, "track.move_to_folder", p)?;
+    let session = e.session_mut();
+    if !session.track(folder).is_some_and(Track::is_folder) {
+        return Err(bad("track.move_to_folder", "`folder` is not a folder track"));
+    }
+    // A folder cannot go inside itself or one of its descendants.
+    let tracks: Vec<TrackId> = tracks.into_iter().filter(|track| *track != folder && !in_folder(session, folder, *track)).collect();
+    let tracks = root_tracks(session, tracks);
+    if tracks.is_empty() {
+        return Err(bad("track.move_to_folder", "nothing to move into that folder"));
+    }
+    let bus = folder_bus(session, folder);
+    for track in &tracks {
+        let old_bus = session.track(*track).and_then(|track| track.folder).and_then(|parent| folder_bus(session, parent));
+        if let Some(moved) = session.track_mut(*track) {
+            moved.folder = Some(folder);
+            if let Some(bus) = &bus
+                && (moved.mixer.output == Route::Main || Some(&moved.mixer.output) == old_bus.as_ref())
+            {
+                moved.mixer.output = bus.clone();
+            }
+        }
+    }
+    place_under(session, folder, &tracks);
+    Ok(json!({"folder": folder, "moved": tracks.len()}))
+}
+
+fn remove_from_folder(e: &mut Engine, p: &Value) -> Result<Value> {
+    let tracks = tracks_required(e, "track.remove_from_folder", p)?;
+    let session = e.session_mut();
+    let tracks = root_tracks(session, tracks);
+    let mut removed = 0;
+    for track in &tracks {
+        let Some(folder) = session.track(*track).and_then(|track| track.folder) else { continue };
+        let bus = folder_bus(session, folder);
+        let parent = session.track(folder).and_then(|folder| folder.folder);
+        let parent_bus = parent.and_then(|parent| folder_bus(session, parent));
+        if let Some(moved) = session.track_mut(*track) {
+            moved.folder = parent;
+            if bus.as_ref() == Some(&moved.mixer.output) {
+                moved.mixer.output = parent_bus.unwrap_or(Route::Main);
+            }
+            removed += 1;
+        }
+        let moved: Vec<_> =
+            session.tracks.iter().filter(|candidate| candidate.id == *track || in_folder(session, candidate.id, *track)).cloned().collect();
+        let moved_ids: Vec<_> = moved.iter().map(|candidate| candidate.id).collect();
+        session.tracks.retain(|candidate| !moved_ids.contains(&candidate.id));
+        if let Some(folder_index) = session.track_index(folder) {
+            let mut insert_at = folder_index + 1;
+            while session.tracks.get(insert_at).is_some_and(|candidate| in_folder(session, candidate.id, folder)) {
+                insert_at += 1;
+            }
+            for (offset, moved) in moved.into_iter().enumerate() {
+                session.tracks.insert((insert_at + offset).min(session.tracks.len()), moved);
+            }
+        }
+    }
+    Ok(json!({"removed": removed}))
 }
 
 fn change_width(e: &mut Engine, p: &Value) -> Result<Value> {
@@ -434,18 +731,77 @@ fn change_width(e: &mut Engine, p: &Value) -> Result<Value> {
     Ok(json!({"format": f}))
 }
 
+/// The nearest ancestor folder of `folder` that is not itself being deleted (walks at most 64 levels).
+fn surviving_parent(s: &Session, deleted: &[TrackId], folder: TrackId) -> Option<TrackId> {
+    let mut parent = s.track(folder).and_then(|folder| folder.folder);
+    for _ in 0..64 {
+        match parent {
+            Some(candidate) if deleted.contains(&candidate) => parent = s.track(candidate).and_then(|folder| folder.folder),
+            _ => break,
+        }
+    }
+    parent
+}
+
+/// Clear inputs and sends that used the removed bus; outputs that used it move to `replacement`.
+fn reroute_deleted_bus(s: &mut Session, bus: soundcraft_model::BusId, replacement: &Route) {
+    for track in &mut s.tracks {
+        if track.mixer.input == Route::Bus(bus) {
+            track.mixer.input = Route::None;
+        }
+        if track.mixer.output == Route::Bus(bus) {
+            track.mixer.output = replacement.clone();
+        }
+        for send in &mut track.mixer.sends {
+            if send.as_ref().is_some_and(|send| send.target == Route::Bus(bus)) {
+                *send = None;
+            }
+        }
+    }
+}
+
 fn delete(e: &mut Engine, p: &Value) -> Result<Value> {
     let tracks = tracks_required(e, "track.delete", p)?;
     let s = e.session_mut();
+    let removed_busses: Vec<_> = tracks
+        .iter()
+        .filter_map(|folder| {
+            let bus = owned_folder_bus(s, *folder)?;
+            let parent = surviving_parent(s, &tracks, *folder);
+            let replacement = parent.and_then(|parent| folder_bus(s, parent)).unwrap_or(Route::Main);
+            // A bus that surviving tracks route through is shared, not the
+            // folder's own: keep it, and every route to it, when the folder
+            // goes (#914).
+            (!bus_used_beyond_folder(s, bus, &tracks, *folder)).then_some((bus, replacement))
+        })
+        .collect();
+    // Promote children of deleted folders and repair only routes that used the deleted
+    // folder's own bus. Custom outputs remain untouched.
+    let mut promoted = Vec::new();
+    for child in &s.tracks {
+        if tracks.contains(&child.id) {
+            continue;
+        }
+        let Some(folder) = child.folder.filter(|folder| tracks.contains(folder)) else { continue };
+        let parent = surviving_parent(s, &tracks, folder);
+        promoted.push((child.id, folder_bus(s, folder), parent, parent.and_then(|parent| folder_bus(s, parent))));
+    }
+    for (child, old_bus, parent, parent_bus) in promoted {
+        if let Some(child) = s.track_mut(child) {
+            child.folder = parent;
+            if old_bus.as_ref() == Some(&child.mixer.output) {
+                child.mixer.output = parent_bus.unwrap_or(Route::Main);
+            }
+        }
+    }
     s.tracks.retain(|t| !tracks.contains(&t.id));
     s.edit.selected_tracks.retain(|t| !tracks.contains(t));
     for g in &mut s.groups {
         g.members.retain(|t| !tracks.contains(t));
     }
-    for t in &mut s.tracks {
-        if t.folder.is_some_and(|f| tracks.contains(&f)) {
-            t.folder = None;
-        }
+    for (bus, replacement) in removed_busses {
+        s.busses.retain(|candidate| candidate.id != bus);
+        reroute_deleted_bus(s, bus, &replacement);
     }
     Ok(json!({"deleted": tracks.len()}))
 }
@@ -453,12 +809,34 @@ fn delete(e: &mut Engine, p: &Value) -> Result<Value> {
 fn rename(e: &mut Engine, p: &Value) -> Result<Value> {
     let t = track_param(e, "track.rename", p, "track")?.ok_or_else(|| bad("track.rename", "`track` required"))?;
     let name = str_param(p, "name").map(str::trim).filter(|n| !n.is_empty()).ok_or_else(|| bad("track.rename", "`name` required"))?;
-    let s = e.session_mut();
+    // Validate the stored name, including its existing 64-character limit.
+    let name: String = name.chars().take(64).collect();
+    let s = e.session();
     if s.tracks.iter().any(|x| x.name == name && x.id != t) {
         return Err(bad("track.rename", format!("a track named `{name}` already exists")));
     }
-    if let Some(tr) = s.track_mut(t) {
-        tr.name = name.chars().take(64).collect();
+    let bus = s.track(t).and_then(|track| match (track.kind, &track.mixer.input) {
+        (TrackKind::Folder, Route::Bus(bus)) => Some(*bus),
+        _ => None,
+    });
+    let track = s.track(t).ok_or_else(|| bad("track.rename", "unknown track"))?;
+    if track.name == name
+        && bus.is_none_or(|id| {
+            let expected = unique_folder_bus_name(s, &format!("{name} Bus"), Some(id));
+            s.bus(id).is_none_or(|bus| bus.name == expected)
+        })
+    {
+        return Ok(json!({"name": name}));
+    }
+    let s = e.session_mut();
+    if let Some(track) = s.track_mut(t) {
+        track.name.clone_from(&name);
+    }
+    if let Some(bus) = bus {
+        let bus_name = unique_folder_bus_name(s, &format!("{name} Bus"), Some(bus));
+        if let Some(bus) = s.busses.iter_mut().find(|candidate| candidate.id == bus) {
+            bus.name = bus_name;
+        }
     }
     Ok(json!({"name": name}))
 }
@@ -493,7 +871,10 @@ fn color(e: &mut Engine, p: &Value) -> Result<Value> {
 
 fn height(e: &mut Engine, p: &Value) -> Result<Value> {
     let tracks = tracks_required(e, "track.height", p)?;
-    let h = str_param(p, "height").and_then(TrackHeight::from_id).ok_or_else(|| bad("track.height", "unknown height"))?;
+    let h = match p.get("height").and_then(Value::as_f64) {
+        Some(points) => TrackHeight::from_points(points as f32),
+        None => str_param(p, "height").and_then(TrackHeight::from_id).ok_or_else(|| bad("track.height", "unknown height"))?,
+    };
     let s = e.session_mut();
     for t in &tracks {
         if let Some(tr) = s.track_mut(*t) {
@@ -501,6 +882,26 @@ fn height(e: &mut Engine, p: &Value) -> Result<Value> {
         }
     }
     Ok(json!({"height": h}))
+}
+
+fn height_step(e: &mut Engine, p: &Value, taller: bool) -> Result<Value> {
+    let tracks = tracks_required(e, if taller { "track.height_up" } else { "track.height_down" }, p)?;
+    let mut steps = Vec::new();
+    for tr in tracks.iter().filter_map(|t| e.session().track(*t)) {
+        let h = tr.height.step(taller);
+        if h != tr.height {
+            steps.push((tr.id, h));
+        }
+    }
+    if !steps.is_empty() {
+        let s = e.session_mut();
+        for (t, h) in &steps {
+            if let Some(tr) = s.track_mut(*t) {
+                tr.height = *h;
+            }
+        }
+    }
+    Ok(json!({"changed": steps.len()}))
 }
 
 fn view(e: &mut Engine, p: &Value) -> Result<Value> {
@@ -625,6 +1026,8 @@ fn route(e: &mut Engine, p: &Value, input: bool) -> Result<Value> {
     if let Route::Hardware(name) = &r
         && create_bus
         && !name.to_ascii_lowercase().starts_with("in ")
+        // A MIDI input (device and channel) of a MIDI or instrument track, see `MidiInput`.
+        && !name.starts_with("MIDI:")
     {
         let fmt = tracks
             .first()
@@ -649,6 +1052,48 @@ mod tests {
     use super::*;
 
     #[test]
+    fn a_midi_input_is_kept_as_typed_and_never_becomes_a_bus() {
+        use soundcraft_model::MidiInput;
+        let mut e = Engine::default();
+        let id = e.execute("track.new", &json!({"name": "Keys", "kind": "instrument"})).unwrap()["tracks"][0].as_u64().unwrap();
+        let mut set = |input: &str| {
+            e.execute("track.input", &json!({"tracks": [id], "input": input})).unwrap();
+            assert_eq!(e.session().busses.len(), 0, "{input}: no bus is made for a MIDI input");
+            e.session().track(soundcraft_model::TrackId(id)).unwrap().mixer.input.clone()
+        };
+        // (what is typed, the device and channel the track listens to)
+        let cases: [(&str, Option<&str>, Option<u8>); 12] = [
+            ("MIDI:*:*", None, None),
+            ("MIDI:1:*", None, Some(0)),
+            ("MIDI:16:Pad", Some("Pad"), Some(15)),
+            ("MIDI:*:Keys", Some("Keys"), None),
+            // A device name may hold colons (ALSA names do): only the first one after the channel splits.
+            ("MIDI:3:Launchkey MK3:MIDI 1", Some("Launchkey MK3:MIDI 1"), Some(2)),
+            // An empty device means every device.
+            ("MIDI:5:", None, Some(4)),
+            ("MIDI:*:", None, None),
+            // Channels outside 1–16 and other junk mean every channel; nothing fails.
+            ("MIDI:0:Pad", Some("Pad"), None),
+            ("MIDI:17:Pad", Some("Pad"), None),
+            ("MIDI:-1:Pad", Some("Pad"), None),
+            ("MIDI:abc:Pad", Some("Pad"), None),
+            // Without the second colon it is not a device choice: everything.
+            ("MIDI:7", None, None),
+        ];
+        for (typed, device, channel) in cases {
+            let route = set(typed);
+            assert_eq!(route, Route::Hardware(typed.to_string()), "kept as typed");
+            assert_eq!(MidiInput::of(&route), MidiInput { device, channel }, "{typed}");
+        }
+        // The route a choice is stored as reads back as the same choice.
+        let stored = MidiInput { device: Some("Launchkey MK3:MIDI 1"), channel: Some(9) }.route();
+        let Route::Hardware(text) = &stored else { panic!("not a hardware route") };
+        assert_eq!(MidiInput::of(&set(text)), MidiInput { device: Some("Launchkey MK3:MIDI 1"), channel: Some(9) });
+        // "none" takes the choice away: all devices, all channels.
+        assert_eq!(MidiInput::of(&set("none")), MidiInput::default());
+    }
+
+    #[test]
     fn comp_from_alternate_playlist() {
         let mut e = crate::demo::demo_engine();
         let kick = e.session().track_by_name("Kick").map(|t| t.id.0).unwrap();
@@ -665,13 +1110,173 @@ mod tests {
     }
 
     #[test]
+    fn group_modify_changes_name_membership_and_linking() {
+        let mut e = crate::demo::demo_engine();
+        let g = e.execute("track.group", &json!({"tracks": ["Kick", "Snare"], "name": "Drums"})).unwrap()["group"].as_u64().unwrap();
+        // Every field at once, the way the dialog submits it.
+        let r = e.execute("track.group_modify", &json!({"group": g, "name": "Rhythm", "tracks": ["Kick", "Bass"], "edit": false})).unwrap();
+        assert_eq!(r["name"], "Rhythm");
+        let gr = e.session().groups.iter().find(|x| x.id.0 == g).unwrap().clone();
+        assert_eq!(gr.name, "Rhythm");
+        assert_eq!(gr.members, vec![e.session().track_by_name("Kick").unwrap().id, e.session().track_by_name("Bass").unwrap().id]);
+        assert!(!gr.edit);
+        assert!(gr.mix, "an omitted field keeps its value");
+        assert_eq!(gr.letter, 'a', "the letter is the group's stable id and never changes");
+        // Omitting `tracks` leaves membership alone rather than falling back to the selection.
+        e.execute("edit.select", &json!({"tracks": ["Pad"], "exact": true})).unwrap();
+        e.execute("track.group_modify", &json!({"group": g, "name": "Rhythm Section"})).unwrap();
+        assert_eq!(e.session().groups.iter().find(|x| x.id.0 == g).unwrap().members, gr.members);
+        // Resolving the group by its new name keeps working, so names stay unique and non-empty.
+        e.execute("track.group", &json!({"tracks": ["Pad"], "name": "Pads"})).unwrap();
+        assert!(e.execute("track.group_modify", &json!({"group": "Pads", "name": "Rhythm Section"})).is_err());
+        assert!(e.execute("track.group_modify", &json!({"group": g, "name": "  "})).is_err());
+        assert!(e.execute("track.group_modify", &json!({"group": g, "tracks": []})).is_err());
+        assert!(e.execute("track.group_modify", &json!({"group": g, "tracks": "Kick"})).is_err(), "`tracks` must be an array");
+        assert!(e.execute("track.group_modify", &json!({"group": g, "tracks": ["Kick", "Kick"]})).is_ok());
+        assert_eq!(e.session().groups.iter().find(|x| x.id.0 == g).unwrap().members.len(), 1, "a repeated track is listed once");
+        assert!(e.execute("track.group_modify", &json!({"group": 9999, "name": "x"})).is_err());
+        assert_eq!(e.session().groups.iter().find(|x| x.id.0 == g).unwrap().name, "Rhythm Section", "a rejected call changes nothing");
+    }
+
+    #[test]
     fn folder_routes_members_through_its_bus() {
         let mut e = crate::demo::demo_engine();
         let r = e.execute("track.move_to_new_folder", &json!({"tracks": ["Kick", "Snare"], "name": "Drums"})).unwrap();
         assert!(r["bus"].is_u64());
         let s = e.session();
         let kick = s.track_by_name("Kick").unwrap();
+        let snare = s.track_by_name("Snare").unwrap();
+        let folder = s.tracks.iter().find(|track| track.kind == TrackKind::Folder).unwrap();
         assert!(matches!(kick.mixer.output, Route::Bus(_)));
-        assert!(s.tracks.iter().any(|t| t.kind == TrackKind::Folder && t.mixer.input == kick.mixer.output));
+        assert_eq!(folder.mixer.input, kick.mixer.output);
+        assert_eq!(folder.mixer.input, snare.mixer.output);
+        assert_eq!(s.track_index(folder.id).unwrap() + 1, s.track_index(kick.id).unwrap());
+        assert_eq!(s.track_index(kick.id).unwrap() + 1, s.track_index(snare.id).unwrap());
+    }
+
+    #[test]
+    fn empty_folder_owns_a_unique_bus_and_renames_it() {
+        let mut e = crate::demo::demo_engine();
+        let first = e.execute("track.new", &json!({"kind": "folder", "name": "Guitars"})).unwrap();
+        let second = e.execute("track.new", &json!({"kind": "folder", "name": "Vocals"})).unwrap();
+        let first = TrackId(first["tracks"][0].as_u64().unwrap());
+        let second = TrackId(second["tracks"][0].as_u64().unwrap());
+        let first_bus = match e.session().track(first).unwrap().mixer.input {
+            Route::Bus(bus) => bus,
+            _ => panic!("folder did not receive a bus"),
+        };
+        let second_bus = match e.session().track(second).unwrap().mixer.input {
+            Route::Bus(bus) => bus,
+            _ => panic!("folder did not receive a bus"),
+        };
+        assert_ne!(first_bus, second_bus);
+        e.session_mut().add_bus("Percussion Bus", ChannelFormat::Stereo);
+        e.execute("track.rename", &json!({"track": first.0, "name": "Percussion"})).unwrap();
+        let renamed = e.session().busses.iter().find(|bus| bus.id == first_bus).unwrap();
+        assert_eq!(renamed.name, "Percussion Bus 2");
+    }
+
+    #[test]
+    fn tracks_can_move_between_nested_folders_and_leave() {
+        let mut e = crate::demo::demo_engine();
+        let outer = e.execute("track.new", &json!({"kind": "folder", "name": "Band"})).unwrap();
+        let inner = e.execute("track.new", &json!({"kind": "folder", "name": "Drums"})).unwrap();
+        let outer = TrackId(outer["tracks"][0].as_u64().unwrap());
+        let inner = TrackId(inner["tracks"][0].as_u64().unwrap());
+
+        e.execute("track.move_to_folder", &json!({"tracks": ["Kick"], "folder": inner.0})).unwrap();
+        e.execute("track.move_to_folder", &json!({"tracks": [inner.0], "folder": outer.0})).unwrap();
+        let inner_bus = match e.session().track(inner).unwrap().mixer.input {
+            Route::Bus(bus) => bus,
+            _ => panic!("folder did not receive a bus"),
+        };
+        let outer_bus = match e.session().track(outer).unwrap().mixer.input {
+            Route::Bus(bus) => bus,
+            _ => panic!("folder did not receive a bus"),
+        };
+        assert!(e.execute("track.move_to_folder", &json!({"tracks": [outer.0], "folder": inner.0})).is_err());
+
+        let kick = e.session().track_by_name("Kick").unwrap();
+        assert_eq!(kick.folder, Some(inner));
+        assert_eq!(kick.mixer.output, e.session().track(inner).unwrap().mixer.input);
+        assert_eq!(e.session().track_index(outer).unwrap() + 1, e.session().track_index(inner).unwrap());
+        assert_eq!(e.session().track_index(inner).unwrap() + 1, e.session().track_index(kick.id).unwrap());
+
+        e.execute("track.remove_from_folder", &json!({"tracks": ["Kick"]})).unwrap();
+        let kick = e.session().track_by_name("Kick").unwrap();
+        assert_eq!(kick.folder, Some(outer));
+        assert_eq!(kick.mixer.output, e.session().track(outer).unwrap().mixer.input);
+
+        e.execute("track.move_to_folder", &json!({"tracks": ["Kick"], "folder": inner.0})).unwrap();
+        e.execute("track.remove_from_folder", &json!({"tracks": [inner.0]})).unwrap();
+        let inner_track = e.session().track(inner).unwrap();
+        let kick = e.session().track_by_name("Kick").unwrap();
+        assert_eq!(inner_track.folder, None);
+        assert_eq!(inner_track.mixer.output, Route::Main);
+        assert_eq!(kick.folder, Some(inner));
+        assert_eq!(e.session().track_index(inner).unwrap() + 1, e.session().track_index(kick.id).unwrap());
+
+        e.execute("track.delete", &json!({"tracks": [inner.0]})).unwrap();
+        let kick = e.session().track_by_name("Kick").unwrap();
+        assert_eq!(kick.folder, None);
+        assert_eq!(kick.mixer.output, Route::Main);
+        assert!(e.session().bus(inner_bus).is_none(), "the deleted folder's owned bus must be removed");
+        assert!(e.session().bus(outer_bus).is_some(), "the surviving parent folder's bus must remain");
+    }
+
+    #[test]
+    fn deleting_a_folder_keeps_a_bus_other_tracks_still_use() {
+        let mut e = crate::demo::demo_engine();
+        // #914: the demo session's Verb bus is shared: an aux takes it as its input
+        // and several tracks send to it. Point a new folder's input at it, the way
+        // `track.input` or a session file can, then delete the folder.
+        let verb = e.session().bus_by_name("Verb").unwrap().id;
+        let folder = e.execute("track.new", &json!({"kind": "folder", "name": "Shared"})).unwrap();
+        let folder = TrackId(folder["tracks"][0].as_u64().unwrap());
+        e.execute("track.input", &json!({"tracks": [folder.0], "input": "Verb"})).unwrap();
+        assert_eq!(e.session().track(folder).unwrap().mixer.input, Route::Bus(verb));
+        e.execute("track.delete", &json!({"tracks": [folder.0]})).unwrap();
+        assert!(e.session().track(folder).is_none(), "the folder itself is deleted");
+        assert!(e.session().bus(verb).is_some(), "a bus other tracks route through must survive");
+        let aux = e.session().track_by_name("Verb").unwrap();
+        assert_eq!(aux.mixer.input, Route::Bus(verb), "the aux input must keep the bus");
+        let snare = e.session().track_by_name("Snare").unwrap();
+        assert!(snare.mixer.sends.iter().flatten().any(|send| send.target == Route::Bus(verb)), "sends to the shared bus must survive");
+    }
+
+    #[test]
+    fn heights_take_points_and_step_through_the_presets() {
+        let mut e = crate::demo::demo_engine();
+        let height = |e: &Engine, name: &str| e.session().track_by_name(name).map(|t| t.height);
+        e.execute("track.height", &json!({"tracks": ["Kick"], "height": 57})).unwrap();
+        assert_eq!(height(&e, "Kick"), Some(TrackHeight::Custom(57)));
+        e.execute("track.height_up", &json!({"tracks": ["Kick", "Snare"]})).unwrap();
+        assert_eq!((height(&e, "Kick"), height(&e, "Snare")), (Some(TrackHeight::Medium), Some(TrackHeight::Large)));
+        e.execute("track.height", &json!({"tracks": ["Kick"], "height": "extreme"})).unwrap();
+        let steps = e.undo_history().len();
+        assert_eq!(e.execute("track.height_up", &json!({"tracks": ["Kick"]})).unwrap()["changed"], 0);
+        assert_eq!(e.undo_history().len(), steps);
+        e.execute("track.height_down", &json!({"tracks": ["Kick"]})).unwrap();
+        assert_eq!(height(&e, "Kick"), Some(TrackHeight::Jumbo));
+    }
+
+    #[test]
+    fn vca_null_clears_the_assignment() {
+        let mut e = Engine::default();
+        e.execute("track.new", &json!({"name": "Member"})).unwrap();
+        e.execute("track.new", &json!({"kind": "vca", "name": "Master"})).unwrap();
+        let (member, master) = (e.session().tracks[0].id, e.session().tracks[1].id);
+        let vca = |e: &Engine| e.session().track(member).unwrap().mixer.vca;
+        e.execute("track.vca", &json!({"tracks": [member.0], "vca": master.0})).unwrap();
+        assert_eq!(vca(&e), Some(master.0));
+        // #237: null is documented as "no VCA"; anything else that is not a VCA is still an error.
+        for invalid in [json!(true), json!(999), json!("Missing"), json!(member.0)] {
+            assert!(e.execute("track.vca", &json!({"tracks": [member.0], "vca": invalid})).is_err());
+            assert_eq!(vca(&e), Some(master.0));
+        }
+        e.execute("track.vca", &json!({"tracks": [member.0], "vca": null})).unwrap();
+        assert_eq!(vca(&e), None);
+        assert!(e.undo());
+        assert_eq!(vca(&e), Some(master.0));
     }
 }

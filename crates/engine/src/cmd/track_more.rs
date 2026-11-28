@@ -1,10 +1,10 @@
 //! More Track menu commands: Convert Aux to Routing Folder, Extract MIDI, track presets, insert /
 //! send bypass subsets, MIDI real-time properties, trim/VCA coalescing and target playlists.
+use super::{CommandSpec, bad, has_selection, has_tracks, range_param, str_param, tracks_param, tracks_required};
 
 use super::more_util::{activate_playlist, target_playlist, track_key};
-use super::*;
-use crate::cmd;
-use serde_json::json;
+use crate::{Engine, EngineError, Result, cmd};
+use serde_json::{Value, json};
 use soundcraft_dsp::Category;
 use soundcraft_model::{AutoParam, AutomationLane, ChannelFormat, Clip, ClipContent, Insert, Route, Session, Track, TrackId, TrackKind};
 use soundcraft_time::Samples;
@@ -171,7 +171,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "track.designate_target_playlist",
             "Designate as Target Playlist",
             ["Track"],
-            None,
+            Some("Cmd+Shift+Right"),
             "{tracks?, index?} — the active playlist (or `index`) becomes the target for Copy/Move Selection to",
             has_selection,
             designate_target
@@ -180,7 +180,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "track.show_target_playlist",
             "Show Target Playlist",
             ["Track"],
-            None,
+            Some("Shift+Right"),
             "{tracks?} — makes the target playlist the main playlist",
             has_selection,
             show_target
@@ -285,11 +285,12 @@ fn save_preset(e: &mut Engine, p: &Value) -> Result<Value> {
     Ok(json!({"path": path, "track": first}))
 }
 
+/// Load persistent mixer settings while retaining destination routing and live input flags.
 fn load_preset(e: &mut Engine, p: &Value) -> Result<Value> {
     let id = "track.load_preset";
     let path = str_param(p, "path").ok_or_else(|| bad(id, "`path` required"))?.to_string();
     let tracks = tracks_required(e, id, p)?;
-    let text = std::fs::read_to_string(&path).map_err(|err| EngineError::Io(format!("{path}: {err}")))?;
+    let text = crate::io::read_text(&path)?;
     let v: Value = serde_json::from_str(&text).map_err(|err| EngineError::Io(format!("{path}: {err}")))?;
     if v.get("format").and_then(Value::as_str) != Some(PRESET_FORMAT) {
         return Err(EngineError::Io(format!("{path}: not a SoundCraft track preset")));
@@ -301,15 +302,17 @@ fn load_preset(e: &mut Engine, p: &Value) -> Result<Value> {
     let s = e.session_mut();
     for t in &tracks {
         if let Some(tr) = s.track_mut(*t) {
-            // Routing is session-specific: keep the track's own input/output, VCA and arm state.
-            let keep = (tr.mixer.input.clone(), tr.mixer.output.clone(), tr.mixer.vca, tr.mixer.record_arm, tr.mixer.pan.clone());
+            // Routing and live input state are track-specific: a preset must not replace them.
+            let keep =
+                (tr.mixer.input.clone(), tr.mixer.output.clone(), tr.mixer.vca, tr.mixer.record_arm, tr.mixer.input_monitor, tr.mixer.pan.clone());
             tr.mixer = mixer.clone();
             tr.mixer.input = keep.0;
             tr.mixer.output = keep.1;
             tr.mixer.vca = keep.2;
             tr.mixer.record_arm = keep.3;
-            if tr.mixer.pan.len() != keep.4.len() {
-                tr.mixer.pan = keep.4;
+            tr.mixer.input_monitor = keep.4;
+            if tr.mixer.pan.len() != keep.5.len() {
+                tr.mixer.pan = keep.5;
             }
             if tr.kind == TrackKind::Instrument && instrument.is_some() {
                 tr.instrument = instrument.clone();
@@ -401,6 +404,10 @@ fn write_rtp(e: &mut Engine, p: &Value) -> Result<Value> {
                 n.start = n.start.saturating_add(r.delay_ticks).max(0);
                 notes += 1;
             }
+            // Playback delays controller events too, but ignores those before tick 0 (hidden by a start trim).
+            for c in sequence.ctrls.iter_mut().filter(|c| c.tick >= 0) {
+                c.tick = c.tick.saturating_add(r.delay_ticks).max(0);
+            }
             sequence.sort();
         }
         let pre = format!("rtp.{}.", t.0);
@@ -465,6 +472,21 @@ fn coalesce_trim(e: &mut Engine, p: &Value) -> Result<Value> {
     Ok(json!({"tracks": n}))
 }
 
+pub(super) fn clear_trim(e: &mut Engine, p: &Value) -> Result<Value> {
+    let tracks = tracks_required(e, "track.clear_trim_automation", p)?;
+    let s = e.session_mut();
+    let mut n = 0;
+    for t in &tracks {
+        let Some(tr) = s.track_mut(*t) else { continue };
+        let before = tr.automation.len();
+        tr.automation.retain(|l| l.param != trim_param());
+        if tr.automation.len() < before {
+            n += 1;
+        }
+    }
+    Ok(json!({"tracks": n}))
+}
+
 fn coalesce_vca(e: &mut Engine, p: &Value) -> Result<Value> {
     let id = "track.coalesce_vca";
     let picked = tracks_param(e, id, p)?;
@@ -498,15 +520,22 @@ fn coalesce_vca(e: &mut Engine, p: &Value) -> Result<Value> {
 }
 
 fn designate_target(e: &mut Engine, p: &Value) -> Result<Value> {
-    let tracks = tracks_required(e, "track.designate_target_playlist", p)?;
-    let idx = p.get("index").and_then(Value::as_u64);
+    let id = "track.designate_target_playlist";
+    let tracks = tracks_required(e, id, p)?;
+    let index = match p.get("index") {
+        None | Some(Value::Null) => None,
+        Some(value) => {
+            let index = value.as_u64().ok_or_else(|| bad(id, "`index` must be a nonnegative integer"))?;
+            Some(usize::try_from(index).map_err(|_| bad(id, "no such playlist"))?)
+        }
+    };
     let s = e.session_mut();
     let mut out = Vec::new();
     for t in &tracks {
         let Some(tr) = s.track(*t) else { continue };
-        let i = idx.map_or(tr.active_playlist, |x| usize::try_from(x).unwrap_or(usize::MAX));
+        let i = index.unwrap_or(tr.active_playlist);
         if i >= tr.playlists.len() {
-            return Err(bad("track.designate_target_playlist", "no such playlist"));
+            return Err(bad(id, "no such playlist"));
         }
         s.edit.values.insert(format!("playlist.target.{}", t.0), i as f64);
         out.push(json!({"track": t, "target": i}));
@@ -546,7 +575,6 @@ fn toggle_recent(e: &mut Engine, p: &Value) -> Result<Value> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
     #[test]
     fn bypass_by_category_and_range() {
         let mut e = crate::demo::demo_engine();
@@ -604,6 +632,7 @@ mod tests {
         assert_eq!(e.session().track(pad).unwrap().folder, Some(verb));
     }
 
+    /// A preset transfers persistent mix settings without replacing live destination states.
     #[test]
     fn preset_round_trip() {
         let dir = std::env::temp_dir().join(format!("sc-preset-{}", std::process::id()));
@@ -613,10 +642,13 @@ mod tests {
         e.execute("edit.select", &json!({"tracks": ["Bass"]})).unwrap();
         e.execute("track.save_preset", &json!({"path": path})).unwrap();
         e.execute("edit.select", &json!({"tracks": ["Hats"]})).unwrap();
+        e.execute("mix.record_arm", &json!({"value": true})).unwrap();
+        e.execute("mix.input_monitor", &json!({"value": true})).unwrap();
         e.execute("track.load_preset", &json!({"path": path})).unwrap();
         let hats = e.session().track_by_name("Hats").unwrap();
         assert_eq!(hats.mixer.inserts[0].as_ref().map(|i| i.plugin.as_str()), Some("compressor"));
         assert_eq!(hats.mixer.volume_db, -5.0);
+        assert!(hats.mixer.record_arm && hats.mixer.input_monitor, "loading a preset keeps live input state");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -638,6 +670,31 @@ mod tests {
         assert_eq!(after.pitch, before.pitch + 12);
         assert_eq!(after.velocity, before.velocity - 10);
         assert!(!e.session().edit.values.keys().any(|k| k.starts_with(&format!("rtp.{}.", keys.0))));
+    }
+
+    #[test]
+    fn rtp_delay_shifts_controller_events() {
+        use soundcraft_midi::{CtrlEvent, CtrlKind};
+        let mut e = crate::demo::demo_engine();
+        let keys = e.session().track_by_name("Keys").unwrap().id;
+        let s = e.session_mut();
+        if let Some(pl) = s.track_mut(keys).and_then(Track::playlist_mut)
+            && let ClipContent::Midi { sequence } = &mut pl.clips[0].content
+        {
+            sequence.ctrls.clear();
+            sequence.ctrls.push(CtrlEvent { tick: 100, channel: 0, kind: CtrlKind::Cc(7), value: 90 });
+            sequence.ctrls.push(CtrlEvent { tick: 200, channel: 0, kind: CtrlKind::PitchBend, value: 10 });
+            sequence.ctrls.push(CtrlEvent { tick: -30, channel: 0, kind: CtrlKind::Cc(1), value: 5 });
+        }
+        s.edit.values.insert(track_key("rtp", keys, "delay"), 50.0);
+        e.execute("edit.select", &json!({"tracks": [keys.0]})).unwrap();
+        e.execute("track.write_midi_rtp", &json!({})).unwrap();
+        let ClipContent::Midi { sequence } = &e.session().track(keys).unwrap().clips()[0].content else { panic!() };
+        let tick_of = |k: CtrlKind| sequence.ctrls.iter().find(|c| c.kind == k).map(|c| c.tick);
+        assert_eq!(tick_of(CtrlKind::Cc(7)), Some(150), "playback delayed the CC by 50 ticks; baked result must match");
+        assert_eq!(tick_of(CtrlKind::PitchBend), Some(250));
+        // Hidden by a start trim: playback ignores it, so baking leaves it alone.
+        assert_eq!(tick_of(CtrlKind::Cc(1)), Some(-30));
     }
 
     #[test]
@@ -670,17 +727,45 @@ mod tests {
     }
 
     #[test]
+    fn clear_trim_automation_removes_only_trim() {
+        let mut e = Engine::default();
+        e.execute("track.new", &json!({"count": 2})).unwrap();
+        let ids: Vec<TrackId> = e.session().tracks.iter().map(|t| t.id).collect();
+        let (a, b) = (ids[0], ids[1]);
+        e.execute("automation.set_point", &json!({"track": a.0, "param": "volume", "at": 0, "value": -3.0})).unwrap();
+        e.execute("track.trim_automation_write", &json!({"tracks": [a.0, b.0], "start": 0, "end": 4800, "db": -12.0})).unwrap();
+        let has_trim = |e: &Engine, t: TrackId| e.session().track(t).unwrap().lane(&trim_param()).is_some_and(|l| !l.points.is_empty());
+        e.execute("edit.select", &json!({"tracks": [a.0]})).unwrap();
+        e.execute("track.clear_trim_automation", &json!({})).unwrap();
+        assert!(!has_trim(&e, a), "the selected track loses its trim");
+        assert!(has_trim(&e, b), "other tracks keep theirs");
+        assert_eq!(e.session().track(a).unwrap().lane(&AutoParam::Volume).unwrap().points.len(), 1);
+        e.execute("track.clear_trim_automation", &json!({"tracks": [b.0]})).unwrap();
+        assert!(!has_trim(&e, b), "an explicit track is cleared too");
+        assert!(e.undo());
+        assert!(has_trim(&e, b), "undo brings the trim back");
+    }
+
+    #[test]
     fn target_and_recent_playlists() {
         let mut e = crate::demo::demo_engine();
         e.execute("edit.select", &json!({"tracks": ["Kick"]})).unwrap();
         e.execute("track.playlist_new", &json!({})).unwrap();
         e.execute("track.designate_target_playlist", &json!({})).unwrap();
         e.execute("track.playlist_select", &json!({"index": 0})).unwrap();
+        let kick = e.session().track_by_name("Kick").unwrap().id;
+        for index in [json!(-1), json!("1"), json!(1.5), json!(u64::MAX)] {
+            assert!(e.execute("track.designate_target_playlist", &json!({"index": index})).is_err(), "{index}");
+            assert_eq!(target_playlist(e.session(), kick), Some(1), "{index} must leave the target unchanged");
+        }
         e.execute("track.show_target_playlist", &json!({})).unwrap();
         assert_eq!(e.session().track_by_name("Kick").unwrap().active_playlist, 1);
         e.execute("track.toggle_recent_playlist", &json!({})).unwrap();
         assert_eq!(e.session().track_by_name("Kick").unwrap().active_playlist, 0);
         e.execute("track.toggle_recent_playlist", &json!({})).unwrap();
         assert_eq!(e.session().track_by_name("Kick").unwrap().active_playlist, 1);
+        e.execute("track.playlist_select", &json!({"index": 0})).unwrap();
+        e.execute("track.designate_target_playlist", &json!({"index": null})).unwrap();
+        assert_eq!(target_playlist(e.session(), kick), Some(0));
     }
 }

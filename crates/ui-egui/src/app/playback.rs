@@ -1,0 +1,565 @@
+use super::audio::feed_meter;
+use super::plugins::failed_plugin_status;
+use super::{Gesture, MainWindow, MeterDisplay, Range, Samples, SoundApp, TrackId, TransportRequest, json};
+
+/// Whether another automation-write pass is due: the transport moved at least
+/// `step` since `last` in either direction. `last == i64::MIN` marks "never
+/// written", so the first pass after (re)start is always due. Saturating
+/// arithmetic keeps restarts and loop wraps overflow-free: the previous
+/// `(pos - last).abs()` panicked in debug builds on the first playing frame,
+/// when `last` is still `i64::MIN`.
+pub(crate) fn automation_step_due(pos: Samples, last: Samples, step: Samples) -> bool {
+    last == i64::MIN || pos.saturating_sub(last) >= step || last.saturating_sub(pos) >= step
+}
+
+impl SoundApp {
+    pub fn is_playing(&self) -> bool {
+        self.engine.transport.playing
+    }
+
+    /// Why the last Record press did nothing, for a few seconds and while it still holds.
+    pub(crate) fn record_hint(&self) -> Option<&'static str> {
+        let (at, why) = self.record_hint?;
+        let fresh = self.last_frame.unwrap_or_default() - at < 4.0;
+        (fresh && !self.engine.session().tracks.iter().any(|t| t.mixer.record_arm)).then_some(why)
+    }
+
+    /// Current transport position (playhead while playing, else the edit insertion).
+    pub fn position(&self) -> Samples {
+        if self.engine.transport.playing { self.engine.transport.position } else { self.engine.session().edit.selection.start }
+    }
+
+    fn start_play(&mut self, from: Samples, end: Option<Samples>, looped: Option<Range>) {
+        if let Some(p) = &self.player {
+            p.update_session(self.engine.session_arc());
+            p.play(from, end, looped);
+        } else {
+            self.sim = Some((from, end, looped));
+        }
+        // The loop as the audio engine takes it: a range too short to loop is played once.
+        self.play_loop = looped.filter(|l| soundcraft_playback::loops(*l));
+        self.engine.transport.playing = true;
+        self.engine.transport.position = from;
+        self.last_write_at = i64::MIN;
+        // A fresh start resumes the playhead follow: clear a manual hold and
+        // re-sync the follow tracker so the current view is not mistaken for
+        // an outside move on the first frame.
+        self.edit_layout.follow_hold = false;
+        self.edit_layout.last_scroll = self.engine.session().edit.zoom.scroll;
+        self.edit_layout.last_follow_to = None;
+    }
+
+    pub(crate) fn stop_play(&mut self) {
+        if let Some(p) = &self.player {
+            // Half-speed is a separate command. Stop must not leave that rate for the next Play.
+            p.set_speed(1.0);
+            p.stop();
+        }
+        if self.engine.transport.recording {
+            self.finish_recording();
+        }
+        self.sim = None;
+        self.play_loop = None;
+        self.engine.transport.playing = false;
+        self.engine.transport.recording = false;
+        let stop_at = self.engine.transport.position;
+        // Snapshot the session flags first: `session_mut` below needs a
+        // mutable borrow, so no session borrow may span it.
+        let (follow_insertion, after_playback) = {
+            let s = self.engine.session();
+            (s.edit.insertion_follows_playback, s.edit.scrolling == "after_playback")
+        };
+        if follow_insertion {
+            let pos = self.engine.transport.position;
+            self.engine.session_mut().edit.selection = Range::point(pos);
+        }
+        if after_playback {
+            // After Playback never scrolls while playing, so bring the stopped
+            // position into view now (only if it is off-screen); every other
+            // mode keeps its view.
+            let at = stop_at.max(0);
+            let (scroll, spp) = {
+                let z = &self.engine.session().edit.zoom;
+                (z.scroll, z.samples_per_px.max(0.01))
+            };
+            let width = f64::from(self.edit_layout.timeline[2] - self.edit_layout.timeline[0]).max(0.0);
+            let end = scroll.saturating_add((width * spp) as Samples);
+            if at < scroll || at >= end {
+                let _ = self.engine.execute("view.scroll", &json!({ "to": at }));
+            }
+        }
+        self.edit_layout.follow_hold = false;
+    }
+
+    fn start_recording(&mut self) {
+        let armed = self.engine.session().tracks.iter().any(|t| t.mixer.record_arm);
+        if !armed {
+            let why = if self.engine.session().tracks.is_empty() {
+                crate::localization::text("Nothing to record on yet: add a track with Track › New…, then click its R button.")
+            } else {
+                crate::localization::text("No track is record-enabled: click the R button on the track to record.")
+            };
+            self.ui.status = why.into();
+            self.record_hint = Some((self.last_frame.unwrap_or_default(), why));
+            return;
+        }
+        // A pass records audio, MIDI or both: it needs one of them ready. The audio input is
+        // only opened for audio tracks. An inactive track keeps its record button but takes no
+        // part (`plan_takes` leaves it out too), so it must not make the pass an audio one.
+        let audio_tracks = self.engine.session().tracks.iter().any(|t| t.mixer.record_arm && !t.inactive && !t.kind.is_midi());
+        let midi_tracks = soundcraft_engine::io::records_midi(&self.engine);
+        let midi_ready = midi_tracks && self.midi_connected();
+        if midi_tracks && self.midi_pass_pending() {
+            self.ui.status = crate::localization::text(
+                "Cannot record: the audio engine has not finished the previous record pass yet (is the audio device running?)",
+            )
+            .into();
+            return;
+        }
+        if audio_tracks {
+            self.ensure_input();
+        }
+        let takes = if audio_tracks {
+            // An audio track is record-enabled: its audio has to be recordable. A pass that would
+            // quietly record only the MIDI tracks is refused, with the reason.
+            match self.arm_recorder() {
+                Ok(takes) => takes,
+                Err(err) => {
+                    self.ui.status = crate::localized_format!("Cannot record: {err}", err = err);
+                    return;
+                }
+            }
+        } else if midi_ready {
+            // MIDI alone makes a pass.
+            Vec::new()
+        } else {
+            self.ui.status =
+                crate::localization::text("Cannot record: no MIDI input device is connected (Setup > Playback Engine lists them)").into();
+            return;
+        };
+        self.lost_shown = 0;
+        self.begin_midi_take();
+        if let Some(p) = &self.player {
+            p.set_recording(true);
+        }
+        let already_playing = self.is_playing();
+        self.engine.transport.recording = true;
+        if already_playing {
+            // Punch in on the fly at the current playhead.
+            self.record_start = self.position();
+            self.punch = None;
+            self.plan_recording(takes, None);
+            return;
+        }
+        let e = self.engine.session().edit.clone();
+        let sel = e.selection;
+        // Loop recording needs a selection the transport will loop: one too short for that is
+        // recorded as a punch, like any other selection.
+        if e.loop_record && !sel.is_empty() && soundcraft_playback::loops(sel) {
+            self.record_start = sel.start;
+            self.punch = None;
+            self.start_play(sel.start, None, Some(sel));
+            self.plan_recording(takes, Some(sel.len()));
+        } else {
+            // Record into the selection when there is one (punch), with pre/post-roll if enabled;
+            // the take is trimmed back to the punch range afterwards.
+            let (pre, post) = if e.pre_post_roll { (e.pre_roll, e.post_roll) } else { (0, 0) };
+            let from = (sel.start - pre).max(0);
+            self.record_start = from;
+            self.punch = (!sel.is_empty()).then_some(sel);
+            let end = (!sel.is_empty()).then_some(sel.end + post);
+            self.start_play(from, end, None);
+            self.plan_recording(takes, None);
+        }
+    }
+
+    /// Remember where the armed `takes` go (split into passes of `pass` when loop recording) and
+    /// autosave that plan with the session.
+    fn plan_recording(&mut self, takes: Vec<soundcraft_engine::io::Take>, pass: Option<Samples>) {
+        let rate = self.recorder.as_ref().map_or(0, |r| r.sample_rate);
+        self.take_plan = Some(soundcraft_engine::io::Recording { start: self.record_start, pass, punch: self.punch, rate, takes });
+        if let Some(root) = self.autosave_dir.clone() {
+            self.queue_autosave(root);
+        }
+    }
+
+    /// Arm the input for the record-enabled tracks; a session never saved records into its
+    /// autosave folder. Returns the takes it records.
+    fn arm_recorder(&mut self) -> Result<Vec<soundcraft_engine::io::Take>, String> {
+        let name = soundcraft_engine::io::sanitize_name(&self.engine.session().name);
+        // Without a settings folder the takes go under the temporary folder, in a folder of this
+        // run's own that nobody else could have made first.
+        let unsaved_dir = match &self.autosave_dir {
+            Some(d) => d.join(name),
+            // A saved session records beside its file: `plan_takes` never uses this folder.
+            None if self.engine.path.is_some() => std::path::PathBuf::new(),
+            None => self.fallback_take_dir()?,
+        };
+        let Some(r) = &mut self.recorder else { return Err(crate::localization::text("no audio input device").into()) };
+        let plan = soundcraft_engine::io::plan_takes(&self.engine, &unsaved_dir, r.channels);
+        if plan.is_empty() {
+            return Err(crate::localization::text("no audio track is record-enabled").into());
+        }
+        // The takes are unsaved work: on Unix the folder they go into is owner-only, like the
+        // autosaves, before the recorder makes anything in it (other systems get the folder's
+        // inherited access: no ACLs are set, so the temporary folder's own per-user access applies).
+        if self.engine.path.is_none() {
+            for dir in plan.iter().filter_map(|(_, _, path)| path.parent()) {
+                soundcraft_engine::autosave::create_folder(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+            }
+        }
+        let takes = plan
+            .iter()
+            .map(|(track, inputs, path)| soundcraft_engine::io::Take { track: *track, path: path.clone(), channels: inputs.len() })
+            .collect();
+        // Each take file holds no more than the session can read back; a longer take goes on in the next.
+        let files = soundcraft_playback::record::TakeFiles {
+            samples: soundcraft_engine::io::take_file_samples(r.sample_rate, self.engine.session().sample_rate.hz()),
+            part: soundcraft_engine::io::take_part,
+        };
+        r.arm(plan, files)?;
+        Ok(takes)
+    }
+
+    /// The folder for the takes of a session never saved when there is no autosave folder, made on
+    /// first use: exclusively and under a name nobody can guess, so another account cannot have
+    /// made it first, with open permissions or as a link.
+    fn fallback_take_dir(&mut self) -> Result<std::path::PathBuf, String> {
+        if let Some(dir) = &self.fallback_take_dir {
+            return Ok(dir.clone());
+        }
+        let dir = soundcraft_engine::autosave::create_unique_folder(&std::env::temp_dir(), "SoundCraft")
+            .map_err(|e| format!("temporary take folder: {e}"))?;
+        self.fallback_take_dir = Some(dir.clone());
+        Ok(dir)
+    }
+
+    fn finish_recording(&mut self) {
+        self.engine.transport.recording = false;
+        let midi_pass = self.end_midi_pass();
+        if let Some(p) = &self.player {
+            match midi_pass {
+                Some(pass) => p.end_recording(pass),
+                None => p.set_recording(false),
+            }
+        }
+        // The audio input stops taking in first: waiting for the MIDI below would otherwise add
+        // what the input hears meanwhile to the audio takes. No input device is open when the
+        // pass was MIDI only.
+        let (takes, problem) = self.recorder.as_mut().map_or_else(|| (Vec::new(), None), |r| r.finish());
+        // The audio thread writes down what was played up to the stop; the clips wait for that.
+        let midi_confirmed = self.await_midi_capture(midi_pass);
+        // Where the pass ended: the audio engine's own position is the freshest.
+        let engine_at = self.player.as_ref().map(|p| p.position());
+        let stopped_at = super::midi::pass_stop(engine_at, self.engine.transport.position);
+        let plan = self.take_plan.take();
+        let tracks = takes.len().max(1);
+        let plan = plan.unwrap_or_else(|| soundcraft_engine::io::Recording {
+            start: self.record_start,
+            pass: None,
+            punch: self.punch,
+            rate: 0,
+            takes: Vec::new(),
+        });
+        self.punch = None;
+        self.autosaved_rev = 0;
+        let ids = soundcraft_engine::io::place_recording(&mut self.engine, &plan, takes);
+        // The audio engine may have confirmed the pass while the audio takes were finished: the
+        // stop position and what the user is told go by one answer.
+        let midi_confirmed = midi_confirmed || self.midi_pass_stopped_at(midi_pass).is_some();
+        // MIDI goes where the audio of the pass goes: the loop, the punch range, or all of it. A
+        // pass punched in while a loop was playing went on round that loop.
+        let midi_loop = match plan.pass {
+            Some(len) => Some(Range::new(plan.start, plan.start.saturating_add(len))),
+            None => self.play_loop,
+        };
+        // A loop pass stopped somewhere inside the loop: where, the audio engine said with its
+        // confirmation, in step with the rounds it wrote into the take. Its position now may be
+        // a round further on; without the confirmation there is no position to trust, and the
+        // keys still down are held to the end of the loop (the take is reported as incomplete).
+        let (midi_range, midi_kind) =
+            super::midi::midi_take_span(midi_loop, plan.punch, self.record_start, stopped_at, self.midi_pass_stopped_at(midi_pass));
+        let (midi_clips, midi_problem) = self.finish_midi_take(midi_range, !ids.is_empty(), midi_confirmed, midi_kind);
+        self.ui.status = if plan.pass.is_some() && midi_clips == 0 {
+            crate::localized_format!("Loop-recorded {} take(s)", ids.len() / tracks)
+        } else if ids.is_empty() && midi_clips == 0 {
+            crate::localization::text("Nothing was recorded: the record-enabled tracks received no input").to_string()
+        } else {
+            crate::localized_format!("Recorded {} clip(s)", ids.len() + midi_clips)
+        };
+        // A take that lost MIDI input, or whose end was not confirmed, is not reported as complete.
+        if let Some(p) = midi_problem {
+            self.ui.status = format!("{} ({p})", self.ui.status);
+        }
+        if let Some(p) = problem {
+            log::warn!("recording: {p}");
+            self.ui.status = format!("{} ({p})", self.ui.status);
+        }
+    }
+
+    /// While playing, record volume automation from fader positions for tracks in Write mode, and
+    /// for Touch/Latch tracks whose fader is (or, for Latch, was) being moved. Send levels follow the
+    /// same rules, per send, from its slot or its floating send window. Each point replaces the
+    /// automation since the previous one, and Stop writes a last point. A pass and whatever is
+    /// dragged during it, its fader included, are one undo step.
+    pub(crate) fn write_automation(&mut self) {
+        use soundcraft_model::AutomationMode as M;
+        const PASS: &str = "automation_pass";
+        let playing = self.is_playing();
+        let may_write =
+            playing && self.engine.session().tracks.iter().any(|t| matches!(t.mixer.automation_mode, M::Write | M::Touch | M::Latch | M::TouchLatch));
+        self.engine.hold_merge(may_write.then_some(PASS));
+        if !playing && self.touched.is_empty() && self.touched_sends.is_empty() {
+            self.last_write_at = i64::MIN;
+            return;
+        }
+        let pos = self.engine.transport.position;
+        let step = self.engine.session().sample_rate.samples(0.02);
+        if playing && !automation_step_due(pos, self.last_write_at, step) {
+            return;
+        }
+        let from = std::mem::replace(&mut self.last_write_at, if playing { pos } else { i64::MIN });
+        // The gesture state cached from the known UI phase, never hidden-tick stale input.
+        let dragging = self.pointer_down;
+        let fader_track = match &self.gesture {
+            Some(Gesture::Fader { track, .. }) => Some(*track),
+            _ => None,
+        };
+        let send_fader = match &self.gesture {
+            Some(Gesture::SendFader { track, slot }) => Some((*track, *slot)),
+            _ => None,
+        };
+        let writes: Vec<(TrackId, f32)> = self
+            .engine
+            .session()
+            .tracks
+            .iter()
+            .filter_map(|t| {
+                let m = t.mixer.automation_mode;
+                let touched_now = dragging && fader_track == Some(t.id);
+                let write = match m {
+                    M::Write => true,
+                    M::Touch => touched_now,
+                    M::Latch | M::TouchLatch => touched_now || self.touched.contains(&t.id),
+                    _ => false,
+                };
+                write.then_some((t.id, t.mixer.volume_db))
+            })
+            .collect();
+        let send_writes: Vec<(TrackId, usize, f32)> = self
+            .engine
+            .session()
+            .tracks
+            .iter()
+            .flat_map(|t| {
+                let m = t.mixer.automation_mode;
+                t.mixer.sends.iter().enumerate().filter_map(move |(slot, s)| s.as_ref().map(|s| (t.id, m, slot, s.level_db)))
+            })
+            .filter(|&(t, m, slot, _)| {
+                let touched_now = dragging && send_fader == Some((t, slot));
+                match m {
+                    M::Write => true,
+                    M::Touch => touched_now,
+                    M::Latch | M::TouchLatch => touched_now || self.touched_sends.contains(&(t, slot)),
+                    _ => false,
+                }
+            })
+            .map(|(t, _, slot, db)| (t, slot, db))
+            .collect();
+        let points: Vec<(TrackId, String, f32)> = writes
+            .iter()
+            .map(|&(t, v)| (t, "volume".to_string(), v))
+            .chain(send_writes.iter().map(|&(t, slot, v)| (t, format!("send_{}_level", (b'a' + slot as u8) as char), v)))
+            .collect();
+        for &(t, _) in &writes {
+            self.touched.insert(t);
+        }
+        for &(t, slot, _) in &send_writes {
+            self.touched_sends.insert((t, slot));
+        }
+        for (t, param, v) in points {
+            let mut point = serde_json::json!({"track": t.0, "param": param, "at": pos, "value": v});
+            if from != i64::MIN {
+                point["from"] = from.into();
+            }
+            let _ = self.engine.execute_merged("automation.set_point", &point, PASS);
+        }
+        if !playing {
+            self.touched.clear();
+            self.touched_sends.clear();
+            self.engine.end_merge();
+        }
+    }
+
+    /// Play from the selection, honouring loop playback and selection end.
+    pub fn play_from_selection(&mut self) {
+        let s = self.engine.session();
+        let sel = s.edit.selection;
+        let preroll = if s.edit.pre_post_roll { s.edit.pre_roll } else { 0 };
+        let postroll = if s.edit.pre_post_roll { s.edit.post_roll } else { 0 };
+        if s.edit.loop_playback && !sel.is_empty() {
+            self.start_play(sel.start, None, Some(sel));
+        } else if !sel.is_empty() {
+            self.start_play((sel.start - preroll).max(0), Some(sel.end + postroll), None);
+        } else {
+            self.start_play((sel.start - preroll).max(0), None, None);
+        }
+    }
+
+    /// Apply engine transport requests to the player and recorder, read back the position and refresh meters. A reset
+    /// request also clears per-document capture, edit-gesture and meter state.
+    pub(crate) fn handle_transport(&mut self, dt: f32) {
+        let reqs: Vec<TransportRequest> = std::mem::take(&mut self.engine.transport_requests);
+        for r in reqs {
+            match r {
+                TransportRequest::ResetSession => {
+                    if let Some(p) = &self.player {
+                        p.stop();
+                        p.set_recording(false);
+                        p.set_speed(1.0);
+                        p.locate(self.engine.transport.position);
+                    }
+                    self.sim = None;
+                    // The old capture belongs to the replaced document, never to the new one.
+                    self.recorder = None;
+                    self.recorder_failed = false;
+                    self.punch = None;
+                    self.gesture = None;
+                    self.touched.clear();
+                    self.touched_sends.clear();
+                    self.last_write_at = i64::MIN;
+                    self.edit_layout.follow_hold = false;
+                    self.meters.clear();
+                    self.main_meter = MeterDisplay::default();
+                }
+                TransportRequest::Play => {
+                    if !self.is_playing() {
+                        self.play_from_selection();
+                    }
+                }
+                TransportRequest::PlayFrom(at) => {
+                    if self.is_playing() {
+                        // Playing on from `at` drops the end and loop of the earlier selection.
+                        if let Some(p) = &self.player {
+                            p.play(at, None, None);
+                        }
+                        if let Some(sim) = &mut self.sim {
+                            *sim = (at, None, None);
+                        }
+                        self.play_loop = None;
+                        self.last_write_at = i64::MIN;
+                        self.engine.transport.position = at;
+                    } else {
+                        self.start_play(at, None, None);
+                    }
+                }
+                TransportRequest::Stop | TransportRequest::Pause => self.stop_play(),
+                TransportRequest::TogglePlay => {
+                    if self.is_playing() {
+                        self.stop_play();
+                    } else {
+                        self.play_from_selection();
+                    }
+                }
+                TransportRequest::Record => {
+                    if self.engine.transport.recording {
+                        self.stop_play();
+                    } else {
+                        self.start_recording();
+                    }
+                }
+                TransportRequest::Locate(at) => {
+                    if self.is_playing() {
+                        if let Some(p) = &self.player {
+                            p.locate(at);
+                        }
+                        if let Some(sim) = &mut self.sim {
+                            sim.0 = at;
+                        }
+                        self.last_write_at = i64::MIN;
+                    }
+                    self.engine.transport.position = at;
+                }
+                TransportRequest::PlaySelection => {
+                    let sel = self.engine.session().edit.selection;
+                    self.start_play(sel.start, Some(sel.end.max(sel.start + 1)), None);
+                }
+                TransportRequest::HalfSpeed => {
+                    if let Some(p) = &self.player {
+                        p.set_speed(0.5);
+                    }
+                    self.play_from_selection();
+                }
+                TransportRequest::Scrub(at) => self.engine.transport.position = at,
+                TransportRequest::AllNotesOff => {}
+            }
+        }
+        // Read back the position.
+        if let Some(p) = &self.player {
+            let playing = p.is_playing();
+            let ended = self.engine.transport.playing && !playing;
+            if ended {
+                p.set_speed(1.0);
+            }
+            if self.engine.transport.playing {
+                self.engine.transport.position = p.position();
+            }
+            let now = self.uptime;
+            let meter_interval = if self.ui.window == MainWindow::Mix { 1.0 / 60.0 } else { 1.0 / 20.0 };
+            if now - self.last_meter_poll >= meter_interval {
+                p.take_meters(&mut self.meter_snapshot);
+                self.last_meter_poll = now;
+            }
+            let snap = &self.meter_snapshot;
+            for (id, m) in &snap.tracks {
+                let d = self.meters.entry(*id).or_default();
+                feed_meter(d, m.peak, m.gain_reduction_db, dt);
+                if m.plugin_failures.count != d.plugin_failures {
+                    d.plugin_failures = m.plugin_failures.count;
+                    if let Some(msg) = failed_plugin_status(self.engine.session(), *id, m.plugin_failures.last) {
+                        self.ui.status = msg;
+                    }
+                }
+            }
+            let main = snap.main.peak;
+            feed_meter(&mut self.main_meter, main, 0.0, dt);
+            if ended {
+                self.stop_play();
+            }
+        } else if let Some((pos, end, looped)) = &mut self.sim {
+            let sr = self.engine.session().sample_rate.as_f64();
+            *pos += (f64::from(dt) * sr) as i64;
+            if let Some(l) = looped
+                && *pos >= l.end
+            {
+                *pos = l.start;
+            }
+            let stop = end.is_some_and(|e| *pos >= e);
+            self.engine.transport.position = *pos;
+            if stop {
+                self.stop_play();
+            }
+        }
+        if !self.meters_live() {
+            for d in self.meters.values_mut() {
+                feed_meter(d, [0.0, 0.0], 0.0, dt);
+            }
+            feed_meter(&mut self.main_meter, [0.0, 0.0], 0.0, dt);
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_fallback_take_folder_is_made_once_under_the_temporary_folder() {
+        let mut app = SoundApp::new(soundcraft_engine::Engine::default(), None, crate::Services::default());
+        let a = app.fallback_take_dir().unwrap();
+        assert_eq!(a.parent(), Some(std::env::temp_dir().as_path()));
+        assert!(a.is_dir());
+        assert_eq!(app.fallback_take_dir().unwrap(), a, "the same folder for the rest of the run");
+        let _ = std::fs::remove_dir_all(&a);
+    }
+}

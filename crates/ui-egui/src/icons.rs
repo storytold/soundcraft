@@ -47,6 +47,12 @@ pub fn draw(painter: &Painter, r: Rect, name: &str, c: Color32) {
             painter.circle_stroke(p(r, 0.42, 0.4), r.width() * 0.2, s);
             painter.line_segment([p(r, 0.56, 0.55), p(r, 0.8, 0.8)], Stroke::new(s.width * 1.6, c));
         }
+        "zoom_toggle" => {
+            for (x, y, dx, dy) in [(0.18, 0.24, 0.16, 0.14), (0.82, 0.24, -0.16, 0.14), (0.18, 0.76, 0.16, -0.14), (0.82, 0.76, -0.16, -0.14)] {
+                painter.add(Shape::line(vec![p(r, x + dx, y), p(r, x, y), p(r, x, y + dy)], s));
+            }
+            painter.rect_filled(Rect::from_min_max(p(r, 0.34, 0.41), p(r, 0.66, 0.59)), 1.0, c);
+        }
         "trim" => {
             painter.line_segment([p(r, 0.5, 0.2), p(r, 0.5, 0.8)], s);
             painter.line_segment([p(r, 0.15, 0.5), p(r, 0.85, 0.5)], s);
@@ -123,9 +129,6 @@ pub fn draw(painter: &Painter, r: Rect, name: &str, c: Color32) {
         "triangle_down" => {
             painter.add(Shape::convex_polygon(vec![p(r, 0.25, 0.35), p(r, 0.75, 0.35), p(r, 0.5, 0.68)], c, Stroke::NONE));
         }
-        "triangle_right" => {
-            painter.add(Shape::convex_polygon(vec![p(r, 0.35, 0.25), p(r, 0.68, 0.5), p(r, 0.35, 0.75)], c, Stroke::NONE));
-        }
         "note" => {
             painter.circle_filled(p(r, 0.38, 0.72), r.width() * 0.13, c);
             painter.line_segment([p(r, 0.5, 0.72), p(r, 0.5, 0.2)], s);
@@ -140,6 +143,18 @@ pub fn draw(painter: &Painter, r: Rect, name: &str, c: Color32) {
                 painter.line_segment([c0, c1], Stroke::new(s.width * 1.4, c));
             }
         }
+        "close" => {
+            // A code-drawn close cross: no bundled UI font has U+2715 in every family.
+            painter.line_segment([p(r, 0.3, 0.3), p(r, 0.7, 0.7)], s);
+            painter.line_segment([p(r, 0.7, 0.3), p(r, 0.3, 0.7)], s);
+        }
+        "lock" => {
+            painter.rect_filled(Rect::from_min_max(p(r, 0.22, 0.46), p(r, 0.78, 0.88)), r.width() * 0.08, c);
+            let (x, y, w) = (r.center().x, r.min.y + r.height() * 0.46, r.width() * 0.19);
+            let arc: Vec<Pos2> =
+                (0..=12).map(|i| std::f32::consts::PI * i as f32 / 12.0).map(|a| pos2(x - w * a.cos(), y - w * 1.4 * a.sin())).collect();
+            painter.add(Shape::line(arc, s));
+        }
         "wave" => {
             let n = 24;
             let pts: Vec<Pos2> = (0..=n)
@@ -152,6 +167,27 @@ pub fn draw(painter: &Painter, r: Rect, name: &str, c: Color32) {
                 })
                 .collect();
             painter.add(Shape::line(pts, s));
+        }
+        "tab_transient" => {
+            painter.line_segment([p(r, 0.08, 0.5), p(r, 0.3, 0.5)], s);
+            painter.add(Shape::convex_polygon(vec![p(r, 0.42, 0.5), p(r, 0.28, 0.36), p(r, 0.28, 0.64)], c, Stroke::NONE));
+            painter.line_segment([p(r, 0.5, 0.16), p(r, 0.5, 0.84)], s);
+            for (x, h) in [(0.64, 0.32), (0.78, 0.2), (0.92, 0.1)] {
+                painter.line_segment([p(r, x, 0.5 - h), p(r, x, 0.5 + h)], s);
+            }
+        }
+        "link_track" => {
+            // A link chain below two track rows, so the track link reads apart from the timeline link's plain chain.
+            painter.line_segment([p(r, 0.12, 0.18), p(r, 0.88, 0.18)], s);
+            painter.line_segment([p(r, 0.12, 0.32), p(r, 0.88, 0.32)], s);
+            painter.circle_stroke(p(r, 0.38, 0.72), r.width() * 0.16, s);
+            painter.circle_stroke(p(r, 0.62, 0.72), r.width() * 0.16, s);
+        }
+        "insertion_follows" => {
+            // The insertion line, a lead, and the playhead arrow it follows.
+            painter.line_segment([p(r, 0.3, 0.14), p(r, 0.3, 0.86)], s);
+            painter.line_segment([p(r, 0.42, 0.5), p(r, 0.62, 0.5)], s);
+            painter.add(Shape::convex_polygon(vec![p(r, 0.84, 0.5), p(r, 0.64, 0.34), p(r, 0.64, 0.66)], c, Stroke::NONE));
         }
         _ => {
             painter.rect_stroke(r.shrink(r.width() * 0.25), 1.0, s, egui::StrokeKind::Middle);

@@ -87,6 +87,10 @@ pub fn scan() -> Vec<Vst3Descriptor> {
     ensure_scanned(&mut r).clone()
 }
 
+pub fn cached() -> Option<Vec<Vst3Descriptor>> {
+    registry().lock().unwrap_or_else(PoisonError::into_inner).scanned.clone()
+}
+
 pub fn rescan() -> Vec<Vst3Descriptor> {
     let mut r = registry().lock().unwrap_or_else(PoisonError::into_inner);
     r.scanned = None;

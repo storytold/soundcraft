@@ -1,9 +1,11 @@
 //! Helpers shared by the newer command modules: settings kept in `EditState.flags`/`values`,
 //! per-track settings, target playlists, clip-gain envelopes and stretch rendering.
+use super::bad;
+use crate::{Engine, Result};
 
-use super::*;
-use serde_json::json;
-use soundcraft_audio_io::{AudioBuffer, FileFormat};
+use craft_audio::AudioBuffer;
+use serde_json::{Value, json};
+use soundcraft_model::FileFormat;
 use soundcraft_model::{Clip, ClipContent, EditState, Session, SourceId, TrackId};
 use soundcraft_time::Samples;
 
@@ -132,9 +134,10 @@ pub fn set_clip_env(c: &mut Clip, mut pts: Vec<(Samples, f32)>) {
     }
 }
 
-/// Longest audio we render in one stretch (one hour at the session rate).
+/// Longest audio we render in one stretch: one hour at the session rate, and no more than
+/// `time_stretch` makes.
 fn max_render(s: &Session) -> Samples {
-    s.sample_rate.samples(3600.0)
+    s.sample_rate.samples(3600.0).min(soundcraft_dsp::offline::MAX_OFFLINE_SAMPLES as Samples)
 }
 
 /// Render the audio a clip plays, time-stretched (pitch preserved) to `out_len` samples, into a new
@@ -142,14 +145,24 @@ fn max_render(s: &Session) -> Samples {
 pub fn render_stretched(s: &mut Session, cmd: &str, c: &Clip, out_len: Samples) -> Result<Option<SourceId>> {
     let ClipContent::Audio { source, offset } = c.content else { return Ok(None) };
     let Some(audio) = s.pool.get(source).cloned() else { return Ok(None) };
-    if out_len <= 0 || out_len > max_render(s) {
-        return Err(bad(cmd, "the target length must be between 1 sample and one hour"));
+    let max = max_render(s);
+    if out_len <= 0 || out_len > max {
+        let secs = max as f64 / s.sample_rate.as_f64();
+        return Err(bad(cmd, format!("the target length must be between 1 sample and {secs:.0} s")));
     }
     let stretch = if c.stretch.is_finite() && c.stretch > 0.0 { c.stretch } else { 1.0 };
     let src_len = ((c.length as f64) / stretch).round().max(1.0);
     let ratio = out_len as f64 / src_len;
     if !(0.1..=10.0).contains(&ratio) {
         return Err(bad(cmd, format!("stretch ratio {ratio:.3} is outside 0.1..10")));
+    }
+    // The source span read in can be 10× the output, and both are held for every channel: bound
+    // each like any other offline render (a session's clip length and stretch are not trusted).
+    let channels = audio.buffer.channels.len().max(1);
+    let limit = crate::io::render_limit(channels);
+    if src_len > limit as f64 || usize::try_from(out_len).map_or(true, |n| n > limit) {
+        let secs = limit as f64 / s.sample_rate.as_f64();
+        return Err(bad(cmd, format!("the clip is too long to stretch: one render holds at most {secs:.0} s of {channels}-channel audio")));
     }
     let a = usize::try_from(offset.max(0)).unwrap_or(0);
     let n = src_len as usize;
@@ -173,18 +186,40 @@ pub fn render_stretched(s: &mut Session, cmd: &str, c: &Clip, out_len: Samples) 
     Ok(Some(crate::io::add_source(s, &format!("{}-TCE", c.name), buf, None, FileFormat::Wav)))
 }
 
-/// Replace clip `old` on track `t` with `new` (overwriting whatever `new` covers).
+/// Replace clip `old` on track `t` with `new`, overwriting whatever `new` covers, except a clip that
+/// overlapped `old` across one edge that `new` does not reach past: the other half of a crossfade keeps
+/// its overlap and its fade, so processing a clip in place does not turn the crossfade into a dip.
 pub fn replace_clip(s: &mut Session, t: TrackId, old: soundcraft_model::ClipId, new: Clip) {
-    if let Some(pl) = s.track_mut(t).and_then(|tr| tr.playlist_mut()) {
-        pl.clips.retain(|c| c.id != old);
-    }
+    let kept: Vec<Clip> = match s.track_mut(t).and_then(|tr| tr.playlist_mut()) {
+        Some(pl) => {
+            let was = pl.clips.iter().find(|c| c.id == old).map(Clip::range);
+            let to = new.range();
+            // The other half of a crossfade: it overlaps `old` across one edge only, starting before `old` and ending
+            // inside it, or starting inside it and ending after it, and `new` does not reach past that edge. A clip
+            // inside `old`, or covering all of it, shares no crossfade with it and is overwritten as usual.
+            let keep = |c: &Clip| {
+                was.is_some_and(|w| {
+                    let earlier = c.start < w.start && c.end() < w.end && to.start >= w.start;
+                    let later = c.start > w.start && c.end() > w.end && to.end <= w.end;
+                    c.range().intersect(&w).is_some() && (earlier || later)
+                })
+            };
+            let (kept, rest) = std::mem::take(&mut pl.clips).into_iter().filter(|c| c.id != old).partition(keep);
+            pl.clips = rest;
+            kept
+        }
+        None => Vec::new(),
+    };
     crate::edit::place_clip(s, t, new);
+    if let Some(pl) = s.track_mut(t).and_then(|tr| tr.playlist_mut()) {
+        pl.clips.extend(kept);
+        pl.sort();
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
     #[test]
     fn text_settings_round_trip() {
         let mut ed = EditState::default();
@@ -201,5 +236,47 @@ mod tests {
         assert!((env_db(&env, 50) + 5.0).abs() < 1e-6);
         assert_eq!(env_db(&[], 50), 0.0);
         assert_eq!(env_db(&env, 500), -10.0);
+    }
+
+    #[test]
+    fn stretches_are_no_longer_than_time_stretch_makes() {
+        let mut s = Session::default();
+        assert_eq!(max_render(&s), s.sample_rate.samples(3600.0));
+        s.sample_rate = soundcraft_time::SampleRate::new(96_000).unwrap();
+        assert_eq!(max_render(&s), soundcraft_dsp::offline::MAX_OFFLINE_SAMPLES as Samples);
+    }
+
+    /// A stereo session with a one-frame source and one clip on it.
+    fn stretched_clip(length: Samples, stretch: f64) -> (Session, Clip) {
+        use soundcraft_model::{ChannelFormat, TrackKind};
+        let mut s = Session::default();
+        let t = s.add_track(TrackKind::Audio, ChannelFormat::Stereo, Some("Long"));
+        let buf = craft_audio::AudioBuffer { sample_rate: 48_000, channels: vec![vec![0.5]; 2] };
+        let src = crate::io::add_source(&mut s, "One", buf, None, FileFormat::Wav);
+        let cid = s.new_clip_id();
+        let mut clip = Clip::audio(cid, "Clip", src, 0, 0, length);
+        clip.stretch = stretch;
+        crate::edit::place_clip(&mut s, t, clip.clone());
+        (s, clip)
+    }
+
+    /// #895: a session's clip length and stretch made the source span read in 10× the one-hour
+    /// output limit, for every channel (about 14 GB here), and the allocation aborted the app.
+    #[test]
+    fn a_stretch_over_the_render_limit_is_refused_before_allocating() {
+        let hour = Session::default().sample_rate.samples(3600.0);
+        let (mut s, clip) = stretched_clip(hour, 0.1);
+        let err = render_stretched(&mut s, "clip.remove_pitch_shift", &clip, clip.length).unwrap_err();
+        assert!(err.to_string().contains("too long to stretch"), "{err}");
+
+        let mut e = crate::Engine::new(s);
+        assert!(e.execute("clip.remove_pitch_shift", &serde_json::json!({"clips": [clip.id.0]})).is_err());
+        let (_, kept) = e.session().find_clip(clip.id).unwrap();
+        assert_eq!((kept.stretch, kept.length), (0.1, hour), "the clip is left as it was");
+
+        // An ordinary stretch still renders, at the length asked for.
+        let (mut s, clip) = stretched_clip(1_000, 0.5);
+        let src = render_stretched(&mut s, "clip.remove_pitch_shift", &clip, clip.length).unwrap().unwrap();
+        assert!(s.pool.get(src).unwrap().buffer.channels.iter().all(|c| c.len() == 1_000));
     }
 }

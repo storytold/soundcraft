@@ -17,7 +17,7 @@ pub fn yin(frame: &[f32], sample_rate: f32, min_hz: f32, max_hz: f32, threshold:
     }
     let max_tau = ((sample_rate / min_hz.max(20.0)) as usize).min(frame.len() / 2);
     let min_tau = ((sample_rate / max_hz.max(min_hz + 1.0)) as usize).max(2);
-    if max_tau <= min_tau + 2 {
+    if max_tau <= min_tau.saturating_add(2) {
         return None;
     }
     let w = frame.len() - max_tau;
@@ -139,5 +139,17 @@ mod tests {
         assert!(audio_to_notes(&vec![0.0; 48_000], 48_000.0).is_empty());
         assert!(audio_to_notes(&[], f32::NAN).is_empty());
         assert!(yin(&[0.0; 10], 48_000.0, 50.0, 1600.0, 0.15).is_none());
+    }
+
+    #[test]
+    fn huge_finite_rate_is_unvoiced() {
+        // #241: the shortest lag saturates to usize::MAX; that is "no pitch", not an overflow.
+        assert!(yin(&[0.0; 64], 1.0e30, 50.0, 1600.0, 0.15).is_none());
+        assert!(yin(&[0.5; 8192], f32::MAX, 50.0, 1600.0, 0.15).is_none());
+    }
+
+    #[test]
+    fn audio_to_notes_survives_huge_finite_rate() {
+        assert!(audio_to_notes(&[0.5; 8192], 1.0e30).is_empty());
     }
 }

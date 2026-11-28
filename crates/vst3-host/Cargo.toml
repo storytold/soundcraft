@@ -15,13 +15,23 @@ log.workspace = true
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 vst3 = "0.3"
-libloading = "0.8"
+libloading = "0.9"
 
 # The macOS editor host window (an NSWindow whose content view the plugin's IPlugView attaches to).
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "0.6"
 objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSGeometry", "NSString"] }
 objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSApplication", "NSResponder", "NSView", "NSWindow", "NSGraphics"] }
+
+# The Windows editor host window (a top-level HWND the plugin view's child window lives in).
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Graphics_Gdi", "Win32_System_LibraryLoader", "Win32_UI_Input_KeyboardAndMouse", "Win32_UI_WindowsAndMessaging"] }
+
+# The X11 editor host window on Linux and the BSDs (a top-level window the plugin view embeds
+# into) and the view's run loop (polling the descriptors plugins register).
+[target.'cfg(all(unix, not(target_os = "macos")))'.dependencies]
+x11rb = "0.13"
+libc = "0.2"
 
 [[test]]
 name = "editor_main_thread"
@@ -43,14 +53,16 @@ harness = false
 name = "module_exit_shutdown"
 harness = false
 
-# An isolated unsafe helper crate (craftrules never-crash), like soundcraft-clap-host: this crate
+# An isolated unsafe helper crate, like soundcraft-clap-host: this crate
 # opts out of the workspace `unsafe_code = "forbid"` for itself only. It denies unsafe everywhere
 # and allows it solely on the FFI module (`src/ffi.rs`). The rest mirrors `[workspace.lints]`.
 [lints.rust]
 unsafe_code = "deny"
 
 [lints.clippy]
+cognitive_complexity = "deny"
+wildcard_imports = "deny"
 dbg_macro = "warn"
 todo = "warn"
-too_many_arguments = "allow"
+too_many_arguments = "deny"
 type_complexity = "allow"

@@ -2,11 +2,14 @@
 //! thin safe wrapper over one Audio Unit instance.
 //!
 //! Every pointer handed to the Audio Unit points into memory this module owns for at least as
-//! long as the unit can use it: the input state the render callback reads is a leaked `Box`
-//! freed only after the unit is disposed, and output buffers are re-pointed before each render.
+//! long as the unit can use it: the input state the render callback reads and the host time the
+//! host callbacks read are leaked `Box`es freed only after the unit is disposed, and output buffers
+//! are re-pointed before each render.
 
+use soundcraft_dsp::Transport;
 use std::ffi::{CStr, c_char, c_void};
 use std::ptr;
+use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU32, AtomicU64, Ordering};
 
 type OSStatus = i32;
 type AudioComponent = *mut c_void;
@@ -40,6 +43,7 @@ const PROP_MAX_FRAMES: u32 = 14;
 const PROP_PARAMETER_VALUE_STRINGS: u32 = 16;
 const PROP_TAIL_TIME: u32 = 20;
 const PROP_SET_RENDER_CALLBACK: u32 = 23;
+const PROP_HOST_CALLBACKS: u32 = 27;
 
 const SCOPE_GLOBAL: u32 = 0;
 const SCOPE_INPUT: u32 = 1;
@@ -138,6 +142,153 @@ struct AudioBufferList {
 struct AudioBufferListHeader {
     number_buffers: u32,
     first: AudioBuffer,
+}
+
+type BeatAndTempoProc = unsafe extern "C" fn(*mut c_void, *mut f64, *mut f64) -> OSStatus;
+type MusicalTimeProc = unsafe extern "C" fn(*mut c_void, *mut u32, *mut f32, *mut u32, *mut f64) -> OSStatus;
+type TransportStateProc = unsafe extern "C" fn(*mut c_void, *mut u8, *mut u8, *mut f64, *mut u8, *mut f64, *mut f64) -> OSStatus;
+type TransportState2Proc = unsafe extern "C" fn(*mut c_void, *mut u8, *mut u8, *mut u8, *mut f64, *mut u8, *mut f64, *mut f64) -> OSStatus;
+
+#[repr(C)]
+struct HostCallbackInfo {
+    host_user_data: *mut c_void,
+    beat_and_tempo: Option<BeatAndTempoProc>,
+    musical_time_location: Option<MusicalTimeProc>,
+    transport_state: Option<TransportStateProc>,
+    transport_state2: Option<TransportState2Proc>,
+}
+
+/// What the host callbacks report: the transport of the block being rendered. Atomics, because a
+/// unit may also ask from another thread.
+struct HostTime {
+    playing: AtomicBool,
+    recording: AtomicBool,
+    changed: AtomicBool,
+    samples: AtomicI64,
+    tempo: AtomicU64,
+    quarters: AtomicU64,
+    bar_start: AtomicU64,
+    numerator: AtomicU32,
+    denominator: AtomicU32,
+    sample_rate: AtomicU64,
+}
+
+impl HostTime {
+    fn new() -> HostTime {
+        HostTime {
+            playing: AtomicBool::new(false),
+            recording: AtomicBool::new(false),
+            changed: AtomicBool::new(false),
+            samples: AtomicI64::new(0),
+            tempo: AtomicU64::new(120f64.to_bits()),
+            quarters: AtomicU64::new(0),
+            bar_start: AtomicU64::new(0),
+            numerator: AtomicU32::new(4),
+            denominator: AtomicU32::new(4),
+            sample_rate: AtomicU64::new(48_000f64.to_bits()),
+        }
+    }
+
+    fn set(&self, t: &Transport) {
+        if self.playing.swap(t.playing, Ordering::Relaxed) != t.playing {
+            self.changed.store(true, Ordering::Relaxed);
+        }
+        self.recording.store(t.recording, Ordering::Relaxed);
+        self.samples.store(t.samples, Ordering::Relaxed);
+        self.tempo.store(t.tempo.to_bits(), Ordering::Relaxed);
+        self.quarters.store(t.quarters.to_bits(), Ordering::Relaxed);
+        self.bar_start.store(t.bar_start.to_bits(), Ordering::Relaxed);
+        self.numerator.store(t.numerator, Ordering::Relaxed);
+        self.denominator.store(t.denominator, Ordering::Relaxed);
+    }
+}
+
+fn load_f64(a: &AtomicU64) -> f64 {
+    f64::from_bits(a.load(Ordering::Relaxed))
+}
+
+/// Writes through an out-pointer the unit may leave null.
+///
+/// # Safety
+/// `p` is null or valid for writing a `T`.
+unsafe fn put<T>(p: *mut T, v: T) {
+    // SAFETY: per the contract above.
+    if let Some(p) = unsafe { p.as_mut() } {
+        *p = v;
+    }
+}
+
+unsafe extern "C" fn beat_and_tempo(user: *mut c_void, beat: *mut f64, tempo: *mut f64) -> OSStatus {
+    // SAFETY: `user` is the `HostTime` leaked by `Instance::new`, alive until after the unit is
+    // disposed.
+    let Some(t) = (unsafe { (user as *const HostTime).as_ref() }) else { return -50 };
+    // SAFETY: the unit's out-pointers (or null).
+    unsafe {
+        put(beat, load_f64(&t.quarters));
+        put(tempo, load_f64(&t.tempo));
+    }
+    0
+}
+
+unsafe extern "C" fn musical_time(
+    user: *mut c_void,
+    to_next_beat: *mut u32,
+    numerator: *mut f32,
+    denominator: *mut u32,
+    downbeat: *mut f64,
+) -> OSStatus {
+    // SAFETY: as in `beat_and_tempo`.
+    let Some(t) = (unsafe { (user as *const HostTime).as_ref() }) else { return -50 };
+    let q = load_f64(&t.quarters);
+    let per_quarter = load_f64(&t.sample_rate) * 60.0 / load_f64(&t.tempo).max(1.0);
+    let next = ((q.ceil() - q) * per_quarter).round();
+    let next = if next.is_finite() { next.clamp(0.0, f64::from(u32::MAX)) as u32 } else { 0 };
+    // SAFETY: the unit's out-pointers (or null).
+    unsafe {
+        put(to_next_beat, next);
+        put(numerator, t.numerator.load(Ordering::Relaxed) as f32);
+        put(denominator, t.denominator.load(Ordering::Relaxed));
+        put(downbeat, load_f64(&t.bar_start));
+    }
+    0
+}
+
+unsafe extern "C" fn transport_state2(
+    user: *mut c_void,
+    playing: *mut u8,
+    recording: *mut u8,
+    changed: *mut u8,
+    sample: *mut f64,
+    cycling: *mut u8,
+    cycle_start: *mut f64,
+    cycle_end: *mut f64,
+) -> OSStatus {
+    // SAFETY: as in `beat_and_tempo`.
+    let Some(t) = (unsafe { (user as *const HostTime).as_ref() }) else { return -50 };
+    // SAFETY: the unit's out-pointers (or null).
+    unsafe {
+        put(playing, u8::from(t.playing.load(Ordering::Relaxed)));
+        put(recording, u8::from(t.recording.load(Ordering::Relaxed)));
+        put(changed, u8::from(t.changed.swap(false, Ordering::Relaxed)));
+        put(sample, t.samples.load(Ordering::Relaxed) as f64);
+        put(cycling, 0);
+        put(cycle_start, 0.0);
+        put(cycle_end, 0.0);
+    }
+    0
+}
+
+unsafe extern "C" fn transport_state(
+    user: *mut c_void,
+    playing: *mut u8,
+    changed: *mut u8,
+    sample: *mut f64,
+    cycling: *mut u8,
+    cycle_start: *mut f64,
+    cycle_end: *mut f64,
+) -> OSStatus {
+    // SAFETY: the same pointers as `transport_state2`, without the recording flag.
+    unsafe { transport_state2(user, playing, ptr::null_mut(), changed, sample, cycling, cycle_start, cycle_end) }
 }
 
 type AuRenderCallback = unsafe extern "C" fn(
@@ -361,6 +512,8 @@ pub struct Instance {
     unit: AudioUnit,
     /// Leaked `Box<InputState>` read by `input_callback`; freed in `Drop` after disposal.
     input: *mut InputState,
+    /// Leaked `Box<HostTime>` read by the host callbacks; freed in `Drop` after disposal.
+    time: *mut HostTime,
     outputs: Vec<Vec<f32>>,
     abl: AudioBufferList,
     has_input: bool,
@@ -369,11 +522,13 @@ pub struct Instance {
     max_frames: usize,
     sample_rate: f64,
     sample_time: f64,
+    link: std::sync::Arc<StateLink>,
 }
 
 // SAFETY: an Audio Unit instance may be used from any thread as long as calls are not
 // concurrent; `Instance` is only reachable through `&mut`/`&` of its owner, which the `Plugin`
-// contract keeps on one thread at a time. The input state is owned exclusively by it.
+// contract keeps on one thread at a time. The input state and host time are owned exclusively by
+// it (the host time is all atomics).
 unsafe impl Send for Instance {}
 
 impl Instance {
@@ -398,19 +553,42 @@ impl Instance {
             return Err(format!("AudioComponentInstanceNew failed ({st})"));
         }
         let input = Box::into_raw(Box::new(InputState { bufs: Vec::new(), frames: 0 }));
+        let time = Box::into_raw(Box::new(HostTime::new()));
         let empty = AudioBuffer { number_channels: 1, data_byte_size: 0, data: ptr::null_mut() };
-        Ok(Instance {
+        let inst = Instance {
             unit,
             input,
+            time,
             outputs: Vec::new(),
             abl: AudioBufferList { number_buffers: 0, buffers: [empty; MAX_AU_CHANNELS] },
             has_input,
+            link: std::sync::Arc::new(StateLink(std::sync::Mutex::new(LinkedUnit(Some(unit))))),
             initialized: false,
             channels: 0,
             max_frames: 0,
             sample_rate: 48_000.0,
             sample_time: 0.0,
-        })
+        };
+        let callbacks = HostCallbackInfo {
+            host_user_data: time.cast(),
+            beat_and_tempo: Some(beat_and_tempo),
+            musical_time_location: Some(musical_time),
+            transport_state: Some(transport_state),
+            transport_state2: Some(transport_state2),
+        };
+        // Units that never ask for host time may refuse it.
+        let _ = inst.set_property(PROP_HOST_CALLBACKS, SCOPE_GLOBAL, 0, &callbacks);
+        Ok(inst)
+    }
+
+    fn time(&self) -> &HostTime {
+        // SAFETY: `time` is the `HostTime` leaked in `new`, freed only in `Drop`.
+        unsafe { &*self.time }
+    }
+
+    /// The transport the host callbacks report during the next renders.
+    pub fn set_transport(&self, t: &Transport) {
+        self.time().set(t);
     }
 
     fn set_property<T>(&self, id: u32, scope: u32, element: u32, value: &T) -> OSStatus {
@@ -490,6 +668,7 @@ impl Instance {
         self.initialized = true;
         self.channels = ch;
         self.sample_rate = sample_rate;
+        self.time().sample_rate.store(sample_rate.to_bits(), Ordering::Relaxed);
         self.outputs = (0..ch).map(|_| vec![0.0; mf]).collect();
         // SAFETY: the callback only runs inside `AudioUnitRender`, which is not running now
         // (we hold `&mut self`), so this exclusive access does not alias.
@@ -678,35 +857,12 @@ impl Instance {
         out
     }
 
-    /// The unit's `ClassInfo` as a binary property list.
-    pub fn save_state(&self) -> Option<Vec<u8>> {
-        let mut plist: CFTypeRef = ptr::null();
-        let mut size = std::mem::size_of::<CFTypeRef>() as u32;
-        // SAFETY: the property is a `CFPropertyListRef` returned +1; `plist` is a local pointer.
-        let st = unsafe { AudioUnitGetProperty(self.unit, PROP_CLASS_INFO, SCOPE_GLOBAL, 0, (&mut plist as *mut CFTypeRef).cast(), &mut size) };
-        if st != 0 || plist.is_null() {
-            release(plist);
-            return None;
-        }
-        let mut err: CFTypeRef = ptr::null();
-        // SAFETY: `plist` is a live property list; `err` is a local out pointer.
-        let data = unsafe { CFPropertyListCreateData(ptr::null(), plist, CF_PROPERTY_LIST_BINARY_FORMAT, 0, &mut err) };
-        release(err);
-        release(plist);
-        if data.is_null() {
-            return None;
-        }
-        // SAFETY: `data` is a live CFData we own; its byte pointer is valid for its length.
-        let out = unsafe {
-            let len = CFDataGetLength(data);
-            let p = CFDataGetBytePtr(data);
-            if len <= 0 || len as usize > MAX_STATE || p.is_null() { None } else { Some(std::slice::from_raw_parts(p, len as usize).to_vec()) }
-        };
-        release(data);
-        out
+    /// The link for state handles.
+    pub fn state_link(&self) -> std::sync::Arc<StateLink> {
+        std::sync::Arc::clone(&self.link)
     }
 
-    /// Restores a blob from [`Instance::save_state`] (hostile input: parsed by CoreFoundation,
+    /// Restores a blob from [`StateLink::save_state`] (hostile input: parsed by CoreFoundation,
     /// must be a dictionary, and the unit validates it).
     pub fn load_state(&self, bytes: &[u8]) -> bool {
         if bytes.is_empty() || bytes.len() > MAX_STATE {
@@ -733,16 +889,71 @@ impl Instance {
     }
 }
 
+struct LinkedUnit(Option<AudioUnit>);
+
+// SAFETY: the pointer is only used under the link's mutex, while the instance keeps the unit alive.
+unsafe impl Send for LinkedUnit {}
+
+/// The link between an instance and its state handles: the unit's state is read on the main
+/// thread while the instance renders on the audio thread (hosts make property calls from other
+/// threads during rendering). The instance clears the link under its lock before it disposes of
+/// the unit, so a handle never reads a dead unit.
+pub(crate) struct StateLink(std::sync::Mutex<LinkedUnit>);
+
+impl StateLink {
+    fn lock(&self) -> std::sync::MutexGuard<'_, LinkedUnit> {
+        self.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// The unit's `ClassInfo` as a binary property list (`None` once the instance is gone).
+    pub fn save_state(&self) -> Option<Vec<u8>> {
+        let g = self.lock();
+        let unit = g.0?;
+        let mut plist: CFTypeRef = ptr::null();
+        let mut size = std::mem::size_of::<CFTypeRef>() as u32;
+        // SAFETY: the unit is live while the link holds it (see the type); the property is a
+        // `CFPropertyListRef` returned +1; `plist` is a local pointer.
+        let st = unsafe { AudioUnitGetProperty(unit, PROP_CLASS_INFO, SCOPE_GLOBAL, 0, (&mut plist as *mut CFTypeRef).cast(), &mut size) };
+        if st != 0 || plist.is_null() {
+            release(plist);
+            return None;
+        }
+        let mut err: CFTypeRef = ptr::null();
+        // SAFETY: `plist` is a live property list; `err` is a local out pointer.
+        let data = unsafe { CFPropertyListCreateData(ptr::null(), plist, CF_PROPERTY_LIST_BINARY_FORMAT, 0, &mut err) };
+        release(err);
+        release(plist);
+        if data.is_null() {
+            return None;
+        }
+        // SAFETY: `data` is a live CFData we own; its byte pointer is valid for its length.
+        let out = unsafe {
+            let len = CFDataGetLength(data);
+            let p = CFDataGetBytePtr(data);
+            if len <= 0 || len as usize > MAX_STATE || p.is_null() { None } else { Some(std::slice::from_raw_parts(p, len as usize).to_vec()) }
+        };
+        release(data);
+        out
+    }
+
+    fn kill(&self) {
+        self.lock().0 = None;
+    }
+}
+
 impl Drop for Instance {
     fn drop(&mut self) {
+        self.link.kill();
         // SAFETY: the unit is live (disposed only here); after disposal nothing can call the
-        // input callback, so the leaked input state can be freed.
+        // input callback or the host callbacks, so the leaked input state and host time can be
+        // freed.
         unsafe {
             if self.initialized {
                 AudioUnitUninitialize(self.unit);
             }
             AudioComponentInstanceDispose(self.unit);
             drop(Box::from_raw(self.input));
+            drop(Box::from_raw(self.time));
         }
     }
 }
@@ -750,6 +961,31 @@ impl Drop for Instance {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn host_callbacks_report_the_transport() {
+        let time = HostTime::new();
+        time.set(&Transport { playing: true, tempo: 120.0, numerator: 3, denominator: 4, samples: 48_000, quarters: 2.25, ..Transport::default() });
+        let user = ptr::from_ref(&time).cast_mut().cast::<c_void>();
+        let (mut beat, mut tempo) = (0.0, 0.0);
+        // SAFETY: `user` points at a live `HostTime`; the out-pointers are locals.
+        assert_eq!(unsafe { beat_and_tempo(user, &mut beat, &mut tempo) }, 0);
+        assert_eq!((beat, tempo), (2.25, 120.0));
+        let (mut next, mut num, mut den, mut down) = (0u32, 0f32, 0u32, -1.0);
+        // SAFETY: as above.
+        assert_eq!(unsafe { musical_time(user, &mut next, &mut num, &mut den, &mut down) }, 0);
+        assert_eq!((next, num, den, down), (18_000, 3.0, 4, 0.0));
+        let (mut playing, mut recording, mut changed, mut sample) = (0u8, 1u8, 0u8, 0.0);
+        let (no_flag, no_beat) = (ptr::null_mut::<u8>(), ptr::null_mut::<f64>());
+        // SAFETY: as above; the unit may pass null for what it doesn't want.
+        let st = unsafe { transport_state2(user, &mut playing, &mut recording, &mut changed, &mut sample, no_flag, no_beat, no_beat) };
+        assert_eq!((st, playing, recording, changed, sample), (0, 1, 0, 1, 48_000.0));
+        // SAFETY: as above.
+        unsafe { transport_state(user, &mut playing, &mut changed, no_beat, no_flag, no_beat, no_beat) };
+        assert_eq!(changed, 0, "a change is reported once");
+        // SAFETY: a null user pointer is refused before anything is read.
+        assert_eq!(unsafe { beat_and_tempo(ptr::null_mut(), &mut beat, &mut tempo) }, -50);
+    }
 
     #[test]
     fn struct_layouts_match_the_c_headers() {
@@ -761,6 +997,7 @@ mod tests {
         assert_eq!(std::mem::offset_of!(AudioBufferList, buffers), 8);
         assert_eq!(std::mem::offset_of!(AudioBufferListHeader, first), 8);
         assert_eq!(std::mem::size_of::<AuRenderCallbackStruct>(), 16);
+        assert_eq!(std::mem::size_of::<HostCallbackInfo>(), 40);
         assert_eq!(std::mem::offset_of!(AudioUnitParameterInfo, unit_name), 56);
         assert_eq!(std::mem::offset_of!(AudioUnitParameterInfo, cf_name_string), 72);
         assert_eq!(std::mem::offset_of!(AudioUnitParameterInfo, flags), 96);

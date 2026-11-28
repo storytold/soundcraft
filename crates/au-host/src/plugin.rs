@@ -1,7 +1,7 @@
 //! `AuPlugin`: a loaded Audio Unit behind the safe `soundcraft_dsp::Plugin` trait.
 
 use crate::ffi::Instance;
-use soundcraft_dsp::{Plugin, PluginInfo};
+use soundcraft_dsp::{Plugin, PluginInfo, Transport};
 
 /// Most MIDI events queued between two blocks (extra events are dropped).
 const EVENT_CAP: usize = 1024;
@@ -170,13 +170,12 @@ impl Plugin for AuPlugin {
                         if ch == 1 && au_ch >= 2 {
                             if let (Some(l), Some(r)) = (self.inst.output(0, n), self.inst.output(1, n)) {
                                 for ((d, a), b) in dst.iter_mut().zip(l).zip(r) {
-                                    let v = 0.5 * (a + b);
-                                    *d = if v.is_finite() { v } else { 0.0 };
+                                    *d = 0.5 * (a + b);
                                 }
                             }
                         } else if let Some(src) = self.inst.output(c.min(au_ch.saturating_sub(1)), n) {
                             for (d, &s) in dst.iter_mut().zip(src) {
-                                *d = if s.is_finite() { s } else { 0.0 };
+                                *d = s;
                             }
                         }
                     }
@@ -198,6 +197,10 @@ impl Plugin for AuPlugin {
 
     fn latency(&self) -> usize {
         self.latency
+    }
+
+    fn set_transport(&mut self, transport: &Transport) {
+        self.inst.set_transport(transport);
     }
 
     fn tail_samples(&self) -> usize {
@@ -227,6 +230,13 @@ impl Plugin for AuPlugin {
         }
     }
 
+    fn midi(&mut self, offset: usize, msg: [u8; 3]) {
+        let [status, data1, data2] = msg;
+        if status & 0xF0 >= 0xA0 && status & 0xF0 < 0xF0 {
+            self.push_event(MidiEvent { time: u32::try_from(offset).unwrap_or(u32::MAX), status, data1: data1 & 0x7F, data2: data2 & 0x7F });
+        }
+    }
+
     fn all_notes_off(&mut self) {
         for k in 0..128u8 {
             if self.held.get(k as usize).copied().unwrap_or(false) {
@@ -237,15 +247,16 @@ impl Plugin for AuPlugin {
         self.push_event(MidiEvent { time: 0, status: 0xB0, data1: 123, data2: 0 });
     }
 
-    fn save_state(&mut self) -> Option<Vec<u8>> {
-        self.inst.save_state()
-    }
-
     fn load_state(&mut self, data: &[u8]) -> bool {
         let ok = self.inst.load_state(data);
         if ok {
             self.refresh_values();
         }
         ok
+    }
+
+    fn state_reader(&mut self) -> Option<Box<dyn soundcraft_dsp::PluginStateReader>> {
+        let link = self.inst.state_link();
+        Some(Box::new(move || link.save_state()))
     }
 }

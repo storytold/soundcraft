@@ -83,6 +83,10 @@ pub fn scan() -> Vec<ClapDescriptor> {
     ensure_scanned(&mut r).clone()
 }
 
+pub fn cached() -> Option<Vec<ClapDescriptor>> {
+    registry().lock().unwrap_or_else(PoisonError::into_inner).scanned.clone()
+}
+
 pub fn rescan() -> Vec<ClapDescriptor> {
     let mut r = registry().lock().unwrap_or_else(PoisonError::into_inner);
     r.scanned = None;

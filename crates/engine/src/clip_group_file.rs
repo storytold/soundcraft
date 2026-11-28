@@ -5,8 +5,9 @@
 //! as 32-bit float WAVs in a `<name> Audio/` folder next to it.
 
 use crate::{Engine, EngineError, Result};
+use craft_audio::EncodeOptions;
 use serde::{Deserialize, Serialize};
-use soundcraft_audio_io::{EncodeOptions, FileFormat};
+use soundcraft_model::FileFormat;
 use soundcraft_model::{Clip, ClipContent, ClipId, SourceId, TrackId};
 use soundcraft_time::Samples;
 use std::collections::BTreeMap;
@@ -14,7 +15,7 @@ use std::path::{Path, PathBuf};
 
 pub const EXTENSION: &str = "scgrp";
 const FORMAT: &str = "soundcraft.clipgroup";
-/// Refuse files that would place absurd numbers of clips.
+/// Refuse files that would place absurd numbers of clips, tracks or audio files.
 const MAX_CLIPS: usize = 10_000;
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -31,6 +32,9 @@ struct GroupFile {
 
 /// Write the clips `ids` (grouped by track) to `path`. Returns the number of clips written.
 pub fn export(e: &Engine, ids: &[ClipId], path: &str) -> Result<usize> {
+    let p = with_extension(path);
+    // First, so a refused group file leaves nothing behind and is refused whatever else is wrong.
+    crate::file_access::check_write(&p).map_err(EngineError::Io)?;
     let s = e.session();
     let mut lanes: Vec<(usize, Vec<Clip>)> = Vec::new();
     for id in ids {
@@ -47,8 +51,7 @@ pub fn export(e: &Engine, ids: &[ClipId], path: &str) -> Result<usize> {
     };
     let n = clips.len();
     lanes.sort_by_key(|(i, _)| *i);
-    let p = with_extension(path);
-    let stem = p.file_stem().and_then(|x| x.to_str()).unwrap_or("Clip Group").to_string();
+    let stem = p.file_stem().and_then(std::ffi::OsStr::to_str).unwrap_or("Clip Group").to_string();
     let audio_dir_name = format!("{} Audio", crate::io::sanitize_name(&stem));
     let dir = p.parent().map(Path::to_path_buf).unwrap_or_default();
     let mut audio = BTreeMap::new();
@@ -62,10 +65,10 @@ pub fn export(e: &Engine, ids: &[ClipId], path: &str) -> Result<usize> {
                 && let (Some(buf), Some(src)) = (s.pool.get(source), s.sources.iter().find(|x| x.id == source))
             {
                 let rel = format!("{audio_dir_name}/{}_{}.wav", crate::io::sanitize_name(&src.name), source.0);
-                std::fs::create_dir_all(dir.join(&audio_dir_name)).map_err(|err| EngineError::Io(format!("{audio_dir_name}: {err}")))?;
-                let opts = EncodeOptions { format: FileFormat::Wav, bit_depth: soundcraft_audio_io::BitDepth::Float32, dither: false, bwf: None };
-                let bytes = soundcraft_audio_io::encode(&buf.buffer, &opts).map_err(|err| EngineError::Io(err.to_string()))?;
-                std::fs::write(dir.join(&rel), bytes).map_err(|err| EngineError::Io(format!("{rel}: {err}")))?;
+                crate::io::make_dir(dir.join(&audio_dir_name))?;
+                let opts = EncodeOptions::new(craft_audio::EncodeFormat::Wav).with_bit_depth(craft_audio::BitDepth::Float32);
+                let bytes = craft_audio::encode(&buf.buffer, &opts).map_err(|err| EngineError::Io(err.to_string()))?;
+                crate::io::write_path(dir.join(&rel), bytes)?;
                 slot.insert(rel);
             }
             lane.push(c);
@@ -74,43 +77,79 @@ pub fn export(e: &Engine, ids: &[ClipId], path: &str) -> Result<usize> {
     }
     let file = GroupFile { format: FORMAT.into(), version: 1, sample_rate: s.sample_rate.hz(), length: end - start, lanes: out_lanes, audio };
     let text = serde_json::to_string_pretty(&file).map_err(|err| EngineError::Io(err.to_string()))?;
-    std::fs::write(&p, text).map_err(|err| EngineError::Io(format!("{}: {err}", p.display())))?;
+    crate::io::write_path(&p, text)?;
     Ok(n)
+}
+
+fn decode_group_audio(
+    audio_entries: &BTreeMap<u64, String>,
+    dir: &Path,
+    rate: u32,
+    cmd_id: &str,
+) -> Result<(Vec<(String, craft_audio::AudioBuffer)>, BTreeMap<u64, usize>)> {
+    let (mut decoded, mut index, mut file_of) = (Vec::new(), BTreeMap::new(), BTreeMap::new());
+    // The folder as the file system knows it, so a link among the group's files can't lead out.
+    let dir = if dir.as_os_str().is_empty() { Path::new(".") } else { dir };
+    let root = crate::io::canonical_path(dir)?;
+    for (old, rel) in audio_entries {
+        let full = dir.join(rel);
+        let escapes = |rel: &str| EngineError::BadParams(cmd_id.into(), format!("audio path escapes the group folder: {rel}"));
+        if !full.starts_with(dir)
+            || Path::new(rel)
+                .components()
+                .any(|c| matches!(c, std::path::Component::ParentDir | std::path::Component::RootDir | std::path::Component::Prefix(_)))
+        {
+            return Err(escapes(rel));
+        }
+        let key = crate::io::canonical_path(&full)?;
+        if !key.starts_with(&root) {
+            return Err(escapes(rel));
+        }
+        let n = match index.get(&key) {
+            Some(n) => *n,
+            None => {
+                let bytes = crate::io::read_file_inside(&full, &root)?;
+                let (_, buf) = craft_audio::decode(&bytes, Some("wav")).map_err(|err| EngineError::Io(format!("{rel}: {err}")))?;
+                let buf = crate::io::at_rate(buf, rate, crate::io::MAX_IMPORT_SAMPLES)
+                    .map_err(|r| EngineError::Io(format!("{rel}: {}", r.message("too large to import"))))?;
+                decoded.push((rel.clone(), buf));
+                index.insert(key, decoded.len() - 1);
+                decoded.len() - 1
+            }
+        };
+        file_of.insert(*old, n);
+    }
+    Ok((decoded, file_of))
 }
 
 /// Import a clip group file at `at`, one lane per track starting at `first` (new audio tracks
 /// are made when the session runs out). Returns the ids of the placed clips.
 pub fn import(e: &mut Engine, path: &str, first: Option<TrackId>, at: Samples) -> Result<Vec<ClipId>> {
     let id = "file.import_clip_groups";
-    let text = std::fs::read_to_string(path).map_err(|err| EngineError::Io(format!("{path}: {err}")))?;
+    let text = crate::io::read_text(path)?;
     let file: GroupFile = serde_json::from_str(&text).map_err(|err| EngineError::BadParams(id.into(), format!("not a clip group file: {err}")))?;
     if file.format != FORMAT {
         return Err(EngineError::BadParams(id.into(), "not a SoundCraft clip group file".into()));
     }
-    if file.lanes.iter().map(Vec::len).sum::<usize>() > MAX_CLIPS {
+    if file.lanes.iter().map(|l| l.len().max(1)).sum::<usize>() > MAX_CLIPS || file.audio.len() > MAX_CLIPS {
         return Err(EngineError::BadParams(id.into(), "clip group file has too many clips".into()));
     }
     let dir = Path::new(path).parent().map(Path::to_path_buf).unwrap_or_default();
-    // Decode audio first so a bad file changes nothing.
-    let mut decoded = BTreeMap::new();
-    for (old, rel) in &file.audio {
-        let full = dir.join(rel);
-        if !full.starts_with(&dir) || rel.contains("..") {
-            return Err(EngineError::BadParams(id.into(), format!("audio path escapes the group folder: {rel}")));
-        }
-        let bytes = std::fs::read(&full).map_err(|err| EngineError::Io(format!("{}: {err}", full.display())))?;
-        let (_, buf) = soundcraft_audio_io::decode(&bytes, Some("wav")).map_err(|err| EngineError::Io(format!("{rel}: {err}")))?;
-        decoded.insert(*old, (rel.clone(), buf));
-    }
+    // Decode audio first so a bad file changes nothing, and each file once however many ids name it.
+    let rate = e.session().sample_rate.hz();
+    let (decoded, file_of) = decode_group_audio(&file.audio, &dir, rate, id)?;
     let src_rate = f64::from(file.sample_rate.max(1));
     let s = e.session_mut();
     let ratio = f64::from(s.sample_rate.hz()) / src_rate;
     let scale = |v: Samples| -> Samples { (v as f64 * ratio).round() as Samples };
-    let mut map: BTreeMap<u64, SourceId> = BTreeMap::new();
-    for (old, (rel, buf)) in decoded {
-        let name = Path::new(&rel).file_name().and_then(|x| x.to_str()).unwrap_or("clip group").to_string();
-        map.insert(old, crate::io::add_source(s, &name, buf, None, FileFormat::Wav));
-    }
+    let sources: Vec<SourceId> = decoded
+        .into_iter()
+        .map(|(rel, buf)| {
+            let name = Path::new(&rel).file_name().and_then(std::ffi::OsStr::to_str).unwrap_or("clip group").to_string();
+            crate::io::add_source(s, &name, buf, None, FileFormat::Wav)
+        })
+        .collect();
+    let map: BTreeMap<u64, SourceId> = file_of.into_iter().filter_map(|(old, n)| Some((old, *sources.get(n)?))).collect();
     let start_idx = first.and_then(|t| s.tracks.iter().position(|x| x.id == t));
     let mut placed = Vec::new();
     let group_id = s.alloc();
@@ -132,6 +171,7 @@ pub fn import(e: &mut Engine, path: &str, first: Option<TrackId>, at: Samples) -
                 s.add_track(kind, fmt, Some("Clip Group"))
             }
         };
+        let mut prepared = Vec::new();
         for mut c in lane {
             if let ClipContent::Audio { source, offset } = &mut c.content {
                 let Some(n) = map.get(&source.0) else { continue };
@@ -142,11 +182,26 @@ pub fn import(e: &mut Engine, path: &str, first: Option<TrackId>, at: Samples) -
             }
             c.id = s.new_clip_id();
             c.start = at.saturating_add(scale(c.start.max(0)));
-            c.length = scale(c.length).max(1);
+            c.length = scale(c.length);
+            c.fade_in.len = scale(c.fade_in.len);
+            c.fade_out.len = scale(c.fade_out.len);
+            c.sync_point = scale(c.sync_point);
+            c.gain_env.iter_mut().for_each(|(at, _)| *at = scale(*at));
             c.group = Some(group_id);
-            c.clamp_fades();
+            // The file does not hold the Auto Rename schemes of the session it came from.
+            c.auto_name = None;
+            c.sanitize();
             placed.push(c.id);
-            crate::edit::place_clip(s, target, c);
+            prepared.push(c);
+        }
+        // Clear what was already on the track first, then add the whole lane at once, so clips of
+        // the group that overlap each other (crossfades) keep their overlap.
+        for c in &prepared {
+            crate::edit::clear_range(s, target, c.range(), false);
+        }
+        if let Some(pl) = s.track_mut(target).and_then(|t| t.playlist_mut()) {
+            pl.clips.extend(prepared);
+            pl.sort();
         }
     }
     Ok(placed)
@@ -187,6 +242,190 @@ mod tests {
         e.undo();
         assert_eq!(e.session().tracks.len(), before);
         assert!(e.session().find_clip(soundcraft_model::ClipId(placed[0])).is_none());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn import_accepts_audio_names_with_consecutive_dots_but_not_parent_dirs() {
+        let dir = std::env::temp_dir().join(format!("sc-grp-dots-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        let path = dir.join("drums.scgrp").to_string_lossy().to_string();
+        let mut e = crate::demo::demo_engine();
+        let kick = e.session().tracks.iter().find(|t| t.name == "Kick").map(|t| t.id).unwrap();
+        let ids: Vec<_> = e.session().track(kick).unwrap().clips().iter().take(1).map(|c| c.id.0).collect();
+        e.execute("file.export_clip_groups", &json!({"path": path, "clips": ids})).unwrap();
+        let mut file: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        for (i, rel) in file["audio"].as_object_mut().unwrap().values_mut().enumerate() {
+            let old = dir.join(rel.as_str().unwrap());
+            let new = format!("Wait... what_{i}.wav");
+            std::fs::rename(&old, dir.join(&new)).unwrap();
+            *rel = json!(new);
+        }
+        std::fs::write(&path, file.to_string()).unwrap();
+        let r = e.execute("file.import_clip_groups", &json!({"path": path, "at": 1000, "track": "Bass"}));
+        assert!(r.is_ok(), "{r:?}");
+        for rel in file["audio"].as_object_mut().unwrap().values_mut() {
+            *rel = json!("../escape.wav");
+        }
+        std::fs::write(&path, file.to_string()).unwrap();
+        let r = e.execute("file.import_clip_groups", &json!({"path": path, "at": 1000, "track": "Bass"}));
+        assert!(matches!(r, Err(crate::EngineError::BadParams(..))), "{r:?}");
+        for rel in file["audio"].as_object_mut().unwrap().values_mut() {
+            *rel = json!(dir.join("Wait... what_0.wav").to_string_lossy());
+        }
+        std::fs::write(&path, file.to_string()).unwrap();
+        let r = e.execute("file.import_clip_groups", &json!({"path": path, "at": 1000, "track": "Bass"}));
+        assert!(matches!(r, Err(crate::EngineError::BadParams(..))), "absolute paths are refused: {r:?}");
+        // A link inside the folder that leads out of it is refused once resolved.
+        #[cfg(unix)]
+        {
+            let outside = std::env::temp_dir().join(format!("sc-grp-outside-{}.wav", std::process::id()));
+            std::fs::copy(dir.join("Wait... what_0.wav"), &outside).unwrap();
+            std::os::unix::fs::symlink(&outside, dir.join("link.wav")).unwrap();
+            for rel in file["audio"].as_object_mut().unwrap().values_mut() {
+                *rel = json!("link.wav");
+            }
+            std::fs::write(&path, file.to_string()).unwrap();
+            let r = e.execute("file.import_clip_groups", &json!({"path": path, "at": 1000, "track": "Bass"}));
+            assert!(matches!(r, Err(crate::EngineError::BadParams(..))), "links out of the folder are refused: {r:?}");
+            let _ = std::fs::remove_file(&outside);
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Under a read root, a link in the group folder to a folder outside the root is refused the same way
+    /// whether or not the file asked for exists there, so the group cannot be used to probe for names.
+    #[cfg(unix)]
+    #[test]
+    fn links_out_of_the_read_root_are_refused_alike_for_existing_and_missing_files() {
+        let base = std::env::temp_dir().join(format!("sc-grp-root-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let (dir, outside) = (base.join("group"), base.join("outside"));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::create_dir_all(&outside).unwrap();
+        let path = dir.join("drums.scgrp").to_string_lossy().to_string();
+        let mut e = crate::demo::demo_engine();
+        let kick = e.session().tracks.iter().find(|t| t.name == "Kick").map(|t| t.id).unwrap();
+        let ids: Vec<_> = e.session().track(kick).unwrap().clips().iter().take(1).map(|c| c.id.0).collect();
+        e.execute("file.export_clip_groups", &json!({"path": path, "clips": ids})).unwrap();
+        let mut file: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        let exported = file["audio"].as_object().unwrap().values().next().unwrap().as_str().unwrap().to_string();
+        std::fs::copy(dir.join(&exported), outside.join("real.wav")).unwrap();
+        std::os::unix::fs::symlink(&outside, dir.join("out")).unwrap();
+        let roots = crate::file_access::AutomationRoots::new(&[&dir], &[]).unwrap().unwrap();
+        let mut refusals = Vec::new();
+        for target in ["out/real.wav", "out/missing.wav"] {
+            for rel in file["audio"].as_object_mut().unwrap().values_mut() {
+                *rel = json!(target);
+            }
+            std::fs::write(&path, file.to_string()).unwrap();
+            let r = crate::file_access::confine(Some(&roots), || {
+                e.execute("file.import_clip_groups", &json!({"path": path, "at": 1000, "track": "Bass"}))
+            });
+            refusals.push(r.unwrap_err().to_string());
+        }
+        assert!(refusals[0].contains("outside the read root"), "{}", refusals[0]);
+        assert_eq!(refusals[0].replace("real.wav", "X"), refusals[1].replace("missing.wav", "X"), "existing and missing names are refused alike");
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn imported_clips_carry_no_auto_rename_scheme() {
+        let dir = std::env::temp_dir().join(format!("sc-grp-names-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        let path = dir.join("named.scgrp").to_string_lossy().to_string();
+        let mut e = crate::demo::demo_engine();
+        let kick = e.session().track_by_name("Kick").unwrap().clips()[0].id.0;
+        e.execute("clip.auto_rename", &json!({"clips": [kick], "name": "Hit"})).unwrap();
+        e.execute("file.export_clip_groups", &json!({"path": path, "clips": [kick]})).unwrap();
+        let r = e.execute("file.import_clip_groups", &json!({"path": path, "at": 30_000_000, "track": "Bass"})).unwrap();
+        let placed = soundcraft_model::ClipId(r["clips"][0].as_u64().unwrap());
+        assert_eq!(e.session().find_clip(placed).unwrap().1.auto_name, None);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn positions_in_a_group_file_are_kept_within_reach() {
+        let dir = std::env::temp_dir().join(format!("sc-grp-far-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        let p = dir.join("far.scgrp");
+        let note = json!({"pitch": 60, "velocity": 100, "release_velocity": 64, "channel": 0, "start": i64::MAX, "length": i64::MAX});
+        let clip =
+            json!({"id": 1, "name": "far", "start": i64::MAX, "length": i64::MAX, "content": {"Midi": {"sequence": {"notes": [note], "ctrls": []}}}});
+        let file = json!({"format": "soundcraft.clipgroup", "version": 1, "sample_rate": 48000, "length": 1, "lanes": [[clip]], "audio": {}});
+        std::fs::write(&p, file.to_string()).unwrap();
+        let mut e = crate::demo::demo_engine();
+        let r = e.execute("file.import_clip_groups", &json!({"path": p.to_string_lossy()})).unwrap();
+        let id = soundcraft_model::ClipId(r["clips"][0].as_u64().unwrap());
+        let c = e.session().find_clip(id).unwrap().1;
+        assert!(c.start <= crate::cmd::MAX_POSITION && c.length <= crate::cmd::MAX_POSITION);
+        e.execute("edit.select_all", &json!({})).unwrap();
+        for cmd in ["edit.duplicate", "event.extract_chords"] {
+            assert!(!matches!(e.execute(cmd, &json!({})), Err(crate::EngineError::Internal(..))), "{cmd}");
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn overlapping_clips_of_a_group_keep_their_overlap_on_import() {
+        let dir = std::env::temp_dir().join(format!("sc-grp-overlap-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        let p = dir.join("overlap.scgrp");
+        let note = json!({"pitch": 60, "velocity": 100, "release_velocity": 64, "channel": 0, "start": 0, "length": 100});
+        let content = json!({"Midi": {"sequence": {"notes": [note], "ctrls": []}}});
+        let a = json!({"id": 1, "name": "a", "start": 0, "length": 1000, "content": content});
+        let b = json!({"id": 2, "name": "b", "start": 600, "length": 1000, "content": content});
+        let file = json!({"format": "soundcraft.clipgroup", "version": 1, "sample_rate": 48000, "length": 1600, "lanes": [[a, b]], "audio": {}});
+        std::fs::write(&p, file.to_string()).unwrap();
+        let mut e = crate::demo::demo_engine();
+        let r = e.execute("file.import_clip_groups", &json!({"path": p.to_string_lossy()})).unwrap();
+        let ids: Vec<_> = r["clips"].as_array().unwrap().iter().filter_map(serde_json::Value::as_u64).collect();
+        assert_eq!(ids.len(), 2);
+        let spans: Vec<_> =
+            ids.iter().filter_map(|id| e.session().find_clip(soundcraft_model::ClipId(*id)).map(|(_, c)| (c.start, c.length))).collect();
+        // The group lands at the insertion point; its clips keep their relative positions and overlap.
+        let at = spans.first().map_or(0, |s| s.0);
+        assert_eq!(spans, vec![(at, 1000), (at + 600, 1000)]);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn fades_sync_point_and_envelope_follow_the_sample_rate() {
+        let dir = std::env::temp_dir().join(format!("sc-grp-rate-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        let p = dir.join("rate.scgrp");
+        let mut e = crate::demo::demo_engine();
+        // The file was saved at half the session rate, so every position doubles.
+        let src_rate = e.session().sample_rate.hz() / 2;
+        let fade = |len: i64| json!({"len": len, "shape": "Linear"});
+        let clip = json!({
+            "id": 1, "name": "m", "start": 0, "length": 10_000, "content": {"Midi": {"sequence": {"notes": [], "ctrls": []}}},
+            "fade_in": fade(1000), "fade_out": fade(2000), "sync_point": 500, "gain_env": [[100, -6.0], [4000, 0.0]]
+        });
+        let file = json!({"format": "soundcraft.clipgroup", "version": 1, "sample_rate": src_rate, "length": 10_000, "lanes": [[clip]], "audio": {}});
+        std::fs::write(&p, file.to_string()).unwrap();
+        let r = e.execute("file.import_clip_groups", &json!({"path": p.to_string_lossy()})).unwrap();
+        let c = e.session().find_clip(soundcraft_model::ClipId(r["clips"][0].as_u64().unwrap())).unwrap().1;
+        assert_eq!((c.length, c.fade_in.len, c.fade_out.len, c.sync_point), (20_000, 2000, 4000, 1000));
+        assert_eq!(c.gain_env.iter().map(|&(at, _)| at).collect::<Vec<_>>(), vec![200, 8000]);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_file_named_by_many_ids_becomes_one_source() {
+        let dir = std::env::temp_dir().join(format!("sc-grp-shared-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        let audio = craft_audio::AudioBuffer { sample_rate: 48_000, channels: vec![vec![0.25; 480]] };
+        std::fs::write(dir.join("k.wav"), craft_audio::encode(&audio, &craft_audio::EncodeOptions::default()).unwrap()).unwrap();
+        let clip = |id: u64| json!({"id": id, "name": "k", "start": id * 1000, "length": 480, "content": {"Audio": {"source": id, "offset": 0}}});
+        let audio_paths = json!({"1": "k.wav", "2": "./k.wav", "3": "k.wav"});
+        let file = json!({"format": "soundcraft.clipgroup", "version": 1, "sample_rate": 48000, "length": 4000, "lanes": [[clip(1), clip(2), clip(3)]], "audio": audio_paths});
+        let p = dir.join("k.scgrp");
+        std::fs::write(&p, file.to_string()).unwrap();
+        let mut e = crate::demo::demo_engine();
+        let before = e.session().sources.len();
+        let r = e.execute("file.import_clip_groups", &json!({"path": p.to_string_lossy()})).unwrap();
+        assert_eq!((r["clips"].as_array().unwrap().len(), e.session().sources.len()), (3, before + 1));
         let _ = std::fs::remove_dir_all(&dir);
     }
 

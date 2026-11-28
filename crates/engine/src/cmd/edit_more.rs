@@ -1,11 +1,13 @@
 //! More Edit menu commands: Cut/Copy/Clear Special variants, Paste Special, selection helpers,
 //! Space Clips, Snap to, Copy/Move Selection to playlists, TCE, and automation coalesce/trim/glide.
+use super::{
+    CommandSpec, always, bad, clip_ids_param, has_clipboard, has_range, has_selection, position_param, range_param, str_param, tracks_required,
+};
 
 use super::more_util::{clip_db, render_stretched, replace_clip, set_clip_env, target_playlist};
-use super::*;
 use crate::edit as ops;
-use crate::{Clipboard, TransportRequest, cmd};
-use serde_json::json;
+use crate::{Clipboard, Engine, Result, TransportRequest, cmd};
+use serde_json::{Value, json};
 use soundcraft_model::{AutoParam, AutomationLane, Clip, ClipContent, ClipId, EditMode, Playlist, Session};
 use soundcraft_time::{Range, Samples};
 
@@ -178,7 +180,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "edit.copy_to_target_playlist",
             "Target Playlist",
             ["Edit", "Copy Selection to..."],
-            None,
+            Some("Alt+Shift+Up"),
             "{tracks?, start?, end?} — copies the selection into each track's target playlist",
             has_range,
             |e, p| to_playlist(e, p, Dest::Target, false, "edit.copy_to_target_playlist")
@@ -196,14 +198,20 @@ pub fn specs() -> Vec<CommandSpec> {
             "edit.move_to_target_playlist",
             "Target Playlist",
             ["Edit", "Move Selection to..."],
-            None,
+            Some("Alt+Shift+T"),
             "{tracks?, start?, end?} — copies to the target playlist and clears it from the main",
             has_range,
             |e, p| to_playlist(e, p, Dest::Target, true, "edit.move_to_target_playlist")
         ),
-        cmd!("edit.move_to_new_playlist", "New Playlist", ["Edit", "Move Selection to..."], None, "{tracks?, start?, end?}", has_range, |e, p| {
-            to_playlist(e, p, Dest::New, true, "edit.move_to_new_playlist")
-        }),
+        cmd!(
+            "edit.move_to_new_playlist",
+            "New Playlist",
+            ["Edit", "Move Selection to..."],
+            Some("Alt+Shift+N"),
+            "{tracks?, start?, end?}",
+            has_range,
+            |e, p| to_playlist(e, p, Dest::New, true, "edit.move_to_new_playlist")
+        ),
         cmd!(
             "edit.move_to_duplicate_playlist",
             "Duplicate of Main Playlist",
@@ -284,7 +292,7 @@ pub(super) fn cut_all_automation(e: &mut Engine, p: &Value) -> Result<Value> {
 fn auto_copy(e: &mut Engine, p: &Value, which: Lanes, cut: bool, id: &str) -> Result<Value> {
     let tracks = tracks_required(e, id, p)?;
     let r = nonempty_range(e, p, id)?;
-    let mut cb = Clipboard { length: r.len(), ..Clipboard::default() };
+    let mut cb = Clipboard { automation_only: true, ..Clipboard::of_range(e.session(), r) };
     let mut lanes_n = 0;
     for t in &tracks {
         cb.tracks.push(Vec::new());
@@ -326,7 +334,7 @@ fn auto_copy(e: &mut Engine, p: &Value, which: Lanes, cut: bool, id: &str) -> Re
     Ok(json!({"lanes": lanes_n, "length": r.len()}))
 }
 
-fn copy_clip_gain(e: &mut Engine, p: &Value) -> Result<Value> {
+pub(super) fn copy_clip_gain(e: &mut Engine, p: &Value) -> Result<Value> {
     let id = "edit.copy_clip_gain";
     let tracks = tracks_required(e, id, p)?;
     let r = nonempty_range(e, p, id)?;
@@ -444,7 +452,7 @@ fn paste_merge_midi(e: &mut Engine, p: &Value) -> Result<Value> {
     let id = "edit.paste_merge_midi";
     let tracks = tracks_required(e, id, p)?;
     let at = position_param(e, id, p, "at")?.unwrap_or(e.session().edit.selection.start).max(0);
-    let cb = e.clipboard.clone();
+    let cb = super::edit::clipboard_for_paste(e);
     let s = e.session_mut();
     let tempo = s.tempo.clone();
     let sr = s.sample_rate;
@@ -502,6 +510,7 @@ fn paste_merge_midi(e: &mut Engine, p: &Value) -> Result<Value> {
             }
         }
     }
+    e.clipboard = cb;
     Ok(json!({"merged": merged, "placed": placed}))
 }
 
@@ -545,12 +554,13 @@ fn duplicate_extend(e: &mut Engine, p: &Value) -> Result<Value> {
     let id = "edit.duplicate_extend";
     let tracks = tracks_required(e, id, p)?;
     let r = nonempty_range(e, p, id)?;
+    let (sh, follow) = (shuffle(e.session()), e.session().edit.automation_follows_edit);
     let s = e.session_mut();
     let mut n = 0;
     for t in &tracks {
         let clips = ops::copy_range(s, *t, r);
-        n += ops::paste(s, *t, r.end, &clips, r.len(), false).len();
-        if let Some(tr) = s.track_mut(*t) {
+        n += ops::paste(s, *t, r.end, &clips, r.len(), sh).map_err(|why| bad(id, why))?.len();
+        if follow && let Some(tr) = s.track_mut(*t) {
             for l in &mut tr.automation {
                 let pts: Vec<_> = l.points.iter().filter(|pt| r.contains(pt.at)).copied().collect();
                 for pt in pts {
@@ -677,7 +687,7 @@ fn snap(e: &mut Engine, p: &Value, next: bool) -> Result<Value> {
             others.iter().filter(|x| x.end() <= c.start).map(Clip::end).max().map(|en| en - c.start)
         };
         if let Some(d) = delta.filter(|d| *d != 0) {
-            moved += ops::move_clips(s, &[id], d, None);
+            moved += ops::move_clips(s, &[id], d, &[]);
         }
     }
     Ok(json!({"moved": moved}))
@@ -713,7 +723,8 @@ fn to_playlist(e: &mut Engine, p: &Value, dest: Dest, mv: bool, id: &str) -> Res
                 tr.playlists.len() - 1
             }
         };
-        let clips = ops::copy_range(s, *t, r);
+        // A move carries only what it clears from the main playlist; locked clips stay there.
+        let clips = if mv { ops::take_range(s, *t, r) } else { ops::copy_range(s, *t, r) };
         let main = s.track(*t).map_or(0, |tr| tr.active_playlist);
         if let Some(tr) = s.track_mut(*t) {
             tr.active_playlist = idx;
@@ -847,6 +858,57 @@ fn coalesce_clip_gain_to_volume(e: &mut Engine, p: &Value) -> Result<Value> {
     Ok(json!({"clips": n}))
 }
 
+/// The automation parameters a trim/glide over a range touches on `tr`.
+fn trim_params(tr: &soundcraft_model::Track, pan_only: bool) -> Vec<AutoParam> {
+    let mut params: Vec<AutoParam> = tr
+        .automation
+        .iter()
+        .filter(|l| l.enabled && !matches!(l.param, AutoParam::Mute | AutoParam::SendMute(_)))
+        .filter(|l| !pan_only || matches!(l.param, AutoParam::Pan(_)))
+        .map(|l| l.param.clone())
+        .collect();
+    if pan_only {
+        for i in 0..tr.mixer.pan.len().min(2) {
+            let pp = AutoParam::Pan(i as u8);
+            if !params.contains(&pp) {
+                params.push(pp);
+            }
+        }
+    }
+    params
+}
+
+/// Trim (shift the points inside `r` by the change at its end) or glide (ramp across `r`) one lane.
+fn trim_lane(tr: &mut soundcraft_model::Track, param: &AutoParam, r: Range, glide: bool) {
+    let cur = super::mix::current_value(tr, param);
+    let (lo, hi, _) = param.range();
+    let l = tr.lane_mut(param);
+    let before = l.value_at(r.start - 1, cur);
+    let after = l.value_at(r.end, cur);
+    let from = l.value_at(r.start, cur);
+    if glide {
+        l.clear_range(r.start, r.end.saturating_add(2));
+        if r.start > 0 {
+            l.set_point(r.start - 1, before);
+        }
+        l.set_point(r.start, from);
+        l.set_point(r.end, cur);
+        l.set_point(r.end.saturating_add(1), after);
+    } else {
+        let delta = cur - from;
+        let last = l.value_at(r.end - 1, cur);
+        if r.start > 0 {
+            l.set_point(r.start - 1, before);
+        }
+        l.set_point(r.start, from);
+        l.set_point(r.end - 1, last);
+        l.set_point(r.end, after);
+        for pt in l.points.iter_mut().filter(|pt| pt.at >= r.start && pt.at < r.end) {
+            pt.value = (pt.value + delta).clamp(lo, hi);
+        }
+    }
+}
+
 fn trim_glide(e: &mut Engine, p: &Value, glide: bool, pan_only: bool, id: &str) -> Result<Value> {
     let tracks = tracks_required(e, id, p)?;
     let r = nonempty_range(e, p, id)?;
@@ -854,49 +916,8 @@ fn trim_glide(e: &mut Engine, p: &Value, glide: bool, pan_only: bool, id: &str) 
     let mut lanes = 0;
     for t in &tracks {
         let Some(tr) = s.track_mut(*t) else { continue };
-        let mut params: Vec<AutoParam> = tr
-            .automation
-            .iter()
-            .filter(|l| l.enabled && !matches!(l.param, AutoParam::Mute | AutoParam::SendMute(_)))
-            .filter(|l| !pan_only || matches!(l.param, AutoParam::Pan(_)))
-            .map(|l| l.param.clone())
-            .collect();
-        if pan_only {
-            for i in 0..tr.mixer.pan.len().min(2) {
-                let pp = AutoParam::Pan(i as u8);
-                if !params.contains(&pp) {
-                    params.push(pp);
-                }
-            }
-        }
-        for param in params {
-            let cur = super::mix::current_value(tr, &param);
-            let (lo, hi, _) = param.range();
-            let l = tr.lane_mut(&param);
-            let before = l.value_at(r.start - 1, cur);
-            let after = l.value_at(r.end, cur);
-            let from = l.value_at(r.start, cur);
-            if glide {
-                l.clear_range(r.start, r.end.saturating_add(2));
-                if r.start > 0 {
-                    l.set_point(r.start - 1, before);
-                }
-                l.set_point(r.start, from);
-                l.set_point(r.end, cur);
-                l.set_point(r.end.saturating_add(1), after);
-            } else {
-                let delta = cur - from;
-                let last = l.value_at(r.end - 1, cur);
-                if r.start > 0 {
-                    l.set_point(r.start - 1, before);
-                }
-                l.set_point(r.start, from);
-                l.set_point(r.end - 1, last);
-                l.set_point(r.end, after);
-                for pt in l.points.iter_mut().filter(|pt| pt.at >= r.start && pt.at < r.end) {
-                    pt.value = (pt.value + delta).clamp(lo, hi);
-                }
-            }
+        for param in trim_params(tr, pan_only) {
+            trim_lane(tr, &param, r, glide);
             lanes += 1;
         }
     }
@@ -1045,6 +1066,22 @@ mod tests {
     }
 
     #[test]
+    fn cut_clip_gain_can_be_pasted() {
+        let (mut e, t, ids) = session_with_clips(&[(0, 1000), (2000, 1000), (4000, 1000)]);
+        e.execute("clip.gain", &json!({"clip": ids[0].0, "db": -6.0})).unwrap();
+        e.execute("clip.gain", &json!({"clip": ids[2].0, "db": -12.0})).unwrap();
+        // An older copy sits in the clipboard: the paste must get the cut gain, not this one.
+        e.execute("edit.copy_clip_gain", &json!({"start": 4000, "end": 5000})).unwrap();
+        e.execute("edit.select", &json!({"tracks": [t.0], "clips": [ids[0].0], "start": 0, "end": 1000})).unwrap();
+        e.execute("edit.cut_clip_gain", &json!({})).unwrap();
+        let src = e.session().track(t).unwrap().clips()[0].clone();
+        assert!(clip_db(&src, 500).abs() < 1e-3, "cut resets the source: {src:?}");
+        e.execute("edit.paste_clip_gain", &json!({"at": 2000})).unwrap();
+        let c = e.session().track(t).unwrap().clips()[1].clone();
+        assert!((clip_db(&c, 500) + 6.0).abs() < 1e-3, "{c:?}");
+    }
+
+    #[test]
     fn move_to_new_playlist_clears_main() {
         let (mut e, t, _) = session_with_clips(&[(0, 1000)]);
         e.execute("edit.move_to_new_playlist", &json!({"start": 200, "end": 400})).unwrap();
@@ -1122,8 +1159,8 @@ mod tests {
         let mut s = Session::default();
         let t = s.add_track(TrackKind::Audio, ChannelFormat::Mono, None);
         let tone: Vec<f32> = (0..24_000).map(|i| (i as f32 * 0.05).sin() * 0.5).collect();
-        let buf = soundcraft_audio_io::AudioBuffer { sample_rate: 48_000, channels: vec![tone] };
-        let src = crate::io::add_source(&mut s, "tone", buf, None, soundcraft_audio_io::FileFormat::Wav);
+        let buf = craft_audio::AudioBuffer { sample_rate: 48_000, channels: vec![tone] };
+        let src = crate::io::add_source(&mut s, "tone", buf, None, soundcraft_model::FileFormat::Wav);
         let id = s.new_clip_id();
         ops::place_clip(&mut s, t, Clip::audio(id, "tone", src, 0, 0, 24_000));
         s.edit.selected_tracks = vec![t];

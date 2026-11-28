@@ -3,11 +3,11 @@
 use crate::Engine;
 use serde_json::{Value, json};
 use soundcraft_model::{Clip, ClipContent, ClipId, Track, TrackId};
-use soundcraft_time::{TimeFormat, format_position};
+use soundcraft_time::TimeFormat;
 
 fn clip_json(e: &Engine, c: &Clip) -> Value {
     let s = e.session();
-    let fmt = |x| format_position(x, TimeFormat::MinSecs, s.sample_rate, &s.tempo, s.frame_rate, s.timecode_start);
+    let fmt = |x| s.format_position(x, TimeFormat::MinSecs);
     let mut v = json!({
         "id": c.id, "name": c.name, "start": c.start, "end": c.end(), "length": c.length,
         "start_time": fmt(c.start), "gain_db": c.gain_db, "muted": c.muted,
@@ -110,12 +110,12 @@ pub fn clip(e: &Engine, id: ClipId) -> Option<Value> {
 /// Plain-text session report (File › Export › Session Info as Text).
 pub fn session_text(e: &Engine) -> String {
     let s = e.session();
-    let fmt = |x| format_position(x, TimeFormat::MinSecs, s.sample_rate, &s.tempo, s.frame_rate, s.timecode_start);
+    let fmt = |x| s.format_position(x, TimeFormat::MinSecs);
     let mut out = String::new();
     out.push_str(&format!("SESSION NAME:\t{}\nSAMPLE RATE:\t{}\nBIT DEPTH:\t{:?}\nTIMECODE FORMAT:\t{}\n# OF AUDIO TRACKS:\t{}\n# OF AUDIO CLIPS:\t{}\n# OF AUDIO FILES:\t{}\n\n",
         s.name, s.sample_rate.hz(), s.bit_depth, s.frame_rate.label(),
         s.tracks.iter().filter(|t| t.kind == soundcraft_model::TrackKind::Audio).count(),
-        s.tracks.iter().map(|t| t.clips().len()).sum::<usize>(), s.sources.len()));
+        s.tracks.iter().filter(|t| t.kind == soundcraft_model::TrackKind::Audio).map(|t| t.clips().len()).sum::<usize>(), s.sources.len()));
     out.push_str("F I L E S  I N  S E S S I O N\nFilename\tLocation\n");
     for src in &s.sources {
         out.push_str(&format!("{}\t{}\n", src.name, src.path));
@@ -155,6 +155,19 @@ pub fn session_text(e: &Engine) -> String {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn session_text_counts_only_audio_track_clips() {
+        let mut e = Engine::default();
+        let t = e.execute("track.new", &json!({"kind": "midi"})).unwrap()["tracks"][0].clone();
+        e.execute("midi.new_clip", &json!({"track": t, "start": 0, "length": 48000})).unwrap();
+        let text = session_text(&e);
+        assert!(text.contains("# OF AUDIO CLIPS:\t0\n"), "{text}");
+
+        let demo = crate::demo::demo_engine();
+        let n: usize = demo.session().tracks.iter().filter(|t| t.kind == soundcraft_model::TrackKind::Audio).map(|t| t.clips().len()).sum();
+        assert!(session_text(&demo).contains(&format!("# OF AUDIO CLIPS:\t{n}\n")));
+    }
 
     #[test]
     fn sources_report_whether_audio_is_loaded() {

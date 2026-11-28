@@ -4,11 +4,11 @@
 //! The source is saved in `Audio Files/` with the session like any other audio, so a session that
 //! uses a sample reopens with it. Sampler parameters (root note, key range, ADSR, loop…) are set
 //! with `mix.instrument_param`, or all at once with `params` here.
+use super::{CommandSpec, bad, has_selection, str_param, tracks_required};
 
-use super::*;
-use crate::cmd;
-use serde_json::json;
-use soundcraft_model::{Insert, TrackKind};
+use crate::{Engine, EngineError, Result, cmd};
+use serde_json::{Value, json};
+use soundcraft_model::{Insert, TrackId, TrackKind};
 use std::path::Path;
 
 const SAMPLER: &str = "sampler";
@@ -55,19 +55,30 @@ fn load(e: &mut Engine, p: &Value) -> Result<Value> {
             values.push((k.clone(), pi.clamp(x as f32)));
         }
     }
-    let bytes = std::fs::read(&path).map_err(|err| EngineError::Io(format!("{path}: {err}")))?;
-    let name = Path::new(&path).file_name().and_then(|n| n.to_str()).unwrap_or("Sample").to_string();
-    let ext = Path::new(&name).extension().and_then(|x| x.to_str()).map(str::to_ascii_lowercase);
-    let (format, buf) = soundcraft_audio_io::decode(&bytes, ext.as_deref()).map_err(|err| EngineError::Io(format!("{name}: {err}")))?;
+    let bytes = crate::io::read_file(&path)?;
+    let name = Path::new(&path).file_name().and_then(std::ffi::OsStr::to_str).unwrap_or("Sample").to_string();
+    attach(e, t, &name, &bytes, Some(&path), values)
+}
+
+/// Decodes `bytes` (a file called `name`, for the format hint) into a new session source and
+/// makes it the sample of track `t`'s Sampler, which becomes its instrument if it is not
+/// already; `values` are sampler parameters to set. Fails before touching the session.
+pub(crate) fn attach(e: &mut Engine, t: TrackId, name: &str, bytes: &[u8], path: Option<&str>, values: Vec<(String, f32)>) -> Result<Value> {
+    let id = "mix.sampler_load";
+    if e.session().track(t).map(|tr| tr.kind) != Some(TrackKind::Instrument) {
+        return Err(bad(id, "only instrument tracks have a sampler"));
+    }
+    let info = soundcraft_dsp::plugin_info(SAMPLER).ok_or_else(|| bad(id, "the sampler is not available"))?;
+    let ext = Path::new(name).extension().and_then(std::ffi::OsStr::to_str).map(str::to_ascii_lowercase);
+    let (file, buf) = craft_audio::decode(bytes, ext.as_deref()).map_err(|err| EngineError::Io(format!("{name}: {err}")))?;
     if buf.frames() == 0 || buf.num_channels() == 0 {
         return Err(EngineError::Io(format!("{name}: no audio")));
     }
-    if buf.frames().saturating_mul(buf.num_channels()) > MAX_SAMPLE_VALUES {
-        return Err(EngineError::Io(format!("{name}: too long for a sample (ten minutes of 192 kHz stereo at most)")));
-    }
+    let buf = crate::io::at_rate(buf, e.session().sample_rate.hz(), MAX_SAMPLE_VALUES)
+        .map_err(|r| EngineError::Io(format!("{name}: {}", r.message("too long for a sample (ten minutes of 192 kHz stereo at most)"))))?;
     let channels = buf.num_channels();
     let s = e.session_mut();
-    let src = crate::io::add_source(s, &name, buf, Some(&path), format.format);
+    let src = crate::io::add_source(s, name, buf, path, soundcraft_model::FileFormat::of(&file));
     let (frames, rate, stem) = s.source(src).map_or((0, 0, String::new()), |x| (x.frames, x.sample_rate, x.name.clone()));
     let tr = s.track_mut(t).ok_or_else(|| bad(id, "no track"))?;
     let keep = tr.instrument.as_ref().is_some_and(|i| i.plugin == SAMPLER);
@@ -99,8 +110,8 @@ fn clear(e: &mut Engine, p: &Value) -> Result<Value> {
 #[cfg(test)]
 mod tests {
     use crate::Engine;
+    use craft_audio::{AudioBuffer, BitDepth, EncodeFormat, EncodeOptions};
     use serde_json::json;
-    use soundcraft_audio_io::{AudioBuffer, BitDepth, EncodeOptions, FileFormat};
     use soundcraft_midi::{Note, Sequence};
     use soundcraft_model::{Clip, TrackId};
     use soundcraft_time::{Range, TICKS_PER_QUARTER};
@@ -119,8 +130,8 @@ mod tests {
         let n = (rate as f32 * secs) as usize;
         let one: Vec<f32> = (0..n).map(|i| 0.5 * (std::f32::consts::TAU * freq * i as f32 / rate as f32).sin()).collect();
         let buf = AudioBuffer { sample_rate: rate, channels: vec![one; channels] };
-        let opts = EncodeOptions { format: FileFormat::Wav, bit_depth: BitDepth::Int16, dither: false, bwf: None };
-        std::fs::write(path, soundcraft_audio_io::encode(&buf, &opts).unwrap()).unwrap();
+        let opts = EncodeOptions::new(craft_audio::EncodeFormat::Wav).with_bit_depth(BitDepth::Int16);
+        std::fs::write(path, craft_audio::encode(&buf, &opts).unwrap()).unwrap();
     }
 
     fn instrument_track(e: &mut Engine) -> TrackId {
@@ -187,6 +198,33 @@ mod tests {
     }
 
     #[test]
+    fn loads_dropped_bytes_as_one_undo_step() {
+        let d = dir("bytes");
+        let wav = d.join("tone.wav");
+        tone_wav(&wav, 440.0, 48_000, 0.5, 1);
+        let bytes = std::fs::read(&wav).unwrap();
+        let mut e = Engine::default();
+        let t = instrument_track(&mut e);
+        let steps = e.undo_history().len();
+        let r = crate::io::load_sampler_bytes(&mut e, t, "dropped.wav", &bytes).unwrap();
+        assert_eq!(r["name"], "dropped");
+        assert_eq!(r["frames"], 24_000);
+        assert_eq!(e.undo_label(), Some("Load Sampler Sample"));
+        assert_eq!(e.undo_history().len(), steps + 1);
+        let src = e.session().sources.first().cloned().unwrap();
+        assert!(src.unsaved, "written into Audio Files on the next save");
+        assert!(e.undo());
+        assert!(e.session().sources.is_empty());
+        assert_eq!(e.session().track(t).unwrap().instrument.as_ref().map(|i| i.plugin.as_str()), Some("subtractive_synth"));
+        assert!(crate::io::load_sampler_bytes(&mut e, t, "junk.wav", b"not audio").is_err());
+        e.execute("track.new", &json!({"kind": "audio"})).unwrap();
+        let audio = e.session().tracks.last().unwrap().id;
+        assert!(crate::io::load_sampler_bytes(&mut e, audio, "tone.wav", &bytes).is_err(), "an audio track");
+        assert!(e.session().sources.is_empty());
+        let _ = std::fs::remove_dir_all(d);
+    }
+
+    #[test]
     fn loads_flac_and_aiff_too() {
         let d = dir("formats");
         let n = 4800;
@@ -194,10 +232,11 @@ mod tests {
         let buf = AudioBuffer { sample_rate: 96_000, channels: vec![tone.clone(), tone] };
         let mut e = Engine::default();
         let t = instrument_track(&mut e);
-        for (ext, format) in [("flac", FileFormat::Flac), ("aif", FileFormat::Aiff)] {
+        for format in [EncodeFormat::Flac, EncodeFormat::Aiff] {
+            let ext = format.extension();
             let path = d.join(format!("tone.{ext}"));
-            let opts = EncodeOptions { format, bit_depth: BitDepth::Int24, dither: false, bwf: None };
-            std::fs::write(&path, soundcraft_audio_io::encode(&buf, &opts).unwrap()).unwrap();
+            let opts = EncodeOptions::new(format);
+            std::fs::write(&path, craft_audio::encode(&buf, &opts).unwrap()).unwrap();
             let r = e.execute("mix.sampler_load", &json!({"track": t.0, "path": path.to_string_lossy()})).unwrap();
             assert_eq!(r["channels"], 2, "{ext}");
             assert_eq!(r["frames"], 2400, "{ext}: 96 kHz resampled to the 48 kHz session");
@@ -281,8 +320,8 @@ mod tests {
         let junk = d.join("junk.wav");
         std::fs::write(&junk, b"definitely not audio").unwrap();
         let empty = d.join("empty.wav");
-        let opts = EncodeOptions { format: FileFormat::Wav, bit_depth: BitDepth::Int16, dither: false, bwf: None };
-        std::fs::write(&empty, soundcraft_audio_io::encode(&AudioBuffer { sample_rate: 48_000, channels: vec![vec![]] }, &opts).unwrap()).unwrap();
+        let opts = EncodeOptions::new(craft_audio::EncodeFormat::Wav).with_bit_depth(BitDepth::Int16);
+        std::fs::write(&empty, craft_audio::encode(&AudioBuffer { sample_rate: 48_000, channels: vec![vec![]] }, &opts).unwrap()).unwrap();
         let wav = d.join("ok.wav");
         tone_wav(&wav, 440.0, 48_000, 0.1, 1);
         let mut e = Engine::default();

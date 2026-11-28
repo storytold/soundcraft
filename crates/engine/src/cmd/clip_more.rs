@@ -1,10 +1,10 @@
 //! More Clip menu commands: Regroup, Unloop, Clip Effects bypass/render, Conform to Tempo and
 //! Remove Pitch Shift.
+use super::{CommandSpec, bad, clip_ids_param, has_selection, str_param};
 
 use super::more_util::{render_stretched, replace_clip};
-use super::*;
-use crate::cmd;
-use serde_json::json;
+use crate::{Engine, Result, cmd};
+use serde_json::{Value, json};
 use soundcraft_model::{Clip, ClipContent, ClipId, Session, TrackId};
 use soundcraft_time::Samples;
 
@@ -99,23 +99,40 @@ fn regroup(e: &mut Engine, p: &Value) -> Result<Value> {
     Ok(json!({"group": g, "clips": n}))
 }
 
-fn same_material(a: &Clip, b: &Clip) -> bool {
-    a.length == b.length
-        && match (&a.content, &b.content) {
-            (ClipContent::Audio { source: s1, offset: o1 }, ClipContent::Audio { source: s2, offset: o2 }) => s1 == s2 && o1 == o2,
-            (ClipContent::Midi { sequence: q1 }, ClipContent::Midi { sequence: q2 }) => q1 == q2,
-            (ClipContent::Video { source: s1, offset: o1 }, ClipContent::Video { source: s2, offset: o2 }) => s1 == s2 && o1 == o2,
-            _ => false,
-        }
+fn same_content(a: &Clip, b: &Clip) -> bool {
+    match (&a.content, &b.content) {
+        (ClipContent::Audio { source: s1, offset: o1 }, ClipContent::Audio { source: s2, offset: o2 }) => s1 == s2 && o1 == o2,
+        (ClipContent::Midi { sequence: q1 }, ClipContent::Midi { sequence: q2 }) => q1 == q2,
+        (ClipContent::Video { source: s1, offset: o1 }, ClipContent::Video { source: s2, offset: o2 }) => s1 == s2 && o1 == o2,
+        _ => false,
+    }
 }
 
-/// The loop a clip belongs to: back-to-back copies of the same material. Origin first.
+fn same_material(a: &Clip, b: &Clip) -> bool {
+    a.length == b.length && (a.loop_id.is_some() && a.loop_id == b.loop_id || same_content(a, b))
+}
+
+/// Whether `short` is the last iteration of `full`'s loop, cut short at its end. It shares the loop,
+/// it is shorter, and no clip of the loop starts where it ends, as the other half of a split clip
+/// does. When `full` is a whole copy (an iteration of the same length ends where it starts), that is
+/// enough. When `full` is the loop's origin alone, `short` also has to hold `full`'s material.
+fn cut_short(clips: &[Clip], full: &Clip, short: &Clip) -> bool {
+    let whole_copy = || clips.iter().any(|x| x.id != full.id && x.end() == full.start && same_material(x, full));
+    full.loop_id.is_some()
+        && full.loop_id == short.loop_id
+        && short.length < full.length
+        && !clips.iter().any(|x| x.loop_id == short.loop_id && x.start == short.end())
+        && (whole_copy() || same_content(full, short))
+}
+
+/// The loop a clip belongs to: back-to-back copies of the same material, the last of which can be
+/// cut short. Origin first.
 fn loop_chain(s: &Session, t: TrackId, id: ClipId) -> Vec<ClipId> {
     let Some(tr) = s.track(t) else { return Vec::new() };
     let clips = tr.clips();
     let Some(mut cur) = clips.iter().find(|c| c.id == id) else { return Vec::new() };
     let mut guard = 0;
-    while let Some(prev) = clips.iter().find(|x| x.id != cur.id && x.end() == cur.start && same_material(x, cur)) {
+    while let Some(prev) = clips.iter().find(|x| x.id != cur.id && x.end() == cur.start && (same_material(x, cur) || cut_short(clips, x, cur))) {
         cur = prev;
         guard += 1;
         if guard > clips.len() {
@@ -126,6 +143,9 @@ fn loop_chain(s: &Session, t: TrackId, id: ClipId) -> Vec<ClipId> {
     while let Some(next) = clips.iter().find(|x| !chain.contains(&x.id) && x.start == cur.end() && same_material(x, cur)) {
         chain.push(next.id);
         cur = next;
+    }
+    if let Some(last) = clips.iter().find(|x| !chain.contains(&x.id) && x.start == cur.end() && cut_short(clips, cur, x)) {
+        chain.push(last.id);
     }
     chain
 }
@@ -160,6 +180,7 @@ fn unloop(e: &mut Engine, p: &Value) -> Result<Value> {
             } else {
                 for c in pl.clips.iter_mut().filter(|c| chain.contains(&c.id)) {
                     c.group = None;
+                    c.loop_id = None;
                 }
             }
         }
@@ -175,8 +196,14 @@ fn unloop(e: &mut Engine, p: &Value) -> Result<Value> {
 fn effects_set(e: &mut Engine, p: &Value) -> Result<Value> {
     let ids = clip_ids_param(e, p);
     let params = p.get("params").and_then(Value::as_object).ok_or_else(|| bad("clip.effects_set", "`params` must be an object of numbers"))?;
-    let vals: Vec<(String, f64)> =
-        params.iter().filter_map(|(k, v)| v.as_f64().filter(|x| x.is_finite()).map(|x| (k.chars().take(64).collect(), x))).collect();
+    let vals: Vec<(String, f64)> = params
+        .iter()
+        .filter_map(|(k, v)| v.as_f64().filter(|x| x.is_finite()).map(|x| (k.chars().take(64).collect(), x)))
+        .map(|(k, v)| {
+            let v = if k == "gain" { v.clamp(f64::from(soundcraft_dsp::MIN_DB), f64::from(soundcraft_mix::CLIP_FX_MAX_GAIN_DB)) } else { v };
+            (k, v)
+        })
+        .collect();
     let s = e.session_mut();
     for c in &ids {
         for (k, v) in &vals {
@@ -204,7 +231,7 @@ fn effects_render(e: &mut Engine, p: &Value) -> Result<Value> {
     let ids = clip_ids_param(e, p);
     let mut n = 0;
     for id in &ids {
-        if crate::io::render_clip_gain(e, *id)? {
+        if crate::io::render_clip_gain(e, "clip.effects_render", *id)? {
             n += 1;
         }
         let s = e.session_mut();
@@ -296,12 +323,157 @@ mod tests {
     }
 
     #[test]
+    fn effects_set_caps_gain() {
+        let (mut e, _t, ids) = engine_with(&[(0, 100, 0)]);
+        e.execute("clip.effects_set", &json!({"clip": ids[0].0, "params": {"gain": 500.0}})).unwrap();
+        assert_eq!(e.session().edit.values.get(&format!("clip_fx.{}.gain", ids[0].0)).copied(), Some(24.0));
+    }
+
+    #[test]
     fn unloop_removes_copies() {
         let (mut e, t, ids) = engine_with(&[(0, 100, 0), (100, 100, 0), (200, 100, 0), (300, 100, 50)]);
         e.execute("clip.unloop", &json!({"clip": ids[1].0})).unwrap();
         let left: Vec<ClipId> = e.session().track(t).unwrap().clips().iter().map(|c| c.id).collect();
         assert_eq!(left, vec![ids[0], ids[3]]);
         assert!(e.execute("clip.unloop", &json!({"clip": ids[3].0})).is_err());
+    }
+
+    /// A 100-sample MIDI clip with one note, on a fresh instrument-less MIDI track.
+    fn midi_engine() -> (Engine, TrackId, ClipId) {
+        let mut s = Session::default();
+        let t = s.add_track(TrackKind::Midi, ChannelFormat::Mono, None);
+        let id = s.new_clip_id();
+        let mut seq = soundcraft_midi::Sequence::default();
+        seq.notes.push(soundcraft_midi::Note { pitch: 60, velocity: 100, release_velocity: 64, channel: 0, start: 0, length: 240 });
+        crate::edit::place_clip(&mut s, t, Clip::midi(id, "m", 0, 100, seq));
+        s.edit.selected_tracks = vec![t];
+        (Engine::new(s), t, id)
+    }
+
+    #[test]
+    fn unloop_recognises_loops_after_source_edit() {
+        let (mut e, t, id) = midi_engine();
+        assert_eq!(e.execute("clip.loop", &json!({"clip": id.0, "count": 4})).unwrap()["loops"], 3);
+        // Editing the source note makes the copies' content differ from it.
+        if let Some(c) = e.session_mut().find_clip_mut(id)
+            && let ClipContent::Midi { sequence } = &mut c.content
+        {
+            sequence.notes[0].length = 1100;
+        }
+        e.execute("clip.unloop", &json!({"clip": id.0})).unwrap();
+        let left: Vec<ClipId> = e.session().track(t).unwrap().clips().iter().map(|c| c.id).collect();
+        assert_eq!(left, vec![id]);
+    }
+
+    #[test]
+    fn unloop_flatten_turns_loop_into_independent_clips() {
+        let (mut e, t, id) = midi_engine();
+        e.execute("clip.loop", &json!({"clip": id.0, "count": 3})).unwrap();
+        e.execute("clip.unloop", &json!({"clip": id.0, "mode": "flatten"})).unwrap();
+        assert_eq!(e.session().track(t).unwrap().clips().len(), 3);
+        assert!(e.session().track(t).unwrap().clips().iter().all(|c| c.loop_id.is_none() && c.group.is_none()));
+    }
+
+    fn spans(e: &Engine, t: TrackId) -> Vec<(Samples, Samples)> {
+        e.session().track(t).unwrap().clips().iter().map(|c| (c.start, c.length)).collect()
+    }
+
+    #[test]
+    fn loop_length_cuts_the_last_iteration_short() {
+        let (mut e, t, id) = midi_engine();
+        assert_eq!(e.execute("clip.loop", &json!({"clip": id.0, "length": 250})).unwrap()["loops"], 2);
+        assert_eq!(spans(&e, t), vec![(0, 100), (100, 100), (200, 50)]);
+        // A length that is a whole number of loops leaves no short one.
+        let (mut e, t, id) = midi_engine();
+        assert_eq!(e.execute("clip.loop", &json!({"clip": id.0, "length": 300})).unwrap()["loops"], 2);
+        assert_eq!(spans(&e, t), vec![(0, 100), (100, 100), (200, 100)]);
+    }
+
+    #[test]
+    fn a_short_last_iteration_fits_its_fades_and_drops_a_sync_point_past_the_cut() {
+        let (mut e, t, id) = midi_engine();
+        if let Some(c) = e.session_mut().find_clip_mut(id) {
+            c.sync_point = 80;
+            c.fade_out.len = 70;
+        }
+        e.execute("clip.loop", &json!({"clip": id.0, "length": 150})).unwrap();
+        let clips = e.session().track(t).unwrap().clips();
+        let last = clips.last().unwrap();
+        assert_eq!((last.start, last.length, last.sync_point, last.fade_out.len), (100, 50, 0, 50));
+        assert_eq!((clips[0].sync_point, clips[0].fade_out.len), (80, 70));
+    }
+
+    #[test]
+    fn unloop_removes_a_short_last_iteration_too() {
+        let (mut e, t, id) = midi_engine();
+        e.execute("clip.loop", &json!({"clip": id.0, "length": 250})).unwrap();
+        e.execute("clip.unloop", &json!({"clip": id.0})).unwrap();
+        assert_eq!(spans(&e, t), vec![(0, 100)]);
+        // An edit to the source note or to the short loop's note.
+        for edited in [0, 2] {
+            let (mut e, t, id) = midi_engine();
+            e.execute("clip.loop", &json!({"clip": id.0, "length": 250})).unwrap();
+            let target = e.session().track(t).unwrap().clips()[edited].id;
+            if let Some(c) = e.session_mut().find_clip_mut(target)
+                && let ClipContent::Midi { sequence } = &mut c.content
+            {
+                sequence.notes[0].length = 1100;
+            }
+            e.execute("clip.unloop", &json!({"clip": id.0})).unwrap();
+            assert_eq!(spans(&e, t), vec![(0, 100)], "edited loop {edited}");
+        }
+    }
+
+    #[test]
+    fn unloop_keeps_both_halves_of_a_split_clip() {
+        let (mut e, t, ids) = engine_with(&[(0, 100, 0)]);
+        e.execute("clip.loop", &json!({"clip": ids[0].0, "count": 3})).unwrap();
+        crate::edit::separate_at(e.session_mut(), t, 230);
+        e.execute("clip.unloop", &json!({"clip": ids[0].0})).unwrap();
+        assert_eq!(spans(&e, t), vec![(0, 100), (200, 30), (230, 70)]);
+        // A split loop origin is not a loop.
+        let (mut e, t, ids) = engine_with(&[(0, 100, 0)]);
+        e.execute("clip.loop", &json!({"clip": ids[0].0, "count": 2})).unwrap();
+        crate::edit::separate_at(e.session_mut(), t, 30);
+        assert!(e.execute("clip.unloop", &json!({"clip": ids[0].0})).is_err());
+        assert_eq!(spans(&e, t), vec![(0, 30), (30, 70), (100, 100)]);
+    }
+
+    #[test]
+    fn loop_fill_stops_at_the_next_clip() {
+        let (mut e, t, ids) = engine_with(&[(0, 100, 0), (430, 100, 0)]);
+        assert_eq!(e.execute("clip.loop", &json!({"clip": ids[0].0, "fill": true})).unwrap()["loops"], 4);
+        assert_eq!(spans(&e, t), vec![(0, 100), (100, 100), (200, 100), (300, 100), (400, 30), (430, 100)]);
+    }
+
+    #[test]
+    fn loop_fill_without_a_next_clip_runs_to_the_session_end() {
+        let (mut e, t, ids) = engine_with(&[(0, 100, 0)]);
+        let other = e.session_mut().add_track(TrackKind::Audio, ChannelFormat::Mono, None);
+        let far = e.session_mut().new_clip_id();
+        crate::edit::place_clip(e.session_mut(), other, Clip::audio(far, "far", SourceId(9), 0, 200, 150));
+        assert_eq!(e.execute("clip.loop", &json!({"clip": ids[0].0, "fill": true})).unwrap()["loops"], 3);
+        assert_eq!(spans(&e, t), vec![(0, 100), (100, 100), (200, 100), (300, 50)]);
+        // The last clip in the session has nothing to fill up to.
+        assert_eq!(e.execute("clip.loop", &json!({"clip": far.0, "fill": true})).unwrap()["loops"], 0);
+    }
+
+    #[test]
+    fn a_fill_or_length_past_the_loop_limit_is_refused_without_an_edit() {
+        let (mut e, t, ids) = engine_with(&[(0, 100, 0), (100_150, 100, 0)]);
+        let err = e.execute("clip.loop", &json!({"clip": ids[0].0, "fill": true})).unwrap_err().to_string();
+        assert!(err.contains("1001 loops"), "{err}");
+        assert!(e.execute("clip.loop", &json!({"clip": ids[0].0, "length": 100_200})).is_err());
+        assert_eq!(spans(&e, t), vec![(0, 100), (100_150, 100)]);
+        // 1000 loops still fit.
+        assert_eq!(e.execute("clip.loop", &json!({"clip": ids[0].0, "length": 100_100})).unwrap()["loops"], 1000);
+    }
+
+    #[test]
+    fn loop_count_accepts_up_to_the_documented_thousand() {
+        let (mut e, t, ids) = engine_with(&[(0, 100, 0)]);
+        assert_eq!(e.execute("clip.loop", &json!({"clip": ids[0].0, "count": 600})).unwrap()["loops"], 599);
+        assert_eq!(e.session().track(t).unwrap().clips().len(), 600);
     }
 
     #[test]
@@ -346,8 +518,8 @@ mod tests {
         let mut s = Session::default();
         let t = s.add_track(TrackKind::Audio, ChannelFormat::Mono, None);
         let tone: Vec<f32> = (0..12_000).map(|i| (i as f32 * 0.07).sin() * 0.5).collect();
-        let buf = soundcraft_audio_io::AudioBuffer { sample_rate: 48_000, channels: vec![tone] };
-        let src = crate::io::add_source(&mut s, "tone", buf, None, soundcraft_audio_io::FileFormat::Wav);
+        let buf = craft_audio::AudioBuffer { sample_rate: 48_000, channels: vec![tone] };
+        let src = crate::io::add_source(&mut s, "tone", buf, None, soundcraft_model::FileFormat::Wav);
         let id = s.new_clip_id();
         let mut c = Clip::audio(id, "tone", src, 0, 0, 18_000);
         c.stretch = 1.5;
@@ -379,8 +551,8 @@ mod tests {
                 let mut s = Session::default();
                 let t = s.add_track(TrackKind::Audio, ChannelFormat::Mono, None);
                 let tone: Vec<f32> = (0..9_600).map(|i| (i as f32 * 0.05).sin() * 0.4).collect();
-                let buf = soundcraft_audio_io::AudioBuffer { sample_rate: 48_000, channels: vec![tone] };
-                let src = crate::io::add_source(&mut s, "tone", buf, None, soundcraft_audio_io::FileFormat::Wav);
+                let buf = craft_audio::AudioBuffer { sample_rate: 48_000, channels: vec![tone] };
+                let src = crate::io::add_source(&mut s, "tone", buf, None, soundcraft_model::FileFormat::Wav);
                 let id = s.new_clip_id();
                 crate::edit::place_clip(&mut s, t, Clip::audio(id, "tone", src, 0, 0, 9_600));
                 s.edit.selected_clips = vec![id];
@@ -410,8 +582,8 @@ mod tests {
         let mut s = Session::default();
         let t = s.add_track(TrackKind::Audio, ChannelFormat::Mono, None);
         let tone: Vec<f32> = (0..9_600).map(|i| (i as f32 * 0.05).sin() * 0.4).collect();
-        let buf = soundcraft_audio_io::AudioBuffer { sample_rate: 48_000, channels: vec![tone] };
-        let src = crate::io::add_source(&mut s, "tone", buf, None, soundcraft_audio_io::FileFormat::Wav);
+        let buf = craft_audio::AudioBuffer { sample_rate: 48_000, channels: vec![tone] };
+        let src = crate::io::add_source(&mut s, "tone", buf, None, soundcraft_model::FileFormat::Wav);
         let id = s.new_clip_id();
         crate::edit::place_clip(&mut s, t, Clip::audio(id, "tone", src, 0, 0, 9_600));
         s.edit.selected_clips = vec![id];

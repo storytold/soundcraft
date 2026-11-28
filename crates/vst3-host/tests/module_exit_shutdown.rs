@@ -29,6 +29,11 @@ fn run(case: &str) -> Output {
 }
 
 fn main() {
+    // nextest lists custom-harness tests with `--list`; each binary here is one test.
+    if std::env::args().any(|a| a == "--list") {
+        println!("module_exit_shutdown: test");
+        return;
+    }
     match std::env::args().nth(1).as_deref() {
         Some("shutdown") => return child(false),
         Some("exit-handler") => return child(true),
@@ -38,7 +43,13 @@ fn main() {
     assert!(up_front.status.success(), "shutdown before exit: {:?}\n{}", up_front.status, String::from_utf8_lossy(&up_front.stderr));
     let too_late = run("exit-handler");
     let err = String::from_utf8_lossy(&too_late.stderr);
-    assert_eq!(too_late.status.code(), Some(3), "the exit handler alone comes too late: {err}");
-    assert!(err.contains("module exit after the process exit tore down state"), "{err}");
+    if cfg!(windows) {
+        // Windows runs the executable's exit handlers before a DLL's own, so the fixture's late
+        // state is still there when the host's exit handler runs its module exit.
+        assert!(too_late.status.success(), "the exit handler alone: {:?}\n{err}", too_late.status);
+    } else {
+        assert_eq!(too_late.status.code(), Some(3), "the exit handler alone comes too late: {err}");
+        assert!(err.contains("module exit after the process exit tore down state"), "{err}");
+    }
     println!("module_exit_shutdown: ok");
 }

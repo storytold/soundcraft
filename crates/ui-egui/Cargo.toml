@@ -8,9 +8,15 @@ rust-version = "1.95"
 repository.workspace = true
 
 [dependencies]
+craft-mime.workspace = true
 craft-ui.workspace = true
+craft-behavior.workspace = true
+craft-host.workspace = true
+craft-keymap.workspace = true
+craft-theme.workspace = true
+craft-window.workspace = true
 soundcraft-time.workspace = true
-soundcraft-audio-io.workspace = true
+craft-audio.workspace = true
 soundcraft-midi.workspace = true
 soundcraft-dsp.workspace = true
 soundcraft-clap-host.workspace = true
@@ -21,11 +27,21 @@ soundcraft-mix.workspace = true
 soundcraft-engine.workspace = true
 soundcraft-playback.workspace = true
 soundcraft-video.workspace = true
-egui.workspace = true
+# 0.37 makes the bundled faces opt-in; the app's own font loader starts from
+# `FontDefinitions::default()`, and kittest never supplies fonts to this root.
+egui = { workspace = true, features = ["default_fonts", "monochrome_emoji_fonts"] }
+egui_extras = { workspace = true }
+web-time.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 log.workspace = true
 image.workspace = true
+
+[target.'cfg(target_os = "linux")'.dependencies]
+zbus = "5"
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+craft-update = { workspace = true }
 
 [dev-dependencies]
 egui_kittest = { workspace = true, features = ["wgpu", "snapshot"] }

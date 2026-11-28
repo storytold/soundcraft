@@ -8,7 +8,7 @@
 //! [`PluginInfo::params`]. Values are plain (display) values; the host converts to and from the
 //! VST3 normalized 0..1 values. Stepped parameters become toggles or choices.
 //!
-//! Like `soundcraft-clap-host`, this is an isolated `unsafe` crate (craftrules never-crash):
+//! Like `soundcraft-clap-host`, this is an isolated `unsafe` crate:
 //! `unsafe` is denied crate-wide and allowed only in the private `ffi` module. The public API is
 //! safe, returns `Result`/`Option` and never panics. Limits of in-process hosting: a plugin that
 //! itself crashes (segfault) takes the process down with it; we cannot sandbox native code.
@@ -25,13 +25,17 @@
 //! component state is accepted too) and re-reads the parameter values.
 //!
 //! Plugin editors (`IPlugView`): on macOS the view is attached to the content `NSView` of a host
-//! `NSWindow` (titled and closable, floating above the app, resized on `IPlugFrame::resizeView`).
+//! `NSWindow` (titled and closable, floating above the app, resized on `IPlugFrame::resizeView`);
+//! on Windows it is attached to a host `HWND` owned by the app's window (no taskbar button,
+//! closing it hides it until the link tears it down); on Linux and the BSDs it is embedded into
+//! an X11 window of ours (`kPlatformTypeX11EmbedWindowID`, through XWayland on Wayland desktops),
+//! and the frame is also the view's `Linux::IRunLoop`, whose descriptors and timers the handle's
+//! `idle` services.
 //! [`Plugin::open_editor`] opens it directly; [`Plugin::editor`] returns a handle usable on the
 //! main thread while the instance processes on the audio thread (VST3's own threading model:
 //! the controller and its views live on the UI thread). Parameter edits made in the editor
 //! (`IComponentHandler::performEdit`) are reported by the handle's `idle` so the host can write
-//! them into the session. Windows (HWND) and Linux (X11) editor windows are not hosted yet:
-//! opening reports "unsupported".
+//! them into the session.
 //!
 //! Not hosted yet: `IMessage`/`IAttributeList` creation through the host (plugins that need it
 //! for processor ↔ controller messaging may lose those messages), sidechain (aux buses are kept
@@ -112,8 +116,11 @@ pub enum Vst3Error {
 
 #[cfg(not(target_arch = "wasm32"))]
 mod api {
-    use super::*;
+    use super::{Path, PathBuf, Plugin, PluginInfo, Vst3Descriptor, Vst3Error, ffi, registry};
 
+    pub fn cached() -> Option<Vec<Vst3Descriptor>> {
+        registry::cached()
+    }
     pub fn scan() -> Vec<Vst3Descriptor> {
         registry::scan()
     }
@@ -142,8 +149,11 @@ mod api {
 
 #[cfg(target_arch = "wasm32")]
 mod api {
-    use super::*;
+    use super::{Path, PathBuf, Plugin, PluginInfo, Vst3Descriptor, Vst3Error};
 
+    pub fn cached() -> Option<Vec<Vst3Descriptor>> {
+        Some(Vec::new())
+    }
     pub fn scan() -> Vec<Vst3Descriptor> {
         Vec::new()
     }
@@ -189,6 +199,11 @@ pub fn add_search_dir(dir: &Path) -> usize {
 /// Scans the given folders without touching the cache.
 pub fn scan_paths(dirs: &[PathBuf]) -> Vec<Vst3Descriptor> {
     api::scan_paths(dirs)
+}
+
+/// The plugins of the last scan, without scanning: `None` until something has scanned.
+pub fn cached() -> Option<Vec<Vst3Descriptor>> {
+    api::cached()
 }
 
 /// Shuts plugin hosting down: runs the module exit of every loaded binary that has no live
@@ -294,11 +309,28 @@ mod tests {
         let _ = std::fs::remove_dir_all(&d);
     }
 
+    /// A binary the system refuses to load reports the system's reason (missing library, wrong
+    /// glibc, not an ELF file), not just "dlopen failed".
+    #[test]
+    fn a_binary_that_does_not_load_says_why() {
+        let d = std::env::temp_dir().join(format!("soundcraft-vst3-reason-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        let f = d.join("garbage.vst3");
+        std::fs::write(&f, b"\x7fELF this is not a plugin \x00\x01\x02").unwrap();
+        let msg = load_bundle(&f).err().map(|e| e.to_string()).unwrap_or_default();
+        let reason = msg.split_once("failed: ").map_or("", |(_, r)| r.trim());
+        assert!(!reason.is_empty(), "no reason in: {msg}");
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    // Unix only: the test points a ".vst3" at a system library through a symlink.
+    #[cfg(unix)]
     #[test]
     fn a_real_library_without_the_vst3_export_is_rejected() {
         // A system library loads fine but has no `GetPluginFactory`.
         // (macOS system libraries live only in the dyld shared cache, not as files.)
-        let lib = if cfg!(target_os = "macos") || cfg!(windows) {
+        let lib = if cfg!(target_os = "macos") {
             None
         } else {
             ["/lib/x86_64-linux-gnu/libz.so.1", "/usr/lib/libz.so.1", "/lib64/libz.so.1"].iter().map(PathBuf::from).find(|p| p.exists())
@@ -308,12 +340,10 @@ mod tests {
         let _ = std::fs::remove_dir_all(&d);
         std::fs::create_dir_all(&d).unwrap();
         // Point a single-file ".vst3" at it via a symlink (no copying of binaries).
-        #[cfg(unix)]
-        {
-            std::os::unix::fs::symlink(&lib, d.join("z.vst3")).unwrap();
-            let e = load_bundle(&d.join("z.vst3")).unwrap_err();
-            assert!(e.to_string().contains("not a VST3 plugin"), "{e}");
-        }
+        std::os::unix::fs::symlink(&lib, d.join("z.vst3")).unwrap();
+        let e = load_bundle(&d.join("z.vst3")).unwrap_err();
+        assert!(e.to_string().contains("not a VST3 plugin"), "{e}");
+        assert!(e.to_string().contains("GetPluginFactory"), "the system's reason names the missing export: {e}");
         let _ = std::fs::remove_dir_all(&d);
     }
 }

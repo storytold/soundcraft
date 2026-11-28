@@ -1,6 +1,6 @@
 # Architecture
 
-> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-10 · **Change:** minor (crate diagram brought up to date: video, vst3-host, au-host; device I/O limits) · **Target:** Avid Pro Tools Ultimate 2026.4.1
+> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-11-11 · **Change:** trivial (recordings are written to disk as they record (#84, #888); previously minor: audio file formats come from craft-audio; previously trivial: delay compensation includes the master faders' inserts (#351)) · **Target:** Avid Pro Tools Ultimate 2026.4.1
 
 SoundCraft is a Cargo workspace of small crates with enforced layering (`cargo xtask layers`).
 Nothing below the UI knows about egui, so the interface can be replaced.
@@ -10,10 +10,10 @@ SoundCraft supplies each state's colors, border, radius and icon painter; select
 dispatch remain in the toolbar and track controls. The single-shape frame option preserves the
 existing fill/border blending when controls are disabled. Specialized transport Play/Stop/Record styling,
 nonlinear meters, faders, pan gestures, fonts and the live theme resolver remain local. Shared adapters read the current palette. The UI
-requires Rust 1.95 or later without raising the core workspace's Rust 1.90 declaration.
+requires Rust 1.95 or later, as does the workspace: the craft-libs crates the model and engine use declare it.
 
 ```
-L0  time        audio-io        midi        video   (standalone: no workspace deps)
+L0  time        midi        video               (standalone: no workspace deps)
 L1  dsp         clap-host   vst3-host   au-host     (plugins; the three hosts are the only crates
                                                      allowed `unsafe`, confined to their FFI modules)
 L2  model                                       (the session document)
@@ -23,6 +23,10 @@ L5  automation                                  (MCP server, control-channel cli
 L6  ui-egui                                     (the user interface)
     apps: soundcraft (desktop) · soundcraft-cli · soundcraft-web (wasm)
 ```
+
+Audio file formats, codecs and waveform peaks come from `craft-audio` in
+[craft-libs](https://github.com/storytold/craft-libs), shared with the other Craft apps. SoundCraft
+keeps only `soundcraft_model::FileFormat`, the kind of file a session records for each source.
 
 ## The document
 
@@ -47,15 +51,16 @@ report.
 `soundcraft_mix::MixEngine::render(session, pos, frames, out)` renders one block: clips (gain,
 fades, clip effects) → trim → inserts → pre-fader sends → fader/mute (automation, VCA, trim
 automation) → post-fader sends → pan → busses → aux inputs → master faders. Independent strips
-process in parallel; plugin delay compensation aligns every path. The same engine renders
-bounces offline (`render_range`) and realtime playback (`soundcraft_playback::Player`, which owns
-it on the audio thread and receives new session snapshots through a channel).
+process in parallel; plugin delay compensation aligns every path, the master faders' inserts included. The same engine renders
+bounces offline (`RangeRender`, streamed to the file block by block) and realtime playback
+(`soundcraft_playback::Player`, which owns it on the audio thread and receives new session
+snapshots through a channel).
 
 Device I/O today is the system's *default* output and *default* input device, opened as two
 separate cpal streams; the mix renders 512-sample blocks and resamples to the device rate when
 they differ. There is no device or buffer-size selection, no ASIO, and no MIDI device layer yet
 (see [`hardware-parity.md`](hardware-parity.md)). Sources are decoded whole into the `SourcePool`
-and recordings are captured in memory until stop.
+while recordings are written to disk as they record, a long take going on in a new file.
 
 `soundcraft-video` holds our own H.264, ProRes and Motion JPEG decoders and the ISO-BMFF demuxer
 for the video track. Hosted plugins (`clap-host`, `vst3-host`, `au-host`) are scanned, created and
@@ -77,5 +82,8 @@ app as an MCP server. See `control-protocol.md` and `mcp.md`.
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-11-11 | minor | `audio-io` left the layer diagram: audio file formats come from `craft-audio` in craft-libs |
+| 2026-10-30 | trivial | Device I/O: recordings are written to disk as they record (#84), long takes in several files (#888) |
+| 2026-10-13 | trivial | delay compensation includes the master faders' inserts (#351) |
 | 2026-10-10 | minor | Added video, vst3-host and au-host to the layer diagram; documented device I/O limits and in-memory media |
 | 2026-10-05 | major | First architecture overview |

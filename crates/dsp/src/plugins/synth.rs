@@ -13,7 +13,14 @@ pub(crate) enum EventKind {
     On(u8, u8),
     Off(u8),
     AllOff,
+    Sustain(bool),
+    /// Pitch bend as a frequency ratio.
+    Bend(f32),
+    ResetControllers,
 }
+
+/// Pitch bend range, semitones each way.
+const BEND_RANGE: f32 = 2.0;
 
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct Event {
@@ -32,11 +39,28 @@ impl EventQueue {
         Self { ev: Vec::with_capacity(MAX_EVENTS) }
     }
 
+    /// Queue an event for the next block. A full queue drops it, unless it ends notes (a note
+    /// off, all notes off, the sustain pedal going up): a release takes the place of the last
+    /// queued event that is not one, because a dropped release leaves a voice on for good while
+    /// a dropped note-on or controller is only missed. Should the queue hold nothing but
+    /// releases, the last one becomes All Notes Off, which covers the new one too.
     pub(crate) fn push(&mut self, offset: usize, kind: EventKind) {
         if self.ev.len() < MAX_EVENTS {
             self.ev.push(Event { offset, kind });
-        } else {
+            return;
+        }
+        let releases = |k: &EventKind| matches!(k, EventKind::Off(_) | EventKind::AllOff | EventKind::Sustain(false));
+        if !releases(&kind) {
             log::warn!("instrument event queue full; dropping event");
+            return;
+        }
+        match self.ev.iter_mut().rev().find(|e| !releases(&e.kind)) {
+            Some(e) => *e = Event { offset, kind },
+            None => {
+                if let Some(last) = self.ev.last_mut() {
+                    last.kind = EventKind::AllOff;
+                }
+            }
         }
     }
 
@@ -212,6 +236,8 @@ struct Voice {
     svf: Svf,
     age: u64,
     held: bool,
+    /// Released while the sustain pedal was down.
+    sustained: bool,
 }
 
 impl Voice {
@@ -228,6 +254,7 @@ impl Voice {
             svf: Svf::default(),
             age: 0,
             held: false,
+            sustained: false,
         }
     }
 
@@ -250,6 +277,8 @@ pub struct SubtractiveSynth {
     counter: u64,
     level: Smoother,
     cutoff: Smoother,
+    sustain: bool,
+    bend: f32,
 }
 
 impl Default for SubtractiveSynth {
@@ -277,6 +306,8 @@ impl SubtractiveSynth {
             counter: 0,
             level: Smoother::new(0.5),
             cutoff: Smoother::new(2000.0),
+            sustain: false,
+            bend: 1.0,
         };
         s.update();
         s
@@ -337,15 +368,32 @@ impl SubtractiveSynth {
             v.filt.gate_on();
             v.age = counter;
             v.held = true;
+            v.sustained = false;
         }
         self.last_freq = Some(freq);
     }
 
     fn stop_note(&mut self, note: u8) {
+        let sustain = self.sustain;
         for v in self.voices.iter_mut().filter(|v| v.held && v.note == note) {
             v.held = false;
-            v.amp.gate_off();
-            v.filt.gate_off();
+            if sustain {
+                v.sustained = true;
+            } else {
+                v.amp.gate_off();
+                v.filt.gate_off();
+            }
+        }
+    }
+
+    fn set_sustain(&mut self, on: bool) {
+        self.sustain = on;
+        if !on {
+            for v in self.voices.iter_mut().filter(|v| v.sustained) {
+                v.sustained = false;
+                v.amp.gate_off();
+                v.filt.gate_off();
+            }
         }
     }
 
@@ -356,9 +404,16 @@ impl SubtractiveSynth {
             EventKind::AllOff => {
                 for v in &mut self.voices {
                     v.held = false;
+                    v.sustained = false;
                     v.amp.gate_off();
                     v.filt.gate_off();
                 }
+            }
+            EventKind::Sustain(on) => self.set_sustain(on),
+            EventKind::Bend(ratio) => self.bend = ratio,
+            EventKind::ResetControllers => {
+                self.set_sustain(false);
+                self.bend = 1.0;
             }
         }
     }
@@ -374,6 +429,7 @@ impl SubtractiveSynth {
         let env_oct = self.p.v(7) / 100.0 * 6.0;
         let cutoff = self.cutoff.next();
         let nyq = sr * 0.45;
+        let bend = self.bend;
         let mut out = 0.0;
         for v in &mut self.voices {
             if !v.active() {
@@ -386,8 +442,8 @@ impl SubtractiveSynth {
             }
             let a = v.amp.next(&self.amp_rates);
             let fe = v.filt.next(&self.filt_rates);
-            let s1 = v.osc1.next(w1, v.freq / sr);
-            let s2 = v.osc2.next(w2, v.freq * ratio2 / sr);
+            let s1 = v.osc1.next(w1, v.freq * bend / sr);
+            let s2 = v.osc2.next(w2, v.freq * bend * ratio2 / sr);
             let raw = s1 * (1.0 - mix) + s2 * mix;
             let fc = (cutoff * 2f32.powf(env_oct * fe)).clamp(20.0, nyq);
             let g = (std::f32::consts::PI * fc / sr).tan();
@@ -418,6 +474,8 @@ impl Plugin for SubtractiveSynth {
         self.last_freq = None;
         self.level.snap();
         self.cutoff.snap();
+        self.sustain = false;
+        self.bend = 1.0;
     }
 
     fn process(&mut self, io: &mut [Vec<f32>], frames: usize) {
@@ -467,7 +525,71 @@ impl Plugin for SubtractiveSynth {
         self.events.push(offset, EventKind::Off(note));
     }
 
+    fn midi(&mut self, offset: usize, msg: [u8; 3]) {
+        let [status, d1, d2] = msg;
+        let kind = match (status & 0xF0, d1) {
+            (0xB0, 64) => EventKind::Sustain(d2 >= 64),
+            (0xB0, 120 | 123) => EventKind::AllOff,
+            (0xB0, 121) => EventKind::ResetControllers,
+            (0xE0, _) => {
+                let v = (i32::from(d2 & 0x7F) << 7 | i32::from(d1 & 0x7F)) - 8192;
+                EventKind::Bend(2f32.powf(v as f32 / 8192.0 * BEND_RANGE / 12.0))
+            }
+            _ => return,
+        };
+        self.events.push(offset, kind);
+    }
+
     fn all_notes_off(&mut self) {
         self.events.push(0, EventKind::AllOff);
+    }
+}
+
+#[cfg(test)]
+mod queue_tests {
+    use super::*;
+
+    #[test]
+    fn a_full_event_queue_still_takes_releases() {
+        let mut q = EventQueue::new();
+        for _ in 0..MAX_EVENTS {
+            q.push(7, EventKind::Bend(1.0));
+        }
+        // Not a release: dropped. Releases: each takes the place of a queued bend.
+        q.push(9, EventKind::On(60, 100));
+        q.push(11, EventKind::Off(60));
+        q.push(12, EventKind::Sustain(false));
+        q.push(13, EventKind::AllOff);
+        assert_eq!(q.ev.len(), MAX_EVENTS, "never grows on the audio thread");
+        assert!(!q.ev.iter().any(|e| matches!(e.kind, EventKind::On(..))));
+        let kept: Vec<usize> = q.ev.iter().filter(|e| !matches!(e.kind, EventKind::Bend(_))).map(|e| e.offset).collect();
+        assert_eq!(kept.len(), 3);
+        assert!([11, 12, 13].iter().all(|o| kept.contains(o)), "{kept:?}");
+        // Nothing but releases queued: the new one is covered by an All Notes Off.
+        let mut q = EventQueue::new();
+        for n in 0..MAX_EVENTS {
+            q.push(0, EventKind::Off((n % 100) as u8));
+        }
+        q.push(0, EventKind::Off(120));
+        assert!(matches!(q.ev.last().map(|e| e.kind), Some(EventKind::AllOff)));
+    }
+
+    #[test]
+    fn a_note_off_behind_a_flood_of_controllers_still_ends_the_note() {
+        let mut synth = crate::create("subtractive_synth").unwrap();
+        synth.prepare(48_000.0, 512, 2);
+        let mut io = vec![vec![0.0f32; 512]; 2];
+        synth.note_on(0, 60, 100);
+        synth.process(&mut io, 512);
+        assert!(io[0].iter().any(|x| x.abs() > 0.01));
+        for _ in 0..MAX_EVENTS + 100 {
+            synth.midi(0, [0xE0, 0, 64]);
+        }
+        synth.note_off(0, 60);
+        for _ in 0..200 {
+            io.iter_mut().for_each(|c| c.fill(0.0));
+            synth.process(&mut io, 512);
+        }
+        assert!(io[0].iter().all(|x| x.abs() < 1e-4), "the voice was left on");
     }
 }

@@ -9,7 +9,7 @@
 //! values are the Audio Unit's own (plain) values, ranges and units, so no mapping is needed.
 //! Boolean parameters become toggles, indexed ones starting at 0 become choices.
 //!
-//! Like `soundcraft-vst3-host`, this is an isolated `unsafe` crate (craftrules never-crash):
+//! Like `soundcraft-vst3-host`, this is an isolated `unsafe` crate:
 //! `unsafe` is denied crate-wide and allowed only in the private `ffi` module (hand-written
 //! AudioToolbox / CoreFoundation declarations). The public API is safe, returns
 //! `Result`/`Option` and never panics. Limits of in-process hosting: an Audio Unit that itself
@@ -23,8 +23,10 @@
 //! (`kAudioUnitProperty_ClassInfo`) as a binary plist; [`Plugin::load_state`] parses it back and
 //! sets it, then re-reads the parameter values.
 //!
-//! Not hosted yet: Audio Unit editor views (Cocoa `AUCocoaUIBase`), sidechain/extra buses,
-//! parameters outside the global scope, and host callbacks (tempo, transport).
+//! Host callbacks report the session's tempo, meter, position and play state.
+//!
+//! Not hosted yet: Audio Unit editor views (Cocoa `AUCocoaUIBase`), sidechain/extra buses, and
+//! parameters outside the global scope.
 //!
 //! Off macOS (and on `wasm32`) the crate compiles to stubs: scans are empty and nothing can be
 //! created.
@@ -190,7 +192,7 @@ pub enum AuError {
 
 #[cfg(target_os = "macos")]
 mod api {
-    use super::*;
+    use super::{AuDescriptor, AuError, Plugin, PluginInfo, registry};
 
     pub fn scan() -> Vec<AuDescriptor> {
         registry::scan()
@@ -208,7 +210,7 @@ mod api {
 
 #[cfg(not(target_os = "macos"))]
 mod api {
-    use super::*;
+    use super::{AuDescriptor, AuError, Plugin, PluginInfo};
 
     pub fn scan() -> Vec<AuDescriptor> {
         Vec::new()

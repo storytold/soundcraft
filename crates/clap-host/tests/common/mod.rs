@@ -9,7 +9,7 @@ use std::sync::OnceLock;
 pub fn fixture_dir() -> &'static Path {
     static DIR: OnceLock<PathBuf> = OnceLock::new();
     DIR.get_or_init(|| {
-        let manifest = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixture/Cargo.toml");
+        let manifest = Path::new(env!("CARGO_MANIFEST_DIR")).join("../clap-host/tests/fixture/Cargo.toml");
         let target = Path::new(env!("CARGO_TARGET_TMPDIR")).join("clap-fixture-target");
         let cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".into());
         let st = Command::new(cargo)
@@ -40,7 +40,7 @@ pub fn fixture_dir() -> &'static Path {
             std::fs::create_dir_all(dir.join("vendor")).unwrap();
             std::fs::copy(&built, dir.join("vendor/Fixture.clap")).unwrap();
         }
-        assert_eq!(soundcraft_clap_host::add_search_dir(&dir), 2);
+        assert_eq!(soundcraft_clap_host::add_search_dir(&dir), 5);
         dir
     })
 }

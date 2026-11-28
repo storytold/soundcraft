@@ -14,13 +14,18 @@ fn shared_panels_and_controls_follow_manual_and_live_system_appearance() {
             app.run(id, json!({})).unwrap();
         }
         let session = app.engine.session().clone();
-        let mut h = Harness::builder().with_size(vec2(1400.0, 1000.0)).with_pixels_per_point(scale).wgpu().build_ui_state(
-            |ui, app: &mut SoundApp| {
-                app.logic(&ui.ctx().clone());
-                app.ui(ui);
-            },
-            app,
-        );
+        let mut h = Harness::builder()
+            .with_context_setup(soundcraft_ui_egui::framework::install_headless)
+            .with_size(vec2(1400.0, 1000.0))
+            .with_pixels_per_point(scale)
+            .wgpu()
+            .build_ui_state(
+                |ui, app: &mut SoundApp| {
+                    app.logic(&ui.ctx().clone());
+                    app.ui(ui);
+                },
+                app,
+            );
         h.input_mut().max_texture_side = Some(8192);
         for (name, mode, system, light) in [
             ("dark", theme::ThemeMode::Dark, egui::Theme::Light, false),
@@ -36,7 +41,7 @@ fn shared_panels_and_controls_follow_manual_and_live_system_appearance() {
                 assert_eq!(theme::is_light(), light);
                 assert_eq!(h.state().ui.theme, mode);
                 assert_eq!(*h.state().engine.session(), session);
-                h.state().ui.docking.validate().unwrap();
+                soundcraft_ui_egui::docking::validate(&h.state().ui.docking).unwrap();
                 if let Some(directory) = std::env::var_os("CRAFT_UI_THEME_SHOTS").map(std::path::PathBuf::from) {
                     std::fs::create_dir_all(&directory).unwrap();
                     h.render().unwrap().save(directory.join(format!("sound-{name}-{width_name}-{scale}x.png"))).unwrap();

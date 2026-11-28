@@ -184,11 +184,17 @@ impl<const S: usize> Eq<S> {
     }
 
     fn update(&mut self) {
+        let mut snapped = false;
         for (i, (s, info)) in self.sm.iter_mut().zip(self.info.params).enumerate() {
             s.set(self.p.v(i));
             if matches!(info.unit, Unit::Toggle | Unit::Choice) {
                 s.snap();
+                snapped |= self.vals.get(i) != Some(&s.value());
             }
+        }
+        // A snapped smoother never settles, so `process` would not redesign for it.
+        if snapped {
+            self.redesign();
         }
         let g = db_to_gain(self.total_gain_db(|i| self.p.v(i)));
         self.gain.set(g);
