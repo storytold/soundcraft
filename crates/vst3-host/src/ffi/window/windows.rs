@@ -1,12 +1,14 @@
 use std::ffi::{c_char, c_void};
 use std::sync::OnceLock;
 use windows_sys::Win32::Foundation::{HWND, LPARAM, LRESULT, RECT, WPARAM};
+use windows_sys::Win32::Graphics::Gdi::{RDW_ALLCHILDREN, RDW_UPDATENOW, RedrawWindow};
 use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows_sys::Win32::UI::Input::KeyboardAndMouse::GetActiveWindow;
 use windows_sys::Win32::UI::WindowsAndMessaging::{
-    AdjustWindowRectEx, CS_HREDRAW, CS_VREDRAW, CW_USEDEFAULT, CreateWindowExW, DefWindowProcW, DestroyWindow, GWL_EXSTYLE, GWL_STYLE,
-    GetWindowLongPtrW, IDC_ARROW, IsWindow, IsWindowVisible, LoadCursorW, RegisterClassExW, SW_HIDE, SW_SHOW, SWP_NOACTIVATE, SWP_NOMOVE,
-    SWP_NOZORDER, SetForegroundWindow, SetWindowPos, ShowWindow, WM_CLOSE, WNDCLASSEXW, WS_CAPTION, WS_CLIPCHILDREN, WS_OVERLAPPED, WS_SYSMENU,
+    AdjustWindowRectEx, CS_HREDRAW, CS_VREDRAW, CW_USEDEFAULT, CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GWL_EXSTYLE,
+    GWL_STYLE, GetWindowLongPtrW, IDC_ARROW, IsWindow, IsWindowVisible, LoadCursorW, MSG, PM_REMOVE, PeekMessageW, PostQuitMessage, RegisterClassExW,
+    SW_HIDE, SW_SHOW, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOZORDER, SetForegroundWindow, SetWindowPos, ShowWindow, WM_CLOSE, WM_QUIT, WM_TIMER,
+    WNDCLASSEXW, WS_CAPTION, WS_CLIPCHILDREN, WS_OVERLAPPED, WS_SYSMENU,
 };
 
 pub const PLATFORM_TYPE: Option<*const c_char> = Some(vst3::Steinberg::kPlatformTypeHWND);
@@ -143,6 +145,18 @@ impl HostWindow {
         self.live().is_some_and(|h| unsafe { IsWindowVisible(h) } != 0)
     }
 
+    /// Per-frame service on the main thread (#1447): while the transport plays eframe always keeps a
+    /// repaint pending, and Win32 only synthesizes `WM_TIMER` and `WM_PAINT` when the queue runs dry —
+    /// so a timer-driven editor is starved until playback pauses. Dispatches the thread's pending
+    /// timers (thread-wide on purpose: nothing else on this thread uses Win32 timers, and a timer
+    /// with a `TIMERPROC` only runs through dispatch) and flushes the paint they invalidate.
+    pub fn service(&self) {
+        let Some(hwnd) = self.live() else { return };
+        pump_timers();
+        // SAFETY: a live window of this thread; ALLCHILDREN reaches the plugin's child windows.
+        unsafe { RedrawWindow(hwnd, std::ptr::null(), std::ptr::null_mut(), RDW_UPDATENOW | RDW_ALLCHILDREN) };
+    }
+
     pub fn close(self) {
         if let Some(h) = self.live() {
             // SAFETY: our own live window; the view was detached before (see `teardown`).
@@ -162,4 +176,91 @@ pub fn resize(window: *mut c_void, w: f64, h: f64) {
     let (ow, oh) = outer_size(style, ex, w, h);
     // SAFETY: as above; only the size changes.
     unsafe { SetWindowPos(window, std::ptr::null_mut(), 0, 0, ow, oh, SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE) };
+}
+
+/// Dispatches up to 32 `WM_TIMER`s pending on this thread (main thread only). The cap keeps a timer
+/// that re-arms on every dispatch from starving the frame; leftovers are served next tick.
+fn pump_timers() {
+    // SAFETY: `PeekMessageW`/`DispatchMessageW`/`PostQuitMessage` on this thread's own queue;
+    // `msg` outlives them all.
+    unsafe {
+        let mut msg: MSG = std::mem::zeroed();
+        for _ in 0..32 {
+            if PeekMessageW(&mut msg, std::ptr::null_mut(), WM_TIMER, WM_TIMER, PM_REMOVE) == 0 {
+                break;
+            }
+            if msg.message == WM_QUIT {
+                // PeekMessageW returns WM_QUIT regardless of the filter — repost it with its
+                // exit code so the app's own message loop still sees the quit, and stop here.
+                PostQuitMessage(msg.wParam as i32);
+                break;
+            }
+            DispatchMessageW(&msg);
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use windows_sys::Win32::Graphics::Gdi::{GetUpdateRect, InvalidateRect};
+    use windows_sys::Win32::UI::WindowsAndMessaging::{KillTimer, SetTimer};
+
+    static FIRED: AtomicUsize = AtomicUsize::new(0);
+
+    unsafe extern "system" fn on_timer(hwnd: HWND, _msg: u32, _id: usize, _time: u32) {
+        FIRED.fetch_add(1, Ordering::Relaxed);
+        // SAFETY: a live window of this thread.
+        unsafe { InvalidateRect(hwnd, std::ptr::null(), 1) };
+    }
+
+    /// #1447: while the transport plays eframe always has a repaint pending, and Win32 only
+    /// synthesizes `WM_TIMER`/`WM_PAINT` when the queue runs dry — an editor that animates from a
+    /// timer freezes until Pause. `service` must dispatch the timer and its paint without a
+    /// message loop ever waiting.
+    #[test]
+    fn an_editors_timer_and_paint_run_while_the_thread_never_waits_for_messages() {
+        // windows are created and served on the app's UI thread — named "main" here.
+        std::thread::Builder::new()
+            .name("main".into())
+            .spawn(|| {
+                let window = HostWindow::new("timer test", 120.0, 80.0).expect("host window");
+                let h = window.raw() as HWND;
+                FIRED.store(0, Ordering::Relaxed);
+                // SAFETY: live window of this thread; proc outlives the timer (killed below).
+                unsafe { SetTimer(h, 1, 10, Some(on_timer)) };
+                std::thread::sleep(std::time::Duration::from_millis(100));
+                assert_eq!(FIRED.load(Ordering::Relaxed), 0, "the timer fired without anyone pumping");
+                window.service();
+                assert!(FIRED.load(Ordering::Relaxed) > 0, "service() did not dispatch WM_TIMER");
+                // SAFETY: `GetUpdateRect` accepts any window; false means the paint was flushed.
+                assert_eq!(unsafe { GetUpdateRect(h, std::ptr::null_mut(), 0) }, 0, "the timer's paint is still pending");
+                unsafe { KillTimer(h, 1) };
+                window.close();
+            })
+            .expect("spawn")
+            .join()
+            .expect("join");
+    }
+
+    /// `PeekMessageW` returns `WM_QUIT` regardless of the filter range, so the pump can swallow
+    /// the quit the app's own loop is waiting for. It must repost it — with its exit code — and
+    /// stop, leaving the signal for the owning loop.
+    #[test]
+    fn the_pump_leaves_a_quit_and_its_exit_code_for_the_owning_loop() {
+        std::thread::Builder::new()
+            .name("main".into())
+            .spawn(|| {
+                // SAFETY: this thread owns the queue it posts to and peeks.
+                unsafe { PostQuitMessage(7) };
+                pump_timers();
+                let mut msg: MSG = unsafe { std::mem::zeroed() };
+                assert_ne!(unsafe { PeekMessageW(&mut msg, std::ptr::null_mut(), 0, 0, PM_REMOVE) }, 0, "the pump swallowed the quit");
+                assert_eq!((msg.message, msg.wParam), (WM_QUIT, 7), "the quit signal or its exit code changed");
+            })
+            .expect("spawn")
+            .join()
+            .expect("join");
+    }
 }

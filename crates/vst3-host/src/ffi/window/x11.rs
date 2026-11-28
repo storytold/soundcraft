@@ -142,6 +142,9 @@ impl HostWindow {
         self.shown.store(true, Ordering::Relaxed);
     }
 
+    /// Per-frame service (#1447): only Windows starves editor timers/paints while repaints run.
+    pub fn service(&self) {}
+
     pub fn is_visible(&self) -> bool {
         let Some(x) = x().filter(|_| on_main_thread()) else { return false };
         x.pump();

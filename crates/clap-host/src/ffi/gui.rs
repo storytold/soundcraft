@@ -287,6 +287,11 @@ impl GuiLink {
         #[cfg(all(unix, not(target_os = "macos")))]
         self.dispatch(&g);
         if g.created {
+            // a timer-driven editor's WM_TIMERs and the paints they invalidate are starved while
+            // the transport keeps the queue busy (#1447)
+            if let Some(w) = &g.window {
+                w.service();
+            }
             let resize = self.host.gui_resize.swap(0, Ordering::Relaxed);
             if resize != 0
                 && let Some(win) = &g.window
