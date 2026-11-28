@@ -42,6 +42,20 @@ const HANGUL: &[(&str, u32)] = &[
     ("/usr/share/fonts/truetype/nanum/NanumGothic.ttf", 0),
     ("/usr/share/fonts/naver-nanum/NanumGothic.ttf", 0),
 ];
+/// Georgian fallback, appended after every family so Georgian session, track and clip names draw
+/// whatever the interface language. Noto Sans Georgian first, DejaVu Sans (which covers Georgian) last.
+const GEORGIAN: &[(&str, u32)] = &[
+    ("/System/Library/Fonts/SFGeorgian.ttf", 0),
+    ("/System/Library/Fonts/Supplemental/NotoSansGeorgian-Regular.otf", 0),
+    ("C:\\Windows\\Fonts\\sylfaen.ttf", 0),
+    ("/usr/share/fonts/truetype/noto/NotoSansGeorgian-Regular.ttf", 0),
+    ("/usr/share/fonts/noto/NotoSansGeorgian-Regular.ttf", 0),
+    ("/usr/share/fonts/google-noto/NotoSansGeorgian-Regular.ttf", 0),
+    ("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", 0),
+    ("/usr/share/fonts/TTF/DejaVuSans.ttf", 0),
+    ("/usr/share/fonts/dejavu/DejaVuSans.ttf", 0),
+    ("/usr/share/fonts/dejavu-sans-fonts/DejaVuSans.ttf", 0),
+];
 /// Font files larger than this are skipped: egui keeps the whole file in memory.
 #[cfg(not(target_arch = "wasm32"))]
 const MAX_FONT_BYTES: u64 = 64 << 20;
@@ -49,7 +63,7 @@ const MAX_FONT_BYTES: u64 = 64 << 20;
 /// Asks fontconfig for the desktop's font matching `pattern`. Only TrueType/OpenType results are
 /// used: egui cannot read Type 1 or bitmap fonts, which `fc-match` may return on minimal systems.
 /// With `lang`, the match must support that language (`fc-match` always returns its best match,
-/// which is a Latin face when no Korean font is installed).
+/// which is a Latin face when no font for the language is installed).
 #[cfg(any(target_os = "linux", target_os = "freebsd"))]
 fn load_from_fontconfig(pattern: &str, lang: Option<&str>) -> Option<FontData> {
     let output = std::process::Command::new("fc-match").args(["--format=%{file}\\n%{index}\\n%{lang}\\n", pattern]).output().ok()?;
@@ -130,6 +144,12 @@ pub fn definitions(system_fonts: bool) -> FontDefinitions {
         fonts.font_data.insert("system-hangul".into(), Arc::new(h));
         for family in fonts.families.values_mut() {
             family.push("system-hangul".into());
+        }
+    }
+    if let Some(g) = load(GEORGIAN, "sans-serif:lang=ka", Some("ka"), system_fonts) {
+        fonts.font_data.insert("system-georgian".into(), Arc::new(g));
+        for family in fonts.families.values_mut() {
+            family.push("system-georgian".into());
         }
     }
     fonts
@@ -224,6 +244,32 @@ mod tests {
         for family in families {
             let font = egui::FontId::new(13.0, family.clone());
             assert!(ctx.fonts_mut(|f| f.has_glyphs(&font, "가한국어세션")), "{family:?} has no Hangul");
+        }
+    }
+
+    #[test]
+    fn georgian_candidates_cover_every_desktop_platform() {
+        for prefix in ["/System/Library/Fonts/", "C:\\Windows\\Fonts\\", "/usr/share/fonts/"] {
+            assert!(GEORGIAN.iter().any(|(p, _)| p.starts_with(prefix)), "no Georgian candidate under {prefix}");
+        }
+    }
+
+    /// Georgian names draw in every family, not as boxes; skipped when the system has no Georgian font.
+    #[test]
+    fn every_family_draws_georgian_with_a_system_georgian_font() {
+        let defs = definitions(true);
+        if !defs.font_data.contains_key("system-georgian") {
+            eprintln!("skipping: no Georgian system font");
+            return;
+        }
+        let families: Vec<FontFamily> = defs.families.keys().cloned().collect();
+        let ctx = egui::Context::default();
+        ctx.set_fonts(defs);
+        let mut output = ctx.run_ui(egui::RawInput::default(), |_| {});
+        output.textures_delta.clear();
+        for family in families {
+            let font = egui::FontId::new(13.0, family.clone());
+            assert!(ctx.fonts_mut(|f| f.has_glyphs(&font, "ქართული სესია")), "{family:?} has no Georgian");
         }
     }
 }
