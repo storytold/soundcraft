@@ -10,7 +10,8 @@
 //!   folder, the rest of the path being plain names (`..` below a missing folder is refused, and so
 //!   is a link that leads nowhere).
 //! - The result must lie inside one of the roots of its kind, compared by whole components
-//!   (`/work2` isn't inside `/work`), without regard to case on Windows.
+//!   (`/work2` isn't inside `/work`), by the case the disk stores (links are resolved first, so a
+//!   differently cased spelling of a root still lands inside it).
 //! - Read and write access are separate: a root given alone grants only its own kind of access.
 //!
 //! Roots are in force on a thread inside [`confine`], and in the whole process after
@@ -266,24 +267,12 @@ fn resolve(path: &Path) -> Result<PathBuf, String> {
     }
 }
 
-/// Is `path` (resolved) `root` or inside it, component by component (without regard to case on
-/// Windows, whose file systems ignore it)?
+/// Is `path` (resolved) `root` or inside it, component by component? Both come from
+/// `canonicalize`, which gives the name's case as the disk stores it, so equal means the same
+/// folder; folding case would equate two folders on a case-sensitive Windows directory.
 fn inside(path: &Path, root: &Path) -> bool {
     let mut path = path.components();
-    root.components().all(|r| path.next().is_some_and(|p| same_component(p, r)))
-}
-
-fn same_component(a: Component, b: Component) -> bool {
-    if a == b {
-        return true;
-    }
-    if !cfg!(windows) {
-        return false;
-    }
-    match (a.as_os_str().to_str(), b.as_os_str().to_str()) {
-        (Some(a), Some(b)) => a.to_lowercase() == b.to_lowercase(),
-        _ => false,
-    }
+    root.components().all(|r| path.next().is_some_and(|p| p == r))
 }
 
 /// A Windows device name (`CON`, `NUL`, `COM1`… also with an extension), which names no file.
@@ -476,7 +465,7 @@ mod tests {
 
     #[cfg(windows)]
     #[test]
-    fn windows_ignores_case_and_refuses_devices() {
+    fn windows_resolves_case_and_refuses_devices() {
         let (base, roots) = folders("case");
         let upper = s(base.join("IN/a.scraft"));
         assert_eq!(roots.check(&upper, Access::Read), Ok(()), "{upper}");
@@ -485,6 +474,50 @@ mod tests {
         assert!(e.contains("reserved device names"), "{e}");
         assert!(roots.check(s(base.join("out/com1.txt")), Access::Write).is_err());
         assert_eq!(roots.check(s(base.join("out/console.txt")), Access::Write), Ok(()));
+        let _ = std::fs::remove_dir_all(base);
+    }
+
+    /// On a case-sensitive Windows directory `Work` and `work` are two folders: a root on one
+    /// doesn't grant the other, while a differently cased spelling of a name that is the same
+    /// folder (the ordinary, case-insensitive directories) is still accepted. Skipped, with a
+    /// note, where `fsutil` can't switch a directory to case-sensitive (it needs rights and the
+    /// NTFS volume's support).
+    #[cfg(windows)]
+    #[test]
+    fn windows_case_sensitive_directory_keeps_case_equal_folders_apart() {
+        let (base, _) = folders("case-sensitive");
+        let cs = base.join("cs");
+        std::fs::create_dir_all(&cs).unwrap();
+        let switched = std::process::Command::new("fsutil")
+            .args(["file", "setCaseSensitiveInfo"])
+            .arg(&cs)
+            .arg("enable")
+            .output()
+            .is_ok_and(|o| o.status.success());
+        if !switched {
+            eprintln!("skipped: cannot make {} case-sensitive", cs.display());
+            let _ = std::fs::remove_dir_all(base);
+            return;
+        }
+        for d in ["Work/sub", "work"] {
+            std::fs::create_dir_all(cs.join(d)).unwrap();
+        }
+        std::fs::write(cs.join("Work/a.scraft"), "x").unwrap();
+        std::fs::write(cs.join("work/secret.scraft"), "x").unwrap();
+        let roots = AutomationRoots::new(&[&cs.join("Work")], &[&cs.join("Work")]).unwrap().unwrap();
+        for access in [Access::Read, Access::Write] {
+            assert_eq!(roots.check(s(cs.join("Work/a.scraft")), access), Ok(()));
+            assert_eq!(roots.check(s(cs.join("Work/sub/New.scraft")), access), Ok(()));
+            // The other folder exists, and so does a name no folder has: both are outside.
+            for outside in ["work/secret.scraft", "work/new.scraft", "WORK/new.scraft"] {
+                let e = roots.check(s(cs.join(outside)), access).unwrap_err();
+                assert!(e.contains("outside the"), "{outside}: {e}");
+            }
+        }
+        // A root on the lower-case folder grants that one only.
+        let lower = AutomationRoots::new(&[&cs.join("work")], &[]).unwrap().unwrap();
+        assert_eq!(lower.check(s(cs.join("work/secret.scraft")), Access::Read), Ok(()));
+        assert!(lower.check(s(cs.join("Work/a.scraft")), Access::Read).is_err());
         let _ = std::fs::remove_dir_all(base);
     }
 
