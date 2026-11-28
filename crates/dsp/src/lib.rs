@@ -206,6 +206,12 @@ pub trait Plugin: Send {
     fn param(&self, id: &str) -> Option<f32>;
     /// In-place processing of `channels` planar buffers each `frames` long.
     fn process(&mut self, io: &mut [Vec<f32>], frames: usize);
+    /// Lets a hosted plugin apply and report parameter changes it asked for (CLAP
+    /// `host.params.request_flush`: typically an edit in its own editor) while no `process`
+    /// call is coming, i.e. while the transport is stopped. Audio thread only, at most once per
+    /// audio callback; must not allocate, block or produce audio. A plugin that did not ask for
+    /// anything does nothing. The default does nothing (built-ins have no editor edits to flush).
+    fn flush(&mut self) {}
     /// Processing latency in samples (for delay compensation).
     fn latency(&self) -> usize {
         0

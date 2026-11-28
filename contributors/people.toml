@@ -76,3 +76,8 @@ display_name = "Vic Herrera (@vhhr)"
 
 [people.ashokram-si]
 real_name = "Ashok Ram"
+
+[people.morgan-voltz]
+real_name = "Morgan Voltz"
+display_name = "Morgan Voltz"
+sync_github_name = false

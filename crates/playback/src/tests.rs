@@ -690,6 +690,7 @@ fn locate_while_playing_drops_the_old_position_audio() {
     }
 }
 
+/// An armed track with input connected is heard and metered once playback has stopped.
 #[test]
 fn armed_tracks_are_heard_and_metered_after_playback_stops() {
     use soundcraft_model::{ChannelFormat, TrackKind};
@@ -1892,4 +1893,241 @@ fn a_pass_started_and_ended_by_the_commands_of_one_callback_keeps_what_was_playe
     rec.clear();
     feed.take_recorded(&mut rec);
     assert!(rec.is_empty(), "{rec:?}");
+}
+
+/// Counts the `process` and `flush` calls of a hosted plugin; `wants_flush` is its pending editor
+/// edit (consumed by `flush`). `in_call` catches a `flush` and a `process` that overlap.
+#[derive(Default)]
+struct Calls {
+    process: std::sync::atomic::AtomicUsize,
+    flush: std::sync::atomic::AtomicUsize,
+    wants_flush: AtomicBool,
+    in_call: AtomicBool,
+}
+
+/// A hosted plugin wrapping `inner` that records its calls in `calls`.
+struct Flusher {
+    inner: Box<dyn soundcraft_dsp::Plugin>,
+    calls: Arc<Calls>,
+}
+
+impl soundcraft_dsp::Plugin for Flusher {
+    /// Delegates to the wrapped plugin.
+    fn info(&self) -> &'static soundcraft_dsp::PluginInfo {
+        self.inner.info()
+    }
+    /// Delegates to the wrapped plugin.
+    fn prepare(&mut self, sr: f32, mb: usize, ch: usize) {
+        self.inner.prepare(sr, mb, ch);
+    }
+    /// Delegates to the wrapped plugin.
+    fn reset(&mut self) {
+        self.inner.reset();
+    }
+    /// Delegates to the wrapped plugin.
+    fn set_param(&mut self, id: &str, v: f32) -> bool {
+        self.inner.set_param(id, v)
+    }
+    /// Delegates to the wrapped plugin.
+    fn param(&self, id: &str) -> Option<f32> {
+        self.inner.param(id)
+    }
+    /// Counts the call, clears the pending want and processes through the wrapped plugin; asserts it
+    /// does not overlap `flush`.
+    fn process(&mut self, io: &mut [Vec<f32>], frames: usize) {
+        assert!(!self.calls.in_call.swap(true, Ordering::SeqCst), "process overlapped another call");
+        self.calls.process.fetch_add(1, Ordering::Relaxed);
+        // Like a CLAP plugin, applying its edit here answers the request.
+        self.calls.wants_flush.store(false, Ordering::Relaxed);
+        self.inner.process(io, frames);
+        self.calls.in_call.store(false, Ordering::SeqCst);
+    }
+    /// Counts a flush only if an edit was wanted, and consumes the want; asserts it does not overlap
+    /// `process`.
+    fn flush(&mut self) {
+        assert!(!self.calls.in_call.swap(true, Ordering::SeqCst), "flush overlapped another call");
+        if self.calls.wants_flush.swap(false, Ordering::Relaxed) {
+            self.calls.flush.fetch_add(1, Ordering::Relaxed);
+        }
+        self.calls.in_call.store(false, Ordering::SeqCst);
+    }
+}
+
+impl Calls {
+    /// Number of `process` calls.
+    fn processes(&self) -> usize {
+        self.process.load(Ordering::Relaxed)
+    }
+    /// Number of `flush` calls that found an edit to answer.
+    fn flushes(&self) -> usize {
+        self.flush.load(Ordering::Relaxed)
+    }
+    /// Gives the plugin an editor edit to flush.
+    fn want(&self) {
+        self.wants_flush.store(true, Ordering::Relaxed);
+    }
+}
+
+/// A stereo audio track with two `Flusher` inserts (`clap:test.flush`), the callback state that
+/// plays it, and the counters of both inserts.
+fn flush_rig(arm: bool) -> (AudioState, Sender<Cmd>, Arc<Shared>, [Arc<Calls>; 2]) {
+    use soundcraft_model::{ChannelFormat, Insert, TrackKind};
+    let mut s = soundcraft_model::Session::default();
+    let t = s.add_track(TrackKind::Audio, ChannelFormat::Stereo, None);
+    for slot in 0..2 {
+        s.track_mut(t).unwrap().mixer.inserts[slot] = Some(Insert::new("clap:test.flush"));
+    }
+    s.track_mut(t).unwrap().mixer.record_arm = arm;
+    let shared = Arc::new(Shared {
+        position: AtomicI64::new(0),
+        playing: AtomicBool::new(false),
+        speed: AtomicU32::new(1000),
+        meters: Mutex::new(MeterSnapshot::default()),
+    });
+    let (tx, rx) = channel();
+    let mut st = AudioState::new(rx, Arc::clone(&shared), Arc::new(soundcraft_model::Session::default()), 48_000.0, channel().0);
+    let calls = [Arc::new(Calls::default()), Arc::new(Calls::default())];
+    let instances = calls
+        .iter()
+        .enumerate()
+        .map(|(slot, c)| {
+            let mut inner = soundcraft_dsp::create("gain").unwrap();
+            inner.prepare(48_000.0, BLOCK, 2);
+            PreparedInstance { track: t, slot, id: "clap:test.flush".into(), ch: 2, plugin: Box::new(Flusher { inner, calls: Arc::clone(c) }) }
+        })
+        .collect();
+    tx.send(Cmd::Session(Arc::new(s), instances)).unwrap();
+    st.fill(&mut vec![0.0f32; 256], 2);
+    (st, tx, shared, calls)
+}
+
+/// With the transport stopped, a requested flush is answered once without processing or sound.
+#[test]
+fn stopped_transport_serves_flush_requests() {
+    let (mut st, _tx, shared, calls) = flush_rig(false);
+    assert!(!shared.playing.load(Ordering::Relaxed));
+    assert_eq!((calls[0].processes(), calls[0].flushes()), (0, 0), "placed, nothing happened yet");
+    calls[0].want();
+    // Pre-filled with garbage: the stopped output must still be zeroed.
+    let mut out = vec![1.0f32; 2 * 256];
+    st.fill(&mut out, 2);
+    assert_eq!(calls[0].flushes(), 1, "the request is answered although nothing plays");
+    assert_eq!(calls[0].processes(), 0, "without processing any audio");
+    assert!(out.iter().all(|x| *x == 0.0), "and without a sound");
+    st.fill(&mut out, 2);
+    assert_eq!(calls[0].flushes(), 1, "once per request");
+    assert_eq!((calls[1].flushes(), calls[1].processes()), (0, 0), "a plugin that did not ask is left alone");
+}
+
+/// While playing, `process` answers the request and no `flush` call is made.
+#[test]
+fn playing_does_not_flush_because_processing_answers() {
+    let (mut st, tx, _shared, calls) = flush_rig(false);
+    tx.send(Cmd::Play { from: 0, end: None, looped: None }).unwrap();
+    calls[0].want();
+    let mut out = vec![0.0f32; 2 * 256];
+    st.fill(&mut out, 2);
+    assert!(calls[0].processes() > 0, "playing processes");
+    assert_eq!(calls[0].flushes(), 0, "and process() applied the edit, no flush call");
+}
+
+/// Input monitoring with the transport stopped still serves flush requests.
+#[test]
+fn monitoring_but_stopped_still_flushes() {
+    let (mut st, tx, shared, calls) = flush_rig(true);
+    let ring = record::InputRing::new(2, 48_000);
+    tx.send(Cmd::Input(Arc::clone(&ring))).unwrap();
+    ring.push(&[0.5; 4096]);
+    calls[1].want();
+    let mut out = vec![0.0f32; 2 * 256];
+    st.fill(&mut out, 2);
+    assert!(!shared.playing.load(Ordering::Relaxed));
+    assert_eq!(calls[1].flushes(), 1);
+    assert_eq!(calls[0].flushes(), 0);
+}
+
+/// Over alternating play and stop blocks, each stopped request gets exactly one flush and no
+/// process, and each playing block processes without flushing.
+#[test]
+fn alternating_play_and_stop_answers_each_stopped_request_once_and_never_flushes_playing() {
+    let (mut st, tx, _shared, calls) = flush_rig(false);
+    let mut out = vec![0.0f32; 2 * 256];
+    for i in 0..40 {
+        let stopping = i % 2 == 1;
+        if stopping {
+            tx.send(Cmd::Stop).unwrap();
+        } else {
+            tx.send(Cmd::Play { from: 0, end: None, looped: None }).unwrap();
+        }
+        calls[0].want();
+        calls[1].want();
+        let before: Vec<(usize, usize)> = calls.iter().map(|c| (c.flushes(), c.processes())).collect();
+        st.fill(&mut out, 2);
+        for (c, (f, p)) in calls.iter().zip(before) {
+            if stopping {
+                assert_eq!((c.flushes() - f, c.processes() - p), (1, 0), "stopped: one flush, no process");
+            } else {
+                assert_eq!(c.flushes() - f, 0, "playing: process answers the request, no flush");
+                assert!(c.processes() > p, "playing: processed");
+            }
+        }
+    }
+}
+
+/// A stopped engine with one record-armed instrument track whose instrument is a `Flusher`
+/// (`clap:test.flush`), a MIDI feed with one open port (so the track plays live MIDI while
+/// stopped), its command sender and the instrument's counters.
+fn flush_instrument_rig() -> (AudioState, Sender<Cmd>, Arc<Calls>) {
+    use soundcraft_model::{ChannelFormat, Insert, TrackKind};
+    let mut s = soundcraft_model::Session::default();
+    let t = s.add_track(TrackKind::Instrument, ChannelFormat::Stereo, None);
+    let tr = s.track_mut(t).unwrap();
+    tr.instrument = Some(Insert::new("clap:test.flush"));
+    tr.mixer.record_arm = true;
+    let shared = Arc::new(Shared {
+        position: AtomicI64::new(0),
+        playing: AtomicBool::new(false),
+        speed: AtomicU32::new(1000),
+        meters: Mutex::new(MeterSnapshot::default()),
+    });
+    let (tx, rx) = channel();
+    let mut st = AudioState::new(rx, shared, Arc::new(soundcraft_model::Session::default()), 48_000.0, channel().0);
+    let calls = Arc::new(Calls::default());
+    let mut inner = soundcraft_dsp::create("gain").unwrap();
+    inner.prepare(48_000.0, BLOCK, 2);
+    let instance = PreparedInstance {
+        track: t,
+        slot: soundcraft_mix::INSTRUMENT_SLOT,
+        id: "clap:test.flush".into(),
+        ch: 2,
+        plugin: Box::new(Flusher { inner, calls: Arc::clone(&calls) }),
+    };
+    let feed = Arc::new(midi::MidiFeed::default());
+    feed.set_connected(1);
+    tx.send(Cmd::Midi(feed)).unwrap();
+    tx.send(Cmd::Session(Arc::new(s), vec![instance])).unwrap();
+    st.fill(&mut vec![0.0f32; 256], 2);
+    (st, tx, calls)
+}
+
+/// A stopped transport still renders a MIDI-thru instrument track (#493), so a pending flush
+/// request there is answered by one `flush` and then served by `process` (here in the same
+/// callback, at 256 frames): the edit is applied exactly once, the next callback has nothing to
+/// flush, and the two calls never overlap (the `Flusher` asserts it).
+#[test]
+fn midi_thru_instrument_while_stopped_is_flushed_once_and_never_overlaps_process() {
+    let (mut st, _tx, calls) = flush_instrument_rig();
+    let (p0, f0) = (calls.processes(), calls.flushes());
+    assert!(p0 > 0, "the MIDI-thru instrument is rendered while stopped");
+    let mut out = vec![0.0f32; 2 * 256];
+    calls.want();
+    st.fill(&mut out, 2);
+    assert_eq!(calls.flushes() - f0, 1, "the request is answered by a flush");
+    assert!(calls.processes() > p0, "and the render processes the instrument after it");
+    let (p1, f1) = (calls.processes(), calls.flushes());
+    for _ in 0..8 {
+        st.fill(&mut out, 2);
+    }
+    assert_eq!(calls.flushes(), f1, "no new request, no new flush");
+    assert!(calls.processes() > p1, "the instrument keeps being rendered");
 }

@@ -678,6 +678,17 @@ impl AudioState {
         // A command may have installed a session at another sample rate: the audio is rendered
         // at the rate that is there now, at the same speed.
         let step = self.step(speed);
+        // Plugins whose editor changed a parameter (CLAP `request_flush`) apply it without
+        // processing audio. While playing, `render` processes them, which applies it too. While
+        // stopped, `render` still runs for monitored audio input and for MIDI-thru or live-note
+        // instrument tracks; a plugin with a pending request there gets a flush, and the
+        // next process (usually in this same callback) starts it again. This sits after the
+        // commands above (which may change the session, its plugins or the transport) and before
+        // the stopped early return below, which is where a stopped transport would otherwise never
+        // reach a plugin. It touches neither the output nor the meters.
+        if !self.playing {
+            self.mix.flush_requested();
+        }
         // A keyboard plays through record-enabled and input-monitored MIDI and instrument tracks.
         let midi_live = self.midi.as_ref().is_some_and(|f| f.connected() > 0)
             && self.session.tracks.iter().any(|t| matches!(t.kind, TrackKind::Instrument | TrackKind::Midi) && midi_thru(t));
