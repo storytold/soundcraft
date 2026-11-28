@@ -80,8 +80,9 @@ pub(crate) struct TrackMidi {
     /// Restart at the play position after a timing gap (as after a locate).
     relocate: bool,
     held: Vec<Held>,
-    /// Holders per channel and key: the device gets one Note-Off, when the last one ends. Wide
-    /// enough for every note a clip can overlap on one key.
+    /// Holders per channel and key. A strike on a held key sends its Note-Off first, so the
+    /// device hears the key's last Note-Off when the last holder ends and none at the earlier
+    /// ends. Wide enough for every note a clip can overlap on one key.
     count: Vec<[u32; 128]>,
     /// Channels whose sustain pedal the clips left down.
     pedal: u16,
@@ -171,7 +172,8 @@ impl TrackMidi {
         send(&bytes[..message_len(status)]);
     }
 
-    /// Release one holder of a key. The device hears the Note-Off when the last holder ends.
+    /// Release one holder of a key. The device hears the Note-Off when the last holder ends;
+    /// a later strike on the key already let the earlier holders go.
     fn release(&mut self, channel: u8, pitch: u8, send: &mut dyn FnMut(&[u8])) {
         let Some(n) = self.count.get_mut(usize::from(channel)).and_then(|keys| keys.get_mut(usize::from(pitch))) else { return };
         *n = n.saturating_sub(1);
@@ -342,6 +344,12 @@ impl TrackMidi {
                 RELEASE | LATE_RELEASE => self.release(channel, e.message[1], &mut |m| send(when, m)),
                 STRIKE => {
                     if let Some(n) = self.count.get_mut(usize::from(channel)).and_then(|keys| keys.get_mut(usize::from(e.message[1]))) {
+                        // A key struck again while held is let go first: every Note-On then has
+                        // its Note-Off (MIDI 1.0), and a receiver with a voice per Note-On
+                        // keeps none sounding past the key's end.
+                        if *n > 0 {
+                            send(when, &[0x80 | channel, e.message[1], 0]);
+                        }
                         *n = n.saturating_add(1);
                     }
                     self.send_on(channel, e.message, &mut |m| send(when, m));
