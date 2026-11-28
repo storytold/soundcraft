@@ -61,8 +61,8 @@ use callback::{STALL, copy_meter_snapshot};
 #[cfg(not(target_arch = "wasm32"))]
 use callback::{guarded_block, stalled};
 #[cfg(test)]
-use stream::pick_output_config;
-use stream::{Opened, build_output, first_started, open_device, start_stream};
+use stream::{NoneWorked, pick_output_config};
+use stream::{Opened, build_output, first_started, first_working, output_candidates, output_config, start_stream};
 
 /// Meter values for the UI: the highest peak (and gain reduction) of every block rendered since
 /// the UI last took them with [`Player::take_meters`]. The audio thread renders blocks faster than
@@ -216,8 +216,8 @@ impl Player {
     }
 
     /// Open the output device for `session`, trying the requested buffer size before the device default, then build
-    /// the shared player state. If no configuration starts or the device cannot open, fall back to a silent clock at
-    /// the session rate.
+    /// the shared player state. When the chosen (else default) device cannot open or start, try the fallback outputs
+    /// (see [`devices::fallback_outputs`]); if none works, fall back to a silent clock at the session rate.
     fn open(session: Arc<Session>, cfg: &AudioConfig) -> Player {
         let shared = Arc::new(Shared {
             position: AtomicI64::new(0),
@@ -233,14 +233,21 @@ impl Player {
             side.gone_tracks(&session);
             Mutex::new(side)
         };
-        match open_device(want, want_ch, cfg) {
-            Ok((device, config, format, name)) => {
+        let (candidates, is_default) = output_candidates(cfg);
+        let opened = first_working(
+            candidates,
+            |device| {
+                output_config(device, want, want_ch, cfg).inspect_err(|e| {
+                    log::warn!("cannot open audio output {}: {e}", devices::device_name(device).unwrap_or_default());
+                })
+            },
+            |device, (config, format, _)| {
                 // The chosen buffer size first; if the device refuses it, its default.
-                let mut attempts = vec![config];
+                let mut attempts = vec![*config];
                 if config.buffer_size != cpal::BufferSize::Default {
-                    attempts.push(cpal::StreamConfig { buffer_size: cpal::BufferSize::Default, ..config });
+                    attempts.push(cpal::StreamConfig { buffer_size: cpal::BufferSize::Default, ..*config });
                 }
-                let opened = first_started(
+                first_started(
                     attempts,
                     |config: &cpal::StreamConfig| -> Result<Opened, cpal::Error> {
                         let rate = config.sample_rate;
@@ -250,54 +257,57 @@ impl Player {
                         let state = AudioState::new(rx, Arc::clone(&shared), Arc::clone(&session), f64::from(rate), gtx);
                         let fault = Arc::new(Fault::default());
                         let stream = match format {
-                            cpal::SampleFormat::I32 => build_output::<i32>(&device, *config, state, channels, &fault, &shared),
-                            cpal::SampleFormat::I16 => build_output::<i16>(&device, *config, state, channels, &fault, &shared),
-                            _ => build_output::<f32>(&device, *config, state, channels, &fault, &shared),
+                            cpal::SampleFormat::I32 => build_output::<i32>(device, *config, state, channels, &fault, &shared),
+                            cpal::SampleFormat::I16 => build_output::<i16>(device, *config, state, channels, &fault, &shared),
+                            _ => build_output::<f32>(device, *config, state, channels, &fault, &shared),
                         }?;
                         Ok(Opened { stream, tx, grx, fault })
                     },
                     |opened| start_stream(&opened.stream),
+                )
+            },
+        );
+        match opened {
+            Ok((i, _, (_, format, name), (config, Opened { stream, tx, grx, fault }))) => {
+                let rate = config.sample_rate;
+                let channels = usize::from(config.channels);
+                let buffer = match config.buffer_size {
+                    cpal::BufferSize::Fixed(n) => Some(n),
+                    cpal::BufferSize::Default => None,
+                };
+                if i > 0 && is_default {
+                    log::warn!("the default audio output did not open; playing through {name} instead");
+                }
+                log::info!(
+                    "audio device: {name} @ {rate} Hz, {channels} ch, {format}, buffer {}",
+                    buffer.map_or("default".to_string(), |n| n.to_string())
                 );
-                match opened {
-                    Some((config, Opened { stream, tx, grx, fault })) => {
-                        let rate = config.sample_rate;
-                        let channels = usize::from(config.channels);
-                        let buffer = match config.buffer_size {
-                            cpal::BufferSize::Fixed(n) => Some(n),
-                            cpal::BufferSize::Default => None,
-                        };
-                        log::info!(
-                            "audio device: {name} @ {rate} Hz, {channels} ch, {format}, buffer {}",
-                            buffer.map_or("default".to_string(), |n| n.to_string())
-                        );
-                        Player {
-                            shared,
-                            fault,
-                            #[cfg(not(target_arch = "wasm32"))]
-                            watch: Mutex::new(None),
-                            tx,
-                            side: new_side(grx),
-                            _stream: Some(stream),
-                            device_name: name,
-                            device_rate: rate,
-                            device_channels: config.channels,
-                            device_buffer: buffer,
-                            silent: false,
-                        }
-                    }
-                    None => {
-                        log::warn!("no usable audio stream; using a silent clock");
-                        let (tx, rx) = channel();
-                        let (gtx, grx) = channel();
-                        Player::silent_clock(shared, tx, rx, want, new_side(grx), gtx)
-                    }
+                Player {
+                    shared,
+                    fault,
+                    #[cfg(not(target_arch = "wasm32"))]
+                    watch: Mutex::new(None),
+                    tx,
+                    side: new_side(grx),
+                    _stream: Some(stream),
+                    device_name: name,
+                    device_rate: rate,
+                    device_channels: config.channels,
+                    device_buffer: buffer,
+                    silent: false,
                 }
             }
-            Err(e) => {
-                log::warn!("no audio output: {e}; using a silent clock");
+            Err(none) => {
                 let (tx, rx) = channel();
                 let (gtx, grx) = channel();
-                Player::silent_clock_with(shared, tx, rx, Arc::clone(&session), new_side(grx), gtx)
+                if none.configured {
+                    log::warn!("no usable audio stream; using a silent clock");
+                    Player::silent_clock(shared, tx, rx, want, new_side(grx), gtx)
+                } else {
+                    let e = none.first_error.unwrap_or_else(|| "no output device".to_string());
+                    log::warn!("no audio output: {e}; using a silent clock");
+                    Player::silent_clock_with(shared, tx, rx, Arc::clone(&session), new_side(grx), gtx)
+                }
             }
         }
     }

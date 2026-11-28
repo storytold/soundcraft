@@ -164,15 +164,87 @@ pub(crate) fn host(cfg: &AudioConfig) -> cpal::Host {
 
 /// The named output (or input) device of `host`, else its default device.
 pub(crate) fn device(host: &cpal::Host, name: Option<&str>, output: bool) -> Option<cpal::Device> {
+    chosen_device(host, name, output).or_else(|| default_device(host, name, output))
+}
+
+/// The output (or input) device named `name`, when there is one by that name.
+pub(crate) fn chosen_device(host: &cpal::Host, name: Option<&str>, output: bool) -> Option<cpal::Device> {
+    let want = name?;
+    if output { host.output_devices().ok() } else { host.input_devices().ok() }
+        .and_then(|mut ds| ds.find(|d| device_name(d).as_deref() == Some(want)))
+}
+
+/// The default output (or input) device, saying so when the named device `name` was not found.
+pub(crate) fn default_device(host: &cpal::Host, name: Option<&str>, output: bool) -> Option<cpal::Device> {
     if let Some(want) = name {
-        let found = if output { host.output_devices().ok() } else { host.input_devices().ok() }
-            .and_then(|mut ds| ds.find(|d| device_name(d).as_deref() == Some(want)));
-        if found.is_some() {
-            return found;
-        }
         log::warn!("audio device `{want}` is not available; using the default");
     }
     if output { host.default_output_device() } else { host.default_input_device() }
+}
+
+/// At most this many fallback outputs are tried, so a machine where nothing opens still starts
+/// promptly (each failed ALSA open can take a moment).
+const MAX_FALLBACKS: usize = 8;
+
+/// Where an ALSA output stands as a fallback for a system default that would not open (lower is
+/// tried first), from its PCM name and its description; `None` for one that is never tried.
+///
+/// The sound servers come first: they share the card with other programs and are what `default`
+/// normally routes to, so PipeWire still plays when `default` goes to a PulseAudio server that
+/// is not running. PipeWire is tried before PulseAudio whatever order ALSA lists them in: where
+/// both exist, `pulse` usually goes through PipeWire anyway, and in #540 it was PulseAudio that
+/// refused. Then each card's own default (`sysdefault:`), which goes through the card's
+/// ALSA configuration (usually software mixing on its main output), cards whose name says HDMI or
+/// DisplayPort last, since a monitor often has no speakers. Nothing else is tried: `null`
+/// discards everything, `default` already failed, raw `hw:`/`plughw:` devices take the card from
+/// every other program, a card's many per-device outputs would crowd out the other cards, and
+/// cpal notes that a plugin device that fails to open can leak descriptors and leave every later
+/// ALSA open failing. `jack` is left out too: opening it can start a JACK server.
+pub(crate) fn fallback_rank(pcm: &str, description: &str) -> Option<u8> {
+    let display = ["HDMI", "DisplayPort"].iter().any(|word| description.to_ascii_lowercase().contains(&word.to_ascii_lowercase()));
+    match pcm.split_once(':') {
+        None if pcm == "pipewire" => Some(0),
+        None if pcm == "pulse" => Some(1),
+        Some(("sysdefault", card)) if !card.is_empty() => Some(if display { 3 } else { 2 }),
+        _ => None,
+    }
+}
+
+/// The outputs worth trying, in [`fallback_rank`] order, from `(item, PCM name, description)`;
+/// skips `tried` (the output that already failed) and keeps at most [`MAX_FALLBACKS`]. The order
+/// among equal ranks is the host's.
+pub(crate) fn order_fallbacks<T>(outputs: impl IntoIterator<Item = (T, String, String)>, tried: Option<&str>) -> Vec<T> {
+    let mut ranked: Vec<(u8, T)> = outputs
+        .into_iter()
+        .filter(|(_, pcm, _)| Some(pcm.as_str()) != tried)
+        .filter_map(|(item, pcm, description)| fallback_rank(&pcm, &description).map(|rank| (rank, item)))
+        .collect();
+    ranked.sort_by_key(|(rank, _)| *rank);
+    ranked.into_iter().take(MAX_FALLBACKS).map(|(_, item)| item).collect()
+}
+
+/// Other outputs to try when `default` (the system default output) will not open. Only ALSA has
+/// them: there `default` is a route through a sound server or plugin that can fail on its own
+/// while the card and the other routes still work (#540). Other systems' defaults are the
+/// devices themselves, so elsewhere this is empty. Never used for a device the user chose: that
+/// one either plays or the player says it is silent, rather than sound coming out elsewhere.
+pub(crate) fn fallback_outputs(host: &cpal::Host, default: Option<&cpal::Device>) -> Vec<cpal::Device> {
+    if host.id().name() != "ALSA" {
+        return Vec::new();
+    }
+    // On ALSA a device's id is its PCM name (`default`, `pipewire`, `sysdefault:CARD=…`).
+    let pcm = |d: &cpal::Device| d.id().ok().map(|id| id.id().to_owned());
+    let description = |d: &cpal::Device| d.description().ok().map(|desc| desc.name().to_owned()).unwrap_or_default();
+    let tried = default.and_then(pcm);
+    let Ok(outputs) = host.output_devices() else { return Vec::new() };
+    order_fallbacks(
+        outputs.filter_map(|d| {
+            let name = pcm(&d)?;
+            let desc = description(&d);
+            Some((d, name, desc))
+        }),
+        tried.as_deref(),
+    )
 }
 
 /// The buffer to request: the chosen size when the device's range allows it, else the default.
@@ -292,6 +364,49 @@ mod tests {
         let h = cpal::default_host();
         let fallback = device(&h, Some("No Such Device 1234"), true).as_ref().and_then(device_name);
         assert_eq!(fallback, h.default_output_device().as_ref().and_then(device_name));
+    }
+
+    /// #540: when ALSA's `default` will not open (it routes to a PulseAudio server that is not
+    /// running), the sound servers are tried first, then each card's own default, a card named
+    /// HDMI last; `default` itself, `null`, `jack`, plugin and per-device hardware outputs never.
+    #[test]
+    fn a_failed_default_falls_back_to_a_sound_server_then_a_card() {
+        // As cpal 0.18 lists ALSA outputs: the PCM hints, then `hw:` and `plughw:` per card device
+        // by card index (the same devices the hints already name by card id).
+        let listed = [
+            ("null", "Discard all samples (playback) or generate zero samples (capture)"),
+            ("pipewire", "PipeWire Sound Server"),
+            ("default", "Default ALSA Output (currently PipeWire Media Server)"),
+            ("jack", "JACK Audio Connection Kit"),
+            ("lavrate", "Rate Converter Plugin Using Libav/FFmpeg Library"),
+            ("sysdefault:CARD=NVidia", "HDA NVidia, HDMI 0"),
+            ("hdmi:CARD=NVidia,DEV=0", "HDA NVidia, HDMI 0"),
+            ("sysdefault:CARD=PCH", "HDA Intel PCH, ALC3246 Analog"),
+            ("front:CARD=PCH,DEV=0", "HDA Intel PCH, ALC3246 Analog"),
+            ("dmix:CARD=PCH,DEV=0", "HDA Intel PCH, ALC3246 Analog"),
+            ("pulse", "PulseAudio Sound Server"),
+            ("hw:CARD=PCH,DEV=0", "HDA Intel PCH, ALC3246 Analog"),
+            ("plughw:CARD=PCH,DEV=0", "HDA Intel PCH, ALC3246 Analog"),
+            ("hw:CARD=0,DEV=0", "HDA Intel PCH, ALC3246 Analog"),
+            ("plughw:CARD=0,DEV=0", "HDA Intel PCH, ALC3246 Analog"),
+        ];
+        let list = || listed.iter().map(|(pcm, desc)| (*pcm, (*pcm).to_owned(), (*desc).to_owned()));
+        assert_eq!(order_fallbacks(list(), Some("default")), ["pipewire", "pulse", "sysdefault:CARD=PCH", "sysdefault:CARD=NVidia"]);
+        // The output that already failed is not tried again.
+        assert!(!order_fallbacks(list(), Some("pipewire")).contains(&"pipewire"));
+        // PipeWire comes before PulseAudio even when ALSA lists `pulse` first.
+        let reversed = || listed.iter().rev().map(|(pcm, desc)| (*pcm, (*pcm).to_owned(), (*desc).to_owned()));
+        assert_eq!(order_fallbacks(reversed(), Some("default")), ["pipewire", "pulse", "sysdefault:CARD=PCH", "sysdefault:CARD=NVidia"]);
+    }
+
+    #[test]
+    fn fallbacks_are_capped_and_never_include_unsafe_names() {
+        let many = (0..20).map(|i| (i, format!("sysdefault:CARD={i}"), String::new()));
+        assert_eq!(order_fallbacks(many, None).len(), MAX_FALLBACKS);
+        for name in ["null", "default", "jack", "pipewire:x", "sysdefault", "sysdefault:", "hw:CARD=0,DEV=0", "plughw:CARD=0,DEV=0", "oss", ""] {
+            assert_eq!(fallback_rank(name, ""), None, "{name:?} must not be tried");
+        }
+        assert!(fallback_rank("sysdefault:CARD=A", "Card, DisplayPort 1") > fallback_rank("sysdefault:CARD=B", "Card, Analog"));
     }
 
     #[test]
