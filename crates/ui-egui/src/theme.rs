@@ -656,12 +656,14 @@ mod tests {
         let appearances = [Some(egui::Theme::Light), Some(egui::Theme::Dark), Some(egui::Theme::Light), None];
         for initial in [Some(egui::Theme::Light), Some(egui::Theme::Dark), None] {
             let ctx = egui::Context::default();
+            crate::framework::install_headless(&ctx);
             let mut app = SoundApp::new(soundcraft_engine::Engine::default(), None, Services::default());
             app.ui = serde_json::from_value(json!({"theme": "system"})).unwrap();
             frame(&mut app, &ctx, initial, initial == Some(egui::Theme::Light));
         }
 
         let ctx = egui::Context::default();
+        crate::framework::install_headless(&ctx);
         let mut engine = soundcraft_engine::demo::demo_engine();
         let track = engine.session_mut().tracks.first_mut().unwrap();
         track.color = [19, 83, 147];

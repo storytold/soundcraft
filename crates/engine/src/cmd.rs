@@ -66,6 +66,7 @@ pub use file::bounce_job;
 
 pub(crate) use edit::remember_selection;
 pub use strip_silence::strip_silence_scan;
+pub use tab::tab_stop_ahead;
 
 pub type Run = fn(&mut Engine, &Value) -> Result<Value>;
 /// `Err(reason)` = disabled.
