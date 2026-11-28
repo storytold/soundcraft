@@ -13,7 +13,8 @@ pub const STANDARD_BUFFERS: [u32; 9] = [32, 64, 128, 256, 512, 1024, 2048, 4096,
 
 /// Sample formats the streams convert to and from, best first (ASIO drivers usually run in
 /// 32-bit integers, WASAPI and Core Audio in float).
-pub(crate) const FORMATS: [cpal::SampleFormat; 3] = [cpal::SampleFormat::F32, cpal::SampleFormat::I32, cpal::SampleFormat::I16];
+pub(crate) const FORMATS: [cpal::SampleFormat; 4] =
+    [cpal::SampleFormat::F32, cpal::SampleFormat::I32, cpal::SampleFormat::I24, cpal::SampleFormat::I16];
 
 /// Preference of a sample format (lower is better); `None` when it is not supported.
 pub(crate) fn format_rank(f: cpal::SampleFormat) -> Option<usize> {
@@ -111,9 +112,10 @@ pub fn audio_systems() -> Vec<AudioSystem> {
 
 /// True when a cpal error means the stream is dead and only a rebuild can restore audio. cpal 0.18
 /// reports every operation through one [`cpal::Error`]: `DeviceNotAvailable` means the device went
-/// away, and `StreamInvalidated` explicitly requires the stream to be rebuilt. SoundCraft has no
-/// in-place rebuild, so both map to the existing actionable "reconnect audio device" trouble
-/// instead of leaving a dead stream silently logging. A rerouted default device
+/// away, and `StreamInvalidated` explicitly requires the stream to be rebuilt. Neither is left as a
+/// dead stream silently logging: a device that went away is reported for the user to reconnect,
+/// and an invalidated stream on a present device (see [`stream_reset`]) is reopened by SoundCraft
+/// itself, on every audio system. A rerouted default device
 /// (`DeviceChanged`) keeps playing, and an xrun is transient, so neither is a lost stream.
 /// `HostUnavailable`, `DeviceBusy` and `BackendError` stay log-only until their retry/rebuild
 /// policies exist.
@@ -123,8 +125,17 @@ pub(crate) fn stream_lost(e: &cpal::Error) -> bool {
     kind == cpal::ErrorKind::DeviceNotAvailable || kind == cpal::ErrorKind::StreamInvalidated
 }
 
+/// True when a lost stream (see [`stream_lost`]) is still on a present device that asked for the
+/// stream to be rebuilt (`StreamInvalidated`). Any audio system can report it: cpal reports an
+/// ASIO driver's reset request this way (for example after the buffer size changed in the driver's
+/// own settings), and Core Audio a device whose sample rate another app changed. The device can be
+/// reopened at once; `DeviceNotAvailable` means it went away.
+pub(crate) fn stream_reset(e: &cpal::Error) -> bool {
+    e.kind() == cpal::ErrorKind::StreamInvalidated
+}
+
 /// The device's configuration at `sample_rate` in the best sample format these streams convert.
-/// cpal 0.18 ranks `I24` (and `F64`) above `I16` when it picks a default configuration, so a
+/// cpal 0.18 can pick a default configuration with `F64`, so a
 /// default alone can name a format the callbacks do not decode; this looks for the same rate in a
 /// format [`FORMATS`] holds. The exact channel count is preferred; when the device offers none in
 /// a usable format at that rate (for example only an 8-channel F32 stream), the closest available
@@ -215,7 +226,7 @@ mod tests {
     #[test]
     fn a_default_format_the_streams_cannot_convert_uses_a_supported_one_at_the_same_rate() {
         let configs = [
-            range(2, 44_100, 48_000, cpal::SampleFormat::I24),
+            range(2, 44_100, 48_000, cpal::SampleFormat::F64),
             range(2, 44_100, 48_000, cpal::SampleFormat::I16),
             range(2, 44_100, 48_000, cpal::SampleFormat::F32),
             range(2, 96_000, 96_000, cpal::SampleFormat::F32),
@@ -228,17 +239,17 @@ mod tests {
             Some((2, cpal::SampleFormat::F32)),
             "with no mono stream, the nearest usable channel count keeps the device open"
         );
-        let i24_only = [range(2, 44_100, 48_000, cpal::SampleFormat::I24)];
-        assert!(supported_format_config(&i24_only, 48_000, 2).is_none(), "no supported format at this rate");
+        let f64_only = [range(2, 44_100, 48_000, cpal::SampleFormat::F64)];
+        assert!(supported_format_config(&f64_only, 48_000, 2).is_none(), "no supported format at this rate");
     }
 
-    /// cpal 0.18 may name an I24 stereo default while the only format the callbacks decode is a
+    /// cpal 0.18 may name an F64 stereo default while the only format the callbacks decode is a
     /// wider F32 stream at another supported rate. The default-rate search finds nothing usable,
     /// so the output fallback retries at the session rate over any usable channel count; the mix
     /// already folds or copies channels and resamples.
     #[test]
     fn a_default_format_with_no_usable_same_rate_stream_falls_back_to_the_session_rate() {
-        let configs = [range(2, 44_100, 44_100, cpal::SampleFormat::I24), range(8, 48_000, 48_000, cpal::SampleFormat::F32)];
+        let configs = [range(2, 44_100, 44_100, cpal::SampleFormat::F64), range(8, 48_000, 48_000, cpal::SampleFormat::F32)];
         assert!(supported_format_config(&configs, 44_100, 2).is_none(), "the default rate has no usable format");
         let c = supported_format_config(&configs, 48_000, 2).expect("the wider F32 stream at the session rate");
         assert_eq!((c.sample_rate(), c.channels(), c.sample_format()), (48_000, 8, cpal::SampleFormat::F32));
@@ -259,6 +270,24 @@ mod tests {
             cpal::ErrorKind::BackendError,
         ] {
             assert!(!stream_lost(&error(kind)), "{kind:?} must not stop the stream");
+        }
+    }
+
+    /// Only an invalidated stream counts as a reset that can be reopened at once; a device that
+    /// went away, and errors that do not stop the stream, do not.
+    #[test]
+    fn only_an_invalidated_stream_is_a_reset() {
+        let error = |kind| cpal::Error::with_message(kind, "test");
+        assert!(stream_reset(&error(cpal::ErrorKind::StreamInvalidated)));
+        for kind in [
+            cpal::ErrorKind::DeviceNotAvailable,
+            cpal::ErrorKind::DeviceChanged,
+            cpal::ErrorKind::DeviceBusy,
+            cpal::ErrorKind::HostUnavailable,
+            cpal::ErrorKind::Xrun,
+            cpal::ErrorKind::BackendError,
+        ] {
+            assert!(!stream_reset(&error(kind)), "{kind:?} is not a reset");
         }
     }
 

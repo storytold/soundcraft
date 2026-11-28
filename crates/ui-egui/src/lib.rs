@@ -314,6 +314,12 @@ pub struct SoundApp {
     /// Punch range to trim the take to (pre/post-roll recordings).
     punch: Option<Range>,
     recorder_failed: bool,
+    /// When the audio devices were last reopened automatically after a device reset, so a device
+    /// that keeps resetting is left to the user (see `SoundApp::reopen_after_reset`).
+    auto_reopened: Option<std::time::Instant>,
+    /// A reopen pending after a device reset, done on the next frame: the cause to report once
+    /// it is done.
+    reopen_pending: Option<String>,
     /// MIDI device input, opened on the first frame of an app that has an audio engine.
     pub midi_inputs: Option<soundcraft_playback::midi::MidiInputs>,
     /// When the MIDI ports were last looked for (app uptime, seconds).

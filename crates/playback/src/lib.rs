@@ -52,6 +52,8 @@ const OLD_SESSIONS: usize = 16;
 /// renders on worker threads; the cpal callbacks here set it.
 pub use soundcraft_mix::{mark_audio_thread, on_audio_thread};
 
+#[cfg(any(test, all(windows, feature = "asio")))]
+mod asio_recovery;
 mod callback;
 mod stream;
 
@@ -62,7 +64,7 @@ use callback::{STALL, copy_meter_snapshot};
 use callback::{guarded_block, stalled};
 #[cfg(test)]
 use stream::pick_output_config;
-use stream::{Opened, build_output, first_started, open_device, start_stream};
+use stream::{Opened, first_started, open_device, start_stream};
 
 /// Meter values for the UI: the highest peak (and gain reduction) of every block rendered since
 /// the UI last took them with [`Player::take_meters`]. The audio thread renders blocks faster than
@@ -153,10 +155,28 @@ struct Shared {
 pub enum OutputTrouble {
     /// A block panicked; the output stays silent.
     Bug,
-    /// The device went away, or the stream was invalidated and must be rebuilt.
+    /// The device went away.
     Gone,
+    /// The device is still present but asked for the stream to be rebuilt (cpal's
+    /// `StreamInvalidated` on any audio system: for example an ASIO driver's reset request after
+    /// its buffer size changed in the driver's own settings, or a Core Audio device whose sample
+    /// rate another app changed). Reopening the device restores audio.
+    Reset,
     /// The device stopped asking for audio while playing.
     Stalled,
+    /// The ASIO driver is still calling back but is no longer keeping up with its audio clock.
+    ClockTooSlow,
+}
+
+/// What an idle ASIO recovery attempt did (see [`Player::recover_idle_asio`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IdleRecovery {
+    /// Nothing was due.
+    None,
+    /// The stream was rebuilt; audio flows again.
+    Reopened,
+    /// The device is not back yet; another attempt follows in a few seconds.
+    Waiting,
 }
 
 /// The transport and audio device.
@@ -172,7 +192,14 @@ pub struct Player {
     _stream: Option<cpal::Stream>,
     #[cfg(target_arch = "wasm32")]
     _stream: Option<cpal::Stream>,
+    #[cfg(all(windows, feature = "asio"))]
+    asio_recovery: Option<asio_recovery::native::Recovery>,
     pub device_name: String,
+    #[cfg(all(windows, feature = "asio"))]
+    asio_device: Option<cpal::Device>,
+    /// Frames the ASIO output had asked for when last checked, and when (`asio_clock_slow`).
+    #[cfg(all(windows, feature = "asio"))]
+    asio_watch: Mutex<Option<(u64, std::time::Instant)>>,
     pub device_rate: u32,
     /// Output channels the device was opened with (0 for the silent clock).
     pub device_channels: u16,
@@ -180,6 +207,18 @@ pub struct Player {
     pub device_buffer: Option<u32>,
     /// True when no audio device could be opened (silent clock).
     pub silent: bool,
+}
+
+#[cfg(any(test, all(windows, feature = "asio")))]
+fn reuses_output_device(selected_input: Option<&str>, opened_output: &str) -> bool {
+    selected_input.is_none_or(|name| name == opened_output)
+}
+
+#[test]
+fn shared_asio_capture_requires_the_opened_output_or_default_input() {
+    assert!(reuses_output_device(None, "USB Mixer"));
+    assert!(reuses_output_device(Some("USB Mixer"), "USB Mixer"));
+    assert!(!reuses_output_device(Some("Other Input"), "USB Mixer"));
 }
 
 impl Player {
@@ -198,17 +237,62 @@ impl Player {
         p
     }
 
-    /// What stopped the audio output, once: a bug in the engine, or the device went away or
-    /// stopped asking for audio while playing.
+    /// Open recording and monitoring on the configured input. Reuse the active ASIO device
+    /// when it is the selected input. Enumerating other drivers can fail with an active stream.
+    pub fn open_input(&self, cfg: &AudioConfig) -> Result<record::Recorder, record::InputOpenError> {
+        #[cfg(all(windows, feature = "asio"))]
+        if let Some(device) = &self.asio_device
+            && reuses_output_device(cfg.input.as_deref(), &self.device_name)
+        {
+            let buffer = self.device_buffer.map_or(cpal::BufferSize::Default, cpal::BufferSize::Fixed);
+            return record::Recorder::open_on_device(device, cfg, Some((self.device_rate, buffer)));
+        }
+        record::Recorder::open_with(cfg).map_err(Into::into)
+    }
+
+    /// What stopped the audio output, once: a bug in the engine, the device went away or asked
+    /// for a reset, stopped asking for audio while playing, or (ASIO) fell behind its clock.
     pub fn trouble(&self) -> Option<OutputTrouble> {
         #[cfg(not(target_arch = "wasm32"))]
-        let stalled = {
+        let clock = {
             let playing = self.shared.playing.load(Ordering::Relaxed) && !self.silent;
-            stalled(&mut self.watch.lock().unwrap_or_else(PoisonError::into_inner), self.fault.beats.load(Ordering::Relaxed), playing)
+            let stopped = stalled(&mut self.watch.lock().unwrap_or_else(PoisonError::into_inner), self.fault.beats.load(Ordering::Relaxed), playing);
+            #[cfg(all(windows, feature = "asio"))]
+            let slow = self.asio_device.is_some()
+                && callback::asio_clock_slow(
+                    &mut self.asio_watch.lock().unwrap_or_else(PoisonError::into_inner),
+                    self.fault.asio_frames.load(Ordering::Relaxed),
+                    std::time::Instant::now(),
+                    self.device_rate,
+                    playing,
+                );
+            #[cfg(not(all(windows, feature = "asio")))]
+            let slow = false;
+            if stopped { Some(OutputTrouble::Stalled) } else { slow.then_some(OutputTrouble::ClockTooSlow) }
         };
         #[cfg(target_arch = "wasm32")]
-        let stalled = false;
-        self.fault.trouble(stalled)
+        let clock = None;
+        self.fault.trouble(clock)
+    }
+
+    /// Rebuild an abnormally slow ASIO endpoint only after transport and capture are idle.
+    /// The input shares the ASIO driver and must be released before rebuilding the output.
+    pub fn recover_idle_asio(&mut self, playing: bool, recording: bool, pending: bool, release_input: impl FnOnce()) -> IdleRecovery {
+        #[cfg(all(windows, feature = "asio"))]
+        return self.recover_idle_stream(playing, recording, pending, release_input);
+        #[cfg(not(all(windows, feature = "asio")))]
+        {
+            let _ = (playing, recording, pending, release_input);
+            IdleRecovery::None
+        }
+    }
+
+    /// Wait for the original output device before attempting to attach the input.
+    pub fn awaiting_asio_output(&self) -> bool {
+        #[cfg(all(windows, feature = "asio"))]
+        return self.asio_recovery.is_some() && self._stream.is_none();
+        #[cfg(not(all(windows, feature = "asio")))]
+        false
     }
 
     fn side(&self) -> std::sync::MutexGuard<'_, Side> {
@@ -244,22 +328,45 @@ impl Player {
                     attempts,
                     |config: &cpal::StreamConfig| -> Result<Opened, cpal::Error> {
                         let rate = config.sample_rate;
-                        let channels = usize::from(config.channels);
                         let (tx, rx) = channel();
                         let (gtx, grx) = channel();
                         let state = AudioState::new(rx, Arc::clone(&shared), Arc::clone(&session), f64::from(rate), gtx);
                         let fault = Arc::new(Fault::default());
-                        let stream = match format {
-                            cpal::SampleFormat::I32 => build_output::<i32>(&device, *config, state, channels, &fault, &shared),
-                            cpal::SampleFormat::I16 => build_output::<i16>(&device, *config, state, channels, &fault, &shared),
-                            _ => build_output::<f32>(&device, *config, state, channels, &fault, &shared),
-                        }?;
-                        Ok(Opened { stream, tx, grx, fault })
+                        let standard = |mut state: AudioState| {
+                            stream::build_format(&device, *config, format, &fault, &shared, |_| {}, move |data, ch| state.fill(data, ch))
+                        };
+                        #[cfg(all(windows, feature = "asio"))]
+                        let (stream, recovery) = if let Some(id) = asio_recovery::native::asio_id(&device) {
+                            let recovery = asio_recovery::native::Recovery::new(id, *config, format, state);
+                            (recovery.build(&device, &fault, &shared)?, Some(recovery))
+                        } else {
+                            (standard(state)?, None)
+                        };
+                        #[cfg(not(all(windows, feature = "asio")))]
+                        let stream = standard(state)?;
+                        Ok(Opened {
+                            stream,
+                            tx,
+                            grx,
+                            fault,
+                            #[cfg(all(windows, feature = "asio"))]
+                            recovery,
+                        })
                     },
                     |opened| start_stream(&opened.stream),
                 );
                 match opened {
-                    Some((config, Opened { stream, tx, grx, fault })) => {
+                    Some((
+                        config,
+                        Opened {
+                            stream,
+                            tx,
+                            grx,
+                            fault,
+                            #[cfg(all(windows, feature = "asio"))]
+                            recovery,
+                        },
+                    )) => {
                         let rate = config.sample_rate;
                         let channels = usize::from(config.channels);
                         let buffer = match config.buffer_size {
@@ -278,6 +385,15 @@ impl Player {
                             tx,
                             side: new_side(grx),
                             _stream: Some(stream),
+                            #[cfg(all(windows, feature = "asio"))]
+                            asio_device: {
+                                use cpal::traits::DeviceTrait;
+                                device.id().ok().filter(|id| id.host() == cpal::HostId::Asio).map(|_| device)
+                            },
+                            #[cfg(all(windows, feature = "asio"))]
+                            asio_watch: Mutex::new(None),
+                            #[cfg(all(windows, feature = "asio"))]
+                            asio_recovery: recovery,
                             device_name: name,
                             device_rate: rate,
                             device_channels: config.channels,
@@ -355,6 +471,12 @@ impl Player {
             tx,
             side,
             _stream: None,
+            #[cfg(all(windows, feature = "asio"))]
+            asio_device: None,
+            #[cfg(all(windows, feature = "asio"))]
+            asio_watch: Mutex::new(None),
+            #[cfg(all(windows, feature = "asio"))]
+            asio_recovery: None,
             device_name: "No audio device (silent)".into(),
             device_rate: rate,
             device_channels: 0,

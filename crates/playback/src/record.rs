@@ -45,12 +45,18 @@ const RING_SECONDS: usize = 4;
 const STALL: Duration = Duration::from_secs(2);
 const GONE: u8 = 1;
 const BROKEN: u8 = 2;
+/// The stream was invalidated on a device that is still present (see `devices::stream_reset`).
+const RESET: u8 = 3;
 
 /// Why the input can't go on.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Trouble {
     /// The device went away or stopped sending audio, or its callback hit a bug.
     Device(String),
+    /// The device is still present but asked for the stream to be rebuilt (cpal's
+    /// `StreamInvalidated` on any audio system, such as an ASIO driver's reset request). Reopening
+    /// the device restores input.
+    Reset(String),
     /// Writing a take failed (a full disk, say).
     Disk(String),
 }
@@ -136,6 +142,20 @@ impl Shared {
     }
 }
 
+/// Why capture could not be opened on the player's audio device.
+#[derive(Debug)]
+pub struct InputOpenError {
+    pub message: String,
+    /// CPAL may have discarded the active ASIO output buffers while opening capture.
+    pub rebuild_output: bool,
+}
+
+impl From<String> for InputOpenError {
+    fn from(message: String) -> Self {
+        Self { message, rebuild_output: false }
+    }
+}
+
 pub struct Recorder {
     shared: Arc<Shared>,
     /// Live input for monitoring (always fed while the input stream runs).
@@ -197,7 +217,8 @@ where
             // or a stream that must be rebuilt (`StreamInvalidated`) stops capture.
             // `DeviceChanged` (a rerouted default device) and an xrun are not faults.
             if crate::devices::stream_lost(&e) {
-                let _ = errors.fault.compare_exchange(0, GONE, Ordering::Relaxed, Ordering::Relaxed);
+                let code = if crate::devices::stream_reset(&e) { RESET } else { GONE };
+                let _ = errors.fault.compare_exchange(0, code, Ordering::Relaxed, Ordering::Relaxed);
             }
             log::warn!("input stream error: {e}");
         },
@@ -222,6 +243,47 @@ fn pick_input_config(configs: &[cpal::SupportedStreamConfigRange], rate: u32) ->
         .map(|(_, _, config)| config)
 }
 
+#[cfg(any(test, not(target_os = "freebsd")))]
+fn input_config_at_rate(
+    configs: &[cpal::SupportedStreamConfigRange],
+    preferred_rate: Option<u32>,
+    required_rate: Option<u32>,
+) -> Result<Option<cpal::SupportedStreamConfig>, String> {
+    if let Some(rate) = required_rate {
+        if configs.is_empty() {
+            return Err("the active ASIO device reports no input configurations".into());
+        }
+        // An active ASIO input and output share the same driver clock.
+        return pick_input_config(configs, rate).map(Some).ok_or_else(|| format!("ASIO input does not support the active output rate ({rate} Hz)"));
+    }
+    Ok(preferred_rate.and_then(|rate| pick_input_config(configs, rate)))
+}
+
+#[cfg(any(test, not(target_os = "freebsd")))]
+fn start_capture<S, E: std::fmt::Display>(
+    mut config: cpal::StreamConfig,
+    shared_asio: bool,
+    mut build: impl FnMut(cpal::StreamConfig) -> Result<S, E>,
+    play: impl FnOnce(&S) -> Result<(), E>,
+) -> Result<S, InputOpenError> {
+    let stream = match build(config) {
+        Err(e) if !shared_asio && config.buffer_size != cpal::BufferSize::Default => {
+            log::warn!("cannot open the input with buffer {:?}: {e}; using the device default", config.buffer_size);
+            config.buffer_size = cpal::BufferSize::Default;
+            build(config)
+        }
+        result => result,
+    };
+    // CPAL 0.18 may remove the output buffers before a duplex build fails. Retrying here
+    // could succeed with capture only. Let the player restore output before another attempt.
+    stream
+        .and_then(|stream| {
+            play(&stream)?;
+            Ok(stream)
+        })
+        .map_err(|error| InputOpenError { message: error.to_string(), rebuild_output: shared_asio })
+}
+
 impl Recorder {
     /// Open the default input device. Errors when there is none (the caller shows a message).
     pub fn open() -> Result<Recorder, String> {
@@ -233,19 +295,32 @@ impl Recorder {
     /// drivers usually are) are converted to f32.
     #[cfg(not(target_os = "freebsd"))]
     pub fn open_with(audio: &crate::AudioConfig) -> Result<Recorder, String> {
-        use cpal::traits::{DeviceTrait, StreamTrait};
         let host = crate::devices::host(audio);
         let device = crate::devices::device(&host, audio.input.as_deref(), false).ok_or("no audio input device")?;
-        let name = crate::devices::device_name(&device).unwrap_or_else(|| "Input".into());
+        Self::open_on_device(&device, audio, None).map_err(|error| error.message)
+    }
+
+    #[cfg(not(target_os = "freebsd"))]
+    pub(crate) fn open_on_device(
+        device: &cpal::Device,
+        audio: &crate::AudioConfig,
+        shared_output: Option<(u32, cpal::BufferSize)>,
+    ) -> Result<Recorder, InputOpenError> {
+        use cpal::traits::{DeviceTrait, StreamTrait};
+        let required_rate = shared_output.map(|(rate, _)| rate);
+        let name = crate::devices::device_name(device).unwrap_or_else(|| "Input".into());
         // At the chosen rate when the device offers it, so input and output run together: the
         // best format first, then the most channels.
-        let configs: Vec<cpal::SupportedStreamConfigRange> = device.supported_input_configs().map(|configs| configs.collect()).unwrap_or_default();
-        let at_rate = audio.sample_rate.and_then(|r| pick_input_config(&configs, r));
-        let cfg = match at_rate {
+        let configs: Vec<_> = match device.supported_input_configs() {
+            Ok(configs) => configs.collect(),
+            Err(err) if required_rate.is_some() => return Err(err.to_string().into()),
+            Err(_) => Vec::new(),
+        };
+        let cfg = match input_config_at_rate(&configs, audio.sample_rate, required_rate)? {
             Some(c) => c,
             None => {
                 let d = device.default_input_config().map_err(|e| e.to_string())?;
-                // cpal 0.18's default can name a format these callbacks do not decode (I24, F64);
+                // cpal 0.18's default can name a format these callbacks do not decode (e.g. F64);
                 // open the same rate and channels in a format they do.
                 if crate::devices::format_rank(d.sample_format()).is_some() {
                     d
@@ -257,30 +332,21 @@ impl Recorder {
         };
         let format = cfg.sample_format();
         if crate::devices::format_rank(format).is_none() {
-            return Err(format!("unsupported input sample format {format:?}"));
+            return Err(format!("unsupported input sample format {format:?}").into());
         }
         let mut config = cfg.config();
-        config.buffer_size = crate::devices::buffer_size(audio.buffer_size, cfg.buffer_size());
+        config.buffer_size = shared_output.map_or_else(|| crate::devices::buffer_size(audio.buffer_size, cfg.buffer_size()), |(_, buffer)| buffer);
         let channels = usize::from(config.channels).max(1);
         let ring = CaptureRing::new((config.sample_rate as usize).saturating_mul(channels * RING_SECONDS).min(1 << 25));
         let shared = Arc::new(Shared::new(ring));
         let monitor = InputRing::new(usize::from(config.channels), config.sample_rate);
         let build = |config: cpal::StreamConfig| match format {
-            cpal::SampleFormat::I32 => build_input::<i32>(&device, config, &shared, &monitor),
-            cpal::SampleFormat::I16 => build_input::<i16>(&device, config, &shared, &monitor),
-            _ => build_input::<f32>(&device, config, &shared, &monitor),
+            cpal::SampleFormat::I32 => build_input::<i32>(device, config, &shared, &monitor),
+            cpal::SampleFormat::I24 => build_input::<cpal::I24>(device, config, &shared, &monitor),
+            cpal::SampleFormat::I16 => build_input::<i16>(device, config, &shared, &monitor),
+            _ => build_input::<f32>(device, config, &shared, &monitor),
         };
-        // The chosen buffer size first; if the device refuses it, its default.
-        let stream = match build(config) {
-            Ok(s) => s,
-            Err(e) if config.buffer_size != cpal::BufferSize::Default => {
-                log::warn!("cannot open the input with buffer {:?}: {e}; using the device default", config.buffer_size);
-                config.buffer_size = cpal::BufferSize::Default;
-                build(config).map_err(|e| e.to_string())?
-            }
-            Err(e) => return Err(e.to_string()),
-        };
-        stream.play().map_err(|e| e.to_string())?;
+        let stream = start_capture(config, shared_output.is_some(), build, StreamTrait::play)?;
         let seen = (0, Instant::now());
         Ok(Recorder { monitor, shared, _stream: Some(stream), device_name: name, sample_rate: config.sample_rate, channels, writer: None, seen })
     }
@@ -331,6 +397,7 @@ impl Recorder {
         let name = &self.device_name;
         match self.shared.fault.load(Ordering::Relaxed) {
             GONE => return Some(Trouble::Device(format!("“{name}” is unavailable"))),
+            RESET => return Some(Trouble::Reset(format!("“{name}” asked to be reopened"))),
             BROKEN => return Some(Trouble::Device("the audio input hit an internal error (see the log)".into())),
             _ => {}
         }
@@ -579,6 +646,55 @@ mod tests {
         assert!(pick_input_config(&configs, 192_001).is_none(), "an unsupported rate falls back to the device default");
     }
 
+    #[test]
+    fn input_config_accepts_a_twelve_channel_packed_pcm_device() {
+        let configs = [range(12, 44_100, 48_000, cpal::SampleFormat::I24)];
+        let config = pick_input_config(&configs, 48_000).unwrap();
+        assert_eq!(config.channels(), 12);
+        assert_eq!(config.sample_format(), cpal::SampleFormat::I24);
+    }
+
+    #[test]
+    fn shared_asio_input_cannot_fall_back_to_another_rate() {
+        assert_eq!(input_config_at_rate(&[], None, Some(48_000)).unwrap_err(), "the active ASIO device reports no input configurations");
+        let configs = [range(12, 44_100, 48_000, cpal::SampleFormat::I24)];
+        let config = input_config_at_rate(&configs, None, Some(48_000)).unwrap().unwrap();
+        assert_eq!(config.sample_rate(), 48_000);
+        assert!(input_config_at_rate(&configs, None, Some(96_000)).is_err());
+        assert!(input_config_at_rate(&configs, Some(96_000), None).unwrap().is_none());
+    }
+
+    #[test]
+    fn shared_asio_build_failure_requires_output_restore_before_retry() {
+        let config = cpal::StreamConfig { channels: 2, sample_rate: 48_000, buffer_size: cpal::BufferSize::Fixed(256) };
+        let mut attempted = Vec::new();
+        let build = |config: cpal::StreamConfig| {
+            attempted.push(config.buffer_size);
+            if config.buffer_size == cpal::BufferSize::Default { Ok(()) } else { Err("duplex build refused") }
+        };
+        let error = start_capture(config, true, build, |()| Ok(())).unwrap_err();
+        assert!(error.rebuild_output);
+        assert_eq!(error.message, "duplex build refused");
+        assert_eq!(attempted, [cpal::BufferSize::Fixed(256)]);
+    }
+
+    #[test]
+    fn standalone_capture_can_retry_and_shared_capture_can_succeed() {
+        let config = cpal::StreamConfig { channels: 2, sample_rate: 48_000, buffer_size: cpal::BufferSize::Fixed(256) };
+        let fallback = start_capture(
+            config,
+            false,
+            |attempt| match attempt.buffer_size {
+                cpal::BufferSize::Default => Ok(attempt.buffer_size),
+                cpal::BufferSize::Fixed(_) => Err("fixed buffer refused"),
+            },
+            |_| Ok(()),
+        );
+        assert_eq!(fallback.unwrap(), cpal::BufferSize::Default);
+        let duplex = start_capture(config, true, |attempt| Ok(attempt.buffer_size), |_| Ok::<(), &str>(()));
+        assert_eq!(duplex.unwrap(), cpal::BufferSize::Fixed(256));
+    }
+
     fn recorder(shared: &Arc<Shared>) -> Recorder {
         Recorder {
             shared: Arc::clone(shared),
@@ -616,6 +732,9 @@ mod tests {
         let gone = Arc::new(Shared::new(CaptureRing::new(64)));
         gone.fault.store(GONE, Ordering::Relaxed);
         assert_eq!(recorder(&gone).trouble(), Some(Trouble::Device("“Mic In” is unavailable".into())));
+        let reset = Arc::new(Shared::new(CaptureRing::new(64)));
+        reset.fault.store(RESET, Ordering::Relaxed);
+        assert_eq!(recorder(&reset).trouble(), Some(Trouble::Reset("“Mic In” asked to be reopened".into())));
     }
 
     #[test]

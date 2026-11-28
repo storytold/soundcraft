@@ -1,4 +1,4 @@
-use super::callback::{AudioState, Fault, guarded_block};
+use super::callback::{Fault, guarded_block};
 use super::{Arc, AudioConfig, Cmd, Ordering, Plugin, Receiver, Sender, Shared, devices, mark_audio_thread};
 
 /// Start a freshly built output stream. `false` when the device refuses to start it, so the caller
@@ -15,6 +15,8 @@ pub(crate) fn start_stream(stream: &impl cpal::traits::StreamTrait) -> bool {
 
 /// A built output stream and the channels and fault flag its callback shares with the player.
 pub(crate) struct Opened {
+    #[cfg(all(windows, feature = "asio"))]
+    pub(crate) recovery: Option<crate::asio_recovery::native::Recovery>,
     pub(crate) stream: cpal::Stream,
     pub(crate) tx: Sender<Cmd>,
     pub(crate) grx: Receiver<Vec<Box<dyn Plugin>>>,
@@ -39,33 +41,60 @@ pub(crate) fn first_started<A: std::fmt::Debug, S, E: std::fmt::Display>(
     None
 }
 
-/// The output stream: the mix renders f32 into a scratch buffer allocated here (so the callback
-/// never allocates), converted to the device's sample type.
+/// [`build_output`] in the device's sample `format`.
+pub(crate) fn build_format(
+    device: &cpal::Device,
+    config: cpal::StreamConfig,
+    format: cpal::SampleFormat,
+    fault: &Arc<Fault>,
+    shared: &Arc<Shared>,
+    begin: impl FnMut(usize) + Send + 'static,
+    render: impl FnMut(&mut [f32], usize) + Send + 'static,
+) -> Result<cpal::Stream, cpal::Error> {
+    match format {
+        cpal::SampleFormat::I32 => build_output::<i32>(device, config, fault, shared, begin, render),
+        cpal::SampleFormat::I24 => build_output::<cpal::I24>(device, config, fault, shared, begin, render),
+        cpal::SampleFormat::I16 => build_output::<i16>(device, config, fault, shared, begin, render),
+        _ => build_output::<f32>(device, config, fault, shared, begin, render),
+    }
+}
+
+/// The output stream: `render` fills f32 into a scratch buffer allocated here (so the callback
+/// never allocates), converted to the device's sample type. `begin` is told each callback's
+/// frame count first.
 pub(crate) fn build_output<T>(
     device: &cpal::Device,
     config: cpal::StreamConfig,
-    mut state: AudioState,
-    channels: usize,
     fault: &Arc<Fault>,
     shared: &Arc<Shared>,
+    mut begin: impl FnMut(usize) + Send + 'static,
+    mut render: impl FnMut(&mut [f32], usize) + Send + 'static,
 ) -> Result<cpal::Stream, cpal::Error>
 where
     T: cpal::SizedSample + cpal::FromSample<f32>,
 {
     use cpal::traits::DeviceTrait;
+    let channels = usize::from(config.channels);
     let frame = channels.max(1);
     let mut scratch = vec![0.0f32; 8192 * frame];
     let chunk = scratch.len();
     let (failed, guard, gone) = (Arc::clone(fault), Arc::clone(shared), Arc::clone(fault));
+    #[cfg(all(windows, feature = "asio"))]
+    let asio = device.id().is_ok_and(|id| id.host() == cpal::HostId::Asio);
     device.build_output_stream(
         config,
         move |data: &mut [T], _: &cpal::OutputCallbackInfo| {
             mark_audio_thread();
+            #[cfg(all(windows, feature = "asio"))]
+            if asio {
+                failed.asio_frames.fetch_add((data.len() / frame) as u64, Ordering::Relaxed);
+            }
+            begin(data.len() / frame);
             for out in data.chunks_mut(chunk) {
                 let Some(s) = scratch.get_mut(..out.len()) else { return };
-                guarded_block(&failed, &guard, s, |d| state.fill(d, channels));
+                guarded_block(&failed, &guard, s, |d| render(d, channels));
                 for (o, x) in out.iter_mut().zip(s.iter()) {
-                    *o = T::from_sample(*x);
+                    *o = output_sample(*x);
                 }
             }
         },
@@ -74,11 +103,14 @@ where
         move |e: cpal::Error| {
             mark_audio_thread();
             // cpal 0.18 uses one error type for every operation. A device that went away, or a
-            // stream that must be rebuilt (`StreamInvalidated`), stops playback until the user
-            // reconnects; a rerouted default device (`DeviceChanged`) keeps playing on the new
+            // stream that must be rebuilt (`StreamInvalidated`), stops playback: a reset on a
+            // device still present is reopened automatically, a lost device waits for Reconnect;
+            // a rerouted default device (`DeviceChanged`) keeps playing on the new
             // route, and an xrun is transient, so neither counts as losing the stream.
             if devices::stream_lost(&e) {
-                gone.gone.store(true, Ordering::Relaxed);
+                // Set before `gone`, so a reader that sees `gone` also sees whether it was a reset.
+                gone.reset.store(devices::stream_reset(&e), Ordering::Relaxed);
+                gone.gone.store(true, Ordering::Release);
             }
             log::warn!("audio stream error: {e}");
         },
@@ -86,8 +118,32 @@ where
     )
 }
 
+fn output_sample<T: cpal::SizedSample + cpal::FromSample<f32>>(sample: f32) -> T {
+    // The I24 conversion scales +1.0 to 0x800000, which is negative full scale
+    // when ASIO packs it into three bytes.
+    const I24_POSITIVE_FULL_SCALE: f32 = 8_388_607.0 / 8_388_608.0;
+    let sample = if T::FORMAT == cpal::SampleFormat::I24 {
+        if sample.is_finite() { sample.clamp(-1.0, I24_POSITIVE_FULL_SCALE) } else { 0.0 }
+    } else {
+        sample
+    };
+    T::from_sample(sample)
+}
+
+#[cfg(test)]
+#[test]
+fn output_sample_preserves_packed_i24_full_scale() {
+    assert_eq!(output_sample::<cpal::I24>(1.0).inner(), 8_388_607);
+    assert_eq!(output_sample::<cpal::I24>(-1.0).inner(), -8_388_608);
+    assert_eq!(output_sample::<cpal::I24>(0.5).inner(), 4_194_304);
+    assert_eq!(output_sample::<cpal::I24>(-1.5).inner(), -8_388_608);
+    assert_eq!(output_sample::<cpal::I24>(1.5).inner(), 8_388_607);
+    assert_eq!(output_sample::<cpal::I24>(f32::NAN).inner(), 0);
+    assert_eq!(output_sample::<f32>(1.0), 1.0);
+}
+
 /// Open the output device `cfg` chooses (else the default) at the chosen rate (else the session
-/// rate) if possible, in the best sample format it offers (f32, else 32- or 16-bit integers),
+/// rate) if possible, in the best sample format it offers (f32, else 32-, 24-, or 16-bit integers),
 /// with as many channels as it offers up to `want_ch` (at least stereo when available), and the
 /// chosen buffer size when the device allows it.
 pub(crate) fn open_device(
@@ -111,7 +167,7 @@ pub(crate) fn open_device(
         None => {
             let d = device.default_output_config().map_err(|e| e.to_string())?;
             let format = d.sample_format();
-            // cpal 0.18's default can name a format these callbacks do not decode (I24, F64);
+            // cpal 0.18's default can name a format these callbacks do not decode (e.g. F64);
             // open the same rate and channels in a format they do, rather than lose output.
             let c = if devices::format_rank(format).is_some() {
                 d

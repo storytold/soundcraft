@@ -44,7 +44,7 @@ When you close a gap, delete its entry (or shrink it) in the same PR, and bump t
 
 - **Done (2026-10-12):** Setup › Playback Engine chooses the audio system, output and input
   device, sample rate and device buffer size (kept with the preferences, per machine; `ui.audio_device`
-  for agents); f32 and 16/32-bit integer devices; ASIO behind the opt-in `asio` build feature
+  for agents); f32 and 16/24/32-bit integer devices; ASIO behind the opt-in `asio` build feature
   (verified on Windows with an SSL 2+ at 128 samples).
 - **Done (2026-10-25):** `setup.playback_engine` and `setup.hardware` apply `device` (the output
   name) and `buffer_size` in the desktop app on the same path as the Playback Engine window

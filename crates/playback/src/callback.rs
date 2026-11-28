@@ -10,29 +10,54 @@ use soundcraft_model::TrackKind;
 #[derive(Default)]
 pub(crate) struct Fault {
     /// A block panicked: output stays silent from then on.
-    failed: AtomicBool,
-    /// The device went away or the stream was invalidated: only a reconnect can restore audio.
+    pub(crate) failed: AtomicBool,
+    /// The device went away or the stream was invalidated: a reconnect restores audio, and with
+    /// `reset` the UI reopens the device itself.
     pub(crate) gone: AtomicBool,
+    /// Set with `gone` when the stream was invalidated on a device that is still present (cpal's
+    /// `StreamInvalidated` on any audio system, such as an ASIO driver's reset request), so the UI
+    /// can reopen it without asking the user.
+    pub(crate) reset: AtomicBool,
     /// Blocks so far, to tell a device that stopped asking for audio.
     pub(crate) beats: std::sync::atomic::AtomicU64,
+    /// Frames an ASIO output has asked for so far, to tell a clock that stopped keeping time.
+    #[cfg(all(windows, feature = "asio"))]
+    pub(crate) asio_frames: std::sync::atomic::AtomicU64,
     /// The UI has been told.
     reported: AtomicBool,
 }
 
 impl Fault {
     /// What stopped the output, once.
-    pub(crate) fn trouble(&self, stalled: bool) -> Option<OutputTrouble> {
+    /// `clock` is what the watch on the device's callbacks found, if anything.
+    pub(crate) fn trouble(&self, clock: Option<OutputTrouble>) -> Option<OutputTrouble> {
         let trouble = if self.failed.load(Ordering::Relaxed) {
             OutputTrouble::Bug
-        } else if self.gone.load(Ordering::Relaxed) {
-            OutputTrouble::Gone
-        } else if stalled {
-            OutputTrouble::Stalled
+        } else if self.gone.load(Ordering::Acquire) {
+            if self.reset.load(Ordering::Relaxed) { OutputTrouble::Reset } else { OutputTrouble::Gone }
         } else {
-            return None;
+            clock?
         };
         (!self.reported.swap(true, Ordering::Relaxed)).then_some(trouble)
     }
+}
+
+/// Some ASIO drivers keep calling back sporadically after USB removal. Count actual device frames
+/// over a full stall interval so those callbacks cannot indefinitely mask a dead audio clock.
+#[cfg(any(test, all(windows, feature = "asio")))]
+pub(crate) fn asio_clock_slow(seen: &mut Option<(u64, std::time::Instant)>, frames: u64, now: std::time::Instant, rate: u32, playing: bool) -> bool {
+    if !playing {
+        *seen = None;
+        return false;
+    }
+    let (previous, since) = *seen.get_or_insert((frames, now));
+    let elapsed = now.saturating_duration_since(since);
+    if elapsed < STALL {
+        return false;
+    }
+    *seen = Some((frames, now));
+    // Allow normal callback jitter and brief load spikes; only a severe, sustained slowdown counts.
+    (frames.wrapping_sub(previous) as f64) < f64::from(rate) * elapsed.as_secs_f64() * 0.5
 }
 
 /// How long a playing output may go without a block before it counts as stalled.
