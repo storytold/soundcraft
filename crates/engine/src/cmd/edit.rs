@@ -9,7 +9,7 @@ use super::more_util::toggle_flag;
 use crate::edit as ops;
 use crate::{Clipboard, Engine, Result, cmd};
 use serde_json::{Value, json};
-use soundcraft_model::{ClipId, EditMode, Fade, FadeShape, Session, TrackId};
+use soundcraft_model::{Clip, ClipId, EditMode, Fade, FadeShape, Session, TrackId};
 
 pub fn specs() -> Vec<CommandSpec> {
     vec![
@@ -741,10 +741,9 @@ fn trim_to_file(e: &mut Engine, p: &Value) -> Result<Value> {
         if let Some((frames, lo, hi)) = trim_limits(s, id)
             && let Some(c) = s.find_clip_mut(id)
         {
-            let off = c.source_offset();
-            let new_start = c.start - off;
-            c.trim_start_to(new_start.max(lo));
-            c.trim_end_to((new_start + frames).min(hi));
+            let (file_start, file_end) = file_span(c, frames);
+            c.trim_start_to(file_start.max(lo));
+            c.trim_end_to(file_end.min(hi));
             n += 1;
         }
     }
@@ -760,13 +759,22 @@ fn trim_to_fill(e: &mut Engine, p: &Value) -> Result<Value> {
         if let Some((frames, lo, hi)) = trim_limits(s, id)
             && let Some(c) = s.find_clip_mut(id)
         {
-            let file_start = c.start - c.source_offset();
+            let (file_start, file_end) = file_span(c, frames);
             c.trim_start_to(r.start.max(file_start).max(lo));
-            c.trim_end_to(r.end.min(file_start + frames).min(hi));
+            c.trim_end_to(r.end.min(file_end).min(hi));
             n += 1;
         }
     }
     Ok(json!({"trimmed": n}))
+}
+
+/// Where a clip's whole source file lies on the timeline. The mixer plays `offset + rel / stretch`,
+/// so the file starts `offset * stretch` before the clip and spans `frames * stretch` samples.
+fn file_span(c: &Clip, frames: Samples) -> (Samples, Samples) {
+    let stretch = if c.stretch.is_finite() && c.stretch > 0.0 { c.stretch } else { 1.0 };
+    let scale = |n: Samples| if (stretch - 1.0).abs() >= 1e-9 { (n as f64 * stretch).round() as Samples } else { n };
+    let start = c.start.saturating_sub(scale(c.source_offset()));
+    (start, start.saturating_add(scale(frames)))
 }
 
 /// How far a trim may extend an audio clip: its source length in frames, and the earliest
@@ -1252,6 +1260,33 @@ mod tests {
         let (mut e, t, ids) = trim_session(&[(0, 10_000, 0), (20_000, 10_000, 20_000), (40_000, 5_000, 0)]);
         e.execute("edit.trim_to_file_boundaries", &json!({"clips": [ids[1].0]})).unwrap();
         assert_eq!(bounds(&e, t), vec![(0, 10_000, 0), (10_000, 40_000, 10_000), (40_000, 45_000, 0)]);
+    }
+
+    /// A lone stretched clip (start 20,000, length 10,000, source offset 5,000) over the 60,000-frame source.
+    fn stretched_trim_session(stretch: f64) -> (Engine, TrackId, Vec<ClipId>) {
+        let (mut e, t, ids) = trim_session(&[(20_000, 10_000, 5_000)]);
+        if let Some(c) = e.session_mut().find_clip_mut(ids[0]) {
+            c.stretch = stretch;
+        }
+        (e, t, ids)
+    }
+
+    #[test]
+    fn trim_to_file_boundaries_covers_the_whole_stretched_file() {
+        let (mut e, t, ids) = stretched_trim_session(2.0);
+        e.execute("edit.trim_to_file_boundaries", &json!({"clips": [ids[0].0]})).unwrap();
+        let (start, end, offset) = bounds(&e, t)[0];
+        assert_eq!(offset, 0, "the clip starts at the file start");
+        assert!(((end - start) as f64 / 2.0 - 60_000.0).abs() <= 1.0, "it plays every file frame: {start}..{end}");
+    }
+
+    #[test]
+    fn trim_to_fill_selection_stops_at_the_stretched_file() {
+        let (mut e, t, ids) = stretched_trim_session(2.0);
+        e.execute("edit.trim_to_fill_selection", &json!({"clips": [ids[0].0], "start": 0, "end": 500_000})).unwrap();
+        let (start, end, offset) = bounds(&e, t)[0];
+        assert_eq!(offset, 0);
+        assert!(((end - start) as f64 / 2.0 - 60_000.0).abs() <= 1.0, "a wider selection stops at the file: {start}..{end}");
     }
 
     #[test]
