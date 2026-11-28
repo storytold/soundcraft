@@ -56,7 +56,7 @@ echo "==> SoundCraft $VERSION Flatpak bundle for $ARCH from $(basename "$TARBALL
 # The packaged app unpacks to tens of MB; an archive that lists far more would fill the build
 # host's disk before anything here could check it.
 MAX_UNPACKED_BYTES=$((2 * 1024 * 1024 * 1024))
-UNPACKED="$(tar -tzvf "$TARBALL" | awk '{ s += $3 } END { print s + 0 }')"
+UNPACKED="$(tar --numeric-owner -tzvf "$TARBALL" | awk '{ s += $3 } END { print s + 0 }')"
 [ "$UNPACKED" -le "$MAX_UNPACKED_BYTES" ] || { echo "error: $TARBALL unpacks to $UNPACKED bytes, more than $MAX_UNPACKED_BYTES" >&2; exit 1; }
 
 WORK="$CARGO_TARGET_DIR/flatpak-bundle"
