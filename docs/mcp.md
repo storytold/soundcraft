@@ -113,7 +113,14 @@ Resources: `soundcraft://session` (full session JSON), `soundcraft://commands`.
 - Programmatic calls never open dialogs; empty params act on the current selection.
 - Positions: samples, `{"seconds": x}`, or `"bars_beats:5|1|000"`-style strings.
 - Tracks by name or id; clips by id.
-- Every command is undoable through `edit.undo` unless it is a query or a view setting.
+- Every edit is undoable through `edit.undo`. Queries and zoom aren't undo steps. Nor are
+  listening controls, record enable, input monitoring and track view settings (solo, mute, track
+  height and view, insert bypass, group activation, Zoom Toggle, …): undo keeps what those commands
+  set, but still takes back what the edit itself changed (a track preset's mute, for example).
+  Session options such as `options.loop_record` are still restored by undo. Inserts have no
+  identity of their own, so a bypass follows a plugin that undo moves by its settings: it can be
+  lost if the undone edit both moved the plugin and changed its settings, and it stays in the slot
+  when two copies have the same settings.
 
 The acceptance test `crates/automation/tests/it/agent_tasks.rs` drives a realistic session end to end
 through MCP only (mixing, plugins, routing, editing with undo, markers, tempo, automation, bounce,

@@ -21,9 +21,10 @@ pub mod io;
 pub mod score;
 
 use serde_json::{Value, json};
-use soundcraft_model::{Clip, Session, TrackId, ZoomState};
+use soundcraft_model::{Clip, GroupId, Insert, Session, Track, TrackId, ZoomState};
 use soundcraft_time::Samples;
 use std::cell::Cell;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use dirty::same_document;
@@ -174,6 +175,137 @@ impl Clipboard {
 struct HistoryEntry {
     label: String,
     doc: Arc<Session>,
+    /// The settings `noundo` commands changed after this step, which Undo and Redo leave as they
+    /// are.
+    touched: HashSet<Live>,
+}
+
+/// A setting Undo and Redo leave as it is (#492): what `noundo` commands change.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+enum Live {
+    Track(TrackId, TrackLive),
+    GroupActive(GroupId),
+    /// Zoom Toggle's way back, with the zoom it's showing.
+    ZoomToggle,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+enum TrackLive {
+    Mute,
+    Solo,
+    SoloSafe,
+    AutomationMode,
+    Height,
+    Hidden,
+    View,
+    FolderOpen,
+    /// The bypass of the plugin (by id) a command found in an insert slot.
+    Bypass(usize, String),
+}
+
+impl TrackLive {
+    const FIELDS: [TrackLive; 8] = [
+        TrackLive::Mute,
+        TrackLive::Solo,
+        TrackLive::SoloSafe,
+        TrackLive::AutomationMode,
+        TrackLive::Height,
+        TrackLive::Hidden,
+        TrackLive::View,
+        TrackLive::FolderOpen,
+    ];
+
+    fn same(&self, a: &Track, b: &Track) -> bool {
+        match self {
+            TrackLive::Mute => a.mixer.mute == b.mixer.mute,
+            TrackLive::Solo => a.mixer.solo == b.mixer.solo,
+            TrackLive::SoloSafe => a.mixer.solo_safe == b.mixer.solo_safe,
+            TrackLive::AutomationMode => a.mixer.automation_mode == b.mixer.automation_mode,
+            TrackLive::Height => a.height == b.height,
+            TrackLive::Hidden => a.hidden == b.hidden,
+            TrackLive::View => a.view == b.view,
+            TrackLive::FolderOpen => a.folder_open == b.folder_open,
+            // Not in `FIELDS`: `live_changes` compares the slots itself.
+            TrackLive::Bypass(..) => true,
+        }
+    }
+
+    fn copy(&self, from: &Track, to: &mut Track) {
+        match self {
+            TrackLive::Mute => to.mixer.mute = from.mixer.mute,
+            TrackLive::Solo => to.mixer.solo = from.mixer.solo,
+            TrackLive::SoloSafe => to.mixer.solo_safe = from.mixer.solo_safe,
+            TrackLive::AutomationMode => to.mixer.automation_mode = from.mixer.automation_mode,
+            TrackLive::Height => to.height = from.height,
+            TrackLive::Hidden => to.hidden = from.hidden,
+            TrackLive::View => to.view.clone_from(&from.view),
+            TrackLive::FolderOpen => to.folder_open = from.folder_open,
+            TrackLive::Bypass(i, plugin) => {
+                if let Some(f) = insert_at(from, *i).filter(|f| f.plugin == *plugin)
+                    && let Some(t) = same_insert(f, *i, from, to).and_then(|j| to.mixer.inserts.get_mut(j)).and_then(Option::as_mut)
+                {
+                    t.bypass = f.bypass;
+                }
+            }
+        }
+    }
+}
+
+fn insert_at(t: &Track, slot: usize) -> Option<&Insert> {
+    t.mixer.inserts.get(slot).and_then(Option::as_ref)
+}
+
+/// Whether `a` and `b` are the same plugin with the same settings, bypassed or not. The plugin
+/// check first spares cloning the settings of a different plugin.
+fn alike(a: &Insert, b: &Insert) -> bool {
+    a.plugin == b.plugin && Insert { bypass: b.bypass, ..a.clone() } == *b
+}
+
+/// The slot of `to` holding the plugin `f` (in `from`'s `slot`), as far as an insert without an id
+/// can be told apart: where `to` has it with the same settings (it may have moved), else in the
+/// same slot if only its settings differ there. `None` when that slot holds an insert that `from`
+/// has in a slot whose contents differ in `to` (the undone edit moved it), so a bypass never goes to
+/// another instance.
+fn same_insert(f: &Insert, slot: usize, from: &Track, to: &Track) -> Option<usize> {
+    if insert_at(to, slot).is_some_and(|t| alike(t, f)) {
+        return Some(slot);
+    }
+    let moved =
+        (0..to.mixer.inserts.len()).find(|&j| insert_at(to, j).is_some_and(|t| alike(t, f)) && !insert_at(from, j).is_some_and(|c| alike(c, f)));
+    moved.or_else(|| {
+        let t = insert_at(to, slot).filter(|t| t.plugin == f.plugin)?;
+        let moved_here =
+            (0..from.mixer.inserts.len()).any(|j| insert_at(from, j).is_some_and(|c| alike(c, t) && !insert_at(to, j).is_some_and(|u| alike(u, c))));
+        (!moved_here).then_some(slot)
+    })
+}
+
+/// The settings that differ between `a` and `b`.
+fn live_changes(a: &Session, b: &Session) -> Vec<Live> {
+    let mut out = Vec::new();
+    // Tracks usually line up; a lookup by id only when they don't (selecting runs this too).
+    let aligned = a.tracks.len() == b.tracks.len() && a.tracks.iter().zip(&b.tracks).all(|(x, y)| x.id == y.id);
+    let by_id: HashMap<TrackId, &Track> = if aligned { HashMap::new() } else { a.tracks.iter().map(|t| (t.id, t)).collect() };
+    for (i, bt) in b.tracks.iter().enumerate() {
+        let Some(at) = (if aligned { a.tracks.get(i) } else { by_id.get(&bt.id).copied() }) else { continue };
+        out.extend(TrackLive::FIELDS.into_iter().filter(|f| !f.same(at, bt)).map(|f| Live::Track(bt.id, f)));
+        for (slot, y) in bt.mixer.inserts.iter().enumerate() {
+            if let Some(y) = y
+                && insert_at(at, slot).map(|x| x.bypass) != Some(y.bypass)
+            {
+                out.push(Live::Track(bt.id, TrackLive::Bypass(slot, y.plugin.clone())));
+            }
+        }
+    }
+    for bg in &b.groups {
+        if a.groups.iter().any(|ag| ag.id == bg.id && ag.active != bg.active) {
+            out.push(Live::GroupActive(bg.id));
+        }
+    }
+    if a.edit.zoom_toggle != b.edit.zoom_toggle {
+        out.push(Live::ZoomToggle);
+    }
+    out
 }
 
 /// Most decoded imports [`Engine::offer_import`] holds at once (each can be gigabytes).
@@ -361,7 +493,8 @@ impl Engine {
         let cur = std::mem::replace(&mut self.doc, h.doc);
         self.keep_edit_mode(&cur);
         self.keep_runtime_track_states(&cur);
-        self.redo.push(HistoryEntry { label: h.label, doc: cur });
+        self.keep_live_state(&h.touched, &cur);
+        self.redo.push(HistoryEntry { label: h.label, doc: cur, touched: HashSet::new() });
         self.revision = self.revision.wrapping_add(1);
         self.dirty = true;
         true
@@ -373,7 +506,8 @@ impl Engine {
         let cur = std::mem::replace(&mut self.doc, h.doc);
         self.keep_edit_mode(&cur);
         self.keep_runtime_track_states(&cur);
-        self.undo.push(HistoryEntry { label: h.label, doc: cur });
+        self.keep_live_state(&h.touched, &cur);
+        self.undo.push(HistoryEntry { label: h.label, doc: cur, touched: HashSet::new() });
         self.revision = self.revision.wrapping_add(1);
         self.dirty = true;
         true
@@ -396,7 +530,7 @@ impl Engine {
     /// Undo and Redo must not restore live input states captured in document snapshots. A track
     /// absent from the current document comes back safe rather than inheriting a historical arm.
     fn keep_runtime_track_states(&mut self, from: &Session) {
-        let states: std::collections::HashMap<_, _> = from
+        let states: HashMap<_, _> = from
             .tracks
             .iter()
             .filter(|track| track.mixer.record_arm || track.mixer.input_monitor)
@@ -412,12 +546,59 @@ impl Engine {
         }
     }
 
+    /// Undo and Redo leave what isn't an edit as it is (#492): the settings `noundo` commands
+    /// changed since the step (`touched`) keep their values from `cur`. What the edit itself changed
+    /// is still undone. Record arm and input monitor are `keep_runtime_track_states`'s. A new
+    /// listening or track view setting needs its field in [`Live`]; other `noundo` settings (rulers,
+    /// grid, options) are still restored with the snapshot.
+    fn keep_live_state(&mut self, touched: &HashSet<Live>, cur: &Session) {
+        if touched.is_empty() {
+            return;
+        }
+        let doc = Arc::make_mut(&mut self.doc);
+        for live in touched {
+            match live {
+                Live::Track(id, field) => {
+                    if let (Some(c), Some(t)) = (cur.track(*id), doc.track_mut(*id)) {
+                        field.copy(c, t);
+                    }
+                }
+                Live::GroupActive(id) => {
+                    if let (Some(c), Some(g)) = (cur.groups.iter().find(|g| g.id == *id), doc.groups.iter_mut().find(|g| g.id == *id)) {
+                        g.active = c.active;
+                    }
+                }
+                // The way back belongs with the heights and zoom Zoom Toggle set.
+                Live::ZoomToggle => {
+                    let mut back = cur.edit.zoom_toggle.clone();
+                    // Not the heights of tracks this step doesn't have: a new track can take
+                    // their ids. Redo brings them back with the step that has the tracks.
+                    if let Some(b) = &mut back {
+                        b.heights.retain(|(id, _)| doc.track(*id).is_some());
+                    }
+                    doc.edit.zoom_toggle = back;
+                    doc.edit.zoom.samples_per_px = cur.edit.zoom.samples_per_px;
+                    doc.edit.zoom.scroll = cur.edit.zoom.scroll;
+                }
+            }
+        }
+    }
+
+    /// Notes the settings a `noundo` command changed (from `before`) on every step in the history,
+    /// so neither Undo nor Redo takes the user's latest setting back.
+    fn touch_live(&mut self, before: &Session) {
+        let changed = live_changes(before, &self.doc);
+        for h in self.undo.iter_mut().chain(self.redo.iter_mut()) {
+            h.touched.extend(changed.iter().cloned());
+        }
+    }
+
     /// Record an undo point manually (for interactive gestures committed by the UI).
     pub fn push_undo(&mut self, label: &str, before: Arc<Session>) {
         if Arc::ptr_eq(&before, &self.doc) {
             return;
         }
-        self.undo.push(HistoryEntry { label: label.to_string(), doc: before });
+        self.undo.push(HistoryEntry { label: label.to_string(), doc: before, touched: HashSet::new() });
         self.redo.clear();
         if self.undo.len() > self.history_limit {
             let excess = self.undo.len() - self.history_limit;
@@ -471,8 +652,13 @@ impl Engine {
         match result {
             Ok(v) => {
                 cmd::remember_selection(self, &before);
-                if spec.undoable && !Arc::ptr_eq(&before, &self.doc) {
-                    self.push_undo(spec.label, before);
+                if !Arc::ptr_eq(&before, &self.doc) {
+                    if spec.undoable {
+                        self.push_undo(spec.label, before);
+                    } else if !matches!(id, "edit.undo" | "edit.redo") {
+                        // Undo and Redo move through the history: what they change is the edits'.
+                        self.touch_live(&before);
+                    }
                 }
                 if spec.journal {
                     self.journal_append(id, params);
@@ -718,7 +904,7 @@ mod merge_tests {
         e.execute("transport.stop", &json!({})).unwrap();
         e.execute_merged("mix.volume", &json!({"track": t.0, "db": -2.0}), "fader").unwrap();
         assert_eq!(e.undo_history().len(), 1);
-        e.execute("mix.mute", &json!({"track": t.0})).unwrap();
+        e.execute("track.color", &json!({"tracks": [t.0], "color": 3})).unwrap();
         e.execute_merged("mix.volume", &json!({"track": t.0, "db": -3.0}), "fader").unwrap();
         assert_eq!(e.undo_history().len(), 3);
     }
@@ -794,7 +980,7 @@ mod dirty_tests {
             e.execute(id, &p).unwrap();
             assert!(!e.is_dirty(), "{id}");
         }
-        e.execute("mix.mute", &json!({"track": "Kick"})).unwrap();
+        e.execute("track.color", &json!({"tracks": ["Kick"], "color": 3})).unwrap();
         assert!(e.is_dirty());
         e.undo();
         assert!(!e.is_dirty());

@@ -1,6 +1,6 @@
 # Target-app parity: SoundCraft vs Avid Pro Tools
 
-> **Last reviewed:** 2026-11-14 · **Last updated:** 2026-11-14 · **Change:** minor (Performance row: recording is to disk (#84, #888); scores unchanged; previously minor: strict external-WAV AAF import; previously trivial: Frequency Shifter: 28 built-in processors; G-09/localization: pt-BR catalog; readiness estimates unchanged) · **Target:** Avid Pro Tools Ultimate 2026.4.1 (bundle 26.4.1.179, macOS)
+> **Last reviewed:** 2026-11-14 · **Last updated:** 2026-11-18 · **Change:** trivial (undo covers edits only, #492; previously minor: Performance row: recording is to disk (#84, #888); scores unchanged; strict external-WAV AAF import; previously trivial: Frequency Shifter: 28 built-in processors; G-09/localization: pt-BR catalog; readiness estimates unchanged) · **Target:** Avid Pro Tools Ultimate 2026.4.1 (bundle 26.4.1.179, macOS)
 
 The authoritative assessment of how close SoundCraft is to Pro Tools. [`ROADMAP.md`](../ROADMAP.md)
 summarizes it, [`gaps.md`](gaps.md) itemizes every shortfall, and the per-dimension docs go deeper:
@@ -155,7 +155,7 @@ microphone or interface, uses default settings, and exports a file to share.
 | Record from the default device | 12 % | 65 % | Works on the default input; forced monitoring can feed back (#42) |
 | Play, stop, loop, scroll, zoom | 10 % | 75 % | Half-speed after Stop (#101) |
 | Basic editing: select, cut/copy/paste, split, trim, move, fades | 18 % | 70 % | #3, #5 |
-| Undo/redo | 5 % | 90 % | Every command undoable |
+| Undo/redo | 5 % | 90 % | Every edit undoable; solo, mute, record and view settings aren't undo steps (#492) |
 | Volume, pan, mute, solo | 10 % | 85 % | |
 | Add a stock effect (EQ, compressor, reverb) and pick a preset | 10 % | 60 % | Generic panels, few presets |
 | Draw MIDI notes for a built-in synth | 5 % | 50 % | Two built-in instruments |
@@ -245,6 +245,7 @@ serializes more, because it needs hands-on testing.
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-11-18 | trivial | Undo/redo row: undo covers edits only (#492) |
 | 2026-11-14 | minor | Strict external-WAV AAF import added to format, interchange and alpha-gate evidence; readiness estimates unchanged |
 | 2026-11-09 | trivial | Built-in plugin counts: 28 processors + 3 instruments with the Frequency Shifter. Percentages unchanged |
 | 2026-11-05 | trivial | Localization row: English plus a near-complete pt-BR catalog for fixed UI strings (PR #1346), not native-reviewed. Percentages and hours unchanged |

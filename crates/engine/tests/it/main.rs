@@ -22,3 +22,4 @@ mod split_into_mono;
 mod time_key_signatures;
 mod track_name_collisions;
 mod trim_to_selection;
+mod undo_edits_only;

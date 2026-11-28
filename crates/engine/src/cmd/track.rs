@@ -21,7 +21,7 @@ pub fn specs() -> Vec<CommandSpec> {
         ),
         cmd!("track.group", "Group...", ["Track"], Some("Cmd+G"), "{name?, tracks?, edit?: true, mix?: true}", has_selection, group),
         cmd!("track.ungroup", "Delete Group", [], None, "{group: id|name}", always, delete_group),
-        cmd!("track.group_toggle", "Toggle Group Active", [], None, "{group: id|name}", always, toggle_group),
+        cmd!(noundo "track.group_toggle", "Toggle Group Active", [], None, "{group: id|name}", always, toggle_group),
         cmd!("track.group_modify", "Modify Group", [], None, "{group: id|name, name?, tracks?, edit?, mix?}", always, modify_group),
         cmd!(
             "track.duplicate",
@@ -65,7 +65,7 @@ pub fn specs() -> Vec<CommandSpec> {
         cmd!("track.comments", "Track Comments", [], None, "{track, comments}", has_tracks, comments),
         cmd!("track.color", "Track Color", [], None, "{tracks?, color: [r,g,b] | palette index}", has_selection, color),
         cmd!(
-            "track.height",
+            noundo "track.height",
             "Track Height",
             [],
             None,
@@ -73,14 +73,14 @@ pub fn specs() -> Vec<CommandSpec> {
             has_selection,
             height
         ),
-        cmd!("track.height_up", "Increase Track Height", [], Some("Ctrl+Up"), "{tracks?} — one preset taller", has_selection, |e, p| height_step(
+        cmd!(noundo "track.height_up", "Increase Track Height", [], Some("Ctrl+Up"), "{tracks?} — one preset taller", has_selection, |e, p| height_step(
             e, p, true
         )),
-        cmd!("track.height_down", "Decrease Track Height", [], Some("Ctrl+Down"), "{tracks?} — one preset shorter", has_selection, |e, p| {
+        cmd!(noundo "track.height_down", "Decrease Track Height", [], Some("Ctrl+Down"), "{tracks?} — one preset shorter", has_selection, |e, p| {
             height_step(e, p, false)
         }),
-        cmd!("track.view", "Track View", [], None, "{tracks?, view: waveform|blocks|notes|volume|pan|mute|<automation id>}", has_selection, view),
-        cmd!("track.hide", "Hide Track", [], None, "{tracks?, hidden?: bool}", has_selection, |e, p| flag(
+        cmd!(noundo "track.view", "Track View", [], None, "{tracks?, view: waveform|blocks|notes|volume|pan|mute|<automation id>}", has_selection, view),
+        cmd!(noundo "track.hide", "Hide Track", [], None, "{tracks?, hidden?: bool}", has_selection, |e, p| flag(
             e,
             p,
             "track.hide",
@@ -98,7 +98,7 @@ pub fn specs() -> Vec<CommandSpec> {
         )),
         cmd!("track.commit", "Commit...", ["Track"], Some("Alt+Shift+C"), "{tracks?}", has_selection, commit),
         cmd!("track.bounce", "Bounce...", ["Track"], Some("Cmd+Alt+Shift+B"), "{tracks?}", has_selection, commit),
-        cmd!("track.bypass_inserts", "All", ["Track", "Bypass Inserts"], None, "{tracks?, bypass?: bool}", has_selection, bypass_inserts),
+        cmd!(noundo "track.bypass_inserts", "All", ["Track", "Bypass Inserts"], None, "{tracks?, bypass?: bool}", has_selection, bypass_inserts),
         cmd!("track.mute_sends", "All", ["Track", "Mute Sends"], None, "{tracks?, mute?: bool}", has_selection, mute_sends),
         cmd!(noundo "track.set_record_to_input_only", "Set Record Tracks to Input Only", ["Track"], Some("Alt+K"), "{}", always, |e, _| {
             let s = e.runtime_session_mut();
