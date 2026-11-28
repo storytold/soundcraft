@@ -135,8 +135,18 @@ pub fn definitions(system_fonts: bool) -> FontDefinitions {
     fonts
 }
 
+/// Gives the context [`definitions`] through the framework runtime, which keeps its font providers and layout memory in
+/// step with them. The framework's chrome draws in three families besides the monospace one: the signature family
+/// (follows the proportional one) and the semibold family, which titles and strong text use because the stack the
+/// runtime started with has it; SoundCraft's own bold family serves as that one. A family left out draws missing-glyph
+/// boxes.
 pub fn install(ctx: &egui::Context, system_fonts: bool) {
-    ctx.set_fonts(definitions(system_fonts));
+    let mut fonts = definitions(system_fonts);
+    let proportional = fonts.families.get(&FontFamily::Proportional).cloned().unwrap_or_default();
+    let bold = fonts.families.get(&FontFamily::Name("bold".into())).cloned().unwrap_or_else(|| proportional.clone());
+    fonts.families.entry(craft_ui::fonts::FontRef::signature().family()).or_insert(proportional);
+    fonts.families.entry(FontFamily::Name(craft_ui::fonts::SEMIBOLD.into())).or_insert(bold);
+    craft_ui::fonts::load(ctx, fonts);
 }
 
 #[cfg(test)]
@@ -171,6 +181,29 @@ mod tests {
             let font = egui::FontId::new(13.0, family.clone());
             for glyph in glyphs {
                 assert!(ctx.fonts_mut(|f| f.has_glyphs(&font, glyph)), "{family:?} has no glyph for {glyph:?}");
+            }
+        }
+    }
+
+    /// Every family the framework's chrome draws in has a face after `install`, with and without system fonts: the
+    /// dialog title once drew boxes because the semibold family was missing.
+    #[test]
+    fn install_gives_every_chrome_family_a_face() {
+        for system_fonts in [false, true] {
+            let ctx = egui::Context::default();
+            crate::framework::install_headless(&ctx);
+            install(&ctx, system_fonts);
+            let mut output = ctx.run_ui(egui::RawInput::default(), |_| {});
+            output.textures_delta.clear();
+            let families = [
+                FontFamily::Proportional,
+                FontFamily::Monospace,
+                craft_ui::fonts::FontRef::signature().family(),
+                FontFamily::Name(craft_ui::fonts::SEMIBOLD.into()),
+            ];
+            for family in families {
+                let font = egui::FontId::new(14.0, family.clone());
+                assert!(ctx.fonts_mut(|f| f.has_glyphs(&font, "Check for Updates")), "{family:?} has no Latin face (system fonts {system_fonts})");
             }
         }
     }

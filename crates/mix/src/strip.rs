@@ -29,6 +29,10 @@ pub(crate) struct PluginSlot {
     /// so the audio thread reuses its allocation.
     lanes: Vec<usize>,
     pub(crate) failed: bool,
+    /// A failed plugin is retried once on the next reset; a second failure keeps it out for the
+    /// rest of the session, so a plugin that always fails stops oscillating the track's latency
+    /// (and the compensation reallocations that go with it) on every stop or seek (#919).
+    pub(crate) retried: bool,
 }
 
 pub(crate) struct Strip {
@@ -203,7 +207,7 @@ impl SlotCtx<'_> {
             let state = if third { ins.state_bytes() } else { None };
             create_instance_for(&ins.plugin, state.as_deref(), self.sr, self.mb, ch, self.offline).map(|n| n.plugin)
         }?;
-        Some(PluginSlot { id: ins.plugin.clone(), ch, plugin, applied: Vec::new(), lanes: Vec::new(), failed: false })
+        Some(PluginSlot { id: ins.plugin.clone(), ch, plugin, applied: Vec::new(), lanes: Vec::new(), failed: false, retried: false })
     }
 }
 
@@ -624,7 +628,7 @@ mod apply_params_tests {
     fn recorder() -> (PluginSlot, Arc<Mutex<Vec<(String, f32)>>>) {
         let sets = Arc::new(Mutex::new(Vec::new()));
         let plugin = Box::new(Recorder { inner: soundcraft_dsp::create("gain").unwrap(), sets: Arc::clone(&sets) });
-        (PluginSlot { id: "gain".into(), ch: 2, plugin, applied: Vec::new(), lanes: Vec::new(), failed: false }, sets)
+        (PluginSlot { id: "gain".into(), ch: 2, plugin, applied: Vec::new(), lanes: Vec::new(), failed: false, retried: false }, sets)
     }
 
     fn lane(slot: u8, param: &str, point: Option<f32>) -> AutomationLane {

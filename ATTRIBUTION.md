@@ -54,4 +54,8 @@ here. The subset uses default_fonts; the parent face uses monochrome_emoji_fonts
 | `assets/app-icon/soundcraft.icns` | SoundCraft contributors | original, rendered from `icon.svg` | MIT OR Apache-2.0 |
 | `assets/app-icon/soundcraft.ico` | SoundCraft contributors | original, rendered from `icon.svg` | MIT OR Apache-2.0 |
 | `assets/app-icon/hicolor/` | SoundCraft contributors | original, rendered from `icon.svg` (16–512 px PNGs and the scalable SVG) | MIT OR Apache-2.0 |
+| `assets/app-icon/soundcraft-nightly.png` | SoundCraft contributors | original, rendered from `icon.svg` with the Nightly badge | MIT OR Apache-2.0 |
+| `assets/app-icon/soundcraft-nightly-macos-512.png` | SoundCraft contributors | original, rendered from `icon.svg` with the Nightly badge | MIT OR Apache-2.0 |
+| `assets/app-icon/soundcraft-nightly.icns` | SoundCraft contributors | original, rendered from `icon.svg` with the Nightly badge | MIT OR Apache-2.0 |
+| `assets/app-icon/soundcraft-nightly.ico` | SoundCraft contributors | original, rendered from `icon.svg` with the Nightly badge | MIT OR Apache-2.0 |
 | `docs/images/` | SoundCraft contributors | screenshots of SoundCraft rendered from the synthesised demo session | MIT OR Apache-2.0 |
