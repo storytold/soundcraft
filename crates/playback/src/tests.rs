@@ -1971,7 +1971,7 @@ fn a_rate_switch_settles_on_a_throwaway_stream_before_the_stream_that_plays() {
         "macos",
         || Some(48_000),
         48_000,
-        |_| {
+        |_, _| {
             built += 1;
             Some(())
         },
@@ -1981,7 +1981,7 @@ fn a_rate_switch_settles_on_a_throwaway_stream_before_the_stream_that_plays() {
         "macos",
         || None,
         48_000,
-        |_| {
+        |_, _| {
             built += 1;
             Some(())
         },
@@ -1994,7 +1994,7 @@ fn a_rate_switch_settles_on_a_throwaway_stream_before_the_stream_that_plays() {
         "macos",
         || Some(44_100),
         48_000,
-        |report| {
+        |_, report| {
             std::thread::spawn(move || {
                 std::thread::sleep(Duration::from_millis(50));
                 let _ = report.send(());
@@ -2007,10 +2007,28 @@ fn a_rate_switch_settles_on_a_throwaway_stream_before_the_stream_that_plays() {
     assert!(start.elapsed() < Duration::from_secs(2), "waited {:?} after the report", start.elapsed());
     // No report comes (the throwaway keeps its sender): the wait ends after its limit.
     let start = Instant::now();
-    assert!(settle_rate_switch("macos", || Some(44_100), 48_000, Some, Duration::from_millis(100)));
+    assert!(settle_rate_switch("macos", || Some(44_100), 48_000, |_, report| Some(report), Duration::from_millis(100)));
     assert!(start.elapsed() >= Duration::from_millis(100));
-    // A throwaway that will not build switched nothing.
-    assert!(!settle_rate_switch("macos", || Some(44_100), 48_000, |_| None::<()>, Duration::from_secs(5)));
+    // A throwaway that will not build at all switched nothing.
+    assert!(!settle_rate_switch("macos", || Some(44_100), 48_000, |_, _| None::<()>, Duration::from_secs(5)));
+    // cpal switches a Core Audio device's rate before it sets the buffer size, so a throwaway
+    // refused for the chosen buffer can still have switched it: one at the device's own buffer
+    // size then takes the report, and is waited for (#1749 review).
+    let mut tried = Vec::new();
+    let start = Instant::now();
+    let switched = settle_rate_switch(
+        "macos",
+        || Some(44_100),
+        48_000,
+        |device_buffer, report| {
+            tried.push(device_buffer);
+            device_buffer.then_some(report)
+        },
+        Duration::from_millis(100),
+    );
+    assert!(switched);
+    assert_eq!(tried, [false, true], "the chosen buffer first, then the device's");
+    assert!(start.elapsed() >= Duration::from_millis(100), "the second throwaway's report is waited for");
 }
 
 /// Only Core Audio reports a device's own rate switch late (see `settle_rate_switch` and the #1749
@@ -2030,7 +2048,7 @@ fn a_rate_switch_reads_and_builds_nothing_off_core_audio() {
                 Some(44_100)
             },
             48_000,
-            |report| {
+            |_, report| {
                 built.set(built.get() + 1);
                 Some(report)
             },

@@ -34,20 +34,24 @@ pub(crate) const RATE_SETTLE: std::time::Duration = std::time::Duration::from_mi
 /// signals on the sender it is given, and this waits for that late report (or `wait`) before
 /// dropping it. WASAPI shared mode and ALSA send no such report, so on any `os` but `"macos"` this
 /// returns at once without reading the device's rate (`current`) or building anything: a settle
-/// there would only wait out `wait` on the UI thread. Returns whether a throwaway switched the
-/// device. Nothing is built when the device already runs at `target` or its rate cannot be read.
+/// there would only wait out `wait` on the UI thread. `build(device_buffer, report)` builds the
+/// throwaway with the chosen buffer size, or the device's own when `device_buffer`: cpal sets the
+/// rate before the buffer size, so a throwaway refused for the chosen buffer can still have
+/// switched the device, and one at the device's buffer then takes the report (#1749 review).
+/// Returns whether a throwaway switched the device. Nothing is built when the device already runs
+/// at `target` or its rate cannot be read.
 pub(crate) fn settle_rate_switch<S>(
     os: &str,
     current: impl FnOnce() -> Option<u32>,
     target: u32,
-    build: impl FnOnce(std::sync::mpsc::Sender<()>) -> Option<S>,
+    mut build: impl FnMut(bool, std::sync::mpsc::Sender<()>) -> Option<S>,
     wait: std::time::Duration,
 ) -> bool {
     if os != "macos" || current().is_none_or(|rate| rate == target) {
         return false;
     }
     let (report, reported) = std::sync::mpsc::channel();
-    let Some(stream) = build(report) else { return false };
+    let Some(stream) = build(false, report.clone()).or_else(|| build(true, report)) else { return false };
     let _ = reported.recv_timeout(wait);
     drop(stream);
     true

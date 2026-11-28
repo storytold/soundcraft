@@ -252,7 +252,10 @@ impl Player {
                     use cpal::traits::DeviceTrait;
                     let current = || device.default_output_config().ok().map(|c| c.sample_rate());
                     let target = first.config.sample_rate;
-                    let build = |report| throwaway_output(&device, first.config, first.format, report);
+                    let build = |device_buffer: bool, report| {
+                        let buffer_size = if device_buffer { cpal::BufferSize::Default } else { first.config.buffer_size };
+                        throwaway_output(&device, cpal::StreamConfig { buffer_size, ..first.config }, first.format, report)
+                    };
                     if settle_rate_switch(std::env::consts::OS, current, target, build, RATE_SETTLE) {
                         log::info!("audio device: {name} switched to {target} Hz before opening");
                     }
