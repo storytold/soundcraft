@@ -27,8 +27,8 @@ pub(crate) struct Fault {
     stalled: AtomicBool,
     /// Blocks so far, to tell a device that stopped asking for audio.
     pub(crate) beats: std::sync::atomic::AtomicU64,
-    /// The UI has been told.
-    reported: AtomicBool,
+    /// The most serious trouble the UI has been told (0: none; see [`severity`]).
+    reported: std::sync::atomic::AtomicU8,
 }
 
 impl Fault {
@@ -39,7 +39,9 @@ impl Fault {
         self.failed.load(Ordering::Relaxed) || self.gone.load(Ordering::Relaxed) || self.stalled.load(Ordering::Relaxed)
     }
 
-    /// What stopped the output, once.
+    /// What stopped the output, once. A more serious trouble found later is told too: a device
+    /// unplugged while playing can stall before the audio system reports it gone, and only the
+    /// loss lets the UI reopen it when it is back.
     pub(crate) fn trouble(&self, stalled: bool) -> Option<OutputTrouble> {
         let trouble = if self.failed.load(Ordering::Relaxed) {
             OutputTrouble::Bug
@@ -52,7 +54,16 @@ impl Fault {
         } else {
             return None;
         };
-        (!self.reported.swap(true, Ordering::Relaxed)).then_some(trouble)
+        (self.reported.fetch_max(severity(trouble), Ordering::Relaxed) < severity(trouble)).then_some(trouble)
+    }
+}
+
+/// How serious `trouble` is, in the order [`Fault::trouble`] checks it.
+fn severity(trouble: OutputTrouble) -> u8 {
+    match trouble {
+        OutputTrouble::Stalled => 1,
+        OutputTrouble::Gone => 2,
+        OutputTrouble::Bug => 3,
     }
 }
 

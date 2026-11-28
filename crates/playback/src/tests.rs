@@ -298,6 +298,19 @@ fn a_lost_or_stalled_device_is_reported_once() {
     assert_eq!((fault.trouble(false), fault.trouble(true)), (Some(OutputTrouble::Gone), None));
 }
 
+/// A device unplugged while playing can stop asking for audio before the audio system reports
+/// it gone. The later loss is still reported, so the UI waits for the device to come back, and
+/// is reported once.
+#[test]
+fn a_device_lost_after_it_stalled_is_reported_as_gone() {
+    let fault = Fault::default();
+    assert_eq!(fault.trouble(true), Some(OutputTrouble::Stalled));
+    assert_eq!(fault.trouble(true), None, "the same stall is told once");
+    fault.gone.store(true, Ordering::Relaxed);
+    assert_eq!(fault.trouble(false), Some(OutputTrouble::Gone));
+    assert_eq!((fault.trouble(false), fault.trouble(true)), (None, None), "and the loss once");
+}
+
 /// A player on the silent clock, which needs no audio device.
 fn silent_player() -> Player {
     let shared = Arc::new(Shared {
