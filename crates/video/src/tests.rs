@@ -368,3 +368,40 @@ fn grey_mjpeg_packets_decode_through_the_shared_decoder() {
     assert_eq!(rgba.len(), 16 * 8 * 4);
     assert!(rgba.as_chunks::<4>().0.iter().all(|p| p[0] == p[1] && p[1] == p[2] && p[0].abs_diff(90) <= 2 && p[3] == 255));
 }
+
+#[test]
+fn shared_codec_playback_and_seek_parity() {
+    for (label, bytes, expected_codec, seek_order) in [
+        ("h264", h264_mp4(24, 8).unwrap(), "h264", vec![23, 0, 15, 7, 8, 2, 19, 1]),
+        ("prores", prores_mov(8).unwrap(), "prores", vec![7, 0, 4, 2, 6, 1, 5, 3]),
+        ("mjpeg", mjpeg_mov(8).unwrap(), "mjpeg", vec![7, 0, 4, 2, 6, 1, 5, 3]),
+    ] {
+        let mut seq_movie = Movie::open(bytes.clone()).unwrap();
+        let info = seq_movie.info().clone();
+        assert_eq!(info.codec, expected_codec, "{label}: unexpected codec");
+        let count = info.frame_count;
+        let mut sequential = Vec::with_capacity(count);
+        for i in 0..count {
+            let t = seq_movie.frame_time(i).unwrap() + 0.001;
+            let frame = seq_movie.frame_at(t).unwrap();
+            assert_eq!(frame.index, i, "{label}: sequential index mismatch");
+            sequential.push(frame);
+        }
+
+        let mut seek_movie = Movie::open(bytes).unwrap();
+        seek_movie.set_cache_frames(1);
+        for i in seek_order {
+            let sought = seek_movie.frame(i).unwrap();
+            assert_eq!(sought.index, sequential[i].index, "{label}: seek index mismatch at {i}");
+            assert_eq!(sought.width, sequential[i].width, "{label}: seek width mismatch at {i}");
+            assert_eq!(sought.height, sequential[i].height, "{label}: seek height mismatch at {i}");
+            assert_eq!(sought.rgba, sequential[i].rgba, "{label}: seek RGBA differs from sequential at {i}");
+        }
+
+        let thumb = seek_movie.thumbnail_at(info.duration * 0.5, 16).unwrap();
+        assert_eq!(thumb.height, 16, "{label}: thumbnail height mismatch");
+        assert!(matches!(seek_movie.frame_at(info.duration), Err(VideoError::OutOfRange)));
+        assert!(matches!(seek_movie.frame_at(-0.1), Err(VideoError::OutOfRange)));
+        assert!(matches!(seek_movie.frame_at(f64::NAN), Err(VideoError::OutOfRange)));
+    }
+}

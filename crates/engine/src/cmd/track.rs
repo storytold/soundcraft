@@ -98,8 +98,16 @@ pub fn specs() -> Vec<CommandSpec> {
         )),
         cmd!("track.commit", "Commit...", ["Track"], Some("Alt+Shift+C"), "{tracks?}", has_selection, commit),
         cmd!("track.bounce", "Bounce...", ["Track"], Some("Cmd+Alt+Shift+B"), "{tracks?}", has_selection, commit),
-        cmd!("track.bypass_inserts", "All", ["Track", "Bypass Inserts"], None, "{tracks?, bypass?: bool}", has_selection, bypass_inserts),
-        cmd!("track.mute_sends", "All", ["Track", "Mute Sends"], None, "{tracks?, mute?: bool}", has_selection, mute_sends),
+        cmd!("track.bypass_inserts", "All", ["Track", "Bypass Inserts"], Some("Shift+A"), "{tracks?, bypass?: bool}", has_selection, bypass_inserts),
+        cmd!(
+            "track.mute_sends",
+            "All",
+            ["Track", "Mute Sends"],
+            Some("Shift+Q"),
+            "{tracks?, mute?: bool} (toggles when omitted)",
+            has_selection,
+            |e, p| super::track_more::mute_sends_where(e, p, 0, 10)
+        ),
         cmd!(noundo "track.set_record_to_input_only", "Set Record Tracks to Input Only", ["Track"], Some("Alt+K"), "{}", always, |e, _| {
             let s = e.runtime_session_mut();
             let mut n = 0;
@@ -201,7 +209,15 @@ pub fn specs() -> Vec<CommandSpec> {
                 Ok(json!({"clips": ids}))
             }
         ),
-        cmd!("track.input", "Track Input", [], None, "{tracks?, input: none|bus name|hardware name}", has_selection, |e, p| route(e, p, true)),
+        cmd!(
+            "track.input",
+            "Track Input",
+            [],
+            None,
+            "{tracks?, input: none|bus name|hardware name|MIDI:<channel 1-16 or *>:<device or *> (MIDI and instrument tracks)}",
+            has_selection,
+            |e, p| route(e, p, true)
+        ),
         cmd!("track.output", "Track Output", [], None, "{tracks?, output: main|none|bus name}", has_selection, |e, p| route(e, p, false)),
         cmd!("track.timebase", "Track Timebase", [], None, "{tracks?, ticks: bool}", has_selection, |e, p| flag(
             e,
@@ -944,20 +960,6 @@ fn bypass_inserts(e: &mut Engine, p: &Value) -> Result<Value> {
     Ok(json!({"bypass": target}))
 }
 
-fn mute_sends(e: &mut Engine, p: &Value) -> Result<Value> {
-    let tracks = tracks_required(e, "track.mute_sends", p)?;
-    let s = e.session_mut();
-    let target = p.get("mute").and_then(Value::as_bool).unwrap_or(true);
-    for t in &tracks {
-        if let Some(tr) = s.track_mut(*t) {
-            for snd in tr.mixer.sends.iter_mut().flatten() {
-                snd.mute = target;
-            }
-        }
-    }
-    Ok(json!({"mute": target}))
-}
-
 fn create_click(e: &mut Engine, _: &Value) -> Result<Value> {
     let s = e.session_mut();
     let id = s.add_track(TrackKind::Aux, ChannelFormat::Mono, Some("Click"));
@@ -1024,6 +1026,8 @@ fn route(e: &mut Engine, p: &Value, input: bool) -> Result<Value> {
     if let Route::Hardware(name) = &r
         && create_bus
         && !name.to_ascii_lowercase().starts_with("in ")
+        // A MIDI input (device and channel) of a MIDI or instrument track, see `MidiInput`.
+        && !name.starts_with("MIDI:")
     {
         let fmt = tracks
             .first()
@@ -1046,6 +1050,49 @@ fn route(e: &mut Engine, p: &Value, input: bool) -> Result<Value> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_midi_input_is_kept_as_typed_and_never_becomes_a_bus() {
+        use soundcraft_model::MidiInput;
+        let mut e = Engine::default();
+        let id = e.execute("track.new", &json!({"name": "Keys", "kind": "instrument"})).unwrap()["tracks"][0].as_u64().unwrap();
+        let mut set = |input: &str| {
+            e.execute("track.input", &json!({"tracks": [id], "input": input})).unwrap();
+            assert_eq!(e.session().busses.len(), 0, "{input}: no bus is made for a MIDI input");
+            e.session().track(soundcraft_model::TrackId(id)).unwrap().mixer.input.clone()
+        };
+        // (what is typed, the device and channel the track listens to)
+        let cases: [(&str, Option<&str>, Option<u8>); 12] = [
+            ("MIDI:*:*", None, None),
+            ("MIDI:1:*", None, Some(0)),
+            ("MIDI:16:Pad", Some("Pad"), Some(15)),
+            ("MIDI:*:Keys", Some("Keys"), None),
+            // A device name may hold colons (ALSA names do): only the first one after the channel splits.
+            ("MIDI:3:Launchkey MK3:MIDI 1", Some("Launchkey MK3:MIDI 1"), Some(2)),
+            // An empty device means every device.
+            ("MIDI:5:", None, Some(4)),
+            ("MIDI:*:", None, None),
+            // Channels outside 1–16 and other junk mean every channel; nothing fails.
+            ("MIDI:0:Pad", Some("Pad"), None),
+            ("MIDI:17:Pad", Some("Pad"), None),
+            ("MIDI:-1:Pad", Some("Pad"), None),
+            ("MIDI:abc:Pad", Some("Pad"), None),
+            // Without the second colon it is not a device choice: everything.
+            ("MIDI:7", None, None),
+        ];
+        for (typed, device, channel) in cases {
+            let route = set(typed);
+            assert_eq!(route, Route::Hardware(typed.to_string()), "kept as typed");
+            assert_eq!(MidiInput::of(&route), MidiInput { device, channel }, "{typed}");
+        }
+        // The route a choice is stored as reads back as the same choice.
+        let stored = MidiInput { device: Some("Launchkey MK3:MIDI 1"), channel: Some(9) }.route();
+        let Route::Hardware(text) = &stored else { panic!("not a hardware route") };
+        assert_eq!(MidiInput::of(&set(text)), MidiInput { device: Some("Launchkey MK3:MIDI 1"), channel: Some(9) });
+        // "none" takes the choice away: all devices, all channels.
+        assert_eq!(MidiInput::of(&set("none")), MidiInput::default());
+    }
+
     #[test]
     fn comp_from_alternate_playlist() {
         let mut e = crate::demo::demo_engine();

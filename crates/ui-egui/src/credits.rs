@@ -221,7 +221,7 @@ fn contributors_toolbar(ui: &mut egui::Ui, v: &mut View) {
         }
         ui.separator();
         let sort = ui.label(crate::localization::text("Sort"));
-        let combo = craft_ui::ComboBox::from_id_salt("credits_sort").selected_text(crate::localization::text(v.key.label().0)).show_ui(ui, |ui| {
+        let combo = egui::ComboBox::from_id_salt("credits_sort").selected_text(crate::localization::text(v.key.label().0)).show_ui(ui, |ui| {
             for k in SortKey::ALL {
                 if ui.selectable_label(v.key == k, crate::localization::text(k.label().0)).clicked() {
                     v.key = k;

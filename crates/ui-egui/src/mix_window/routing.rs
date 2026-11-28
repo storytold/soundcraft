@@ -10,8 +10,68 @@ pub(crate) fn route_name(app: &SoundApp, r: &Route) -> String {
     }
 }
 
+/// The input selector's text on a MIDI or instrument track.
+pub(crate) fn midi_input_name(track: &Track) -> String {
+    let input = soundcraft_model::MidiInput::of(&track.mixer.input);
+    if input.device.is_none() && input.channel.is_none() { crate::localization::text("All MIDI").to_string() } else { input.label() }
+}
+
+/// The MIDI input menu of a MIDI or instrument track: a device (or all) and a channel (or all).
+pub(crate) fn midi_input_menu(app: &mut SoundApp, ui: &mut Ui, id: TrackId) {
+    let Some(route) = app.engine.session().track(id).map(|t| t.mixer.input.clone()) else { return };
+    let now = soundcraft_model::MidiInput::of(&route);
+    let (device, channel) = (now.device.map(str::to_string), now.channel);
+    let mut pick: Option<(Option<String>, Option<u8>)> = None;
+    let mut devices: Vec<(String, bool)> =
+        app.midi_inputs.as_ref().map(|m| m.ports().iter().filter(|p| p.enabled).map(|p| (p.name.clone(), p.open)).collect()).unwrap_or_default();
+    // A device the track listens to stays in the list while it is unplugged.
+    if let Some(d) = &device
+        && !devices.iter().any(|(n, _)| n == d)
+    {
+        devices.push((d.clone(), false));
+    }
+    ui.strong(crate::localization::text("MIDI input"));
+    if ui.selectable_label(device.is_none(), crate::localization::text("All devices")).clicked() {
+        pick = Some((None, channel));
+    }
+    for (name, open) in &devices {
+        let text = if *open { name.clone() } else { crate::localized_format!("{name} (not connected)", name = name) };
+        if ui.selectable_label(device.as_deref() == Some(name.as_str()), text).clicked() {
+            pick = Some((Some(name.clone()), channel));
+        }
+    }
+    if devices.is_empty() {
+        ui.weak(crate::localization::text("No MIDI input device found"));
+    }
+    ui.separator();
+    ui.strong(crate::localization::text("Channel"));
+    egui::Grid::new(("midi-channel", id.0)).spacing(egui::vec2(2.0, 2.0)).show(ui, |ui| {
+        if ui.selectable_label(channel.is_none(), crate::localization::text("All")).clicked() {
+            pick = Some((device.clone(), None));
+        }
+        ui.end_row();
+        for ch in 0..16u8 {
+            if ui.selectable_label(channel == Some(ch), format!("{:>2}", ch + 1)).clicked() {
+                pick = Some((device.clone(), Some(ch)));
+            }
+            if ch % 8 == 7 {
+                ui.end_row();
+            }
+        }
+    });
+    if let Some((device, channel)) = pick {
+        let input = match (soundcraft_model::MidiInput { device: device.as_deref(), channel }).route() {
+            Route::Hardware(h) => h,
+            _ => "none".to_string(),
+        };
+        let _ = app.run("track.input", json!({"track": id.0, "input": input}));
+    }
+}
+
 pub(crate) fn input_name(app: &SoundApp, track: &Track) -> String {
-    if track.kind.has_playlist() && track.mixer.input == Route::None {
+    if track.kind.is_midi() {
+        midi_input_name(track)
+    } else if track.kind.has_playlist() && track.mixer.input == Route::None {
         let channels = track.format.channels();
         if channels == 1 { crate::localized_format!("In {}", 1) } else { crate::localized_format!("In 1-{}", channels) }
     } else {
@@ -22,7 +82,11 @@ pub(crate) fn input_name(app: &SoundApp, track: &Track) -> String {
 /// The input or output menu under `resp`. It closes only on a click outside, so its bus search
 /// field can be typed in.
 pub(crate) fn route_popup(app: &mut SoundApp, resp: &egui::Response, id: TrackId, input: bool) {
-    egui::Popup::menu(resp).close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside).show(|ui| route_menu(app, ui, id, input));
+    // The input of a MIDI or instrument track is a MIDI device and channel.
+    let midi = input && app.engine.session().track(id).is_some_and(|t| t.kind.is_midi());
+    egui::Popup::menu(resp)
+        .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
+        .show(|ui| if midi { midi_input_menu(app, ui, id) } else { route_menu(app, ui, id, input) });
 }
 
 /// Input or output menu: no route and buses on both, plus the main output (outputs) or inputs 1-8
@@ -89,5 +153,30 @@ mod tests {
         let track = &app.engine.session().tracks[0];
 
         assert_eq!(input_name(&app, track), "In 1-2");
+    }
+}
+
+#[cfg(test)]
+mod midi_input_tests {
+    use super::*;
+
+    #[test]
+    fn a_midi_track_names_its_device_and_channel_on_the_input_selector() {
+        let mut app = SoundApp::new(soundcraft_engine::Engine::default(), None, crate::Services::default());
+        let midi = app.run("track.new", json!({"name": "Synth", "kind": "instrument"})).unwrap()["tracks"][0].as_u64().unwrap();
+        let audio = app.run("track.new", json!({"name": "Vox", "format": "mono"})).unwrap()["tracks"][0].as_u64().unwrap();
+        let shown = |app: &SoundApp, id: u64| input_name(app, app.engine.session().track(TrackId(id)).unwrap());
+        assert_eq!(shown(&app, midi), "All MIDI", "a new MIDI track listens to every device and channel");
+        for (input, text) in [
+            ("MIDI:10:Drum Pad", "Drum Pad ch 10"),
+            ("MIDI:*:Keys", "Keys"),
+            ("MIDI:2:*", "All ch 2"),
+            ("MIDI:99:*", "All MIDI"),
+            ("none", "All MIDI"),
+        ] {
+            app.run("track.input", json!({"tracks": [midi], "input": input})).unwrap();
+            assert_eq!(shown(&app, midi), text, "{input}");
+        }
+        assert_eq!(shown(&app, audio), "In 1", "an audio track still shows its audio input");
     }
 }

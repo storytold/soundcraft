@@ -36,6 +36,8 @@ impl SoundApp {
         } else {
             self.sim = Some((from, end, looped));
         }
+        // The loop as the audio engine takes it: a range too short to loop is played once.
+        self.play_loop = looped.filter(|l| soundcraft_playback::loops(*l));
         self.engine.transport.playing = true;
         self.engine.transport.position = from;
         self.last_write_at = i64::MIN;
@@ -57,6 +59,7 @@ impl SoundApp {
             self.finish_recording();
         }
         self.sim = None;
+        self.play_loop = None;
         self.engine.transport.playing = false;
         self.engine.transport.recording = false;
         let stop_at = self.engine.transport.position;
@@ -100,15 +103,42 @@ impl SoundApp {
             self.record_hint = Some((self.last_frame.unwrap_or_default(), why));
             return;
         }
-        self.ensure_input();
-        let takes = match self.arm_recorder() {
-            Ok(takes) => takes,
-            Err(err) => {
-                self.ui.status = crate::localized_format!("Cannot record: {err}", err = err);
-                return;
+        // A pass records audio, MIDI or both: it needs one of them ready. The audio input is
+        // only opened for audio tracks. An inactive track keeps its record button but takes no
+        // part (`plan_takes` leaves it out too), so it must not make the pass an audio one.
+        let audio_tracks = self.engine.session().tracks.iter().any(|t| t.mixer.record_arm && !t.inactive && !t.kind.is_midi());
+        let midi_tracks = soundcraft_engine::io::records_midi(&self.engine);
+        let midi_ready = midi_tracks && self.midi_connected();
+        if midi_tracks && self.midi_pass_pending() {
+            self.ui.status = crate::localization::text(
+                "Cannot record: the audio engine has not finished the previous record pass yet (is the audio device running?)",
+            )
+            .into();
+            return;
+        }
+        if audio_tracks {
+            self.ensure_input();
+        }
+        let takes = if audio_tracks {
+            // An audio track is record-enabled: its audio has to be recordable. A pass that would
+            // quietly record only the MIDI tracks is refused, with the reason.
+            match self.arm_recorder() {
+                Ok(takes) => takes,
+                Err(err) => {
+                    self.ui.status = crate::localized_format!("Cannot record: {err}", err = err);
+                    return;
+                }
             }
+        } else if midi_ready {
+            // MIDI alone makes a pass.
+            Vec::new()
+        } else {
+            self.ui.status =
+                crate::localization::text("Cannot record: no MIDI input device is connected (Setup > Playback Engine lists them)").into();
+            return;
         };
         self.lost_shown = 0;
+        self.begin_midi_take();
         if let Some(p) = &self.player {
             p.set_recording(true);
         }
@@ -123,7 +153,9 @@ impl SoundApp {
         }
         let e = self.engine.session().edit.clone();
         let sel = e.selection;
-        if e.loop_record && !sel.is_empty() {
+        // Loop recording needs a selection the transport will loop: one too short for that is
+        // recorded as a punch, like any other selection.
+        if e.loop_record && !sel.is_empty() && soundcraft_playback::loops(sel) {
             self.record_start = sel.start;
             self.punch = None;
             self.start_play(sel.start, None, Some(sel));
@@ -180,7 +212,12 @@ impl SoundApp {
             .iter()
             .map(|(track, inputs, path)| soundcraft_engine::io::Take { track: *track, path: path.clone(), channels: inputs.len() })
             .collect();
-        r.arm(plan)?;
+        // Each take file holds no more than the session can read back; a longer take goes on in the next.
+        let files = soundcraft_playback::record::TakeFiles {
+            samples: soundcraft_engine::io::take_file_samples(r.sample_rate, self.engine.session().sample_rate.hz()),
+            part: soundcraft_engine::io::take_part,
+        };
+        r.arm(plan, files)?;
         Ok(takes)
     }
 
@@ -199,12 +236,23 @@ impl SoundApp {
 
     fn finish_recording(&mut self) {
         self.engine.transport.recording = false;
+        let midi_pass = self.end_midi_pass();
         if let Some(p) = &self.player {
-            p.set_recording(false);
+            match midi_pass {
+                Some(pass) => p.end_recording(pass),
+                None => p.set_recording(false),
+            }
         }
+        // The audio input stops taking in first: waiting for the MIDI below would otherwise add
+        // what the input hears meanwhile to the audio takes. No input device is open when the
+        // pass was MIDI only.
+        let (takes, problem) = self.recorder.as_mut().map_or_else(|| (Vec::new(), None), |r| r.finish());
+        // The audio thread writes down what was played up to the stop; the clips wait for that.
+        let midi_confirmed = self.await_midi_capture(midi_pass);
+        // Where the pass ended: the audio engine's own position is the freshest.
+        let engine_at = self.player.as_ref().map(|p| p.position());
+        let stopped_at = super::midi::pass_stop(engine_at, self.engine.transport.position);
         let plan = self.take_plan.take();
-        let Some(r) = &mut self.recorder else { return };
-        let (takes, problem) = r.finish();
         let tracks = takes.len().max(1);
         let plan = plan.unwrap_or_else(|| soundcraft_engine::io::Recording {
             start: self.record_start,
@@ -216,11 +264,33 @@ impl SoundApp {
         self.punch = None;
         self.autosaved_rev = 0;
         let ids = soundcraft_engine::io::place_recording(&mut self.engine, &plan, takes);
-        self.ui.status = if plan.pass.is_some() {
-            crate::localized_format!("Loop-recorded {} take(s)", ids.len() / tracks)
-        } else {
-            crate::localized_format!("Recorded {} clip(s)", ids.len())
+        // The audio engine may have confirmed the pass while the audio takes were finished: the
+        // stop position and what the user is told go by one answer.
+        let midi_confirmed = midi_confirmed || self.midi_pass_stopped_at(midi_pass).is_some();
+        // MIDI goes where the audio of the pass goes: the loop, the punch range, or all of it. A
+        // pass punched in while a loop was playing went on round that loop.
+        let midi_loop = match plan.pass {
+            Some(len) => Some(Range::new(plan.start, plan.start.saturating_add(len))),
+            None => self.play_loop,
         };
+        // A loop pass stopped somewhere inside the loop: where, the audio engine said with its
+        // confirmation, in step with the rounds it wrote into the take. Its position now may be
+        // a round further on; without the confirmation there is no position to trust, and the
+        // keys still down are held to the end of the loop (the take is reported as incomplete).
+        let (midi_range, midi_kind) =
+            super::midi::midi_take_span(midi_loop, plan.punch, self.record_start, stopped_at, self.midi_pass_stopped_at(midi_pass));
+        let (midi_clips, midi_problem) = self.finish_midi_take(midi_range, !ids.is_empty(), midi_confirmed, midi_kind);
+        self.ui.status = if plan.pass.is_some() && midi_clips == 0 {
+            crate::localized_format!("Loop-recorded {} take(s)", ids.len() / tracks)
+        } else if ids.is_empty() && midi_clips == 0 {
+            crate::localization::text("Nothing was recorded: the record-enabled tracks received no input").to_string()
+        } else {
+            crate::localized_format!("Recorded {} clip(s)", ids.len() + midi_clips)
+        };
+        // A take that lost MIDI input, or whose end was not confirmed, is not reported as complete.
+        if let Some(p) = midi_problem {
+            self.ui.status = format!("{} ({p})", self.ui.status);
+        }
         if let Some(p) = problem {
             log::warn!("recording: {p}");
             self.ui.status = format!("{} ({p})", self.ui.status);
@@ -376,6 +446,7 @@ impl SoundApp {
                         if let Some(sim) = &mut self.sim {
                             *sim = (at, None, None);
                         }
+                        self.play_loop = None;
                         self.last_write_at = i64::MIN;
                         self.engine.transport.position = at;
                     } else {

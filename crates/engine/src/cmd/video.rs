@@ -29,7 +29,8 @@ pub fn specs() -> Vec<CommandSpec> {
             always,
             offset
         ),
-        cmd!(query "video.list", "Movies", [], None, "{} — movies used by Video tracks (path, size, rate, codec, online file, why it is offline)", always, |e, _| {
+        cmd!(query "video.list", "Movies", [], None, "{} — lists session movies with media details, clip counts, `file_found`, and any recorded `offline` reason. \
+             The top-level `online` flag reports the Video Track Online setting.", always, |e, _| {
             let s = e.session();
             let rows: Vec<Value> = s
                 .videos
