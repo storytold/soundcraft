@@ -484,6 +484,8 @@ pub struct SoundApp {
     pub frame_ms: f32,
     last_frame: Option<f64>,
     last_meter_poll: f64,
+    /// When a meter take last brought new audio blocks (uptime, seconds).
+    last_meter_block: f64,
     /// Movies for the Video window and Video track (decoded in the background).
     pub video: video_track::VideoPool,
     /// The Bounce Mix in progress, rendered a slice per frame.

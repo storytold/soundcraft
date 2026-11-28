@@ -105,6 +105,12 @@ impl MeterSnapshot {
         self.fresh = true;
     }
 
+    /// Zero every level, keeping the entries and their storage: for a reader whose readings went
+    /// stale because no block has arrived for a while (the device stopped calling back).
+    pub fn clear_levels(&mut self) {
+        self.reset_levels();
+    }
+
     /// Drop the entries of deleted tracks.
     fn forget(&mut self, gone: &[TrackId]) {
         for id in gone {
@@ -551,13 +557,15 @@ impl Player {
     /// Take the meters accumulated since the last call into reusable UI storage and start a new
     /// period: `out` gets the highest peak of every block rendered in between. If no block was
     /// rendered since (a large device buffer renders several blocks per callback), `out` keeps
-    /// the previous values rather than dropping to silence. Call it from one place only (two
-    /// readers would split the peaks between them). Once track/channel counts are stable this
-    /// performs no allocation. The audio thread only ever `try_lock`s, so holding the lock here
-    /// never blocks it; blocks rendered meanwhile reach the next call.
-    pub fn take_meters(&self, out: &mut MeterSnapshot) {
+    /// the previous values rather than dropping to silence, and the call returns `false`: when
+    /// that goes on for longer than any device buffer lasts, the device has stopped calling back
+    /// and the reader should clear the readings ([`MeterSnapshot::clear_levels`]). Call it from
+    /// one place only (two readers would split the peaks between them). Once track/channel
+    /// counts are stable this performs no allocation. The audio thread only ever `try_lock`s, so
+    /// holding the lock here never blocks it; blocks rendered meanwhile reach the next call.
+    pub fn take_meters(&self, out: &mut MeterSnapshot) -> bool {
         let mut source = self.shared.meters.lock().unwrap_or_else(PoisonError::into_inner);
-        take_meter_snapshot(&mut source, out);
+        take_meter_snapshot(&mut source, out)
     }
 }
 

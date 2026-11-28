@@ -1,4 +1,4 @@
-use super::audio::feed_meter;
+use super::audio::{age_meters, feed_meter};
 use super::plugins::failed_plugin_status;
 use super::{Gesture, MainWindow, MeterDisplay, Range, Samples, SoundApp, TrackId, TransportRequest, json};
 
@@ -522,7 +522,8 @@ impl SoundApp {
             let now = self.uptime;
             let meter_interval = if self.ui.window == MainWindow::Mix { 1.0 / 60.0 } else { 1.0 / 20.0 };
             if now - self.last_meter_poll >= meter_interval {
-                p.take_meters(&mut self.meter_snapshot);
+                let fresh = p.take_meters(&mut self.meter_snapshot);
+                age_meters(&mut self.meter_snapshot, fresh, now, &mut self.last_meter_block);
                 self.last_meter_poll = now;
             }
             let snap = &self.meter_snapshot;

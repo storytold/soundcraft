@@ -162,7 +162,7 @@ fn a_spike_in_one_block_among_quiet_ones_reaches_the_ui() {
     // The last block alone (what the UI used to see) is quiet.
     assert!(st.mix.meters[&t].peak[0] < 0.05);
     let mut ui = MeterSnapshot::default();
-    take_meter_snapshot(&mut shared.meters.lock().unwrap(), &mut ui);
+    assert!(take_meter_snapshot(&mut shared.meters.lock().unwrap(), &mut ui), "new blocks arrived");
     assert!(ui.tracks[&t].peak[0] > 0.85, "{:?}", ui.tracks[&t]);
     assert!(ui.tracks[&t].peaks[0] > 0.85);
     assert!(ui.main.peak[0] > 0.5 && ui.main.peaks.iter().all(|p| *p > 0.5), "{:?}", ui.main);
@@ -170,9 +170,12 @@ fn a_spike_in_one_block_among_quiet_ones_reaches_the_ui() {
     st.fill(&mut out, 2);
     take_meter_snapshot(&mut shared.meters.lock().unwrap(), &mut ui);
     assert!(ui.tracks[&t].peak[0] < 0.05 && ui.main.peak[0] < 0.05);
-    // No block since the last take: the reading stays rather than dropping to silence.
-    take_meter_snapshot(&mut shared.meters.lock().unwrap(), &mut ui);
+    // No block since the last take: the reading stays rather than dropping to silence, and the
+    // reader is told, so it can clear readings that stay stale (the device stopped calling back).
+    assert!(!take_meter_snapshot(&mut shared.meters.lock().unwrap(), &mut ui));
     assert!(ui.tracks[&t].peak[0] > 0.005);
+    ui.clear_levels();
+    assert!(ui.tracks[&t].peak[0] == 0.0 && ui.main.peak[0] == 0.0 && ui.tracks[&t].peaks.len() == 1, "{:?}", ui.tracks[&t]);
 }
 
 #[test]
