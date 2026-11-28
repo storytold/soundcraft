@@ -114,6 +114,8 @@ pub(super) fn translate(source: &str) -> Option<&'static str> {
         "End" => "Fim",
         "Extract" => "Extrair",
         "File" => "Arquivo",
+        "File path" => "Caminho do arquivo",
+        "Folder path" => "Caminho da pasta",
         "Format" => "Formato",
         "Grab bag" => "Diversos",
         "Grid" => "Grade",
@@ -323,6 +325,23 @@ pub(super) fn translate(source: &str) -> Option<&'static str> {
         }
         "No engine" => "Sem mecanismo de áudio",
         "default buffer" => "buffer padrão",
+        "The audio settings were changed outside this window; your unapplied changes were replaced." => {
+            "As configurações de áudio foram alteradas fora desta janela; suas alterações não aplicadas foram substituídas."
+        }
+        "The device allows {}–{} samples; it runs at its default buffer." => {
+            "O dispositivo aceita {}–{} amostras; ele funciona com o buffer padrão."
+        }
+        "The device did not take {} samples; it runs at its default buffer." => {
+            "O dispositivo não aceitou {} amostras; ele funciona com o buffer padrão."
+        }
+        "The device runs only at {} samples." => "O dispositivo funciona apenas com {} amostras.",
+        "The device runs at {} samples, not {}." => "O dispositivo funciona com {} amostras, não {}.",
+        "The device allows {}–{} samples; it runs at its default buffer, {} samples." => {
+            "O dispositivo aceita {}–{} amostras; ele funciona com o buffer padrão, {} amostras."
+        }
+        "The device did not take {} samples; it runs at its default buffer, {} samples." => {
+            "O dispositivo não aceitou {} amostras; ele funciona com o buffer padrão, {} amostras."
+        }
         "Bus name: {name}" => "Nome do bus: {name}",
         "Model" => "Modelo",
         "Version" => "Versão",

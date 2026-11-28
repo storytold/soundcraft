@@ -149,6 +149,8 @@ pub struct UiState {
     pub preferences_window_pos: Option<[f32; 2]>,
     pub reduce_visual_effects: preferences::ReduceVisualEffects,
     pub undo_levels: usize,
+    /// The level a send made in the Mix window starts at (Preferences › Mixing).
+    pub sends_default: preferences::SendsDefault,
     /// The audio device choice (Setup › Playback Engine), kept with the preferences: per machine.
     pub audio: soundcraft_playback::AudioConfig,
     /// The Mix window lives in its own native window (Window › Mix in Separate Window); the main
@@ -227,6 +229,7 @@ impl Default for UiState {
             preferences_window_pos: None,
             reduce_visual_effects: preferences::ReduceVisualEffects::default(),
             undo_levels: 64,
+            sends_default: preferences::SendsDefault::default(),
             audio: soundcraft_playback::AudioConfig::default(),
             mix_separate: false,
             show_io_setup: false,
@@ -481,6 +484,8 @@ pub struct SoundApp {
     pub frame_ms: f32,
     last_frame: Option<f64>,
     last_meter_poll: f64,
+    /// When a meter take last brought new audio blocks (uptime, seconds).
+    last_meter_block: f64,
     /// Movies for the Video window and Video track (decoded in the background).
     pub video: video_track::VideoPool,
     /// The Bounce Mix in progress, rendered a slice per frame.

@@ -19,10 +19,13 @@ fi
 
 TMP="${RUNNER_TEMP:-${TMPDIR:-/tmp}}"
 KEYCHAIN="$TMP/soundcraft-signing.keychain-db"
-CERT="$TMP/soundcraft-signing.p12"
+# The decoded certificate goes in a folder of this run's own (mktemp creates it, owner-only):
+# a name another account could plant in the shared folder must not receive or redirect it.
+CERT_DIR="$(mktemp -d "$TMP/soundcraft-signing.XXXXXX")"
+CERT="$CERT_DIR/soundcraft-signing.p12"
 KC_PASS="${KEYCHAIN_PASSWORD:-$(openssl rand -hex 24)}"
 
-trap 'rm -f "$CERT"' EXIT
+trap 'rm -rf "$CERT_DIR"' EXIT
 printf '%s' "$APPLE_CERTIFICATE" | base64 --decode >"$CERT"
 security create-keychain -p "$KC_PASS" "$KEYCHAIN"
 security set-keychain-settings -lut 21600 "$KEYCHAIN"

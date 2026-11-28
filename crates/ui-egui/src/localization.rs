@@ -540,6 +540,16 @@ mod tests {
         }
     }
 
+    /// The Strip Silence dialog's action button and the Channel Strip plug-in's short name are
+    /// different strings ("remove" vs a channel strip): the button keeps the dialog's own key,
+    /// so a translation gives each its word (#1610).
+    #[test]
+    fn strip_button_translates_as_its_own_key() {
+        let pt = Language::PortugueseBrazil;
+        assert_eq!(pt.text("Strip Silence"), "Remover silêncio", "the dialog's action button");
+        assert_eq!(pt.text("Strip"), "Canal", "the Channel Strip plug-in's short name keeps its own key");
+    }
+
     #[test]
     fn every_localized_source_string_has_a_catalog_entry() {
         assert_source_strings_have_entries("pt-BR", |source| super::pt_br::translate(source).is_some());

@@ -15,7 +15,8 @@ impl cpal::traits::StreamTrait for Fake {
     fn pause(&self) -> Result<(), cpal::Error> {
         Ok(())
     }
-    /// The fake stream has no clock and no fixed buffer; neither is used by these tests.
+    /// The fake stream reports 0 frames, which says nothing about a buffer (see
+    /// `a_stream_that_reports_no_buffer_size_has_no_running_buffer`).
     fn buffer_size(&self) -> Result<cpal::FrameCount, cpal::Error> {
         Ok(0)
     }
@@ -23,6 +24,12 @@ impl cpal::traits::StreamTrait for Fake {
     fn now(&self) -> cpal::StreamInstant {
         cpal::StreamInstant::from_nanos(0)
     }
+}
+
+#[test]
+fn a_stream_that_reports_no_buffer_size_has_no_running_buffer() {
+    // The fake reports 0 frames, which says nothing about the device.
+    assert_eq!(stream::running_buffer(&Fake { starts: true }), None);
 }
 
 #[test]
@@ -155,7 +162,7 @@ fn a_spike_in_one_block_among_quiet_ones_reaches_the_ui() {
     // The last block alone (what the UI used to see) is quiet.
     assert!(st.mix.meters[&t].peak[0] < 0.05);
     let mut ui = MeterSnapshot::default();
-    take_meter_snapshot(&mut shared.meters.lock().unwrap(), &mut ui);
+    assert!(take_meter_snapshot(&mut shared.meters.lock().unwrap(), &mut ui), "new blocks arrived");
     assert!(ui.tracks[&t].peak[0] > 0.85, "{:?}", ui.tracks[&t]);
     assert!(ui.tracks[&t].peaks[0] > 0.85);
     assert!(ui.main.peak[0] > 0.5 && ui.main.peaks.iter().all(|p| *p > 0.5), "{:?}", ui.main);
@@ -163,9 +170,12 @@ fn a_spike_in_one_block_among_quiet_ones_reaches_the_ui() {
     st.fill(&mut out, 2);
     take_meter_snapshot(&mut shared.meters.lock().unwrap(), &mut ui);
     assert!(ui.tracks[&t].peak[0] < 0.05 && ui.main.peak[0] < 0.05);
-    // No block since the last take: the reading stays rather than dropping to silence.
-    take_meter_snapshot(&mut shared.meters.lock().unwrap(), &mut ui);
+    // No block since the last take: the reading stays rather than dropping to silence, and the
+    // reader is told, so it can clear readings that stay stale (the device stopped calling back).
+    assert!(!take_meter_snapshot(&mut shared.meters.lock().unwrap(), &mut ui));
     assert!(ui.tracks[&t].peak[0] > 0.005);
+    ui.clear_levels();
+    assert!(ui.tracks[&t].peak[0] == 0.0 && ui.main.peak[0] == 0.0 && ui.tracks[&t].peaks.len() == 1, "{:?}", ui.tracks[&t]);
 }
 
 #[test]
@@ -696,6 +706,7 @@ fn armed_tracks_are_heard_and_metered_after_playback_stops() {
     let mut s = soundcraft_model::Session::default();
     let t = s.add_track(TrackKind::Audio, ChannelFormat::Mono, None);
     s.track_mut(t).unwrap().mixer.record_arm = true;
+    s.track_mut(t).unwrap().mixer.input = soundcraft_model::Route::Hardware("In 1".into());
     let shared = Arc::new(Shared {
         position: AtomicI64::new(0),
         playing: AtomicBool::new(false),
