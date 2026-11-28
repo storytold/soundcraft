@@ -435,6 +435,24 @@ fn a_track_routed_here_while_playing_is_chased_like_a_locate() {
 }
 
 #[test]
+fn a_track_routed_here_while_playing_plays_nothing_from_before_it_arrived() {
+    let mut s = session();
+    add_track(&mut s, TrackKind::Midi, vec![], vec![], "DIN", 0);
+    // Tick 150 is sample 3750, between the two updates.
+    let late = add_track(&mut s, TrackKind::Midi, vec![note(64, 100, 150, 960)], vec![cc(0, CtrlKind::Cc(7), 70)], "Other", 2);
+    let base = Instant::now();
+    let b = rolling(base, 1, 0);
+    let mut enc = TrackMidi::new("DIN");
+    let mut wire = Wire::new();
+    enc.update(b, base + Duration::from_millis(50), &s, &mut |at, m| wire.push((at, m.to_vec())));
+    MidiOutput::store(&mut s.edit, late, Some(MidiOutput { device: "DIN", channel: 2 }));
+    wire.clear();
+    enc.update(b, base + Duration::from_millis(100), &s, &mut |at, m| wire.push((at, m.to_vec())));
+    // Chased at the play position like a locate, which starts no note that began before it.
+    assert_eq!(bytes(&wire), [vec![0xb2, 7, 70]]);
+}
+
+#[test]
 fn a_timing_loss_before_a_stop_does_not_restart_the_next_pass() {
     // The timing was lost while playing, then the transport stopped before the next update. The
     // next pass starts once: its notes are not cut by a second start one update later.

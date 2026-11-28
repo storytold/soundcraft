@@ -101,6 +101,11 @@ pub(crate) struct TrackMidi {
     present: Vec<(TrackId, u8)>,
     /// Reused for the next update's [`TrackMidi::present`].
     arriving: Vec<(TrackId, u8)>,
+    /// The tracks that arrived in this update and the play position they were chased at: their
+    /// events start there, not at the cursor.
+    arrived: Vec<(TrackId, i64)>,
+    /// Reused for the notes of tracks that left, each update.
+    leaving: Vec<Held>,
     events: Vec<Pending>,
 }
 
@@ -148,6 +153,8 @@ impl TrackMidi {
             quieting: 0,
             present: Vec::new(),
             arriving: Vec::new(),
+            arrived: Vec::new(),
+            leaving: Vec::new(),
             events: Vec::new(),
         }
     }
@@ -224,8 +231,10 @@ impl TrackMidi {
     /// the last routed, unmuted track left gets its sustain pedal up, since the pedal holds notes
     /// over their Note-Offs (MIDI 1.0 p A-5) and no track there will lift it. A track that newly
     /// plays here (routed, unmuted or made active) gets its controllers and program at the play
-    /// position, as a locate does (Pro Tools Reference Guide p1059).
+    /// position, as a locate does (Pro Tools Reference Guide p1059), and plays from there
+    /// ([`TrackMidi::arrived`]).
     fn follow_routing(&mut self, s: &Session, at: i64, send: &mut dyn FnMut(&[u8])) {
+        self.arrived.clear();
         let mut here = std::mem::take(&mut self.arriving);
         unmuted(s, &self.port, at, &mut here);
         for channel in 0..16u8 {
@@ -237,6 +246,7 @@ impl TrackMidi {
             if self.present.contains(&(id, channel)) {
                 continue;
             }
+            self.arrived.push((id, at));
             if let Some(t) = s.track(id) {
                 chase_events(s, t, at.saturating_sub(midi_offset(s, t)), |message| self.send_on(channel, message, send));
             }
@@ -249,6 +259,12 @@ impl TrackMidi {
         self.events.clear();
         for (t, channel) in routed(s, &self.port) {
             let offset = midi_offset(s, t);
+            // A track that arrived in this update was chased at that position (the controllers
+            // before it): its events start there.
+            let from = self.arrived.iter().find(|(id, _)| *id == t.id).map_or(from, |&(_, at)| from.max(at));
+            if from >= to {
+                continue;
+            }
             let events = &mut self.events;
             clip_events(s, t, from.saturating_sub(offset), to.saturating_sub(offset), |event| match event {
                 ClipEvent::Note { on, off, pitch, velocity } => {
@@ -288,31 +304,32 @@ impl TrackMidi {
         let from = self.cursor.unwrap_or(at);
         let to = at.saturating_add(1);
         // Tracks no longer routed here on the same channel, or now muted, let go of their notes.
-        let mut gone = std::mem::take(&mut self.held);
-        let mut stay = Vec::with_capacity(gone.len());
-        gone.retain(|h| {
+        let mut gone = std::mem::take(&mut self.leaving);
+        let port = &self.port;
+        self.held.retain(|h| {
             let keep = s
                 .track(h.track)
                 .filter(|t| t.kind.is_midi())
                 .and_then(|t| MidiOutput::of(&s.edit, t.id).map(|out| (t, out)))
-                .is_some_and(|(t, out)| out.device == self.port && out.channel == h.channel && !midi_output_muted(s, t, at));
-            if keep {
-                stay.push(*h);
+                .is_some_and(|(t, out)| out.device == *port && out.channel == h.channel && !midi_output_muted(s, t, at));
+            if !keep {
+                gone.push(*h);
             }
-            !keep
+            keep
         });
-        self.held = stay;
         let deadline = |sample: i64| b.instant_for(sample as f64).min(now);
         {
             let mut out = |m: &[u8]| send(now, m);
-            for h in gone {
+            for h in gone.drain(..) {
                 self.release(h.channel, h.pitch, &mut out);
             }
             self.follow_routing(s, at, &mut out);
         }
-        if from < to {
+        self.leaving = gone;
+        if from < to || !self.arrived.is_empty() {
             self.collect(s, from, to);
         }
+        self.arrived.clear();
         // The ends that fall in this window: held notes, then notes that start and end in it.
         for h in self.held.iter().filter(|h| h.off < to) {
             self.events.push(Pending { at: h.off, rank: RELEASE, track: h.track, message: [0x80 | h.channel, h.pitch, 0], off: h.off });
