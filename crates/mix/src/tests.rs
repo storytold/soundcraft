@@ -2212,3 +2212,45 @@ fn a_monitored_input_is_kept_out_of_delay_compensation_without_any_option() {
     assert_eq!(waits, 0, "the monitored input does not wait for the latent track");
     assert_eq!(monitored_delay(true).0, 0, "Low Latency Monitoring changes nothing here");
 }
+
+/// The monitored input's exemption is its own: a track playing back during the same pass still
+/// waits for the latent track (#1766 review).
+#[test]
+fn playback_still_waits_for_a_latent_track_while_an_input_is_monitored() {
+    let mut s = Session::default();
+    s.edit.delay_compensation = true;
+    s.edit.click = false;
+    let mut imp = vec![0.0f32; 48_000];
+    imp[1000] = 1.0;
+    s.pool.insert(SourceId(900), Arc::new(SourceAudio::new(AudioBuffer { sample_rate: 48_000, channels: vec![imp] })));
+    let latent = s.add_track(TrackKind::Audio, ChannelFormat::Mono, None);
+    s.track_mut(latent).unwrap().mixer.inserts[0] = Some(Insert::new("maximizer"));
+    let played = s.add_track(TrackKind::Audio, ChannelFormat::Mono, None);
+    let cid = s.new_clip_id();
+    let t = s.track_mut(played).unwrap();
+    t.playlist_mut().unwrap().clips.push(Clip::audio(cid, "i", SourceId(900), 0, 0, 48_000));
+    t.mixer.pan = vec![-1.0];
+    let mon = s.add_track(TrackKind::Audio, ChannelFormat::Mono, None);
+    let t = s.track_mut(mon).unwrap();
+    t.mixer.input = Route::Hardware("In 1".into());
+    t.mixer.input_monitor = true;
+    t.mixer.pan = vec![1.0];
+    let mut eng = MixEngine::new(48_000.0, 512);
+    let (mut left, mut right) = (None, None);
+    for b in 0..16 {
+        let mut input = vec![0.0f32; 512];
+        if b == 2 {
+            input[100] = 0.5;
+        }
+        eng.input = vec![input];
+        let mut out = vec![vec![0.0f32; 512]; 2];
+        eng.render(&s, b * 512, 512, &mut out);
+        let at = |c: &[f32]| c.iter().position(|x| x.abs() > 0.05).map(|i| b as usize * 512 + i);
+        left = left.or(at(&out[0]));
+        right = right.or(at(&out[1]));
+    }
+    let lat = soundcraft_dsp::create("maximizer").unwrap().latency();
+    assert!(lat > 0, "test needs a latent plugin");
+    assert_eq!(left, Some(1000 + lat), "the played track waits for the latent track");
+    assert_eq!(right, Some(2 * 512 + 100), "the monitored input does not");
+}
