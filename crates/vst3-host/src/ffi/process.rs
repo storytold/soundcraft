@@ -3,14 +3,78 @@ use super::{
     MAX_BUS_CHANNELS, MAX_BUSES, MAX_STATE_BYTES, Mutex, Ordering, PoisonError, c_void, sb, sv,
 };
 
-/// One parameter's points for one block. SoundCraft sends at most one point per block; a
-/// plugin writing output changes may add more, of which only the last is kept.
-#[derive(Default)]
+/// Points one input queue holds per block. Host values and controller points for one parameter
+/// rarely number more than a few per block; a fuller queue keeps the latest state (see
+/// [`ParamChanges::set`]). Every instance holds `PARAM_QUEUE_CAP` input queues, so this sets
+/// most of its parameter memory (24 bytes a point).
+pub(crate) const QUEUE_POINTS: usize = 8;
+
+/// One parameter's points for one block, sorted by offset. The storage is sized when the queue
+/// is made and never grows. The host may add several points (a host value and controller
+/// points); a plugin writing output changes keeps only its last, so output queues hold one.
 pub(crate) struct ParamQueue {
     id: AtomicU32,
-    offset: AtomicI32,
-    value: AtomicU64,
+    offsets: Box<[AtomicI32]>,
+    values: Box<[AtomicU64]>,
+    /// Call order of each point, so the later call wins at a shared offset.
+    seqs: Box<[AtomicU64]>,
     points: AtomicI32,
+}
+
+impl ParamQueue {
+    fn new(cap: usize) -> ParamQueue {
+        let cap = cap.max(1);
+        ParamQueue {
+            id: AtomicU32::new(0),
+            offsets: (0..cap).map(|_| AtomicI32::new(0)).collect(),
+            values: (0..cap).map(|_| AtomicU64::new(0)).collect(),
+            seqs: (0..cap).map(|_| AtomicU64::new(0)).collect(),
+            points: AtomicI32::new(0),
+        }
+    }
+
+    fn len(&self) -> usize {
+        usize::try_from(self.points.load(Ordering::Relaxed)).unwrap_or(0).min(self.offsets.len())
+    }
+
+    fn point(&self, i: usize) -> Option<(i32, u64, u64)> {
+        Some((self.offsets.get(i)?.load(Ordering::Relaxed), self.values.get(i)?.load(Ordering::Relaxed), self.seqs.get(i)?.load(Ordering::Relaxed)))
+    }
+
+    fn write(&self, i: usize, (offset, value, seq): (i32, u64, u64)) {
+        if let (Some(o), Some(v), Some(s)) = (self.offsets.get(i), self.values.get(i), self.seqs.get(i)) {
+            o.store(offset, Ordering::Relaxed);
+            v.store(value, Ordering::Relaxed);
+            s.store(seq, Ordering::Relaxed);
+        }
+    }
+
+    /// Adds a point in offset order. At an offset that already has one, the later call (higher
+    /// `seq`) wins whichever arrives first. When full, the new point takes the place of the
+    /// point just before it (so the parameter still ends the block where the latest calls put
+    /// it); a point earlier than all of them is dropped.
+    fn insert(&self, offset: i32, value: f64, seq: u64) {
+        let n = self.len();
+        let k = (0..n).find(|&i| self.point(i).is_some_and(|p| p.0 >= offset)).unwrap_or(n);
+        let new = (offset, value.to_bits(), seq);
+        if let Some((o, _, s)) = self.point(k).filter(|_| k < n)
+            && o == offset
+        {
+            if seq >= s {
+                self.write(k, new);
+            }
+        } else if n < self.offsets.len() {
+            for i in (k..n).rev() {
+                if let Some(p) = self.point(i) {
+                    self.write(i + 1, p);
+                }
+            }
+            self.write(k, new);
+            self.points.store(i32::try_from(n + 1).unwrap_or(i32::MAX), Ordering::Relaxed);
+        } else if let Some(prev) = k.checked_sub(1) {
+            self.write(prev, new);
+        }
+    }
 }
 
 impl Class for ParamQueue {
@@ -25,21 +89,21 @@ impl IParamValueQueueTrait for ParamQueue {
         self.points.load(Ordering::Relaxed)
     }
     unsafe fn getPoint(&self, index: sb::int32, offset: *mut sb::int32, value: *mut sv::ParamValue) -> sb::tresult {
-        if index != 0 || self.points.load(Ordering::Relaxed) < 1 {
+        let Some((o, v, _)) = usize::try_from(index).ok().filter(|&i| i < self.len()).and_then(|i| self.point(i)) else {
             return sb::kInvalidArgument;
-        }
+        };
         // SAFETY: out-pointers from the plugin (or null, handled).
-        if let (Some(o), Some(v)) = (unsafe { offset.as_mut() }, unsafe { value.as_mut() }) {
-            *o = self.offset.load(Ordering::Relaxed);
-            *v = f64::from_bits(self.value.load(Ordering::Relaxed));
+        if let (Some(po), Some(pv)) = (unsafe { offset.as_mut() }, unsafe { value.as_mut() }) {
+            *po = o;
+            *pv = f64::from_bits(v);
             sb::kResultOk
         } else {
             sb::kInvalidArgument
         }
     }
     unsafe fn addPoint(&self, offset: sb::int32, value: sv::ParamValue, index: *mut sb::int32) -> sb::tresult {
-        self.offset.store(offset, Ordering::Relaxed);
-        self.value.store(value.to_bits(), Ordering::Relaxed);
+        // Output queues keep the plugin's last point only.
+        self.write(0, (offset, value.to_bits(), 0));
         self.points.store(1, Ordering::Relaxed);
         // SAFETY: out-pointer from the plugin (or null, handled).
         if let Some(i) = unsafe { index.as_mut() } {
@@ -60,8 +124,9 @@ impl Class for ParamChanges {
 }
 
 impl ParamChanges {
-    pub(super) fn new(cap: usize) -> ParamChanges {
-        ParamChanges { queues: (0..cap).map(|_| ComWrapper::new(ParamQueue::default())).collect(), count: AtomicI32::new(0) }
+    /// `cap` queues of `points` points each (at least one).
+    pub(super) fn new(cap: usize, points: usize) -> ParamChanges {
+        ParamChanges { queues: (0..cap).map(|_| ComWrapper::new(ParamQueue::new(points))).collect(), count: AtomicI32::new(0) }
     }
 
     pub(super) fn clear(&self) {
@@ -83,12 +148,11 @@ impl ParamChanges {
         Some((n, q))
     }
 
-    /// Host side: one point for `id` at `offset` (replacing an earlier one this block).
-    pub(super) fn set(&self, id: u32, offset: i32, value: f64) {
+    /// Host side: a point for `id` at `offset`, made by the `seq`-th call (see
+    /// [`ParamQueue::insert`]).
+    pub(super) fn set(&self, id: u32, offset: i32, value: f64, seq: u64) {
         if let Some((_, q)) = self.queue_for(id) {
-            q.offset.store(offset, Ordering::Relaxed);
-            q.value.store(value.to_bits(), Ordering::Relaxed);
-            q.points.store(1, Ordering::Relaxed);
+            q.insert(offset, value, seq);
         }
     }
 
