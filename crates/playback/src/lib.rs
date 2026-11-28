@@ -158,8 +158,9 @@ pub enum OutputTrouble {
     /// The device went away.
     Gone,
     /// The device is still present but asked for the stream to be rebuilt (cpal's
-    /// `StreamInvalidated`, an ASIO driver's reset request, for example after its buffer size
-    /// changed in the driver's own settings). Reopening the device restores audio.
+    /// `StreamInvalidated` on any audio system: for example an ASIO driver's reset request after
+    /// its buffer size changed in the driver's own settings, or a Core Audio device whose sample
+    /// rate another app changed). Reopening the device restores audio.
     Reset,
     /// The device stopped asking for audio while playing.
     Stalled,

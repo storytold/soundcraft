@@ -112,9 +112,10 @@ pub fn audio_systems() -> Vec<AudioSystem> {
 
 /// True when a cpal error means the stream is dead and only a rebuild can restore audio. cpal 0.18
 /// reports every operation through one [`cpal::Error`]: `DeviceNotAvailable` means the device went
-/// away, and `StreamInvalidated` explicitly requires the stream to be rebuilt. SoundCraft has no
-/// in-place rebuild, so both map to the existing actionable "reconnect audio device" trouble
-/// instead of leaving a dead stream silently logging. A rerouted default device
+/// away, and `StreamInvalidated` explicitly requires the stream to be rebuilt. Neither is left as a
+/// dead stream silently logging: a device that went away is reported for the user to reconnect,
+/// and an invalidated stream on a present device (see [`stream_reset`]) is reopened by SoundCraft
+/// itself, on every audio system. A rerouted default device
 /// (`DeviceChanged`) keeps playing, and an xrun is transient, so neither is a lost stream.
 /// `HostUnavailable`, `DeviceBusy` and `BackendError` stay log-only until their retry/rebuild
 /// policies exist.
@@ -125,8 +126,9 @@ pub(crate) fn stream_lost(e: &cpal::Error) -> bool {
 }
 
 /// True when a lost stream (see [`stream_lost`]) is still on a present device that asked for the
-/// stream to be rebuilt (`StreamInvalidated`). cpal reports an ASIO driver's reset request this
-/// way, for example after the buffer size changed in the driver's own settings. The device can be
+/// stream to be rebuilt (`StreamInvalidated`). Any audio system can report it: cpal reports an
+/// ASIO driver's reset request this way (for example after the buffer size changed in the driver's
+/// own settings), and Core Audio a device whose sample rate another app changed. The device can be
 /// reopened at once; `DeviceNotAvailable` means it went away.
 pub(crate) fn stream_reset(e: &cpal::Error) -> bool {
     e.kind() == cpal::ErrorKind::StreamInvalidated

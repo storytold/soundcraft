@@ -64,7 +64,10 @@ impl SoundApp {
         }
     }
 
-    /// Stop the transport, keeping a take in progress, when the audio output fails.
+    /// Stop the transport, keeping a take in progress, when the audio output fails. An output that
+    /// asked for its stream to be rebuilt is reopened on the next frame unless it asked again too
+    /// soon (`reopen_after_reset`), and an idle ASIO output whose clock ran too slow is rebuilt
+    /// (`Player::recover_idle_asio`), with the status line saying what happened.
     pub(super) fn watch_output(&mut self) {
         if let Some(cause) = self.reopen_pending.take() {
             self.reconnect_audio();
@@ -137,9 +140,10 @@ impl SoundApp {
         self.ui.status = output_status(recording, playing, &cause, then);
     }
 
-    /// The device asked for its stream to be rebuilt (an ASIO driver's reset request, for example
-    /// after its buffer size changed in the driver's own settings). Stop the transport, keeping a
-    /// take in progress up to here, and reopen the device on the next frame, as Reconnect audio
+    /// The device asked for its stream to be rebuilt (cpal's `StreamInvalidated` on any audio
+    /// system, for example an ASIO driver's reset request after its buffer size changed in the
+    /// driver's own settings). Stop the transport, keeping a take in progress up to here, and
+    /// reopen the device on the next frame, as Reconnect audio
     /// device does, so that the input of the same device, reporting its reset in this frame, joins
     /// the one reopen. Says what happens next. A device that asks again within [`AUTO_REOPEN_GAP`]
     /// of the last automatic reopen is left to the user, so a driver that keeps resetting cannot
@@ -165,7 +169,8 @@ impl SoundApp {
     }
 
     /// Stop recording, keeping the take, when the input device or the disk fails, and say as soon
-    /// as a slow disk loses input.
+    /// as a slow disk loses input. An input that asked for its stream to be rebuilt is reopened
+    /// with the output (`reopen_after_reset`).
     pub(super) fn watch_input(&mut self) {
         let recording = self.engine.transport.recording;
         let Some(r) = &mut self.recorder else { return };

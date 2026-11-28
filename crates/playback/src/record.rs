@@ -53,8 +53,9 @@ const RESET: u8 = 3;
 pub enum Trouble {
     /// The device went away or stopped sending audio, or its callback hit a bug.
     Device(String),
-    /// The device is still present but asked for the stream to be rebuilt (an ASIO driver's reset
-    /// request). Reopening the device restores input.
+    /// The device is still present but asked for the stream to be rebuilt (cpal's
+    /// `StreamInvalidated` on any audio system, such as an ASIO driver's reset request). Reopening
+    /// the device restores input.
     Reset(String),
     /// Writing a take failed (a full disk, say).
     Disk(String),

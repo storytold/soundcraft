@@ -14,8 +14,9 @@ pub(crate) struct Fault {
     /// The device went away or the stream was invalidated: a reconnect restores audio, and with
     /// `reset` the UI reopens the device itself.
     pub(crate) gone: AtomicBool,
-    /// Set with `gone` when the stream was invalidated on a device that is still present (an
-    /// ASIO driver's reset request), so the UI can reopen it without asking the user.
+    /// Set with `gone` when the stream was invalidated on a device that is still present (cpal's
+    /// `StreamInvalidated` on any audio system, such as an ASIO driver's reset request), so the UI
+    /// can reopen it without asking the user.
     pub(crate) reset: AtomicBool,
     /// Blocks so far, to tell a device that stopped asking for audio.
     pub(crate) beats: std::sync::atomic::AtomicU64,
