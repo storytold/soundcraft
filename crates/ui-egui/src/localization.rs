@@ -522,6 +522,15 @@ mod tests {
         assert_eq!(pt.text("Strip"), "Canal", "the Channel Strip plug-in's short name keeps its own key");
     }
 
+    /// The path prompt's field label and the Auto Pan "Path" choice are different strings
+    /// (a file path and a panning trajectory): each translates as its own key (#1611).
+    #[test]
+    fn prompt_field_translates_as_its_own_key() {
+        let pt = Language::PortugueseBrazil;
+        assert_eq!(pt.text("File path"), "Caminho do arquivo", "the prompt's field, not the Auto Pan choice");
+        assert_eq!(pt.text("Path"), "Caminho", "the Auto Pan choice keeps its own key");
+    }
+
     #[test]
     fn every_localized_source_string_has_a_catalog_entry() {
         fn visit(dir: &std::path::Path, missing: &mut Vec<String>) {
