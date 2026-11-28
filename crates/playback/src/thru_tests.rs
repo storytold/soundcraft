@@ -133,6 +133,17 @@ fn a_key_two_sources_hold_ends_when_the_last_lets_go_and_a_stray_release_sends_n
 }
 
 #[test]
+fn the_pedal_two_sources_hold_goes_up_when_the_last_lets_go() {
+    let (mut s, names) = (session(), names());
+    track(&mut s, TrackKind::Midi, "PC1X", 0);
+    let mut thru = Thru::default();
+    let wire = play(&mut thru, &s, &names, &[ev(0, 0xB0, 64, 127), ev(1, 0xB3, 64, 100), ev(0, 0xB0, 64, 0)]);
+    assert_eq!(wire, [w("PC1X", &[0xB0, 64, 127]), w("PC1X", &[0xB0, 64, 100])], "the pads still hold the pedal");
+    assert_eq!(play(&mut thru, &s, &names, &[ev(1, 0xB3, 64, 0)]), [w("PC1X", &[0xB0, 64, 0])]);
+    assert!(!thru.holds());
+}
+
+#[test]
 fn a_track_that_stops_playing_live_input_lets_go_of_its_notes_and_pedal() {
     let changes: [(&str, fn(&mut Session, TrackId)); 7] = [
         ("taken out of record", |s, t| s.track_mut(t).unwrap().mixer.record_arm = false),

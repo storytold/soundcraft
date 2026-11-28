@@ -121,6 +121,10 @@ impl Thru {
                         }
                     } else {
                         self.pedals.retain(|p| *p != pedal);
+                        // Another input still holds the pedal there: it goes up with the last.
+                        if self.pedals.iter().any(|p| p.dest == *dest && p.out == *out) {
+                            continue;
+                        }
                     }
                     send(dest, &[status, 64, data2]);
                 }
