@@ -125,7 +125,7 @@ impl SoundApp {
                 crate::localization::text("Use Reconnect audio device in Setup › Playback Engine, or restart SoundCraft."),
             ),
             OutputTrouble::Gone => (
-                format!("“{}” {}", name, crate::localization::text("is unavailable")),
+                format!("“{}” {}.", name, crate::localization::text("is unavailable")),
                 crate::localization::text("Check the audio device, then use Reconnect audio device in Setup › Playback Engine."),
             ),
             OutputTrouble::Stalled => (

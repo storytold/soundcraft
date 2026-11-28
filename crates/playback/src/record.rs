@@ -235,7 +235,7 @@ impl Recorder {
     pub fn open_with(audio: &crate::AudioConfig) -> Result<Recorder, String> {
         use cpal::traits::{DeviceTrait, StreamTrait};
         let host = crate::devices::host(audio);
-        let device = crate::devices::device(&host, audio.input.as_deref(), false).ok_or("no audio input device")?;
+        let device = crate::devices::device(&host, audio.input.as_deref(), false, true).ok_or("no audio input device")?;
         let name = crate::devices::device_name(&device).unwrap_or_else(|| "Input".into());
         // At the chosen rate when the device offers it, so input and output run together: the
         // best format first, then the most channels.
@@ -330,7 +330,7 @@ impl Recorder {
         }
         let name = &self.device_name;
         match self.shared.fault.load(Ordering::Relaxed) {
-            GONE => return Some(Trouble::Device(format!("“{name}” is unavailable"))),
+            GONE => return Some(Trouble::Device(format!("“{name}” is unavailable."))),
             BROKEN => return Some(Trouble::Device("the audio input hit an internal error (see the log)".into())),
             _ => {}
         }
@@ -615,7 +615,7 @@ mod tests {
         assert_eq!(r.trouble(), Some(Trouble::Device("the audio input hit an internal error (see the log)".into())));
         let gone = Arc::new(Shared::new(CaptureRing::new(64)));
         gone.fault.store(GONE, Ordering::Relaxed);
-        assert_eq!(recorder(&gone).trouble(), Some(Trouble::Device("“Mic In” is unavailable".into())));
+        assert_eq!(recorder(&gone).trouble(), Some(Trouble::Device("“Mic In” is unavailable.".into())));
     }
 
     #[test]
