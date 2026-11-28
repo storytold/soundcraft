@@ -342,7 +342,8 @@ fn bounce_file_row(app: &mut SoundApp, ui: &mut egui::Ui, path: &mut String, for
 
 /// The path prompt's form; the command to run once it is confirmed.
 fn path_prompt_form(app: &mut SoundApp, ui: &mut egui::Ui, cmd: &str, path: &mut String, key: &str, enter: bool) -> Option<(String, Value)> {
-    crate::widgets::named_text_field(ui.add(egui::TextEdit::singleline(path).desired_width(420.0)), crate::localization::text("Path"));
+    let label = if key == "dir" { crate::localization::text("Folder path") } else { crate::localization::text("File path") };
+    crate::widgets::named_text_field(ui.add(egui::TextEdit::singleline(path).desired_width(420.0)), label);
     let mut picked = None;
     // Import Audio picks several files at once; every other open dialog takes one.
     let multi = cmd == "file.import_audio" && app.services.pick_open_many.is_some();
@@ -444,7 +445,9 @@ fn strip_silence_form(
             mode = Some("separate");
         }
         // Enter on a focused Extract or Separate clicks that button, so Enter presses Strip only when neither was clicked.
-        if buttons(ui, "Strip", enter) && mode.is_none() {
+        // The button is its own string ("Strip Silence"), not the Channel Strip plug-in's
+        // short name "Strip", so translations can give them different words (#1610).
+        if buttons(ui, "Strip Silence", enter) && mode.is_none() {
             mode = Some("strip");
         }
         // Enter on a focused Rename… also presses Strip, so Rename… goes first.
