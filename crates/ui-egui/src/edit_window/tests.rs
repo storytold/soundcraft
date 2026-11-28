@@ -2348,6 +2348,49 @@ fn alt_click_on_a_marker_deletes_it() {
     assert!(!h.state().engine.session().markers.iter().any(|m| m.name == "Alt-delete me"));
 }
 
+/// #1685: dragging a marker on its ruler moves it, as one undo step; a drag from empty ruler moves none.
+#[test]
+fn dragging_a_marker_on_its_ruler_moves_it() {
+    let mut engine = soundcraft_engine::demo::demo_engine();
+    engine.session_mut().edit.rulers = vec!["markers".into()];
+    engine.execute("markers.add", &json!({"at": 48_000, "name": "Drag me"})).unwrap();
+    let mut h = harness_with(engine);
+    let start_of = |h: &Harness<SoundApp>| h.state().engine.session().markers.iter().find(|m| m.name == "Drag me").map(|m| m.start);
+    let s = h.state().engine.session_arc();
+    let x = x_of(&s, timeline(&h), 48_000);
+    let y = timeline(&h).min.y - 11.5;
+    let before: Vec<_> = s.markers.iter().map(|m| m.start).collect();
+
+    // From empty ruler, well clear of every marker: nothing moves.
+    let clear = (0..)
+        .map(|k| x + 40.0 + 30.0 * k as f32)
+        .find(|cx| {
+            s.markers
+                .iter()
+                .all(|m| (x_of(&s, timeline(&h), m.start) - cx).abs() > 20.0 && (x_of(&s, timeline(&h), m.start) - cx - 120.0).abs() > 20.0)
+        })
+        .unwrap();
+    drag(&mut h, pos2(clear, y), pos2(clear + 120.0, y));
+    let after: Vec<_> = h.state().engine.session().markers.iter().map(|m| m.start).collect();
+    assert_eq!(after, before, "a drag that grabs no marker moves none");
+
+    // Escape cancels the drag: the release that follows does not drop the marker.
+    start_drag(&mut h, pos2(x, y));
+    h.hover_at(pos2(x + 120.0, y));
+    h.step();
+    h.key_press(egui::Key::Escape);
+    h.drop_at(pos2(x + 120.0, y));
+    h.step();
+    assert_eq!(start_of(&h), Some(48_000), "a drag cancelled with Escape leaves the marker where it was");
+
+    drag(&mut h, pos2(x, y), pos2(x + 120.0, y));
+    let moved = start_of(&h).unwrap();
+    assert!(moved > 48_000, "the marker follows the drag to the right: {moved}");
+
+    h.state_mut().run("edit.undo", json!({})).unwrap();
+    assert_eq!(start_of(&h), Some(48_000), "one undo puts the marker back");
+}
+
 #[test]
 fn short_track_name_is_centered_and_long_name_is_left_aligned() {
     let mut h = harness(2);

@@ -73,6 +73,48 @@ fn tempo_editor(app: &mut SoundApp, ui: &mut Ui, painter: &egui::Painter, s: &Se
     }
 }
 
+/// A marker held on its ruler: which one, where it and the pointer started, and where it would land.
+#[derive(Clone, Copy)]
+struct MarkerGrab {
+    id: u64,
+    start: Samples,
+    from: Samples,
+    at: Samples,
+}
+
+/// Dragging a marker on its ruler: a line shows where it lands (snapped to the grid), and the
+/// release moves it there with `markers.edit`. The marker keeps its offset from the pointer, so
+/// grabbing it off-centre does not jump it.
+fn marker_drag(app: &mut SoundApp, ui: &mut Ui, s: &Session, (tl, row): (Rect, Rect), lane: u8, resp: &egui::Response) {
+    let key = ui.scope_id().with(("marker_drag", lane));
+    if resp.drag_started()
+        && let Some(origin) = ui.input(|i| i.pointer.press_origin())
+        && let Some(m) =
+            s.markers.iter().filter(|m| m.ruler == lane || (lane == 1 && m.ruler == 0)).find(|m| (x_of(s, tl, m.start) - origin.x).abs() < 8.0)
+    {
+        ui.ctx()
+            .memory_mut(|mem| mem.data.insert_temp(key, MarkerGrab { id: m.id.0, start: m.start, from: sample_at(s, tl, origin.x), at: m.start }));
+    }
+    let Some(mut grab) = ui.ctx().memory(|mem| mem.data.get_temp::<MarkerGrab>(key)) else { return };
+    // The release frame may carry no pointer position: the marker lands where it was last shown.
+    if let Some(p) = resp.interact_pointer_pos() {
+        grab.at = snap(s, (grab.start + sample_at(s, tl, p.x) - grab.from).max(0));
+    }
+    let MarkerGrab { id, start, at, .. } = grab;
+    if resp.drag_stopped() || !resp.dragged() {
+        ui.ctx().memory_mut(|mem| mem.data.remove::<MarkerGrab>(key));
+        // Escape also stops a drag: only a release drops the marker.
+        let released = ui.input(|i| i.pointer.any_released() && !i.key_pressed(egui::Key::Escape));
+        if resp.drag_stopped() && released && at != start {
+            let _ = app.run("markers.edit", json!({"id": id, "at": at}));
+        }
+        return;
+    }
+    ui.ctx().memory_mut(|mem| mem.data.insert_temp(key, grab));
+    let x = x_of(s, tl, at);
+    ui.painter().with_clip_rect(row).line_segment([pos2(x, row.min.y + 1.0), pos2(x, row.max.y - 1.0)], Stroke::new(2.0, Tokens::current().accent));
+}
+
 /// A "nice" step in samples for ruler labels at the current zoom.
 fn nice_step(spp: f64, sr: f64, min_px: f64) -> i64 {
     let min = spp * min_px;
@@ -265,8 +307,10 @@ pub(super) fn draw_rulers(app: &mut SoundApp, ui: &mut Ui, area: Rect, tl: Rect,
                     ));
                     painter.text(pos2(x + 8.0, row.center().y), Align2::LEFT_CENTER, &m.name, bold(11.0), t.marker_text);
                 }
-                // Click on the marker ruler: recall a marker; double-click renames it, or adds one.
-                let resp = ui.interact(row, ui.scope_id().with(("marker_ruler", lane)), Sense::click());
+                // Click on the marker ruler: recall a marker; double-click renames it, or adds one;
+                // dragging a marker moves it along the ruler.
+                let resp = ui.interact(row, ui.scope_id().with(("marker_ruler", lane)), Sense::click_and_drag());
+                marker_drag(app, ui, &s, (tl, row), lane, &resp);
                 if let Some(p) = resp.interact_pointer_pos() {
                     let hit = s
                         .markers
