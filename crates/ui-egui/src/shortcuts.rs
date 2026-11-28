@@ -478,7 +478,7 @@ fn centre_on_selection(app: &mut SoundApp, end: bool) -> bool {
 /// window's Clear there (#1627).
 fn midi_editor_drawn(app: &SoundApp) -> bool {
     app.ui.show_midi_editor
-        && app.ui.docking.layout.panel_state(&crate::docking::Panel::Midi) == craft_ui::docking::PanelState::Front
+        && app.ui.docking.layout().panel_state(&crate::docking::Panel::Midi) == craft_behavior::dock::PanelState::Front
         && app.docking_context.as_ref().is_some_and(|c| c.data(|d| d.get_temp::<egui::Rect>(egui::Id::unique("soundcraft-midi-body"))).is_some())
 }
 

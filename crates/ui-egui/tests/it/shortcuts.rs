@@ -249,7 +249,7 @@ fn delete_with_the_midi_editor_behind_another_tab_clears_the_edit_selection() {
         app_frame(&ctx, &mut app, vec![]);
     }
     assert!(app.ui.show_midi_editor, "the MIDI editor is still open");
-    assert_ne!(app.ui.docking.layout.panel_state(&soundcraft_ui_egui::docking::Panel::Midi), craft_ui::docking::PanelState::Front);
+    assert_ne!(app.ui.docking.layout().panel_state(&soundcraft_ui_egui::docking::Panel::Midi), craft_behavior::dock::PanelState::Front);
     let before = clip_ids(&app);
     assert!(!before.is_empty());
     app.midi.selected = vec![0, 1];
@@ -273,10 +273,10 @@ fn delete_right_after_a_tab_covers_the_midi_editor_clears_the_edit_selection() {
     for _ in 0..6 {
         app_frame(&ctx, &mut app, vec![]);
     }
-    assert_eq!(app.ui.docking.layout.panel_state(&soundcraft_ui_egui::docking::Panel::Midi), craft_ui::docking::PanelState::Front);
+    assert_eq!(app.ui.docking.layout().panel_state(&soundcraft_ui_egui::docking::Panel::Midi), craft_behavior::dock::PanelState::Front);
     app.run("ui.dock", json!({"operation": "open", "panel": "history"})).unwrap();
     app.run("ui.dock", json!({"operation": "move", "panel": "history", "target": "midi", "zone": "tab"})).unwrap();
-    assert_ne!(app.ui.docking.layout.panel_state(&soundcraft_ui_egui::docking::Panel::Midi), craft_ui::docking::PanelState::Front);
+    assert_ne!(app.ui.docking.layout().panel_state(&soundcraft_ui_egui::docking::Panel::Midi), craft_behavior::dock::PanelState::Front);
     assert!(clips(&app) > 0);
     app.midi.selected = vec![0, 1];
     app_frame(&ctx, &mut app, arrow(Key::Delete));
