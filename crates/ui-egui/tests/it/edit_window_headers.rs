@@ -324,6 +324,18 @@ fn the_popup_fader_writes_touch_automation() {
 }
 
 #[test]
+fn a_stereo_tracks_pan_readout_shows_both_panners() {
+    let (mut h, id, _) = harness("Pad", "medium", "view.edit_io");
+    for (index, pan) in [(0, -0.25), (1, 0.75)] {
+        h.state_mut().run("mix.pan", json!({"track": id.0, "pan": pan, "index": index})).unwrap();
+    }
+    for _ in 0..4 {
+        step(&mut h);
+    }
+    assert!(h.query_by_label("Pad pan <25 75>").is_some(), "the readout must show L and R, not only L");
+}
+
+#[test]
 fn clicking_the_pan_readout_opens_one_slider_on_mono_and_two_on_stereo() {
     for (name, panners) in [("Kick", 1), ("Pad", 2)] {
         let (mut h, _, row) = harness(name, "medium", "view.edit_io");
