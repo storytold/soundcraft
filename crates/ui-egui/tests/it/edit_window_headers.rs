@@ -122,6 +122,52 @@ fn edit_window_insert_slots_open_change_and_add_plugins() {
     assert_eq!(insert(&h, 2).as_deref(), Some(plugin.id));
 }
 
+/// On an instrument track an insert slot's menu also lists instruments; picking one assigns the
+/// track's instrument through `mix.instrument`, leaving the insert slot empty (#372).
+#[test]
+fn instrument_tracks_list_instruments_in_the_insert_menu() {
+    let mut app = SoundApp::new(soundcraft_engine::demo::demo_engine(), None, Services::default());
+    app.run("view.edit_inserts_ae", json!({})).unwrap();
+    app.run("track.new", json!({"kind": "instrument", "name": "VI"})).unwrap();
+    let id = app.engine.session().track_by_name("VI").unwrap().id;
+    app.run("track.height", json!({"tracks": ["VI"], "height": "medium"})).unwrap();
+    let mut h = Harness::builder().with_size(vec2(1600.0, 1000.0)).build_ui_state(
+        |ui, app: &mut SoundApp| {
+            let ctx = ui.ctx().clone();
+            app.logic(&ctx);
+            app.ui(ui);
+        },
+        app,
+    );
+    for _ in 0..6 {
+        step(&mut h);
+    }
+    let row = h.state().edit_layout.rows.iter().find(|(t, _)| *t == id.0).map(|(_, r)| *r).unwrap();
+    let slot = |i: usize| pos2(row[0] + HEADER_W + 37.5, row[1] + 8.5 + i as f32 * 18.0);
+
+    click(&mut h, slot(0));
+    let instruments = h.get_by_label("Instruments").rect().center();
+    h.state_mut().synthetic.push(Event::PointerMoved(instruments));
+    for _ in 0..10 {
+        step(&mut h);
+    }
+    let pick = h.get_by_label("Drum Synth").rect().center();
+    click(&mut h, pick);
+
+    let t = h.state().engine.session().track(id).unwrap();
+    assert_eq!(t.instrument.as_ref().map(|i| i.plugin.as_str()), Some("drum_synth"));
+    assert!(t.mixer.inserts.first().is_none_or(Option::is_none));
+}
+
+/// An audio track's insert menu has no Instruments section.
+#[test]
+fn audio_tracks_do_not_list_instruments_in_the_insert_menu() {
+    let (mut h, _, row) = harness("Kick", "medium", "view.edit_inserts_ae");
+    let slot = |i: usize| pos2(row[0] + HEADER_W + 37.5, row[1] + 8.5 + i as f32 * 18.0);
+    click(&mut h, slot(4));
+    assert!(h.query_by_label("Instruments").is_none());
+}
+
 /// Short tracks draw insert slots as squares that still open, bypass and open the add-plugin menu.
 #[test]
 fn short_tracks_show_insert_slots_as_squares() {

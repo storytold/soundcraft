@@ -145,6 +145,46 @@ fn an_instrument_menu_searches_as_soon_as_it_opens() {
     assert!(h.query_by_label(drums[0].name).is_none(), "picking closes the menu");
 }
 
+/// On an instrument track an insert menu's search lists instruments and effects in one list: the
+/// arrow keys move across both kinds and a single Enter picks exactly the highlighted row — not one
+/// plugin of each kind (#372).
+#[test]
+fn an_insert_search_on_an_instrument_track_picks_one_row() {
+    let instruments = built_in(true, "s");
+    let effects = built_in(false, "s");
+    assert!(instruments.len() >= 2 && !effects.is_empty(), "the test needs a query matching both kinds");
+    let mut engine = soundcraft_engine::Engine::default();
+    engine.execute("track.new", &json!({"kind": "instrument", "name": "Keys"})).unwrap();
+    let mut h = harness(engine);
+    open(&mut h, "Insert A for Keys");
+    type_text(&mut h, "s");
+    for _ in 0..instruments.len() {
+        press(&mut h, Key::ArrowDown);
+    }
+    press(&mut h, Key::Enter);
+    let track = &h.state().engine.session().tracks[0];
+    assert_eq!(track.mixer.inserts[0].as_ref().map(|i| i.plugin.as_str()), Some(effects[0].id), "the first effect row was highlighted");
+    assert_eq!(track.instrument.as_ref().map(|i| i.plugin.as_str()), Some("subtractive_synth"), "one Enter picks one plugin only");
+}
+
+/// When a query matches instruments only, the empty effect side does not reset the highlight, so
+/// arrows still move the pick through the instrument rows.
+#[test]
+fn a_search_with_no_effect_matches_still_moves_the_highlight() {
+    let synths = built_in(true, "synth");
+    assert!(synths.len() >= 2, "the test needs two instruments");
+    let mut engine = soundcraft_engine::Engine::default();
+    engine.execute("track.new", &json!({"kind": "instrument", "name": "Keys"})).unwrap();
+    let mut h = harness(engine);
+    open(&mut h, "Insert A for Keys");
+    type_text(&mut h, "synth");
+    press(&mut h, Key::ArrowDown);
+    press(&mut h, Key::Enter);
+    let track = &h.state().engine.session().tracks[0];
+    assert_eq!(track.instrument.as_ref().map(|i| i.plugin.as_str()), Some(synths[1].id));
+    assert!(track.mixer.inserts[0].is_none());
+}
+
 /// Send and output menus filter buses as soon as they open, and Enter routes to the highlighted bus.
 #[test]
 fn send_and_output_menus_search_buses_as_soon_as_they_open() {
