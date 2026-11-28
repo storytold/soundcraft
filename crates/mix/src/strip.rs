@@ -53,6 +53,8 @@ pub(crate) struct Strip {
     /// The last block played the clips: stopped monitoring has their sustain pedal to let go of.
     pub(crate) clips_played: bool,
     pub(crate) muted: bool,
+    /// The interface is monitoring this live input. Keep its input meter, skip software routing.
+    pub(crate) direct_monitor: bool,
     pub(crate) gr: f32,
     /// Per-clip effect chains (Clip Effects) and a scratch buffer to render clips into.
     pub(crate) clip_fx: HashMap<u64, ClipFx>,
@@ -153,6 +155,7 @@ impl Strip {
             chase: true,
             clips_played: false,
             muted: false,
+            direct_monitor: false,
             gr: 0.0,
             clip_fx: HashMap::new(),
             clipbuf: Vec::new(),
@@ -222,6 +225,7 @@ pub(crate) struct LiveInput<'a> {
     pub(crate) midi_lost: u64,
     pub(crate) monitor_only: bool,
     pub(crate) recording: bool,
+    pub(crate) direct_monitor_available: bool,
 }
 
 /// The block being rendered: where it starts, its length, and whether any track is soloed.
@@ -464,11 +468,38 @@ fn gate_mute_automation(t: &Track, strip: &mut Strip, blk: Block) {
 pub(crate) fn process_strip(s: &Session, t: &Track, strip: &mut Strip, busses: &HashMap<BusId, BusBuf>, live: &LiveInput<'_>, blk: Block) {
     let Block { pos, frames, any_solo } = blk;
     zero_buf(&mut strip.buf, frames);
+    let monitors_input = t.kind == TrackKind::Audio
+        && !live.input.is_empty()
+        && (t.mixer.input_monitor || (t.mixer.record_arm && (live.monitor_only || live.recording)));
+    // The device mixes its physical input with DAW playback. Suppress only the software copy
+    // of a live input, retaining clip playback when an armed track is in Auto Input playback.
+    let direct_monitor = monitors_input
+        && live.direct_monitor_available
+        && s.edit.flag("options.low_latency_monitoring")
+        // A hardware input reaches the interface's own monitor mix; a bus input does not.
+        && !matches!(&t.mixer.input, Route::Bus(_) | Route::Main);
+    if direct_monitor && !strip.direct_monitor {
+        strip.align.clear();
+        strip.align_pre.clear();
+        strip.out_extra.clear();
+    }
+    if !direct_monitor && strip.direct_monitor {
+        // The inserts heard nothing while the interface monitored: start them afresh, so a
+        // lookahead delay does not replay input from before the hand-off.
+        for p in strip.plugins.iter_mut().flatten() {
+            p.plugin.reset();
+        }
+    }
+    strip.direct_monitor = direct_monitor;
+    if direct_monitor {
+        monitor_input(t, strip, live, frames);
+        strip.gr = 0.0;
+        note_insert_latency(t, strip, pos);
+        return;
+    }
     let transport = transport_at(s, pos, !live.monitor_only, live.recording);
     match t.kind {
-        TrackKind::Audio if !live.input.is_empty() && (t.mixer.input_monitor || (t.mixer.record_arm && (live.monitor_only || live.recording))) => {
-            monitor_input(t, strip, live, frames);
-        }
+        TrackKind::Audio if monitors_input => monitor_input(t, strip, live, frames),
         TrackKind::Audio if live.monitor_only => {}
         // Stopped: only a track that plays live MIDI input sounds (and one that just stopped
         // doing so, to release its notes).

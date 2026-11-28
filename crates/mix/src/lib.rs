@@ -139,6 +139,8 @@ pub struct MixEngine {
     aux_latency: usize,
     /// Live input for the next block (planar), set by the audio host for input monitoring.
     pub input: Vec<Vec<f32>>,
+    /// The current same-device ASIO input can be monitored through external hardware.
+    pub direct_monitor_available: bool,
     /// Live MIDI input for the next block, set by the audio host: record-enabled and
     /// input-monitored MIDI and instrument tracks play it. Keep its capacity; `render` only reads.
     pub midi: Vec<LiveMidi>,
@@ -187,6 +189,7 @@ impl MixEngine {
             aux_fed: Vec::new(),
             aux_latency: 0,
             input: Vec::new(),
+            direct_monitor_available: false,
             midi: Vec::new(),
             midi_ports: None,
             midi_lost: 0,
@@ -429,6 +432,7 @@ impl MixEngine {
             midi: &self.midi,
             ports: self.midi_ports.as_deref(),
             midi_lost: self.midi_lost,
+            direct_monitor_available: self.direct_monitor_available,
             monitor_only: self.monitor_only,
             recording: self.recording,
         }
@@ -505,6 +509,9 @@ impl MixEngine {
         }
         for (i, st) in work.iter_mut() {
             let Some(t) = s.tracks.get(*i) else { continue };
+            if st.direct_monitor {
+                continue;
+            }
             let ch = st.buf.len();
             st.align.set(lmax_t.saturating_sub(st.latency), ch);
             st.align.process(&mut st.buf, frames);
@@ -639,6 +646,9 @@ impl MixEngine {
         let m = self.meters.entry(t.id).or_default();
         m.measure(&strip.buf, frames, strip.gr);
         m.plugin_failures = strip.failures;
+        if strip.direct_monitor {
+            return;
+        }
         let src_fmt = strip_format(t, strip.buf.len());
         let law = self.pan_law;
         for (i, snd) in t.mixer.sends.iter().enumerate() {

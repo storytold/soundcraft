@@ -1162,6 +1162,116 @@ fn input_monitoring_replaces_clips() {
 }
 
 #[test]
+fn direct_monitor_does_not_remove_the_tracks_latency_from_compensation() {
+    let (mut session, track_id) = session_with_dc(0.5, 4_800);
+    let track = session.track_mut(track_id).unwrap();
+    track.mixer.record_arm = true;
+    let mut comp = Insert::new("compressor");
+    comp.params.insert("lookahead".into(), 5.0);
+    track.mixer.inserts[0] = Some(comp);
+    session.edit.set_flag("options.delay_compensation", true);
+    let mut mix = MixEngine::new(48_000.0, 512);
+    mix.input = vec![vec![0.25; 512]];
+    mix.recording = true;
+    render_block(&mut mix, &session, 0);
+    let latency = mix.track_latency;
+    assert!(latency > 0);
+
+    session.edit.set_flag("options.low_latency_monitoring", true);
+    mix.direct_monitor_available = true;
+    render_block(&mut mix, &session, 512);
+    assert_eq!(mix.track_latency, latency);
+}
+
+/// Back from direct monitoring, a lookahead insert does not replay input from before the hand-off.
+#[test]
+fn software_monitoring_resumes_without_input_from_before_direct_monitoring() {
+    let mut s = Session::default();
+    let live = s.add_track(TrackKind::Audio, ChannelFormat::Mono, None);
+    let track = s.track_mut(live).unwrap();
+    track.mixer.input = Route::Hardware("In 1".into());
+    track.mixer.record_arm = true;
+    let mut comp = Insert::new("compressor");
+    comp.params.insert("lookahead".into(), 5.0);
+    comp.params.insert("ratio".into(), 1.0);
+    track.mixer.inserts[0] = Some(comp);
+    let mut eng = MixEngine::new(48_000.0, 512);
+    eng.direct_monitor_available = true;
+    eng.recording = true;
+    let mut out = vec![vec![0.0; 512]; 2];
+    eng.input = vec![vec![0.25; 512]];
+    eng.render(&s, 0, 512, &mut out);
+    assert!(out[0][511].abs() > 0.1, "software monitoring through the lookahead");
+    s.edit.set_flag("options.low_latency_monitoring", true);
+    eng.render(&s, 512, 512, &mut out);
+    assert_eq!(out[0][100], 0.0, "the interface monitors");
+    s.edit.set_flag("options.low_latency_monitoring", false);
+    eng.input = vec![vec![0.0; 512]];
+    eng.render(&s, 1024, 512, &mut out);
+    assert!(out.iter().all(|c| c.iter().all(|x| x.abs() < 1e-6)), "{:?}", out[0].iter().position(|x| x.abs() >= 1e-6));
+}
+
+#[test]
+fn low_latency_monitoring_blocks_the_live_software_copy_and_sends() {
+    let (mut s, backing) = session_with_dc(0.5, 4800);
+    let live = s.add_track(TrackKind::Audio, ChannelFormat::Mono, None);
+    let bus = s.add_bus("Cue", ChannelFormat::Mono);
+    let track = s.track_mut(live).unwrap();
+    track.mixer.input = Route::Hardware("In 1".into());
+    track.mixer.record_arm = true;
+    let mut send = soundcraft_model::SendSlot::new(Route::Bus(bus));
+    send.pre_fader = true;
+    send.level_db = 0.0;
+    track.mixer.sends[0] = Some(send);
+    let mut eng = MixEngine::new(48_000.0, 512);
+    let mut out = vec![vec![0.0; 512]; 2];
+    eng.render(&s, 0, 512, &mut out);
+    let backing_only = out[0][100];
+    eng.input = vec![vec![0.25; 512]];
+    eng.recording = true;
+    eng.render(&s, 0, 512, &mut out);
+    let with_monitor = out[0][100];
+    let with_send = eng.busses[&bus].buf[0][100];
+    assert!(with_monitor > 0.5);
+    assert!(with_send > 0.1);
+
+    s.edit.set_flag("options.low_latency_monitoring", true);
+    eng.render(&s, 512, 512, &mut out);
+    assert!((out[0][100] - with_monitor).abs() < 1e-6, "an input without a direct-monitor path still uses software monitoring");
+    eng.direct_monitor_available = true;
+    s.track_mut(live).unwrap().mixer.inserts[0] = Some(Insert::new("clap:test.nan"));
+    eng.set_external_instances(true);
+    eng.adopt(nan(live, 0, 1));
+    eng.render(&s, 512, 512, &mut out);
+    assert_eq!(out[0][100], backing_only);
+    assert_eq!(eng.busses[&bus].buf[0][100], 0.0);
+    assert_eq!(eng.meters[&live].plugin_failures, PluginFailures::default());
+    assert_eq!(eng.meters[&live].peak[0], 0.25);
+
+    // Input Only also hands off monitoring without arming the track or rolling transport.
+    let track = s.track_mut(live).unwrap();
+    track.mixer.record_arm = false;
+    track.mixer.input_monitor = true;
+    eng.recording = false;
+    eng.monitor_only = true;
+    eng.render(&s, 1024, 512, &mut out);
+    assert_eq!(out[0][100], 0.0);
+    assert_eq!(eng.meters[&live].peak[0], 0.25);
+
+    // Normal clip playback survives with the option on, including an armed track in Auto Input.
+    s.track_mut(backing).unwrap().mixer.record_arm = true;
+    eng.monitor_only = false;
+    eng.render(&s, 1536, 512, &mut out);
+    assert_eq!(out[0][100], backing_only);
+
+    s.track_mut(live).unwrap().mixer.inserts[0] = None;
+    s.edit.set_flag("options.low_latency_monitoring", false);
+    eng.render(&s, 2048, 512, &mut out);
+    assert!((out[0][100] - with_monitor).abs() < 1e-6);
+    assert!((eng.busses[&bus].buf[0][100] - with_send).abs() < 1e-6);
+}
+
+#[test]
 fn empty_session_is_silent() {
     let s = Session::default();
     let out = render_range(&s, Range::new(0, 1000), 128);
