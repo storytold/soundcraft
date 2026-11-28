@@ -2048,8 +2048,8 @@ fn menu_translate(source: &str) -> Option<&'static str> {
         "♩ = {bpm:.2}   {n}/{d}" => "♩ = {bpm:.2}   {n}/{d}",
         "{n} ch" => "{n} canais",
         "{b}-bit" => "{b} bits",
-        "Send {which} to {name}: {db} dB\nClick for the send fader · drag vertically to adjust · Shift-drag for fine control · Alt-click for 0 dB · right-click for options" => {
-            "Envio {which} para {name}: {db} dB\nClique para abrir o fader do envio · arraste na vertical para ajustar · Shift-arraste para controle fino · Alt-clique para 0 dB · clique com o botão direito para opções"
+        "Send {which} to {name}: {db} dB\nClick for the send fader · drag vertically to adjust · {fine_drag} or Shift-drag for fine control · Alt-click for 0 dB · right-click for options" => {
+            "Envio {which} para {name}: {db} dB\nClique para abrir o fader do envio · arraste na vertical para ajustar · {fine_drag} ou Shift-arraste para controle fino · Alt-clique para 0 dB · clique com o botão direito para opções"
         }
         "1 {what}" => "1 {what}",
         "{n} {what}s" => "{n} {what}s",
