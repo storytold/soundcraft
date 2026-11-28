@@ -39,7 +39,7 @@ fn write_help() -> &'static str {
 
 /// soundcraft-cli: SoundCraft without a window
 #[derive(Parser)]
-#[command(name = "soundcraft-cli", version = long_version(), arg_required_else_help = true)]
+#[command(name = "soundcraft-cli", version = long_version(), propagate_version = true, arg_required_else_help = true)]
 pub(crate) struct Cli {
     #[command(subcommand)]
     pub(crate) command: Command,

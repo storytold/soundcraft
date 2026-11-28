@@ -17,6 +17,12 @@ set -euo pipefail
 . "$(dirname "${BASH_SOURCE[0]}")/../env.sh"
 HERE="$ROOT/packaging/linux"
 APP_ID=ai.storyteller.soundcraft
+FLATPAK_ID="$APP_ID"
+# The remote indexes both app IDs on the stable ref branch; IDs isolate installations.
+FLATPAK_BRANCH=stable
+if [[ "${SOUNDCRAFT_BUILD_CHANNEL:-}" == nightly-v1 || "$VERSION" == *-nightly* ]]; then
+  FLATPAK_ID="$APP_ID.nightly"
+fi
 FLATHUB=https://dl.flathub.org/repo/flathub.flatpakrepo
 
 TEST=1
@@ -52,29 +58,84 @@ rm -rf "$WORK"
 mkdir -p "$WORK/stage"
 tar -xzf "$TARBALL" -C "$WORK/stage" --strip-components=1
 [[ -x "$WORK/stage/bin/soundcraft" ]] || { echo "error: $TARBALL has no bin/soundcraft" >&2; exit 1; }
-cp "$HERE/flatpak/$APP_ID.bundle.yml" "$WORK/$APP_ID.yml"
+if [[ "$FLATPAK_ID" != "$APP_ID" ]]; then
+  # The Nightly tarball already separates the launcher (bin/soundcraft) from the GUI
+  # (bin/soundcraft-bin); this bundle installs its own wrapper in bin/soundcraft and the GUI in
+  # /app/bin/soundcraft-bin, which starts with the Launcher's private profile. Inside the sandbox
+  # $XDG_CONFIG_HOME is this app id's own folder, so the profile never meets stable's.
+  if [[ ! -e "$WORK/stage/bin/soundcraft-bin" ]]; then
+    mv "$WORK/stage/bin/soundcraft" "$WORK/stage/bin/soundcraft-bin"
+  fi
+  rm -f "$WORK/stage/bin/soundcraft"
+  cat >"$WORK/stage/bin/soundcraft" <<'WRAPPER'
+#!/bin/sh
+set -eu
+bin=/app/bin/soundcraft-bin
+profile="${XDG_CONFIG_HOME:-${HOME:-}/.config}/soundcraft-nightly"
+# The Launcher's protocol, and a bare version query, pass through untouched.
+case "${1-}" in
+  --launch-profile | --profile-root | --version | -V) exec "$bin" "$@" ;;
+esac
+exec "$bin" --launch-profile nightly-v1 --profile-root "$profile" -- "$@"
+WRAPPER
+  chmod 755 "$WORK/stage/bin/soundcraft"
+  sed -e "s|^Icon=$APP_ID$|Icon=$FLATPAK_ID|" \
+      -e "s|^Name=SoundCraft$|Name=SoundCraft Nightly|" \
+      -e 's|^StartupWMClass=.*|StartupWMClass=ai.storyteller.soundcraft.nightly-v1|' \
+      -e '/^MimeType=/d' \
+      "$WORK/stage/share/applications/$APP_ID.desktop" >"$WORK/stage/share/applications/$FLATPAK_ID.desktop"
+  rm -f "$WORK/stage/share/applications/$APP_ID.desktop"
+  sed -e "s|<id>$APP_ID</id>|<id>$FLATPAK_ID</id>|g" \
+      -e "s|<name>SoundCraft</name>|<name>SoundCraft Nightly</name>|g" \
+      -e "s|<launchable type=\"desktop-id\">$APP_ID.desktop</launchable>|<launchable type=\"desktop-id\">$FLATPAK_ID.desktop</launchable>|g" \
+      -e "s|<icon type=\"stock\">$APP_ID</icon>|<icon type=\"stock\">$FLATPAK_ID</icon>|g" \
+      -e '/<mediatype>/d' \
+      "$WORK/stage/share/metainfo/$APP_ID.metainfo.xml" >"$WORK/stage/share/metainfo/$FLATPAK_ID.metainfo.xml"
+  rm -f "$WORK/stage/share/metainfo/$APP_ID.metainfo.xml"
+  mv "$WORK/stage/share/mime/packages/$APP_ID.xml" "$WORK/stage/share/mime/packages/$FLATPAK_ID.xml"
+  NIGHTLY_ICON="$ROOT/assets/app-icon/soundcraft-nightly.png"
+  [[ -f "$NIGHTLY_ICON" ]] || NIGHTLY_ICON="$ROOT/assets/app-icon/hicolor/256x256/apps/$APP_ID.png"
+  rm -rf "$WORK/stage/share/icons/hicolor"
+  install -Dm644 "$NIGHTLY_ICON" \
+    "$WORK/stage/share/icons/hicolor/256x256/apps/$FLATPAK_ID.png"
+  # The shared manifest installs bin/soundcraft (= this wrapper); the Nightly bundle also installs
+  # the GUI beside it. The line is added here so the stable bundle's manifest stays untouched.
+  sed -e "s|ai\.storyteller\.soundcraft|$FLATPAK_ID|g" \
+      -e "s|^      - install -Dm755 bin/soundcraft /app/bin/soundcraft\$|&\n      - install -Dm755 bin/soundcraft-bin /app/bin/soundcraft-bin|" \
+      "$HERE/flatpak/$APP_ID.bundle.yml" >"$WORK/$FLATPAK_ID.yml"
+  grep -qx '      - install -Dm755 bin/soundcraft-bin /app/bin/soundcraft-bin' "$WORK/$FLATPAK_ID.yml" || {
+    echo "error: could not add the Nightly GUI to the Flatpak manifest" >&2
+    exit 1
+  }
+else
+  cp "$HERE/flatpak/$APP_ID.bundle.yml" "$WORK/$FLATPAK_ID.yml"
+fi
 
 flatpak remote-add --user --if-not-exists flathub "$FLATHUB"
 # --disable-rofiles-fuse: no FUSE in containers and CI runners.
 flatpak-builder --user --install-deps-from=flathub --disable-rofiles-fuse --force-clean \
-  --default-branch=stable --repo="$WORK/repo" --state-dir="$WORK/state" "$WORK/build" "$WORK/$APP_ID.yml"
+  --default-branch="$FLATPAK_BRANCH" --repo="$WORK/repo" --state-dir="$WORK/state" "$WORK/build" "$WORK/$FLATPAK_ID.yml"
 
 OUT="$DIST/$BASENAME.flatpak"
 # --runtime-repo lets `flatpak install` fetch the freedesktop runtime from Flathub if missing.
-flatpak build-bundle --runtime-repo="$FLATHUB" "$WORK/repo" "$OUT" "$APP_ID" stable
+flatpak build-bundle --runtime-repo="$FLATHUB" "$WORK/repo" "$OUT" "$FLATPAK_ID" "$FLATPAK_BRANCH"
 echo "wrote $OUT"
 if [[ "$OCI" = 1 ]]; then
   OUT_OCI="$DIST/$BASENAME-oci"
   rm -rf "$OUT_OCI"
-  flatpak build-bundle --oci "$WORK/repo" "$OUT_OCI" "$APP_ID" stable
+  flatpak build-bundle --oci "$WORK/repo" "$OUT_OCI" "$FLATPAK_ID" "$FLATPAK_BRANCH"
   echo "wrote OCI layout to $OUT_OCI"
 fi
 
 if [[ "$TEST" = 1 ]]; then
   flatpak install --user -y --noninteractive --reinstall "$OUT"
-  flatpak info --user "$APP_ID"
-  flatpak run --command=soundcraft-cli "$APP_ID" --version
-  flatpak run --command=sh "$APP_ID" -c 'ls /app/share/applications /app/share/metainfo /app/share/mime/packages /app/share/icons/hicolor/scalable/apps'
+  flatpak info --user "$FLATPAK_ID"
+  flatpak run --command=soundcraft-cli "$FLATPAK_ID" --version
+  if [[ "$FLATPAK_ID" != "$APP_ID" ]]; then
+    # The Nightly bundle starts through its wrapper, which answers a version query before any window.
+    flatpak run "$FLATPAK_ID" --version
+  fi
+  flatpak run --command=sh "$FLATPAK_ID" -c 'ls /app/share/applications /app/share/metainfo /app/share/mime/packages /app/share/icons/hicolor/*/apps'
 fi
 echo "==> done"
 ls -lh "$OUT"

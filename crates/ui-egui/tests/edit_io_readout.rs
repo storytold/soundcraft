@@ -22,13 +22,14 @@ fn the_io_columns_vol_and_pan_readout_is_readable_in_both_themes() {
         app.run("view.edit_io", json!({})).unwrap();
         app.run("track.height", json!({"tracks": ["Kick"], "height": "medium"})).unwrap();
         app.run("ui.theme", json!({"mode": mode.id()})).unwrap();
-        let mut harness = Harness::builder().with_size(vec2(1600.0, 1000.0)).build_ui_state(
-            |ui, app: &mut SoundApp| {
-                app.logic(ui.ctx());
-                app.ui(ui);
-            },
-            app,
-        );
+        let mut harness =
+            Harness::builder().with_context_setup(soundcraft_ui_egui::framework::install_headless).with_size(vec2(1600.0, 1000.0)).build_ui_state(
+                |ui, app: &mut SoundApp| {
+                    app.logic(ui.ctx());
+                    app.ui(ui);
+                },
+                app,
+            );
         for _ in 0..4 {
             harness.step();
         }

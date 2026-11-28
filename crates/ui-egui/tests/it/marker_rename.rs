@@ -16,6 +16,7 @@ impl Rig {
         engine.execute("track.new", &json!({})).unwrap();
         engine.execute("markers.add", &json!({"name": "Verse", "at": 96_000})).unwrap();
         let mut r = Rig { ctx: egui::Context::default(), app: SoundApp::new(engine, None, Services::default()), shapes: Vec::new() };
+        soundcraft_ui_egui::framework::install_headless(&r.ctx);
         r.frames(4);
         r
     }
