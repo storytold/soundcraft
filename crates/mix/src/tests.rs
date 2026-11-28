@@ -1032,8 +1032,6 @@ fn delay_compensation_aligns_an_aux_return_on_a_named_output() {
     assert!(latent[at[0]] > 0.26, "both paths sum at one frame: {}", latent[at[0]]);
 }
 
-/// A track routed to a path that shares a physical channel with an aux-fed path waits for the aux
-/// returns too, even through a chain of overlapping paths; with no aux latency nothing is delayed.
 /// The overlap closure runs on every block: a chain of paths each overlapping the next, listed
 /// from the far end, still takes one look at each path, not a pass per link (#1768 review).
 #[test]
@@ -1067,6 +1065,8 @@ fn the_overlap_closure_looks_at_each_path_once() {
     assert_eq!(paths, [1], "touching is not sharing");
 }
 
+/// A track routed to a path that shares a physical channel with an aux-fed path waits for the aux
+/// returns too, even through a chain of overlapping paths; with no aux latency nothing is delayed.
 #[test]
 fn delay_compensation_aligns_overlapping_named_outputs() {
     let mut s = Session::default();
