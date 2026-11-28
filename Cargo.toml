@@ -48,7 +48,7 @@ proptest = "1"
 # audio
 rustfft = "6"
 # AAF interchange: Compound File Binary (structured storage) container reader.
-cfb = "0.15"
+cfb = "0.16"
 # Session bundles (one file holding a session and its audio, for the browser): stored entries only.
 zip = { version = "9", default-features = false }
 cpal = "0.18"
@@ -96,7 +96,7 @@ eframe = { version = "0.37", default-features = false }
 # Monotonic clock on native and the browser (the `web_time::Instant` panics-free equivalent).
 web-time = "1.1"
 egui_kittest = "0.37"
-rfd = "0.17"
+rfd = "0.18"
 image = { version = "0.25", default-features = false, features = ["png"] }
 
 [workspace.lints.rust]

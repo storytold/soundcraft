@@ -20,7 +20,7 @@ windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Graphic
 # The X11 host window for embedded editors on Linux and the BSDs, and the polling behind
 # `clap.posix-fd-support`.
 [target.'cfg(all(unix, not(target_os = "macos")))'.dependencies]
-x11rb = "0.13"
+x11rb = "0.14"
 libc = "0.2"
 
 [[test]]
@@ -28,7 +28,7 @@ name = "editor_main_thread"
 harness = false
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
-clap-sys = "0.5"
+clap-sys = "0.6"
 libloading = "0.9"
 
 # The isolated unsafe helper crate: this crate opts out of the workspace
