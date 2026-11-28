@@ -1712,3 +1712,229 @@ fn assert_history_unchanged(
     assert_eq!(app.engine.undo_history(), history);
     assert_eq!(&app.engine.journal, journal);
 }
+
+#[test]
+fn punching_out_keeps_the_transport_rolling() {
+    let mut app = SoundApp::new(soundcraft_engine::demo::demo_engine(), None, Services::default());
+    app.run("transport.play", json!({})).unwrap();
+    app.handle_transport(0.25);
+    assert!(app.is_playing());
+
+    // A take under way (this machine has no input device to arm one for real).
+    app.engine.transport.recording = true;
+    app.run("transport.record", json!({})).unwrap();
+    app.handle_transport(0.25);
+    assert!(!app.engine.transport.recording, "the punch-out ends the take");
+    assert!(app.is_playing(), "playback continues after the punch-out (#1265)");
+    let at = app.position();
+    app.handle_transport(0.25);
+    assert!(app.position() > at, "the clock keeps running");
+
+    // Recording outside playback still stops the transport.
+    app.run("transport.stop", json!({})).unwrap();
+    app.handle_transport(0.25);
+    assert!(!app.is_playing());
+    app.engine.transport.recording = true;
+    app.run("transport.record", json!({})).unwrap();
+    app.handle_transport(0.25);
+    assert!(!app.engine.transport.recording && !app.is_playing());
+}
+
+/// A punch-out ends the automation pass's undo merge, so automation written after it is its own
+/// undo step instead of joining the pass's step (where the take's Record step would share its
+/// undo with automation written after the punch-out).
+#[test]
+fn automation_after_a_punch_out_gets_its_own_undo_step() {
+    let mut app = SoundApp::new(soundcraft_engine::demo::demo_engine(), None, Services::default());
+    app.run("mix.automation_mode", json!({"tracks": ["Kick"], "mode": "write"})).unwrap();
+    app.run("transport.play", json!({})).unwrap();
+    app.handle_transport(0.25);
+    app.write_automation();
+    fn kick_volume_points(app: &SoundApp) -> usize {
+        app.engine.session().track_by_name("Kick").unwrap().lane(&soundcraft_model::AutoParam::Volume).unwrap().points.len()
+    }
+    let during_pass = kick_volume_points(&app);
+    let pass_steps = app.engine.undo_history().len();
+
+    // A take under way (this machine has no input device to arm one for real).
+    app.engine.transport.recording = true;
+    app.run("transport.record", json!({})).unwrap();
+    app.handle_transport(0.25);
+    assert!(app.is_playing() && !app.engine.transport.recording, "the punch-out ends the take, playback continues");
+
+    // Automation written after the punch-out is its own undo step: the history grows, where the
+    // unended pass merge would swallow the write into the pass's step.
+    app.write_automation();
+    assert_eq!(kick_volume_points(&app), during_pass + 1);
+    assert_eq!(app.engine.undo_history().len(), pass_steps + 1, "the post-punch write is its own undo step");
+
+    // Undoing it leaves the pass's points alone.
+    app.run("edit.undo", json!({})).unwrap();
+    assert_eq!(kick_volume_points(&app), during_pass);
+}
+
+/// A mono 48 kHz take file, as the recorder writes them.
+fn punchout_take_wav(name: &str) -> String {
+    let dir = std::env::temp_dir().join(format!("sc-ui-punchout-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let tone: Vec<f32> = (0..9_600).map(|i| (i as f32 * 0.05).sin() * 0.2).collect();
+    let buf = craft_audio::AudioBuffer { sample_rate: 48_000, channels: vec![tone] };
+    let bytes = craft_audio::encode(&buf, &craft_audio::EncodeOptions::default()).unwrap();
+    let path = dir.join(name);
+    std::fs::write(&path, bytes).unwrap();
+    path.to_string_lossy().into_owned()
+}
+
+/// A punch-out's take is placed from its off-thread decode, as one "Record" undo step, without
+/// disturbing the still-rolling transport (the blocking review point on #1283).
+#[test]
+fn a_punch_out_take_lands_without_stopping_the_transport() {
+    let mut app = SoundApp::new(soundcraft_engine::demo::demo_engine(), None, Services::default());
+    app.run("transport.play", json!({})).unwrap();
+    app.handle_transport(0.25);
+    assert!(app.is_playing());
+    let kick = app.engine.session().track_by_name("Kick").unwrap().id;
+    let rate = app.engine.session().sample_rate.hz();
+    let (tx, rx) = std::sync::mpsc::channel();
+    tx.send(vec![soundcraft_engine::io::decode_take(kick, std::path::PathBuf::from(punchout_take_wav("punchout-take.wav")), rate)]).unwrap();
+    app.placing.push(crate::PlacingTake {
+        plan: soundcraft_engine::io::Recording { start: 480, pass: None, punch: None, rate, takes: Vec::new() },
+        tracks: 1,
+        problem: None,
+        rx,
+    });
+    let undo = app.engine.undo_history().len();
+    app.handle_transport(0.25); // polls the finished decode and places the clip
+    let clip = app.engine.session().track(kick).unwrap().clips().iter().find(|c| c.name == "punchout-take").unwrap();
+    assert_eq!(clip.start, 480);
+    assert!(app.is_playing(), "placing the take does not stop the transport");
+    assert_eq!(app.engine.undo_history().len(), undo + 1, "the take is exactly one undo step");
+    assert_eq!(app.engine.undo_history().last().unwrap(), "Record", "the take's step stands alone in the history");
+    app.run("edit.undo", json!({})).unwrap();
+    assert!(app.engine.session().track(kick).unwrap().clips().iter().all(|c| c.name != "punchout-take"), "undo removes the take's clip");
+}
+
+/// While a punch-out's take is still decoding, the transport answers Stop and Play — the UI
+/// thread never waits on the decode (the responsiveness requirement on #1283).
+#[test]
+fn the_transport_answers_while_a_punch_out_take_decodes() {
+    let mut app = SoundApp::new(soundcraft_engine::demo::demo_engine(), None, Services::default());
+    app.run("transport.play", json!({})).unwrap();
+    app.handle_transport(0.25);
+    assert!(app.is_playing());
+    let kick = app.engine.session().track_by_name("Kick").unwrap().id;
+    let rate = app.engine.session().sample_rate.hz();
+    let (tx, rx) = std::sync::mpsc::channel();
+    app.placing.push(crate::PlacingTake {
+        plan: soundcraft_engine::io::Recording { start: 480, pass: None, punch: None, rate, takes: Vec::new() },
+        tracks: 1,
+        problem: None,
+        rx,
+    });
+    // The decode has not answered yet: nothing is placed, and the transport still obeys.
+    app.run("transport.stop", json!({})).unwrap();
+    app.handle_transport(0.25);
+    assert!(!app.is_playing(), "Stop is honoured while the take decodes");
+    app.run("transport.play", json!({})).unwrap();
+    app.handle_transport(0.25);
+    assert!(app.is_playing(), "Play is honoured while the take decodes");
+    assert!(
+        app.engine.session().track(kick).unwrap().clips().iter().all(|c| c.name != "punchout-inflight"),
+        "nothing is placed before the decode answers"
+    );
+    tx.send(vec![soundcraft_engine::io::decode_take(kick, std::path::PathBuf::from(punchout_take_wav("punchout-inflight.wav")), rate)]).unwrap();
+    app.handle_transport(0.25);
+    assert!(app.is_playing(), "placing the finished take does not stop the transport");
+    assert!(app.engine.session().track(kick).unwrap().clips().iter().any(|c| c.name == "punchout-inflight"));
+}
+
+/// A second Record press while playback rolls is answered on this headless rig — there is no input
+/// device to arm a take with, so the press reports that instead of stopping the transport.
+#[test]
+fn a_second_punch_in_while_playing_is_answered_without_stopping_the_transport() {
+    let mut app = SoundApp::new(soundcraft_engine::demo::demo_engine(), None, Services::default());
+    app.run("transport.play", json!({})).unwrap();
+    app.handle_transport(0.25);
+    app.engine.transport.recording = true;
+    app.run("transport.record", json!({})).unwrap();
+    app.handle_transport(0.25);
+    assert!(!app.engine.transport.recording && app.is_playing(), "the punch-out ends the take, playback continues");
+    // Punch back in: the rig cannot arm a recorder (no audio input device), so the press is
+    // refused with a status note rather than a take — never by stopping the transport.
+    app.run("transport.record", json!({})).unwrap();
+    app.handle_transport(0.25);
+    assert!(app.is_playing(), "the re-arm attempt leaves the transport rolling");
+    assert!(!app.engine.transport.recording);
+    assert!(!app.ui.status.is_empty(), "the rig's inability to arm is reported, not hidden");
+}
+
+/// A reset while a punch-out's take is still decoding drops the pending placement together with
+/// the plan that kept the take recoverable: the replaced document receives neither the old take
+/// nor an autosaved recovery plan for it (the reset-during-decode review point on #1283).
+#[test]
+fn a_reset_while_a_punch_out_take_decodes_drops_the_plan_too() {
+    let mut app = SoundApp::new(soundcraft_engine::demo::demo_engine(), None, Services::default());
+    app.run("transport.play", json!({})).unwrap();
+    app.handle_transport(0.25);
+    let kick = app.engine.session().track_by_name("Kick").unwrap().id;
+    let rate = app.engine.session().sample_rate.hz();
+    let (tx, rx) = std::sync::mpsc::channel();
+    let plan = soundcraft_engine::io::Recording { start: 480, pass: None, punch: None, rate, takes: Vec::new() };
+    app.placing.push(crate::PlacingTake { plan: plan.clone(), tracks: 1, problem: None, rx });
+    // The punch-out cloned the plan for recovery: a crash during the decode still recovers the take.
+    app.take_plan = Some(plan.clone());
+    assert_eq!(app.take_plan, Some(plan), "the recovery plan stays intact while the take decodes");
+    // The decode answers just as the new document arrives in the same batch.
+    let decoded = soundcraft_engine::io::decode_take(kick, std::path::PathBuf::from(punchout_take_wav("punchout-reset.wav")), rate);
+    tx.send(vec![decoded]).unwrap();
+    app.engine.replace_session(soundcraft_model::Session::default());
+    app.handle_transport(0.25);
+    assert!(app.placing.is_empty() && app.take_plan.is_none(), "the reset dropped the pending placement and its recovery plan");
+    assert!(
+        app.engine.session().tracks.iter().all(|t| t.clips().iter().all(|c| c.name != "punchout-reset")),
+        "the finished take is not placed into the replaced document"
+    );
+    assert!(tx.send(Vec::new()).is_err(), "the reset closed the decode's channel with the placement");
+    app.handle_transport(0.25); // nothing pending: no panic, nothing placed
+    assert!(app.placing.is_empty() && app.take_plan.is_none());
+}
+
+/// Overlapping punch-outs whose decodes answer in one poll land in recording order, not
+/// completion order: undo peels the later take off first, deterministically (the placement-order
+/// review point on #1283).
+#[test]
+fn overlapping_punch_outs_place_in_recording_order() {
+    let mut app = SoundApp::new(soundcraft_engine::demo::demo_engine(), None, Services::default());
+    app.run("transport.play", json!({})).unwrap();
+    app.handle_transport(0.25);
+    let kick = app.engine.session().track_by_name("Kick").unwrap().id;
+    let rate = app.engine.session().sample_rate.hz();
+    let (tx_first, rx_first) = std::sync::mpsc::channel();
+    let (tx_second, rx_second) = std::sync::mpsc::channel();
+    let first = soundcraft_engine::io::Recording { start: 480, pass: None, punch: None, rate, takes: Vec::new() };
+    let second = soundcraft_engine::io::Recording { start: 48_000, pass: None, punch: None, rate, takes: Vec::new() };
+    app.placing.push(crate::PlacingTake { plan: first, tracks: 1, problem: None, rx: rx_first });
+    app.placing.push(crate::PlacingTake { plan: second.clone(), tracks: 1, problem: None, rx: rx_second });
+    // The later punch-out owns the recovery plan: re-arming replaced the earlier one.
+    app.take_plan = Some(second);
+    let first_take = soundcraft_engine::io::decode_take(kick, std::path::PathBuf::from(punchout_take_wav("punchout-first.wav")), rate);
+    tx_first.send(vec![first_take]).unwrap();
+    let second_take = soundcraft_engine::io::decode_take(kick, std::path::PathBuf::from(punchout_take_wav("punchout-second.wav")), rate);
+    tx_second.send(vec![second_take]).unwrap();
+    let undo = app.engine.undo_history().len();
+    app.handle_transport(0.25); // both decodes answer in the same poll
+    let track = app.engine.session().track(kick).unwrap();
+    assert!(track.clips().iter().any(|c| c.name == "punchout-first"), "the earlier take is placed");
+    assert!(track.clips().iter().any(|c| c.name == "punchout-second"), "the later take is placed");
+    assert_eq!(app.engine.undo_history().len(), undo + 2, "each take is its own Record step");
+    assert!(app.take_plan.is_none(), "the placed later take consumed the recovery plan");
+    // Recording order, not completion order: the later take is the top undo step, so one undo
+    // removes it alone — where a reversed poll would remove the earlier one.
+    app.run("edit.undo", json!({})).unwrap();
+    let track = app.engine.session().track(kick).unwrap();
+    assert!(track.clips().iter().all(|c| c.name != "punchout-second"), "undo removes the later take first");
+    assert!(track.clips().iter().any(|c| c.name == "punchout-first"), "the earlier take survives that undo");
+    app.run("edit.undo", json!({})).unwrap();
+    let track = app.engine.session().track(kick).unwrap();
+    assert!(track.clips().iter().all(|c| c.name != "punchout-first"), "the second undo removes the earlier take");
+}

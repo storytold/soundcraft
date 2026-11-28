@@ -54,6 +54,77 @@ pub fn place_recording(e: &mut Engine, plan: &Recording, takes: Vec<(TrackId, Pa
     add_recording_in(e, plan.start, takes, plan.pass, plan.punch)
 }
 
+/// A recorded take, decoded off the UI thread (see [`decode_take`]) and waiting to be placed by
+/// [`place_recording_decoded`].
+#[derive(Debug)]
+pub struct DecodedTake {
+    pub track: TrackId,
+    pub path: PathBuf,
+    /// The take's audio, resampled to the session rate it was decoded for — and whether it was
+    /// resampled, which marks the placed source unsaved — or the error that stopped the decode.
+    pub audio: Result<(craft_audio::AudioBuffer, bool), String>,
+}
+
+/// Reads, decodes and resamples one recorded take for a session at `rate`. Thread-safe and slow:
+/// run it off the UI thread — a punch-out keeps the transport rolling while the audio loads — and
+/// hand the result to [`place_recording_decoded`], which places it on the UI thread.
+pub fn decode_take(track: TrackId, path: PathBuf, rate: u32) -> DecodedTake {
+    let audio = (|| {
+        let bytes = read_file(&path).map_err(|err| format!("{}: {err}", path.display()))?;
+        let (_, buf) = craft_audio::decode(&bytes, None).map_err(|err| format!("{}: {err}", path.display()))?;
+        let mut buf = buf;
+        let resampled = buf.sample_rate != rate;
+        if resampled && buf.sample_rate > 0 {
+            buf.channels = soundcraft_dsp::offline::resample(&buf.channels, buf.sample_rate, rate);
+            buf.sample_rate = rate;
+        }
+        Ok((buf, resampled))
+    })();
+    DecodedTake { track, path, audio }
+}
+
+/// Place take files decoded off the UI thread by [`decode_take`], as one undo step ("Record"):
+/// the placement twin of [`place_recording`] for takes the app could not afford to decode while
+/// the transport kept rolling. A take whose decode failed reports its error and ends its track's
+/// take there, as an unreadable file does in the synchronous path.
+pub fn place_recording_decoded(e: &mut Engine, plan: &Recording, takes: Vec<DecodedTake>) -> Vec<soundcraft_model::ClipId> {
+    let before = e.session_arc();
+    let mut out = Vec::new();
+    let mut tracks: Vec<(TrackId, Vec<TakeFile>)> = Vec::new();
+    let mut ended: Vec<TrackId> = Vec::new();
+    for take in takes {
+        if ended.contains(&take.track) {
+            continue;
+        }
+        let file = match take.audio {
+            Ok((buf, resampled)) => {
+                let len = i64::try_from(buf.frames()).unwrap_or(0);
+                TakeFile { path: take.path, len, resampled, audio: Some(buf) }
+            }
+            Err(err) => {
+                e.message(err);
+                ended.push(take.track);
+                continue;
+            }
+        };
+        match tracks.iter_mut().find(|(t, _)| *t == take.track) {
+            Some((_, files)) => files.push(file),
+            None => tracks.push((take.track, vec![file])),
+        }
+    }
+    for (tid, files) in tracks {
+        let (clips, problems) = place_take(e.session_mut(), tid, files, plan.start, plan.pass, plan.punch);
+        for problem in problems {
+            e.message(problem);
+        }
+        out.extend(clips);
+    }
+    if !out.is_empty() {
+        e.push_undo("Record", before);
+    }
+    out
+}
+
 /// Turn recorded take files into clips at `start`, as one undo step ("Record"); each file is the
 /// source of its clips. `takes` are grouped by track; a track's files, in the order given (the
 /// recorder's order: first file, then [`take_part`] 2, 3, …), are one take that went on in a new
@@ -119,7 +190,9 @@ struct TakeFile {
 }
 
 /// A take file's audio at the session's rate `hz`, and whether it was recorded at another rate.
-fn decode_take(path: &Path, hz: u32) -> Result<(AudioBuffer, bool), EngineError> {
+/// (Named apart from the public [`decode_take`], which runs off the UI thread for a take that
+/// is placed by [`place_recording_decoded`] instead.)
+fn decode_take_file(path: &Path, hz: u32) -> Result<(AudioBuffer, bool), EngineError> {
     let bytes = read_file(path)?;
     let (_, mut buf) = craft_audio::decode(&bytes, None).map_err(|err| EngineError::Io(format!("{}: {err}", path.display())))?;
     let resampled = buf.sample_rate != hz && buf.sample_rate > 0;
@@ -132,7 +205,7 @@ fn decode_take(path: &Path, hz: u32) -> Result<(AudioBuffer, bool), EngineError>
 
 /// A take file read and decoded, at the session's rate `hz`.
 fn read_take_file(path: &Path, hz: u32) -> Result<TakeFile, EngineError> {
-    let (buf, resampled) = decode_take(path, hz)?;
+    let (buf, resampled) = decode_take_file(path, hz)?;
     let len = i64::try_from(buf.frames()).unwrap_or(0);
     Ok(TakeFile { path: path.to_path_buf(), len, resampled, audio: Some(buf) })
 }
@@ -198,7 +271,7 @@ fn place_take(
         }
         let read = match file.audio {
             Some(buf) => Ok(buf),
-            None => decode_take(&file.path, hz).map(|(buf, _)| buf),
+            None => decode_take_file(&file.path, hz).map(|(buf, _)| buf),
         };
         let buf = match read {
             Ok(buf) => buf,
