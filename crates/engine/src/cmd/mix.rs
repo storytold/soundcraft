@@ -96,6 +96,15 @@ pub fn specs() -> Vec<CommandSpec> {
             automation_mode
         ),
         cmd!("mix.insert", "Insert Plugin", [], None, "{track?, slot?: 0..9 | a..j, plugin: id, params?: {id: value}}", has_selection, insert),
+        cmd!(
+            "mix.insert_io",
+            "Insert Hardware I/O",
+            [],
+            None,
+            "{track?, slot?: 0..9 | a..j, out: path, in: path, latency_samples?: n} (an I/O insert sends the chain out a hardware output and continues it from a hardware input; latency_samples is the measured round trip)",
+            has_selection,
+            insert_io
+        ),
         cmd!("mix.insert_remove", "Remove Insert", [], None, "{track?, slot}", has_selection, insert_remove),
         cmd!("mix.insert_bypass", "Bypass Insert", [], None, "{track?, slot, value?: bool}", has_selection, insert_bypass),
         cmd!("mix.insert_param", "Set Plugin Parameter", [], None, "{track?, slot, param, value}", has_selection, insert_param),
@@ -379,6 +388,33 @@ fn insert(e: &mut Engine, p: &Value) -> Result<Value> {
     Ok(json!({"track": t, "slot": slot, "plugin": info.id}))
 }
 
+/// `hwio:{send}|{return}` — a hardware insert sends the chain out a physical output and
+/// continues it from a physical input (the Pro Tools I/O insert for outboard/reamping).
+/// `latency_samples` is the round trip the delay compensation aligns the session to.
+fn insert_io(e: &mut Engine, p: &Value) -> Result<Value> {
+    let out = str_param(p, "out").ok_or_else(|| bad("mix.insert_io", "`out` required"))?;
+    let ret = str_param(p, "in").ok_or_else(|| bad("mix.insert_io", "`in` required"))?;
+    for (what, path) in [("out", out), ("in", ret)] {
+        if path.is_empty() || path.contains('|') || !path.chars().any(|c| c.is_ascii_digit()) {
+            return Err(bad("mix.insert_io", format!("`{what}` must name a hardware path with a channel number, like `Out 3-4`")));
+        }
+    }
+    let latency = p.get("latency_samples").and_then(Value::as_f64).filter(|v| v.is_finite() && *v >= 0.0).unwrap_or(0.0);
+    let t = tracks_required(e, "mix.insert_io", p)?.first().copied().ok_or_else(|| bad("mix.insert_io", "no track"))?;
+    let explicit = optional_slot(p, "mix.insert_io", INSERT_SLOTS)?;
+    let s = e.session_mut();
+    let tr = s.track_mut(t).ok_or_else(|| bad("mix.insert_io", "no track"))?;
+    let slot =
+        explicit.or_else(|| tr.mixer.inserts.iter().position(Option::is_none)).ok_or_else(|| bad("mix.insert_io", "all insert slots are in use"))?;
+    let mut ins = Insert::new(format!("{}{out}|{ret}", soundcraft_mix::HWIO_PREFIX));
+    ins.params.insert(soundcraft_mix::HWIO_LATENCY.to_string(), latency as f32);
+    ins.preset = format!("I/O: {out} ↔ {ret}");
+    if let Some(sl) = tr.mixer.inserts.get_mut(slot) {
+        *sl = Some(ins);
+    }
+    Ok(json!({"track": t, "slot": slot, "out": out, "in": ret, "latency_samples": latency}))
+}
+
 fn insert_remove(e: &mut Engine, p: &Value) -> Result<Value> {
     let (t, slot) = track_slot(e, p, "mix.insert_remove", INSERT_SLOTS)?;
     if let Some(tr) = e.session_mut().track_mut(t)
@@ -410,6 +446,14 @@ fn insert_param(e: &mut Engine, p: &Value) -> Result<Value> {
     let s = e.session_mut();
     let ins =
         s.track_mut(t).and_then(|tr| tr.mixer.inserts.get_mut(slot)).and_then(Option::as_mut).ok_or_else(|| bad("mix.insert_param", "empty slot"))?;
+    if ins.plugin.starts_with(soundcraft_mix::HWIO_PREFIX) {
+        if param != soundcraft_mix::HWIO_LATENCY {
+            return Err(bad("mix.insert_param", format!("`{}` has no parameter `{param}`", ins.plugin)));
+        }
+        let v = value.clamp(0.0, (1 << 20) as f32);
+        ins.params.insert(param, v);
+        return Ok(json!({"value": v}));
+    }
     let info = super::clap::plugin_info(&ins.plugin).ok_or_else(|| bad("mix.insert_param", "unknown plugin"))?;
     let pi =
         info.params.iter().find(|x| x.id == param).ok_or_else(|| bad("mix.insert_param", format!("`{}` has no parameter `{param}`", info.id)))?;

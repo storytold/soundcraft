@@ -108,19 +108,26 @@ pub(crate) fn insert_slot(app: &mut SoundApp, ui: &mut Ui, track: &Track, slot: 
         egui::WidgetInfo::labeled(egui::Role::Button, true, crate::localized_format!("Insert {} for {}", (b'A' + slot as u8) as char, track.name))
     });
     let info = ins.as_ref().and_then(|i| plugin_info(&i.plugin));
-    let name = ins.as_ref().map(|i| info.map_or(i.plugin.as_str(), |p| p.short_name)).unwrap_or_default();
+    let name = ins
+        .as_ref()
+        .map(|i| {
+            soundcraft_mix::hwio_paths(&i.plugin)
+                .map_or_else(|| info.map_or_else(|| i.plugin.clone(), |p| p.short_name.to_string()), |(s, r)| format!("{s}→{r}"))
+        })
+        .unwrap_or_default();
     match &ins {
         None => empty_slot(ui.painter(), r, resp.hovered(), Mark::Dot),
         Some(i) => {
             let faces = if i.bypass { t.slot_bypassed } else { t.slot_face };
             let color = if info.is_some() { t.text } else { t.text_dim };
-            used_slot(ui.painter(), r, faces, Mark::Dot, name, color, None);
+            used_slot(ui.painter(), r, faces, Mark::Dot, &name, color, None);
         }
     }
     if resp.clicked() && ins.is_some() {
         if ui.input(|i| i.modifiers.command) {
             let _ = app.run("mix.insert_bypass", json!({"track": id.0, "slot": slot}));
-        } else if !app.ui.plugin_windows.contains(&(id, slot)) {
+        } else if ins.as_ref().is_some_and(|i| soundcraft_mix::hwio_paths(&i.plugin).is_none()) && !app.ui.plugin_windows.contains(&(id, slot)) {
+            // A hardware I/O insert has no plugin window; the menu carries its settings.
             app.ui.plugin_windows.push((id, slot));
         }
     }

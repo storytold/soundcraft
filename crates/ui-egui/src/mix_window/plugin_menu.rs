@@ -19,6 +19,19 @@ pub fn plugin_menu(app: &mut SoundApp, ui: &mut Ui, id: TrackId, slot: usize, oc
         }
         ui.separator();
     }
+    if let Some(ins) = hwio_insert(app, id, slot) {
+        // A hardware insert's one parameter: the measured round trip delay compensation
+        // aligns the rest of the session to.
+        let mut lat = ins.params.get(soundcraft_mix::HWIO_LATENCY).copied().unwrap_or(0.0);
+        ui.horizontal(|ui| {
+            ui.label(crate::localization::text("Round-trip latency"));
+            if ui.add(egui::DragValue::new(&mut lat).range(0.0..=1_048_576.0).speed(1.0).suffix(" spl")).changed() {
+                let _ = app.run("mix.insert_param", json!({"track": id.0, "slot": slot, "param": soundcraft_mix::HWIO_LATENCY, "value": lat}));
+            }
+        });
+        ui.separator();
+    }
+    io_menu(app, ui, id, slot);
     let mut cats: Vec<soundcraft_dsp::Category> = Vec::new();
     for p in soundcraft_dsp::plugins() {
         if !p.is_instrument && !cats.contains(&p.category) {
@@ -93,6 +106,42 @@ pub fn instrument_menu(app: &mut SoundApp, ui: &mut Ui, id: TrackId) {
     if let Some(plugin) = picked {
         run_pick(app, ui, "mix.instrument", json!({"track": id.0, "plugin": plugin}));
     }
+}
+
+/// The insert on `slot`, when it is a hardware I/O insert (`hwio:` id).
+fn hwio_insert(app: &SoundApp, id: TrackId, slot: usize) -> Option<soundcraft_model::Insert> {
+    app.engine
+        .session()
+        .track(id)
+        .and_then(|t| t.mixer.inserts.get(slot).cloned().flatten())
+        .filter(|i| soundcraft_mix::hwio_paths(&i.plugin).is_some())
+}
+
+/// The "I/O" submenu of an insert's menu: hardware output paths, then the input path the
+/// outboard gear's return lands on (the Pro Tools I/O insert for reamping and hardware units).
+fn io_menu(app: &mut SoundApp, ui: &mut Ui, id: TrackId, slot: usize) {
+    ui.menu_button(crate::localization::text("I/O"), |ui| {
+        let current = hwio_insert(app, id, slot).and_then(|i| soundcraft_mix::hwio_paths(&i.plugin).map(|(a, b)| (a.to_string(), b.to_string())));
+        for out in io_paths("Out") {
+            ui.menu_button(&out, |ui| {
+                for ret in io_paths("In") {
+                    let here = current.as_ref().is_some_and(|(o, r)| o == &out && r == &ret);
+                    if menu_row(ui, here, &ret) {
+                        run_pick(app, ui, "mix.insert_io", json!({"track": id.0, "slot": slot, "out": out, "in": ret}));
+                    }
+                }
+            });
+        }
+    });
+}
+
+/// Mono channels and the stereo pairs they make, named as the routing menus name them.
+fn io_paths(kind: &str) -> Vec<String> {
+    let mut v: Vec<String> = (1..=8).map(|i| format!("{kind} {i}")).collect();
+    for i in (1..8).step_by(2) {
+        v.push(format!("{kind} {i}-{}", i + 1));
+    }
+    v
 }
 
 /// Inserts the plugin picked in an insert's menu and, as DAWs do, opens it once the audio engine has

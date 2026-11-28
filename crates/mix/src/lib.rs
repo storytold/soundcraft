@@ -86,10 +86,12 @@ use pan::{PanSpec, apply_matrix, apply_matrix_span, build_matrix};
 pub use routing::solo_mutes;
 use routing::{any_solo, processing_order, structure_fingerprint};
 use strip::{
-    Block, BusBuf, LiveInput, SlotCtx, Strip, apply_params, contain_failure, note_insert_latency, process_strip, strip_channels, strip_format,
+    Block, BusBuf, LiveInput, SlotCtx, Strip, apply_params, contain_failure, has_hwio, note_insert_latency, process_strip, run_hwio, strip_channels,
+    strip_format,
 };
 #[cfg(test)]
 use strip::{DelayLine, MAX_LATENCY};
+pub use strip::{HWIO_LATENCY, HWIO_PREFIX, hwio_paths};
 use threads::run_strips;
 pub use threads::{mark_audio_thread, on_audio_thread};
 
@@ -137,6 +139,12 @@ pub struct MixEngine {
     /// such a bus waits for it, so a bounce of the bus drops it as well.
     aux_fed: Vec<BusId>,
     aux_latency: usize,
+    /// Device channels hardware inserts sent to this block, added to `out` after the main
+    /// mix: a hardware output path is not the main mix, so it must not be delayed by it.
+    hw_out: Vec<Vec<f32>>,
+    /// Device output channel count from the last render, so strips with hardware inserts
+    /// can size their `hw_out` scratch without allocating in `process`.
+    out_ch: usize,
     /// Live input for the next block (planar), set by the audio host for input monitoring.
     pub input: Vec<Vec<f32>>,
     /// Live MIDI input for the next block, set by the audio host: record-enabled and
@@ -186,6 +194,8 @@ impl MixEngine {
             track_latency: 0,
             aux_fed: Vec::new(),
             aux_latency: 0,
+            hw_out: Vec::new(),
+            out_ch: 0,
             input: Vec::new(),
             midi: Vec::new(),
             midi_ports: None,
@@ -319,6 +329,9 @@ impl MixEngine {
             if strip.buf.len() != ch || strip.buf.first().map_or(0, Vec::len) != mb {
                 strip.buf = vec![vec![0.0; mb]; ch];
             }
+            // A hardware insert's send scratch covers the device channels it could write to;
+            // it only exists on strips that have one, and never grows inside `process`.
+            sync_hw_out(strip, has_hwio(t), self.out_ch, mb);
             while strip.plugins.len() > t.mixer.inserts.len() {
                 let p = strip.plugins.pop().flatten();
                 cx.retire(p);
@@ -386,6 +399,10 @@ impl MixEngine {
     /// Render `frames` (≤ max_block) samples starting at `pos` into `out` (≥ 2 channels).
     pub fn render(&mut self, s: &Session, pos: Samples, frames: usize, out: &mut [Vec<f32>]) {
         let frames = frames.min(self.max_block);
+        self.out_ch = out.len();
+        if self.hw_out.len() != out.len() {
+            self.hw_out = vec![vec![0.0; self.max_block]; out.len()];
+        }
         self.begin_block(s, pos, frames);
         let blk = Block { pos, frames, any_solo: any_solo(s) };
         let order = std::mem::take(&mut self.order);
@@ -398,10 +415,11 @@ impl MixEngine {
                 work.push((i, st));
             }
         }
-        for (_, st) in work.iter_mut() {
+        for (i, st) in work.iter_mut() {
             if st.scratch.len() < self.max_block {
                 st.scratch.resize(self.max_block, 0.0);
             }
+            sync_hw_out(st, s.tracks.get(*i).is_some_and(has_hwio), self.out_ch, self.max_block);
         }
         let busses = std::mem::take(&mut self.busses);
         let live_in = self.live_input();
@@ -459,6 +477,9 @@ impl MixEngine {
             }
         }
         for c in &mut self.main {
+            c.iter_mut().take(frames).for_each(|x| *x = 0.0);
+        }
+        for c in &mut self.hw_out {
             c.iter_mut().take(frames).for_each(|x| *x = 0.0);
         }
     }
@@ -541,6 +562,7 @@ impl MixEngine {
             if st.scratch.len() < self.max_block {
                 st.scratch.resize(self.max_block, 0.0);
             }
+            sync_hw_out(&mut st, has_hwio(t), self.out_ch, self.max_block);
             let live_in = self.live_input();
             process_strip(s, t, &mut st, &self.busses, &live_in, blk);
             let ch = st.buf.len();
@@ -559,15 +581,35 @@ impl MixEngine {
         let transport = transport_at(s, pos, !self.monitor_only, self.recording);
         for t in s.tracks.iter().filter(|t| t.kind == TrackKind::Master && !t.inactive) {
             if let Some(strip) = self.strips.get_mut(&t.id) {
+                sync_hw_out(strip, has_hwio(t), self.out_ch, self.max_block);
+                for c in strip.hw_out.iter_mut() {
+                    c.iter_mut().take(frames).for_each(|x| *x = 0.0);
+                }
                 for (dst, src) in strip.buf.iter_mut().zip(self.main.iter()) {
                     if let (Some(d), Some(sr)) = (dst.get_mut(..frames), src.get(..frames)) {
                         d.copy_from_slice(sr);
                     }
                 }
                 for (i, ins) in t.mixer.inserts.iter().enumerate() {
-                    if let (Some(ins), Some(Some(slot))) = (ins, strip.plugins.get_mut(i))
-                        && ins.active
-                        && !ins.bypass
+                    let Some(ins) = ins else { continue };
+                    if !ins.active || ins.bypass {
+                        continue;
+                    }
+                    if hwio_paths(&ins.plugin).is_some() {
+                        // Field borrows: `self.live_input()` borrows all of `self`, which
+                        // `self.strips` is already mutably borrowed through.
+                        let live = LiveInput {
+                            input: &self.input,
+                            midi: &self.midi,
+                            ports: self.midi_ports.as_deref(),
+                            midi_lost: self.midi_lost,
+                            monitor_only: self.monitor_only,
+                            recording: self.recording,
+                        };
+                        run_hwio(ins, &mut strip.buf, &live, &mut strip.hw_out, frames);
+                        continue;
+                    }
+                    if let Some(Some(slot)) = strip.plugins.get_mut(i)
                         && !slot.failed
                     {
                         apply_params(slot, ins, t, i, pos);
@@ -578,6 +620,7 @@ impl MixEngine {
                         }
                     }
                 }
+                fold_hw_out(&mut self.hw_out, strip, frames);
                 // Read at every sample, like track faders: a breakpoint acts on its own sample.
                 copy_with_gain(&[volume_level(t)], pos, frames, f32::INFINITY, &strip.buf, &mut self.main);
                 let m = self.meters.entry(t.id).or_default();
@@ -600,8 +643,9 @@ impl MixEngine {
         // Output: min(out.len(), main channels) channels; any further output channels are silent.
         for (c, o) in out.iter_mut().enumerate() {
             let src = self.main.get(c);
+            let hw = self.hw_out.get(c);
             for i in 0..frames {
-                let v = src.and_then(|m| m.get(i)).copied().unwrap_or(0.0);
+                let v = src.and_then(|m| m.get(i)).copied().unwrap_or(0.0) + hw.and_then(|h| h.get(i)).copied().unwrap_or(0.0);
                 if let Some(d) = o.get_mut(i) {
                     *d = if v.is_finite() { v } else { 0.0 };
                 }
@@ -660,6 +704,7 @@ impl MixEngine {
             let m = build_matrix(src_fmt, src.len(), dst.fmt, dst.buf.len(), &PanSpec { stereo, surround }, law);
             apply_matrix(src, frames, &mut dst.buf, &m, gain);
         }
+        fold_hw_out(&mut self.hw_out, strip, frames);
         let src: &[Vec<f32>] = match &t.mixer.output {
             Route::Main | Route::Bus(_) if strip.out_extra.len > 0 => {
                 if strip.outbuf.len() != strip.buf.len() {
@@ -695,6 +740,28 @@ impl MixEngine {
 
 std::thread_local! {
     static AUDIO_THREAD: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Size a strip's hardware-send scratch: every device channel an insert could write,
+/// when the track has one. Runs at sync and before a strip processes, so a change in the
+/// stream's channel count is picked up without a session change.
+fn sync_hw_out(strip: &mut Strip, has_hwio: bool, out_ch: usize, max_block: usize) {
+    let hw = if has_hwio { out_ch } else { 0 };
+    if strip.hw_out.len() != hw || strip.hw_out.first().map_or(0, Vec::len) != max_block {
+        strip.hw_out = vec![vec![0.0; max_block]; hw];
+    }
+}
+
+/// Fold what a strip's hardware inserts sent to their output paths into the block's
+/// device-channel accumulator. The strip's scratch is zeroed when it next processes.
+fn fold_hw_out(hw_out: &mut [Vec<f32>], strip: &Strip, frames: usize) {
+    for (c, src) in strip.hw_out.iter().enumerate() {
+        if let Some(dst) = hw_out.get_mut(c) {
+            for (d, x) in dst.iter_mut().zip(src.iter()).take(frames) {
+                *d += *x;
+            }
+        }
+    }
 }
 
 fn is_live(t: &Track) -> bool {

@@ -222,6 +222,7 @@ pub(super) fn translate(source: &str) -> Option<&'static str> {
         "Reset" => "Redefinir",
         "Reverse the order" => "Inverter a ordem",
         "Revert" => "Reverter",
+        "Round-trip latency" => "Latência de ida e volta",
         "Route as an immersive object or to the bed" => "Rotear como objeto imersivo ou para a camada base",
         "Sample rate" => "Taxa de amostragem",
         "Sample Rate" => "Taxa de amostragem",

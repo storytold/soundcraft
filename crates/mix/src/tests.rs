@@ -2160,3 +2160,74 @@ fn a_clip_volume_moved_earlier_by_the_track_delay_counts_as_set_when_a_device_go
     render_block(&mut eng, &s, 1024);
     assert_eq!(std::mem::take(&mut *heard.lock().unwrap()), vec![(0, [0xB0, 121, 0]), (0, [0xB0, 7, 80])], "the clip's volume, not the default");
 }
+
+/// A stereo track with a DC clip, for the hardware-insert tests.
+fn stereo_dc_track(s: &mut Session, level: f32, frames: usize, src: u64) -> TrackId {
+    let t = s.add_track(TrackKind::Audio, ChannelFormat::Stereo, None);
+    let buf = AudioBuffer { sample_rate: 48_000, channels: vec![vec![level; frames], vec![level; frames]] };
+    s.pool.insert(SourceId(src), Arc::new(SourceAudio::new(buf)));
+    let id = s.new_clip_id();
+    if let Some(pl) = s.track_mut(t).and_then(|t| t.playlist_mut()) {
+        pl.clips.push(Clip::audio(id, "dc", SourceId(src), 0, 0, frames as i64));
+    }
+    t
+}
+
+#[test]
+fn a_hardware_insert_sends_out_and_returns_in() {
+    // #1550: an I/O insert sends the chain to its output path's device channels and
+    // continues it from the input path's block — the device round trip is the delay.
+    let mut s = Session::default();
+    let t = stereo_dc_track(&mut s, 0.5, 4096, 910);
+    s.track_mut(t).unwrap().mixer.inserts[0] = Some(Insert::new("hwio:Out 3-4|In 1-2"));
+    let mut eng = MixEngine::new(48_000.0, 512);
+    eng.input = vec![vec![0.25; 512]; 2];
+    let mut out = vec![vec![0.0; 512]; 4];
+    eng.render(&s, 0, 512, &mut out);
+    // Out 3-4 → device channels 2-3 carry the 0.5 chain.
+    assert!((out[2][100] - 0.5).abs() < 1e-5, "send path: {}", out[2][100]);
+    assert!((out[3][100] - 0.5).abs() < 1e-5, "send path R: {}", out[3][100]);
+    // The chain continues from the return (In 1-2 → channels 0-1): the mix carries 0.25.
+    assert!((out[0][100] - 0.25).abs() < 1e-5, "return: {}", out[0][100]);
+    assert!((out[1][100] - 0.25).abs() < 1e-5, "return R: {}", out[1][100]);
+}
+
+#[test]
+fn a_hardware_insert_reports_its_round_trip_to_pdc() {
+    // #1550: latency_samples aligns the rest of the session to the late return.
+    let mut s = Session::default();
+    s.edit.delay_compensation = true;
+    let hw = stereo_dc_track(&mut s, 0.5, 4096, 910);
+    let mut ins = Insert::new("hwio:Out 3-4|In 1-2");
+    ins.params.insert("latency_samples".into(), 48.0);
+    s.track_mut(hw).unwrap().mixer.inserts[0] = Some(ins);
+    // A plain track with an impulse at sample 100.
+    let plain = s.add_track(TrackKind::Audio, ChannelFormat::Stereo, None);
+    let mut impulse = vec![0.0; 4096];
+    impulse[100] = 0.9;
+    s.pool.insert(SourceId(911), Arc::new(SourceAudio::new(AudioBuffer { sample_rate: 48_000, channels: vec![impulse.clone(), impulse] })));
+    let cid = s.new_clip_id();
+    s.track_mut(plain).unwrap().playlist_mut().unwrap().clips.push(Clip::audio(cid, "imp", SourceId(911), 0, 0, 4096));
+    let mut eng = MixEngine::new(48_000.0, 512);
+    eng.input = vec![vec![0.0; 512]; 2];
+    let mut out = vec![vec![0.0; 512]; 4];
+    eng.render(&s, 0, 512, &mut out);
+    // The plain track waited the insert's round trip: its impulse lands at 100 + 48.
+    let at = out[0].iter().enumerate().max_by(|a, b| a.1.abs().total_cmp(&b.1.abs())).map_or(0, |(i, _)| i);
+    assert_eq!(at, 148, "impulse should be delayed by the insert's latency");
+}
+
+#[test]
+fn a_hardware_insert_passes_through_without_live_input() {
+    // #1550: no input device (or an offline render, which has none) — the chain passes
+    // through instead of going silent.
+    let mut s = Session::default();
+    let t = stereo_dc_track(&mut s, 0.5, 4096, 910);
+    s.track_mut(t).unwrap().mixer.inserts[0] = Some(Insert::new("hwio:Out 3-4|In 1-2"));
+    let mut eng = MixEngine::new(48_000.0, 512);
+    let mut out = vec![vec![0.0; 512]; 4];
+    eng.render(&s, 0, 512, &mut out);
+    assert!((out[0][100] - 0.5).abs() < 1e-5, "bypassed chain: {}", out[0][100]);
+    assert!(out[2].iter().all(|x| *x == 0.0), "no send without an input device");
+    assert!(out[3].iter().all(|x| *x == 0.0));
+}

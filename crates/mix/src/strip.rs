@@ -65,6 +65,9 @@ pub(crate) struct Strip {
     pub(crate) align_pre: DelayLine,
     pub(crate) out_extra: DelayLine,
     pub(crate) outbuf: Vec<Vec<f32>>,
+    /// The block a hardware insert sent to its output path, per device channel: the engine
+    /// folds it into the stream's output buffer after the strip routed its own output.
+    pub(crate) hw_out: Vec<Vec<f32>>,
     pub(crate) failures: PluginFailures,
 }
 
@@ -161,6 +164,7 @@ impl Strip {
             align_pre: DelayLine::default(),
             out_extra: DelayLine::default(),
             outbuf: Vec::new(),
+            hw_out: Vec::new(),
             failures: PluginFailures::default(),
         }
     }
@@ -252,6 +256,67 @@ fn monitor_input(t: &Track, strip: &mut Strip, live: &LiveInput<'_>, frames: usi
             for (d, x) in dst.iter_mut().zip(src.iter()).take(frames) {
                 *d = *x;
             }
+        }
+    }
+}
+
+/// A hardware insert's plugin id: `hwio:{send path}|{return path}`, e.g. `hwio:Out 3-4|In 5-6`.
+/// It sends the chain out a physical output and continues it from a physical input — the
+/// Pro Tools I/O insert for outboard gear and reamping. `latency_samples` (a param) is the
+/// measured round trip the delay compensation aligns the rest of the session to.
+pub const HWIO_PREFIX: &str = "hwio:";
+pub const HWIO_LATENCY: &str = "latency_samples";
+
+/// `(send path, return path)` when `id` is a hardware insert's.
+pub fn hwio_paths(id: &str) -> Option<(&str, &str)> {
+    id.strip_prefix(HWIO_PREFIX)?.split_once('|')
+}
+
+/// The first device channel a hardware path names ("In 1-2" → 0, "Out 3-4" → 2).
+fn hw_path_channel(path: &str) -> usize {
+    path.trim_start_matches(|c: char| !c.is_ascii_digit())
+        .split(['-', ' '])
+        .next()
+        .and_then(|n| n.parse::<usize>().ok())
+        .map_or(0, |n| n.saturating_sub(1))
+}
+
+/// The insert's configured round-trip latency, bounded like any plugin's.
+fn hwio_latency(ins: &soundcraft_model::Insert) -> usize {
+    ins.params.get(HWIO_LATENCY).map_or(0, |v| (*v as usize).min(MAX_LATENCY))
+}
+
+/// A track has a hardware insert, bypassed or not: its strip keeps `hw_out` scratch.
+pub(crate) fn has_hwio(t: &Track) -> bool {
+    t.mixer.inserts.iter().flatten().any(|i| hwio_paths(&i.plugin).is_some())
+}
+
+/// Send the chain out the insert's output path, then continue it from the input path's
+/// block: the device's own round trip is what supplies the delay, `latency_samples` only
+/// tells the compensation how late the return is. With no hardware input at all the insert
+/// passes through instead of muting the track (and an offline render has no input).
+pub(crate) fn run_hwio(ins: &soundcraft_model::Insert, buf: &mut [Vec<f32>], live: &LiveInput<'_>, hw_out: &mut [Vec<f32>], frames: usize) {
+    if live.input.is_empty() {
+        return;
+    }
+    let Some((send, ret)) = hwio_paths(&ins.plugin) else { return };
+    let send_ch = hw_path_channel(send);
+    for (k, src) in buf.iter().enumerate() {
+        if let Some(dst) = hw_out.get_mut(send_ch + k) {
+            for (d, x) in dst.iter_mut().zip(src.iter()).take(frames) {
+                *d += *x;
+            }
+        }
+    }
+    let ret_ch = hw_path_channel(ret);
+    for (k, dst) in buf.iter_mut().enumerate() {
+        match live.input.get(ret_ch + k) {
+            Some(src) => {
+                for (d, x) in dst.iter_mut().zip(src.iter()).take(frames) {
+                    *d = if x.is_finite() { *x } else { 0.0 };
+                }
+            }
+            None => dst.iter_mut().take(frames).for_each(|x| *x = 0.0),
         }
     }
 }
@@ -391,13 +456,22 @@ fn render_instrument(s: &Session, t: &Track, strip: &mut Strip, live: &LiveInput
 }
 
 /// Run the active inserts in order; records their latency and the first gain reduction.
-fn run_inserts(t: &Track, strip: &mut Strip, blk: Block, transport: &Transport) {
+fn run_inserts(t: &Track, strip: &mut Strip, blk: Block, transport: &Transport, live: &LiveInput<'_>) {
     let Block { pos, frames, .. } = blk;
     let mut gr = 0.0f32;
     let mut latency = strip.instrument.as_ref().filter(|i| !i.failed).map_or(0, |i| i.plugin.latency());
     for (i, ins) in t.mixer.inserts.iter().enumerate() {
-        let (Some(ins), Some(Some(slot))) = (ins, strip.plugins.get_mut(i)) else { continue };
-        if !ins.active || ins.bypass || slot.failed {
+        let Some(ins) = ins else { continue };
+        if !ins.active || ins.bypass {
+            continue;
+        }
+        if hwio_paths(&ins.plugin).is_some() {
+            run_hwio(ins, &mut strip.buf, live, &mut strip.hw_out, frames);
+            latency = latency.saturating_add(hwio_latency(ins));
+            continue;
+        }
+        let Some(Some(slot)) = strip.plugins.get_mut(i) else { continue };
+        if slot.failed {
             continue;
         }
         apply_params(slot, ins, t, i, pos);
@@ -464,6 +538,7 @@ fn gate_mute_automation(t: &Track, strip: &mut Strip, blk: Block) {
 pub(crate) fn process_strip(s: &Session, t: &Track, strip: &mut Strip, busses: &HashMap<BusId, BusBuf>, live: &LiveInput<'_>, blk: Block) {
     let Block { pos, frames, any_solo } = blk;
     zero_buf(&mut strip.buf, frames);
+    zero_buf(&mut strip.hw_out, frames);
     let transport = transport_at(s, pos, !live.monitor_only, live.recording);
     match t.kind {
         TrackKind::Audio if !live.input.is_empty() && (t.mixer.input_monitor || (t.mixer.record_arm && (live.monitor_only || live.recording))) => {
@@ -484,7 +559,7 @@ pub(crate) fn process_strip(s: &Session, t: &Track, strip: &mut Strip, busses: &
             c.iter_mut().take(frames).for_each(|x| *x *= trim);
         }
     }
-    run_inserts(t, strip, blk, &transport);
+    run_inserts(t, strip, blk, &transport, live);
     let soloed_out = solo_muted(s, t, any_solo);
     strip.muted = t.mixer.mute || soloed_out;
     if t.mixer.sends.iter().flatten().any(|x| x.pre_fader) {
@@ -529,8 +604,16 @@ pub(crate) fn strip_format(t: &Track, n: usize) -> ChannelFormat {
 pub(crate) fn note_insert_latency(t: &Track, strip: &mut Strip, pos: Samples) {
     let mut latency = 0usize;
     for (i, ins) in t.mixer.inserts.iter().enumerate() {
-        let (Some(ins), Some(Some(slot))) = (ins, strip.plugins.get_mut(i)) else { continue };
-        if !ins.active || ins.bypass || slot.failed {
+        let Some(ins) = ins else { continue };
+        if !ins.active || ins.bypass {
+            continue;
+        }
+        if hwio_paths(&ins.plugin).is_some() {
+            latency = latency.saturating_add(hwio_latency(ins));
+            continue;
+        }
+        let Some(Some(slot)) = strip.plugins.get_mut(i) else { continue };
+        if slot.failed {
             continue;
         }
         apply_params(slot, ins, t, i, pos);
