@@ -1,11 +1,14 @@
 //! Render the real UI offscreen (no window, no focus stealing) and save PNGs.
 //!
-//! `cargo run -p soundcraft-ui-egui --example ui_shot -- out.png [script.jsonl] [--blank] [--size WxH] [--system-theme light|dark|none]`
+//! `cargo run -p soundcraft-ui-egui --example ui_shot -- out.png [script.jsonl] [--blank] [--size WxH] [--system-theme light|dark|none] [--file-provider-preview]`
 //!
 //! Script lines are control requests (`{"method": "...", "params": {...}}`), `{"shot": "path.png"}`
 //! or `{"steps": n}`. `{"system_theme": "light"}` (also `"dark"` or `"none"`) changes the
 //! simulated OS appearance for subsequent frames. The demo session is loaded unless `--blank`.
+//! The provider preview opens the real Open Recent menu with synthetic local/provider entries;
+//! it does not change the application's defaults or contact a storage service.
 
+use egui_kittest::kittest::Queryable;
 use soundcraft_ui_egui::{ControlRequest, Services, SoundApp};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
@@ -26,6 +29,7 @@ fn main() {
     let out = args.first().cloned().unwrap_or_else(|| "soundcraft.png".into());
     let script = args.get(1).filter(|a| !a.starts_with("--")).cloned();
     let blank = args.iter().any(|a| a == "--blank");
+    let provider_preview = args.iter().any(|a| a == "--file-provider-preview");
     let appearance = if let Some(i) = args.iter().position(|a| a == "--system-theme") {
         let Some(appearance) = args.get(i + 1).and_then(|value| system_theme(value)) else {
             eprintln!("--system-theme requires light, dark or none");
@@ -44,7 +48,29 @@ fn main() {
         .unwrap_or((1600.0, 1000.0));
     let engine = if blank { soundcraft_engine::Engine::default() } else { soundcraft_engine::demo::demo_engine() };
     let (tx, rx) = mpsc::channel::<ControlRequest>();
-    let app = SoundApp::new(engine, None, Services::default()).with_control(rx);
+    let services = Services::default();
+    if provider_preview {
+        let host = &services.file_providers;
+        let result = host.set_session("00112233445566778899aabbccddeeff".into()).and_then(|()| {
+            let connection = host.connect("preview".into(), "External files".into(), "example-account".into())?;
+            host.set_resources(
+                &connection,
+                vec![soundcraft_ui_egui::file_providers::Resource {
+                    id: "session".into(),
+                    name: "Provider session.scraftz".into(),
+                    updated_at: "2026-10-31 12:00".into(),
+                }],
+            )
+        });
+        if let Err(error) = result {
+            eprintln!("provider preview: {error}");
+            return;
+        }
+    }
+    let mut app = SoundApp::new(engine, None, services).with_control(rx);
+    if provider_preview {
+        app.ui.recent_sessions = vec!["Device session.scraftz".into()];
+    }
     let mut harness =
         egui_kittest::Harness::builder().with_size(egui::vec2(w, h)).with_pixels_per_point(2.0).with_max_steps(1_000_000).wgpu().build_ui_state(
             |ui, app: &mut SoundApp| {
@@ -122,6 +148,21 @@ fn main() {
                 step(&mut harness);
             }
         }
+    }
+    if provider_preview {
+        let Some(file) = harness.query_by_label("File") else {
+            eprintln!("provider preview: File menu not found");
+            return;
+        };
+        file.click();
+        for _ in 0..3 {
+            step(&mut harness);
+        }
+        let Some(recent) = harness.query_by_label("Open Recent") else {
+            eprintln!("provider preview: Open Recent menu not found");
+            return;
+        };
+        recent.click();
     }
     for _ in 0..4 {
         step(&mut harness);

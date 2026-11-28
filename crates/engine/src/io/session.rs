@@ -76,6 +76,28 @@ pub(super) fn decode_source(bytes: &[u8], ext: Option<&str>, rate: u32) -> std::
     Ok(Arc::new(SourceAudio::new(buf)))
 }
 
+/// Decode one source within the remaining provider audio budget. Measure the actual
+/// decoded channels before resampling rather than trusting the source metadata.
+pub(super) fn decode_source_with_budget(
+    bytes: &[u8],
+    ext: Option<&str>,
+    rate: u32,
+    decode_limit: usize,
+    remaining: &mut usize,
+) -> std::result::Result<Arc<SourceAudio>, String> {
+    let options = craft_audio::DecodeOptions::default().with_max_samples(decode_limit as u64);
+    let (_, buf) = craft_audio::decode_with(bytes, ext, &options).map_err(|err| err.to_string())?;
+    let ratio = f64::from(rate) / f64::from(buf.sample_rate.max(1));
+    let projected = buf.channels.iter().fold(0usize, |total, channel| total.saturating_add((channel.len() as f64 * ratio).round() as usize));
+    if projected > *remaining {
+        return Err("audio exceeds the provider's decoded sample budget".into());
+    }
+    let buf = at_rate(buf, rate, MAX_IMPORT_SAMPLES).map_err(|e| e.message("too large to load"))?;
+    let actual = buf.channels.iter().fold(0usize, |total, channel| total.saturating_add(channel.len()));
+    *remaining = remaining.checked_sub(actual).ok_or("audio exceeds the provider's decoded sample budget")?;
+    Ok(Arc::new(SourceAudio::new(buf)))
+}
+
 pub(crate) type DecodedFiles = std::collections::HashMap<PathBuf, std::result::Result<Arc<SourceAudio>, String>>;
 
 /// The audio of the file at `p` at `rate`, decoded the first time it is asked for. The error

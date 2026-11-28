@@ -202,7 +202,9 @@ fn insert_path(roots: &mut Vec<MenuNode>, line: &str) {
                 level.len() - 1
             }
         };
-        let Some(node) = level.get_mut(idx) else { break };
+        let Some(node) = level.get_mut(idx) else {
+            break;
+        };
         level = &mut node.children;
     }
 }
@@ -518,7 +520,9 @@ fn params_for(path: &str, id: &str) -> Value {
         "clip.rating" => json!({"rating": leaf.parse::<u8>().unwrap_or(0)}),
         "track.change_width" => json!({"format": leaf}),
         "view.mix_section" => json!({"section": mix_section_id(leaf)}),
-        "audiosuite.process" => json!({"process": AUDIOSUITE.iter().find(|(p, _)| *p == path).map_or("", |(_, x)| *x)}),
+        "audiosuite.process" => {
+            json!({"process": AUDIOSUITE.iter().find(|(p, _)| *p == path).map_or("", |(_, x)| *x)})
+        }
         _ => json!({}),
     }
 }
@@ -567,6 +571,12 @@ pub fn invoke_menu(app: &mut SoundApp, id: &str, path: &str) {
         let _ = crate::aaf_import::command(app, &json!({}));
         return;
     }
+    if let Some(result) = crate::provider_ui::choose(app, id) {
+        if let Err(error) = result {
+            app.ui.status = error;
+        }
+        return;
+    }
     if id == "setup.preferences" {
         let _ = app.run(id, json!({"value": true}));
         return;
@@ -603,6 +613,12 @@ pub fn invoke_menu(app: &mut SoundApp, id: &str, path: &str) {
 pub fn invoke_shortcut_dialog(app: &mut SoundApp, id: &str) -> bool {
     if id == "file.import_aaf" {
         let _ = crate::aaf_import::command(app, &json!({}));
+        return true;
+    }
+    if let Some(result) = crate::provider_ui::choose(app, id) {
+        if let Err(error) = result {
+            app.ui.status = error;
+        }
         return true;
     }
     (wants_dialog(id) && app.dialogs.open_for_command(&app.engine, id)) || crate::dialogs::ask_to_save(app, id, &json!({}))
@@ -808,7 +824,9 @@ pub fn run_ui_command(app: &mut SoundApp, id: &str, p: &Value) -> Option<Result<
                 Ok(Some(t)) => t,
                 Ok(None) => match app.engine.session().edit.selected_tracks.first() {
                     Some(t) => *t,
-                    None => return Some(Err("view.scroll_into_view: pass `track` or select a track".into())),
+                    None => {
+                        return Some(Err("view.scroll_into_view: pass `track` or select a track".into()));
+                    }
                 },
                 Err(e) => return Some(Err(e.to_string())),
             };
