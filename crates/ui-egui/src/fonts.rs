@@ -42,6 +42,20 @@ const HANGUL: &[(&str, u32)] = &[
     ("/usr/share/fonts/truetype/nanum/NanumGothic.ttf", 0),
     ("/usr/share/fonts/naver-nanum/NanumGothic.ttf", 0),
 ];
+/// Han fallback, appended after every family so Chinese session, track and clip names draw
+/// whatever the interface language. The Noto Sans CJK collection's face 2 is its Simplified
+/// Chinese face.
+const HAN: &[(&str, u32)] = &[
+    ("/System/Library/Fonts/PingFang.ttc", 0),
+    ("/System/Library/Fonts/Hiragino Sans GB.ttc", 0),
+    ("C:\\Windows\\Fonts\\msyh.ttc", 0),
+    ("C:\\Windows\\Fonts\\simsun.ttc", 0),
+    ("/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc", 2),
+    ("/usr/share/fonts/noto-cjk/NotoSansCJK-Regular.ttc", 2),
+    ("/usr/share/fonts/google-noto-cjk/NotoSansCJK-Regular.ttc", 2),
+    ("/usr/share/fonts/truetype/wqy/wqy-microhei.ttc", 0),
+    ("/usr/share/fonts/wenquanyi/wqy-microhei/wqy-microhei.ttc", 0),
+];
 /// Font files larger than this are skipped: egui keeps the whole file in memory.
 #[cfg(not(target_arch = "wasm32"))]
 const MAX_FONT_BYTES: u64 = 64 << 20;
@@ -132,6 +146,12 @@ pub fn definitions(system_fonts: bool) -> FontDefinitions {
             family.push("system-hangul".into());
         }
     }
+    if let Some(h) = load(HAN, "sans-serif:lang=zh-cn", Some("zh-cn"), system_fonts) {
+        fonts.font_data.insert("system-han".into(), Arc::new(h));
+        for family in fonts.families.values_mut() {
+            family.push("system-han".into());
+        }
+    }
     fonts
 }
 
@@ -160,6 +180,16 @@ mod tests {
         }
         // Face 0 of the Noto Sans CJK collection is Japanese; the Korean face is 1.
         assert!(HANGUL.iter().filter(|(p, _)| p.ends_with("NotoSansCJK-Regular.ttc")).all(|(_, i)| *i == 1));
+    }
+
+    #[test]
+    fn han_candidates_cover_every_desktop_platform() {
+        for prefix in ["/System/Library/Fonts/", "C:\\Windows\\Fonts\\", "/usr/share/fonts/"] {
+            assert!(HAN.iter().any(|(p, _)| p.starts_with(prefix)), "no Han candidate under {prefix}");
+        }
+        // Face 0 of the Noto Sans CJK collection is Japanese and face 1 is Korean; the Simplified
+        // Chinese face is 2.
+        assert!(HAN.iter().filter(|(p, _)| p.ends_with("NotoSansCJK-Regular.ttc")).all(|(_, i)| *i == 2));
     }
 
     /// Every literal glyph the UI fixtures paint is covered by the bundled faces in every family,
@@ -224,6 +254,25 @@ mod tests {
         for family in families {
             let font = egui::FontId::new(13.0, family.clone());
             assert!(ctx.fonts_mut(|f| f.has_glyphs(&font, "가한국어세션")), "{family:?} has no Hangul");
+        }
+    }
+
+    /// Chinese names draw in every family, not as boxes; skipped when the system has no Chinese font.
+    #[test]
+    fn every_family_draws_han_with_a_system_chinese_font() {
+        let defs = definitions(true);
+        if !defs.font_data.contains_key("system-han") {
+            eprintln!("skipping: no Chinese system font");
+            return;
+        }
+        let families: Vec<FontFamily> = defs.families.keys().cloned().collect();
+        let ctx = egui::Context::default();
+        ctx.set_fonts(defs);
+        let mut output = ctx.run_ui(egui::RawInput::default(), |_| {});
+        output.textures_delta.clear();
+        for family in families {
+            let font = egui::FontId::new(13.0, family.clone());
+            assert!(ctx.fonts_mut(|f| f.has_glyphs(&font, "混音轨道剪辑")), "{family:?} has no Han glyphs");
         }
     }
 }

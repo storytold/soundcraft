@@ -52,7 +52,7 @@ measures readiness and adds hardware, localization and field bug reports.
 | UI/UX fidelity | ~55 % | 60–100 | [ui-parity.md](docs/ui-parity.md) |
 | File formats | ~40 % | 70–120 | [file-format-parity.md](docs/file-format-parity.md) |
 | Hardware (interfaces, MIDI, surfaces, sync) | ~12 % | 110–180 | [hardware-parity.md](docs/hardware-parity.md) |
-| Localization | ~12 % (1 of Pro Tools' 8 languages; English and pt-BR fixed UI strings, no CJK/RTL font fallback or native review) | 70–110 | [localization-parity.md](docs/localization-parity.md) |
+| Localization | ~25 % (2 of Pro Tools' 8 languages; English, pt-BR and zh-Hans fixed UI strings, system Han/Hangul font fallback, no RTL fallback or native review) | 60–100 | [localization-parity.md](docs/localization-parity.md) |
 | Performance | ~35 % (unmeasured) | 40–70 | [hardware-parity.md](docs/hardware-parity.md#performance) |
 | Stability | ~45 % | 50–80 | [gaps.md](docs/gaps.md) |
 | Platforms | ~65 % (5 platforms built, macOS exercised) | 20–40 | [gaps.md](docs/gaps.md) |
@@ -86,7 +86,7 @@ Weights and evidence per row: [target-app-parity.md](docs/target-app-parity.md#f
 | Language | Code | Status | Translated |
 |---|---|---|---:|
 | English | en | full | 100 % |
-| Simplified Chinese | zh-Hans | none | 0 % |
+| Simplified Chinese | zh-Hans | full — 100 % of fixed UI strings; tests pass; system Han font fallback | 100 % (native-speaker review pending) |
 | Spanish | es | none (PR #143 open) | 0 % |
 | Hindi | hi | none | 0 % |
 | Arabic | ar | none | 0 % |
@@ -98,7 +98,7 @@ Weights and evidence per row: [target-app-parity.md](docs/target-app-parity.md#f
 | Korean | ko | none | 0 % |
 | Vietnamese | vi | none | 0 % |
 
-Other languages shipped: 0 complete. Brazilian Portuguese covers the fixed UI strings (100 %), with native-speaker review, CJK/RTL font fallbacks and script shaping still pending. Detail: [localization-parity.md](docs/localization-parity.md).
+Other languages shipped: 0 complete. Brazilian Portuguese and Simplified Chinese cover the fixed UI strings (100 %), with native-speaker review, remaining CJK/RTL font fallbacks and script shaping still pending. Detail: [localization-parity.md](docs/localization-parity.md).
 
 ## Upcoming
 
