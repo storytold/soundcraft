@@ -87,7 +87,7 @@ When you close a gap, delete its entry (or shrink it) in the same PR, and bump t
   input on FreeBSD and the web. `setup.midi_input_devices` and `setup.midi_studio` still only
   store names in the session; the real device switches are app preferences.
 - **Impact:** you can play and record a keyboard, not drive hardware synths or sync other gear.
-- **Estimate:** ≈ 12–22 h (output tracks and thru, clock out, merge/loop takes, controller path).
+- **Estimate:** ≈ 6–14 h (output tracks and thru, clock out, controller path).
 
 ### G-03. Session interchange with Pro Tools
 
