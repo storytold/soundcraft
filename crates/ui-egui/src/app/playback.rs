@@ -234,6 +234,8 @@ impl SoundApp {
         Ok(dir)
     }
 
+    /// Ends recording, clears the punch state and places the recorded takes
+    /// (from the recorder or the take plan when the recorder is already gone).
     fn finish_recording(&mut self) {
         self.engine.transport.recording = false;
         let midi_pass = self.end_midi_pass();
@@ -246,13 +248,21 @@ impl SoundApp {
         // The audio input stops taking in first: waiting for the MIDI below would otherwise add
         // what the input hears meanwhile to the audio takes. No input device is open when the
         // pass was MIDI only.
-        let (takes, problem) = self.recorder.as_mut().map_or_else(|| (Vec::new(), None), |r| r.finish());
         // The audio thread writes down what was played up to the stop; the clips wait for that.
+        let plan = self.take_plan.take();
+        self.punch = None;
+        self.autosaved_rev = 0;
+        // The recorder can already be gone (tests run headless): the plan still names the takes,
+        // so place what it holds; with neither, there is nothing to place.
+        let (takes, problem) = match (&mut self.recorder, &plan) {
+            (Some(r), _) => r.finish(),
+            (None, Some(plan)) => (plan.takes.iter().map(|t| (t.track, t.path.clone())).collect(), None),
+            (None, None) => (Vec::new(), None),
+        };
         let midi_confirmed = self.await_midi_capture(midi_pass);
         // Where the pass ended: the audio engine's own position is the freshest.
         let engine_at = self.player.as_ref().map(|p| p.position());
         let stopped_at = super::midi::pass_stop(engine_at, self.engine.transport.position);
-        let plan = self.take_plan.take();
         let tracks = takes.len().max(1);
         let plan = plan.unwrap_or_else(|| soundcraft_engine::io::Recording {
             start: self.record_start,
@@ -261,8 +271,6 @@ impl SoundApp {
             rate: 0,
             takes: Vec::new(),
         });
-        self.punch = None;
-        self.autosaved_rev = 0;
         let ids = soundcraft_engine::io::place_recording(&mut self.engine, &plan, takes);
         // The audio engine may have confirmed the pass while the audio takes were finished: the
         // stop position and what the user is told go by one answer.
@@ -463,7 +471,14 @@ impl SoundApp {
                 }
                 TransportRequest::Record => {
                     if self.engine.transport.recording {
-                        self.stop_play();
+                        // Punching out ends the take; while playing, the transport keeps
+                        // running, like QuickPunch. `finish_recording` places the take
+                        // without touching playback.
+                        if self.is_playing() {
+                            self.finish_recording();
+                        } else {
+                            self.stop_play();
+                        }
                     } else {
                         self.start_recording();
                     }
@@ -561,5 +576,61 @@ mod tests {
         assert!(a.is_dir());
         assert_eq!(app.fallback_take_dir().unwrap(), a, "the same folder for the rest of the run");
         let _ = std::fs::remove_dir_all(&a);
+    }
+
+    /// Punching out (Record pressed again mid-take) ends the take and leaves the transport
+    /// running, like QuickPunch: the punch clears, the take is placed inside the punch range,
+    /// and playback continues from where it was.
+    #[test]
+    fn punching_out_while_playing_keeps_the_transport_running() {
+        let mut app = SoundApp::new(soundcraft_engine::Engine::default(), None, crate::Services::default());
+        app.run("track.new", json!({"count": 1, "format": "mono"})).unwrap();
+        let track = app.engine.session().tracks[0].id;
+        // A take already recorded over the punch range, so the punch-out has something to place.
+        let take = std::env::temp_dir().join(format!("soundcraft-punch-out-take-{}.wav", std::process::id()));
+        let opts = craft_audio::EncodeOptions::new(craft_audio::EncodeFormat::Wav);
+        std::fs::write(
+            &take,
+            craft_audio::encode(&craft_audio::AudioBuffer { sample_rate: 48_000, channels: vec![vec![0.0; 96_000]] }, &opts).unwrap(),
+        )
+        .unwrap();
+        app.record_start = 0;
+        app.punch = Some(Range { start: 48_000, end: 96_000 });
+        app.take_plan = Some(soundcraft_engine::io::Recording {
+            start: 0,
+            pass: None,
+            punch: app.punch,
+            rate: 48_000,
+            takes: vec![soundcraft_engine::io::Take { track, path: take.clone(), channels: 1 }],
+        });
+        // Punch out two seconds in: the playhead must keep its place, not restart from the top.
+        app.start_play(96_000, None, None);
+        app.engine.transport.recording = true;
+        app.engine.transport_requests.push(TransportRequest::Record);
+        app.handle_transport(1.0 / 60.0);
+        assert!(!app.engine.transport.recording, "the take ends");
+        assert!(app.punch.is_none(), "the punch clears");
+        assert!(app.is_playing(), "playback continues after the punch-out");
+        assert!(app.engine.transport.position >= 96_000, "the playhead keeps its place instead of restarting");
+        let clips = app.engine.session().track(track).unwrap().clips().to_vec();
+        assert_eq!(clips.len(), 1, "the take is placed");
+        assert_eq!(clips[0].start, 48_000, "the take is trimmed to the punch");
+        assert_eq!(clips[0].end(), 96_000, "the take covers the punch");
+        let _ = std::fs::remove_file(&take);
+    }
+
+    /// A Record press while recording but not playing (a player that died mid-take, say)
+    /// still stops everything, from where it was.
+    #[test]
+    fn a_record_press_while_recording_but_stopped_still_stops() {
+        let mut app = SoundApp::new(soundcraft_engine::Engine::default(), None, crate::Services::default());
+        app.start_play(96_000, None, None);
+        app.engine.transport.playing = false;
+        app.engine.transport.recording = true;
+        app.engine.transport_requests.push(TransportRequest::Record);
+        app.handle_transport(1.0 / 60.0);
+        assert!(!app.engine.transport.recording);
+        assert!(!app.is_playing());
+        assert_eq!(app.engine.transport.position, 96_000, "the playhead stays where it stopped");
     }
 }
