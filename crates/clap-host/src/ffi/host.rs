@@ -1,10 +1,11 @@
 use super::{
-    AtomicBool, AtomicU64, CLAP_EXT_GUI, CLAP_EXT_LATENCY, CLAP_EXT_LOG, CLAP_EXT_PARAMS, CLAP_EXT_STATE, CLAP_LOG_ERROR, CLAP_LOG_FATAL,
-    CLAP_LOG_WARNING, CStr, EDIT_CAP, Mutex, Ordering, c_char, c_void, clap_host, clap_host_gui, clap_host_latency, clap_host_log, clap_host_params,
-    clap_host_state, clap_id, clap_log_severity, clap_param_clear_flags, clap_param_rescan_flags, read_cstr,
+    AtomicBool, AtomicU64, AtomicUsize, CLAP_EXT_GUI, CLAP_EXT_LATENCY, CLAP_EXT_LOG, CLAP_EXT_PARAMS, CLAP_EXT_STATE, CLAP_LOG_ERROR,
+    CLAP_LOG_FATAL, CLAP_LOG_WARNING, CStr, EDIT_CAP, Mutex, Ordering, c_char, c_void, clap_host, clap_host_gui, clap_host_latency, clap_host_log,
+    clap_host_params, clap_host_state, clap_id, clap_log_severity, clap_param_clear_flags, clap_param_rescan_flags, read_cstr,
 };
 #[cfg(all(unix, not(target_os = "macos")))]
 use super::{CLAP_EXT_POSIX_FD_SUPPORT, CLAP_EXT_TIMER_SUPPORT, clap_host_posix_fd_support, clap_host_timer_support};
+use std::sync::PoisonError;
 
 // ---- host side -----------------------------------------------------------------------------
 
@@ -14,6 +15,7 @@ pub(crate) struct HostState {
     pub process: AtomicBool,
     pub callback: AtomicBool,
     pub latency_changed: AtomicBool,
+    /// A rescan was requested since the editor last took the edits ([`HostState::take_edits`]).
     pub params_rescan: AtomicBool,
     /// `clap_host_state.mark_dirty`.
     pub dirty: AtomicBool,
@@ -27,6 +29,8 @@ pub(crate) struct HostState {
     /// Parameter changes the plugin reported (output events: typically edits in its GUI),
     /// waiting for the UI. Bounded by `EDIT_CAP`; the audio thread only `try_lock`s it.
     pub edits: Mutex<Vec<(u32, f64)>>,
+    /// How many of `edits` were queued before the latest rescan (see [`HostState::note_rescan`]).
+    rescan_edits: AtomicUsize,
     /// The timers and descriptors the plugin registered (`clap.timer-support`,
     /// `clap.posix-fd-support`), serviced by the editor's `idle` on the main thread.
     #[cfg(all(unix, not(target_os = "macos")))]
@@ -48,9 +52,31 @@ impl Default for HostState {
             gui_hide: AtomicBool::new(false),
             gui_resize: AtomicU64::new(0),
             edits: Mutex::new(Vec::with_capacity(EDIT_CAP)),
+            rescan_edits: AtomicUsize::new(0),
             #[cfg(all(unix, not(target_os = "macos")))]
             run_loop: super::run_loop::RunLoop::default(),
         }
+    }
+}
+
+impl HostState {
+    /// The plugin asked for a rescan (`clap_host_params.rescan`, main thread): the values read
+    /// after it are newer than the edits already queued, which are counted.
+    pub(crate) fn note_rescan(&self) {
+        let queued = self.edits.lock().unwrap_or_else(PoisonError::into_inner).len();
+        self.rescan_edits.store(queued, Ordering::Relaxed);
+        self.params_rescan.store(true, Ordering::Relaxed);
+    }
+
+    /// Drain the queued edits, with how many of them came before the latest rescan when one was
+    /// requested since the last call (`None` otherwise).
+    pub(crate) fn take_edits(&self) -> (Vec<(u32, f64)>, Option<usize>) {
+        let mut e = self.edits.lock().unwrap_or_else(PoisonError::into_inner);
+        let before = self.rescan_edits.swap(0, Ordering::Relaxed);
+        let rescan = self.params_rescan.swap(false, Ordering::Relaxed).then_some(before);
+        let out = e.clone();
+        e.clear();
+        (out, rescan)
     }
 }
 
@@ -100,7 +126,7 @@ unsafe extern "C" fn host_log(_host: *const clap_host, severity: clap_log_severi
 unsafe extern "C" fn host_params_rescan(host: *const clap_host, _flags: clap_param_rescan_flags) {
     // SAFETY: the plugin passes back the host pointer we gave it.
     if let Some(s) = unsafe { state(host) } {
-        s.params_rescan.store(true, Ordering::Relaxed);
+        s.note_rescan();
     }
 }
 
@@ -277,4 +303,26 @@ unsafe extern "C" fn host_modify_fd(host: *const clap_host, fd: i32, flags: u32)
 unsafe extern "C" fn host_unregister_fd(host: *const clap_host, fd: i32) -> bool {
     // SAFETY: the plugin passes back the host pointer we gave it.
     unsafe { state(host) }.is_some_and(|s| s.run_loop.remove_fd(fd))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The edits queued before the latest rescan are counted apart from those after it, so the
+    /// values the rescan read are not overwritten by older edits (#1652 review).
+    #[test]
+    fn edits_queued_before_a_rescan_are_counted_apart() {
+        let s = HostState::default();
+        s.edits.lock().unwrap().push((1, 0.2));
+        s.note_rescan();
+        s.edits.lock().unwrap().push((2, 0.7));
+        assert_eq!(s.take_edits(), (vec![(1, 0.2), (2, 0.7)], Some(1)));
+        assert_eq!(s.take_edits(), (vec![], None), "drained, rescan taken");
+        s.edits.lock().unwrap().push((1, 0.3));
+        s.note_rescan();
+        s.note_rescan();
+        s.edits.lock().unwrap().push((1, 0.4));
+        assert_eq!(s.take_edits(), (vec![(1, 0.3), (1, 0.4)], Some(1)), "the latest rescan counts");
+    }
 }

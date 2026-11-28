@@ -3,6 +3,7 @@
 use crate::ffi::{EVENT_CAP, Event, GuiLink, Instance, NotePort, PortBuffers, ProcessInput};
 use clap_sys::ext::note_ports::{CLAP_NOTE_DIALECT_CLAP, CLAP_NOTE_DIALECT_MIDI};
 use soundcraft_dsp::{Plugin, PluginEditor, PluginInfo, Transport};
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
@@ -430,6 +431,16 @@ impl Plugin for ClapPlugin {
     }
 }
 
+/// The parameter values an editor poll reports when the plugin may have changed them without
+/// edits: those `read` from it, overwritten by this poll's `edits`. After a rescan (`rescan`, how
+/// many edits were queued before it) the values it read are newer than the edits queued before
+/// it, which are dropped (CLAP `params.h`: rescanned values apply at once). Without one (only
+/// `dirty`), every edit wins, as the processor may still have an old value.
+fn polled_values(mut read: HashMap<u32, f64>, edits: Vec<(u32, f64)>, rescan: Option<usize>) -> HashMap<u32, f64> {
+    read.extend(edits.into_iter().skip(rescan.unwrap_or(0)));
+    read
+}
+
 /// A CLAP plugin's floating editor, driven from the main thread (see [`GuiLink`]).
 struct ClapEditor {
     link: Arc<GuiLink>,
@@ -454,13 +465,10 @@ impl PluginEditor for ClapEditor {
 
     fn idle(&mut self) -> Vec<(String, f32)> {
         let was_open = self.link.is_open();
-        let events = self.link.idle();
-        let rescan = self.link.host().params_rescan.swap(false, Ordering::Relaxed);
-        if self.info.is_instrument && was_open && (rescan || self.link.host().dirty.load(Ordering::Relaxed)) {
-            // Native patch changes may report only a dirty/rescan notification. Prefer explicit
-            // edits from this poll when present, as the processor may still have an old value.
-            let mut values: std::collections::HashMap<_, _> = self.link.parameter_values(&self.ids).into_iter().collect();
-            values.extend(events);
+        let (events, rescan) = self.link.idle();
+        if self.info.is_instrument && was_open && (rescan.is_some() || self.link.host().dirty.load(Ordering::Relaxed)) {
+            // Native patch changes may report only a dirty/rescan notification (see `polled_values`).
+            let values = polled_values(self.link.parameter_values(&self.ids).into_iter().collect(), events, rescan);
             return self.ids.iter().zip(self.info.params).filter_map(|(id, p)| Some((p.id.to_string(), p.clamp(*values.get(id)? as f32)))).collect();
         }
         let mut out: Vec<(String, f32)> = Vec::new();
@@ -485,6 +493,17 @@ impl PluginEditor for ClapEditor {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// After a rescan, edits queued before it give way to the values it read; later edits, and
+    /// every edit when only `dirty` was raised, take precedence (#1652 review).
+    #[test]
+    fn edits_older_than_a_rescan_do_not_overwrite_its_values() {
+        let read = || HashMap::from([(7, 0.8), (8, 0.1)]);
+        assert_eq!(polled_values(read(), vec![(7, 0.2)], Some(1))[&7], 0.8, "an older edit");
+        assert_eq!(polled_values(read(), vec![(7, 0.2), (7, 0.5)], Some(1))[&7], 0.5, "a newer edit");
+        assert_eq!(polled_values(read(), vec![(7, 0.2)], None)[&7], 0.2, "dirty only: the processor can lag");
+        assert_eq!(polled_values(read(), vec![], Some(0))[&8], 0.1);
+    }
 
     /// A reset keeps parameter changes and one release per key, at the start of the next block,
     /// and drops note-ons and other MIDI.

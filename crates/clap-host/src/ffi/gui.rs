@@ -287,14 +287,15 @@ impl GuiLink {
     }
 
     /// Main-thread housekeeping: runs a requested `on_main_thread`, follows the plugin's
-    /// show/hide/closed requests, and returns the parameter edits reported since the last call.
-    pub fn idle(&self) -> Vec<(u32, f64)> {
+    /// show/hide/closed requests, and returns the parameter edits reported since the last call,
+    /// with how many came before a rescan requested since then (see [`HostState::take_edits`]).
+    pub fn idle(&self) -> (Vec<(u32, f64)>, Option<usize>) {
         if !on_main_thread() {
-            return Vec::new();
+            return (Vec::new(), None);
         }
         let mut g = self.lock();
         if !g.alive {
-            return Vec::new();
+            return (Vec::new(), None);
         }
         if self.host.callback.swap(false, Ordering::Relaxed) {
             // SAFETY: `plugin` is valid while `alive`; we copy its vtable struct.
@@ -341,10 +342,7 @@ impl GuiLink {
             }
         }
         drop(g);
-        let mut e = self.host.edits.lock().unwrap_or_else(PoisonError::into_inner);
-        let out = e.clone();
-        e.clear();
-        out
+        self.host.take_edits()
     }
 
     /// Called by the instance before it destroys the plugin.
