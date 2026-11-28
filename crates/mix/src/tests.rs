@@ -1334,7 +1334,7 @@ fn surround_busses_and_master_fader() {
         let x = 0.1 * (c + 1) as f32 + (1000 % 7) as f32 * 1e-3;
         assert!((ch[1000] - x * g).abs() < 1e-5, "channel {c}: {} vs {}", ch[1000], x * g);
     }
-    // A mono bus sums a stereo source like the old stereo bus did.
+    // A mono track reaches a mono bus at unity; only the aux's panner applies.
     let (mut s, t) = session_with_dc(0.5, 4800);
     let bus = s.add_bus("Mono", ChannelFormat::Mono);
     let aux = s.add_track(TrackKind::Aux, ChannelFormat::Mono, Some("M"));
@@ -1342,7 +1342,38 @@ fn surround_busses_and_master_fader() {
     s.track_mut(aux).unwrap().mixer.pan = vec![-1.0];
     s.track_mut(t).unwrap().mixer.output = Route::Bus(bus);
     let out = render_range(&s, Range::new(0, 4800), 512);
-    assert!((out[0][1000] - 0.5 * gains(0.0, PanLaw::Minus3).0).abs() < 1e-6, "{}", out[0][1000]);
+    assert!((out[0][1000] - 0.5 * gains(-1.0, PanLaw::Minus3).0).abs() < 1e-6, "{}", out[0][1000]);
+}
+
+/// #1718: a mono track into a mono bus, by output or by send, has no panner,
+/// so the pan law applies once, at the aux that feeds the stereo main.
+#[test]
+fn mono_into_mono_bus_passes_at_unity() {
+    for by_send in [false, true] {
+        for pan in [0.0, -1.0, 0.7] {
+            let (mut s, t) = session_with_dc(0.5, 4800);
+            let bus = s.add_bus("Mono", ChannelFormat::Mono);
+            let aux = s.add_track(TrackKind::Aux, ChannelFormat::Mono, Some("M"));
+            s.track_mut(aux).unwrap().mixer.input = Route::Bus(bus);
+            let tr = s.track_mut(t).unwrap();
+            tr.mixer.pan = vec![pan];
+            if by_send {
+                tr.mixer.output = Route::None;
+                let mut send = soundcraft_model::SendSlot::new(Route::Bus(bus));
+                send.level_db = 0.0;
+                send.pan = pan;
+                send.follow_main_pan = false;
+                tr.mixer.sends[0] = Some(send);
+            } else {
+                tr.mixer.output = Route::Bus(bus);
+            }
+            let out = render_range(&s, Range::new(0, 4800), 512);
+            let want = 0.5 * gains(0.0, PanLaw::Minus3).0;
+            for ch in &out[..2] {
+                assert!((ch[1000] - want).abs() < 1e-6, "send {by_send}, pan {pan}: {} vs {want}", ch[1000]);
+            }
+        }
+    }
 }
 
 #[test]

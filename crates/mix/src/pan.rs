@@ -72,6 +72,11 @@ pub(crate) fn build_matrix(src_fmt: ChannelFormat, ns: usize, dst_fmt: ChannelFo
     if ns == 0 || nd == 0 {
         return m;
     }
+    if ns == 1 && nd == 1 {
+        // Mono into mono has no panner: it passes at unity.
+        m[0][0] = 1.0;
+        return m;
+    }
     if nd == 1 {
         // Mono destination: the stereo routing summed at -6 dB.
         let st = build_matrix(src_fmt, ns, ChannelFormat::Stereo, 2, pan, law);
