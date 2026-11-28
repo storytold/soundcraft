@@ -24,9 +24,13 @@ impl SoundApp {
         (fresh && !self.engine.session().tracks.iter().any(|t| t.mixer.record_arm)).then_some(why)
     }
 
-    /// Current transport position (playhead while playing, else the edit insertion).
+    /// Current transport position (playhead while playing or paused, else the edit insertion).
     pub fn position(&self) -> Samples {
-        if self.engine.transport.playing { self.engine.transport.position } else { self.engine.session().edit.selection.start }
+        if self.engine.transport.playing || self.engine.transport.paused {
+            self.engine.transport.position
+        } else {
+            self.engine.session().edit.selection.start
+        }
     }
 
     fn start_play(&mut self, from: Samples, end: Option<Samples>, looped: Option<Range>) {
@@ -39,6 +43,7 @@ impl SoundApp {
         // The loop as the audio engine takes it: a range too short to loop is played once.
         self.play_loop = looped.filter(|l| soundcraft_playback::loops(*l));
         self.engine.transport.playing = true;
+        self.engine.transport.paused = false;
         self.engine.transport.position = from;
         self.last_write_at = i64::MIN;
         // A fresh start resumes the playhead follow: clear a manual hold and
@@ -61,6 +66,7 @@ impl SoundApp {
         self.sim = None;
         self.play_loop = None;
         self.engine.transport.playing = false;
+        self.engine.transport.paused = false;
         self.engine.transport.recording = false;
         let stop_at = self.engine.transport.position;
         // Snapshot the session flags first: `session_mut` below needs a
@@ -89,6 +95,28 @@ impl SoundApp {
             }
         }
         self.edit_layout.follow_hold = false;
+    }
+
+    fn pause_play(&mut self) {
+        if !self.engine.transport.playing && !self.engine.transport.recording {
+            return;
+        }
+        if let Some(p) = &self.player {
+            // Half-speed must not stick across Pause, matching Stop.
+            p.set_speed(1.0);
+            p.stop();
+        }
+        // Space routes to Pause. An open take has to be finished here; leaving
+        // `recording` set would keep the recorder armed after the player stops.
+        if self.engine.transport.recording {
+            self.finish_recording();
+        }
+        self.sim = None;
+        self.engine.transport.playing = false;
+        self.engine.transport.paused = true;
+        self.engine.transport.recording = false;
+        let pos = self.engine.transport.position;
+        self.engine.session_mut().edit.playhead = pos;
     }
 
     fn start_recording(&mut self) {
@@ -400,11 +428,23 @@ impl SoundApp {
     }
 
     /// Play from the selection, honouring loop playback and selection end.
+    /// After Pause, continue from the playhead instead of restarting the selection.
     pub fn play_from_selection(&mut self) {
         let s = self.engine.session();
         let sel = s.edit.selection;
         let preroll = if s.edit.pre_post_roll { s.edit.pre_roll } else { 0 };
         let postroll = if s.edit.pre_post_roll { s.edit.post_roll } else { 0 };
+        if self.engine.transport.paused {
+            let from = self.engine.transport.position.max(0);
+            if s.edit.loop_playback && !sel.is_empty() {
+                self.start_play(from, None, Some(sel));
+            } else if !sel.is_empty() && from < sel.end {
+                self.start_play(from, Some(sel.end + postroll), None);
+            } else {
+                self.start_play(from, None, None);
+            }
+            return;
+        }
         if s.edit.loop_playback && !sel.is_empty() {
             self.start_play(sel.start, None, Some(sel));
         } else if !sel.is_empty() {
@@ -461,10 +501,11 @@ impl SoundApp {
                         self.start_play(at, None, None);
                     }
                 }
-                TransportRequest::Stop | TransportRequest::Pause => self.stop_play(),
+                TransportRequest::Stop => self.stop_play(),
+                TransportRequest::Pause => self.pause_play(),
                 TransportRequest::TogglePlay => {
                     if self.is_playing() {
-                        self.stop_play();
+                        self.pause_play();
                     } else {
                         self.play_from_selection();
                     }
