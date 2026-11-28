@@ -60,7 +60,7 @@ impl eframe::App for App {
         self.0.guarded(|app| app.logic(ctx));
         #[cfg(target_os = "macos")]
         if let Some(menu) = &mut self.3 {
-            menu.sync(&self.0);
+            menu.sync(&mut self.0);
         }
         // Files dropped on the window: audio on an instrument track or a Sampler window loads
         // the sampler; otherwise sessions open and audio/MIDI import.

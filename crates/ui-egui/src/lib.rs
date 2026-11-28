@@ -306,7 +306,7 @@ pub struct SoundApp {
     recent_seen: Option<String>,
     recent_changed: bool,
     /// When the recent sessions were last checked for existence, which list, and the result.
-    recent_checked: Option<(f64, Vec<String>, Vec<bool>)>,
+    recent_checked: Option<(web_time::Instant, Vec<String>, Vec<bool>)>,
     pub player: Option<Player>,
     /// Input capture, opened on first record.
     pub recorder: Option<soundcraft_playback::record::Recorder>,

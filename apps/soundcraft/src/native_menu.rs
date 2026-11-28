@@ -1,11 +1,12 @@
 //! macOS system menu bar. All actions use the same menu dispatch as the egui host.
-use muda::{CheckMenuItem, Menu, MenuEvent, MenuItem, PredefinedMenuItem, Submenu};
+use muda::{CheckMenuItem, Menu, MenuEvent, MenuId, MenuItem, PredefinedMenuItem, Submenu};
 use objc2::MainThreadMarker;
 use objc2_app_kit::NSApplication;
+use soundcraft_ui_egui::menus::dynamic::{self, Action, Contents, Entry};
 use soundcraft_ui_egui::{SoundApp, menus};
 use std::sync::mpsc::{Receiver, channel};
 
-struct Entry {
+struct Leaf {
     item: CheckMenuItem,
     command: Option<String>,
     path: String,
@@ -13,9 +14,21 @@ struct Entry {
     checked: bool,
 }
 
+/// One of `menus::dynamic::SUBMENUS` (Open Recent, Instrument): its Cocoa submenu, rebuilt
+/// whenever what it should show changes.
+struct Dynamic {
+    /// Its index in `SUBMENUS`, and in what `dynamic::submenus` returns.
+    index: usize,
+    submenu: Submenu,
+    /// What it shows now; `None` until first filled, and after a click.
+    shown: Option<Contents>,
+    actions: Vec<(MenuId, Action)>,
+}
+
 pub struct NativeMenu {
     menu: Menu,
-    entries: Vec<Entry>,
+    entries: Vec<Leaf>,
+    dynamic: Vec<Dynamic>,
     events: Receiver<MenuEvent>,
     /// When `sync` last walked the entries; see `SYNC_EVERY`.
     last_sync: Option<std::time::Instant>,
@@ -30,7 +43,7 @@ impl NativeMenu {
     pub fn new(app: &SoundApp, ctx: &egui::Context) -> muda::Result<Self> {
         let menu = Menu::new();
         let (tx, events) = channel();
-        let mut native = Self { menu, entries: Vec::new(), events, last_sync: None };
+        let mut native = Self { menu, entries: Vec::new(), dynamic: Vec::new(), events, last_sync: None };
         let app_menu = Submenu::new("SoundCraft", true);
         native.add_item(app, &app_menu, "About SoundCraft", "", Some("window.about".into()))?;
         native.add_item(app, &app_menu, "Preferences...", "", Some("setup.preferences".into()))?;
@@ -69,6 +82,13 @@ impl NativeMenu {
             } else {
                 submenu.append(&self.add_branch(app, child, aliases)?)?;
             }
+            // After its entry, leaf or submenu (`File > Open` is a submenu), as the egui menu bar
+            // places it. Filled on the first `sync`.
+            for (index, d) in dynamic::SUBMENUS.iter().enumerate().filter(|(_, d)| d.after == child.path) {
+                let dynamic = Submenu::new(soundcraft_ui_egui::localization::text(d.label), false);
+                submenu.append(&dynamic)?;
+                self.dynamic.push(Dynamic { index, submenu: dynamic, shown: None, actions: Vec::new() });
+            }
         }
         Ok(submenu)
     }
@@ -78,7 +98,7 @@ impl NativeMenu {
         // egui owns keyboard shortcuts, so a key press is dispatched only once.
         let item = CheckMenuItem::new(label, enabled, checked, None);
         parent.append(&item)?;
-        self.entries.push(Entry { item, command, path: path.into(), enabled, checked });
+        self.entries.push(Leaf { item, command, path: path.into(), enabled, checked });
         Ok(())
     }
 
@@ -91,6 +111,12 @@ impl NativeMenu {
             {
                 let ns = NSApplication::sharedApplication(mtm);
                 if event.id == "hide" { ns.hide(None) } else { ns.hideOtherApplications(None) }
+            } else if let Some(action) = self.dynamic.iter().flat_map(|d| &d.actions).find(|(id, _)| id == &event.id).map(|(_, a)| a.clone()) {
+                // Cocoa flips a clicked item's check mark: rebuild from the app's state.
+                for d in &mut self.dynamic {
+                    d.shown = None;
+                }
+                dynamic::run(app, &action);
             } else if let Some(entry) = self.entries.iter().find(|e| e.item.id() == &event.id)
                 && let Some(command) = &entry.command
                 && menus::item_state(app, &entry.path, Some(command)).0
@@ -106,7 +132,7 @@ impl NativeMenu {
     }
 
     /// Refresh after engine/control changes; avoid touching Cocoa items with unchanged state.
-    pub fn sync(&mut self, app: &SoundApp) {
+    pub fn sync(&mut self, app: &mut SoundApp) {
         let now = std::time::Instant::now();
         if self.last_sync.is_some_and(|t| now.duration_since(t) < SYNC_EVERY) {
             return;
@@ -129,7 +155,56 @@ impl NativeMenu {
                 entry.checked = checked;
             }
         }
+        let wanted = dynamic::submenus(app);
+        for d in &mut self.dynamic {
+            let Some(want) = wanted.get(d.index) else { continue };
+            if d.shown.as_ref() != Some(want)
+                && let Err(e) = d.rebuild(want)
+            {
+                log::warn!("menu bar: {e}");
+            }
+        }
     }
+}
+
+impl Dynamic {
+    fn rebuild(&mut self, want: &Contents) -> muda::Result<()> {
+        while self.submenu.remove_at(0).is_some() {}
+        self.actions.clear();
+        // Mark it shown first: a failure part way is logged once, not retried every sync.
+        self.shown = Some(want.clone());
+        self.submenu.set_text(literal(&want.title));
+        self.submenu.set_enabled(want.enabled);
+        append(&self.submenu, &want.entries, &mut self.actions)
+    }
+}
+
+/// `text` as muda shows it: muda takes `&` as a mnemonic marker and drops it, so a session or
+/// vendor called "R&B" would read "RB"; `&&` shows one `&`.
+fn literal(text: &str) -> String {
+    text.replace('&', "&&")
+}
+
+/// Adds `entries` to `parent`, noting the action of each item that has one.
+fn append(parent: &Submenu, entries: &[Entry], actions: &mut Vec<(MenuId, Action)>) -> muda::Result<()> {
+    for e in entries {
+        match e {
+            Entry::Item { label, enabled, checked, action } => {
+                let item = CheckMenuItem::new(literal(label), *enabled, *checked, None);
+                parent.append(&item)?;
+                if let Some(a) = action {
+                    actions.push((item.id().clone(), a.clone()));
+                }
+            }
+            Entry::Submenu { label, entries } => {
+                let sub = Submenu::new(literal(label), true);
+                append(&sub, entries, actions)?;
+                parent.append(&sub)?;
+            }
+            Entry::Separator => parent.append(&PredefinedMenuItem::separator())?,
+        }
+    }
+    Ok(())
 }
 
 impl Drop for NativeMenu {
