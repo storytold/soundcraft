@@ -172,9 +172,27 @@ impl Vst3Plugin {
 
     /// Queues an event if space is available. Processing sorts the queue by sample offset.
     fn push_note(&mut self, e: NoteEvent) {
-        let room = if matches!(e, NoteEvent::Off { .. }) { self.notes.capacity() } else { self.notes.capacity().saturating_sub(RELEASE_RESERVE) };
-        if self.notes.len() < room {
-            self.notes.push(e);
+        queue_note(&mut self.notes, e);
+    }
+}
+
+/// Queues `e` if space is available, keeping `RELEASE_RESERVE` free for releases.
+fn queue_note(notes: &mut Vec<NoteEvent>, e: NoteEvent) {
+    let room = if matches!(e, NoteEvent::Off { .. }) { notes.capacity() } else { notes.capacity().saturating_sub(RELEASE_RESERVE) };
+    if notes.len() < room {
+        notes.push(e);
+    }
+}
+
+/// Keeps the pending releases (`keep_releases`) and adds one for every `held` key without one,
+/// at the start of the next block. At most 16 * 128 remain, so the queue never grows.
+fn release_held(notes: &mut Vec<NoteEvent>, held: &[[bool; 128]; 16]) {
+    let pending = keep_releases(notes);
+    for (channel, (held, pending)) in held.iter().zip(pending).enumerate() {
+        for (key, (&held, pending)) in held.iter().zip(pending).enumerate() {
+            if held && !pending {
+                notes.push(NoteEvent::Off { time: 0, channel: channel as u8, key: key as u8 });
+            }
         }
     }
 }
@@ -426,14 +444,7 @@ impl Plugin for Vst3Plugin {
     }
 
     fn all_notes_off(&mut self) {
-        let pending = keep_releases(&mut self.notes);
-        for (channel, (held, pending)) in self.held.iter().zip(pending).enumerate() {
-            for (key, (&held, pending)) in held.iter().zip(pending).enumerate() {
-                if held && !pending {
-                    self.notes.push(NoteEvent::Off { time: 0, channel: channel as u8, key: key as u8 });
-                }
-            }
-        }
+        release_held(&mut self.notes, &self.held);
     }
 
     fn load_state(&mut self, data: &[u8]) -> bool {
@@ -605,19 +616,26 @@ mod tests {
         }
     }
 
-    /// A queue full of releases still has room to release every held key after a reset.
+    /// A queue full of note-ons and releases still has room to release every held key on every
+    /// channel after a reset, without growing.
     #[test]
     fn reset_keeps_room_to_release_every_held_key() {
         let mut notes = Vec::with_capacity(EVENT_CAP);
         for i in 0..EVENT_CAP {
-            notes.push(NoteEvent::Off { channel: 0, time: i as u32, key: (i % 4) as u8 });
+            let (channel, key) = ((i % 16) as u8, (i / 16 % 128) as u8);
+            queue_note(&mut notes, NoteEvent::On { channel, time: i as u32, key, velocity: 1.0 });
+            queue_note(&mut notes, NoteEvent::Off { channel, time: i as u32, key: (i % 4) as u8 });
         }
-        keep_releases(&mut notes);
-        for key in 0..128u8 {
-            notes.push(NoteEvent::Off { channel: 0, time: 0, key });
-        }
-        for key in 0..128u8 {
-            assert!(notes.iter().any(|e| matches!(*e, NoteEvent::Off { key: k, .. } if k == key)), "key {key} was never released");
+        let capacity = notes.capacity();
+        assert_eq!(notes.len(), capacity, "the queue is full");
+        release_held(&mut notes, &[[true; 128]; 16]);
+        assert_eq!(notes.capacity(), capacity, "releasing never grows the queue");
+        assert!(notes.iter().all(|e| matches!(e, NoteEvent::Off { time: 0, .. })), "only releases, at the block start");
+        for channel in 0..16u8 {
+            for key in 0..128u8 {
+                let n = notes.iter().filter(|e| matches!(**e, NoteEvent::Off { channel: c, key: k, .. } if c == channel && k == key)).count();
+                assert_eq!(n, 1, "channel {channel} key {key} released {n} times");
+            }
         }
     }
 }
