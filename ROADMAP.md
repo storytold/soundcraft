@@ -2,7 +2,7 @@
 
 **Stage: pre-alpha** · next: alpha, ~5% and ~110–180 h away (the alpha gate's three failing workflows)
 
-> **Last reviewed:** 2026-11-14 · **Last updated:** 2026-11-18 · **Change:** minor (long takes kept whole; previously minor: strict external-WAV AAF import and MIDI input in the progress log; previously trivial: Frequency Shifter plugin, Command-click target priority and cursor, Command-click automation points, plugin editors on Linux/X11, Cancel Zoom Toggle, side panels in dock columns, Auto Pan stereo balance, Alt-click returns a plugin parameter to its default, Clip List Auto Rename, Strip Silence rectangles, Strip Silence Rename, Strip Silence Extract and Separate, Clip Looping dialog, AudioSuite Vari-Fi speed ramps, Auto Pan plugin, Subharmonic plugin, Ring Modulator plugin, Float32 file headroom) · **Target:** Avid Pro Tools Ultimate 2026.4.1
+> **Last reviewed:** 2026-11-14 · **Last updated:** 2026-11-27 · **Change:** trivial (Languages table: Spanish full; previously trivial: French and Spanish partial; previously minor: long takes kept whole; previously minor: strict external-WAV AAF import and MIDI input in the progress log; previously trivial: Frequency Shifter plugin, Command-click target priority and cursor, Command-click automation points, plugin editors on Linux/X11, Cancel Zoom Toggle, side panels in dock columns, Auto Pan stereo balance, Alt-click returns a plugin parameter to its default, Clip List Auto Rename, Strip Silence rectangles, Strip Silence Rename, Strip Silence Extract and Separate, Clip Looping dialog, AudioSuite Vari-Fi speed ramps, Auto Pan plugin, Subharmonic plugin, Ring Modulator plugin, Float32 file headroom) · **Target:** Avid Pro Tools Ultimate 2026.4.1
 
 SoundCraft is a clean-room, pure-Rust digital audio workstation that aims at full parity with
 Avid Pro Tools, and then beyond it: faster, open, scriptable and agent-controllable. This page is
@@ -87,10 +87,10 @@ Weights and evidence per row: [target-app-parity.md](docs/target-app-parity.md#f
 |---|---|---|---:|
 | English | en | full | 100 % |
 | Simplified Chinese | zh-Hans | none | 0 % |
-| Spanish | es | none (PR #143 open) | 0 % |
+| Spanish | es | full — 100 % of fixed UI strings and engine errors; tests pass | 100 % (native-speaker review done) |
 | Hindi | hi | none | 0 % |
 | Arabic | ar | none | 0 % |
-| French | fr | none (PR #143 open) | 0 % |
+| French | fr | partial — catalog of 1,368 strings, the rest in English | ≈ 62 % |
 | Portuguese (Brazil) | pt-BR | full — 100 % of fixed UI strings; tests pass | 100 % (native-speaker review pending) |
 | Indonesian | id | none | 0 % |
 | Japanese | ja | none | 0 % |
@@ -98,7 +98,7 @@ Weights and evidence per row: [target-app-parity.md](docs/target-app-parity.md#f
 | Korean | ko | none | 0 % |
 | Vietnamese | vi | none | 0 % |
 
-Other languages shipped: 0 complete. Brazilian Portuguese covers the fixed UI strings (100 %), with native-speaker review, CJK/RTL font fallbacks and script shaping still pending. Detail: [localization-parity.md](docs/localization-parity.md).
+Other languages shipped: Spanish complete (fixed UI strings and engine errors, native-speaker review). French is partial (≈ 62 %). Brazilian Portuguese covers the fixed UI strings (100 %), with native-speaker review, CJK/RTL font fallbacks and script shaping still pending. Detail: [localization-parity.md](docs/localization-parity.md).
 
 ## Upcoming
 
@@ -189,6 +189,8 @@ mutated and truncated movies. Field reports from the first public week are track
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-11-27 | trivial | Languages table: Spanish catalog complete with native-speaker review. Estimates unchanged |
+| 2026-11-24 | trivial | Languages table: French and Spanish catalogs, partial (≈ 62 %), PR #143. Estimates unchanged |
 | 2026-11-14 | minor | Strict external-WAV AAF import with bounded property caching; remaining interchange work and readiness estimates unchanged |
 | 2026-11-09 | trivial | Progress log: Frequency Shifter plugin; readiness estimates unchanged |
 | 2026-11-08 | trivial | Command-click breakpoint/control priority and insertion affordance; active-tool drags retained; readiness estimates unchanged |
