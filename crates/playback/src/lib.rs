@@ -176,7 +176,8 @@ pub struct Player {
     pub device_rate: u32,
     /// Output channels the device was opened with (0 for the silent clock).
     pub device_channels: u16,
-    /// The device buffer in frames when one was chosen (`None`: the device default).
+    /// The device buffer in frames when the chosen fixed size opened (`None`: the device default, also when the chosen
+    /// size was refused or the default had to be asked for by size).
     pub device_buffer: Option<u32>,
     /// True when no audio device could be opened (silent clock).
     pub silent: bool,
@@ -215,9 +216,9 @@ impl Player {
         self.side.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
-    /// Open the output device for `session`, trying the requested buffer size before the device default, then build
-    /// the shared player state. If no configuration starts or the device cannot open, fall back to a silent clock at
-    /// the session rate.
+    /// Open the output device for `session`, trying up to three buffer sizes (`devices::buffer_attempts`: the chosen
+    /// fixed size, the device default by size, then cpal's default), then build the shared player state. If no
+    /// configuration starts or the device cannot open, fall back to a silent clock at the session rate.
     fn open(session: Arc<Session>, cfg: &AudioConfig) -> Player {
         let shared = Arc::new(Shared {
             position: AtomicI64::new(0),
