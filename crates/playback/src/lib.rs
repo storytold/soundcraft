@@ -176,7 +176,8 @@ pub struct Player {
     pub device_rate: u32,
     /// Output channels the device was opened with (0 for the silent clock).
     pub device_channels: u16,
-    /// The device buffer in frames when one was chosen (`None`: the device default).
+    /// The device buffer in frames when the chosen fixed size opened (`None`: the device default, also when the chosen
+    /// size was refused or the default had to be asked for by size).
     pub device_buffer: Option<u32>,
     /// True when no audio device could be opened (silent clock).
     pub silent: bool,
@@ -215,9 +216,9 @@ impl Player {
         self.side.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
-    /// Open the output device for `session`, trying the requested buffer size before the device default, then build
-    /// the shared player state. If no configuration starts or the device cannot open, fall back to a silent clock at
-    /// the session rate.
+    /// Open the output device for `session`, trying up to three buffer sizes (`devices::buffer_attempts`: the chosen
+    /// fixed size, the device default by size, then cpal's default), then build the shared player state. If no
+    /// configuration starts or the device cannot open, fall back to a silent clock at the session rate.
     fn open(session: Arc<Session>, cfg: &AudioConfig) -> Player {
         let shared = Arc::new(Shared {
             position: AtomicI64::new(0),
@@ -235,11 +236,11 @@ impl Player {
         };
         match open_device(want, want_ch, cfg) {
             Ok((device, config, format, name)) => {
-                // The chosen buffer size first; if the device refuses it, its default.
-                let mut attempts = vec![config];
-                if config.buffer_size != cpal::BufferSize::Default {
-                    attempts.push(cpal::StreamConfig { buffer_size: cpal::BufferSize::Default, ..config });
-                }
+                // Buffer sizes in order: the chosen fixed size, the device's remembered default, then
+                // cpal's default (`devices::buffer_attempts`).
+                let asked = config.buffer_size;
+                let default = devices::default_buffer(&device, asked, || stream::buffer_now(&device, config, format));
+                let attempts = devices::buffer_attempts(asked, default).into_iter().map(|buffer_size| cpal::StreamConfig { buffer_size, ..config });
                 let opened = first_started(
                     attempts,
                     |config: &cpal::StreamConfig| -> Result<Opened, cpal::Error> {
@@ -262,9 +263,10 @@ impl Player {
                     Some((config, Opened { stream, tx, grx, fault })) => {
                         let rate = config.sample_rate;
                         let channels = usize::from(config.channels);
+                        // The default stays reported as the default when it was asked for by size.
                         let buffer = match config.buffer_size {
-                            cpal::BufferSize::Fixed(n) => Some(n),
-                            cpal::BufferSize::Default => None,
+                            cpal::BufferSize::Fixed(n) if config.buffer_size == asked => Some(n),
+                            _ => None,
                         };
                         log::info!(
                             "audio device: {name} @ {rate} Hz, {channels} ch, {format}, buffer {}",

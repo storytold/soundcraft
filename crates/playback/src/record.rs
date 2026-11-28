@@ -151,6 +151,16 @@ pub struct Recorder {
     seen: (u64, Instant),
 }
 
+/// The buffer size `device` runs its input at now, read from a stream that is built at cpal's
+/// default buffer and dropped without starting. `None` when it cannot be read.
+#[cfg(not(target_os = "freebsd"))]
+fn input_buffer_now(device: &cpal::Device, config: cpal::StreamConfig, format: cpal::SampleFormat) -> Option<u32> {
+    use cpal::traits::{DeviceTrait, StreamTrait};
+    let config = cpal::StreamConfig { buffer_size: cpal::BufferSize::Default, ..config };
+    let stream = device.build_input_stream_raw(config, format, |_: &cpal::Data, _: &cpal::InputCallbackInfo| {}, |_| {}, None).ok()?;
+    stream.buffer_size().ok()
+}
+
 /// The input stream: device samples are converted to f32 in a scratch buffer allocated here (so
 /// the callback never allocates), then feed the monitor ring and, while armed, the capture.
 #[cfg(not(target_os = "freebsd"))]
@@ -270,16 +280,25 @@ impl Recorder {
             cpal::SampleFormat::I16 => build_input::<i16>(&device, config, &shared, &monitor),
             _ => build_input::<f32>(&device, config, &shared, &monitor),
         };
-        // The chosen buffer size first; if the device refuses it, its default.
-        let stream = match build(config) {
-            Ok(s) => s,
-            Err(e) if config.buffer_size != cpal::BufferSize::Default => {
-                log::warn!("cannot open the input with buffer {:?}: {e}; using the device default", config.buffer_size);
-                config.buffer_size = cpal::BufferSize::Default;
-                build(config).map_err(|e| e.to_string())?
+        // Buffer sizes in order: the chosen fixed size, the device's remembered default, then
+        // cpal's default (`devices::buffer_attempts`).
+        let asked = config.buffer_size;
+        let default = crate::devices::default_buffer(&device, asked, || input_buffer_now(&device, config, format));
+        let mut stream = Err("no buffer size to try".to_string());
+        for buffer_size in crate::devices::buffer_attempts(asked, default) {
+            config.buffer_size = buffer_size;
+            match build(config) {
+                Ok(s) => {
+                    stream = Ok(s);
+                    break;
+                }
+                Err(e) => {
+                    log::warn!("cannot open the input with buffer {buffer_size:?}: {e}");
+                    stream = Err(e.to_string());
+                }
             }
-            Err(e) => return Err(e.to_string()),
-        };
+        }
+        let stream = stream?;
         stream.play().map_err(|e| e.to_string())?;
         let seen = (0, Instant::now());
         Ok(Recorder { monitor, shared, _stream: Some(stream), device_name: name, sample_rate: config.sample_rate, channels, writer: None, seen })
