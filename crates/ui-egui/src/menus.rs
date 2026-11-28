@@ -71,6 +71,7 @@ pub const UI_COMMANDS: &[(&str, &str, &str, Option<&str>)] = &[
     ("window.import_aaf", "Import Session Data (AAF)", "", None),
     ("window.playback_engine", "Playback Engine", "", None),
     ("ui.audio_device", "Audio Device", "", None),
+    ("ui.mono_listen", "Mono Listen", "", None),
     ("window.io_setup", "I/O Setup", "", None),
     ("window.shortcuts", "Keyboard Shortcuts", "", None),
     ("view.mix_section", "Mix Window View", "", None),
@@ -637,6 +638,16 @@ pub fn run_ui_command(app: &mut SoundApp, id: &str, p: &Value) -> Option<Result<
         json!({"value": *v})
     };
     let r = match id {
+        "ui.mono_listen" => {
+            if let Some(value) = p.get("value") {
+                let Some(enabled) = value.as_bool() else { return Some(Err("`value` must be a boolean".into())) };
+                app.mono_listen = enabled;
+                if let Some(player) = &app.player {
+                    player.set_mono_listen(enabled);
+                }
+            }
+            json!({"value": app.mono_listen})
+        }
         "ui.language" => {
             let Some(tag) = p.get("language").and_then(Value::as_str) else {
                 return Some(Ok(json!({"language": app.ui.language.id()})));

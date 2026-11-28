@@ -3,6 +3,41 @@ use serde_json::json;
 use soundcraft_model::TrackId;
 
 #[test]
+fn mono_listen_leaves_the_session_and_offline_bounce_stereo() {
+    use craft_audio::AudioBuffer;
+    use soundcraft_model::{ChannelFormat, Clip, FileFormat, TrackKind};
+
+    let mut engine = soundcraft_engine::Engine::default();
+    let s = engine.session_mut();
+    s.edit.click = false;
+    let track = s.add_track(TrackKind::Audio, ChannelFormat::Stereo, None);
+    let audio = AudioBuffer { sample_rate: s.sample_rate.hz(), channels: vec![vec![0.5; 4800], vec![0.25; 4800]] };
+    let source = soundcraft_engine::io::add_source(s, "Source", audio, None, FileFormat::Wav);
+    let clip = Clip::audio(s.new_clip_id(), "Source", source, 0, 0, 4800);
+    soundcraft_engine::edit::place_clip(s, track, clip);
+    let mut app = SoundApp::new(engine, None, Services::default());
+    assert_eq!(app.run("ui.mono_listen", json!({})).unwrap()["value"], false);
+
+    let dir = std::env::temp_dir().join(format!("soundcraft-mono-listen-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let bounce = |app: &mut SoundApp, name: &str| {
+        let path = dir.join(name);
+        app.run("file.bounce_mix", json!({"path": path.to_string_lossy(), "start": 0, "end": 128, "bit_depth": "32f", "dither": false})).unwrap();
+        let bytes = std::fs::read(path).unwrap();
+        craft_audio::decode(&bytes, Some("wav")).unwrap().1.channels
+    };
+
+    let stereo = bounce(&mut app, "stereo.wav");
+    assert_ne!(stereo[0], stereo[1]);
+    let before = app.engine.session_arc();
+    assert_eq!(app.run("ui.mono_listen", json!({"value": true})).unwrap()["value"], true);
+    assert_eq!(app.run("ui.mono_listen", json!({})).unwrap()["value"], true);
+    assert!(std::sync::Arc::ptr_eq(&before, &app.engine.session_arc()));
+    assert_eq!(bounce(&mut app, "monitor-mono.wav"), stereo);
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
 fn new_session_stops_playback_and_the_old_clock() {
     for (command, params) in [
         ("session.new", json!({"name": "New project", "sample_rate": 96_000})),

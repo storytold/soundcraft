@@ -308,6 +308,8 @@ pub struct SoundApp {
     /// When the recent sessions were last checked for existence, which list, and the result.
     recent_checked: Option<(f64, Vec<String>, Vec<bool>)>,
     pub player: Option<Player>,
+    /// A live monitor setting kept for the lifetime of the app.
+    mono_listen: bool,
     /// Input capture, opened on first record.
     pub recorder: Option<soundcraft_playback::record::Recorder>,
     record_start: Samples,

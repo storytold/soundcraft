@@ -108,6 +108,11 @@ files it was given rather than guarding against other software on the computer.
 
 Resources: `soundcraft://session` (full session JSON), `soundcraft://commands`.
 
+The **Mono** switch beside the main-output meter folds live audio to the front monitor pair.
+With a connection to the app, call `execute` with `ui.mono_listen` and `{"value":true}`
+to enable it, or omit `value` to read the switch. Session files and offline bounces retain
+the session's channel layout.
+
 ## Conventions
 
 - Programmatic calls never open dialogs; empty params act on the current selection.

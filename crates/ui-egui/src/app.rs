@@ -37,6 +37,7 @@ impl SoundApp {
             recent_checked: None,
             engine,
             player,
+            mono_listen: false,
             recorder: None,
             record_start: 0,
             punch: None,

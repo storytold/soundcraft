@@ -147,6 +147,45 @@ fn spike_session(spike_at: usize) -> (Arc<Shared>, AudioState, std::sync::mpsc::
 }
 
 #[test]
+fn mono_listen_folds_live_stereo_and_restores_stereo_when_disabled() {
+    use soundcraft_model::{ChannelFormat, Clip, SourceAudio, SourceId, TrackKind};
+
+    let mut s = Session::default();
+    s.edit.click = false;
+    let track = s.add_track(TrackKind::Audio, ChannelFormat::Stereo, None);
+    let source = SourceId(5);
+    let audio = craft_audio::AudioBuffer { sample_rate: 48_000, channels: vec![vec![0.5; 4800], vec![0.25; 4800]] };
+    s.pool.insert(source, Arc::new(SourceAudio::new(audio)));
+    let clip = Clip::audio(s.new_clip_id(), "Stereo source", source, 0, 0, 4800);
+    s.track_mut(track).unwrap().playlist_mut().unwrap().clips.push(clip);
+    let shared = Arc::new(Shared {
+        position: AtomicI64::new(0),
+        playing: AtomicBool::new(false),
+        speed: AtomicU32::new(1000),
+        meters: Mutex::new(MeterSnapshot::default()),
+    });
+    let (tx, rx) = channel();
+    let mut state = AudioState::new(rx, shared, Arc::new(s), 48_000.0, channel().0);
+    tx.send(Cmd::Play { from: 0, end: None, looped: None }).unwrap();
+    let render = |state: &mut AudioState| {
+        let mut out = [0.0; 64];
+        state.fill(&mut out, 2);
+        [out[62], out[63]]
+    };
+
+    let stereo = render(&mut state);
+    assert!((stereo[0] - 0.5).abs() < 1e-6 && (stereo[1] - 0.25).abs() < 1e-6, "{stereo:?}");
+
+    tx.send(Cmd::MonoListen(true)).unwrap();
+    let mono = render(&mut state);
+    let expected = (stereo[0] + stereo[1]) * 0.5;
+    assert!(mono.iter().all(|sample| (sample - expected).abs() < 1e-6), "{mono:?}");
+
+    tx.send(Cmd::MonoListen(false)).unwrap();
+    assert_eq!(render(&mut state), stereo);
+}
+
+#[test]
 fn a_spike_in_one_block_among_quiet_ones_reaches_the_ui() {
     // Eight 512-frame blocks per callback, as between two UI polls; the spike is in the 3rd.
     let (shared, mut st, _tx, t) = spike_session(2 * 512 + 100);
