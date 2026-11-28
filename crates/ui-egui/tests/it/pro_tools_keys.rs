@@ -202,6 +202,7 @@ fn the_piano_roll_leaves_modified_arrows_to_the_shortcuts() {
     app.ui.show_midi_editor = true;
     app.run("edit.select", json!({"tracks": ["Keys"]})).unwrap();
     let ctx = egui::Context::default();
+    soundcraft_ui_egui::framework::install_headless(&ctx);
     let frame = |app: &mut SoundApp, events: Vec<Event>| {
         let raw = RawInput { screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(1600.0, 1000.0))), events, ..Default::default() };
         ctx.run_ui(raw, |ui| {
@@ -241,6 +242,7 @@ fn the_piano_roll_selection_follows_notes_the_arrows_move_past_others() {
     app.ui.show_midi_editor = true;
     app.run("edit.select", json!({"tracks": ["Keys"]})).unwrap();
     let ctx = egui::Context::default();
+    soundcraft_ui_egui::framework::install_headless(&ctx);
     let frame = |app: &mut SoundApp, events: Vec<Event>| {
         let raw = RawInput { screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(1600.0, 1000.0))), events, ..Default::default() };
         ctx.run_ui(raw, |ui| {
