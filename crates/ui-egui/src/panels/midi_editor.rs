@@ -4,12 +4,17 @@ use crate::SoundApp;
 use crate::theme::{Tokens, bold, regular};
 use egui::{Align2, Color32, Rect, Sense, Stroke, StrokeKind, Ui, pos2, vec2};
 use serde_json::json;
-use soundcraft_model::{ClipContent, ClipId, Tool};
+use soundcraft_model::{ClipContent, ClipId, Session, Tool, TrackId};
 use soundcraft_time::TICKS_PER_QUARTER;
 
 const KEY_W: f32 = 48.0;
 const ROW_H: f32 = 9.0;
 const VEL_H: f32 = 64.0;
+/// Roll rows for white and black keys.
+const ROW_WHITE: Color32 = Color32::from_rgb(40, 40, 42);
+const ROW_BLACK: Color32 = Color32::from_rgb(30, 30, 32);
+/// WCAG non-text minimum: reference-note outlines keep it against the lighter roll row.
+const REFERENCE_CONTRAST: f64 = 3.0;
 
 #[derive(Debug, Clone, Default)]
 pub struct MidiEditorState {
@@ -62,6 +67,57 @@ pub fn target_clip(app: &SoundApp) -> Option<ClipId> {
         .find(|c| c.range().contains(at) || c.range().overlaps(&s.edit.selection))
         .or_else(|| s.tracks.iter().filter(|t| s.edit.selected_tracks.contains(&t.id) && t.kind.is_midi()).flat_map(|t| t.clips().iter()).next())
         .map(|c| c.id)
+}
+
+/// A note from a reference track, in ticks from the edited clip's start, cut to the edited clip.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct RefNote {
+    color: [u8; 3],
+    start: i64,
+    length: i64,
+    pitch: u8,
+}
+
+/// The notes of the reference tracks' MIDI clips that sound inside the edited clip
+/// (`edited` on `edited_track`, starting at `base_tick` and `len_ticks` long), placed at their own
+/// time. The edited track adds nothing: its notes are the ones being edited.
+fn reference_notes(s: &Session, edited: ClipId, edited_track: TrackId, base_tick: i64, len_ticks: i64) -> Vec<RefNote> {
+    let Some((_, clip)) = s.find_clip(edited) else { return Vec::new() };
+    let range = clip.range();
+    let sr = s.sample_rate;
+    let mut out = Vec::new();
+    for id in soundcraft_engine::cmd::midi_reference_tracks(s) {
+        let Some(track) = s.track(id).filter(|t| t.id != edited_track) else { continue };
+        for other in track.clips().iter().filter(|c| c.range().overlaps(&range)) {
+            let ClipContent::Midi { sequence } = &other.content else { continue };
+            let start = s.tempo.samples_to_ticks(other.start, sr);
+            let own_len = s.tempo.samples_to_ticks(other.end(), sr).saturating_sub(start);
+            let offset = start.saturating_sub(base_tick);
+            for n in &sequence.notes {
+                // Cut to the other clip, then to the edited one.
+                let from = n.start.max(0).saturating_add(offset).max(0);
+                let to = n.start.saturating_add(n.length).min(own_len).saturating_add(offset).min(len_ticks);
+                if to > from {
+                    out.push(RefNote { color: track.color, start: from, length: to - from, pitch: n.pitch });
+                }
+            }
+        }
+    }
+    out
+}
+
+/// Reference notes: outlines in their track's colour, kept visible on the roll, over a faint fill,
+/// so they read as different from the edited notes' solid fill without relying on colour.
+fn draw_reference_notes(painter: &egui::Painter, g: &Roll<'_>, notes: &[RefNote]) {
+    let bg = craft_theme::Rgba::rgb(ROW_WHITE.r(), ROW_WHITE.g(), ROW_WHITE.b());
+    for n in notes {
+        let [r, gr, b] = n.color;
+        let craft_theme::Rgba([r, gr, b, _]) = craft_theme::ensure_contrast(craft_theme::Rgba::rgb(r, gr, b), bg, REFERENCE_CONTRAST);
+        let ink = Color32::from_rgb(r, gr, b);
+        let y = g.y_of(i32::from(n.pitch));
+        let rect = Rect::from_min_max(pos2(g.x_of(n.start), y + 1.0), pos2(g.x_of(n.start + n.length).max(g.x_of(n.start) + 3.0), y + ROW_H - 1.0));
+        painter.rect(rect, 2.0, ink.gamma_multiply(0.2), Stroke::new(1.5, ink), StrokeKind::Inside);
+    }
 }
 
 fn is_black(p: i32) -> bool {
@@ -136,18 +192,18 @@ pub fn show(app: &mut SoundApp, ui: &mut Ui) {
     let Some((track, clip)) = app.engine.session().find_clip(cid).map(|(t, c)| (t, c.clone())) else { return };
     let ClipContent::Midi { sequence } = &clip.content else { return };
     let track_color = app.engine.session().track(track).map_or([120, 120, 200], |t| t.color);
-    ui.painter().text(
-        pos2(header.min.x + 110.0, header.center().y),
-        Align2::LEFT_CENTER,
-        format!(
-            "{} · {} notes · {} selected · Pencil: add · drag: move/select · arrows: move · Delete: remove",
-            clip.name,
-            sequence.notes.len(),
-            app.midi.selected.len()
-        ),
-        regular(11.0),
-        t.text_dim,
+    let reference = reference_names(app.engine.session(), track);
+    let mut summary = format!(
+        "{} · {} notes · {} selected · Pencil: add · drag: move/select · arrows: move · Delete: remove",
+        clip.name,
+        sequence.notes.len(),
+        app.midi.selected.len()
     );
+    if let Some(names) = &reference {
+        summary.push_str(" · ");
+        summary.push_str(&crate::localized_format!("Also showing: {names}", names = names));
+    }
+    ui.painter().text(pos2(header.min.x + 110.0, header.center().y), Align2::LEFT_CENTER, &summary, regular(11.0), t.text_dim);
     let grid_ticks = grid_ticks_of(app);
     midi_toolbar(app, ui, header, cid, grid_ticks);
     let s = app.engine.session_arc();
@@ -174,12 +230,28 @@ pub fn show(app: &mut SoundApp, ui: &mut Ui) {
     let g = Roll { sequence, roll, keys, vel, px_per_tick, len_ticks, scroll, grid_ticks, rows };
     let painter = ui.painter().with_clip_rect(roll.union(keys));
     draw_roll_background(&painter, &g);
+    // Other tracks' notes behind the edited ones; they take no part in editing.
+    draw_reference_notes(&painter, &g, &reference_notes(&s, cid, track, base_tick, len_ticks));
     // Notes.
     let base = egui::Color32::from_rgb(track_color[0], track_color[1], track_color[2]);
     draw_notes(app, &painter, &g, base);
-    note_pointer(app, ui, &g, cid, s.edit.tool == Tool::Pencil);
+    let roll_label = match &reference {
+        Some(names) => crate::localized_format!("MIDI Editor: {clip}, also showing: {names}", clip = clip.name, names = names),
+        None => crate::localized_format!("MIDI Editor: {clip}", clip = clip.name),
+    };
+    note_pointer(app, ui, &g, cid, s.edit.tool == Tool::Pencil, &roll_label);
     note_keys(app, ui, &g, cid);
     velocity_lane(app, ui, &g, cid, base, full.min.x + 6.0);
+}
+
+/// The reference tracks shown behind `edited_track`'s clip, by name, or `None` when there are none.
+fn reference_names(s: &Session, edited_track: TrackId) -> Option<String> {
+    let names: Vec<&str> = soundcraft_engine::cmd::midi_reference_tracks(s)
+        .into_iter()
+        .filter(|id| *id != edited_track)
+        .filter_map(|id| s.track(id).map(|t| t.name.as_str()))
+        .collect();
+    (!names.is_empty()).then(|| names.join(", "))
 }
 
 /// The empty state: a prompt that adds a clip on the selected MIDI track when clicked.
@@ -256,7 +328,7 @@ fn draw_roll_background(painter: &egui::Painter, g: &Roll<'_>) {
         let pitch = top - r;
         let y = g.y_of(pitch);
         let row = Rect::from_min_size(pos2(roll.min.x, y), vec2(roll.width(), ROW_H));
-        painter.rect_filled(row, 0.0, if is_black(pitch) { Color32::from_rgb(30, 30, 32) } else { Color32::from_rgb(40, 40, 42) });
+        painter.rect_filled(row, 0.0, if is_black(pitch) { ROW_BLACK } else { ROW_WHITE });
         let key = Rect::from_min_size(pos2(keys.min.x, y), vec2(KEY_W - 2.0, ROW_H - 1.0));
         painter.rect_filled(key, 1.0, if is_black(pitch) { Color32::from_rgb(20, 20, 20) } else { Color32::from_rgb(225, 225, 225) });
         if pitch.rem_euclid(12) == 0 && (0..=127).contains(&pitch) {
@@ -339,10 +411,11 @@ fn draw_notes(app: &SoundApp, painter: &egui::Painter, g: &Roll<'_>, base: Color
 }
 
 /// Pointer interaction on the roll: note and band selection, drags and clicks.
-fn note_pointer(app: &mut SoundApp, ui: &mut Ui, g: &Roll<'_>, cid: ClipId, pencil: bool) {
+fn note_pointer(app: &mut SoundApp, ui: &mut Ui, g: &Roll<'_>, cid: ClipId, pencil: bool, label: &str) {
     let Roll { sequence, roll, px_per_tick, grid_ticks, .. } = *g;
     // Interaction.
     let resp = ui.interact(roll, ui.scope_id().with(("roll", cid.0)), Sense::click_and_drag());
+    resp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Canvas, true, label));
     if resp.drag_started()
         && let Some(p) = resp.interact_pointer_pos()
     {
@@ -522,6 +595,40 @@ mod tests {
         assert_eq!((step % dotted, step % (TICKS_PER_QUARTER * 4)), (0, 0), "lines are snap positions on bars: {step}");
         assert!((len / step) <= 251, "{} lines", len / step);
         assert!(grid_stride(0, 0.0) >= TICKS_PER_QUARTER * 4, "a zero grid or width still advances");
+    }
+
+    #[test]
+    fn reference_notes_keep_their_time_inside_the_edited_clip_only() {
+        use soundcraft_model::{ChannelFormat, TrackKind};
+        let mut e = soundcraft_engine::Engine::default();
+        let keys = e.session_mut().add_track(TrackKind::Instrument, ChannelFormat::Stereo, Some("Keys"));
+        let pad = e.session_mut().add_track(TrackKind::Midi, ChannelFormat::Stereo, Some("Pad"));
+        let sr = e.session().sample_rate;
+        let bar = e.session().tempo.tick_to_samples(TICKS_PER_QUARTER * 4, sr);
+        let clip = |e: &mut soundcraft_engine::Engine, track: TrackId, start, end| {
+            ClipId(e.execute("midi.new_clip", &json!({"track": track.0, "start": start, "end": end})).unwrap()["clip"].as_u64().unwrap())
+        };
+        // Keys edits bars 2–3; Pad's clip runs over bars 1–4.
+        let edited = clip(&mut e, keys, bar, 3 * bar);
+        let other = clip(&mut e, pad, 0, 4 * bar);
+        let q = TICKS_PER_QUARTER;
+        for (pitch, start) in [(60, 0), (64, 5 * q), (67, 11 * q), (72, 13 * q)] {
+            e.execute("midi.note_add", &json!({"clip": other.0, "pitch": pitch, "start_ticks": start, "length_ticks": 2 * q})).unwrap();
+        }
+        e.execute("midi.note_add", &json!({"clip": edited.0, "pitch": 48, "start_ticks": 0})).unwrap();
+        let s = e.session();
+        let (base, len) = (s.tempo.samples_to_ticks(bar, sr), 8 * q);
+        assert!(reference_notes(s, edited, keys, base, len).is_empty(), "no reference tracks yet");
+        e.execute("midi.reference_tracks", &json!({"tracks": [pad.0, keys.0]})).unwrap();
+        let notes = reference_notes(e.session(), edited, keys, base, len);
+        // Only Pad's notes: Keys is the edited track. The bar-1 and bar-4 notes fall outside.
+        assert_eq!(notes.iter().map(|n| n.pitch).collect::<Vec<_>>(), [64, 67]);
+        for n in &notes {
+            assert!(n.start >= 0 && n.start + n.length <= len, "{n:?} is outside the edited clip");
+        }
+        // Each keeps its own time: a bar earlier relative to the edited clip than to its own.
+        assert_eq!(notes[0].start, 5 * q - 4 * q);
+        assert!(notes[1].length < 2 * q, "the note crossing the clip's end is cut short");
     }
 
     #[test]

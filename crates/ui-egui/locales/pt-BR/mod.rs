@@ -21,6 +21,7 @@ pub(super) fn translate(source: &str) -> Option<&'static str> {
             "Adiciona dither triangular de ±1 LSB ao gravar arquivos de 16 ou 24 bits. Deixe desativado se a cadeia master já aplicar dither."
         }
         "All" => "Tudo",
+        "Also showing: {names}" => "Mostrando também: {names}",
         "All audio clips checked" => "Todos os clipes de áudio verificados",
         "All audio clips have loaded media within source bounds." => "Todos os clipes de áudio têm mídia carregada dentro dos limites da origem.",
         "An open-source digital audio workstation from the ArtCraft team." => {
@@ -252,6 +253,7 @@ pub(super) fn translate(source: &str) -> Option<&'static str> {
         "Show grid lines" => "Mostrar linhas da grade",
         "Show in the Mix window" => "Mostrar na janela Mix",
         "Show track names" => "Mostrar nomes das faixas",
+        "Show Notes in MIDI Editor: {name}" => "Mostrar notas no Editor MIDI: {name}",
         "Smart Tool (F6+F7 / F7+F8)" => "Ferramenta inteligente (F6+F7 / F7+F8)",
         "Sort" => "Ordenar",
         "SoundCraft" => "SoundCraft",
@@ -311,6 +313,8 @@ pub(super) fn translate(source: &str) -> Option<&'static str> {
         "Tempo" => "Andamento",
         "MIDI in: all" => "Entrada MIDI: todas",
         "MIDI EDITOR" => "EDITOR MIDI",
+        "MIDI Editor: {clip}" => "Editor MIDI: {clip}",
+        "MIDI Editor: {clip}, also showing: {names}" => "Editor MIDI: {clip}, mostrando também: {names}",
         "Velocity" => "Velocidade",
         "movie missing from session" => "vídeo ausente da sessão",
         "Video Track Offline" => "Faixa de vídeo indisponível",

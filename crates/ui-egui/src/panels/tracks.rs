@@ -25,6 +25,27 @@ fn drag_track(app: &mut SoundApp, ui: &Ui, row: Rect, id: u64, dropped: bool) {
     }
 }
 
+/// The toggle at the right of a MIDI track's row that shows its notes, read-only, behind the clip
+/// in the MIDI Editor. A small note drawn filled when on and as an outline when off, so the state
+/// does not rest on colour alone. Returns the area it takes.
+fn reference_toggle(app: &mut SoundApp, ui: &Ui, row: Rect, id: u64, name: &str, on: bool) -> Rect {
+    let t = Tokens::current();
+    let area = Rect::from_center_size(pos2(row.max.x - 10.0, row.center().y), vec2(16.0, row.height()));
+    let label = crate::localized_format!("Show Notes in MIDI Editor: {name}", name = name);
+    let resp = ui.interact(area, ui.scope_id().with(("midi_reference", id)), Sense::click());
+    resp.widget_info(|| egui::WidgetInfo::selected(egui::Role::CheckBox, true, on, &label));
+    let note = Rect::from_center_size(area.center(), vec2(10.0, 5.0));
+    let ink = if on || resp.hovered() || resp.has_focus() { t.text } else { t.text_dim };
+    ui.painter().rect(note, 1.5, if on { ink } else { Color32::TRANSPARENT }, Stroke::new(1.0, ink), egui::StrokeKind::Inside);
+    if resp.has_focus() {
+        ui.painter().rect_stroke(area, 2.0, Stroke::new(1.0, t.accent), egui::StrokeKind::Inside);
+    }
+    if resp.on_hover_text(&label).clicked() {
+        let _ = app.run("midi.reference_tracks", json!({"tracks": [id]}));
+    }
+    area
+}
+
 /// The strip down the Tracks panel's right edge: the lists' scroll bars, and a clear line between
 /// the panel and the window beside it.
 const GUTTER_W: f32 = 10.0;
@@ -46,8 +67,9 @@ pub fn tracks_and_groups(app: &mut SoundApp, ui: &mut Ui) {
     if crate::widgets::icon_button(&mut ui.new_child(egui::UiBuilder::new().max_rect(plus)), plus.size(), "plus", false, &tip).clicked() {
         let _ = app.dialogs.open_for_command(&app.engine, "track.new");
     }
-    let tracks: Vec<(u64, String, bool, [u8; 3], bool, usize)> = {
+    let tracks: Vec<(u64, String, bool, [u8; 3], bool, usize, Option<bool>)> = {
         let s = app.engine.session();
+        let reference = soundcraft_engine::cmd::midi_reference_tracks(s);
         s.tracks
             .iter()
             .map(|x| {
@@ -65,7 +87,9 @@ pub fn tracks_and_groups(app: &mut SoundApp, ui: &mut Ui) {
                     depth += 1;
                     current = folder.folder;
                 }
-                (x.id.0, x.name.clone(), !x.hidden, x.color, s.edit.selected_tracks.contains(&x.id), depth)
+                // MIDI tracks carry their "show notes in the MIDI Editor" state.
+                let midi = x.kind.is_midi().then(|| reference.contains(&x.id));
+                (x.id.0, x.name.clone(), !x.hidden, x.color, s.edit.selected_tracks.contains(&x.id), depth, midi)
             })
             .collect()
     };
@@ -75,7 +99,7 @@ pub fn tracks_and_groups(app: &mut SoundApp, ui: &mut Ui) {
         .auto_shrink([false, false])
         .scroll_bar_visibility(hidden);
     let out = lists.show(ui, |ui| {
-        for (id, name, shown, color, sel, depth) in tracks {
+        for (id, name, shown, color, sel, depth, reference) in tracks {
             let (r, resp) = ui.allocate_exact_size(vec2(ui.available_width(), 17.0), Sense::click_and_drag());
             resp.widget_info(|| egui::WidgetInfo::selected(egui::Role::Button, true, sel, &name));
             if sel {
@@ -88,7 +112,14 @@ pub fn tracks_and_groups(app: &mut SoundApp, ui: &mut Ui) {
                 let _ = app.run("track.hide", json!({"tracks": [id], "hidden": shown}));
             }
             ui.painter().rect_filled(Rect::from_min_size(pos2(r.min.x + 20.0, r.min.y + 3.0), vec2(4.0, 11.0)), 0.0, rgb(color));
-            ui.painter().with_clip_rect(r).text(
+            let name_clip = match reference {
+                Some(on) => {
+                    let toggle = reference_toggle(app, ui, r, id, &name, on);
+                    r.with_max_x(toggle.min.x - 2.0)
+                }
+                None => r,
+            };
+            ui.painter().with_clip_rect(name_clip).text(
                 // Indent stops growing at eight levels so a deep name keeps room in the column.
                 pos2(r.min.x + 30.0 + depth.min(8) as f32 * 10.0, r.center().y),
                 Align2::LEFT_CENTER,
