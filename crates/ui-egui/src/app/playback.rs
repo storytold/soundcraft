@@ -673,7 +673,8 @@ mod tests {
     }
 
     /// Record is refused on a lost output with an armed track, not only Play: no pass starts,
-    /// so no take is made (on Windows only the Play refusal had been seen).
+    /// so no take is made (before, on Windows, Record on a stalled output made a take while
+    /// nothing moved).
     #[test]
     fn record_is_refused_on_a_lost_output_with_an_armed_track() {
         for stalled in [false, true] {
