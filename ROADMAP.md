@@ -95,6 +95,7 @@ Weights and evidence per row: [target-app-parity.md](docs/target-app-parity.md#f
 | Indonesian | id | none | 0 % |
 | Japanese | ja | none | 0 % |
 | German | de | none | 0 % |
+| Georgian | ka | full — every fixed UI string; tests pass | 100 % (native-speaker review pending) |
 | Korean | ko | none | 0 % |
 | Vietnamese | vi | none | 0 % |
 
@@ -189,6 +190,7 @@ mutated and truncated movies. Field reports from the first public week are track
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-11-17 | trivial | Languages table: Georgian (ka) complete for fixed UI strings. Estimates unchanged |
 | 2026-11-14 | minor | Strict external-WAV AAF import with bounded property caching; remaining interchange work and readiness estimates unchanged |
 | 2026-11-09 | trivial | Progress log: Frequency Shifter plugin; readiness estimates unchanged |
 | 2026-11-08 | trivial | Command-click breakpoint/control priority and insertion affordance; active-tool drags retained; readiness estimates unchanged |

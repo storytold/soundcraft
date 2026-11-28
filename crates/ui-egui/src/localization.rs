@@ -1,5 +1,7 @@
 //! Language selection and source-language fallback for UI strings.
 
+#[path = "../locales/ka/mod.rs"]
+mod ka;
 #[path = "../locales/pt-BR/mod.rs"]
 mod pt_br;
 
@@ -17,17 +19,20 @@ pub enum Language {
     English,
     #[serde(rename = "pt-BR")]
     PortugueseBrazil,
+    #[serde(rename = "ka")]
+    Georgian,
 }
 
 impl Language {
     /// All supported languages, in the order they are shown in the language menu.
-    pub const ALL: [Self; 2] = [Self::English, Self::PortugueseBrazil];
+    pub const ALL: [Self; 3] = [Self::English, Self::PortugueseBrazil, Self::Georgian];
 
     /// Stable language tag used in preferences and control commands.
     pub const fn id(self) -> &'static str {
         match self {
             Self::English => "en",
             Self::PortugueseBrazil => "pt-BR",
+            Self::Georgian => "ka",
         }
     }
 
@@ -36,6 +41,7 @@ impl Language {
         match self {
             Self::English => "English",
             Self::PortugueseBrazil => "Portuguese (Brazil)",
+            Self::Georgian => "Georgian",
         }
     }
 
@@ -47,7 +53,7 @@ impl Language {
     pub fn localize_decimal(self, number: &str) -> String {
         match self {
             Self::English => number.to_owned(),
-            Self::PortugueseBrazil => number.replace('.', ","),
+            Self::PortugueseBrazil | Self::Georgian => number.replace('.', ","),
         }
     }
 
@@ -56,6 +62,7 @@ impl Language {
         match self {
             Self::English => source,
             Self::PortugueseBrazil => pt_br::translate(source).unwrap_or(source),
+            Self::Georgian => ka::translate(source).unwrap_or(source),
         }
     }
 }
@@ -89,6 +96,7 @@ fn error_text_in(language: Language, message: &str, depth: usize) -> String {
     let templates: &[(&str, &str)] = match language {
         Language::English => &[],
         Language::PortugueseBrazil => pt_br::ERROR_TEMPLATES,
+        Language::Georgian => ka::ERROR_TEMPLATES,
     };
     let mut best: Option<(usize, &str, Vec<(String, String)>)> = None;
     for (template, translation) in templates {
@@ -354,6 +362,7 @@ mod tests {
             assert_eq!(decoded, language);
         }
         assert_eq!(Language::parse(" PT-br "), Some(Language::PortugueseBrazil));
+        assert_eq!(Language::parse(" KA "), Some(Language::Georgian));
         assert_eq!(Language::parse("fr"), None);
     }
 
@@ -389,6 +398,15 @@ mod tests {
     }
 
     #[test]
+    fn georgian_catalog_covers_every_menu_label() {
+        for path in include_str!("../../engine/catalog/menus.txt").lines() {
+            for label in path.split(" > ").map(str::trim).filter(|label| !label.is_empty()) {
+                assert!(super::ka::translate(label).is_some(), "missing ka menu label: {label}");
+            }
+        }
+    }
+
+    #[test]
     fn engine_errors_are_translated_with_their_values() {
         assert_eq!(error_text("select a clip"), "select a clip");
         let _scope = enter(Language::PortugueseBrazil);
@@ -400,6 +418,13 @@ mod tests {
         let ratio = error_text("stretch ratio 12.500 is outside 0.1..10");
         assert!(ratio.contains("12,500"), "{ratio}");
         assert_eq!(error_text("some unknown library failure"), "some unknown library failure");
+    }
+
+    #[test]
+    fn georgian_numbers_use_a_decimal_comma_only_with_a_precision() {
+        let _scope = enter(Language::Georgian);
+        assert_eq!(format_positional("{:.1} dB", &[Arg::new(&-6.04_f64)]), "-6,0 dB");
+        assert_eq!(format_positional("{}", &[Arg::new(&"v1.2")]), "v1.2");
     }
 
     #[test]
@@ -462,7 +487,10 @@ mod tests {
 
     /// Every `"source" => "translation"` pair of the catalog, read from its source file.
     fn catalog_entries() -> Vec<(String, String)> {
-        let text = include_str!("../locales/pt-BR/mod.rs");
+        parse_catalog(include_str!("../locales/pt-BR/mod.rs"))
+    }
+
+    fn parse_catalog(text: &str) -> Vec<(String, String)> {
         let mut lines = text.lines().map(str::trim);
         let mut entries = Vec::new();
         while let Some(line) = lines.next() {
@@ -524,19 +552,59 @@ mod tests {
 
     #[test]
     fn every_localized_source_string_has_a_catalog_entry() {
-        fn visit(dir: &std::path::Path, missing: &mut Vec<String>) {
+        assert_source_strings_have_entries("pt-BR", |source| super::pt_br::translate(source).is_some());
+    }
+
+    #[test]
+    fn georgian_clip_count_errors_translate_for_one_and_many() {
+        for n in ["1 clip", "2 clips"] {
+            let message = format!("`Kick` is used by {n} on the timeline; pass `with_clips: true` to remove them too");
+            let count = &n[..1];
+            assert_eq!(
+                super::error_text_in(Language::Georgian, &message, 0),
+                format!("`Kick` გამოიყენება დროის ხაზის {count} კლიპში; მათი წასაშლელადაც გადაეცით `with_clips: true`")
+            );
+        }
+    }
+
+    #[test]
+    fn georgian_catalog_entries_are_parsed_and_unique() {
+        let entries = parse_catalog(include_str!("../locales/ka/mod.rs"));
+        assert!(entries.len() > 1000, "parsed only {} catalog entries", entries.len());
+        let mut keys: Vec<&str> = entries.iter().map(|(key, _)| key.as_str()).collect();
+        keys.sort_unstable();
+        let before = keys.len();
+        keys.dedup();
+        assert_eq!(before, keys.len(), "duplicate catalog keys");
+    }
+
+    #[test]
+    fn georgian_translations_keep_the_english_placeholders() {
+        for (source, translation) in parse_catalog(include_str!("../locales/ka/mod.rs")) {
+            assert_eq!(placeholders(&source), placeholders(&translation), "placeholders differ for {source:?}");
+            assert_eq!(super::ka::translate(&source), Some(translation.as_str()), "lookup differs for {source:?}");
+        }
+    }
+
+    #[test]
+    fn every_localized_source_string_has_a_georgian_entry() {
+        assert_source_strings_have_entries("ka", |source| super::ka::translate(source).is_some());
+    }
+
+    fn assert_source_strings_have_entries(tag: &str, has_entry: fn(&str) -> bool) {
+        fn visit(dir: &std::path::Path, missing: &mut Vec<String>, has_entry: fn(&str) -> bool) {
             let Ok(read) = std::fs::read_dir(dir) else { return };
             for entry in read.flatten() {
                 let path = entry.path();
                 if path.is_dir() {
-                    visit(&path, missing);
+                    visit(&path, missing, has_entry);
                 } else if path.extension().is_some_and(|e| e == "rs") && !path.ends_with("localization.rs") {
                     let Ok(text) = std::fs::read_to_string(&path) else { continue };
                     for marker in ["localization::text(\"", "localized_format!(\""] {
                         for (at, _) in text.match_indices(marker) {
                             let start = at + marker.len() - 1;
                             if let Some((source, _)) = literal(&text[start..])
-                                && super::pt_br::translate(&source).is_none()
+                                && !has_entry(&source)
                             {
                                 missing.push(format!("{}: {source:?}", path.display()));
                             }
@@ -546,7 +614,7 @@ mod tests {
             }
         }
         let mut missing = Vec::new();
-        visit(&std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src"), &mut missing);
-        assert!(missing.is_empty(), "strings without a pt-BR entry:\n{}", missing.join("\n"));
+        visit(&std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src"), &mut missing, has_entry);
+        assert!(missing.is_empty(), "strings without a {tag} entry:\n{}", missing.join("\n"));
     }
 }
