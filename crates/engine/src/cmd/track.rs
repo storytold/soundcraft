@@ -210,7 +210,15 @@ pub fn specs() -> Vec<CommandSpec> {
             has_selection,
             |e, p| route(e, p, true)
         ),
-        cmd!("track.output", "Track Output", [], None, "{tracks?, output: main|none|bus name}", has_selection, |e, p| route(e, p, false)),
+        cmd!(
+            "track.output",
+            "Track Output",
+            [],
+            None,
+            "{tracks?, output: main|none|output path or bus name|Out N-M (makes that output pair's path)}",
+            has_selection,
+            |e, p| route(e, p, false)
+        ),
         cmd!("track.timebase", "Track Timebase", [], None, "{tracks?, ticks: bool}", has_selection, |e, p| flag(
             e,
             p,
@@ -1022,6 +1030,40 @@ pub(crate) fn parse_route(s: &soundcraft_model::Session, v: &str) -> Route {
     }
 }
 
+/// The first channel (0-based) of `name` when it is the default name of a stereo pair of
+/// interface outputs after the main one: "Out 3-4", "Out 5-6" and so on, in any case.
+pub(crate) fn interface_output_pair(name: &str) -> Option<u16> {
+    let (a, b) = name.get(..4).filter(|out| out.eq_ignore_ascii_case("out ")).and_then(|_| name[4..].split_once('-'))?;
+    let (a, b) = (a.parse::<usize>().ok()?, b.parse::<usize>().ok()?);
+    (a >= 3 && a % 2 == 1 && b == a + 1 && b <= soundcraft_mix::MAX_HARDWARE_CHANNELS).then(|| u16::try_from(a - 1).ok()).flatten()
+}
+
+/// Make the stereo output path of the interface pair `name` names by its default name ("Out 9-10"),
+/// and return the path's name; `None` when `name` is no such pair.
+fn make_output_pair(s: &mut soundcraft_model::Session, name: &str) -> Option<String> {
+    let first = interface_output_pair(name)?;
+    let name = format!("Out {}-{}", first + 1, first + 2);
+    s.outputs.push(soundcraft_model::OutputPath { name: name.clone(), first_channel: first, format: ChannelFormat::Stereo });
+    Some(name)
+}
+
+/// The route to the output path `name`: the main path (by its name, `main` or `Out 1-2`), a named
+/// output path, or an interface pair by its default name, whose path this makes. `None` when
+/// `name` names none of these, or names a bus (a route names one or the other).
+pub(crate) fn output_path_route(s: &mut soundcraft_model::Session, name: &str) -> Option<Route> {
+    let name = name.trim();
+    if parse_route(s, name) == Route::Main {
+        return Some(Route::Main);
+    }
+    if let Some((index, path)) = s.outputs.iter().enumerate().find(|(_, path)| path.name.eq_ignore_ascii_case(name)) {
+        return Some(if index == 0 { Route::Main } else { Route::Hardware(path.name.clone()) });
+    }
+    if s.bus_by_name(name).is_some() {
+        return None;
+    }
+    make_output_pair(s, name).map(Route::Hardware)
+}
+
 fn route(e: &mut Engine, p: &Value, input: bool) -> Result<Value> {
     let key = if input { "input" } else { "output" };
     let tracks = tracks_required(e, "track.route", p)?;
@@ -1029,9 +1071,36 @@ fn route(e: &mut Engine, p: &Value, input: bool) -> Result<Value> {
     let create_bus = bool_or(p, "create_bus", true);
     let s = e.session_mut();
     let mut r = parse_route(s, &v);
+    if input
+        && !matches!(r, Route::None)
+        && (!create_bus || !matches!(r, Route::Bus(_)))
+        && let Some(path) = s.inputs.iter().find(|path| path.name.eq_ignore_ascii_case(&v))
+    {
+        if tracks.iter().any(|id| s.track(*id).is_some_and(|track| track.kind != TrackKind::Audio || track.format != path.format)) {
+            return Err(bad("track.input", "the named input must match the audio track format"));
+        }
+        r = Route::Input(path.name.clone());
+    }
+    if !input
+        && matches!(r, Route::Hardware(_) | Route::Bus(_))
+        && (!create_bus || !matches!(r, Route::Bus(_)))
+        && let Some((index, path)) = s.outputs.iter().enumerate().find(|(_, path)| path.name.eq_ignore_ascii_case(&v))
+    {
+        r = if index == 0 { Route::Main } else { Route::Hardware(path.name.clone()) };
+    }
+    // An interface pair by its default path name ("Out 9-10") makes that path, as Pro Tools'
+    // default I/O settings hold one for every pair of the interface's outputs.
+    if !input
+        && let Route::Hardware(name) = &r
+        && !s.outputs.iter().any(|path| path.name.eq_ignore_ascii_case(name))
+        && let Some(name) = make_output_pair(s, name)
+    {
+        r = Route::Hardware(name);
+    }
     if let Route::Hardware(name) = &r
         && create_bus
         && !name.to_ascii_lowercase().starts_with("in ")
+        && (input || !s.outputs.iter().any(|path| path.name.eq_ignore_ascii_case(name)))
         // A MIDI input (device and channel) of a MIDI or instrument track, see `MidiInput`.
         && !name.starts_with("MIDI:")
     {
@@ -1097,6 +1166,67 @@ mod tests {
         assert_eq!(MidiInput::of(&set(text)), MidiInput { device: Some("Launchkey MK3:MIDI 1"), channel: Some(9) });
         // "none" takes the choice away: all devices, all channels.
         assert_eq!(MidiInput::of(&set("none")), MidiInput::default());
+    }
+
+    #[test]
+    fn output_commands_preserve_main_and_validate_named_paths() {
+        let mut e = crate::demo::demo_engine();
+        let main = e.session().outputs[0].name.clone();
+        let step = |e: &mut Engine, args| e.execute("setup.io", &args);
+        assert!(step(&mut e, json!({"action":"delete_output","name":main})).is_err());
+        assert!(step(&mut e, json!({"action":"create_output","name":"Master"})).is_err());
+        assert!(step(&mut e, json!({"action":"create_output","name":"Cue","first_channel":1023})).is_err());
+        step(&mut e, json!({"action":"create_output","name":"Cue","format":"mono"})).unwrap();
+        step(&mut e, json!({"action":"set_output","name":"Cue","first_channel":7})).unwrap();
+        assert_eq!(e.session().outputs[1].first_channel, 7);
+        assert!(step(&mut e, json!({"action":"set_output","name":"Cue","first_channel":-1})).is_err());
+        assert!(step(&mut e, json!({"action":"set_output","name":main,"format":"mono"})).is_err());
+        assert!(step(&mut e, json!({"action":"rename_output","name":"Cue","new_name":main.to_uppercase()})).is_err());
+        let buses = e.session().busses.len();
+        e.execute("track.output", &json!({"track":"Kick","output":"cue","create_bus":true})).unwrap();
+        assert_eq!(e.session().track_by_name("Kick").unwrap().mixer.output, Route::Hardware("Cue".into()));
+        assert_eq!(e.session().busses.len(), buses);
+        step(&mut e, json!({"action":"rename_output","name":"cUE","new_name":"Headphones"})).unwrap();
+        assert_eq!(e.session().track_by_name("Kick").unwrap().mixer.output, Route::Hardware("Headphones".into()));
+        e.execute("track.output", &json!({"track":"Kick","output":"main","create_bus":false})).unwrap();
+        assert_eq!(e.session().track_by_name("Kick").unwrap().mixer.output, Route::Main);
+        // A route names a bus or an output path, so the two never share a name.
+        let verb = e.session().busses[0].name.to_uppercase();
+        assert!(step(&mut e, json!({"action":"create_output","name":verb})).is_err());
+        assert!(step(&mut e, json!({"action":"rename_output","name":"Headphones","new_name":verb})).is_err());
+        assert!(step(&mut e, json!({"action":"create_bus","name":"headphones"})).is_err());
+        let bus = e.session().busses[0].name.clone();
+        assert!(step(&mut e, json!({"action":"rename_bus","name":bus,"new_name":"HEADPHONES"})).is_err());
+    }
+    #[test]
+    fn an_interface_output_pair_routes_to_a_new_output_path() {
+        let mut e = Engine::default();
+        e.execute("track.new", &json!({"name": "Vox", "format": "mono"})).unwrap();
+        let output = |e: &Engine| e.session().track_by_name("Vox").unwrap().mixer.output.clone();
+        // Pro Tools' default paths name each interface pair "Out 9-10" and so on; picking one
+        // makes the path, so it plays on channels 9 and 10 and shows in I/O Setup.
+        e.execute("track.output", &json!({"track": "Vox", "output": "out 9-10", "create_bus": false})).unwrap();
+        assert_eq!(output(&e), Route::Hardware("Out 9-10".into()));
+        let path = e.session().outputs.iter().find(|path| path.name == "Out 9-10").expect("an output path is made");
+        assert_eq!((path.first_channel, path.format), (8, ChannelFormat::Stereo));
+        assert!(e.session().busses.is_empty(), "no bus is made for an interface output");
+        // The protocol's default (`create_bus: true`) does the same, and reuses the path.
+        e.execute("track.output", &json!({"track": "Vox", "output": "Out 9-10"})).unwrap();
+        e.execute("track.output", &json!({"track": "Vox", "output": "Out 3-4"})).unwrap();
+        assert_eq!(output(&e), Route::Hardware("Out 3-4".into()));
+        assert_eq!(e.session().outputs.len(), 3);
+        assert!(e.session().busses.is_empty());
+        // One undo takes back the route and the path it made.
+        e.execute("edit.undo", &json!({})).unwrap();
+        assert_eq!(output(&e), Route::Hardware("Out 9-10".into()));
+        assert_eq!(e.session().outputs.len(), 2);
+        // Names that are not an interface pair still name a bus, and a bus of that name wins.
+        e.execute("track.output", &json!({"track": "Vox", "output": "Out 4-5"})).unwrap();
+        assert!(matches!(output(&e), Route::Bus(_)));
+        e.execute("mix.new_bus", &json!({"name": "Out 7-8"})).unwrap();
+        e.execute("track.output", &json!({"track": "Vox", "output": "Out 7-8"})).unwrap();
+        assert!(matches!(output(&e), Route::Bus(_)));
+        assert!(!e.session().outputs.iter().any(|path| path.name == "Out 7-8"));
     }
 
     #[test]

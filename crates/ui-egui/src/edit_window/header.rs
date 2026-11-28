@@ -596,7 +596,7 @@ fn io_column(app: &mut SoundApp, ui: &mut Ui, track: &Track, r: Rect) {
     if let Some(out) = row(21.0, 17.0) {
         let (sel, fader) = (out.with_max_x(out.max.x - 11.0), out.with_min_x(out.max.x - 11.0));
         let resp = ui.interact(sel, ui.scope_id().with(("out", id.0)), Sense::click());
-        let output_name = crate::mix_window::route_name(app, &track.mixer.output);
+        let output_name = crate::mix_window::output_name(app, &track.mixer.output);
         resp.widget_info(|| {
             let mut info = egui::WidgetInfo::labeled(egui::accesskit::Role::ComboBox, ui.is_enabled(), format!("Output for {}", track.name));
             info.current_text_value = Some(output_name.clone());

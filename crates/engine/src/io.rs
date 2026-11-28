@@ -1096,10 +1096,14 @@ fn read_bundle(bytes: &[u8], limits: BundleLimits) -> Result<(String, std::colle
     .map_err(|error| EngineError::Io(error.to_string()))
 }
 
+/// One planned take: the track, the input channels it records and its new take file.
+pub type PlannedTake = (TrackId, Vec<usize>, PathBuf);
+
 /// The record-enabled audio tracks, each with the input channels it records (those its input
-/// route names, "In 3" → 2, wrapped to the device's `input_channels`) and a new take file
+/// route names, with legacy numbered routes wrapped to the device width) and a new take file
 /// `<track>_<NN>.wav` in the `Audio Files` of the session's folder (`unsaved_dir` until it is saved).
-pub fn plan_takes(e: &Engine, unsaved_dir: &Path, input_channels: usize) -> Vec<(TrackId, Vec<usize>, PathBuf)> {
+/// Fail before opening any take if an armed track's named input cannot be recorded.
+pub fn plan_takes(e: &Engine, unsaved_dir: &Path, input_channels: usize) -> std::result::Result<Vec<PlannedTake>, String> {
     let dir = e.path.as_deref().and_then(|p| Path::new(p).parent()).unwrap_or(unsaved_dir);
     let s = e.session();
     let take_no = s.sources.len() + 1;
@@ -1107,16 +1111,22 @@ pub fn plan_takes(e: &Engine, unsaved_dir: &Path, input_channels: usize) -> Vec<
         .iter()
         .filter(|t| t.mixer.record_arm && t.kind == TrackKind::Audio && !t.inactive)
         .map(|t| {
-            let first = match &t.mixer.input {
-                soundcraft_model::Route::Hardware(h) => {
-                    h.trim_start_matches("In ").split(['-', ' ']).next().and_then(|n| n.parse::<usize>().ok()).map_or(0, |n| n.saturating_sub(1))
+            let first = soundcraft_model::hardware_input_start(s, t, input_channels).ok_or_else(|| {
+                if let soundcraft_model::Route::Input(name) = &t.mixer.input {
+                    let reason = match s.inputs.iter().find(|input| input.name.eq_ignore_ascii_case(name)) {
+                        None => "the path is missing",
+                        Some(path) if path.format != t.format => "the path format differs from the track",
+                        Some(_) => "the path is outside the device range",
+                    };
+                    format!("{}: input path `{name}` is unavailable ({reason})", t.name)
+                } else {
+                    format!("{}: input path unavailable", t.name)
                 }
-                _ => 0,
-            };
+            })?;
             let inputs = (0..t.channels()).map(|k| first.saturating_add(k) % input_channels.max(1)).collect();
             let file = |n: usize| dir.join("Audio Files").join(format!("{}_{n:02}.wav", sanitize_name(&t.name)));
             let path = (take_no..take_no + 1_000).map(file).find(|p| !p.exists()).unwrap_or_else(|| file(take_no));
-            (t.id, inputs, path)
+            Ok((t.id, inputs, path))
         })
         .collect()
 }

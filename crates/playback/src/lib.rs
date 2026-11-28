@@ -198,6 +198,18 @@ impl Player {
         p
     }
 
+    /// Input width at the selected rate without opening a recording stream: the width the
+    /// recorder would open, for the routing menus.
+    pub fn input_channels(&self, cfg: &AudioConfig) -> usize {
+        #[cfg(not(target_os = "freebsd"))]
+        return record::input_device(cfg).and_then(|device| record::input_config(&device, cfg)).map_or(0, |config| usize::from(config.channels()));
+        #[cfg(target_os = "freebsd")]
+        {
+            let _ = cfg;
+            0
+        }
+    }
+
     /// What stopped the audio output, once: a bug in the engine, or the device went away or
     /// stopped asking for audio while playing.
     pub fn trouble(&self) -> Option<OutputTrouble> {

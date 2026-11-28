@@ -3,6 +3,8 @@
 //! [`MixEngine::render`] produces one block of the main output for a session at a timeline
 //! position: clips (with clip gain and fades) → trim/phase → inserts → pre-fader sends → fader and
 //! mute (with automation) → pan → post-fader sends → busses → aux inputs → main → master faders.
+//! During playback it also mixes the session's named output paths into their hardware channels
+//! ([`MixEngine::hardware_output`]).
 //! The same code drives realtime playback and offline bounces, so what you hear is what you get.
 //! Steady-state rendering does not allocate.
 //!
@@ -103,10 +105,20 @@ pub const MAIN_CHANNELS: usize = 2;
 
 /// Widest strip, bus or main mix (9.1.6 / 3rd-order Ambisonics). Wider formats are truncated.
 pub const MAX_CHANNELS: usize = 16;
+/// Bound realtime routing buffers and the session's physical channel addresses.
+pub const MAX_HARDWARE_CHANNELS: usize = 1024;
 
 /// Number of channels of a session's main mix.
 pub fn main_channels(s: &Session) -> usize {
     s.main_format().channels().clamp(MAIN_CHANNELS, MAX_CHANNELS)
+}
+
+/// The device channel the main mix starts on in a stream of `channels`: its path's first channel,
+/// or channel 0 when the main mix does not fit the device from there. Playback places the main
+/// mix by this, and delay compensation finds the paths that share its channels by it.
+pub fn main_first_channel(s: &Session, channels: usize) -> usize {
+    let first = s.outputs.first().map_or(0, |path| usize::from(path.first_channel));
+    if first + main_channels(s) <= channels { first } else { 0 }
 }
 
 /// Renders sessions. Keep one per playback stream; plugin state persists across blocks.
@@ -116,6 +128,10 @@ pub struct MixEngine {
     strips: HashMap<TrackId, Strip>,
     busses: HashMap<BusId, BusBuf>,
     main: Vec<Vec<f32>>,
+    /// Independent hardware paths, indexed by physical channel. Empty for offline rendering.
+    physical: Vec<Vec<f32>>,
+    /// The device's output channels ([`MixEngine::set_hardware_channels`]); 0 for offline rendering.
+    device_channels: usize,
     main_fmt: ChannelFormat,
     pub meters: HashMap<TrackId, StripMeter>,
     pub main_meter: StripMeter,
@@ -136,6 +152,16 @@ pub struct MixEngine {
     /// Busses an aux returns onto, and the latency of the slowest aux return: audio written onto
     /// such a bus waits for it, so a bounce of the bus drops it as well.
     aux_fed: Vec<BusId>,
+    /// Named output paths (indices into `Session::outputs`) that share a physical channel with
+    /// the main mix's path or with a path an aux returns onto, directly or through other such
+    /// paths: tracks routed to one wait for the aux returns as the main mix does.
+    aux_fed_outputs: Vec<usize>,
+    /// Named output paths other than the main mix's that share a physical channel with it,
+    /// directly or through other paths: what is routed to one waits for the master faders' inserts
+    /// as well, as the main mix does.
+    main_outputs: Vec<usize>,
+    /// Latency of the master faders' inserts.
+    master_latency: usize,
     aux_latency: usize,
     /// Live input for the next block (planar), set by the audio host for input monitoring.
     pub input: Vec<Vec<f32>>,
@@ -175,6 +201,8 @@ impl MixEngine {
             strips: HashMap::new(),
             busses: HashMap::new(),
             main: vec![vec![0.0; max_block]; MAIN_CHANNELS],
+            physical: Vec::new(),
+            device_channels: 0,
             main_fmt: ChannelFormat::Stereo,
             meters: HashMap::new(),
             main_meter: StripMeter::default(),
@@ -185,6 +213,9 @@ impl MixEngine {
             latency: 0,
             track_latency: 0,
             aux_fed: Vec::new(),
+            aux_fed_outputs: Vec::new(),
+            main_outputs: Vec::new(),
+            master_latency: 0,
             aux_latency: 0,
             input: Vec::new(),
             midi: Vec::new(),
@@ -246,6 +277,27 @@ impl MixEngine {
 
     pub fn max_block(&self) -> usize {
         self.max_block
+    }
+
+    /// Reserve the device's output channels before the first audio block.
+    pub fn set_hardware_channels(&mut self, channels: usize) {
+        self.device_channels = channels;
+        self.physical.resize_with(channels.min(MAX_HARDWARE_CHANNELS), || vec![0.0; self.max_block]);
+    }
+
+    /// The device's output channels, as given to [`MixEngine::set_hardware_channels`].
+    pub fn hardware_channels(&self) -> usize {
+        self.device_channels
+    }
+
+    pub fn hardware_output(&self) -> &[Vec<f32>] {
+        &self.physical
+    }
+
+    pub fn clear_hardware_output(&mut self, frames: usize) {
+        for channel in &mut self.physical {
+            channel.iter_mut().take(frames).for_each(|sample| *sample = 0.0);
+        }
     }
 
     /// Format of the main mix as of the last sync.
@@ -458,7 +510,7 @@ impl MixEngine {
                 c.iter_mut().take(frames).for_each(|x| *x = 0.0);
             }
         }
-        for c in &mut self.main {
+        for c in self.main.iter_mut().chain(&mut self.physical) {
             c.iter_mut().take(frames).for_each(|x| *x = 0.0);
         }
     }
@@ -493,15 +545,35 @@ impl MixEngine {
         // An aux that returns onto a bus delays it by the slowest aux return, so the tracks routed
         // to that bus wait as well (as the ones routed to the main mix do) and the bus lines up.
         self.aux_latency = lmax_a;
+        self.master_latency = lmax_m;
         self.aux_fed.clear();
+        self.aux_fed_outputs.clear();
+        self.main_outputs.clear();
         if pdc {
+            // The first path is the main mix's, where playback puts it.
+            let main_first = main_first_channel(s, self.device_channels);
+            if !s.outputs.is_empty() {
+                self.main_outputs.push(0);
+                close_overlaps(s, main_first, self.device_channels, &mut self.main_outputs);
+                self.main_outputs.retain(|&i| i != 0);
+                self.aux_fed_outputs.push(0);
+            }
             for t in s.tracks.iter().filter(|t| is_aux(t) && is_live(t)) {
-                if let Route::Bus(b) = &t.mixer.output
-                    && !self.aux_fed.contains(b)
-                {
-                    self.aux_fed.push(*b);
+                match &t.mixer.output {
+                    Route::Bus(b) if !self.aux_fed.contains(b) => self.aux_fed.push(*b),
+                    Route::Hardware(name) => {
+                        if let Some(path) = output_index(s, name)
+                            && !self.aux_fed_outputs.contains(&path)
+                        {
+                            self.aux_fed_outputs.push(path);
+                        }
+                    }
+                    _ => {}
                 }
             }
+            // Paths that share a physical channel sum there, so a path overlapping a waiting one
+            // waits as well.
+            close_overlaps(s, main_first, self.device_channels, &mut self.aux_fed_outputs);
         }
         for (i, st) in work.iter_mut() {
             let Some(t) = s.tracks.get(*i) else { continue };
@@ -515,13 +587,15 @@ impl MixEngine {
             let waits = match &t.mixer.output {
                 Route::Main => true,
                 Route::Bus(b) => self.aux_fed.contains(b),
-                _ => false,
+                Route::Hardware(name) => output_index(s, name).is_some_and(|path| self.aux_fed_outputs.contains(&path)),
+                Route::None | Route::Input(_) => false,
             };
-            st.out_extra.set(if waits { lmax_a } else { 0 }, ch);
+            let extra = if waits { lmax_a } else { 0 } + self.master_wait(s, t);
+            st.out_extra.set(extra, ch);
         }
         for (i, st) in work.iter_mut() {
             if let Some(t) = s.tracks.get(*i) {
-                self.route_strip(t, st, pos, frames);
+                self.route_strip(s, t, st, pos, frames);
             }
         }
         for (i, st) in work.drain(..) {
@@ -546,8 +620,8 @@ impl MixEngine {
             let ch = st.buf.len();
             st.align.set(if pdc { lmax_a.saturating_sub(st.latency) } else { 0 }, ch);
             st.align.process(&mut st.buf, frames);
-            st.out_extra.set(0, ch);
-            self.route_strip(t, &mut st, pos, frames);
+            st.out_extra.set(self.master_wait(s, t), ch);
+            self.route_strip(s, t, &mut st, pos, frames);
             self.strips.insert(t.id, st);
         }
     }
@@ -634,8 +708,17 @@ impl MixEngine {
         }
     }
 
-    /// Send, meter and pan a processed strip into the busses / main mix.
-    fn route_strip(&mut self, t: &Track, strip: &mut Strip, pos: Samples, frames: usize) {
+    /// Delay that lines a strip routed to a path sharing the main mix's channels up with the main
+    /// mix, which the master faders' inserts delay.
+    fn master_wait(&self, s: &Session, t: &Track) -> usize {
+        match &t.mixer.output {
+            Route::Hardware(name) if output_index(s, name).is_some_and(|path| self.main_outputs.contains(&path)) => self.master_latency,
+            _ => 0,
+        }
+    }
+
+    /// Send, meter and pan a processed strip into its output path.
+    fn route_strip(&mut self, s: &Session, t: &Track, strip: &mut Strip, pos: Samples, frames: usize) {
         let m = self.meters.entry(t.id).or_default();
         m.measure(&strip.buf, frames, strip.gr);
         m.plugin_failures = strip.failures;
@@ -649,19 +732,21 @@ impl MixEngine {
             let lvl = send_level(t, i, snd.level_db, pos);
             let gain = db_to_gain(lvl);
             let src = if snd.pre_fader { &strip.pre } else { &strip.buf };
-            let Route::Bus(b) = &snd.target else { continue };
-            let Some(dst) = self.busses.get_mut(b) else { continue };
             if gain <= 0.0 {
                 continue;
             }
+            // As in Pro Tools, a send goes to a bus or to an output path, in that path's width.
+            let Some((dst, dst_fmt)) = destination(s, &snd.target, &mut self.main, self.main_fmt, &mut self.busses, &mut self.physical) else {
+                continue;
+            };
             // Mono sends use the send's own pan; stereo sends go straight to L/R.
             let stereo = if src.len() == 1 { [snd.pan, 0.0] } else { [-1.0, 1.0] };
             let surround = snd.surround.as_ref().or(if snd.follow_main_pan { t.mixer.surround.as_ref() } else { None });
-            let m = build_matrix(src_fmt, src.len(), dst.fmt, dst.buf.len(), &PanSpec { stereo, surround }, law);
-            apply_matrix(src, frames, &mut dst.buf, &m, gain);
+            let m = build_matrix(src_fmt, src.len(), dst_fmt, dst.len(), &PanSpec { stereo, surround }, law);
+            apply_matrix(src, frames, dst, &m, gain);
         }
         let src: &[Vec<f32>] = match &t.mixer.output {
-            Route::Main | Route::Bus(_) if strip.out_extra.len > 0 => {
+            Route::Main | Route::Bus(_) | Route::Hardware(_) if strip.out_extra.len > 0 => {
                 if strip.outbuf.len() != strip.buf.len() {
                     strip.outbuf = vec![Vec::new(); strip.buf.len()];
                 }
@@ -674,13 +759,8 @@ impl MixEngine {
             }
             _ => &strip.buf,
         };
-        let (dst, dst_fmt) = match &t.mixer.output {
-            Route::Main => (&mut self.main, self.main_fmt),
-            Route::Bus(b) => match self.busses.get_mut(b) {
-                Some(d) => (&mut d.buf, d.fmt),
-                None => return,
-            },
-            _ => return,
+        let Some((dst, dst_fmt)) = destination(s, &t.mixer.output, &mut self.main, self.main_fmt, &mut self.busses, &mut self.physical) else {
+            return;
         };
         let mut start = 0;
         while start < frames {
@@ -699,6 +779,75 @@ std::thread_local! {
 
 fn is_live(t: &Track) -> bool {
     !(t.kind == TrackKind::Master || t.inactive || t.kind == TrackKind::Vca)
+}
+
+/// The buffers a track output or send to `route` mixes into, and their format: the main mix (also
+/// for the main path by name), a bus, or a named output path's hardware channels. `None` when there
+/// is nowhere to play it: no route, a missing bus or path, a path that does not fit the device, or
+/// offline rendering (no hardware channels).
+fn destination<'a>(
+    s: &Session,
+    route: &Route,
+    main: &'a mut [Vec<f32>],
+    main_fmt: ChannelFormat,
+    busses: &'a mut HashMap<BusId, BusBuf>,
+    physical: &'a mut [Vec<f32>],
+) -> Option<(&'a mut [Vec<f32>], ChannelFormat)> {
+    match route {
+        Route::Main => Some((main, main_fmt)),
+        Route::Hardware(name) if s.outputs.first().is_some_and(|path| path.name.eq_ignore_ascii_case(name)) => Some((main, main_fmt)),
+        Route::Bus(b) => busses.get_mut(b).map(|d| (d.buf.as_mut_slice(), d.fmt)),
+        Route::Hardware(name) => {
+            if physical.is_empty() {
+                return None;
+            }
+            let path = s.outputs.iter().find(|path| path.name.eq_ignore_ascii_case(name))?;
+            let channels = fitted_channels(path, physical.len())?;
+            Some((&mut physical[channels], path.format))
+        }
+        _ => None,
+    }
+}
+
+/// Index of the named output path `name` in `Session::outputs`.
+fn output_index(s: &Session, name: &str) -> Option<usize> {
+    s.outputs.iter().position(|path| path.name.eq_ignore_ascii_case(name))
+}
+
+/// Physical channels of a named output path (not the main mix's) on a device of `channels`
+/// outputs, or `None` when it does not fit there: then nothing is played on it.
+fn fitted_channels(path: &soundcraft_model::OutputPath, channels: usize) -> Option<std::ops::Range<usize>> {
+    let width = path.format.channels();
+    let first = usize::from(path.first_channel);
+    ((1..=MAX_CHANNELS).contains(&width) && first + width <= channels.min(MAX_HARDWARE_CHANNELS)).then_some(first..first + width)
+}
+
+/// Physical channels of output path `i` on a device of `channels` outputs; the main mix's (the
+/// first) starts at `main_first` ([`main_first_channel`]), as playback puts it. `None` for a path
+/// that does not fit the device ([`fitted_channels`]), as nothing is played on it.
+fn path_channels(s: &Session, i: usize, main_first: usize, channels: usize) -> Option<std::ops::Range<usize>> {
+    let path = s.outputs.get(i)?;
+    if i == 0 { Some(main_first..main_first + main_channels(s)) } else { fitted_channels(path, channels) }
+}
+
+/// Add to `paths` (indices into `Session::outputs`) every path that shares a physical channel
+/// with one of them on a device of `channels` outputs, directly or through a chain of such paths:
+/// they sum there. A path that does not fit the device plays nothing, so it links no others.
+fn close_overlaps(s: &Session, main_first: usize, channels: usize, paths: &mut Vec<usize>) {
+    loop {
+        let before = paths.len();
+        for i in 0..s.outputs.len() {
+            let Some(a) = path_channels(s, i, main_first, channels) else { continue };
+            if !paths.contains(&i)
+                && paths.iter().any(|&j| path_channels(s, j, main_first, channels).is_some_and(|b| a.start < b.end && b.start < a.end))
+            {
+                paths.push(i);
+            }
+        }
+        if paths.len() == before {
+            break;
+        }
+    }
 }
 
 fn is_aux(t: &Track) -> bool {

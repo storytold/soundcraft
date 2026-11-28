@@ -239,16 +239,11 @@ fn zero_buf(buf: &mut [Vec<f32>], frames: usize) {
 }
 
 /// Input monitoring: the track hears its hardware input instead of its clips.
-fn monitor_input(t: &Track, strip: &mut Strip, live: &LiveInput<'_>, frames: usize) {
-    let first = match &t.mixer.input {
-        Route::Hardware(h) => {
-            h.trim_start_matches("In ").split(['-', ' ']).next().and_then(|n| n.parse::<usize>().ok()).map_or(0, |n| n.saturating_sub(1))
-        }
-        _ => 0,
-    };
+fn monitor_input(s: &Session, t: &Track, strip: &mut Strip, live: &LiveInput<'_>, frames: usize) {
+    let Some(first) = soundcraft_model::hardware_input_start(s, t, live.input.len()) else { return };
     let n_in = live.input.len().max(1);
     for (k, dst) in strip.buf.iter_mut().enumerate() {
-        if let Some(src) = live.input.get((first + k) % n_in) {
+        if let Some(src) = live.input.get(first.saturating_add(k) % n_in) {
             for (d, x) in dst.iter_mut().zip(src.iter()).take(frames) {
                 *d = *x;
             }
@@ -467,7 +462,7 @@ pub(crate) fn process_strip(s: &Session, t: &Track, strip: &mut Strip, busses: &
     let transport = transport_at(s, pos, !live.monitor_only, live.recording);
     match t.kind {
         TrackKind::Audio if !live.input.is_empty() && (t.mixer.input_monitor || (t.mixer.record_arm && (live.monitor_only || live.recording))) => {
-            monitor_input(t, strip, live, frames);
+            monitor_input(s, t, strip, live, frames);
         }
         TrackKind::Audio if live.monitor_only => {}
         // Stopped: only a track that plays live MIDI input sounds (and one that just stopped
