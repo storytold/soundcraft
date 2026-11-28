@@ -147,6 +147,11 @@ pub struct Recorder {
     pub channels: usize,
     /// The audio system (cpal host name) the input opened on.
     system: &'static str,
+    /// The system default was opened as the device that was the default then (Core Audio's
+    /// default input; WASAPI when its default handle cannot open): the stream is not told when
+    /// the default moves to another device, so the app watches the default and reopens (see
+    /// [`crate::devices::default_names`]).
+    pub pinned_default: bool,
     /// The take writer, and what each track's take holds so far.
     writer: Option<(std::thread::JoinHandle<Takes>, Vec<(TrackId, Arc<Mutex<LiveTake>>)>)>,
     /// The callback count last seen, and since when.
@@ -237,7 +242,7 @@ impl Recorder {
     pub fn open_with(audio: &crate::AudioConfig) -> Result<Recorder, String> {
         use cpal::traits::{DeviceTrait, StreamTrait};
         let host = crate::devices::host(audio);
-        let device = crate::devices::device(&host, audio.input.as_deref(), false).ok_or("no audio input device")?;
+        let (device, pinned_default) = crate::devices::device(&host, audio.input.as_deref(), false).ok_or("no audio input device")?;
         let name = crate::devices::device_name(&device).unwrap_or_else(|| "Input".into());
         // At the chosen rate when the device offers it, so input and output run together: the
         // best format first, then the most channels.
@@ -293,6 +298,7 @@ impl Recorder {
             sample_rate: config.sample_rate,
             channels,
             system,
+            pinned_default,
             writer: None,
             seen,
         })
@@ -616,6 +622,7 @@ mod tests {
             sample_rate: 48_000,
             channels: 1,
             system: "CoreAudio",
+            pinned_default: false,
             writer: None,
             seen: (0, Instant::now()),
         }

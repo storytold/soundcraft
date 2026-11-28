@@ -108,10 +108,10 @@ pub(crate) fn open_device(
     want_ch: u16,
     cfg: &AudioConfig,
     required_output: Option<&str>,
-) -> Result<(cpal::Device, cpal::StreamConfig, cpal::SampleFormat, String, &'static str), String> {
+) -> Result<(cpal::Device, cpal::StreamConfig, cpal::SampleFormat, String, &'static str, bool), String> {
     use cpal::traits::DeviceTrait;
     let host = devices::host(cfg);
-    let device = devices::device(&host, required_output.or(cfg.output.as_deref()), true).ok_or_else(|| "no output device".to_string())?;
+    let (device, pinned) = devices::device(&host, required_output.or(cfg.output.as_deref()), true).ok_or_else(|| "no output device".to_string())?;
     let name = devices::device_name(&device).unwrap_or_else(|| "Audio device".into());
     if not_the_required_output(required_output, cfg.system.as_deref(), &name, host.id().name()) {
         return Err(format!("The requested audio output {} is unavailable", required_output.unwrap_or_default()));
@@ -146,7 +146,7 @@ pub(crate) fn open_device(
             (stream_config, c.sample_format())
         }
     };
-    Ok((device, config, format, name, host.id().name()))
+    Ok((device, config, format, name, host.id().name(), pinned))
 }
 
 /// Whether the output a device lookup found (`name`, on audio system `host`) is not the one that

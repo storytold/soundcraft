@@ -314,6 +314,9 @@ pub struct SoundApp {
     recorder_failed: bool,
     /// The audio devices need reopening, and those that went away are waited for.
     lost_audio: Option<app::LostAudio>,
+    /// The system default, watched while the output or input open on it is pinned to the device
+    /// that was the default then (see `watch_default`).
+    default_watch: app::DefaultWatch,
     /// The refusal of Play or Record on a lost output last shown, and whether a Record was refused
     /// since the last Stop (a Play then is the same record attempt, as in Pro Tools' Record, Play).
     lost_refusal: Option<(String, bool)>,

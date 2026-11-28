@@ -22,7 +22,7 @@ pub(crate) use audio::Stall;
 pub(crate) use playback::automation_step_due;
 #[cfg(test)]
 pub(crate) use plugins::{editor_changes, editor_states_due, failed_plugin_status};
-pub(crate) use replug::LostAudio;
+pub(crate) use replug::{DefaultWatch, LostAudio};
 
 impl SoundApp {
     /// Whether fonts installed from the system are used besides the bundled ones (on by default).
@@ -45,6 +45,7 @@ impl SoundApp {
             punch: None,
             recorder_failed: false,
             lost_audio: None,
+            default_watch: DefaultWatch::new(),
             lost_refusal: None,
             stall: None,
             midi_inputs: None,
@@ -211,6 +212,7 @@ impl SoundApp {
         self.watch_output();
         self.watch_input();
         self.watch_replug();
+        self.watch_default();
         // Stop the old playback before sending a replacement session to the audio thread.
         self.handle_transport(dt);
         if self.engine.revision != self.last_rev {

@@ -1,6 +1,7 @@
 //! Audio devices that stopped working: the Reconnect offer, and reopening a device that went away
 //! once it is back, or an output whose settings another app or the system changed (or, where the
-//! audio system does not say which, an output that stopped).
+//! audio system does not say which, an output that stopped). Also following the system default
+//! where the stream open on it is not told when the default moves (`DefaultWatch`).
 
 use std::sync::Arc;
 use std::sync::mpsc::{Receiver, channel};
@@ -10,7 +11,8 @@ use super::SoundApp;
 use soundcraft_playback::OutputLoss;
 use soundcraft_playback::devices::Wanted;
 
-/// How often the device list is read while a device is away.
+/// How often the device list is read while a device is away (and the system default's name while
+/// it is watched).
 const POLL: Duration = Duration::from_secs(2);
 /// Readings in a row a device must be listed in before it is reopened: a device that was just
 /// plugged in can be listed before it opens, and one that is going away can still be listed.
@@ -169,6 +171,88 @@ impl LostAudio {
     }
 }
 
+/// Reads the names of the system default output and input of an audio system (first argument,
+/// `None` for the default one; see [`soundcraft_playback::devices::default_names`]).
+pub(crate) type DefaultNames = Arc<dyn Fn(Option<&str>) -> (Option<String>, Option<String>) + Send + Sync>;
+
+/// What a [`DefaultWatch`] watches: the audio system, and the output and input open on the
+/// system default, by their names (`None`: not watched).
+type Watched = (Option<String>, Option<String>, Option<String>);
+
+/// Follows the system default where the stream opened on it does not: one pinned to the device
+/// that was the default when it opened (`pinned_default`; WASAPI when its default handle cannot
+/// open, and Core Audio's default input). A background thread reads the names of the current
+/// defaults, never the device lists, and the app reopens on a default that moved to another
+/// device.
+pub(crate) struct DefaultWatch {
+    /// What the background thread reads for, `None` while nothing is watched.
+    watched: Option<Watched>,
+    /// The readings; dropping it ends the thread at its next reading.
+    readings: Option<Receiver<(Option<String>, Option<String>)>>,
+    /// Readings in a row that named another default output and input than the one open.
+    moved: (u32, u32),
+    /// The default output and input the last reading named.
+    now: (Option<String>, Option<String>),
+    names: DefaultNames,
+    every: Duration,
+}
+
+impl DefaultWatch {
+    pub(crate) fn new() -> Self {
+        Self::with_names(Arc::new(soundcraft_playback::devices::default_names), POLL)
+    }
+
+    /// Reads the default devices' names with `names` every `every`.
+    pub(crate) fn with_names(names: DefaultNames, every: Duration) -> Self {
+        DefaultWatch { watched: None, readings: None, moved: (0, 0), now: (None, None), names, every }
+    }
+
+    /// Stop reading the defaults.
+    fn stop(&mut self) {
+        self.watched = None;
+        self.readings = None;
+        self.moved = (0, 0);
+    }
+
+    /// Watch the system default of audio system `system` while the output and the input named
+    /// (`None`: not open on a pinned default) are open on it. Returns the default output and input
+    /// that replaced them, once another device was named the default in several readings in a row.
+    fn moved(&mut self, system: Option<String>, output: Option<String>, input: Option<String>) -> (Option<String>, Option<String>) {
+        if output.is_none() && input.is_none() {
+            self.stop();
+            return (None, None);
+        }
+        let watched = (system, output, input);
+        if self.watched.as_ref() != Some(&watched) {
+            self.stop();
+            let (tx, rx) = channel();
+            let (names, every, system) = (Arc::clone(&self.names), self.every, watched.0.clone());
+            let reader = std::thread::Builder::new().name("audio default watch".into()).spawn(move || {
+                while tx.send(names(system.as_deref())).is_ok() {
+                    std::thread::sleep(every);
+                }
+            });
+            match reader {
+                Ok(_) => self.readings = Some(rx),
+                Err(e) => log::warn!("cannot watch the system default audio device: {e}"),
+            }
+            self.watched = Some(watched);
+        }
+        let (Some(readings), Some((_, output, input))) = (&self.readings, &self.watched) else { return (None, None) };
+        for (out, inp) in readings.try_iter() {
+            self.moved.0 = if moved_from(output, &out) { self.moved.0 + 1 } else { 0 };
+            self.moved.1 = if moved_from(input, &inp) { self.moved.1 + 1 } else { 0 };
+            self.now = (out, inp);
+        }
+        (self.now.0.clone().filter(|_| self.moved.0 >= STEADY), self.now.1.clone().filter(|_| self.moved.1 >= STEADY))
+    }
+}
+
+/// Whether the system default is another device (`default`) than the one open on it (`open`).
+fn moved_from(open: &Option<String>, default: &Option<String>) -> bool {
+    open.is_some() && default.is_some() && open != default
+}
+
 /// What to wait for: nothing, the device `name` that was lost, or (`default`) any system default.
 fn wanted(name: &Option<String>, default: bool) -> Wanted<'_> {
     match name.as_deref() {
@@ -280,6 +364,41 @@ impl SoundApp {
         }
     }
 
+    /// Follow the system default where the stream open on it is pinned to the device that was
+    /// the default then (see [`DefaultWatch`]): with the system default chosen (no device by
+    /// name), once another device is the default, reopen the output on it, or let the input open
+    /// it on its next use. Like a device that comes back (`watch_replug`), nothing is reopened
+    /// while the transport runs, so the default is not read then; nor while the devices need
+    /// reopening for another reason (the Reconnect offer), which `watch_replug` handles.
+    pub(super) fn watch_default(&mut self) {
+        let running = self.engine.transport.playing || self.engine.transport.recording;
+        if running || self.lost_audio.is_some() {
+            self.default_watch.stop();
+            return;
+        }
+        let output = self.player.as_ref().filter(|p| p.pinned_default && !p.silent && self.ui.audio.output.is_none()).map(|p| p.device_name.clone());
+        let input = self.recorder.as_ref().filter(|r| r.pinned_default && self.ui.audio.input.is_none()).map(|r| r.device_name.clone());
+        let (output, input) = self.default_watch.moved(self.ui.audio.system.clone(), output, input);
+        if output.is_some() {
+            self.default_watch.stop();
+            // The input reopens with it, on its next use, on the current default input.
+            let cfg = self.ui.audio.clone();
+            self.reopen_audio(&cfg, None);
+            self.ui.status = match self.player.as_ref().filter(|p| !p.silent) {
+                Some(p) => crate::localized_format!("SoundCraft opened the system default output, “{name}”.", name = p.device_name),
+                None => {
+                    self.audio_lost().by_hand = true;
+                    crate::localization::text("SoundCraft could not open the system default output. Use Reconnect to try again.").to_string()
+                }
+            };
+        } else if let Some(name) = input {
+            self.default_watch.stop();
+            self.recorder = None;
+            self.recorder_failed = false;
+            self.ui.status = crate::localized_format!("SoundCraft follows the system default input, now “{name}”.", name = name);
+        }
+    }
+
     /// The input device `name` opened: stop waiting for it.
     pub(super) fn input_opened(&mut self, name: &str) {
         let Some(l) = &mut self.lost_audio else { return };
@@ -366,7 +485,8 @@ fn reconnect_status(missing: Option<&str>, opened: Option<&str>, input_away: Opt
 
 #[cfg(test)]
 mod tests {
-    use super::{LostAudio, Probe, STEADY, Wanted};
+    use super::{DefaultNames, DefaultWatch, LostAudio, Probe, STEADY, Wanted};
+    use std::sync::atomic::AtomicUsize;
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::{Arc, Mutex};
     use std::time::{Duration, Instant};
@@ -806,5 +926,145 @@ mod tests {
         }
         assert!(!app.recorder_failed, "the input that came back may open again");
         assert!(app.lost_audio.as_ref().is_none_or(|l| l.input.is_none()));
+    }
+
+    /// System defaults the test moves, and how often they were read.
+    #[derive(Clone, Default)]
+    struct Defaults(Arc<Mutex<(Option<String>, Option<String>)>>, Arc<AtomicUsize>);
+
+    impl Defaults {
+        fn set(&self, output: Option<&str>, input: Option<&str>) {
+            *self.0.lock().unwrap() = (output.map(str::to_owned), input.map(str::to_owned));
+        }
+
+        fn reads(&self) -> usize {
+            self.1.load(Ordering::Relaxed)
+        }
+
+        fn watch(&self) -> DefaultWatch {
+            let d = self.clone();
+            let names: DefaultNames = Arc::new(move |_system| {
+                d.1.fetch_add(1, Ordering::Relaxed);
+                d.0.lock().unwrap().clone()
+            });
+            DefaultWatch::with_names(names, Duration::from_millis(5))
+        }
+    }
+
+    /// The name of an output open on the system default and pinned to that device, which no
+    /// machine has.
+    const PINNED: &str = "SoundCraft test output pinned to the default";
+
+    /// A SoundApp with the system default chosen, its output open on the default as the device
+    /// `PINNED` (as WASAPI opens it when its default handle cannot open: `pinned_default`), with
+    /// the defaults read from `defaults`.
+    fn app_on_pinned_default(defaults: &Defaults) -> crate::SoundApp {
+        let mut app = crate::SoundApp::new(soundcraft_engine::Engine::default(), None, crate::Services::default());
+        let mut player = soundcraft_playback::Player::with_config(app.engine.session_arc(), &app.ui.audio);
+        player.device_name = PINNED.into();
+        player.silent = false;
+        player.pinned_default = true;
+        app.player = Some(player);
+        app.default_watch = defaults.watch();
+        defaults.set(Some(PINNED), None);
+        app
+    }
+
+    /// Runs `watch_default` until the output open is no longer `PINNED`, or a while has passed.
+    fn follow(app: &mut crate::SoundApp) {
+        let until = Instant::now() + Duration::from_secs(5);
+        while app.player.as_ref().is_some_and(|p| p.device_name == PINNED) && Instant::now() < until {
+            app.watch_default();
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    }
+
+    /// Seen on Windows (WASAPI, Model 12): the output on the system default was reopened as the
+    /// device that was the default then; when the default later moved (Model 12 plugged back in
+    /// and made the default), SoundCraft stayed on the old device until Reconnect. It now reopens
+    /// on the new default by itself, and says so.
+    #[test]
+    fn an_output_pinned_to_the_system_default_follows_the_default_when_it_moves() {
+        let defaults = Defaults::default();
+        let mut app = app_on_pinned_default(&defaults);
+        for _ in 0..20 {
+            app.watch_default();
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert_eq!(app.player.as_ref().map(|p| p.device_name.as_str()), Some(PINNED), "the default did not move: not reopened");
+        assert!(defaults.reads() > 0, "the default is watched");
+        defaults.set(Some("Model 12"), None);
+        follow(&mut app);
+        let player = app.player.as_ref().expect("an output is open");
+        assert_ne!(player.device_name, PINNED, "reopened on the current default");
+        assert!(app.ui.status.contains("system default output"), "{}", app.ui.status);
+        assert_eq!(app.ui.audio.output, None, "still the system default");
+    }
+
+    /// An output chosen by name stays on it, whatever the system default is.
+    #[test]
+    fn an_output_chosen_by_name_does_not_follow_the_system_default() {
+        let defaults = Defaults::default();
+        let mut app = app_on_pinned_default(&defaults);
+        app.ui.audio.output = Some(PINNED.into());
+        defaults.set(Some("Model 12"), None);
+        follow(&mut app);
+        assert_eq!(app.player.as_ref().map(|p| p.device_name.as_str()), Some(PINNED));
+        assert_eq!(defaults.reads(), 0, "nothing to watch");
+    }
+
+    /// While the transport runs, the devices are not reopened (as for a device that comes back),
+    /// so the default is not read either; it is followed once the transport stops.
+    #[test]
+    fn the_system_default_is_not_followed_while_the_transport_runs() {
+        let defaults = Defaults::default();
+        let mut app = app_on_pinned_default(&defaults);
+        defaults.set(Some("Model 12"), None);
+        for running in [(true, false), (false, true)] {
+            (app.engine.transport.playing, app.engine.transport.recording) = running;
+            follow(&mut app);
+            assert_eq!(app.player.as_ref().map(|p| p.device_name.as_str()), Some(PINNED), "{running:?}");
+            assert_eq!(defaults.reads(), 0, "{running:?}");
+        }
+        (app.engine.transport.playing, app.engine.transport.recording) = (false, false);
+        follow(&mut app);
+        assert_ne!(app.player.as_ref().map(|p| p.device_name.as_str()), Some(PINNED), "followed once stopped");
+    }
+
+    /// A stream that follows the system default by itself (WASAPI's default handle, Core Audio's
+    /// default output) is left to it: the default is not watched.
+    #[test]
+    fn a_stream_that_follows_the_default_itself_is_not_watched() {
+        let defaults = Defaults::default();
+        let mut app = app_on_pinned_default(&defaults);
+        if let Some(p) = &mut app.player {
+            p.pinned_default = false;
+        }
+        defaults.set(Some("Model 12"), None);
+        follow(&mut app);
+        assert_eq!(app.player.as_ref().map(|p| p.device_name.as_str()), Some(PINNED));
+        assert_eq!(defaults.reads(), 0);
+    }
+
+    /// The input open on a pinned default is followed the same way: once another device is the
+    /// default input in several readings in a row, not while it is the device open.
+    #[test]
+    fn an_input_pinned_to_the_system_default_is_told_when_the_default_moves() {
+        let defaults = Defaults::default();
+        let mut watch = defaults.watch();
+        defaults.set(Some("Speakers"), Some("Mic A"));
+        let read = |watch: &mut DefaultWatch| {
+            let mut moved = (None, None);
+            let until = Instant::now() + Duration::from_millis(300);
+            while moved == (None, None) && Instant::now() < until {
+                moved = watch.moved(None, None, Some("Mic A".into()));
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            moved
+        };
+        assert_eq!(read(&mut watch), (None, None), "the default input is the one open");
+        defaults.set(Some("Speakers"), Some("Mic B"));
+        assert_eq!(read(&mut watch), (None, Some("Mic B".into())));
+        assert!(watch.moved.1 >= STEADY, "named in several readings in a row, not just one");
     }
 }

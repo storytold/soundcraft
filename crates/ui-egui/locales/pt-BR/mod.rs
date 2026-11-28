@@ -1331,6 +1331,7 @@ fn menu_translate(source: &str) -> Option<&'static str> {
             "O SoundCraft não conseguiu abrir a saída padrão do sistema. Use Reconectar para tentar de novo."
         }
         "The system default input is available again." => "A entrada padrão do sistema está disponível de novo.",
+        "SoundCraft follows the system default input, now “{name}”." => "O SoundCraft segue a entrada padrão do sistema, agora “{name}”.",
         "Recording stopped: {cause} The take is kept up to there. {then}" => "Gravação interrompida: {cause} A gravação foi mantida até aqui. {then}",
         "Recording stopped: {what} The take is kept up to there. {then}" => "Gravação interrompida: {what} A gravação foi mantida até aqui. {then}",
         "Remove configuration" => "Remover configuração",

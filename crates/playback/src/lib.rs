@@ -195,6 +195,11 @@ pub struct Player {
     pub silent: bool,
     /// The audio system (cpal host name) the output opened on; empty for the silent clock.
     system: &'static str,
+    /// The system default was opened as the device that was the default then (WASAPI when its
+    /// default handle cannot open): the stream is not told when the default moves to another
+    /// device, so the app watches the default and reopens (see
+    /// [`devices::default_names`]).
+    pub pinned_default: bool,
 }
 
 impl Player {
@@ -268,7 +273,7 @@ impl Player {
             Mutex::new(side)
         };
         match open_device(want, want_ch, cfg, required_output) {
-            Ok((device, config, format, name, system)) => {
+            Ok((device, config, format, name, system, pinned_default)) => {
                 // The chosen buffer size first; if the device refuses it, its default.
                 let mut attempts = vec![config];
                 if config.buffer_size != cpal::BufferSize::Default {
@@ -318,6 +323,7 @@ impl Player {
                             device_buffer: buffer,
                             silent: false,
                             system,
+                            pinned_default,
                         }
                     }
                     None => {
@@ -396,6 +402,7 @@ impl Player {
             device_buffer: None,
             silent: true,
             system: "",
+            pinned_default: false,
         }
     }
 
@@ -420,6 +427,7 @@ impl Player {
             device_buffer: None,
             silent: true,
             system: "",
+            pinned_default: false,
         }
     }
 
