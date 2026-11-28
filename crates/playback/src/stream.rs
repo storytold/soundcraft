@@ -19,6 +19,8 @@ pub(crate) struct Opened {
     pub(crate) tx: Sender<Cmd>,
     pub(crate) grx: Receiver<Vec<Box<dyn Plugin>>>,
     pub(crate) fault: Arc<Fault>,
+    #[cfg(target_os = "windows")]
+    pub(crate) recovery: Option<crate::stream_recovery::Recovery>,
 }
 
 /// Build and start the attempts in order; the first that builds and starts wins. A build error or
@@ -39,13 +41,40 @@ pub(crate) fn first_started<A: std::fmt::Debug, S, E: std::fmt::Display>(
     None
 }
 
+pub(crate) trait RenderGraph {
+    fn render(&mut self, draw: impl FnOnce(&mut AudioState)) -> bool;
+    #[cfg(target_os = "windows")]
+    fn report(&self, _now: std::time::Instant, _valid: bool) {}
+}
+
+impl RenderGraph for AudioState {
+    fn render(&mut self, draw: impl FnOnce(&mut AudioState)) -> bool {
+        draw(self);
+        true
+    }
+}
+
+pub(crate) fn build_format(
+    device: &cpal::Device,
+    config: cpal::StreamConfig,
+    format: cpal::SampleFormat,
+    graph: impl RenderGraph + Send + 'static,
+    fault: &Arc<Fault>,
+    shared: &Arc<Shared>,
+) -> Result<cpal::Stream, cpal::Error> {
+    match format {
+        cpal::SampleFormat::I32 => build_output::<i32>(device, config, graph, fault, shared),
+        cpal::SampleFormat::I16 => build_output::<i16>(device, config, graph, fault, shared),
+        _ => build_output::<f32>(device, config, graph, fault, shared),
+    }
+}
+
 /// The output stream: the mix renders f32 into a scratch buffer allocated here (so the callback
 /// never allocates), converted to the device's sample type.
 pub(crate) fn build_output<T>(
     device: &cpal::Device,
     config: cpal::StreamConfig,
-    mut state: AudioState,
-    channels: usize,
+    mut graph: impl RenderGraph + Send + 'static,
     fault: &Arc<Fault>,
     shared: &Arc<Shared>,
 ) -> Result<cpal::Stream, cpal::Error>
@@ -53,20 +82,46 @@ where
     T: cpal::SizedSample + cpal::FromSample<f32>,
 {
     use cpal::traits::DeviceTrait;
+    let channels = usize::from(config.channels);
     let frame = channels.max(1);
     let mut scratch = vec![0.0f32; 8192 * frame];
     let chunk = scratch.len();
+    #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+    let mut stream_lead = super::sync_clock::StreamLead::default();
     let (failed, guard, gone) = (Arc::clone(fault), Arc::clone(shared), Arc::clone(fault));
     device.build_output_stream(
         config,
-        move |data: &mut [T], _: &cpal::OutputCallbackInfo| {
+        move |data: &mut [T], info: &cpal::OutputCallbackInfo| {
+            // When this buffer is heard, for the external MIDI outputs' presentation timeline.
+            #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+            let now = std::time::Instant::now();
+            #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+            let timestamp = info.timestamp();
+            #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+            let mut timing = stream_lead.observe(now, timestamp.playback.checked_duration_since(timestamp.callback));
+            let _ = info;
             mark_audio_thread();
-            for out in data.chunks_mut(chunk) {
-                let Some(s) = scratch.get_mut(..out.len()) else { return };
-                guarded_block(&failed, &guard, s, |d| state.fill(d, channels));
-                for (o, x) in out.iter_mut().zip(s.iter()) {
-                    *o = T::from_sample(*x);
+            let frames = data.len() / frame;
+            #[cfg(target_os = "windows")]
+            graph.report(now, !timing.clamped);
+            let rendered = graph.render(|state| {
+                for (index, out) in data.chunks_mut(chunk).enumerate() {
+                    #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+                    {
+                        timing.frame_offset = index * (chunk / frame);
+                        state.device_timing = Some(timing);
+                        state.device_buffer_frames = frames;
+                    }
+                    let _ = (frames, index);
+                    let Some(s) = scratch.get_mut(..out.len()) else { return };
+                    guarded_block(&failed, &guard, s, |d| state.fill(d, channels));
+                    for (o, x) in out.iter_mut().zip(s.iter()) {
+                        *o = T::from_sample(*x);
+                    }
                 }
+            });
+            if !rendered {
+                data.fill(T::from_sample(0.0));
             }
         },
         // cpal may call this on the audio thread (on ALSA in a loop while the device stays
@@ -94,11 +149,19 @@ pub(crate) fn open_device(
     want_rate: u32,
     want_ch: u16,
     cfg: &AudioConfig,
-) -> Result<(cpal::Device, cpal::StreamConfig, cpal::SampleFormat, String), String> {
+    required_output: Option<&str>,
+) -> Result<(cpal::Device, cpal::StreamConfig, cpal::SampleFormat, String, &'static str), String> {
     use cpal::traits::DeviceTrait;
     let host = devices::host(cfg);
-    let device = devices::device(&host, cfg.output.as_deref(), true).ok_or_else(|| "no output device".to_string())?;
+    let unavailable = |required: &str| format!("The requested audio output {required} is unavailable");
+    let device = devices::device(&host, required_output.or(cfg.output.as_deref()), true, required_output.is_none())
+        .ok_or_else(|| required_output.map_or_else(|| "no output device".to_string(), unavailable))?;
     let name = devices::device_name(&device).unwrap_or_else(|| "Audio device".into());
+    if let Some(required) = required_output
+        && (name != required || cfg.system.as_ref().is_some_and(|system| !host.id().name().eq_ignore_ascii_case(system)))
+    {
+        return Err(unavailable(required));
+    }
     // Prefer a config at the chosen (else session) rate; else the device default (we resample).
     let want_ch = want_ch.max(2);
     let rates: Vec<u32> = cfg.sample_rate.into_iter().chain(Some(want_rate)).collect();
@@ -129,7 +192,7 @@ pub(crate) fn open_device(
             (stream_config, c.sample_format())
         }
     };
-    Ok((device, config, format, name))
+    Ok((device, config, format, name, host.id().name()))
 }
 
 /// Pick the output configuration for the first requested rate the device offers (the configured

@@ -103,17 +103,8 @@ pub fn specs() -> Vec<CommandSpec> {
             let devices: Vec<String> = text(&s.edit, "midi.studio.devices").map(|t| t.split('|').map(str::to_string).collect()).unwrap_or_default();
             Ok(json!({"devices": devices}))
         }),
-        cmd!(noundo "setup.midi_beat_clock", "MIDI Beat Clock...", ["Setup", "MIDI"], None, "{enabled?: bool, offset?: samples, destination?: name}", always, |e, p| {
-            let s = e.session_mut();
-            if let Some(v) = p.get("enabled").and_then(Value::as_bool) {
-                s.edit.set_flag("midi.beat_clock", v);
-            }
-            store_value(&mut s.edit, p, "offset", "midi.beat_clock.offset", -1e7, 1e7);
-            if let Some(d) = str_param(p, "destination") {
-                set_text(&mut s.edit, "midi.beat_clock.destination", Some(d));
-            }
-            Ok(json!({"enabled": s.edit.flag("midi.beat_clock"), "offset": s.edit.value("midi.beat_clock.offset", 0.0), "destination": text(&s.edit, "midi.beat_clock.destination")}))
-        }),
+        cmd!(noundo "setup.midi_beat_clock", "MIDI Beat Clock...", ["Setup", "MIDI"], None, "{enabled?, ports?: {name:{enabled,offset_samples}}, compensation?} (desktop host)", always, |_, _| Err(EngineError::Unsupported("MIDI sync settings require the desktop host".into()))),
+        cmd!(noundo "setup.midi_sync_status", "MIDI Sync Diagnostics", [], None, "{} (desktop host reports port timers)", always, |_, _| Ok(json!({"audio_device_open":false,"output":null}))),
         cmd!(noundo "setup.midi_input_filter", "MIDI Input Filter...", ["Setup", "MIDI"], None, "{filter?: [notes|pitch_bend|mono_aftertouch|poly_aftertouch|program|cc|sysex|realtime], allow?: [...]} — filtered kinds are not recorded", always, midi_filter),
         cmd!(noundo "setup.midi_input_devices", "MIDI Input Devices...", ["Setup", "MIDI"], None, "{enable?: [names], disable?: [names]}", always, midi_inputs),
         cmd!(noundo "setup.transcription_settings", "Transcription Settings...", ["Setup"], None, "{enabled?: bool, language?: 'en'}", always, |e, p| {

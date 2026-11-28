@@ -115,7 +115,7 @@ pub fn specs() -> Vec<CommandSpec> {
             has_selection,
             |e, p| performance(e, p, true)
         ),
-        cmd!(noundo "event.midi_track_offsets", "MIDI Track Offsets", ["Event"], None, "{track?, offset?: samples|{seconds}} — sets (or lists) per-track MIDI playback offsets", always, midi_offsets),
+        cmd!(noundo "event.midi_track_offsets", "MIDI Track Offsets", ["Event"], None, "{track?, offset?: samples|{seconds}} — sets (or lists) per-track MIDI playback offsets, for the instrument and the external MIDI output", always, midi_offsets),
         cmd!(noundo "event.midi_rtp", "MIDI Real-Time Properties", ["Event"], None, "{tracks?, velocity?: ±127, transpose?: ±127, duration?: % (100), delay?: ticks, clear?: bool}", always, midi_rtp),
         cmd!(
             "event.extract_chords",

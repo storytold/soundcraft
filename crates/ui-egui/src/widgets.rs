@@ -304,6 +304,15 @@ pub(crate) struct SelectorLabels<'a> {
     pub tooltip: &'a str,
 }
 
+/// `text` laid out on one line at most `width` wide, ending in "…" where it does not fit.
+pub(crate) fn one_line(painter: &egui::Painter, text: &str, font: egui::FontId, color: Color32, width: f32) -> std::sync::Arc<egui::Galley> {
+    let mut job = egui::text::LayoutJob::simple(text.to_owned(), font, color, width.max(1.0));
+    job.wrap.max_rows = 1;
+    job.wrap.break_anywhere = true;
+    job.wrap.overflow_character = Some('…');
+    painter.layout_job(job)
+}
+
 /// A selector whose accessible name is unique (for example per track), with its current value
 /// published separately in the accessibility tree.
 pub(crate) fn selector_box_named(ui: &mut Ui, width: f32, height: f32, text: &str, color: Color32, labels: SelectorLabels<'_>) -> Response {
@@ -323,11 +332,7 @@ pub(crate) fn selector_box_named(ui: &mut Ui, width: f32, height: f32, text: &st
     let tr = Rect::from_min_max(pos2(r.max.x - height * 0.8, r.min.y), r.max);
     icons::draw(ui.painter(), tr.shrink(height * 0.15), "triangle_down", t.text_dim);
     let text_rect = Rect::from_min_max(r.min + vec2(3.0, 1.0), pos2(tr.left() - 2.0, r.bottom() - 1.0));
-    let mut job = egui::text::LayoutJob::simple(text.to_owned(), regular((height * 0.62).clamp(8.0, 12.0)), color, text_rect.width().max(1.0));
-    job.wrap.max_rows = 1;
-    job.wrap.break_anywhere = true;
-    job.wrap.overflow_character = Some('…');
-    let galley = ui.painter().layout_job(job);
+    let galley = one_line(ui.painter(), text, regular((height * 0.62).clamp(8.0, 12.0)), color, text_rect.width());
     let pos = text_rect.center() - galley.size() * 0.5;
     ui.painter().with_clip_rect(r.shrink(1.0)).galley(pos, galley, color);
     resp.on_hover_text(tooltip)
@@ -877,6 +882,23 @@ fn drag_toggle(ui: &Ui, resp: &Response, on: &mut bool) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{clip_gain_from_pos, clip_gain_to_pos};
+
+    /// A selector's text that does not fit ends in an ellipsis within the key, not cut off at both edges.
+    #[test]
+    fn one_line_text_ends_in_an_ellipsis_within_its_width() {
+        let ctx = egui::Context::default();
+        let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
+            let painter = ui.painter();
+            let long = "IAC Driver Bus 1 with a very long name ch 2 (unavailable)";
+            let galley = super::one_line(painter, long, crate::theme::bold(10.0), egui::Color32::WHITE, 80.0);
+            assert!(galley.size().x <= 80.0, "{} wide", galley.size().x);
+            assert_eq!(galley.rows.len(), 1);
+            assert!(galley.elided && galley.rows[0].glyphs.last().is_some_and(|g| g.chr == '…'), "no ellipsis");
+            let short = super::one_line(painter, "UM-ONE ch 1", crate::theme::bold(10.0), egui::Color32::WHITE, 80.0);
+            assert!(!short.elided);
+        });
+        output.textures_delta.clear();
+    }
     use egui::{Event, Modifiers, PointerButton, Pos2};
     use egui_kittest::{Harness, kittest::Queryable};
 

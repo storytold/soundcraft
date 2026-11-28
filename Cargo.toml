@@ -73,6 +73,8 @@ craft-video = { version = "0.1.0", git = "https://github.com/storytold/craft-lib
 craft-midi = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "8fa4db64a9bb943520259ea95331a303ba788f21", features = ["serde"] }
 craft-audio = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "8fa4db64a9bb943520259ea95331a303ba788f21", features = ["decode", "lossless-encode", "peaks", "serde"] }
 craft-time = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "8fa4db64a9bb943520259ea95331a303ba788f21" }
+# The sync message API (Beat Clock, SPP, MTC) is pinned separately until the next workspace dependency update.
+craft-midi-sync = { package = "craft-midi", version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "08da5e1486ee640de1d2cccd8fe8dd32b1d3b62c" }
 # AAF property-stream framing, shared with the other craft apps.
 craft-aaf = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "8fa4db64a9bb943520259ea95331a303ba788f21" }
 craft-scraft-format = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "8fa4db64a9bb943520259ea95331a303ba788f21" }

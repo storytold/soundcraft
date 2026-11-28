@@ -81,6 +81,7 @@ pub const UI_COMMANDS: &[(&str, &str, &str, Option<&str>)] = &[
     ("ui.language", "Language", "", None),
     ("ui.theme", "Appearance", "", None),
     ("ui.reduce_visual_effects", "Reduce Visual Effects", "", None),
+    ("ui.midi_output_compensation", "Delay Compensation for External MIDI Notes", "", None),
     ("ui.undo_levels", "Levels of Undo", "", None),
 ];
 
@@ -171,6 +172,7 @@ const DIALOG_COMMANDS: &[&str] = &[
     "edit.shift",
     "edit.fades_create",
     "setup.session",
+    "setup.midi_beat_clock",
     "event.quantize",
     "event.transpose",
     "edit.strip_silence",
@@ -582,6 +584,11 @@ pub fn invoke_menu(app: &mut SoundApp, id: &str, path: &str) {
         app.ui.audiosuite = p.get("process").and_then(Value::as_str).map(str::to_string);
         return;
     }
+    if id == "setup.midi_beat_clock" {
+        app.migrate_midi_sync();
+        app.dialogs.open_beat_clock(&app.ui.midi_sync);
+        return;
+    }
     if wants_dialog(id) && app.dialogs.open_for_command(&app.engine, id) {
         return;
     }
@@ -605,6 +612,10 @@ pub fn invoke_shortcut_dialog(app: &mut SoundApp, id: &str) -> bool {
         let _ = crate::aaf_import::command(app, &json!({}));
         return true;
     }
+    if id == "setup.midi_beat_clock" {
+        app.migrate_midi_sync();
+        return app.dialogs.open_beat_clock(&app.ui.midi_sync);
+    }
     (wants_dialog(id) && app.dialogs.open_for_command(&app.engine, id)) || crate::dialogs::ask_to_save(app, id, &json!({}))
 }
 
@@ -615,6 +626,9 @@ fn wants_dialog(id: &str) -> bool {
 
 /// Handle UI-layer commands. Returns None when `id` is not a UI command.
 pub fn run_ui_command(app: &mut SoundApp, id: &str, p: &Value) -> Option<Result<Value, String>> {
+    if matches!(id, "setup.midi_beat_clock" | "setup.midi_sync_status") {
+        return Some(app.sync_command(id, p));
+    }
     if id == "window.import_aaf" {
         return Some(crate::aaf_import::command(app, p));
     }
@@ -842,6 +856,7 @@ pub fn run_ui_command(app: &mut SoundApp, id: &str, p: &Value) -> Option<Result<
             app.ui.reduce_visual_effects = mode;
             json!({"mode": mode.id()})
         }
+        "ui.midi_output_compensation" => return Some(app.midi_output_compensation_command(p)),
         "ui.undo_levels" => {
             if let Some(levels) = p.get("levels").and_then(Value::as_u64) {
                 app.ui.undo_levels = usize::try_from(levels).unwrap_or(64).clamp(1, 64);
