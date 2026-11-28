@@ -466,9 +466,10 @@ pub(crate) fn process_strip(s: &Session, t: &Track, strip: &mut Strip, busses: &
     zero_buf(&mut strip.buf, frames);
     let transport = transport_at(s, pos, !live.monitor_only, live.recording);
     match t.kind {
-        TrackKind::Audio if !live.input.is_empty() && (t.mixer.input_monitor || (t.mixer.record_arm && (live.monitor_only || live.recording))) => {
+        TrackKind::Audio if !live.input.is_empty() && t.mixer.input_monitor => {
             monitor_input(t, strip, live, frames);
         }
+        TrackKind::Audio if live.recording && t.mixer.record_arm => {}
         TrackKind::Audio if live.monitor_only => {}
         // Stopped: only a track that plays live MIDI input sounds (and one that just stopped
         // doing so, to release its notes).

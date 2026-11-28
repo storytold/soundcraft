@@ -1162,6 +1162,44 @@ fn input_monitoring_replaces_clips() {
 }
 
 #[test]
+fn input_monitoring_disabled_silences_recording_audio_track() {
+    let (mut s, t) = session_with_dc(0.5, 4800);
+    let backing = add_dc_track(&mut s, 0.5, 4800);
+    let mut eng = MixEngine::new(48_000.0, 512);
+    eng.input = vec![vec![0.25; 512]];
+    eng.recording = true;
+    s.track_mut(t).unwrap().mixer.record_arm = true;
+    s.track_mut(t).unwrap().mixer.input_monitor = false;
+    let mut out = vec![vec![0.0; 512]; 2];
+    // With input monitoring off, the recording track produces silence while the backing track plays.
+    eng.render(&s, 0, 512, &mut out);
+    assert!((out[0][100] - 0.5 * std::f32::consts::FRAC_1_SQRT_2).abs() < 1e-3, "backing track still plays");
+
+    // When input monitoring is enabled on the recording track, both backing and input are heard.
+    s.track_mut(t).unwrap().mixer.input_monitor = true;
+    eng.render(&s, 0, 512, &mut out);
+    let expected = (0.5 + 0.25) * std::f32::consts::FRAC_1_SQRT_2;
+    assert!((out[0][100] - expected).abs() < 1e-3, "monitored recording track adds input to mix");
+}
+
+#[test]
+fn record_arm_without_input_monitoring_is_silent_when_stopped() {
+    let (mut s, t) = session_with_dc(0.5, 4800);
+    let mut eng = MixEngine::new(48_000.0, 512);
+    eng.input = vec![vec![0.25; 512]];
+    eng.monitor_only = true;
+    s.track_mut(t).unwrap().mixer.record_arm = true;
+    s.track_mut(t).unwrap().mixer.input_monitor = false;
+    let mut out = vec![vec![0.0; 512]; 2];
+    eng.render(&s, 0, 512, &mut out);
+    assert!(out[0].iter().all(|x| x.abs() < 1e-6), "record-armed track without input monitor stays silent when stopped");
+
+    s.track_mut(t).unwrap().mixer.input_monitor = true;
+    eng.render(&s, 0, 512, &mut out);
+    assert!((out[0][100] - 0.25 * std::f32::consts::FRAC_1_SQRT_2).abs() < 1e-3, "input-monitored track is heard when stopped");
+}
+
+#[test]
 fn empty_session_is_silent() {
     let s = Session::default();
     let out = render_range(&s, Range::new(0, 1000), 128);
