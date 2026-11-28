@@ -389,6 +389,14 @@ mod tests {
     }
 
     #[test]
+    fn room_tone_menu_labels_are_translated() {
+        for label in ["Room Tone", "Set Room Tone", "Fill Gaps with Room Tone", "Clear Room Tone"] {
+            let translated = super::pt_br::translate(label).expect("room tone menu translation");
+            assert_ne!(translated, label);
+        }
+    }
+
+    #[test]
     fn engine_errors_are_translated_with_their_values() {
         assert_eq!(error_text("select a clip"), "select a clip");
         let _scope = enter(Language::PortugueseBrazil);
