@@ -8,15 +8,34 @@ use std::path::{Path, PathBuf};
 
 fn harness() -> Harness<'static, SoundApp> {
     let app = SoundApp::new(soundcraft_engine::demo::demo_engine(), None, Services::default());
-    let mut h = Harness::builder().with_size(vec2(1400.0, 900.0)).with_max_steps(1_000).build_ui_state(
-        |ui, app: &mut SoundApp| {
-            app.logic(&ui.ctx().clone());
-            app.ui(ui);
-        },
-        app,
-    );
+    let mut h = Harness::builder()
+        .with_context_setup(soundcraft_ui_egui::framework::install_headless)
+        .with_size(vec2(1400.0, 900.0))
+        .with_max_steps(1_000)
+        .build_ui_state(
+            |ui, app: &mut SoundApp| {
+                app.logic(&ui.ctx().clone());
+                app.ui(ui);
+            },
+            app,
+        );
     h.run_steps(5);
     h
+}
+
+/// How many frames a bounce may take before a test calls it stuck. A frame renders for a slice of
+/// wall-clock time, so a slow CPU needs many more frames than the harness's `max_steps`.
+const MAX_FRAMES: usize = 100_000;
+
+/// Steps frames until the bounce ends, then lets the app settle.
+fn finish_bounce(h: &mut Harness<'_, SoundApp>) {
+    let mut frames = 0;
+    while h.state().bounce.is_some() {
+        h.step();
+        frames += 1;
+        assert!(frames < MAX_FRAMES, "the bounce did not finish within {MAX_FRAMES} frames");
+    }
+    h.run();
 }
 
 fn scratch(name: &str) -> PathBuf {
@@ -40,6 +59,27 @@ fn bounce_from_dialog(h: &mut Harness<'_, SoundApp>, file: &Path) {
 }
 
 #[test]
+fn enter_on_a_focused_cancel_closes_the_dialog_and_starts_no_bounce() {
+    let dir = scratch("bounce-enter-cancel");
+    let file = dir.join("Mix.wav");
+    let mut h = harness();
+    let app = h.state_mut();
+    assert!(app.dialogs.open_for_command(&app.engine, "file.bounce_mix"));
+    if let Some(Dialog::Bounce { path, .. }) = &mut app.dialogs.open {
+        *path = file.to_string_lossy().into_owned();
+    }
+    h.run_steps(2);
+    h.get_by_label("Cancel").focus();
+    h.run_steps(2);
+    h.event(egui::Event::Key { key: egui::Key::Enter, physical_key: None, pressed: true, repeat: false, modifiers: egui::Modifiers::NONE });
+    h.run_steps(3);
+    assert!(h.state().dialogs.open.is_none());
+    assert!(h.state().bounce.is_none(), "Cancel started a bounce");
+    assert!(!file.exists());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn a_bounce_renders_across_frames_with_progress_until_its_file_is_written() {
     let dir = scratch("bounce-frames");
     let mut h = harness();
@@ -52,10 +92,10 @@ fn a_bounce_renders_across_frames_with_progress_until_its_file_is_written() {
         h.step();
     }
     assert!(progress.is_sorted() && progress[0] < progress[3] && progress[3] < 1.0, "{progress:?}");
-    h.run();
+    finish_bounce(&mut h);
     assert!(h.state().bounce.is_none());
     assert!(h.state().ui.status.starts_with("Bounced Mix.wav (peak"), "{}", h.state().ui.status);
-    let (_, file) = soundcraft_audio_io::decode(&std::fs::read(dir.join("Mix.wav")).unwrap(), None).unwrap();
+    let (_, file) = craft_audio::decode(&std::fs::read(dir.join("Mix.wav")).unwrap(), None).unwrap();
     assert_eq!(file.frames() as i64, frames);
     assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 1);
     let _ = std::fs::remove_dir_all(&dir);
@@ -72,7 +112,7 @@ fn a_bounce_keeps_going_while_the_window_is_hidden() {
         let _ = ctx.run_logic(&egui::RawInput::default(), |ctx| h.state_mut().logic(ctx));
         assert!(h.state().bounce.is_none() || ctx.has_requested_repaint());
         calls += 1;
-        assert!(calls < 10_000);
+        assert!(calls < MAX_FRAMES);
     }
     assert!(calls > 3, "{calls}");
     assert!(h.state().ui.status.starts_with("Bounced Hidden.wav"), "{}", h.state().ui.status);
@@ -117,8 +157,8 @@ fn cancel_or_escape_stops_a_bounce_and_leaves_no_file() {
 
 /// The largest gap between `int` and `float` in 16-bit LSBs.
 fn max_error_lsb(int: &Path, float: &Path) -> f64 {
-    let (_, a) = soundcraft_audio_io::decode(&std::fs::read(int).unwrap(), None).unwrap();
-    let (_, b) = soundcraft_audio_io::decode(&std::fs::read(float).unwrap(), None).unwrap();
+    let (_, a) = craft_audio::decode(&std::fs::read(int).unwrap(), None).unwrap();
+    let (_, b) = craft_audio::decode(&std::fs::read(float).unwrap(), None).unwrap();
     let mut worst = 0.0f64;
     for (i, f) in a.channels.iter().zip(&b.channels) {
         for (x, y) in i.iter().zip(f) {

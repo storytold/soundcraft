@@ -5,6 +5,7 @@ impl SoundApp {
     pub(crate) fn meters_live(&self) -> bool {
         self.engine.transport.playing
             || (self.recorder.is_some() && self.engine.session().tracks.iter().any(|t| t.mixer.input_monitor || t.mixer.record_arm))
+            || (self.midi_connected() && self.engine.session().tracks.iter().any(|t| t.kind.is_midi() && soundcraft_mix::midi_thru(t)))
     }
 
     /// Reopens the audio devices with `cfg` (Setup › Playback Engine › Apply), keeping the
@@ -13,7 +14,7 @@ impl SoundApp {
     /// then stays the configuration of the open device.
     pub fn apply_audio_config(&mut self, cfg: soundcraft_playback::AudioConfig) -> Result<(), String> {
         if self.engine.transport.recording {
-            return Err("stop recording before changing the audio device".into());
+            return Err(crate::localization::text("stop recording before changing the audio device").into());
         }
         self.ui.audio = cfg;
         let at = self.position();
@@ -26,7 +27,8 @@ impl SoundApp {
         // The input reopens on the next record or monitor with the new choice.
         self.recorder = None;
         self.recorder_failed = false;
-        let player = soundcraft_playback::Player::with_config(self.engine.session_arc(), &self.ui.audio);
+        let player = reopen(&mut self.player, &self.ui.audio, || soundcraft_playback::Player::with_config(self.engine.session_arc(), &self.ui.audio));
+        self.attach_midi(&player);
         player.locate(at);
         self.player = Some(player);
         Ok(())
@@ -46,7 +48,7 @@ impl SoundApp {
             }
             Err(e) => {
                 self.recorder_failed = true;
-                self.ui.status = format!("No audio input: {e}");
+                self.ui.status = crate::localized_format!("No audio input: {e}", e = e);
             }
         }
     }
@@ -58,24 +60,28 @@ impl SoundApp {
         let name = p.device_name.clone();
         let (cause, then) = match trouble {
             OutputTrouble::Bug => (
-                "the audio engine hit an internal error (see the log)".to_string(),
-                "Use Reconnect audio device in Setup › Playback Engine, or restart SoundCraft.",
+                crate::localization::text("the audio engine hit an internal error (see the log)").to_string(),
+                crate::localization::text("Use Reconnect audio device in Setup › Playback Engine, or restart SoundCraft."),
             ),
-            OutputTrouble::Gone => {
-                (format!("“{name}” is unavailable"), "Check the audio device, then use Reconnect audio device in Setup › Playback Engine.")
-            }
-            OutputTrouble::Stalled => (format!("“{name}” stopped asking for audio"), "Use Reconnect audio device in Setup › Playback Engine."),
+            OutputTrouble::Gone => (
+                format!("“{}” {}", name, crate::localization::text("is unavailable")),
+                crate::localization::text("Check the audio device, then use Reconnect audio device in Setup › Playback Engine."),
+            ),
+            OutputTrouble::Stalled => (
+                format!("“{}” {}", name, crate::localization::text("stopped asking for audio")),
+                crate::localization::text("Use Reconnect audio device in Setup › Playback Engine."),
+            ),
         };
         let (recording, playing) = (self.engine.transport.recording, self.engine.transport.playing);
         if recording || playing {
             self.stop_play();
         }
         self.ui.status = if recording {
-            format!("Recording stopped: {cause}. The take is kept up to there. {then}")
+            crate::localized_format!("Recording stopped: {cause} The take is kept up to there. {then}", cause = cause, then = then)
         } else if playing {
-            format!("Playback stopped: {cause}. {then}")
+            crate::localized_format!("Playback stopped: {cause} {then}", cause = cause, then = then)
         } else {
-            format!("Audio output: {cause}. {then}")
+            crate::localized_format!("Audio output: {cause} {then}", cause = cause, then = then)
         };
     }
 
@@ -88,7 +94,7 @@ impl SoundApp {
             let lost = r.lost_ms();
             if recording && lost > self.lost_shown {
                 self.lost_shown = lost;
-                self.ui.status = format!("The disk is too slow: this take has lost {lost} ms of input so far.");
+                self.ui.status = crate::localized_format!("The disk is too slow: this take has lost {lost} ms of input so far.", lost = lost);
             }
             return;
         };
@@ -99,14 +105,14 @@ impl SoundApp {
             Trouble::Device(what) => {
                 self.recorder = None;
                 self.recorder_failed = true;
-                (what, "Reconnect it, then use Reconnect audio device in Setup › Playback Engine.")
+                (what, crate::localization::text("Reconnect it, then use Reconnect audio device in Setup › Playback Engine."))
             }
-            Trouble::Disk(what) => (what, "Check the disk, then record again."),
+            Trouble::Disk(what) => (what, crate::localization::text("Check the disk, then record again.")),
         };
         self.ui.status = if recording {
-            format!("Recording stopped: {what}. The take is kept up to there. {then}")
+            crate::localized_format!("Recording stopped: {what} The take is kept up to there. {then}", what = what, then = then)
         } else {
-            format!("Audio input: {what}. {then}")
+            crate::localized_format!("Audio input: {what} {then}", what = what, then = then)
         };
     }
 
@@ -121,8 +127,50 @@ impl SoundApp {
         }
         self.recorder = None;
         self.recorder_failed = false;
-        self.player = Some(Player::with_config(self.engine.session_arc(), &self.ui.audio));
+        let player = reopen(&mut self.player, &self.ui.audio, || Player::with_config(self.engine.session_arc(), &self.ui.audio));
+        self.attach_midi(&player);
+        self.player = Some(player);
     }
+}
+
+/// How long the meters keep the last readings while no audio block arrives. Longer than the
+/// longest device buffer (8192 frames at 44.1 kHz, 186 ms) plus the slowest meter poll (50 ms), so
+/// a large buffer never reads as silence between its callbacks; once it has passed, the device has
+/// stopped calling back (switched off, unplugged, stalled) and the meters fall to silence.
+pub(super) const METER_STALE_SECS: f64 = 0.5;
+
+/// After a meter take that `fresh`ly brought new blocks or not, at `now` (uptime, seconds): note
+/// when the last block came in `last_block`, and clear `snap`'s readings once none has come for
+/// [`METER_STALE_SECS`]. Otherwise the last block's levels would be fed to the meters every frame
+/// and never fall.
+pub(super) fn age_meters(snap: &mut soundcraft_playback::MeterSnapshot, fresh: bool, now: f64, last_block: &mut f64) {
+    if fresh {
+        *last_block = now;
+    } else if now - *last_block >= METER_STALE_SECS {
+        snap.clear_levels();
+    }
+}
+
+/// Open the new device of `cfg` with `open` in place of the one in `slot`, and return it; the caller
+/// stores it, which closes the old one if it is still there.
+///
+/// On ASIO the old device closes first: in cpal 0.18.2 a process holds one ASIO driver, and while
+/// the old stream keeps it loaded the device list stops at the first other driver, so the new device
+/// (even the same driver again) is often not found and the player falls back to the silent clock
+/// (#1864). Elsewhere (Core Audio, WASAPI, ALSA, JACK) a device opens whatever else is open, and the
+/// old one stays open until the new one is there, as before: closing first there would only make the
+/// new device start cold, which on Core Audio holds Apply on the UI thread for about half a second.
+fn reopen<T>(slot: &mut Option<T>, cfg: &soundcraft_playback::AudioConfig, open: impl FnOnce() -> T) -> T {
+    if one_driver_per_process(cfg) {
+        drop(slot.take());
+    }
+    open()
+}
+
+/// Whether `cfg`'s audio system opens one driver per process (ASIO in cpal 0.18.2), so the device in
+/// use must close before another (or the same one again) can be found.
+fn one_driver_per_process(cfg: &soundcraft_playback::AudioConfig) -> bool {
+    cfg.system.as_deref().is_some_and(|s| s.eq_ignore_ascii_case("ASIO"))
 }
 
 pub(super) fn feed_meter(d: &mut MeterDisplay, peak: [f32; 2], gr: f32, dt: f32) {
@@ -135,7 +183,9 @@ pub(super) fn feed_meter(d: &mut MeterDisplay, peak: [f32; 2], gr: f32, dt: f32)
         if let Some(x) = d.level.get_mut(c) {
             *x = if nv < 1e-5 { 0.0 } else { nv };
         }
-        if v >= d.hold.get(c).copied().unwrap_or(0.0) {
+        // Only a signal holds: silence meeting a hold of 0 would restart the shared hold time
+        // every frame and keep the other channel's hold up for good.
+        if v > 0.0 && v >= d.hold.get(c).copied().unwrap_or(0.0) {
             if let Some(h) = d.hold.get_mut(c) {
                 *h = v;
             }
@@ -150,4 +200,175 @@ pub(super) fn feed_meter(d: &mut MeterDisplay, peak: [f32; 2], gr: f32, dt: f32)
         d.hold = d.level;
     }
     d.gr = if gr > d.gr { gr } else { d.gr * fall };
+}
+
+/// Whether a track needs the audio input opened: an audio track (or an aux) that is
+/// record-enabled or input-monitored. A MIDI or instrument track listens to MIDI devices, so
+/// arming one does not open an audio device or complain that there is none.
+pub(super) fn wants_audio_input(s: &soundcraft_model::Session) -> bool {
+    s.tracks.iter().any(|t| !t.kind.is_midi() && (t.mixer.input_monitor || t.mixer.record_arm))
+}
+
+#[cfg(test)]
+mod reopen_tests {
+    use super::reopen;
+    use soundcraft_playback::AudioConfig;
+    use std::cell::Cell;
+    use std::rc::Rc;
+
+    /// A fake audio system. `one_driver` models ASIO in cpal 0.18.2: while a stream holds the
+    /// driver, looking a device up by name finds nothing. Without it, any device opens.
+    #[derive(Default)]
+    struct FakeHost {
+        one_driver: bool,
+        open_streams: Rc<Cell<u32>>,
+        opened_while_another_was_open: Cell<u32>,
+    }
+
+    /// An open stream; dropping it closes it (and releases an ASIO driver).
+    struct Stream(Rc<Cell<u32>>);
+
+    impl Drop for Stream {
+        fn drop(&mut self) {
+            self.0.set(self.0.get() - 1);
+        }
+    }
+
+    /// A player: its stream when the device was found, else the silent clock (no stream).
+    struct FakePlayer {
+        stream: Option<Stream>,
+    }
+
+    impl FakeHost {
+        fn open(&self) -> FakePlayer {
+            if self.open_streams.get() > 0 {
+                self.opened_while_another_was_open.set(self.opened_while_another_was_open.get() + 1);
+                if self.one_driver {
+                    return FakePlayer { stream: None };
+                }
+            }
+            self.open_streams.set(self.open_streams.get() + 1);
+            FakePlayer { stream: Some(Stream(Rc::clone(&self.open_streams))) }
+        }
+    }
+
+    fn config(system: &str) -> AudioConfig {
+        AudioConfig { system: Some(system.into()), output: Some("ASIO4ALL v2".into()), ..AudioConfig::default() }
+    }
+
+    /// Apply, Apply, Reconnect: each step opens the device of `cfg` in place of the open one, as
+    /// `apply_audio_config` and `reconnect_audio` do. Returns whether each step found the device.
+    fn apply_apply_reconnect(host: &FakeHost, cfg: &AudioConfig) -> Vec<bool> {
+        let mut player = Some(host.open());
+        assert!(player.as_ref().is_some_and(|p| p.stream.is_some()), "the first open finds the device");
+        let mut found = Vec::new();
+        for _ in ["first Apply", "second Apply", "Reconnect"] {
+            let new = reopen(&mut player, cfg, || host.open());
+            found.push(new.stream.is_some());
+            player = Some(new);
+        }
+        found
+    }
+
+    #[test]
+    fn on_asio_every_apply_and_reconnect_finds_the_device() {
+        let host = FakeHost { one_driver: true, ..FakeHost::default() };
+        assert_eq!(apply_apply_reconnect(&host, &config("ASIO")), [true, true, true], "no step falls back to the silent clock");
+        assert_eq!(host.opened_while_another_was_open.get(), 0, "the old stream released the driver before each lookup");
+    }
+
+    #[test]
+    fn elsewhere_the_old_device_stays_open_until_the_new_one_is_there() {
+        for system in ["CoreAudio", "WASAPI"] {
+            let host = FakeHost::default();
+            assert_eq!(apply_apply_reconnect(&host, &config(system)), [true, true, true]);
+            assert_eq!(host.opened_while_another_was_open.get(), 3, "{system}: each new device opened before the old one closed, as before");
+        }
+    }
+}
+
+#[cfg(test)]
+mod audio_input_tests {
+    use super::wants_audio_input;
+    use soundcraft_model::{ChannelFormat, Session, TrackKind};
+
+    #[test]
+    fn only_audio_tracks_ask_for_the_audio_input() {
+        let mut s = Session::default();
+        let synth = s.add_track(TrackKind::Instrument, ChannelFormat::Stereo, None);
+        let midi = s.add_track(TrackKind::Midi, ChannelFormat::Stereo, None);
+        let vox = s.add_track(TrackKind::Audio, ChannelFormat::Mono, None);
+        assert!(!wants_audio_input(&s));
+        s.track_mut(synth).unwrap().mixer.record_arm = true;
+        s.track_mut(midi).unwrap().mixer.input_monitor = true;
+        assert!(!wants_audio_input(&s), "armed and monitored MIDI tracks listen to MIDI devices");
+        s.track_mut(vox).unwrap().mixer.input_monitor = true;
+        assert!(wants_audio_input(&s));
+        s.track_mut(vox).unwrap().mixer.input_monitor = false;
+        s.track_mut(vox).unwrap().mixer.record_arm = true;
+        assert!(wants_audio_input(&s));
+    }
+}
+
+#[cfg(test)]
+mod meter_tests {
+    use super::{METER_STALE_SECS, MeterDisplay, age_meters, feed_meter};
+    use soundcraft_mix::StripMeter;
+    use soundcraft_model::TrackId;
+    use soundcraft_playback::MeterSnapshot;
+
+    /// Runs the UI's meter loop for `secs` at 60 frames a second, polling at 20 Hz as the Edit
+    /// window does; `blocks(prev, now)` says whether a block (with `peak`) arrived since the
+    /// previous poll.
+    fn run(secs: f64, peak: [f32; 2], blocks: impl Fn(f64, f64) -> bool) -> (MeterDisplay, f32) {
+        let t = TrackId(1);
+        let mut snap = MeterSnapshot::default();
+        let mut d = MeterDisplay::default();
+        let (mut last_block, mut last_poll, mut lowest) = (f64::NEG_INFINITY, f64::NEG_INFINITY, f32::INFINITY);
+        let dt = 1.0 / 60.0;
+        let mut now = 0.0;
+        while now < secs {
+            if now - last_poll >= 1.0 / 20.0 {
+                let fresh = blocks(last_poll.max(-1e-9), now);
+                if fresh {
+                    let m = snap.tracks.entry(t).or_insert_with(StripMeter::default);
+                    m.peak = peak;
+                    m.peaks = peak.to_vec();
+                }
+                age_meters(&mut snap, fresh, now, &mut last_block);
+                last_poll = now;
+            }
+            let m = snap.tracks.get(&t).map_or([0.0; 2], |m| m.peak);
+            feed_meter(&mut d, m, 0.0, dt as f32);
+            if now > 0.0 {
+                lowest = lowest.min(d.level[0]);
+            }
+            now += dt;
+        }
+        (d, lowest)
+    }
+
+    #[test]
+    fn meters_fall_to_silence_when_the_device_stops_calling_back() {
+        // Blocks come for a second, then the device is switched off: no callback ever again.
+        let (d, _) = run(6.0, [0.4; 2], |_, now| now < 1.0);
+        assert!(d.level == [0.0; 2] && d.hold == [0.0; 2], "the meter still reads {d:?}");
+    }
+
+    /// A silent channel does not keep the other channel's peak hold up: 0.0 meets a hold of 0.0
+    /// every frame, which must not restart the shared hold time.
+    #[test]
+    fn a_silent_channel_does_not_keep_the_other_channels_peak_hold() {
+        let (d, _) = run(6.0, [0.4, 0.0], |_, now| now < 1.0);
+        assert!(d.level == [0.0; 2] && d.hold == [0.0; 2], "the meter still reads {d:?}");
+    }
+
+    #[test]
+    fn a_large_device_buffer_keeps_the_meters_up_between_callbacks() {
+        // 8192 frames at 44.1 kHz: one block every 186 ms, several polls without one.
+        let period = 8192.0 / 44_100.0;
+        assert!(period + 1.0 / 20.0 < METER_STALE_SECS);
+        let (d, lowest) = run(3.0, [0.4; 2], |prev, now| (now / period).floor() > (prev / period).floor());
+        assert!(lowest >= 0.4 && d.level[0] >= 0.4, "the meter dropped to {lowest} between callbacks");
+    }
 }

@@ -15,14 +15,15 @@ fn strip_silence_dialog() -> (Harness<'static, SoundApp>, TrackId) {
     app.run("edit.select", json!({"tracks": [track.0], "start": 0, "end": end})).unwrap();
     menus::invoke_menu(&mut app, "edit.strip_silence", "Edit > Strip Silence");
     assert_eq!(app.dialogs.open_name(), Some("strip_silence"));
-    let mut h = Harness::builder().with_size(vec2(1600.0, 1000.0)).build_ui_state(
-        |ui, app: &mut SoundApp| {
-            let ctx = ui.ctx().clone();
-            app.logic(&ctx);
-            app.ui(ui);
-        },
-        app,
-    );
+    let mut h =
+        Harness::builder().with_context_setup(soundcraft_ui_egui::framework::install_headless).with_size(vec2(1600.0, 1000.0)).build_ui_state(
+            |ui, app: &mut SoundApp| {
+                let ctx = ui.ctx().clone();
+                app.logic(&ctx);
+                app.ui(ui);
+            },
+            app,
+        );
     h.run_steps(3);
     (h, track)
 }
@@ -53,7 +54,7 @@ fn rename_names_the_clips_strip_silence_leaves() {
     click(&mut h, "OK");
     assert_eq!(h.state().dialogs.open_name(), Some("strip_silence"), "OK goes back to Strip Silence");
     assert_eq!(h.state().dialogs.strip_names, sfx());
-    click(&mut h, "Strip");
+    click(&mut h, "Strip Silence");
     assert_eq!(h.state().dialogs.open_name(), None);
     let names: Vec<String> = h.state().engine.session().track(track).unwrap().clips().iter().map(|c| c.name.clone()).collect();
     assert!(names.len() > 1);

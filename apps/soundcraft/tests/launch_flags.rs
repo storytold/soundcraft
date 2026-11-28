@@ -2,8 +2,13 @@
 
 use std::process::{Command, Output};
 
+/// Nextest archives relocate binaries; plain Cargo keeps the compile-time path valid.
+fn soundcraft_binary() -> std::ffi::OsString {
+    std::env::var_os("NEXTEST_BIN_EXE_soundcraft").unwrap_or_else(|| env!("CARGO_BIN_EXE_soundcraft").into())
+}
+
 fn soundcraft(args: &[&str], control_port: &str) -> Output {
-    Command::new(env!("CARGO_BIN_EXE_soundcraft"))
+    Command::new(soundcraft_binary())
         .args(args)
         .env("SOUNDCRAFT_NO_PREFS", "1")
         .env("SOUNDCRAFT_CONTROL_PORT", control_port)

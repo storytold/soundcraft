@@ -68,38 +68,56 @@ pub fn specs() -> Vec<CommandSpec> {
             has_selection,
             load_preset
         ),
-        cmd!("track.bypass_inserts_ae", "Inserts A-E", ["Track", "Bypass Inserts"], None, "{tracks?, bypass?: bool}", has_selection, |e, p| {
-            bypass_where(e, p, |i, _| i < 5)
+        cmd!(
+            "track.bypass_inserts_ae",
+            "Inserts A-E",
+            ["Track", "Bypass Inserts"],
+            Some("Shift+2"),
+            "{tracks?, bypass?: bool}",
+            has_selection,
+            |e, p| bypass_where(e, p, |i, _| i < 5)
+        ),
+        cmd!(
+            "track.bypass_inserts_fj",
+            "Inserts F-J",
+            ["Track", "Bypass Inserts"],
+            Some("Shift+3"),
+            "{tracks?, bypass?: bool}",
+            has_selection,
+            |e, p| bypass_where(e, p, |i, _| (5..10).contains(&i))
+        ),
+        cmd!(
+            "track.bypass_eq",
+            "EQ",
+            ["Track", "Bypass Inserts"],
+            Some("Shift+E"),
+            "{tracks?, bypass?: bool} — EQ plug-ins only",
+            has_selection,
+            |e, p| bypass_where(e, p, |_, c| c == Some(Category::Eq))
+        ),
+        cmd!("track.bypass_dynamics", "Dynamics", ["Track", "Bypass Inserts"], Some("Shift+C"), "{tracks?, bypass?: bool}", has_selection, |e, p| {
+            bypass_where(e, p, |_, c| c == Some(Category::Dynamics))
         }),
-        cmd!("track.bypass_inserts_fj", "Inserts F-J", ["Track", "Bypass Inserts"], None, "{tracks?, bypass?: bool}", has_selection, |e, p| {
-            bypass_where(e, p, |i, _| (5..10).contains(&i))
+        cmd!("track.bypass_reverb", "Reverb", ["Track", "Bypass Inserts"], Some("Shift+V"), "{tracks?, bypass?: bool}", has_selection, |e, p| {
+            bypass_where(e, p, |_, c| c == Some(Category::Reverb))
         }),
-        cmd!("track.bypass_eq", "EQ", ["Track", "Bypass Inserts"], None, "{tracks?, bypass?: bool} — EQ plug-ins only", has_selection, |e, p| {
-            bypass_where(e, p, |_, c| c == Some(Category::Eq))
+        cmd!("track.bypass_delay", "Delay", ["Track", "Bypass Inserts"], Some("Shift+D"), "{tracks?, bypass?: bool}", has_selection, |e, p| {
+            bypass_where(e, p, |_, c| c == Some(Category::Delay))
         }),
-        cmd!("track.bypass_dynamics", "Dynamics", ["Track", "Bypass Inserts"], None, "{tracks?, bypass?: bool}", has_selection, |e, p| bypass_where(
-            e,
-            p,
-            |_, c| c == Some(Category::Dynamics)
-        )),
-        cmd!("track.bypass_reverb", "Reverb", ["Track", "Bypass Inserts"], None, "{tracks?, bypass?: bool}", has_selection, |e, p| bypass_where(
-            e,
-            p,
-            |_, c| c == Some(Category::Reverb)
-        )),
-        cmd!("track.bypass_delay", "Delay", ["Track", "Bypass Inserts"], None, "{tracks?, bypass?: bool}", has_selection, |e, p| bypass_where(
-            e,
-            p,
-            |_, c| c == Some(Category::Delay)
-        )),
-        cmd!("track.bypass_modulation", "Modulation", ["Track", "Bypass Inserts"], None, "{tracks?, bypass?: bool}", has_selection, |e, p| {
-            bypass_where(e, p, |_, c| c == Some(Category::Modulation))
-        }),
+        cmd!(
+            "track.bypass_modulation",
+            "Modulation",
+            ["Track", "Bypass Inserts"],
+            Some("Shift+W"),
+            "{tracks?, bypass?: bool}",
+            has_selection,
+            |e, p| bypass_where(e, p, |_, c| c == Some(Category::Modulation))
+        ),
         cmd!(
             "track.mute_sends_ae",
             "Sends A-E",
             ["Track", "Mute Sends"],
-            None,
+            Some("Shift+4"),
             "{tracks?, mute?: bool} (toggles when omitted)",
             has_selection,
             |e, p| mute_sends_where(e, p, 0, 5)
@@ -108,7 +126,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "track.mute_sends_fj",
             "Sends F-J",
             ["Track", "Mute Sends"],
-            None,
+            Some("Shift+5"),
             "{tracks?, mute?: bool} (toggles when omitted)",
             has_selection,
             |e, p| mute_sends_where(e, p, 5, 10)
@@ -267,6 +285,7 @@ fn save_preset(e: &mut Engine, p: &Value) -> Result<Value> {
     Ok(json!({"path": path, "track": first}))
 }
 
+/// Load persistent mixer settings while retaining destination routing and live input flags.
 fn load_preset(e: &mut Engine, p: &Value) -> Result<Value> {
     let id = "track.load_preset";
     let path = str_param(p, "path").ok_or_else(|| bad(id, "`path` required"))?.to_string();
@@ -283,15 +302,17 @@ fn load_preset(e: &mut Engine, p: &Value) -> Result<Value> {
     let s = e.session_mut();
     for t in &tracks {
         if let Some(tr) = s.track_mut(*t) {
-            // Routing is session-specific: keep the track's own input/output, VCA and arm state.
-            let keep = (tr.mixer.input.clone(), tr.mixer.output.clone(), tr.mixer.vca, tr.mixer.record_arm, tr.mixer.pan.clone());
+            // Routing and live input state are track-specific: a preset must not replace them.
+            let keep =
+                (tr.mixer.input.clone(), tr.mixer.output.clone(), tr.mixer.vca, tr.mixer.record_arm, tr.mixer.input_monitor, tr.mixer.pan.clone());
             tr.mixer = mixer.clone();
             tr.mixer.input = keep.0;
             tr.mixer.output = keep.1;
             tr.mixer.vca = keep.2;
             tr.mixer.record_arm = keep.3;
-            if tr.mixer.pan.len() != keep.4.len() {
-                tr.mixer.pan = keep.4;
+            tr.mixer.input_monitor = keep.4;
+            if tr.mixer.pan.len() != keep.5.len() {
+                tr.mixer.pan = keep.5;
             }
             if tr.kind == TrackKind::Instrument && instrument.is_some() {
                 tr.instrument = instrument.clone();
@@ -332,7 +353,7 @@ fn bypass_where(e: &mut Engine, p: &Value, pick: fn(usize, Option<Category>) -> 
     Ok(json!({"bypass": target, "inserts": n}))
 }
 
-fn mute_sends_where(e: &mut Engine, p: &Value, from: usize, to: usize) -> Result<Value> {
+pub(super) fn mute_sends_where(e: &mut Engine, p: &Value, from: usize, to: usize) -> Result<Value> {
     let tracks = tracks_required(e, "track.mute_sends", p)?;
     let s = e.session_mut();
     let all_muted = tracks.iter().filter_map(|t| s.track(*t)).all(|tr| tr.mixer.sends.iter().skip(from).take(to - from).flatten().all(|x| x.mute));
@@ -499,15 +520,22 @@ fn coalesce_vca(e: &mut Engine, p: &Value) -> Result<Value> {
 }
 
 fn designate_target(e: &mut Engine, p: &Value) -> Result<Value> {
-    let tracks = tracks_required(e, "track.designate_target_playlist", p)?;
-    let idx = p.get("index").and_then(Value::as_u64);
+    let id = "track.designate_target_playlist";
+    let tracks = tracks_required(e, id, p)?;
+    let index = match p.get("index") {
+        None | Some(Value::Null) => None,
+        Some(value) => {
+            let index = value.as_u64().ok_or_else(|| bad(id, "`index` must be a nonnegative integer"))?;
+            Some(usize::try_from(index).map_err(|_| bad(id, "no such playlist"))?)
+        }
+    };
     let s = e.session_mut();
     let mut out = Vec::new();
     for t in &tracks {
         let Some(tr) = s.track(*t) else { continue };
-        let i = idx.map_or(tr.active_playlist, |x| usize::try_from(x).unwrap_or(usize::MAX));
+        let i = index.unwrap_or(tr.active_playlist);
         if i >= tr.playlists.len() {
-            return Err(bad("track.designate_target_playlist", "no such playlist"));
+            return Err(bad(id, "no such playlist"));
         }
         s.edit.values.insert(format!("playlist.target.{}", t.0), i as f64);
         out.push(json!({"track": t, "target": i}));
@@ -571,6 +599,8 @@ mod tests {
         assert!(!e.session().track_by_name("Snare").unwrap().mixer.sends[0].as_ref().unwrap().mute);
         e.execute("track.mute_sends_ae", &json!({})).unwrap();
         assert!(e.session().track_by_name("Snare").unwrap().mixer.sends[0].as_ref().unwrap().mute);
+        e.execute("track.mute_sends", &json!({})).unwrap();
+        assert!(!e.session().track_by_name("Snare").unwrap().mixer.sends[0].as_ref().unwrap().mute);
     }
 
     #[test]
@@ -602,6 +632,7 @@ mod tests {
         assert_eq!(e.session().track(pad).unwrap().folder, Some(verb));
     }
 
+    /// A preset transfers persistent mix settings without replacing live destination states.
     #[test]
     fn preset_round_trip() {
         let dir = std::env::temp_dir().join(format!("sc-preset-{}", std::process::id()));
@@ -611,10 +642,13 @@ mod tests {
         e.execute("edit.select", &json!({"tracks": ["Bass"]})).unwrap();
         e.execute("track.save_preset", &json!({"path": path})).unwrap();
         e.execute("edit.select", &json!({"tracks": ["Hats"]})).unwrap();
+        e.execute("mix.record_arm", &json!({"value": true})).unwrap();
+        e.execute("mix.input_monitor", &json!({"value": true})).unwrap();
         e.execute("track.load_preset", &json!({"path": path})).unwrap();
         let hats = e.session().track_by_name("Hats").unwrap();
         assert_eq!(hats.mixer.inserts[0].as_ref().map(|i| i.plugin.as_str()), Some("compressor"));
         assert_eq!(hats.mixer.volume_db, -5.0);
+        assert!(hats.mixer.record_arm && hats.mixer.input_monitor, "loading a preset keeps live input state");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -719,11 +753,19 @@ mod tests {
         e.execute("track.playlist_new", &json!({})).unwrap();
         e.execute("track.designate_target_playlist", &json!({})).unwrap();
         e.execute("track.playlist_select", &json!({"index": 0})).unwrap();
+        let kick = e.session().track_by_name("Kick").unwrap().id;
+        for index in [json!(-1), json!("1"), json!(1.5), json!(u64::MAX)] {
+            assert!(e.execute("track.designate_target_playlist", &json!({"index": index})).is_err(), "{index}");
+            assert_eq!(target_playlist(e.session(), kick), Some(1), "{index} must leave the target unchanged");
+        }
         e.execute("track.show_target_playlist", &json!({})).unwrap();
         assert_eq!(e.session().track_by_name("Kick").unwrap().active_playlist, 1);
         e.execute("track.toggle_recent_playlist", &json!({})).unwrap();
         assert_eq!(e.session().track_by_name("Kick").unwrap().active_playlist, 0);
         e.execute("track.toggle_recent_playlist", &json!({})).unwrap();
         assert_eq!(e.session().track_by_name("Kick").unwrap().active_playlist, 1);
+        e.execute("track.playlist_select", &json!({"index": 0})).unwrap();
+        e.execute("track.designate_target_playlist", &json!({"index": null})).unwrap();
+        assert_eq!(target_playlist(e.session(), kick), Some(0));
     }
 }

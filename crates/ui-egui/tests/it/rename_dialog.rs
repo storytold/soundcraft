@@ -9,14 +9,15 @@ fn typing_in_the_rename_clip_dialog_replaces_the_old_name() {
     let clip = app.engine.session().track_by_name("Kick").unwrap().clips()[0].clone();
     app.run("edit.select", json!({"clips": [clip.id.0]})).unwrap();
     menus::invoke_menu(&mut app, "clip.rename", "Clip > Rename...");
-    let mut h = Harness::builder().with_size(vec2(1600.0, 1000.0)).build_ui_state(
-        |ui, app: &mut SoundApp| {
-            let ctx = ui.ctx().clone();
-            app.logic(&ctx);
-            app.ui(ui);
-        },
-        app,
-    );
+    let mut h =
+        Harness::builder().with_context_setup(soundcraft_ui_egui::framework::install_headless).with_size(vec2(1600.0, 1000.0)).build_ui_state(
+            |ui, app: &mut SoundApp| {
+                let ctx = ui.ctx().clone();
+                app.logic(&ctx);
+                app.ui(ui);
+            },
+            app,
+        );
     for _ in 0..3 {
         h.step();
     }

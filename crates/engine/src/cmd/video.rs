@@ -29,7 +29,8 @@ pub fn specs() -> Vec<CommandSpec> {
             always,
             offset
         ),
-        cmd!(query "video.list", "Movies", [], None, "{} — movies used by Video tracks (path, size, rate, codec, online file, why it is offline)", always, |e, _| {
+        cmd!(query "video.list", "Movies", [], None, "{} — lists session movies with media details, clip counts, `file_found`, and any recorded `offline` reason. \
+             The top-level `online` flag reports the Video Track Online setting.", always, |e, _| {
             let s = e.session();
             let rows: Vec<Value> = s
                 .videos
@@ -135,7 +136,7 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let out = dir.join("mix.wav");
         e.execute("file.bounce_mix", &json!({"path": out.to_string_lossy(), "start": 0, "end": 96_000, "dither": false})).unwrap();
-        let (_, buf) = soundcraft_audio_io::decode(&std::fs::read(&out).unwrap(), Some("wav")).unwrap();
+        let (_, buf) = craft_audio::decode(&std::fs::read(&out).unwrap(), Some("wav")).unwrap();
         assert!(buf.channels.iter().flatten().all(|x| *x == 0.0));
         let _ = std::fs::remove_dir_all(dir);
     }

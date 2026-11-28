@@ -3,7 +3,7 @@
 //! adopts a fake under a clap:test.* id via MixEngine::adopt.
 
 use super::*;
-use soundcraft_audio_io::AudioBuffer;
+use craft_audio::AudioBuffer;
 use soundcraft_model::{Insert, SourceAudio, SourceId};
 use std::sync::Arc;
 
@@ -87,6 +87,102 @@ fn add_dc_track(s: &mut Session, level: f32, frames: usize) -> TrackId {
         pl.clips.push(Clip::audio(id, "dc", SourceId(900), 0, 0, frames as i64));
     }
     t
+}
+
+/// Per track: the solo mutes it ([`solo_mutes`]).
+fn shaded(s: &Session) -> Vec<bool> {
+    s.tracks.iter().map(|t| solo_mutes(s, t)).collect()
+}
+
+#[test]
+fn soloing_a_vca_solos_its_members() {
+    let (mut s, member) = session_with_dc(0.5, 4800);
+    // Quieter than the member, so the render tells which of the two sounds.
+    let other = add_dc_track(&mut s, 0.5, 4800);
+    s.track_mut(other).unwrap().mixer.volume_db = -6.0;
+    let vca = s.add_track(TrackKind::Vca, ChannelFormat::Mono, Some("VCA"));
+    s.track_mut(member).unwrap().mixer.vca = Some(vca.0);
+    s.track_mut(other).unwrap().mixer.mute = true;
+    let only_member = render_range(&s, Range::new(0, 4800), 512);
+    assert!(only_member[0][2000].abs() > 0.1, "the member should sound");
+    s.track_mut(other).unwrap().mixer.mute = false;
+    s.track_mut(vca).unwrap().mixer.solo = true;
+    assert_eq!(render_range(&s, Range::new(0, 4800), 512), only_member);
+    assert_eq!(shaded(&s), [false, true, false], "member, other, VCA");
+    // A soloed member leaves its VCA unshaded.
+    s.track_mut(vca).unwrap().mixer.solo = false;
+    s.track_mut(member).unwrap().mixer.solo = true;
+    assert_eq!(shaded(&s), [false, true, false], "member soloed: member, other, VCA");
+}
+
+#[test]
+fn soloing_an_empty_vca_mutes_nothing() {
+    let (mut s, _) = session_with_dc(0.5, 4800);
+    let vca = s.add_track(TrackKind::Vca, ChannelFormat::Mono, Some("VCA"));
+    let all = render_range(&s, Range::new(0, 4800), 512);
+    s.track_mut(vca).unwrap().mixer.solo = true;
+    assert_eq!(render_range(&s, Range::new(0, 4800), 512), all);
+    assert_eq!(shaded(&s), [false, false], "track, VCA");
+}
+
+/// A member of a VCA that is not soloed itself, reaching an aux through its output or through a send, next to a
+/// track the solo mutes. Tracks: member, other, aux, VCA. The solo goes on the member, or on its VCA.
+fn member_through_aux(by_send: bool, solo_vca: bool) -> Session {
+    let (mut s, member) = session_with_dc(0.5, 4800);
+    add_dc_track(&mut s, 0.5, 4800);
+    let bus = s.add_bus("Verb", ChannelFormat::Stereo);
+    let aux = s.add_track(TrackKind::Aux, ChannelFormat::Stereo, Some("Verb"));
+    s.track_mut(aux).unwrap().mixer.input = Route::Bus(bus);
+    let vca = s.add_track(TrackKind::Vca, ChannelFormat::Mono, Some("VCA"));
+    let tr = s.track_mut(member).unwrap();
+    tr.mixer.vca = Some(vca.0);
+    if by_send {
+        tr.mixer.output = Route::None;
+        let mut send = soundcraft_model::SendSlot::new(Route::Bus(bus));
+        send.level_db = 0.0; // a new send sits at -144 dB
+        tr.mixer.sends[0] = Some(send);
+    } else {
+        tr.mixer.output = Route::Bus(bus);
+    }
+    if solo_vca {
+        s.track_mut(vca).unwrap().mixer.solo = true;
+    } else {
+        s.track_mut(member).unwrap().mixer.solo = true;
+    }
+    s
+}
+
+#[test]
+fn a_soloed_vcas_member_feeds_its_aux_through_the_output() {
+    let (vca, own) = (member_through_aux(false, true), member_through_aux(false, false));
+    let out = render_range(&vca, Range::new(0, 4800), 512);
+    assert!(out[0][2000].abs() > 0.1, "the aux carries the member: {}", out[0][2000]);
+    // Soloing the VCA sounds as soloing the member itself.
+    assert_eq!(out, render_range(&own, Range::new(0, 4800), 512));
+    assert_eq!(shaded(&vca), [false, true, false, false], "member, other, aux, VCA");
+    assert_eq!(shaded(&own), shaded(&vca));
+}
+
+#[test]
+fn a_soloed_vcas_member_feeds_its_send_return() {
+    let (vca, own) = (member_through_aux(true, true), member_through_aux(true, false));
+    let out = render_range(&vca, Range::new(0, 4800), 512);
+    assert!(out[0][2000].abs() > 0.1, "the send return carries the member: {}", out[0][2000]);
+    assert_eq!(out, render_range(&own, Range::new(0, 4800), 512));
+    assert_eq!(shaded(&vca), [false, true, false, false], "member, other, aux, VCA");
+    assert_eq!(shaded(&own), shaded(&vca));
+}
+
+#[test]
+fn an_inactive_track_does_not_solo_its_aux() {
+    // An inactive track plays nothing, so it is no solo source for an aux, whether soloed itself or through its VCA.
+    // `other` keeps the solo on.
+    for solo_vca in [false, true] {
+        let mut s = member_through_aux(false, solo_vca);
+        s.tracks[1].mixer.solo = true;
+        s.tracks[0].inactive = true;
+        assert_eq!(shaded(&s), [false, false, true, false], "solo_vca {solo_vca}: member, other, aux, VCA");
+    }
 }
 
 #[test]
@@ -602,6 +698,31 @@ fn an_insert_that_puts_out_nan_is_taken_out_until_the_next_reset() {
     assert_eq!(eng.meters[&a].plugin_failures.count, 2);
 }
 
+/// A plugin that fails again after its one reset retry stays failed for the session, instead of
+/// oscillating the track's latency (and its delay-line reallocations) on every stop/seek (#919).
+#[test]
+fn a_repeatedly_failing_insert_gets_only_one_reset_retry() {
+    let (mut s, a) = session_with_dc(0.5, 48_000);
+    let _b = add_dc_track(&mut s, 0.5, 48_000);
+    s.track_mut(a).unwrap().mixer.inserts[2] = Some(Insert::new("clap:test.nan"));
+    let mut eng = MixEngine::new(48_000.0, 512);
+    eng.set_external_instances(true);
+    let both = render_block(&mut eng, &s, 0);
+    eng.adopt(nan(a, 2, 1));
+    let only_b = render_block(&mut eng, &s, 512);
+    assert!((only_b - both / 2.0).abs() < 1e-6, "{only_b} vs {both}");
+    // While failed it passes the track's audio through, dry.
+    assert_eq!(render_block(&mut eng, &s, 1024), both);
+    // The first reset grants the single retry; it fails again.
+    eng.reset();
+    assert_eq!(render_block(&mut eng, &s, 1536), only_b);
+    assert_eq!(eng.meters[&a].plugin_failures.count, 2);
+    // A later reset does not retry it again: the block stays dry and the count does not move.
+    eng.reset();
+    assert_eq!(render_block(&mut eng, &s, 2048), both);
+    assert_eq!(eng.meters[&a].plugin_failures.count, 2);
+}
+
 #[test]
 fn nan_from_an_instrument_or_a_master_insert_is_contained() {
     let mut s = synth_session(-6.0);
@@ -942,8 +1063,87 @@ fn a_plugins_bogus_latency_is_capped() {
 }
 
 #[test]
+fn a_hosted_instruments_latency_is_compensated() {
+    // #1474: a synth that reports latency plays late. Its delay must count toward the mix
+    // latency and align, the way an insert's does.
+    struct LatentSynth {
+        inner: Box<dyn Plugin>,
+        n: usize,
+        t: usize,
+        pending: Option<usize>,
+    }
+    impl Plugin for LatentSynth {
+        fn info(&self) -> &'static soundcraft_dsp::PluginInfo {
+            self.inner.info()
+        }
+        fn prepare(&mut self, sr: f32, mb: usize, ch: usize) {
+            self.inner.prepare(sr, mb, ch);
+        }
+        fn reset(&mut self) {
+            self.inner.reset();
+        }
+        fn set_param(&mut self, id: &str, v: f32) -> bool {
+            self.inner.set_param(id, v)
+        }
+        fn param(&self, id: &str) -> Option<f32> {
+            self.inner.param(id)
+        }
+        fn note_on(&mut self, offset: usize, _: u8, _: u8) {
+            self.pending = Some(self.t + offset + self.n);
+        }
+        fn process(&mut self, io: &mut [Vec<f32>], frames: usize) {
+            for c in io.iter_mut() {
+                for (i, x) in c.iter_mut().take(frames).enumerate() {
+                    *x = if Some(self.t + i) == self.pending { 0.25 } else { 0.0 };
+                }
+            }
+            self.t += frames;
+        }
+        fn latency(&self) -> usize {
+            self.n
+        }
+    }
+    use soundcraft_midi::{Note, Sequence};
+    let n = 500;
+    let mut s = Session::default();
+    s.edit.delay_compensation = true;
+    let audio = s.add_track(TrackKind::Audio, ChannelFormat::Stereo, None);
+    let mut click = vec![0.0f32; 48_000];
+    click[24_000] = 0.25;
+    s.pool.insert(SourceId(1474), Arc::new(SourceAudio::new(AudioBuffer { sample_rate: 48_000, channels: vec![click.clone(), click] })));
+    let cid = s.new_clip_id();
+    s.track_mut(audio).unwrap().playlist_mut().unwrap().clips.push(Clip::audio(cid, "click", SourceId(1474), 0, 0, 48_000));
+    let inst = s.add_track(TrackKind::Instrument, ChannelFormat::Stereo, None);
+    let mut seq = Sequence::default();
+    seq.notes.push(Note { pitch: 60, velocity: 100, release_velocity: 64, channel: 0, start: 960, length: 240 });
+    let mcid = s.new_clip_id();
+    s.track_mut(inst).unwrap().playlist_mut().unwrap().clips.push(Clip::midi(mcid, "note", 0, 48_000, seq));
+    s.track_mut(inst).unwrap().instrument = Some(Insert::new("clap:test.latent"));
+    let mut eng = MixEngine::new(48_000.0, 1024);
+    eng.set_external_instances(true);
+    eng.adopt(vec![PreparedInstance {
+        track: inst,
+        slot: INSTRUMENT_SLOT,
+        id: "clap:test.latent".into(),
+        ch: 2,
+        plugin: Box::new(LatentSynth { inner: soundcraft_dsp::create("gain").unwrap(), n, t: 0, pending: None }),
+    }]);
+    let mut out = vec![vec![0.0; 1024]; 2];
+    let mut rendered = Vec::new();
+    for b in 0..48 {
+        eng.render(&s, b * 1024, 1024, &mut out);
+        rendered.extend_from_slice(&out[0]);
+    }
+    assert_eq!(eng.latency, n, "the hosted instrument's latency is part of the mix latency");
+    let impulses: Vec<_> = rendered.iter().enumerate().filter(|(_, v)| v.abs() > 1e-6).map(|(i, _)| i).collect();
+    assert_eq!(impulses, vec![24_000 + n], "both the audio click and instrument impulse align");
+    assert!((rendered[24_000 + n] - 0.5).abs() < 1e-6, "the aligned impulses add, neither is missing");
+}
+
+#[test]
 fn input_monitoring_replaces_clips() {
     let (mut s, t) = session_with_dc(0.5, 4800);
+    s.track_mut(t).unwrap().mixer.input = Route::Hardware("In 1".into());
     let mut eng = MixEngine::new(48_000.0, 512);
     eng.input = vec![vec![0.25; 512]];
     let mut out = vec![vec![0.0; 512]; 2];
@@ -960,6 +1160,23 @@ fn input_monitoring_replaces_clips() {
     s.track_mut(t).unwrap().mixer.input_monitor = false;
     eng.render(&s, 1024, 512, &mut out);
     assert!(out[0][100].abs() < 1e-6, "stopped, unmonitored: silence");
+}
+
+/// A track whose input is "no input" (`Route::None`) hears nothing, not hardware input 1.
+#[test]
+fn a_track_with_no_input_monitors_nothing() {
+    let (mut s, t) = session_with_dc(0.0, 4800);
+    let mut eng = MixEngine::new(48_000.0, 512);
+    eng.input = vec![vec![0.25; 512], vec![0.5; 512]];
+    eng.monitor_only = true;
+    let mut out = vec![vec![0.0; 512]; 2];
+    s.track_mut(t).unwrap().mixer.input_monitor = true;
+    s.track_mut(t).unwrap().mixer.input = Route::None;
+    eng.render(&s, 0, 512, &mut out);
+    assert!(out.iter().all(|c| c.iter().all(|x| *x == 0.0)), "no input: silence, not In 1");
+    s.track_mut(t).unwrap().mixer.input = Route::Hardware("In 2".into());
+    eng.render(&s, 512, 512, &mut out);
+    assert!((out[0][100] - 0.5 * std::f32::consts::FRAC_1_SQRT_2).abs() < 1e-3, "In 2 is heard: {}", out[0][100]);
 }
 
 #[test]
@@ -1197,14 +1414,767 @@ fn apply_matrix_span_matches_the_plain_per_sample_sum() {
     }
 }
 
+/// A volume lane through `points` (sample, dB).
+fn volume_lane(points: &[(i64, f32)]) -> soundcraft_model::AutomationLane {
+    let mut l = soundcraft_model::AutomationLane::new(AutoParam::Volume);
+    for &(at, db) in points {
+        l.set_point(at, db);
+    }
+    l
+}
+
+/// Volume automation is read at every sample: a breakpoint acts on its own sample, and between
+/// breakpoints the gain follows the lane (linear in dB), whatever size the render blocks are. A
+/// 480-sample crossfade used to be resolved once per block, so it moved by up to a block and left
+/// a hole or not depending on where the block edge fell.
 #[test]
-fn gain_ramp_matches_converting_both_ends_every_sample() {
-    for (db0, db1, n) in [(-6.0f32, 3.0f32, 512usize), (0.0, 0.0, 1), (-144.0, 0.0, 300), (2.5, -60.0, 0), (f32::NAN, -3.0, 64), (-200.0, 12.0, 7)] {
-        let ramp = crate::automation::GainRamp::new(db0, db1, n);
-        let (g0, g1) = (db_to_gain(db0), db_to_gain(db1));
-        for i in 0..=n {
-            let want = if n == 0 { g0 } else { g0 + (g1 - g0) * (i as f32 / n as f32) };
-            assert_eq!(ramp.at(i).to_bits(), want.to_bits(), "{db0} -> {db1} dB, sample {i} of {n}");
+fn volume_automation_follows_its_breakpoints_in_any_block_size() {
+    let (mut s, a) = session_with_dc(0.5, 8192);
+    let b = add_dc_track(&mut s, 0.5, 8192);
+    // A falls from 0 to -144 dB across 2760..3240 while B rises, and back across 5760..6240.
+    let fall = volume_lane(&[(0, 0.0), (2760, 0.0), (3240, -144.0), (5760, -144.0), (6240, 0.0)]);
+    let rise = volume_lane(&[(0, -144.0), (2760, -144.0), (3240, 0.0), (5760, 0.0), (6240, -144.0)]);
+    // One track's level at 0 dB, through the pan law.
+    let per_track = render_range(&s, Range::new(0, 64), 64)[0][0] / 2.0;
+    s.track_mut(a).unwrap().automation.push(fall.clone());
+    s.track_mut(b).unwrap().automation.push(rise.clone());
+    let want = |i: i64| per_track * (db_to_gain(fall.value_at(i, 0.0)) + db_to_gain(rise.value_at(i, 0.0)));
+    for block in [1024, 512, 333, 64] {
+        let out = render_range(&s, Range::new(0, 8192), block);
+        for (i, &x) in out[0].iter().enumerate() {
+            let w = want(i as i64);
+            assert!((x - w).abs() <= 1e-5 * w.max(1e-3), "block {block}, sample {i}: {x} vs {w}");
         }
     }
+}
+
+/// A master fader's breakpoint acts on its own sample too.
+#[test]
+fn master_volume_automation_follows_its_breakpoints_in_any_block_size() {
+    let (mut s, _) = session_with_dc(0.5, 4096);
+    let dry = render_range(&s, Range::new(0, 64), 64)[0][0];
+    let m = s.add_track(TrackKind::Master, ChannelFormat::Stereo, None);
+    let lane = volume_lane(&[(0, 0.0), (1500, 0.0), (1501, -144.0), (2600, -144.0), (2700, -6.0)]);
+    s.track_mut(m).unwrap().automation.push(lane.clone());
+    for block in [1024, 256, 100] {
+        let out = render_range(&s, Range::new(0, 4096), block);
+        for (i, &x) in out[0].iter().enumerate() {
+            let w = dry * db_to_gain(lane.value_at(i as i64, 0.0));
+            assert!((x - w).abs() <= 1e-5 * w.max(1e-3), "block {block}, sample {i}: {x} vs {w}");
+        }
+    }
+}
+
+/// `scale` gives what `db_to_gain` gives sample by sample, from a ramp's first sample to its last:
+/// silence at or below -144 dB, the cap, NaN, extreme values and one- or two-sample ramps.
+#[test]
+fn stepped_fader_ramps_match_converting_every_sample() {
+    let cases: &[(&str, f32, f32, usize, f32)] = &[
+        ("down to silence", 0.0, -144.0, 480, 12.0),
+        ("up from silence", -144.0, 0.0, 480, 12.0),
+        ("across the cap", 6.0, 18.0, 300, 12.0),
+        ("below the floor and back", -200.0, -20.0, 512, 12.0),
+        ("flat", -6.0, -6.0, 1024, 12.0),
+        ("one sample", -6.0, 3.0, 1, 12.0),
+        ("two samples", -6.0, 3.0, 2, 12.0),
+        ("empty", 0.0, -6.0, 0, 12.0),
+        ("NaN start", f32::NAN, -3.0, 64, 12.0),
+        ("long ramp in one block", 0.0, -60.0, 16_384, 12.0),
+        ("recover from deep silence", -10_000.0, 0.0, 1024, 12.0),
+        ("descend from extreme trim", 10_000.0, -100.0, 1024, 12.0),
+        ("no cap", -12.0, 6.0, 1000, f32::INFINITY),
+        ("gain helper ceiling", 300.0, 0.0, 1024, f32::INFINITY),
+        ("extreme exact endpoint", -1e20, -20.0, 64, 12.0),
+        ("negative infinite start", f32::NEG_INFINITY, -20.0, 64, 12.0),
+        ("positive infinite end", -20.0, f32::INFINITY, 64, 12.0),
+        ("opposite infinities", f32::NEG_INFINITY, f32::INFINITY, 64, 12.0),
+    ];
+    for &(name, d0, d1, n, max_db) in cases {
+        let mut x = vec![1.0f32; n];
+        crate::automation::scale(&mut x, d0, d1, max_db);
+        for (k, &got) in x.iter().enumerate() {
+            let at = if k == 0 {
+                d0
+            } else if k + 1 == n {
+                d1
+            } else {
+                let t = k as f64 / (n - 1) as f64;
+                (f64::from(d0) * (1.0 - t) + f64::from(d1) * t) as f32
+            };
+            let want = if d0.is_nan() || d1.is_nan() || at.is_nan() { 0.0 } else { db_to_gain(at.min(max_db)) };
+            assert!((got - want).abs() <= 1e-5 * want.max(1e-6) || (got == 0.0 && want == 0.0), "{name}, sample {k} of {n}: {got} vs {want}");
+        }
+        if d0.is_nan() || d1.is_nan() {
+            assert!(x.iter().all(|&g| g == 0.0), "{name}: a NaN end is silence");
+            continue;
+        }
+        assert_eq!(x.first().copied().unwrap_or(0.0), if n == 0 { 0.0 } else { db_to_gain(d0.min(max_db)) }, "{name}: first sample exact");
+        if n > 1 {
+            assert_eq!(x[n - 1], db_to_gain(d1.min(max_db)), "{name}: last sample exact");
+        }
+    }
+}
+
+/// Volume, trim and VCA lanes with breakpoints at different samples add up at every sample, a
+/// muted track stays silent, and a render that starts inside a ramp or has breakpoints on block
+/// edges reads the same curve.
+#[test]
+fn summed_fader_lanes_are_read_at_every_sample() {
+    let (mut s, a) = session_with_dc(0.5, 12_288);
+    let muted = add_dc_track(&mut s, 0.5, 12_288);
+    let vca = s.add_track(TrackKind::Vca, ChannelFormat::Mono, None);
+    let one_track = render_range(&s, Range::new(0, 64), 64)[0][0] / 2.0;
+    s.track_mut(muted).unwrap().mixer.mute = true;
+    let vol = volume_lane(&[(0, 0.0), (1024, 0.0), (2048, -30.0), (4096, -6.0)]);
+    let mut trim = soundcraft_model::AutomationLane::new(AutoParam::Plugin { slot: u8::MAX, param: "trim".into() });
+    for (at, db) in [(0, 0.0), (1500, 0.0), (3000, 6.0)] {
+        trim.set_point(at, db);
+    }
+    let vca_lane = volume_lane(&[(0, 0.0), (5120, 0.0), (7000, -12.0)]);
+    let tr = s.track_mut(a).unwrap();
+    tr.automation.push(vol.clone());
+    tr.automation.push(trim.clone());
+    tr.mixer.vca = Some(vca.0);
+    s.track_mut(vca).unwrap().automation.push(vca_lane.clone());
+    // dB at `i`, from the breakpoints themselves.
+    let lin = |pts: &[(i64, f32)], i: i64| match pts.iter().position(|p| p.0 > i) {
+        None => pts[pts.len() - 1].1,
+        Some(0) => pts[0].1,
+        Some(k) => pts[k - 1].1 + (pts[k].1 - pts[k - 1].1) * ((i - pts[k - 1].0) as f32 / (pts[k].0 - pts[k - 1].0) as f32),
+    };
+    let want = |i: i64| {
+        let db = lin(&[(0, 0.0), (1024, 0.0), (2048, -30.0), (4096, -6.0)], i)
+            + lin(&[(0, 0.0), (1500, 0.0), (3000, 6.0)], i)
+            + lin(&[(0, 0.0), (5120, 0.0), (7000, -12.0)], i);
+        one_track * db_to_gain(db.min(12.0))
+    };
+    for (start, block) in [(0i64, 1024), (0, 512), (1700, 333), (1024, 1024), (2047, 64)] {
+        let out = render_range(&s, Range::new(start, 12_288), block);
+        for (k, &x) in out[0].iter().enumerate() {
+            let i = start + k as i64;
+            let w = want(i);
+            assert!((x - w).abs() <= 1e-5 * w.max(1e-3), "start {start}, block {block}, sample {i}: {x} vs {w}");
+        }
+    }
+}
+
+/// Consolidate's clip-effect pass, processing every clip's effects across the whole selection
+/// (what `render_clips` did before it limited them to the clip and its tail).
+fn render_clips_full_span(s: &Session, track: TrackId, range: Range) -> Vec<Vec<f32>> {
+    let t = s.track(track).unwrap();
+    let len = range.len() as usize;
+    let mut out = vec![vec![0.0f32; len]; t.channels().max(1)];
+    let mut scratch = Vec::new();
+    for c in t.clips().iter().filter(|c| !c.muted && c.range().overlaps(&range)) {
+        let params = crate::clips::clip_fx_params(s, c.id.0).unwrap();
+        let mut tmp = vec![vec![0.0f32; len]; out.len()];
+        crate::clips::render_clip(s, c, range.start, len, &mut tmp, &mut scratch);
+        let mut fx = crate::clips::ClipFx::new(48_000.0, tmp.len());
+        fx.configure(params);
+        for done in (0..len).step_by(4096) {
+            let n = (len - done).min(4096);
+            let mut block: Vec<Vec<f32>> = tmp.iter().map(|ch| ch[done..done + n].to_vec()).collect();
+            fx.process(&mut block, n);
+            for (o, b) in out.iter_mut().zip(&block) {
+                o[done..done + n].iter_mut().zip(b).for_each(|(x, y)| *x += y);
+            }
+        }
+    }
+    out
+}
+
+#[test]
+fn consolidate_clip_effects_cover_the_clip_and_its_tail() {
+    let fx_sets: [&[(&str, f64)]; 3] =
+        [&[("comp.lookahead", 5.0), ("comp.threshold", -20.0), ("gain", -6.0)], &[("eq.hpf_on", 1.0), ("gain", 3.0)], &[("eq.low_shelf_gain", 12.0)]];
+    for (k, params) in fx_sets.iter().enumerate() {
+        let mut s = Session::default();
+        let t = s.add_track(TrackKind::Audio, ChannelFormat::Mono, None);
+        s.pool.insert(SourceId(900), Arc::new(SourceAudio::new(AudioBuffer { sample_rate: 48_000, channels: vec![vec![0.5; 4800]] })));
+        let cid = s.new_clip_id();
+        s.track_mut(t).unwrap().playlist_mut().unwrap().clips.push(Clip::audio(cid, "dc", SourceId(900), 0, 20_000, 4800));
+        for (param, value) in params.iter() {
+            s.edit.values.insert(format!("clip_fx.{}.{param}", cid.0), *value);
+        }
+        let range = Range::new(5_000, 100_000);
+        let got = render_clips(&s, t, range);
+        let want = render_clips_full_span(&s, t, range);
+        assert_eq!(got.len(), want.len());
+        assert!(want[0].iter().any(|x| x.abs() > 0.05), "the fixture should sound");
+        if k == 0 {
+            // The compressor's lookahead output after the clip's end is kept.
+            assert!(got[0][20_000 + 4800 - 5_000 + 10].abs() > 1e-3);
+        }
+        for (i, (a, b)) in got[0].iter().zip(&want[0]).enumerate() {
+            assert!((a - b).abs() < 1e-5, "set {k}, sample {i}: {a} vs {b}");
+        }
+    }
+}
+
+/// A clip that starts a few frames into the selection, while the EQ's smoothers are still settling: the
+/// effect's 32-frame chunks must line up with the full-span render's.
+#[test]
+fn consolidate_clip_effects_keep_the_reference_chunk_grid() {
+    for offset in [1i64, 31, 32, 33, 1000] {
+        let mut s = Session::default();
+        let t = s.add_track(TrackKind::Audio, ChannelFormat::Mono, None);
+        s.pool.insert(SourceId(900), Arc::new(SourceAudio::new(AudioBuffer { sample_rate: 48_000, channels: vec![vec![0.5; 4800]] })));
+        let cid = s.new_clip_id();
+        s.track_mut(t).unwrap().playlist_mut().unwrap().clips.push(Clip::audio(cid, "dc", SourceId(900), 0, offset, 4800));
+        s.edit.values.insert(format!("clip_fx.{}.eq.low_shelf_gain", cid.0), 12.0);
+        let range = Range::new(0, 20_000);
+        let got = render_clips(&s, t, range);
+        let want = render_clips_full_span(&s, t, range);
+        for (i, (a, b)) in got[0].iter().zip(&want[0]).enumerate() {
+            assert!((a - b).abs() < 1e-5, "clip at {offset}, sample {i}: {a} vs {b}");
+        }
+    }
+}
+
+#[test]
+fn consolidate_many_tiny_effect_clips_stays_fast() {
+    // Thousands of one-sample clips with effects across a long selection: each one is processed
+    // over its own span, not the whole selection.
+    let mut s = Session::default();
+    let t = s.add_track(TrackKind::Audio, ChannelFormat::Mono, None);
+    s.pool.insert(SourceId(900), Arc::new(SourceAudio::new(AudioBuffer { sample_rate: 48_000, channels: vec![vec![0.5; 1]] })));
+    for i in 0..2000i64 {
+        let cid = s.new_clip_id();
+        s.track_mut(t).unwrap().playlist_mut().unwrap().clips.push(Clip::audio(cid, "x", SourceId(900), 0, i * 1000, 1));
+        s.edit.values.insert(format!("clip_fx.{}.gain", cid.0), -6.0);
+    }
+    let start = std::time::Instant::now();
+    let out = render_clips(&s, t, Range::new(0, 4_000_000));
+    assert!(start.elapsed() < std::time::Duration::from_secs(10), "{:?}", start.elapsed());
+    assert!((out[0][1000] - 0.5 * db_to_gain(-6.0)).abs() < 1e-6);
+    assert_eq!(out[0][1001], 0.0);
+}
+
+fn peak(x: &[f32]) -> f32 {
+    x.iter().fold(0.0f32, |m, v| m.max(v.abs()))
+}
+
+/// Renders `blocks` stopped blocks, the events in the first one, and returns the last block's peak.
+fn live_peak(eng: &mut MixEngine, s: &Session, events: &[(u8, u8, u8)], blocks: usize) -> f32 {
+    let mut out = vec![vec![0.0f32; 512]; 2];
+    eng.monitor_only = true;
+    eng.midi.clear();
+    eng.midi.extend(events.iter().map(|&(status, data1, data2)| LiveMidi { offset: 0, port: 0, status, data1, data2 }));
+    for _ in 0..blocks {
+        eng.render(s, 0, 512, &mut out);
+        eng.midi.clear();
+        eng.midi_lost = 0;
+    }
+    peak(&out[0])
+}
+
+#[test]
+fn live_midi_plays_record_enabled_instruments_while_stopped() {
+    let mut s = synth_session(-6.0);
+    let t = s.tracks[0].id;
+    let mut eng = MixEngine::new(48_000.0, 512);
+    // Not record-enabled: the keyboard is not heard, and neither is the clip while stopped.
+    assert_eq!(live_peak(&mut eng, &s, &[(0x90, 60, 100)], 8), 0.0);
+    s.track_mut(t).unwrap().mixer.record_arm = true;
+    assert!(live_peak(&mut eng, &s, &[(0x90, 60, 100)], 8) > 0.01, "a held key sounds");
+    assert!(live_peak(&mut eng, &s, &[], 40) > 0.01, "and keeps sounding: a stopped transport is not a seek");
+    // The sustain pedal holds the note past its note-off (a note-on with velocity 0 here).
+    assert!(live_peak(&mut eng, &s, &[(0xB0, 64, 127), (0x90, 60, 0)], 40) > 0.01);
+    assert!(live_peak(&mut eng, &s, &[(0xB0, 64, 0)], 400) < 1e-4, "pedal up releases it");
+    // Taking the track out of record releases a held key.
+    assert!(live_peak(&mut eng, &s, &[(0x91, 64, 100)], 8) > 0.01);
+    s.track_mut(t).unwrap().mixer.record_arm = false;
+    assert!(live_peak(&mut eng, &s, &[], 400) < 1e-4);
+}
+
+#[test]
+fn live_midi_honours_the_track_input_device_and_channel() {
+    let mut s = synth_session(-6.0);
+    let t = s.tracks[0].id;
+    let ports = Arc::new(MidiPorts::default());
+    ports.assign("Keys");
+    let mut eng = MixEngine::new(48_000.0, 512);
+    eng.midi_ports = Some(Arc::clone(&ports));
+    let tr = s.track_mut(t).unwrap();
+    tr.mixer.input_monitor = true;
+    tr.mixer.input = soundcraft_model::MidiInput { device: Some("Pad"), channel: None }.route();
+    assert_eq!(live_peak(&mut eng, &s, &[(0x90, 60, 100)], 8), 0.0, "another device");
+    s.track_mut(t).unwrap().mixer.input = soundcraft_model::MidiInput { device: Some("Keys"), channel: Some(1) }.route();
+    assert_eq!(live_peak(&mut eng, &s, &[(0x90, 60, 100)], 8), 0.0, "another channel");
+    assert!(live_peak(&mut eng, &s, &[(0x91, 60, 100)], 8) > 0.01);
+}
+
+#[test]
+fn live_midi_sounds_on_top_of_the_clips_during_playback() {
+    let mut s = synth_session(-6.0);
+    s.tracks[0].mixer.record_arm = true;
+    let render = |events: &[LiveMidi]| {
+        let mut eng = MixEngine::new(48_000.0, 512);
+        let mut out = vec![vec![0.0f32; 512]; 2];
+        let mut all = Vec::new();
+        for b in 0..80 {
+            eng.midi.clear();
+            if b == 60 {
+                eng.midi.extend_from_slice(events);
+            }
+            eng.render(&s, b * 512, 512, &mut out);
+            all.extend_from_slice(&out[0]);
+        }
+        all
+    };
+    let (dry, played) = (render(&[]), render(&[LiveMidi { offset: 100, port: 0, status: 0x90, data1: 72, data2: 110 }]));
+    // The clip's note ends at 24 000 samples; block 60 starts at 30 720.
+    assert_eq!(dry[..30_720 + 100], played[..30_720 + 100], "nothing changes before the key goes down");
+    assert!(peak(&played[31_000..]) > peak(&dry[31_000..]) + 0.01);
+}
+
+#[test]
+fn a_port_that_lost_events_lets_go_of_its_held_key_and_pedal() {
+    let mut s = synth_session(-6.0);
+    s.tracks[0].mixer.record_arm = true;
+    let mut eng = MixEngine::new(48_000.0, 512);
+    // A key and the pedal are down, then the queue drops the releases.
+    assert!(live_peak(&mut eng, &s, &[(0xB0, 64, 127), (0x90, 60, 100), (0x90, 64, 100), (0x80, 64, 0)], 8) > 0.01);
+    eng.midi_lost = midi_port_bit(7);
+    assert!(live_peak(&mut eng, &s, &[], 40) > 0.01, "another port's loss leaves them alone");
+    eng.midi_lost = midi_port_bit(0);
+    assert!(live_peak(&mut eng, &s, &[], 400) < 1e-4, "nothing is left sounding");
+    // The pedal went with them: a new note ends at its note-off.
+    assert!(live_peak(&mut eng, &s, &[(0x90, 60, 100)], 8) > 0.01);
+    assert!(live_peak(&mut eng, &s, &[(0x80, 60, 0)], 400) < 1e-4);
+}
+
+/// A record-enabled instrument track whose instrument writes down the MIDI messages it gets.
+fn ears_session() -> (Session, TrackId, MixEngine, Arc<std::sync::Mutex<Vec<(usize, [u8; 3])>>>) {
+    let mut s = Session::default();
+    let t = s.add_track(TrackKind::Instrument, ChannelFormat::Stereo, None);
+    let tr = s.track_mut(t).unwrap();
+    tr.instrument = Some(Insert::new("clap:test.ears"));
+    tr.mixer.record_arm = true;
+    let heard = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let ears = Ears { inner: soundcraft_dsp::create("gain").unwrap(), heard: Arc::clone(&heard) };
+    let mut eng = MixEngine::new(48_000.0, 512);
+    eng.set_external_instances(true);
+    eng.adopt(vec![PreparedInstance { track: t, slot: INSTRUMENT_SLOT, id: "clap:test.ears".into(), ch: 2, plugin: Box::new(ears) }]);
+    (s, t, eng, heard)
+}
+
+#[test]
+fn live_controllers_bend_aftertouch_and_program_reach_the_instrument_at_their_offsets() {
+    let (mut s, t, mut eng, heard) = ears_session();
+    let ev = |offset, status, data1, data2| LiveMidi { offset, port: 0, status, data1, data2 };
+    eng.midi.extend([
+        ev(10, 0xB3, 1, 90),       // mod wheel on channel 4: the channel is dropped
+        ev(200, 0xE0, 0x7F, 0x7F), // pitch bend, full up
+        ev(300, 0xD0, 55, 99),     // channel pressure: one data byte
+        ev(301, 0xA0, 60, 70),     // poly pressure
+        ev(400, 0xC1, 0xFF, 0xFF), // program change; a data byte above 127 is masked
+        ev(410, 0xB0, 64, 127),    // sustain: handled by the host, not passed on
+        ev(420, 0xB0, 123, 0),     // all notes off: handled by the host
+        ev(430, 0xB0, 126, 0),     // another channel mode message: not passed on
+        ev(440, 0xF8, 0, 0),       // not a channel message
+        ev(9_999, 0xB0, 7, 100),   // an offset past the block lands on its last sample
+    ]);
+    render_block(&mut eng, &s, 0);
+    let want = vec![
+        (0, [0xB0, 121, 0]), // the first block's controller reset
+        (10, [0xB0, 1, 90]),
+        (200, [0xE0, 0x7F, 0x7F]),
+        (300, [0xD0, 55, 0]),
+        (301, [0xA0, 60, 70]),
+        (400, [0xC0, 0x7F, 0]),
+        (511, [0xB0, 7, 100]),
+    ];
+    assert_eq!(std::mem::take(&mut *heard.lock().unwrap()), want);
+    // Out of record: the controllers go back to what the clips say (a reset; there are none).
+    // The reset leaves the volume the device set, so that goes back to MIDI's default.
+    eng.midi.clear();
+    s.track_mut(t).unwrap().mixer.record_arm = false;
+    render_block(&mut eng, &s, 512);
+    assert!(heard.lock().unwrap().is_empty());
+    render_block(&mut eng, &s, 1024);
+    assert_eq!(std::mem::take(&mut *heard.lock().unwrap()), vec![(0, [0xB0, 121, 0]), (0, [0xB0, 7, 100])]);
+    render_block(&mut eng, &s, 1536);
+    assert!(heard.lock().unwrap().is_empty(), "once");
+}
+
+/// One playing block at `pos` with `events`; the left channel.
+fn live_block(eng: &mut MixEngine, s: &Session, pos: i64, events: &[(u32, u8, u8, u8)]) -> Vec<f32> {
+    let mut out = vec![vec![0.0f32; 512]; 2];
+    eng.monitor_only = false;
+    eng.midi.clear();
+    eng.midi.extend(events.iter().map(|&(offset, status, data1, data2)| LiveMidi { offset, port: 0, status, data1, data2 }));
+    eng.render(s, pos, 512, &mut out);
+    eng.midi.clear();
+    out.swap_remove(0)
+}
+
+/// A record-enabled synth track with no clips.
+fn live_synth_session() -> Session {
+    let mut s = synth_session(-6.0);
+    s.tracks[0].playlist_mut().unwrap().clips.clear();
+    s.tracks[0].mixer.record_arm = true;
+    s
+}
+
+#[test]
+fn several_live_events_in_one_block_play_in_order_at_their_offsets() {
+    let s = live_synth_session();
+    let mut eng = MixEngine::new(48_000.0, 512);
+    // The note starts at its offset, not at the start of the block.
+    let out = live_block(&mut eng, &s, 0, &[(300, 0x90, 60, 100)]);
+    assert!(out[..300].iter().all(|x| *x == 0.0), "silent before the key goes down");
+    assert!(peak(&out[300..]) > 0.001);
+    // On and off in one block: the note ends. The tail is over well within a second.
+    let mut eng = MixEngine::new(48_000.0, 512);
+    live_block(&mut eng, &s, 0, &[(100, 0x90, 60, 100), (400, 0x80, 60, 0)]);
+    let tail = (1..100).map(|b| peak(&live_block(&mut eng, &s, b * 512, &[]))).last().unwrap();
+    assert!(tail < 1e-4, "{tail}");
+    // A release that comes before the key goes down does not end the note that follows.
+    let mut eng = MixEngine::new(48_000.0, 512);
+    live_block(&mut eng, &s, 0, &[(100, 0x80, 60, 0), (400, 0x90, 60, 100)]);
+    let held = (1..100).map(|b| peak(&live_block(&mut eng, &s, b * 512, &[]))).last().unwrap();
+    assert!(held > 0.01, "{held}");
+    // An offset past the block still plays, in this block.
+    let mut eng = MixEngine::new(48_000.0, 512);
+    live_block(&mut eng, &s, 0, &[(u32::MAX, 0x90, 60, 100)]);
+    assert!(peak(&live_block(&mut eng, &s, 512, &[])) > 0.001);
+}
+
+#[test]
+fn a_seek_and_a_stop_silence_live_notes() {
+    let s = live_synth_session();
+    let quiet_after = |then: &dyn Fn(&mut MixEngine) -> i64| {
+        let mut eng = MixEngine::new(48_000.0, 512);
+        live_block(&mut eng, &s, 0, &[(0, 0xB0, 64, 127), (0, 0x90, 60, 100)]);
+        assert!(peak(&live_block(&mut eng, &s, 512, &[])) > 0.01);
+        let pos = then(&mut eng);
+        (0..100).map(|b| peak(&live_block(&mut eng, &s, pos + b * 512, &[]))).last().unwrap()
+    };
+    // Playing on: the key and the pedal keep the note.
+    assert!(quiet_after(&|_| 1024) > 0.01);
+    // A seek (the next block is somewhere else) and a transport reset end it, pedal or not.
+    assert!(quiet_after(&|_| 480_000) < 1e-4, "seek");
+    assert!(
+        quiet_after(&|eng| {
+            eng.reset();
+            1024
+        }) < 1e-4,
+        "stop"
+    );
+}
+
+#[test]
+fn muted_inactive_and_solo_shaded_tracks_do_not_sound_live_input() {
+    let level = |change: &dyn Fn(&mut Session)| {
+        let mut s = live_synth_session();
+        change(&mut s);
+        let mut eng = MixEngine::new(48_000.0, 512);
+        live_block(&mut eng, &s, 0, &[(0, 0x90, 60, 100)]);
+        peak(&live_block(&mut eng, &s, 512, &[]))
+    };
+    assert!(level(&|_| {}) > 0.01);
+    assert_eq!(level(&|s| s.tracks[0].mixer.mute = true), 0.0, "muted");
+    assert_eq!(level(&|s| s.tracks[0].inactive = true), 0.0, "inactive");
+    assert_eq!(
+        level(&|s| {
+            let other = s.add_track(TrackKind::Audio, ChannelFormat::Mono, None);
+            s.track_mut(other).unwrap().mixer.solo = true;
+        }),
+        0.0,
+        "another track is soloed"
+    );
+    // A track taken out of record with a key down and put back has no note left over.
+    let mut s = live_synth_session();
+    let mut eng = MixEngine::new(48_000.0, 512);
+    live_block(&mut eng, &s, 0, &[(0, 0x90, 60, 100)]);
+    s.tracks[0].mixer.record_arm = false;
+    live_block(&mut eng, &s, 512, &[]);
+    s.tracks[0].mixer.record_arm = true;
+    let tail = (2..100).map(|b| peak(&live_block(&mut eng, &s, b * 512, &[]))).last().unwrap();
+    assert!(tail < 1e-4, "{tail}");
+}
+
+/// The peak of each of `blocks` playing blocks from `first`, with `events` in block `at`.
+fn live_levels(eng: &mut MixEngine, s: &Session, first: i64, blocks: i64, at: i64, events: &[(u32, u8, u8, u8)]) -> Vec<f32> {
+    (first..first + blocks).map(|b| peak(&live_block(eng, s, b * 512, if b == at { events } else { &[] }))).collect()
+}
+
+#[test]
+fn a_clip_note_and_a_live_key_on_one_pitch_do_not_cut_each_other() {
+    // The clip plays C4 (60) from 0 to 24 000 samples: blocks 0 to 46.
+    let mut s = synth_session(-6.0);
+    s.tracks[0].mixer.record_arm = true;
+    // The key goes down during the clip's note and stays down past its end: it keeps sounding.
+    let mut eng = MixEngine::new(48_000.0, 512);
+    let levels = live_levels(&mut eng, &s, 0, 200, 20, &[(0, 0x90, 60, 100)]);
+    assert!(levels[199] > 0.01, "the clip's note-off silenced the key that is still down: {}", levels[199]);
+    // The key's release then ends it.
+    let after = live_levels(&mut eng, &s, 200, 200, 200, &[(0, 0x80, 60, 0)]);
+    assert!(after[199] < 1e-4, "{}", after[199]);
+    // The other way round: a key pressed and released during the clip's note does not cut it.
+    let mut eng = MixEngine::new(48_000.0, 512);
+    live_levels(&mut eng, &s, 0, 10, 5, &[(0, 0x90, 60, 100)]);
+    let during = live_levels(&mut eng, &s, 10, 30, 10, &[(0, 0x80, 60, 0)]);
+    assert!(during[29] > 0.01, "the live release cut the clip's note: {}", during[29]);
+    // And the clip's own note-off ends it on time.
+    let end = live_levels(&mut eng, &s, 40, 160, -1, &[]);
+    assert!(end[159] < 1e-4, "{}", end[159]);
+    // Another pitch is not affected by any of this.
+    let mut eng = MixEngine::new(48_000.0, 512);
+    live_levels(&mut eng, &s, 0, 60, 5, &[(0, 0x90, 72, 100)]);
+    assert!(live_levels(&mut eng, &s, 60, 100, -1, &[])[99] > 0.01, "the other key is still down");
+}
+
+#[test]
+fn clip_notes_end_when_playback_runs_out_while_the_track_is_still_monitored() {
+    let mut s = synth_session(-6.0);
+    s.tracks[0].mixer.record_arm = true;
+    let mut out = vec![vec![0.0f32; 512]; 2];
+    // Playback stops by itself in the middle of the clip's note (no reset, as at a range end),
+    // and the armed track goes on being rendered for live input.
+    let stopped = |eng: &mut MixEngine, out: &mut Vec<Vec<f32>>, live: &[LiveMidi]| {
+        eng.monitor_only = true;
+        eng.midi.clear();
+        eng.midi.extend_from_slice(live);
+        eng.render(&s, 5_120, 512, out);
+        eng.midi.clear();
+        peak(&out[0])
+    };
+    let mut eng = MixEngine::new(48_000.0, 512);
+    assert!(live_levels(&mut eng, &s, 0, 10, -1, &[])[9] > 0.01);
+    let tail = (0..200).map(|_| stopped(&mut eng, &mut out, &[])).last().unwrap();
+    assert!(tail < 1e-4, "the clip's note was left on: {tail}");
+    // A key held on the same pitch at that moment stays, and ends with its own release.
+    let mut eng = MixEngine::new(48_000.0, 512);
+    live_levels(&mut eng, &s, 0, 10, 5, &[(0, 0x90, 60, 100)]);
+    let held = (0..200).map(|_| stopped(&mut eng, &mut out, &[])).last().unwrap();
+    assert!(held > 0.01, "{held}");
+    stopped(&mut eng, &mut out, &[LiveMidi { offset: 0, port: 0, status: 0x80, data1: 60, data2: 0 }]);
+    let released = (0..200).map(|_| stopped(&mut eng, &mut out, &[])).last().unwrap();
+    assert!(released < 1e-4, "{released}");
+}
+
+#[test]
+fn the_clips_sustain_pedal_goes_up_when_playback_runs_out_under_monitoring() {
+    use soundcraft_midi::{CtrlEvent, CtrlKind};
+    // The clip holds the pedal down from its start and never lifts it before playback ends.
+    let mut s = synth_session(-6.0);
+    s.tracks[0].mixer.record_arm = true;
+    let ClipContent::Midi { sequence } = &mut s.tracks[0].playlist_mut().unwrap().clips[0].content else { panic!("a MIDI clip") };
+    sequence.ctrls.push(CtrlEvent { tick: 0, channel: 0, kind: CtrlKind::Cc(64), value: 127 });
+    let mut out = vec![vec![0.0f32; 512]; 2];
+    let stopped = |eng: &mut MixEngine, out: &mut Vec<Vec<f32>>, live: &[LiveMidi]| {
+        eng.monitor_only = true;
+        eng.midi.clear();
+        eng.midi.extend_from_slice(live);
+        eng.render(&s, 5_120, 512, out);
+        eng.midi.clear();
+        peak(&out[0])
+    };
+    // Playback stops by itself in the middle of the note (no reset): the note-off alone would
+    // leave the instrument sustaining it for as long as the track is monitored.
+    let mut eng = MixEngine::new(48_000.0, 512);
+    assert!(live_levels(&mut eng, &s, 0, 10, -1, &[])[9] > 0.01);
+    let tail = (0..200).map(|_| stopped(&mut eng, &mut out, &[])).last().unwrap();
+    assert!(tail < 1e-4, "the clip's pedal kept its note on: {tail}");
+    // A key held live on the same pitch stays, and ends with its own release.
+    let mut eng = MixEngine::new(48_000.0, 512);
+    live_levels(&mut eng, &s, 0, 10, 5, &[(0, 0x90, 60, 100)]);
+    let held = (0..200).map(|_| stopped(&mut eng, &mut out, &[])).last().unwrap();
+    assert!(held > 0.01, "{held}");
+    stopped(&mut eng, &mut out, &[LiveMidi { offset: 0, port: 0, status: 0x80, data1: 60, data2: 0 }]);
+    let released = (0..200).map(|_| stopped(&mut eng, &mut out, &[])).last().unwrap();
+    assert!(released < 1e-4, "{released}");
+}
+
+#[test]
+fn a_lost_ports_controllers_are_reset_and_the_other_ports_kept() {
+    let (s, _, mut eng, heard) = ears_session();
+    let ev = |port, status, data1, data2| LiveMidi { offset: 0, port, status, data1, data2 };
+    // Port 0 bends the pitch; port 1 sets the volume.
+    eng.midi.extend([ev(0, 0xE0, 0, 0x7F), ev(1, 0xB0, 7, 100)]);
+    render_block(&mut eng, &s, 0);
+    eng.midi.clear();
+    heard.lock().unwrap().clear();
+    // Port 0 is unplugged while the track goes on playing port 1: the bend must not stay. The
+    // controllers are reset (to the clips' values: there are none) and port 1's volume is sent
+    // again.
+    eng.midi_lost = midi_port_bit(0);
+    render_block(&mut eng, &s, 512);
+    eng.midi_lost = 0;
+    assert_eq!(std::mem::take(&mut *heard.lock().unwrap()), vec![(0, [0xB0, 121, 0]), (0, [0xB0, 7, 100])]);
+    // A port that set no controller changes nothing; neither does the same port again.
+    eng.midi_lost = midi_port_bit(5) | midi_port_bit(0);
+    render_block(&mut eng, &s, 1024);
+    assert!(heard.lock().unwrap().is_empty());
+}
+
+#[test]
+fn a_clip_controller_at_the_start_of_the_block_a_port_is_lost_in_keeps_its_new_value() {
+    use soundcraft_midi::{CtrlEvent, CtrlKind, Sequence};
+    let (mut s, t, mut eng, heard) = ears_session();
+    // The clip sets the mod wheel at its start and again 24 ticks in: sample 600 at 120 bpm.
+    let mut seq = Sequence::default();
+    seq.ctrls.push(CtrlEvent { tick: 0, channel: 0, kind: CtrlKind::Cc(1), value: 10 });
+    seq.ctrls.push(CtrlEvent { tick: 24, channel: 0, kind: CtrlKind::Cc(1), value: 90 });
+    let cid = s.new_clip_id();
+    s.track_mut(t).unwrap().playlist_mut().unwrap().clips.push(Clip::midi(cid, "c", 0, 24_000, seq));
+    // A device bends the pitch in the block before the one that starts at sample 600.
+    eng.midi.push(LiveMidi { offset: 0, port: 0, status: 0xE0, data1: 0, data2: 0x7F });
+    render_block(&mut eng, &s, 88);
+    eng.midi.clear();
+    heard.lock().unwrap().clear();
+    // The device goes away. Its bend is taken back (a reset, then the clip's value as it stood
+    // before this block), and only then come the clip's events of this block: the mod wheel
+    // ends at the value the clip gives it here, not at the one from before.
+    eng.midi_lost = midi_port_bit(0);
+    render_block(&mut eng, &s, 600);
+    assert_eq!(std::mem::take(&mut *heard.lock().unwrap()), vec![(0, [0xB0, 121, 0]), (0, [0xB0, 1, 10]), (0, [0xB0, 1, 90])]);
+}
+
+#[test]
+fn the_clips_sustain_pedal_is_not_put_down_again_when_a_device_goes_away_while_stopped() {
+    use soundcraft_midi::{CtrlEvent, CtrlKind};
+    // The clip holds the pedal down from its start; playback runs out in the middle of it.
+    let mut s = synth_session(-6.0);
+    s.tracks[0].mixer.record_arm = true;
+    let ClipContent::Midi { sequence } = &mut s.tracks[0].playlist_mut().unwrap().clips[0].content else { panic!("a MIDI clip") };
+    sequence.ctrls.push(CtrlEvent { tick: 0, channel: 0, kind: CtrlKind::Cc(64), value: 127 });
+    let mut out = vec![vec![0.0f32; 512]; 2];
+    let mut eng = MixEngine::new(48_000.0, 512);
+    live_levels(&mut eng, &s, 0, 10, -1, &[]);
+    let mut stopped = |eng: &mut MixEngine, lost: u64, live: &[LiveMidi]| {
+        eng.monitor_only = true;
+        eng.midi_lost = lost;
+        eng.midi.clear();
+        eng.midi.extend_from_slice(live);
+        eng.render(&s, 5_120, 512, &mut out);
+        eng.midi.clear();
+        eng.midi_lost = 0;
+        peak(&out[0])
+    };
+    let ev = |port, status, data1, data2| LiveMidi { offset: 0, port, status, data1, data2 };
+    // Stopped, two devices play: one bends the pitch and is then unplugged. The controllers are
+    // set again from the clips, whose pedal is down at this position and will never come up.
+    stopped(&mut eng, 0, &[ev(0, 0xE0, 0, 0x7F)]);
+    stopped(&mut eng, midi_port_bit(0), &[]);
+    // A key of the other device sounds while it is held, and ends with its release.
+    stopped(&mut eng, 0, &[ev(1, 0x90, 64, 100)]);
+    let held = (0..20).map(|_| stopped(&mut eng, 0, &[])).last().unwrap();
+    assert!(held > 0.01, "the live note plays: {held}");
+    stopped(&mut eng, 0, &[ev(1, 0x80, 64, 0)]);
+    let tail = (0..200).map(|_| stopped(&mut eng, 0, &[])).last().unwrap();
+    assert!(tail < 1e-4, "the clips' pedal held the live note: {tail}");
+}
+
+#[test]
+fn a_volume_or_pan_left_by_a_device_that_went_away_goes_back_to_the_midi_default() {
+    use soundcraft_midi::{CtrlEvent, CtrlKind, Sequence};
+    let ev = |port, status, data1, data2| LiveMidi { offset: 0, port, status, data1, data2 };
+    let lost = |eng: &mut MixEngine, s: &Session, pos: i64, bits: u64| {
+        eng.midi.clear();
+        eng.midi_lost = bits;
+        render_block(eng, s, pos);
+        eng.midi_lost = 0;
+    };
+    // Port 0 turns the volume down to nothing and the pan hard left, and is unplugged. The
+    // reset of the controllers does not touch those two: they are set to MIDI's defaults.
+    let (s, _, mut eng, heard) = ears_session();
+    eng.midi.extend([ev(0, 0xB0, 7, 0), ev(0, 0xB0, 10, 0), ev(0, 0xB0, 1, 50)]);
+    render_block(&mut eng, &s, 0);
+    heard.lock().unwrap().clear();
+    lost(&mut eng, &s, 512, midi_port_bit(0));
+    assert_eq!(std::mem::take(&mut *heard.lock().unwrap()), vec![(0, [0xB0, 121, 0]), (0, [0xB0, 7, 100]), (0, [0xB0, 10, 64])]);
+    lost(&mut eng, &s, 1024, midi_port_bit(0));
+    assert!(heard.lock().unwrap().is_empty(), "once");
+    // A device that is still there has the say: its volume is sent again, no default.
+    let (s, _, mut eng, heard) = ears_session();
+    eng.midi.extend([ev(1, 0xB0, 7, 90), ev(0, 0xB0, 7, 0)]);
+    render_block(&mut eng, &s, 0);
+    heard.lock().unwrap().clear();
+    lost(&mut eng, &s, 512, midi_port_bit(0));
+    assert_eq!(std::mem::take(&mut *heard.lock().unwrap()), vec![(0, [0xB0, 121, 0]), (0, [0xB0, 7, 90])]);
+    // That device is the one whose volume the instrument has now: when it goes too, the default.
+    lost(&mut eng, &s, 1024, midi_port_bit(1));
+    assert_eq!(std::mem::take(&mut *heard.lock().unwrap()), vec![(0, [0xB0, 121, 0]), (0, [0xB0, 7, 100])]);
+    // So have the clips: their volume at this position, no default.
+    let (mut s, t, mut eng, heard) = ears_session();
+    let mut seq = Sequence::default();
+    seq.ctrls.push(CtrlEvent { tick: 0, channel: 0, kind: CtrlKind::Cc(7), value: 80 });
+    let cid = s.new_clip_id();
+    s.track_mut(t).unwrap().playlist_mut().unwrap().clips.push(Clip::midi(cid, "c", 0, 24_000, seq));
+    render_block(&mut eng, &s, 0);
+    eng.midi.push(ev(0, 0xB0, 7, 0));
+    render_block(&mut eng, &s, 512);
+    heard.lock().unwrap().clear();
+    lost(&mut eng, &s, 1024, midi_port_bit(0));
+    assert_eq!(std::mem::take(&mut *heard.lock().unwrap()), vec![(0, [0xB0, 121, 0]), (0, [0xB0, 7, 80])]);
+    // The track leaves record with the volume down: the next block's reset is followed by the
+    // default as well.
+    let (mut s, t, mut eng, heard) = ears_session();
+    eng.midi.push(ev(0, 0xB0, 7, 0));
+    render_block(&mut eng, &s, 0);
+    eng.midi.clear();
+    s.track_mut(t).unwrap().mixer.record_arm = false;
+    render_block(&mut eng, &s, 512);
+    heard.lock().unwrap().clear();
+    render_block(&mut eng, &s, 1024);
+    assert_eq!(std::mem::take(&mut *heard.lock().unwrap()), vec![(0, [0xB0, 121, 0]), (0, [0xB0, 7, 100])]);
+}
+
+#[test]
+fn a_volume_the_full_controller_table_forgot_is_reset_only_when_its_own_device_goes() {
+    let ev = |port, status, data1, data2| LiveMidi { offset: 0, port, status, data1, data2 };
+    let (s, _, mut eng, heard) = ears_session();
+    // Keys (port 0) sets the volume. A third device then sets so many controllers that the
+    // table forgets that value, and Pad (port 1) bends the pitch.
+    eng.midi.push(ev(0, 0xB0, 7, 30));
+    render_block(&mut eng, &s, 0);
+    eng.midi.clear();
+    eng.midi.extend((0..crate::live_midi::MAX_LIVE_CTRLS as u8).map(|n| ev(2, 0xB0, 20 + n, 1)));
+    eng.midi.push(ev(1, 0xE0, 0, 0x7F));
+    render_block(&mut eng, &s, 512);
+    let lost = |eng: &mut MixEngine, pos: i64, port: u8| {
+        heard.lock().unwrap().clear();
+        eng.midi.clear();
+        eng.midi_lost = midi_port_bit(port);
+        render_block(eng, &s, pos);
+        eng.midi_lost = 0;
+        heard.lock().unwrap().iter().filter(|(_, m)| m[1] == 7 || m[1] == 121).map(|(_, m)| *m).collect::<Vec<_>>()
+    };
+    // Pad goes: the controllers are reset for its bend, but the volume is Keys', who is still
+    // there, and is left alone.
+    assert_eq!(lost(&mut eng, 1024, 1), [[0xB0, 121, 0]]);
+    // Keys goes: now the volume goes back to the default.
+    assert_eq!(lost(&mut eng, 1536, 0), [[0xB0, 121, 0], [0xB0, 7, 100]]);
+    // Two devices set the volume one after the other, and the table forgets both values. The
+    // instrument has the later one: when the earlier setter goes, it stays.
+    eng.midi.extend([ev(0, 0xB0, 7, 20), ev(3, 0xB0, 7, 30), ev(0, 0xE0, 0, 0x7F)]);
+    eng.midi.extend((0..crate::live_midi::MAX_LIVE_CTRLS as u8).map(|n| ev(2, 0xB0, 20 + n, 2)));
+    render_block(&mut eng, &s, 2048);
+    assert_eq!(lost(&mut eng, 2560, 0), [[0xB0, 121, 0]], "the later setter is still there");
+    assert_eq!(lost(&mut eng, 3072, 3), [[0xB0, 121, 0], [0xB0, 7, 100]]);
+}
+
+#[test]
+fn a_clip_volume_moved_earlier_by_the_track_delay_counts_as_set_when_a_device_goes_away() {
+    use soundcraft_midi::{CtrlEvent, CtrlKind, Sequence};
+    let ev = |port, status, data1, data2| LiveMidi { offset: 0, port, status, data1, data2 };
+    // The clip sets the volume at tick 960; the track's MIDI delay of -960 ticks plays it at 0.
+    let (mut s, t, mut eng, heard) = ears_session();
+    let mut seq = Sequence::default();
+    seq.ctrls.push(CtrlEvent { tick: 960, channel: 0, kind: CtrlKind::Cc(7), value: 80 });
+    let cid = s.new_clip_id();
+    s.track_mut(t).unwrap().playlist_mut().unwrap().clips.push(Clip::midi(cid, "c", 0, 48_000, seq));
+    s.edit.values.insert(format!("rtp.{}.delay", t.0), -960.0);
+    render_block(&mut eng, &s, 0);
+    // A device turns the volume down and is unplugged, long before tick 960.
+    eng.midi.push(ev(0, 0xB0, 7, 0));
+    render_block(&mut eng, &s, 512);
+    heard.lock().unwrap().clear();
+    eng.midi.clear();
+    eng.midi_lost = midi_port_bit(0);
+    render_block(&mut eng, &s, 1024);
+    assert_eq!(std::mem::take(&mut *heard.lock().unwrap()), vec![(0, [0xB0, 121, 0]), (0, [0xB0, 7, 80])], "the clip's volume, not the default");
 }

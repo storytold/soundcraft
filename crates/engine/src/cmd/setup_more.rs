@@ -155,6 +155,9 @@ fn prepare_dpe(e: &mut Engine, p: &Value) -> Result<Value> {
         return Err(bad(id, "there is no audio to prepare"));
     }
     let r = soundcraft_time::Range::new(0, end);
+    if tracks.iter().any(|&t| crate::edit::holds_locked(e.session(), t, crate::io::bounded_to_track(e.session(), t, r))) {
+        return Err(bad(id, crate::edit::LOCKED_IN_RANGE));
+    }
     let mut n = 0;
     for t in tracks {
         // Each track keeps its own length (its material plus a second), as before.
@@ -472,8 +475,9 @@ fn midi_inputs(e: &mut Engine, p: &Value) -> Result<Value> {
 fn import_session_data(e: &mut Engine, p: &Value) -> Result<Value> {
     let id = "file.import_session_data";
     let path = str_param(p, "path").filter(|x| !x.trim().is_empty()).ok_or_else(|| bad(id, "`path` required"))?.to_string();
-    let text_v = crate::io::read_text(&path)?;
-    let other = Session::from_json(&text_v).map_err(|err| EngineError::Io(format!("{path}: {err}")))?;
+    let text_v = crate::io::read_session_text(&path)?;
+    let mut other = Session::from_json(&text_v).map_err(|err| EngineError::Io(format!("{path}: {err}")))?;
+    crate::no_input::upgrade_legacy_inputs(&mut other);
     let names: Option<Vec<String>> =
         p.get("tracks").and_then(Value::as_array).map(|a| a.iter().filter_map(Value::as_str).map(str::to_string).collect());
     let picked: Vec<soundcraft_model::Track> = match &names {
@@ -761,8 +765,8 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let wav = dir.join("hit.wav");
-        let buf = soundcraft_audio_io::AudioBuffer { sample_rate: 48_000, channels: vec![vec![0.5; 4_800]] };
-        std::fs::write(&wav, soundcraft_audio_io::encode(&buf, &soundcraft_audio_io::EncodeOptions::default()).unwrap()).unwrap();
+        let buf = craft_audio::AudioBuffer { sample_rate: 48_000, channels: vec![vec![0.5; 4_800]] };
+        std::fs::write(&wav, craft_audio::encode(&buf, &craft_audio::EncodeOptions::default()).unwrap()).unwrap();
         let mut donor = Engine::default();
         donor.execute("track.new", &json!({"count": 1, "name": "Pads", "kind": "instrument"})).unwrap();
         donor.execute("mix.sampler_load", &json!({"track": "Pads", "path": wav.to_string_lossy()})).unwrap();

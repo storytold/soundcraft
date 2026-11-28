@@ -4,7 +4,6 @@ use crate::SoundApp;
 use crate::theme::{Tokens, mono, rgb};
 use egui::{Color32, Sense, vec2};
 use serde_json::{Value, json};
-use soundcraft_audio_io::FileFormat;
 use soundcraft_model::{AutomationMode, ClipContent, SESSION_EXTENSION};
 use soundcraft_playback::AudioConfig;
 use soundcraft_playback::devices::{AudioSystem, DeviceInfo};
@@ -31,34 +30,34 @@ pub fn show(app: &mut SoundApp, ctx: &egui::Context) {
 fn audio_health(app: &mut SoundApp, ctx: &egui::Context) {
     let mut open = app.ui.show_audio_health;
     win(ctx, &mut open, "Session Audio Health", vec2(620.0, 360.0), |ui| {
-        let refresh = ui.button("Refresh Report").clicked();
+        let refresh = ui.button(crate::localization::text("Refresh Report")).clicked();
         if app.audio_health_report.is_none() || refresh {
             app.audio_health_report = Some(app.engine.execute("session.audio_health", &json!({})).map_err(|error| error.to_string()));
         }
         let Some(result) = &app.audio_health_report else { return };
         match result {
             Ok(report) => {
-                ui.label(format!("{} audio clips checked · {} issues", report["audio_clips"], report["issue_count"]));
+                ui.label(crate::localized_format!("{} audio clips checked · {} issues", report["audio_clips"], report["issue_count"]));
                 ui.label(match report["active_audio_end_seconds"].as_f64() {
-                    Some(seconds) => format!("Active audio ends at {seconds:.2} seconds"),
-                    None => "Active audio end time is unknown (invalid session sample rate)".into(),
+                    Some(seconds) => crate::localized_format!("Active audio ends at {seconds:.2} seconds", seconds = seconds),
+                    None => crate::localization::text("Active audio end time is unknown (invalid session sample rate)").to_owned(),
                 });
-                ui.label("Includes alternate takes and muted clips. Refresh after editing.");
+                ui.label(crate::localization::text("Includes alternate takes and muted clips. Refresh after editing."));
                 ui.separator();
                 if report["healthy"] == true {
-                    ui.label("All audio clips have loaded media within source bounds.");
+                    ui.label(crate::localization::text("All audio clips have loaded media within source bounds."));
                 }
                 egui::ScrollArea::vertical().max_height(260.0).show(ui, |ui| {
                     if let Some(issues) = report["issues"].as_array() {
                         for issue in issues {
                             ui.group(|ui| {
                                 let text = |key: &str| issue[key].as_str().unwrap_or("");
-                                ui.label(format!(
+                                ui.label(crate::localized_format!(
                                     "{} / {} / {}{}",
                                     text("track"),
                                     text("playlist"),
                                     text("clip"),
-                                    if issue["active"] == true { "" } else { " (alternate playlist)" }
+                                    if issue["active"] == true { "" } else { crate::localization::text(" (alternate playlist)") }
                                 ));
                                 ui.label(text("message"));
                                 if let Some(path) = issue["path"].as_str() {
@@ -69,10 +68,10 @@ fn audio_health(app: &mut SoundApp, ctx: &egui::Context) {
                     }
                 });
                 ui.separator();
-                ui.label("Checks loaded media only, not files on disk, signal levels, plugins or routing.");
+                ui.label(crate::localization::text("Checks loaded media only, not files on disk, signal levels, plugins or routing."));
             }
             Err(error) => {
-                ui.label(error.to_string());
+                ui.label(crate::localization::error_text(&error.to_string()));
             }
         }
     });
@@ -86,13 +85,15 @@ fn win(ctx: &egui::Context, open: &mut bool, title: &str, size: egui::Vec2, body
     if !*open {
         return;
     }
-    egui::Window::new(title).open(open).default_size(size).show(ctx, body);
+    // The title is translated for display, but the id keeps the English source so a language
+    // switch does not move or resize the window.
+    egui::Window::new(crate::localization::text(title)).id(egui::Id::unique(title)).open(open).default_size(size).show(ctx, body);
 }
 
 fn automation(app: &mut SoundApp, ctx: &egui::Context) {
     let mut open = app.ui.show_automation;
     win(ctx, &mut open, "Automation", vec2(260.0, 260.0), |ui| {
-        ui.label("Write automation for the selected tracks:");
+        ui.label(crate::localization::text("Write automation for the selected tracks:"));
         let tracks = app.engine.session().edit.selected_tracks.clone();
         ui.horizontal_wrapped(|ui| {
             for m in [
@@ -104,14 +105,14 @@ fn automation(app: &mut SoundApp, ctx: &egui::Context) {
                 AutomationMode::Write,
                 AutomationMode::Trim,
             ] {
-                if ui.button(m.label()).clicked() {
+                if ui.button(crate::localization::text(m.label())).clicked() {
                     let ids: Vec<u64> = tracks.iter().map(|t| t.0).collect();
                     let _ = app.run("mix.automation_mode", json!({"tracks": ids, "mode": m.label()}));
                 }
             }
         });
         ui.separator();
-        ui.label("Enabled parameters");
+        ui.label(crate::localization::text("Enabled parameters"));
         for f in ["volume", "pan", "mute", "send level", "send pan", "send mute", "plugin"] {
             let id = format!("automation.enable.{}", f.replace(' ', "_"));
             let mut on = !app.engine.session().edit.flag(&format!("{id}.off"));
@@ -120,10 +121,10 @@ fn automation(app: &mut SoundApp, ctx: &egui::Context) {
             }
         }
         ui.separator();
-        if ui.button("Write to Current").clicked() {
+        if ui.button(crate::localization::text("Write to Current")).clicked() {
             let _ = app.run("automation.write_to_current", json!({}));
         }
-        if ui.button("Thin All").clicked() {
+        if ui.button(crate::localization::text("Thin All")).clicked() {
             let _ = app.run("automation.thin_all", json!({}));
         }
     });
@@ -133,7 +134,7 @@ fn automation(app: &mut SoundApp, ctx: &egui::Context) {
 fn color_palette(app: &mut SoundApp, ctx: &egui::Context) {
     let mut open = app.ui.show_color_palette;
     win(ctx, &mut open, "Color Palette", vec2(300.0, 140.0), |ui| {
-        ui.label("Apply to selected tracks (Shift: selected clips)");
+        ui.label(crate::localization::text("Apply to selected tracks (Shift: selected clips)"));
         ui.horizontal_wrapped(|ui| {
             for (i, c) in soundcraft_model::TRACK_COLORS.iter().enumerate() {
                 let (r, resp) = ui.allocate_exact_size(vec2(28.0, 28.0), Sense::click());
@@ -148,7 +149,9 @@ fn color_palette(app: &mut SoundApp, ctx: &egui::Context) {
             }
         });
         ui.separator();
-        ui.add(egui::Slider::new(&mut app.ui.track_tint, 0.0..=1.0).show_value(false).text("Track tint in the Edit window"));
+        ui.add(
+            egui::Slider::new(&mut app.ui.track_tint, 0.0..=1.0).show_value(false).text(crate::localization::text("Track tint in the Edit window")),
+        );
     });
     app.ui.show_color_palette = open;
 }
@@ -158,11 +161,11 @@ fn disk_usage(app: &mut SoundApp, ctx: &egui::Context) {
     win(ctx, &mut open, "Disk Usage", vec2(360.0, 160.0), |ui| {
         let s = app.engine.session();
         let bytes: u64 = s.sources.iter().map(|x| x.frames * u64::from(x.channels) * 4).sum();
-        ui.label(format!("Session media: {} files, {:.1} MB in memory (32-bit float)", s.sources.len(), bytes as f64 / 1_048_576.0));
+        ui.label(crate::localized_format!("Session media: {} files, {:.1} MB in memory (32-bit float)", s.sources.len(), bytes as f64 / 1_048_576.0));
         let per_min = f64::from(s.sample_rate.hz()) * 60.0 * 3.0 / 1_048_576.0;
-        ui.label(format!("Recording at 24-bit uses {per_min:.1} MB per mono track-minute"));
+        ui.label(crate::localized_format!("Recording at 24-bit uses {per_min:.1} MB per mono track-minute", per_min = per_min));
         if let Some(p) = &app.engine.path {
-            ui.label(format!("Session file: {p}"));
+            ui.label(crate::localized_format!("Session file: {p}", p = p));
         }
     });
     app.ui.show_disk_usage = open;
@@ -171,12 +174,18 @@ fn disk_usage(app: &mut SoundApp, ctx: &egui::Context) {
 fn system_usage(app: &mut SoundApp, ctx: &egui::Context) {
     let mut open = app.ui.show_system_usage;
     win(ctx, &mut open, "System Usage", vec2(320.0, 140.0), |ui| {
-        ui.label(format!("UI frame time: {:.1} ms", app.frame_ms));
-        ui.label(format!("Audio: {}", app.player.as_ref().map_or("no engine".to_string(), |p| format!("{} @ {} Hz", p.device_name, p.device_rate))));
+        ui.label(crate::localized_format!("UI frame time: {:.1} ms", app.frame_ms));
+        ui.label(crate::localized_format!(
+            "Audio: {}",
+            app.player.as_ref().map_or_else(
+                || crate::localization::text("No engine").to_owned(),
+                |p| crate::localized_format!("{} @ {} Hz", p.device_name, p.device_rate)
+            )
+        ));
         let plugins: usize = app.engine.session().tracks.iter().map(|t| t.mixer.inserts.iter().flatten().count()).sum();
-        ui.label(format!("Active plugin instances: {plugins}"));
-        ui.label(format!("Tracks: {}", app.engine.session().tracks.len()));
-        ui.label(format!("Undo steps: {}", app.engine.undo_history().len()));
+        ui.label(crate::localized_format!("Active plugin instances: {plugins}", plugins = plugins));
+        ui.label(crate::localized_format!("Tracks: {}", app.engine.session().tracks.len()));
+        ui.label(crate::localized_format!("Undo steps: {}", app.engine.undo_history().len()));
     });
     app.ui.show_system_usage = open;
 }
@@ -186,15 +195,17 @@ fn task_manager(app: &mut SoundApp, ctx: &egui::Context) {
     win(ctx, &mut open, "Task Manager", vec2(320.0, 120.0), |ui| {
         match &app.bounce {
             Some(b) => {
-                ui.label(format!("Bouncing {} ({:.0}%)", b.path().display(), b.progress() * 100.0));
+                ui.label(crate::localized_format!("Bouncing {} ({:.0}%)", b.path().display(), b.progress() * 100.0));
                 ui.add(egui::ProgressBar::new(b.progress()));
             }
             None => {
-                ui.label("No background tasks are running.");
+                ui.label(crate::localization::text("No background tasks are running."));
             }
         }
         ui.label(
-            egui::RichText::new("Renders and AudioSuite processes run to completion before returning.").small().color(Tokens::current().text_dim),
+            egui::RichText::new(crate::localization::text("Renders and AudioSuite processes run to completion before returning."))
+                .small()
+                .color(Tokens::current().text_dim),
         );
     });
     app.ui.show_task_manager = open;
@@ -216,14 +227,14 @@ fn metadata(app: &mut SoundApp, ctx: &egui::Context) {
                 ("Markers", s.markers.len().to_string()),
                 ("Length", s.format_position(s.content_end(), soundcraft_time::TimeFormat::MinSecs)),
             ] {
-                ui.label(k);
+                ui.label(crate::localization::text(k));
                 ui.label(v);
                 ui.end_row();
             }
         });
         ui.separator();
         let mut c = s.comments.clone();
-        ui.label("Session comments");
+        ui.label(crate::localization::text("Session comments"));
         if ui.text_edit_multiline(&mut c).changed() {
             app.engine.session_mut().comments = c;
         }
@@ -237,7 +248,7 @@ fn event_list(app: &mut SoundApp, ctx: &egui::Context) {
     let mut open = app.ui.show_event_list;
     win(ctx, &mut open, "MIDI Event List", vec2(420.0, 360.0), |ui| {
         let Some(cid) = crate::midi_editor::target_clip(app) else {
-            ui.label("Select a MIDI clip.");
+            ui.label(crate::localization::text("Select a MIDI clip."));
             return;
         };
         let notes = match app.engine.session().find_clip(cid).map(|(_, c)| c.content.clone()) {
@@ -247,14 +258,14 @@ fn event_list(app: &mut SoundApp, ctx: &egui::Context) {
         egui::ScrollArea::vertical().show(ui, |ui| {
             egui::Grid::new("evl").num_columns(5).striped(true).show(ui, |ui| {
                 for h in ["Start (ticks)", "Note", "Vel", "Length", ""] {
-                    ui.label(egui::RichText::new(h).strong());
+                    ui.label(egui::RichText::new(crate::localization::text(h)).strong());
                 }
                 ui.end_row();
                 for (i, n) in notes.iter().enumerate() {
                     ui.label(egui::RichText::new(n.start.to_string()).font(mono(11.0)));
                     ui.label(soundcraft_midi::note_name(n.pitch));
                     let mut v = i64::from(n.velocity);
-                    if ui.add(egui::DragValue::new(&mut v).range(1..=127)).accessible_name("Note velocity").changed() {
+                    if ui.add(egui::DragValue::new(&mut v).range(1..=127)).accessible_name(crate::localization::text("Note velocity")).changed() {
                         let _ = app.engine.execute("midi.note_edit", &json!({"clip": cid.0, "index": i, "velocity": v}));
                     }
                     ui.label(n.length.to_string());
@@ -314,7 +325,10 @@ fn midi_keyboard(app: &mut SoundApp, ctx: &egui::Context) {
             let next = s.tempo.tick_to_samples(s.tempo.samples_to_ticks(at, s.sample_rate) + len, s.sample_rate);
             let _ = app.run("transport.locate", json!({"at": next}));
         }
-        ui.label(egui::RichText::new("Click keys to step-enter notes into the selected MIDI clip at the insertion point.").small());
+        ui.label(
+            egui::RichText::new(crate::localization::text("Click keys to step-enter notes into the selected MIDI clip at the insertion point."))
+                .small(),
+        );
     });
     app.ui.show_midi_keyboard = open;
 }
@@ -324,55 +338,64 @@ fn workspace(app: &mut SoundApp, ctx: &egui::Context) {
     if !open {
         return;
     }
-    egui::Window::new("Workspace").open(&mut open).default_size(vec2(460.0, 420.0)).show(ctx, |ui| {
-        let dir = if app.ui.workspace_dir.is_empty() { std::env::var("HOME").unwrap_or_else(|_| ".".into()) } else { app.ui.workspace_dir.clone() };
-        ui.horizontal(|ui| {
-            if ui.button("⬆").on_hover_text("Parent folder").clicked()
-                && let Some(p) = std::path::Path::new(&dir).parent()
-            {
-                app.ui.workspace_dir = p.to_string_lossy().into_owned();
-            }
-            ui.label(egui::RichText::new(&dir).small());
-        });
-        ui.separator();
-        // Names stay paths: a name that is not valid Unicode is shown lossily, and opening it says so.
-        let mut entries: Vec<(std::path::PathBuf, String, bool)> = std::fs::read_dir(&dir)
-            .map(|rd| {
-                rd.flatten()
-                    .filter_map(|e| {
-                        let path = e.path();
-                        let name = e.file_name().to_string_lossy().into_owned();
-                        if name.starts_with('.') {
-                            return None;
-                        }
-                        let is_dir = e.file_type().is_ok_and(|t| t.is_dir());
-                        let ext = path.extension().and_then(std::ffi::OsStr::to_str).unwrap_or("").to_ascii_lowercase();
-                        (is_dir || FileFormat::from_extension(&ext).is_some() || ["mid", "midi", SESSION_EXTENSION].contains(&ext.as_str()))
+    egui::Window::new(crate::localization::text("Workspace"))
+        .id(egui::Id::unique("Workspace"))
+        .open(&mut open)
+        .default_size(vec2(460.0, 420.0))
+        .show(ctx, |ui| {
+            let dir =
+                if app.ui.workspace_dir.is_empty() { std::env::var("HOME").unwrap_or_else(|_| ".".into()) } else { app.ui.workspace_dir.clone() };
+            ui.horizontal(|ui| {
+                if ui.button(crate::localization::text("⬆")).on_hover_text(crate::localization::text("Parent folder")).clicked()
+                    && let Some(p) = std::path::Path::new(&dir).parent()
+                {
+                    app.ui.workspace_dir = p.to_string_lossy().into_owned();
+                }
+                ui.label(egui::RichText::new(&dir).small());
+            });
+            ui.separator();
+            // Names stay paths: a name that is not valid Unicode is shown lossily, and opening it says so.
+            let mut entries: Vec<(std::path::PathBuf, String, bool)> = std::fs::read_dir(&dir)
+                .map(|rd| {
+                    rd.flatten()
+                        .filter_map(|e| {
+                            let path = e.path();
+                            let name = e.file_name().to_string_lossy().into_owned();
+                            if name.starts_with('.') {
+                                return None;
+                            }
+                            let is_dir = e.file_type().is_ok_and(|t| t.is_dir());
+                            let ext = path.extension().and_then(std::ffi::OsStr::to_str).unwrap_or("").to_ascii_lowercase();
+                            (is_dir
+                                || craft_audio::DECODE_EXTENSIONS.contains(&ext.as_str())
+                                || ["mid", "midi", SESSION_EXTENSION].contains(&ext.as_str()))
                             .then_some((path, name, is_dir))
-                    })
-                    .collect()
-            })
-            .unwrap_or_default();
-        entries.sort_by(|a, b| b.2.cmp(&a.2).then(a.1.to_lowercase().cmp(&b.1.to_lowercase())));
-        egui::ScrollArea::vertical().show(ui, |ui| {
-            for (path, name, is_dir) in entries.into_iter().take(2000) {
-                let label = if is_dir { format!("📁 {name}") } else { format!("🔊 {name}") };
-                let r = ui.selectable_label(false, label);
-                if r.double_clicked() {
-                    if is_dir {
-                        // The folder is kept as text in the preferences.
-                        match crate::dialogs::unicode(&path) {
-                            Ok(p) => app.ui.workspace_dir = p.to_owned(),
-                            Err(e) => app.ui.status = e.to_string(),
+                        })
+                        .collect()
+                })
+                .unwrap_or_default();
+            entries.sort_by(|a, b| b.2.cmp(&a.2).then(a.1.to_lowercase().cmp(&b.1.to_lowercase())));
+            egui::ScrollArea::vertical().show(ui, |ui| {
+                for (path, name, is_dir) in entries.into_iter().take(2000) {
+                    let label = if is_dir { format!("📁 {name}") } else { format!("🔊 {name}") };
+                    let r = ui.selectable_label(false, label);
+                    if r.double_clicked() {
+                        if is_dir {
+                            // The folder is kept as text in the preferences.
+                            match crate::dialogs::unicode(&path) {
+                                Ok(p) => app.ui.workspace_dir = p.to_owned(),
+                                Err(e) => app.ui.status = crate::localization::error_text(&e.to_string()),
+                            }
+                        } else {
+                            crate::dialogs::open_path(app, &path);
                         }
-                    } else {
-                        crate::dialogs::open_path(app, &path);
                     }
                 }
-            }
+            });
+            ui.label(
+                egui::RichText::new(crate::localization::text("Double-click to import audio/MIDI at the insertion point or open a session.")).small(),
+            );
         });
-        ui.label(egui::RichText::new("Double-click to import audio/MIDI at the insertion point or open a session.").small());
-    });
     app.ui.show_workspace = open;
 }
 
@@ -381,7 +404,7 @@ fn workspace(app: &mut SoundApp, ctx: &egui::Context) {
 fn configurations(app: &mut SoundApp, ctx: &egui::Context) {
     let mut open = app.ui.show_configurations;
     win(ctx, &mut open, "Window Configurations", vec2(320.0, 240.0), |ui| {
-        if ui.button("New Configuration…").clicked() {
+        if ui.button(crate::localization::text("New Configuration…")).clicked() {
             let n = app.ui.configurations.len() + 1;
             let mut snap = app.ui.clone();
             snap.configurations.clear();
@@ -397,7 +420,7 @@ fn configurations(app: &mut SoundApp, ctx: &egui::Context) {
                 if ui.button(format!("{}  {name}", i + 1)).clicked()
                     && let Err(error) = recall_configuration(app, v)
                 {
-                    app.ui.status = format!("Window configuration could not be restored: {error}");
+                    app.ui.status = crate::localized_format!("Window configuration could not be restored: {error}", error = error);
                 }
                 if crate::widgets::close_button(ui, "Remove configuration").clicked() {
                     app.ui.configurations.remove(i);
@@ -408,7 +431,7 @@ fn configurations(app: &mut SoundApp, ctx: &egui::Context) {
     app.ui.show_configurations = open;
 }
 
-/// Restore a saved window configuration, keeping the configuration list and the appearance.
+/// Restore a window layout while retaining current application preferences and any open draft.
 /// A configuration saved before the current panel layouts gets the default layouts.
 pub fn recall_configuration(app: &mut SoundApp, saved: &Value) -> Result<(), String> {
     let mut saved = saved.clone();
@@ -417,8 +440,17 @@ pub fn recall_configuration(app: &mut SoundApp, saved: &Value) -> Result<(), Str
     crate::docking::validate(&st.docking).and_then(|()| crate::docking::validate_mix(&st.mix_docking))?;
     st.configurations = app.ui.configurations.clone();
     st.theme = app.ui.theme;
+    // Language is a global preference like the theme: recalling a configuration keeps the current one.
+    st.language = app.ui.language;
+    st.show_preferences = app.ui.show_preferences;
+    st.preferences_page = app.ui.preferences_page;
+    st.preferences_window_pos = app.ui.preferences_window_pos;
+    st.reduce_visual_effects = app.ui.reduce_visual_effects;
+    st.undo_levels = app.ui.undo_levels.clamp(1, 64);
+    st.sends_default = app.ui.sends_default;
     st.show_configurations = true;
     crate::docking::cancel_replaced_state(app, &st);
+    app.engine.set_history_limit(st.undo_levels);
     app.ui = st;
     Ok(())
 }
@@ -451,49 +483,172 @@ fn chosen_device<'a>(devices: &'a [DeviceInfo], name: Option<&str>) -> Option<&'
 
 /// Device picker with a Default entry and channel counts, labelled for accessibility.
 fn device_combo(ui: &mut egui::Ui, id: &str, name: &str, value: &mut Option<String>, devices: &[DeviceInfo]) {
-    let default = devices.iter().find(|d| d.is_default).map_or("none".to_string(), |d| d.name.clone());
-    let shown = value.clone().unwrap_or_else(|| format!("Default ({default})"));
-    let combo = craft_ui::ComboBox::from_id_salt(id).width(300.0).selected_text(shown).show_ui(ui, |ui| {
-        ui.selectable_value(value, None, format!("Default ({default})"));
+    let default = devices.iter().find(|d| d.is_default).map_or_else(|| crate::localization::text("none").to_string(), |d| d.name.clone());
+    let shown = value.clone().unwrap_or_else(|| crate::localized_format!("Default ({default})", default = default));
+    let combo = egui::ComboBox::from_id_salt(id).width(300.0).selected_text(shown).show_ui(ui, |ui| {
+        ui.selectable_value(value, None, crate::localized_format!("Default ({default})", default = default));
         for d in devices {
             ui.selectable_value(value, Some(d.name.clone()), format!("{} ({} ch)", d.name, d.max_channels));
         }
     });
-    combo.response.accessible_name(name);
+    combo.response.accessible_name(crate::localization::text(name));
 }
 
 /// Optional-number picker with a Device default entry and a unit, labelled for accessibility.
 fn number_combo(ui: &mut egui::Ui, id: &str, name: &str, value: &mut Option<u32>, options: &[u32], unit: &str) {
-    let shown = value.map_or("Device default".to_string(), |v| format!("{v} {unit}"));
-    let combo = craft_ui::ComboBox::from_id_salt(id).width(300.0).selected_text(shown).show_ui(ui, |ui| {
-        ui.selectable_value(value, None, "Device default");
+    let shown = value.map_or_else(
+        || crate::localization::text("Device default").to_string(),
+        |v| crate::localized_format!("{v} {unit}", v = v, unit = crate::localization::text(unit)),
+    );
+    let combo = egui::ComboBox::from_id_salt(id).width(300.0).selected_text(shown).show_ui(ui, |ui| {
+        ui.selectable_value(value, None, crate::localization::text("Device default"));
         for v in options {
-            ui.selectable_value(value, Some(*v), format!("{v} {unit}"));
+            ui.selectable_value(value, Some(*v), crate::localized_format!("{v} {unit}", v = v, unit = crate::localization::text(unit)));
         }
     });
-    combo.response.accessible_name(name);
+    combo.response.accessible_name(crate::localization::text(name));
+}
+
+/// What a MIDI message is, for the "last received" readout.
+fn midi_event_text(e: &soundcraft_mix::LiveMidi) -> String {
+    let ch = e.channel() + 1;
+    match e.status & 0xF0 {
+        0x90 if e.data2 > 0 => format!("note {} on, velocity {}, channel {ch}", soundcraft_midi::note_name(e.data1), e.data2),
+        0x80 | 0x90 => format!("note {} off, channel {ch}", soundcraft_midi::note_name(e.data1)),
+        0xA0 => format!("aftertouch {} on note {}, channel {ch}", e.data2, soundcraft_midi::note_name(e.data1)),
+        0xB0 => format!("controller {} = {}, channel {ch}", e.data1, e.data2),
+        0xC0 => format!("program {}, channel {ch}", u16::from(e.data1) + 1),
+        0xD0 => format!("aftertouch {}, channel {ch}", e.data1),
+        0xE0 => format!("pitch bend {}, channel {ch}", (i32::from(e.data2) << 7 | i32::from(e.data1)) - 8192),
+        _ => format!("message {:#04x}", e.status),
+    }
+}
+
+/// The MIDI inputs of Setup › Playback Engine: every input port with a switch, and on request what
+/// arrives from it, to see that a keyboard gets through.
+fn midi_inputs(app: &mut SoundApp, ui: &mut egui::Ui) {
+    ui.strong("MIDI inputs");
+    let Some(m) = &app.midi_inputs else {
+        ui.weak("No audio engine, so MIDI devices are not opened.");
+        return;
+    };
+    if let Some(e) = m.error() {
+        ui.colored_label(ui.visuals().warn_fg_color, e);
+        return;
+    }
+    let ports = m.ports().to_vec();
+    if ports.is_empty() {
+        ui.weak("No MIDI input device found. Plug one in: it shows up here by itself.");
+    }
+    // Per port name: whether its debug readout is shown, and the last message seen from it.
+    let debug_id = egui::Id::unique("playback-engine-midi-debug");
+    let mut debug: std::collections::BTreeMap<String, (bool, Option<String>)> = ui.data(|d| d.get_temp(debug_id)).unwrap_or_default();
+    let (count, last) = m.feed().activity();
+    let dropped = m.feed().dropped();
+    if dropped > 0 {
+        ui.colored_label(
+            ui.visuals().warn_fg_color,
+            format!("{dropped} MIDI event(s) arrived faster than they could be played and were dropped; held notes of that device were released."),
+        );
+    }
+    if let Some(e) = last
+        && let Some(from) = m.feed().ports().name(e.port)
+    {
+        debug.entry(from.to_string()).or_default().1 = Some(format!("{} (message {count} of all devices)", midi_event_text(&e)));
+    }
+    let mut toggle = None;
+    egui::Grid::new("pe-midi").num_columns(3).show(ui, |ui| {
+        for p in &ports {
+            let mut on = p.enabled;
+            if crate::widgets::checkbox(ui, &mut on, &p.name).on_hover_text("Play and record from this device").changed() {
+                toggle = Some((p.name.clone(), on));
+            }
+            match (p.enabled, p.open) {
+                (false, _) => ui.weak("off"),
+                (true, true) => ui.label("connected"),
+                (true, false) => ui.colored_label(ui.visuals().warn_fg_color, "could not be opened"),
+            };
+            let shown = &mut debug.entry(p.name.clone()).or_default().0;
+            if ui.selectable_label(*shown, "Test").on_hover_text("Show what arrives from this device").clicked() {
+                *shown = !*shown;
+            }
+            ui.end_row();
+        }
+    });
+    if let Some((name, on)) = toggle {
+        app.set_midi_input_enabled(&name, on);
+    }
+    for p in &ports {
+        let Some((true, seen)) = debug.get(&p.name) else { continue };
+        ui.separator();
+        ui.label(&p.name);
+        ui.weak(format!("Enabled: {}, open: {}", if p.enabled { "yes" } else { "no" }, if p.open { "yes" } else { "no" }));
+        ui.weak(match seen {
+            Some(text) => format!("Last received: {text}"),
+            None => "Last received: nothing yet".to_string(),
+        });
+        // Keep the readout live while it is shown.
+        ui.ctx().request_repaint_after_secs(0.1);
+    }
+    ui.data_mut(|d| d.insert_temp(debug_id, debug));
+}
+
+/// What the Playback Engine says when a change made elsewhere replaced its unapplied edits.
+const REPLACED_EDITS: &str = "The audio settings were changed outside this window; your unapplied changes were replaced.";
+
+/// Drop the replacement notice from the status line when it is still this notice, so a later edit
+/// or closing the window does not leave it there. Leave any other status message alone.
+fn clear_replaced_edits_status(app: &mut SoundApp) {
+    if app.ui.status == crate::localization::text(REPLACED_EDITS) {
+        app.ui.status.clear();
+    }
 }
 
 /// Setup › Playback Engine / Hardware: choose the audio system, devices, rate and buffer size.
 pub fn playback_engine(app: &mut SoundApp, ctx: &egui::Context) {
     let mut open = app.ui.show_playback_engine;
+    // The window's unapplied edits, with the choice they started from. A choice changed elsewhere
+    // (`ui.audio_device`, `setup.playback_engine`) replaces them, so the window never shows, or
+    // applies, an earlier choice. A reconnect reopens the same choice and leaves them alone.
+    let draft_id = egui::Id::unique("audio_draft");
+    // Set while the window shows a choice made elsewhere that replaced its unapplied edits.
+    let replaced_id = egui::Id::unique("audio_draft_replaced");
     if !open {
+        // Closed from the menu or by command: unapplied edits go, as with the close button.
+        clear_replaced_edits_status(app);
+        ctx.data_mut(|d| {
+            d.remove_temp::<(AudioConfig, AudioConfig)>(draft_id);
+            d.remove_temp::<bool>(replaced_id);
+        });
         return;
     }
-    let draft_id = egui::Id::unique("audio_draft");
-    let mut draft = ctx.data(|d| d.get_temp::<AudioConfig>(draft_id)).unwrap_or_else(|| app.ui.audio.clone());
+    // Pro Tools' Playback Engine is modal, so nothing else changes the device under its edits
+    // (Reference Guide p. 109). This window is not: a change made elsewhere wins, and when it
+    // replaces unapplied edits the window and the status line say so.
+    let mut draft = match ctx.data(|d| d.get_temp::<(AudioConfig, AudioConfig)>(draft_id)) {
+        Some((from, draft)) if from == app.ui.audio => draft,
+        Some((from, draft)) => {
+            if draft != from && draft != app.ui.audio {
+                let note = crate::localization::text(REPLACED_EDITS);
+                app.ui.status = note.to_string();
+                ctx.data_mut(|d| d.insert_temp(replaced_id, true));
+            }
+            app.ui.audio.clone()
+        }
+        None => app.ui.audio.clone(),
+    };
     let mut refresh = false;
     let mut apply = false;
     let systems = audio_systems(ctx, false);
     win(ctx, &mut open, "Playback Engine", vec2(460.0, 360.0), |ui| {
         let t = Tokens::current();
         egui::Grid::new("pe").num_columns(2).spacing(vec2(12.0, 6.0)).show(ui, |ui| {
-            let system_label = ui.label("Audio system");
+            let system_label = ui.label(crate::localization::text("Audio system"));
             let def = systems.iter().find(|s| s.is_default).map_or("none".to_string(), |s| s.name.clone());
-            let shown = draft.system.clone().unwrap_or_else(|| format!("Default ({def})"));
-            let system = craft_ui::ComboBox::from_id_salt("pe-system").width(300.0).selected_text(shown).show_ui(ui, |ui| {
+            let shown = draft.system.clone().unwrap_or_else(|| crate::localized_format!("Default ({default})", default = def));
+            let system = egui::ComboBox::from_id_salt("pe-system").width(300.0).selected_text(shown).show_ui(ui, |ui| {
                 let before = draft.system.clone();
-                ui.selectable_value(&mut draft.system, None, format!("Default ({def})"));
+                ui.selectable_value(&mut draft.system, None, crate::localized_format!("Default ({default})", default = def));
                 for s in systems.iter() {
                     ui.selectable_value(&mut draft.system, Some(s.name.clone()), &s.name);
                 }
@@ -506,17 +661,17 @@ pub fn playback_engine(app: &mut SoundApp, ctx: &egui::Context) {
             system.response.labelled_by(system_label.id);
             ui.end_row();
             let sys = chosen_system(&systems, &draft);
-            ui.label("Output device");
+            ui.label(crate::localization::text("Output device"));
             device_combo(ui, "pe-out", "Output device", &mut draft.output, sys.map_or(&[][..], |s| &s.outputs));
             ui.end_row();
-            ui.label("Input device");
+            ui.label(crate::localization::text("Input device"));
             device_combo(ui, "pe-in", "Input device", &mut draft.input, sys.map_or(&[][..], |s| &s.inputs));
             ui.end_row();
             let out = sys.and_then(|s| chosen_device(&s.outputs, draft.output.as_deref()));
-            ui.label("Sample rate");
+            ui.label(crate::localization::text("Sample rate"));
             number_combo(ui, "pe-rate", "Sample rate", &mut draft.sample_rate, out.map_or(&[][..], |d| &d.sample_rates), "Hz");
             ui.end_row();
-            ui.label("Buffer size");
+            ui.label(crate::localization::text("Buffer size"));
             // The combo lists standard power-of-two sizes. `setup.playback_engine` does not round
             // onto this list: it keeps any integer 16..=8192, the same as `ui.audio_device`.
             let buffers = out.map(DeviceInfo::buffer_sizes).unwrap_or_else(|| soundcraft_playback::devices::STANDARD_BUFFERS.to_vec());
@@ -525,52 +680,76 @@ pub fn playback_engine(app: &mut SoundApp, ctx: &egui::Context) {
         });
         ui.add_space(4.0);
         ui.horizontal(|ui| {
-            if ui.button("Refresh devices").clicked() {
+            if ui.button(crate::localization::text("Refresh devices")).clicked() {
                 refresh = true;
             }
             let changed = draft != app.ui.audio;
-            if ui.add_enabled(changed, egui::Button::new("Apply")).on_hover_text("Reopen the audio devices with these settings").clicked() {
+            if ui
+                .add_enabled(changed, egui::Button::new(crate::localization::text("Apply")))
+                .on_hover_text(crate::localization::text("Reopen the audio devices with these settings"))
+                .clicked()
+            {
                 apply = true;
             }
-            if changed && ui.button("Revert").clicked() {
+            if changed && ui.button(crate::localization::text("Revert")).clicked() {
                 draft = app.ui.audio.clone();
             }
         });
+        if draft != app.ui.audio {
+            // A new edit: the replaced ones are no longer the news.
+            ui.ctx().data_mut(|d| d.remove_temp::<bool>(replaced_id));
+            clear_replaced_edits_status(app);
+        } else if ui.ctx().data(|d| d.get_temp::<bool>(replaced_id)).unwrap_or(false) {
+            ui.label(egui::RichText::new(crate::localization::text(REPLACED_EDITS)).color(ui.visuals().warn_fg_color));
+        }
         ui.separator();
         egui::Grid::new("pe-state").num_columns(2).show(ui, |ui| {
-            ui.label("Output");
-            ui.label(app.player.as_ref().map_or("none".to_string(), |p| {
+            ui.label(crate::localization::text("Output"));
+            ui.label(app.player.as_ref().map_or(crate::localization::text("none").to_string(), |p| {
                 if p.silent {
-                    "no device (silent clock)".to_string()
+                    crate::localization::text("no device (silent clock)").to_string()
                 } else {
-                    let buf = p.device_buffer.map_or("default buffer".to_string(), |b| format!("{b} samples"));
-                    format!("{} · {} Hz · {} ch · {buf}", p.device_name, p.device_rate, p.device_channels)
+                    let buf = p
+                        .device_buffer
+                        .map_or(crate::localization::text("default buffer").to_string(), |b| crate::localized_format!("{} samples", b));
+                    crate::localized_format!("{} · {} Hz · {} ch · {}", p.device_name, p.device_rate, p.device_channels, buf)
                 }
             }));
             ui.end_row();
-            ui.label("Input");
-            ui.label(app.recorder.as_ref().map_or("opened on first record or monitor".to_string(), |r| {
-                format!("{} · {} Hz · {} ch", r.device_name, r.sample_rate, r.channels)
+            if let Some(note) = buffer_note(app) {
+                ui.label("");
+                ui.label(egui::RichText::new(buffer_note_text(note)).color(ui.visuals().warn_fg_color));
+                ui.end_row();
+            }
+            ui.label(crate::localization::text("Input"));
+            ui.label(app.recorder.as_ref().map_or(crate::localization::text("opened on first record or monitor").to_string(), |r| {
+                crate::localized_format!("{} · {} Hz · {} ch", r.device_name, r.sample_rate, r.channels)
             }));
             ui.end_row();
-            ui.label("Session rate");
+            ui.label(crate::localization::text("Session rate"));
             let sr = app.engine.session().sample_rate.hz();
             let note = app
                 .player
                 .as_ref()
                 .filter(|p| !p.silent && p.device_rate != sr)
-                .map_or(String::new(), |_| " (resampled to the device rate)".to_string());
-            ui.label(format!("{sr} Hz{note}"));
+                .map_or(String::new(), |_| crate::localization::text(" (resampled to the device rate)").to_string());
+            ui.label(crate::localized_format!("{sr} Hz{note}", sr = sr, note = note));
             ui.end_row();
         });
-        ui.label(egui::RichText::new("The mix runs in 512-sample blocks; the buffer size sets the device's own latency.").small().color(t.text_dim));
+        ui.label(
+            egui::RichText::new(crate::localization::text("The mix runs in 512-sample blocks; the buffer size sets the device's own latency."))
+                .small()
+                .color(t.text_dim),
+        );
         let mut dc = app.engine.session().edit.delay_compensation;
-        if crate::widgets::checkbox(ui, &mut dc, "Delay compensation").changed() {
+        if crate::widgets::checkbox(ui, &mut dc, crate::localization::text("Delay compensation")).changed() {
             let _ = app.run("options.delay_compensation", json!({"value": dc}));
         }
-        if ui.button("Reconnect audio device").clicked() {
+        if ui.button(crate::localization::text("Reconnect audio device")).clicked() {
             app.reconnect_audio();
         }
+        ui.separator();
+        midi_inputs(app, ui);
     });
     if refresh {
         audio_systems(ctx, true);
@@ -579,11 +758,13 @@ pub fn playback_engine(app: &mut SoundApp, ctx: &egui::Context) {
         app.ui.status = e;
     }
     if open {
-        ctx.data_mut(|d| d.insert_temp(draft_id, draft));
+        ctx.data_mut(|d| d.insert_temp(draft_id, (app.ui.audio.clone(), draft)));
     } else {
         // Closing discards unapplied edits and the device list (re-read on the next open).
+        clear_replaced_edits_status(app);
         ctx.data_mut(|d| {
-            d.remove_temp::<AudioConfig>(draft_id);
+            d.remove_temp::<(AudioConfig, AudioConfig)>(draft_id);
+            d.remove_temp::<bool>(replaced_id);
             d.remove_temp::<Arc<Vec<AudioSystem>>>(egui::Id::unique("audio_systems"));
         });
     }
@@ -592,7 +773,9 @@ pub fn playback_engine(app: &mut SoundApp, ctx: &egui::Context) {
 
 /// `ui.audio_device`: `{list?: bool}` returns the audio systems and their devices;
 /// `{system?, output?, input?, sample_rate?, buffer_size?}` (a `null` value means "default") sets
-/// the choice and reopens the devices. Always returns the choice and the open device.
+/// the choice and reopens the devices. Always returns the choice, the open device (with the
+/// driver's `buffer_range`, null when it reports none, and `buffer_running`, the size the stream
+/// reports it runs at) and a `buffer_note` when the device does not run at the chosen buffer size.
 pub fn audio_device_command(app: &mut SoundApp, p: &serde_json::Value) -> Result<serde_json::Value, String> {
     use serde_json::Value;
     let mut changed = false;
@@ -616,21 +799,55 @@ pub fn audio_device_command(app: &mut SoundApp, p: &serde_json::Value) -> Result
         app.apply_audio_config(cfg)?;
     }
     let device = app.player.as_ref().map(|pl| {
-        json!({"name": pl.device_name, "sample_rate": pl.device_rate, "channels": pl.device_channels, "buffer_size": pl.device_buffer, "silent": pl.silent})
+        let range = pl.device_buffer_range.map(|(min, max)| json!({"min": min, "max": max}));
+        json!({"name": pl.device_name, "sample_rate": pl.device_rate, "channels": pl.device_channels, "buffer_size": pl.device_buffer, "buffer_range": range, "buffer_running": pl.device_buffer_running, "silent": pl.silent})
     });
-    let mut out = json!({"config": app.ui.audio, "device": device});
+    let mut out = json!({"config": app.ui.audio, "device": device, "buffer_note": buffer_note(app).map(|n| n.english())});
     if p.get("list").and_then(Value::as_bool).unwrap_or(false) {
         out["systems"] = json!(soundcraft_playback::devices::audio_systems());
     }
     Ok(out)
 }
 
+/// Why the open output does not run at the chosen buffer, when it does not (#1757).
+fn buffer_note(app: &SoundApp) -> Option<soundcraft_playback::devices::BufferNote> {
+    let player = app.player.as_ref().filter(|p| !p.silent)?;
+    soundcraft_playback::devices::buffer_note(
+        app.ui.audio.buffer_size,
+        player.device_buffer,
+        player.device_buffer_range,
+        player.device_buffer_running,
+    )
+}
+
+/// The window's wording of a [`soundcraft_playback::devices::BufferNote`].
+fn buffer_note_text(note: soundcraft_playback::devices::BufferNote) -> String {
+    use soundcraft_playback::devices::BufferNote;
+    match note {
+        BufferNote::OutsideRange { min, max, .. } if min == max => crate::localized_format!("The device runs only at {} samples.", min),
+        BufferNote::OutsideRange { min, max, running: Some(n) } => {
+            crate::localized_format!("The device allows {}–{} samples; it runs at its default buffer, {} samples.", min, max, n)
+        }
+        BufferNote::OutsideRange { min, max, running: None } => {
+            crate::localized_format!("The device allows {}–{} samples; it runs at its default buffer.", min, max)
+        }
+        BufferNote::Refused { want, running: Some(n) } => {
+            crate::localized_format!("The device did not take {} samples; it runs at its default buffer, {} samples.", want, n)
+        }
+        BufferNote::Refused { want, running: None } => {
+            crate::localized_format!("The device did not take {} samples; it runs at its default buffer.", want)
+        }
+        BufferNote::Rounded { want, running } => crate::localized_format!("The device runs at {} samples, not {}.", running, want),
+    }
+}
+
 /// Programmatic `setup.playback_engine` / `setup.hardware`. `device` is the output name and
 /// `buffer_size` is any integer 16..=8192 or null (not rounded to the window's power-of-two list);
 /// both go through [`audio_device_command`]. Delay compensation still goes through the engine
 /// command, and only after the device change has been accepted. The result is the open device:
-/// its name, the buffer actually in use (`device_buffer`, null for the device default), its sample
-/// rate, and delay compensation. `applied` is true only when an audio device is open.
+/// its name, the buffer actually in use (`buffer_size`, null for the device default), a
+/// `buffer_note` when that is not the chosen size, its sample rate, and delay compensation.
+/// `applied` is true only when an audio device is open.
 pub fn setup_audio_command(app: &mut SoundApp, id: &str, p: &serde_json::Value) -> Result<serde_json::Value, String> {
     use serde_json::Value;
     let mut audio = serde_json::Map::new();
@@ -666,6 +883,7 @@ pub fn setup_audio_command(app: &mut SoundApp, id: &str, p: &serde_json::Value) 
         "applied": applied,
         "device": device,
         "buffer_size": buffer_size,
+        "buffer_note": buffer_note(app).map(|n| n.english()),
         "sample_rate": sample_rate,
         "bit_depth": app.engine.session().bit_depth,
         "delay_compensation": app.engine.session().edit.delay_compensation,
@@ -676,46 +894,48 @@ pub fn setup_audio_command(app: &mut SoundApp, id: &str, p: &serde_json::Value) 
 pub fn io_setup(app: &mut SoundApp, ctx: &egui::Context) {
     let mut open = app.ui.show_io_setup;
     win(ctx, &mut open, "I/O Setup", vec2(420.0, 300.0), |ui| {
-        ui.label(egui::RichText::new("Busses").strong());
+        ui.label(egui::RichText::new(crate::localization::text("Busses")).strong());
         let busses: Vec<(String, String)> = app.engine.session().busses.iter().map(|b| (b.name.clone(), b.format.label().to_string())).collect();
         egui::Grid::new("busses").num_columns(3).striped(true).show(ui, |ui| {
             for (name, fmt) in busses {
                 let key = egui::Id::unique(("bus_name", name.clone()));
                 let mut edit: String = ui.ctx().memory(|m| m.data.get_temp(key)).unwrap_or_else(|| name.clone());
-                let r = crate::widgets::named_text_field(ui.text_edit_singleline(&mut edit), &format!("Bus name: {name}"));
+                let r =
+                    crate::widgets::named_text_field(ui.text_edit_singleline(&mut edit), &crate::localized_format!("Bus name: {name}", name = name));
                 ui.ctx().memory_mut(|m| m.data.insert_temp(key, edit.clone()));
                 if r.lost_focus() && edit != name {
                     let _ = app.run("setup.io", json!({"action": "rename_bus", "name": name, "new_name": edit}));
                 }
                 ui.label(fmt);
-                if ui.small_button("Delete").clicked() {
+                if ui.small_button(crate::localization::text("Delete")).clicked() {
                     let _ = app.run("setup.io", json!({"action": "delete_bus", "name": name}));
                 }
                 ui.end_row();
             }
         });
-        if ui.button("New Bus").clicked() {
+        if ui.button(crate::localization::text("New Bus")).clicked() {
             let n = app.engine.session().busses.len() + 1;
             let _ = app.run("mix.new_bus", json!({"name": format!("Bus {n}")}));
         }
         ui.separator();
-        ui.label(egui::RichText::new("Outputs").strong());
+        ui.label(egui::RichText::new(crate::localization::text("Outputs")).strong());
         // Main output format: stereo, or a surround format (the mix and master faders follow).
         let main = app.engine.session().main_format();
         ui.horizontal(|ui| {
-            let main_label = ui.label("Main output");
-            let format = craft_ui::ComboBox::from_id_salt("main_output_format").selected_text(main.label()).show_ui(ui, |ui| {
-                for f in soundcraft_model::ChannelFormat::ALL.into_iter().filter(|f| (2..=16).contains(&f.channels())) {
-                    if ui.selectable_label(f == main, f.label()).clicked() && f != main {
-                        let _ = app.run("setup.main_format", json!({"format": f.label()}));
+            let main_label = ui.label(crate::localization::text("Main output"));
+            let format =
+                egui::ComboBox::from_id_salt("main_output_format").selected_text(crate::localization::text(main.label())).show_ui(ui, |ui| {
+                    for f in soundcraft_model::ChannelFormat::ALL.into_iter().filter(|f| (2..=16).contains(&f.channels())) {
+                        if ui.selectable_label(f == main, crate::localization::text(f.label())).clicked() && f != main {
+                            let _ = app.run("setup.main_format", json!({"format": f.label()}));
+                        }
                     }
-                }
-            });
+                });
             format.response.labelled_by(main_label.id);
-            ui.label(egui::RichText::new(format!("{} ch", main.channels())).small());
+            ui.label(egui::RichText::new(crate::localized_format!("{n} ch", n = main.channels())).small());
         });
         for o in app.engine.session().outputs.clone() {
-            ui.label(format!("{} — {} from channel {}", o.name, o.format.label(), o.first_channel + 1));
+            ui.label(crate::localized_format!("{} — {} from channel {}", o.name, o.format.label(), o.first_channel + 1));
         }
     });
     app.ui.show_io_setup = open;
@@ -732,8 +952,9 @@ pub fn shortcuts_window(app: &mut SoundApp, ctx: &egui::Context) {
                 let windows = crate::menus::UI_COMMANDS.iter().map(|c| (c.3, c.1, c.2.replace(" > ", " › ")));
                 for (shortcut, label, menu) in engine.chain(windows) {
                     let Some(shortcut) = shortcut else { continue };
-                    ui.label(egui::RichText::new(crate::shortcuts::shortcut_label(shortcut, mac)).font(mono(11.0)));
-                    ui.label(label);
+                    ui.label(egui::RichText::new(crate::shortcuts::display_shortcut(shortcut, mac)).font(mono(11.0)));
+                    ui.label(crate::localization::text(label));
+                    let menu = menu.split(" › ").map(crate::localization::text).collect::<Vec<_>>().join(" › ");
                     ui.label(egui::RichText::new(menu).small());
                     ui.end_row();
                 }
@@ -757,20 +978,20 @@ pub fn clip_effects(app: &mut SoundApp, ctx: &egui::Context) {
                 .map(|c| c.id)
         });
         let Some(cid) = clip else {
-            ui.label("Select an audio clip.");
+            ui.label(crate::localization::text("Select an audio clip."));
             return;
         };
         let name = app.engine.session().find_clip(cid).map(|(_, c)| c.name.clone()).unwrap_or_default();
         let bypass = app.engine.session().edit.flag(&format!("clip_fx.bypass.{}", cid.0));
         ui.horizontal(|ui| {
             ui.label(egui::RichText::new(&name).strong());
-            if ui.selectable_label(bypass, "Bypass").clicked() {
+            if ui.selectable_label(bypass, crate::localization::text("Bypass")).clicked() {
                 let _ = app.run("clip.effects_bypass", json!({"clips": [cid.0]}));
             }
-            if ui.button("Render").clicked() {
+            if ui.button(crate::localization::text("Render")).clicked() {
                 let _ = app.run("clip.effects_render", json!({"clips": [cid.0]}));
             }
-            if ui.button("Clear").clicked() {
+            if ui.button(crate::localization::text("Clear")).clicked() {
                 let _ = app.run("edit.clear_clip_effects", json!({"clips": [cid.0]}));
             }
         });
@@ -784,7 +1005,13 @@ pub fn clip_effects(app: &mut SoundApp, ctx: &egui::Context) {
                         let key = format!("{prefix}{}", p.id);
                         let mut v = get(app, &key, p.default);
                         let before = v;
-                        col.add(egui::Slider::new(&mut v, p.min..=p.max).text(p.name));
+                        let mut wide = f64::from(v);
+                        crate::widgets::FineSlider::new(&mut wide, f64::from(p.min)..=f64::from(p.max))
+                            .text(p.name)
+                            .logarithmic(p.taper == soundcraft_dsp::Taper::Log && p.min > 0.0)
+                            .default_value(f64::from(p.default))
+                            .show(col);
+                        v = wide as f32;
                         if (v - before).abs() > f32::EPSILON {
                             let mut m = serde_json::Map::new();
                             m.insert(key.clone(), json!(v));
@@ -799,7 +1026,12 @@ pub fn clip_effects(app: &mut SoundApp, ctx: &egui::Context) {
             });
             let mut g = get(app, "gain", 0.0);
             let before = g;
-            ui.add(egui::Slider::new(&mut g, -36.0..=24.0).text("Clip effects gain (dB)"));
+            let mut wide = f64::from(g);
+            crate::widgets::FineSlider::new(&mut wide, -36.0..=24.0)
+                .text(crate::localization::text("Clip effects gain (dB)"))
+                .default_value(0.0)
+                .show(ui);
+            g = wide as f32;
             if (g - before).abs() > f32::EPSILON {
                 let _ =
                     app.engine.execute_merged("clip.effects_set", &json!({"clips": [cid.0], "params": {"gain": g}}), &format!("cfx:{}:gain", cid.0));

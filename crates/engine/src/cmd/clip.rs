@@ -162,7 +162,11 @@ pub fn specs() -> Vec<CommandSpec> {
                 let t = match track {
                     Some(t) if s.track(t).is_some_and(|x| x.kind == soundcraft_model::TrackKind::Audio) => t,
                     Some(_) => return Err(bad("clip.place_source", "audio files go on audio tracks")),
-                    None => s.add_track(soundcraft_model::TrackKind::Audio, soundcraft_model::ChannelFormat::for_channels(chans.min(2)), Some(&name)),
+                    None => {
+                        let t =
+                            s.add_track(soundcraft_model::TrackKind::Audio, soundcraft_model::ChannelFormat::for_channels(chans.min(2)), Some(&name));
+                        crate::no_input::assign_first_input(s, t)
+                    }
                 };
                 let (sh, len) = (s.edit.edit_mode == soundcraft_model::EditMode::Shuffle, frames.max(1));
                 let at = if sh { crate::edit::shuffle_slot(s, t, at, &[]) } else { at };
@@ -301,7 +305,7 @@ const MAX_LOOPS: i64 = 1000;
 
 fn loop_clips(e: &mut Engine, p: &Value) -> Result<Value> {
     let ids = clip_ids_param(e, p);
-    let count = i64_or(p, "count", 4).clamp(1, 512);
+    let count = i64_or(p, "count", 4).clamp(1, MAX_LOOPS);
     let total = position_param(e, "clip.loop", p, "length")?;
     let fill = p.get("fill").and_then(Value::as_bool).unwrap_or(false);
     let s = e.session_mut();
@@ -425,7 +429,7 @@ fn quantize_to_grid(e: &mut Engine, p: &Value) -> Result<Value> {
     let ids = clip_ids_param(e, p);
     let s = e.session();
     let moves: Vec<(soundcraft_model::ClipId, i64)> =
-        ids.iter().filter_map(|id| s.find_clip(*id).map(|(_, c)| (*id, crate::edit::grid_delta(s, c, 0, false)))).collect();
+        ids.iter().filter_map(|id| s.find_clip(*id).map(|(_, c)| (*id, crate::edit::grid_delta(s, c, 0, false, &ids)))).collect();
     let s = e.session_mut();
     for (id, d) in &moves {
         crate::edit::move_clips(s, &[*id], *d, &[]);
@@ -464,8 +468,8 @@ mod tests {
         let mut s = Session::default();
         let t = s.add_track(TrackKind::Audio, ChannelFormat::Mono, Some("Elastic"));
         let samples = (0..source_len).map(|i| if i >= tone_at { (i as f32 * 0.2).sin() * 0.4 } else { 0.0 }).collect();
-        let buf = soundcraft_audio_io::AudioBuffer { sample_rate: 48_000, channels: vec![samples] };
-        let src = crate::io::add_source(&mut s, "Tone", buf, None, soundcraft_audio_io::FileFormat::Wav);
+        let buf = craft_audio::AudioBuffer { sample_rate: 48_000, channels: vec![samples] };
+        let src = crate::io::add_source(&mut s, "Tone", buf, None, soundcraft_model::FileFormat::Wav);
         let cid = s.new_clip_id();
         crate::edit::place_clip(&mut s, t, Clip::audio(cid, "Clip", src, 0, 0, clip_len));
         let mut e = crate::Engine::new(s);
@@ -552,8 +556,8 @@ mod tests {
         use soundcraft_model::{ChannelFormat, Clip, Session, TrackKind};
         let mut s = Session::default();
         let t = s.add_track(TrackKind::Audio, ChannelFormat::Mono, Some("Dialog"));
-        let buf = soundcraft_audio_io::AudioBuffer { sample_rate: 48_000, channels: vec![vec![0.1; 10_000]] };
-        let src = crate::io::add_source(&mut s, "Line", buf, None, soundcraft_audio_io::FileFormat::Wav);
+        let buf = craft_audio::AudioBuffer { sample_rate: 48_000, channels: vec![vec![0.1; 10_000]] };
+        let src = crate::io::add_source(&mut s, "Line", buf, None, soundcraft_model::FileFormat::Wav);
         let ids = [0, 1, 2].map(|k| {
             let cid = s.new_clip_id();
             crate::edit::place_clip(&mut s, t, Clip::audio(cid, "Line", src, 0, k * 12_000, 10_000));

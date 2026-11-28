@@ -145,7 +145,7 @@ fn main_format(e: &mut Engine, p: &Value) -> Result<Value> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use soundcraft_audio_io::AudioBuffer;
+    use craft_audio::AudioBuffer;
     use soundcraft_model::{Clip, SourceAudio, SourceId};
     use std::sync::Arc;
 
@@ -211,13 +211,13 @@ mod tests {
         let ps = path.to_string_lossy().to_string();
         e.execute("file.bounce_mix", &json!({"path": ps, "start": 0, "end": 4800, "bit_depth": "32f"})).unwrap();
         let bytes = std::fs::read(&path).unwrap();
-        assert_eq!(soundcraft_audio_io::wav_channel_mask(&bytes), Some(0x63F));
-        let (_, buf) = soundcraft_audio_io::decode(&bytes, Some("wav")).unwrap();
+        assert_eq!(craft_audio::probe(&bytes, None).unwrap().layout.mask(), Some(0x63F));
+        let (_, buf) = craft_audio::decode(&bytes, Some("wav")).unwrap();
         assert_eq!(buf.channels.len(), 8);
         assert!((buf.channels[2][1000] - 0.25).abs() < 1e-5, "front centre lands on C");
         // ITU stereo fold-down.
         e.execute("file.bounce_mix", &json!({"path": ps, "start": 0, "end": 4800, "bit_depth": "32f", "fold_down": "stereo"})).unwrap();
-        let (_, buf) = soundcraft_audio_io::decode(&std::fs::read(&path).unwrap(), Some("wav")).unwrap();
+        let (_, buf) = craft_audio::decode(&std::fs::read(&path).unwrap(), Some("wav")).unwrap();
         assert_eq!(buf.channels.len(), 2);
         assert!((buf.channels[0][1000] - 0.25 * std::f32::consts::FRAC_1_SQRT_2).abs() < 1e-4);
         assert!(e.execute("file.bounce_mix", &json!({"path": ps, "fold_down": "quad"})).is_err());
@@ -225,7 +225,7 @@ mod tests {
         let sdir = dir.join("stems");
         let r = e.execute("file.bounce_stems", &json!({"dir": sdir.to_string_lossy(), "start": 0, "end": 4800})).unwrap();
         let f = r["files"][0].as_str().unwrap().to_string();
-        let (_, buf) = soundcraft_audio_io::decode(&std::fs::read(&f).unwrap(), Some("wav")).unwrap();
+        let (_, buf) = craft_audio::decode(&std::fs::read(&f).unwrap(), Some("wav")).unwrap();
         assert_eq!(buf.channels.len(), 8);
         let _ = std::fs::remove_dir_all(&dir);
     }
