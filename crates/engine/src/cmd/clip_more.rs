@@ -470,6 +470,13 @@ mod tests {
     }
 
     #[test]
+    fn loop_count_accepts_up_to_the_documented_thousand() {
+        let (mut e, t, ids) = engine_with(&[(0, 100, 0)]);
+        assert_eq!(e.execute("clip.loop", &json!({"clip": ids[0].0, "count": 600})).unwrap()["loops"], 599);
+        assert_eq!(e.session().track(t).unwrap().clips().len(), 600);
+    }
+
+    #[test]
     fn regroup_reuses_group() {
         let (mut e, _, ids) = engine_with(&[(0, 100, 0), (500, 100, 0), (900, 100, 0)]);
         let all: Vec<u64> = ids.iter().map(|c| c.0).collect();

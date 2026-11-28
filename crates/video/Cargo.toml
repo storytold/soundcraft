@@ -18,7 +18,6 @@ craft-media.workspace = true
 craft-video.workspace = true
 thiserror.workspace = true
 serde.workspace = true
-image = { workspace = true, features = ["jpeg"] }
 
 [dev-dependencies]
 proptest.workspace = true

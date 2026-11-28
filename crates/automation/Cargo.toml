@@ -8,6 +8,7 @@ rust-version.workspace = true
 repository.workspace = true
 
 [dependencies]
+craft-mcp-server.workspace = true
 soundcraft-engine.workspace = true
 craft-audio.workspace = true
 soundcraft-time.workspace = true

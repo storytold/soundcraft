@@ -418,20 +418,14 @@ impl Movie {
                 Ok(Frame { width: f.width, height: f.height, rgba, index, time })
             }
             Codec::Jpeg => {
-                // The frame's own size, from its header, before a pixel is decoded: a frame may differ from
-                // the track's size (as before), but not exceed `MAX_PIXELS`.
-                let reader = image::ImageReader::with_format(std::io::Cursor::new(&data), image::ImageFormat::Jpeg);
-                let (w, h) = reader.into_dimensions().map_err(|e| VideoError::Decode(e.to_string()))?;
-                if u64::from(w) * u64::from(h) > MAX_PIXELS {
-                    return Err(VideoError::Decode("picture too large".into()));
-                }
-                let img = image::load_from_memory_with_format(&data, image::ImageFormat::Jpeg).map_err(|e| VideoError::Decode(e.to_string()))?;
-                let rgba = img.to_rgba8();
-                let (width, height) = rgba.dimensions();
-                if u64::from(width) * u64::from(height) > MAX_PIXELS {
-                    return Err(VideoError::Decode("picture too large".into()));
-                }
-                Ok(Frame { width, height, rgba: rgba.into_raw(), index, time })
+                // The frame's own size is checked from its header before a pixel is decoded: a frame may
+                // differ from the track's size (as before), but not exceed `MAX_PIXELS`.
+                let decoded = craft_video::mjpeg::Decoder::new().max_pixels(MAX_PIXELS).decode(&data).map_err(|e| match e {
+                    craft_video::mjpeg::Error::Limit(_) => VideoError::Decode("picture too large".into()),
+                    e => VideoError::Decode(e.to_string()),
+                })?;
+                let rgba = mjpeg_rgba(&decoded)?;
+                Ok(Frame { width: decoded.width, height: decoded.height, rgba, index, time })
             }
             _ => Err(VideoError::Unsupported("not an intra-frame codec".into())),
         }
@@ -562,4 +556,25 @@ impl Movie {
         }
         Err(VideoError::Decode(last_err.unwrap_or_else(|| format!("frame {index} was not produced"))))
     }
+}
+
+/// A decoded Motion JPEG picture as RGBA8: grey is spread over R, G and B, and 12-bit samples
+/// (scaled to 16 bits by the decoder) keep their top 8 bits.
+pub(crate) fn mjpeg_rgba(frame: &craft_video::mjpeg::Frame) -> Result<Vec<u8>> {
+    let channels = usize::from(frame.channels);
+    if channels != 1 && channels != 3 {
+        return Err(VideoError::Decode(format!("{channels}-channel Motion JPEG picture")));
+    }
+    let samples: Vec<u8> = match &frame.samples {
+        craft_video::mjpeg::Samples::U8(p) => p.clone(),
+        craft_video::mjpeg::Samples::U16(p) => p.iter().map(|&v| (v >> 8) as u8).collect(),
+    };
+    Ok(samples
+        .chunks_exact(channels)
+        .flat_map(|px| match *px {
+            [g] => [g, g, g, 255],
+            [r, g, b] => [r, g, b, 255],
+            _ => [0, 0, 0, 255],
+        })
+        .collect())
 }

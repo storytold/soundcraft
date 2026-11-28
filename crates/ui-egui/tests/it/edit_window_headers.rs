@@ -52,14 +52,15 @@ fn harness(track: &str, height: &str, view: &str) -> (Harness<'static, SoundApp>
     app.run(view, json!({})).unwrap();
     app.run("track.height", json!({"tracks": [track], "height": height})).unwrap();
     let id = app.engine.session().track_by_name(track).unwrap().id;
-    let mut h = Harness::builder().with_size(vec2(1600.0, 1000.0)).build_ui_state(
-        |ui, app: &mut SoundApp| {
-            let ctx = ui.ctx().clone();
-            app.logic(&ctx);
-            app.ui(ui);
-        },
-        app,
-    );
+    let mut h =
+        Harness::builder().with_context_setup(soundcraft_ui_egui::framework::install_headless).with_size(vec2(1600.0, 1000.0)).build_ui_state(
+            |ui, app: &mut SoundApp| {
+                let ctx = ui.ctx().clone();
+                app.logic(&ctx);
+                app.ui(ui);
+            },
+            app,
+        );
     for _ in 0..6 {
         step(&mut h);
     }
@@ -69,7 +70,7 @@ fn harness(track: &str, height: &str, view: &str) -> (Harness<'static, SoundApp>
 
 #[test]
 fn header_keys_freeze_silence_and_show_automation() {
-    let (mut h, _, row) = harness("Kick", "medium", "view.edit_io");
+    let (mut h, kick_id, row) = harness("Kick", "medium", "view.edit_io");
     let at = |x: f32, y: f32| pos2(row[0] + x, row[1] + y);
 
     click(&mut h, at(23.5, 65.5));
@@ -83,8 +84,10 @@ fn header_keys_freeze_silence_and_show_automation() {
     click(&mut h, at(7.5, row[3] - row[1] - 7.5));
     assert_eq!(kick(&h).view, "volume");
 
+    // The fader button beside the Output selector opens Kick's Output window (#1392).
     click(&mut h, at(HEADER_W + 81.5, 29.5));
-    assert_eq!(h.state().ui.window, MainWindow::Mix);
+    assert_eq!(h.state().ui.output_window, Some(kick_id));
+    assert_eq!(h.state().ui.window, MainWindow::Edit);
 }
 
 /// From the Edit window's insert column, clicking a plugin opens it, Cmd-click bypasses it, right-click changes or

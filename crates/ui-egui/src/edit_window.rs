@@ -50,6 +50,8 @@ use overlay::overlay;
 #[cfg(test)]
 use overlay::playhead_colour;
 pub use rulers::ruler_height;
+#[cfg(test)]
+use rulers::{arrow_half, selection_marker_colour, selection_markers};
 use rulers::{column_titles, draw_rulers, views_button};
 pub use scroll::zoom_toggle;
 #[cfg(test)]

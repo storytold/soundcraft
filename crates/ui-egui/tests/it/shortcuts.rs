@@ -42,12 +42,15 @@ fn type_in_app(ctx: &egui::Context, app: &mut SoundApp, keys: &[(Key, Modifiers)
 fn tab_leaves_the_keys_to_the_shortcuts() {
     let mut app = SoundApp::new(soundcraft_engine::demo::demo_engine(), None, Services::default());
     let ctx = egui::Context::default();
+    soundcraft_ui_egui::framework::install_headless(&ctx);
     for _ in 0..3 {
         type_in_app(&ctx, &mut app, &[]);
     }
+    app.run("edit.select", json!({"tracks": ["Kick"], "start": 0})).unwrap();
+    let view = Some(soundcraft_ui_egui::framework::session_view_id(true));
     for tab in [Modifiers::NONE, Modifiers::SHIFT] {
         type_in_app(&ctx, &mut app, &[(Key::Tab, tab)]);
-        assert_eq!(ctx.memory(|m| m.focused()), None, "{tab:?}");
+        assert_eq!(ctx.memory(|m| m.focused()), view, "{tab:?}");
         let zoom = app.engine.session().edit.zoom.samples_per_px;
         type_in_app(&ctx, &mut app, &[(Key::T, Modifiers::NONE)]);
         assert_eq!(app.engine.session().edit.zoom.samples_per_px, zoom / 2.0, "{tab:?}");
@@ -139,6 +142,7 @@ fn x_and_middle(app: &SoundApp, at: i64) -> (f32, f32) {
 fn left_and_right_arrows_centre_the_edit_window_on_the_selected_clip() {
     let mut app = SoundApp::new(soundcraft_engine::demo::demo_engine(), None, Services::default());
     let ctx = egui::Context::default();
+    soundcraft_ui_egui::framework::install_headless(&ctx);
     let (clip_id, clip) = app.engine.session().tracks.iter().flat_map(|t| t.clips()).find(|c| c.start > 100_000).map(|c| (c.id, c.range())).unwrap();
     app.run("view.zoom_set", json!({"samples_per_px": 10.0})).unwrap();
     app.run("view.scroll", json!({"to": 0})).unwrap();
@@ -172,6 +176,7 @@ fn the_piano_roll_keeps_the_plain_arrows() {
     app.run("view.zoom_set", json!({"samples_per_px": 10.0})).unwrap();
     app.run("view.scroll", json!({"to": 1_000_000})).unwrap();
     let ctx = egui::Context::default();
+    soundcraft_ui_egui::framework::install_headless(&ctx);
     for _ in 0..6 {
         app_frame(&ctx, &mut app, vec![]);
     }
@@ -201,6 +206,7 @@ fn a_midi_editor_behind_another_tab_leaves_the_arrows_to_the_edit_window() {
     app.run("view.zoom_set", json!({"samples_per_px": 10.0})).unwrap();
     app.run("view.scroll", json!({"to": 0})).unwrap();
     let ctx = egui::Context::default();
+    soundcraft_ui_egui::framework::install_headless(&ctx);
     for _ in 0..6 {
         app_frame(&ctx, &mut app, vec![]);
     }
@@ -211,7 +217,7 @@ fn a_midi_editor_behind_another_tab_leaves_the_arrows_to_the_edit_window() {
         app_frame(&ctx, &mut app, vec![]);
     }
     assert!(app.ui.show_midi_editor, "the MIDI editor is still open");
-    assert_ne!(app.ui.docking.layout.panel_state(&soundcraft_ui_egui::docking::Panel::Midi), craft_ui::docking::PanelState::Front);
+    assert_ne!(app.ui.docking.layout().panel_state(&soundcraft_ui_egui::docking::Panel::Midi), craft_behavior::dock::PanelState::Front);
     app_frame(&ctx, &mut app, vec![egui::Event::PointerMoved(body.center())]);
     app.run("edit.select", json!({"clips": [clip_id.0]})).unwrap();
 

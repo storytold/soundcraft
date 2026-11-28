@@ -150,10 +150,7 @@ fn process(e: &mut Engine, p: &Value) -> Result<Value> {
             nc.gain_db = 0.0;
             nc.gain_env.clear();
         }
-        if let Some(pl) = s.track_mut(track).and_then(|t| t.playlist_mut()) {
-            pl.clips.retain(|c| c.id != id);
-        }
-        crate::edit::place_clip(s, track, nc);
+        super::more_util::replace_clip(s, track, id, nc);
         done += 1;
     }
     Ok(json!({"processed": done, "process": name}))

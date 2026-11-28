@@ -723,7 +723,8 @@ fn to_playlist(e: &mut Engine, p: &Value, dest: Dest, mv: bool, id: &str) -> Res
                 tr.playlists.len() - 1
             }
         };
-        let clips = ops::copy_range(s, *t, r);
+        // A move carries only what it clears from the main playlist; locked clips stay there.
+        let clips = if mv { ops::take_range(s, *t, r) } else { ops::copy_range(s, *t, r) };
         let main = s.track(*t).map_or(0, |tr| tr.active_playlist);
         if let Some(tr) = s.track_mut(*t) {
             tr.active_playlist = idx;

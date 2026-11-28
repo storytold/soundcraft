@@ -258,7 +258,8 @@ fn cut_copy(e: &mut Engine, p: &Value, cut: bool, id: &str) -> Result<Value> {
     let mut cb = Clipboard::of_range(e.session(), range);
     let follow = e.session().edit.automation_follows_edit;
     for t in &tracks {
-        cb.tracks.push(ops::copy_range(e.session(), *t, range));
+        // Cut carries only what it removes; a locked clip stays where it is (see `ops::take_range`).
+        cb.tracks.push(if cut { ops::take_range(e.session(), *t, range) } else { ops::copy_range(e.session(), *t, range) });
         let lanes = e
             .session()
             .track(*t)
@@ -1022,6 +1023,9 @@ fn consolidate(e: &mut Engine, p: &Value) -> Result<Value> {
     if r.is_empty() {
         return Err(bad("edit.consolidate", "selection is empty"));
     }
+    if tracks.iter().any(|&t| ops::holds_locked(e.session(), t, r)) {
+        return Err(bad("edit.consolidate", ops::LOCKED_IN_RANGE));
+    }
     let midi = tracks.iter().filter(|&&t| crate::edit::consolidate_midi(e.session_mut(), t, r)).count();
     let mut n = 0;
     for t in tracks {
@@ -1205,9 +1209,9 @@ mod tests {
         let (mut e, t, at) = keys();
         let s = e.session_mut();
         let cc = soundcraft_midi::CtrlEvent { tick: 0, channel: 0, kind: soundcraft_midi::CtrlKind::Cc(1), value: 64 };
-        let a = soundcraft_midi::Sequence { notes: vec![note(0, 1, 60), note(3, 2, 62), note(5, 1, 63)], ctrls: vec![] };
-        let b = soundcraft_midi::Sequence { notes: vec![note(0, 1, 64)], ctrls: vec![] };
-        let c = soundcraft_midi::Sequence { notes: vec![note(1, 1, 65)], ctrls: vec![cc] };
+        let a = soundcraft_midi::Sequence { notes: vec![note(0, 1, 60), note(3, 2, 62), note(5, 1, 63)], ctrls: vec![], sysex: vec![] };
+        let b = soundcraft_midi::Sequence { notes: vec![note(0, 1, 64)], ctrls: vec![], sysex: vec![] };
+        let c = soundcraft_midi::Sequence { notes: vec![note(1, 1, 65)], ctrls: vec![cc], sysex: vec![] };
         for (start, end, seq, muted) in [(0, 4, a, false), (6, 8, b, true), (8, 12, c, false)] {
             let id = s.new_clip_id();
             let mut clip = Clip::midi(id, "Keys", at(start), at(end) - at(start), seq);
