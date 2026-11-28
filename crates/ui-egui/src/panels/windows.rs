@@ -599,8 +599,8 @@ const REPLACED_EDITS: &str = "The audio settings were changed outside this windo
 pub fn playback_engine(app: &mut SoundApp, ctx: &egui::Context) {
     let mut open = app.ui.show_playback_engine;
     // The window's unapplied edits, with the choice they started from. A choice changed elsewhere
-    // (`ui.audio_device`, `setup.playback_engine`, a reconnect) replaces them, so the window never
-    // shows, or applies, an earlier choice.
+    // (`ui.audio_device`, `setup.playback_engine`) replaces them, so the window never shows, or
+    // applies, an earlier choice. A reconnect reopens the same choice and leaves them alone.
     let draft_id = egui::Id::unique("audio_draft");
     // Set while the window shows a choice made elsewhere that replaced its unapplied edits.
     let replaced_id = egui::Id::unique("audio_draft_replaced");
