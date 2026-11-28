@@ -330,7 +330,7 @@ impl Recorder {
         }
         let name = &self.device_name;
         match self.shared.fault.load(Ordering::Relaxed) {
-            GONE => return Some(Trouble::Device(format!("“{name}” is unavailable"))),
+            GONE => return Some(Trouble::Device(format!("“{name}” is unavailable."))),
             BROKEN => return Some(Trouble::Device("the audio input hit an internal error (see the log)".into())),
             _ => {}
         }
@@ -615,7 +615,7 @@ mod tests {
         assert_eq!(r.trouble(), Some(Trouble::Device("the audio input hit an internal error (see the log)".into())));
         let gone = Arc::new(Shared::new(CaptureRing::new(64)));
         gone.fault.store(GONE, Ordering::Relaxed);
-        assert_eq!(recorder(&gone).trouble(), Some(Trouble::Device("“Mic In” is unavailable".into())));
+        assert_eq!(recorder(&gone).trouble(), Some(Trouble::Device("“Mic In” is unavailable.".into())));
     }
 
     #[test]

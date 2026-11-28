@@ -279,6 +279,68 @@ fn a_lost_or_stalled_device_is_reported_once() {
     assert_eq!((fault.trouble(false), fault.trouble(true)), (Some(OutputTrouble::Gone), None));
 }
 
+/// A player on the silent clock, which needs no audio device.
+fn silent_player() -> Player {
+    let shared = Arc::new(Shared {
+        position: AtomicI64::new(0),
+        playing: AtomicBool::new(false),
+        speed: AtomicU32::new(1000),
+        meters: Mutex::new(MeterSnapshot::default()),
+    });
+    let (tx, rx) = channel();
+    let (gtx, grx) = channel();
+    Player::silent_clock(shared, tx, rx, 48_000, Mutex::new(Side::new(48_000.0, grx)), gtx)
+}
+
+#[test]
+fn a_lost_output_refuses_play_even_after_the_loss_was_reported() {
+    let p = silent_player();
+    assert!(!p.lost());
+    assert!(p.play(0, None, None));
+    assert!(p.is_playing());
+    p.stop();
+    p.fault.gone.store(true, Ordering::Relaxed);
+    assert_eq!(p.trouble(), Some(OutputTrouble::Gone));
+    assert_eq!(p.trouble(), None, "reported once");
+    assert!(p.lost(), "still lost after it was reported");
+    assert!(!p.play(0, None, None), "a lost output does not start");
+    assert!(!p.is_playing(), "the transport must not sit at a playhead nothing advances");
+}
+
+/// An output that stopped asking for audio (seen on Windows right after a Model 12 replug) is
+/// as unusable as a lost one: once the stall is reported, Play is refused until a reconnect,
+/// instead of a transport stuck at 0 and a take of nothing.
+#[test]
+fn a_stalled_output_stays_lost_after_the_stall_was_reported() {
+    let fault = Fault::default();
+    assert!(!fault.lost());
+    assert_eq!(fault.trouble(true), Some(OutputTrouble::Stalled));
+    assert!(fault.lost(), "a stalled output cannot play");
+    assert_eq!(fault.trouble(false), None, "reported once");
+    assert!(fault.lost(), "still lost once the transport stopped and the stall is no longer measured");
+}
+
+#[test]
+fn a_player_made_lost_or_stalled_for_tests_refuses_play() {
+    let session = Arc::new(soundcraft_model::Session::default());
+    for stalled in [false, true] {
+        let p = Player::lost_for_tests(Arc::clone(&session), "UFX", stalled);
+        assert!(p.lost());
+        assert!(!p.play(0, None, None));
+        assert_eq!(p.device_name, "UFX");
+    }
+}
+
+#[test]
+fn an_output_whose_engine_failed_refuses_play() {
+    let p = silent_player();
+    let mut out = [0.0f32; 8];
+    guarded_block(&p.fault, &p.shared, &mut out, |_| std::panic::panic_any("a bug in the mix"));
+    assert!(p.lost());
+    assert!(!p.play(0, None, None));
+    assert!(!p.is_playing());
+}
+
 #[test]
 fn audio_state_plays_and_stops_at_end() {
     let s = Arc::new(soundcraft_model::Session::default());

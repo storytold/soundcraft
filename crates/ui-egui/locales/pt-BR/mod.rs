@@ -1340,6 +1340,11 @@ fn menu_translate(source: &str) -> Option<&'static str> {
         "silent clock" => "relógio silencioso",
         "stop recording before changing the audio device" => "pare a gravação antes de alterar o dispositivo de áudio",
         "stopped asking for audio" => "parou de solicitar áudio",
+        "“{name}” stopped asking for audio." => "“{name}” parou de solicitar áudio.",
+        "“{name}” stopped asking for audio again after Reconnect." => "“{name}” parou de solicitar áudio de novo depois de Reconectar.",
+        "Unplug the interface and plug it back in (or switch it off and on), then use Reconnect audio device in Setup › Playback Engine." => {
+            "Desconecte a interface e conecte-a de novo (ou desligue-a e ligue-a), depois use Reconectar dispositivo de áudio em Configurar › Mecanismo de reprodução."
+        }
         "the audio engine hit an internal error (see the log)" => "o mecanismo de áudio encontrou um erro interno (veja o registro)",
         "Equal Power" => "Potência igual",
         "Exponential" => "Exponencial",
@@ -1528,6 +1533,12 @@ fn menu_translate(source: &str) -> Option<&'static str> {
         "{sr} Hz{note}" => "{sr} Hz{note}",
         "Autosave failed: {e}" => "Falha ao salvar automaticamente: {e}",
         "Bounced {} (peak {:.1} dBFS, {:.1} LUFS)" => "Bounce concluído: {} (pico {:.1} dBFS, {:.1} LUFS)",
+        "Cannot play: “{name}” is not running. Use Reconnect audio device in Setup › Playback Engine." => {
+            "Não foi possível reproduzir: “{name}” não está em execução. Use Reconectar dispositivo de áudio em Configurar › Mecanismo de reprodução."
+        }
+        "Cannot record: “{name}” is not running. Use Reconnect audio device in Setup › Playback Engine." => {
+            "Não foi possível gravar: “{name}” não está em execução. Use Reconectar dispositivo de áudio em Configurar › Mecanismo de reprodução."
+        }
         "Cannot record: {err}" => "Não foi possível gravar: {err}",
         "Cannot record: no MIDI input device is connected (Setup > Playback Engine lists them)" => {
             "Não foi possível gravar: nenhum dispositivo de entrada MIDI está conectado (Configuração > Mecanismo de reprodução mostra a lista)"

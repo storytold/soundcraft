@@ -13,6 +13,13 @@ pub(crate) struct Fault {
     failed: AtomicBool,
     /// The device went away or the stream was invalidated: only a reconnect can restore audio.
     pub(crate) gone: AtomicBool,
+    /// The device stopped asking for audio while playing (reported as `Stalled`): only a
+    /// reconnect can restore audio, as for a lost stream. Kept on every audio system, from one
+    /// observation: on Windows (WASAPI, a Model 12 just replugged) Play was accepted after the
+    /// stall with the position stuck at 0. Also seen after a Windows sleep and wake (Model 12):
+    /// the output stalled, and again after each Reconnect until the interface was replugged (see
+    /// the UI's `STALLED_AGAIN`).
+    stalled: AtomicBool,
     /// Blocks so far, to tell a device that stopped asking for audio.
     pub(crate) beats: std::sync::atomic::AtomicU64,
     /// The UI has been told.
@@ -20,13 +27,22 @@ pub(crate) struct Fault {
 }
 
 impl Fault {
+    /// True while the output cannot play: a block panicked, the stream was lost, or the device
+    /// stopped asking for audio. Unlike [`Fault::trouble`], it keeps answering after the UI has
+    /// been told.
+    pub(crate) fn lost(&self) -> bool {
+        self.failed.load(Ordering::Relaxed) || self.gone.load(Ordering::Relaxed) || self.stalled.load(Ordering::Relaxed)
+    }
+
     /// What stopped the output, once.
     pub(crate) fn trouble(&self, stalled: bool) -> Option<OutputTrouble> {
         let trouble = if self.failed.load(Ordering::Relaxed) {
             OutputTrouble::Bug
         } else if self.gone.load(Ordering::Relaxed) {
             OutputTrouble::Gone
-        } else if stalled {
+        } else if stalled || self.stalled.load(Ordering::Relaxed) {
+            // Kept: the stall is measured only while playing, and the transport stops on it.
+            self.stalled.store(true, Ordering::Relaxed);
             OutputTrouble::Stalled
         } else {
             return None;

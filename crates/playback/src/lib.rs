@@ -474,11 +474,49 @@ impl Player {
         self.side().editors.get_mut(&(track, slot))?.value_text(id, value)
     }
 
-    /// Start playback at `from`, stopping at `end`, or looping `looped`.
-    pub fn play(&self, from: Samples, end: Option<Samples>, looped: Option<Range>) {
+    /// Start playback at `from`, stopping at `end`, or looping `looped`. Returns false, and does
+    /// not start, while the output is [lost](Player::lost): nothing would advance the playhead.
+    pub fn play(&self, from: Samples, end: Option<Samples>, looped: Option<Range>) -> bool {
+        if self.lost() {
+            return false;
+        }
         self.shared.position.store(from, Ordering::Relaxed);
         self.shared.playing.store(true, Ordering::Relaxed);
         let _ = self.tx.send(Cmd::Play { from, end, looped });
+        true
+    }
+
+    /// A player on the silent clock whose output `name` is already lost (or, with `stalled`, has
+    /// reported that it stopped asking for audio), for tests of what the UI refuses on such an
+    /// output. Not for use outside tests.
+    #[doc(hidden)]
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn lost_for_tests(session: Arc<Session>, name: &str, stalled: bool) -> Player {
+        let shared = Arc::new(Shared {
+            position: AtomicI64::new(0),
+            playing: AtomicBool::new(false),
+            speed: AtomicU32::new(1000),
+            meters: Mutex::new(MeterSnapshot::default()),
+        });
+        let (tx, rx) = channel();
+        let (gtx, grx) = channel();
+        let side = Mutex::new(Side::new(session.sample_rate.as_f64() as f32, grx));
+        let mut p = Player::silent_clock_with(shared, tx, rx, session, side, gtx);
+        p.device_name = name.into();
+        p.silent = false;
+        if stalled {
+            let _ = p.fault.trouble(true);
+        } else {
+            p.fault.gone.store(true, Ordering::Relaxed);
+        }
+        p
+    }
+
+    /// True while the output cannot play until the device is reopened: its stream was lost, the
+    /// device stopped asking for audio, or the engine hit an internal error. Unlike
+    /// [`Player::trouble`], it keeps answering after the problem has been reported.
+    pub fn lost(&self) -> bool {
+        self.fault.lost()
     }
 
     /// Feed live input (from a `record::Recorder`) into the mix for input monitoring.

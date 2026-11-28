@@ -314,6 +314,12 @@ pub struct SoundApp {
     /// Punch range to trim the take to (pre/post-roll recordings).
     punch: Option<Range>,
     recorder_failed: bool,
+    /// The refusal of Play or Record on a lost output last shown, and whether a Record was refused
+    /// since the last Stop (a Play then is the same record attempt, as in Pro Tools' Record, Play).
+    lost_refusal: Option<(String, bool)>,
+    /// The output stopped asking for audio, and whether Reconnect reopened it since, and when
+    /// (see `app::Stall`).
+    stall: Option<app::Stall>,
     /// MIDI device input, opened on the first frame of an app that has an audio engine.
     pub midi_inputs: Option<soundcraft_playback::midi::MidiInputs>,
     /// When the MIDI ports were last looked for (app uptime, seconds).
