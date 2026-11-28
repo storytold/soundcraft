@@ -100,6 +100,26 @@ fn lowpass_attenuates_highs() {
 }
 
 #[test]
+fn parameter_text_round_trips_through_an_apple_unit() {
+    if !available(DELAY) {
+        return;
+    }
+    let mut p = soundcraft_au_host::create(DELAY).unwrap();
+    let candidates: Vec<_> = p.info().params.iter().map(|param| (param.id, param.default, param.min, param.max)).collect();
+    let Some((id, value, min, max, text)) =
+        candidates.into_iter().find_map(|(id, value, min, max)| p.value_text(id, value).map(|text| (id, value, min, max, text)))
+    else {
+        eprintln!("{DELAY} exposes no parameter string conversion; skipping");
+        return;
+    };
+    assert!(!text.is_empty());
+    let parsed = p.value_from_text(id, &text).expect("value text parses");
+    let tolerance = (max - min).abs().max(1.0) * 1e-4;
+    assert!((parsed - value).abs() <= tolerance, "{value} -> {text:?} -> {parsed}");
+    assert_eq!(p.value_from_text(id, &"x".repeat(257)), None);
+}
+
+#[test]
 fn state_reader_reads_while_another_thread_renders() {
     if !available(LOWPASS) {
         return;

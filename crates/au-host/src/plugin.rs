@@ -123,6 +123,17 @@ impl Plugin for AuPlugin {
         self.values.get(i).copied()
     }
 
+    fn value_text(&mut self, id: &str, value: f32) -> Option<String> {
+        let i = self.info.params.iter().position(|p| p.id == id)?;
+        self.inst.value_text(*self.ids.get(i)?, self.info.params.get(i)?.clamp(value))
+    }
+
+    fn value_from_text(&mut self, id: &str, text: &str) -> Option<f32> {
+        let i = self.info.params.iter().position(|p| p.id == id)?;
+        let value = self.inst.value_from_text(*self.ids.get(i)?, text)?;
+        Some(self.info.params.get(i)?.clamp(value))
+    }
+
     fn process(&mut self, io: &mut [Vec<f32>], frames: usize) {
         let ch = self.channels.min(io.len());
         let frames = io.iter().take(ch).map(Vec::len).fold(frames, usize::min);
