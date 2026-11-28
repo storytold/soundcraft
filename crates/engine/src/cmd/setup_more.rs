@@ -566,7 +566,8 @@ fn default_outputs(s: &mut Session, channels: usize) {
     }
 }
 
-/// Routes name busses and output paths alike (`track.output`), so one name cannot be both.
+/// Routes name busses and paths alike (`track.input`, `track.output`), so an input or output path
+/// never takes a bus's name.
 fn check_name_free_of_busses(s: &Session, name: &str) -> Result<()> {
     if s.bus_by_name(name).is_some() {
         return Err(bad("setup.io", format!("a bus named `{name}` exists")));
