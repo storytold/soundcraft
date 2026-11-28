@@ -1,7 +1,24 @@
 //! Language selection and source-language fallback for UI strings.
 
+macro_rules! error_templates {
+    ($($source:literal => $translation:literal,)*) => {
+        fn error_translation(source: &str) -> Option<&'static str> {
+            match source {
+                $($source => Some($translation),)*
+                _ => None,
+            }
+        }
+
+        /// Engine error messages with `{name}` placeholders standing for the values they embed. The
+        /// UI matches a message against these templates and fills the translation with the values.
+        pub(super) const ERROR_TEMPLATES: &[(&str, &str)] = &[$(($source, $translation)),*];
+    };
+}
+
 #[path = "../locales/pt-BR/mod.rs"]
 mod pt_br;
+#[path = "../locales/sv/mod.rs"]
+mod sv;
 
 use std::cell::Cell;
 
@@ -17,17 +34,20 @@ pub enum Language {
     English,
     #[serde(rename = "pt-BR")]
     PortugueseBrazil,
+    #[serde(rename = "sv")]
+    Swedish,
 }
 
 impl Language {
     /// All supported languages, in the order they are shown in the language menu.
-    pub const ALL: [Self; 2] = [Self::English, Self::PortugueseBrazil];
+    pub const ALL: [Self; 3] = [Self::English, Self::PortugueseBrazil, Self::Swedish];
 
     /// Stable language tag used in preferences and control commands.
     pub const fn id(self) -> &'static str {
         match self {
             Self::English => "en",
             Self::PortugueseBrazil => "pt-BR",
+            Self::Swedish => "sv",
         }
     }
 
@@ -36,26 +56,36 @@ impl Language {
         match self {
             Self::English => "English",
             Self::PortugueseBrazil => "Portuguese (Brazil)",
+            Self::Swedish => "Swedish",
         }
     }
 
     pub fn parse(tag: &str) -> Option<Self> {
-        Self::ALL.into_iter().find(|language| language.id().eq_ignore_ascii_case(tag.trim()))
+        let tag = tag.trim();
+        if tag.eq_ignore_ascii_case("sv-SE") || tag.eq_ignore_ascii_case("sv-FI") {
+            return Some(Self::Swedish);
+        }
+        Self::ALL.into_iter().find(|language| language.id().eq_ignore_ascii_case(tag))
     }
 
     /// Rewrites the decimal point of a rendered number for this language.
     pub fn localize_decimal(self, number: &str) -> String {
         match self {
             Self::English => number.to_owned(),
-            Self::PortugueseBrazil => number.replace('.', ","),
+            Self::PortugueseBrazil | Self::Swedish => number.replace('.', ","),
         }
     }
 
     /// Translates a UI string, falling back to its English source when no translation exists.
     pub fn text(self, source: &str) -> &str {
+        self.translation(source).unwrap_or(source)
+    }
+
+    fn translation(self, source: &str) -> Option<&'static str> {
         match self {
-            Self::English => source,
-            Self::PortugueseBrazil => pt_br::translate(source).unwrap_or(source),
+            Self::English => None,
+            Self::PortugueseBrazil => pt_br::translate(source),
+            Self::Swedish => sv::translate(source),
         }
     }
 }
@@ -89,6 +119,7 @@ fn error_text_in(language: Language, message: &str, depth: usize) -> String {
     let templates: &[(&str, &str)] = match language {
         Language::English => &[],
         Language::PortugueseBrazil => pt_br::ERROR_TEMPLATES,
+        Language::Swedish => sv::ERROR_TEMPLATES,
     };
     let mut best: Option<(usize, &str, Vec<(String, String)>)> = None;
     for (template, translation) in templates {
@@ -345,6 +376,9 @@ macro_rules! localized_format {
 mod tests {
     use super::{Arg, Language, enter, error_text, format_named, format_positional, text};
 
+    const CATALOGS: [(Language, &str); 2] =
+        [(Language::PortugueseBrazil, include_str!("../locales/pt-BR/mod.rs")), (Language::Swedish, include_str!("../locales/sv/mod.rs"))];
+
     #[test]
     fn language_tags_are_stable_and_round_trip() {
         for language in Language::ALL {
@@ -354,13 +388,17 @@ mod tests {
             assert_eq!(decoded, language);
         }
         assert_eq!(Language::parse(" PT-br "), Some(Language::PortugueseBrazil));
+        assert_eq!(Language::parse("sv-SE"), Some(Language::Swedish));
+        assert_eq!(Language::parse("sv-FI"), Some(Language::Swedish));
         assert_eq!(Language::parse("fr"), None);
     }
 
     #[test]
     fn language_translations_fall_back_to_the_english_source() {
-        assert_ne!(Language::PortugueseBrazil.text("Appearance"), "Appearance");
-        assert_eq!(Language::PortugueseBrazil.text("A source string with no catalog entry"), "A source string with no catalog entry");
+        for (language, _) in CATALOGS {
+            assert_ne!(language.text("Appearance"), "Appearance");
+            assert_eq!(language.text("A source string with no catalog entry"), "A source string with no catalog entry");
+        }
         assert_eq!(Language::English.text("Appearance"), "Appearance");
     }
 
@@ -380,10 +418,12 @@ mod tests {
     }
 
     #[test]
-    fn portuguese_catalog_covers_every_menu_label() {
+    fn catalogs_cover_every_menu_label() {
         for path in include_str!("../../engine/catalog/menus.txt").lines() {
             for label in path.split(" > ").map(str::trim).filter(|label| !label.is_empty()) {
-                assert!(super::pt_br::translate(label).is_some(), "missing pt-BR menu label: {label}");
+                for (language, _) in CATALOGS {
+                    assert!(language.translation(label).is_some(), "missing {} menu label: {label}", language.id());
+                }
             }
         }
     }
@@ -391,21 +431,34 @@ mod tests {
     #[test]
     fn engine_errors_are_translated_with_their_values() {
         assert_eq!(error_text("select a clip"), "select a clip");
-        let _scope = enter(Language::PortugueseBrazil);
-        assert_ne!(error_text("select a clip"), "select a clip");
-        assert_ne!(error_text("no track"), "no track");
-        let wrapped = error_text("bad parameters for `track.new`: `name` required");
-        assert!(wrapped.contains("`track.new`") && wrapped.contains("`name`"), "{wrapped}");
-        assert!(!wrapped.contains("bad parameters") && !wrapped.contains("required"), "{wrapped}");
-        let ratio = error_text("stretch ratio 12.500 is outside 0.1..10");
-        assert!(ratio.contains("12,500"), "{ratio}");
-        assert_eq!(error_text("some unknown library failure"), "some unknown library failure");
+        for (language, _) in CATALOGS {
+            let _scope = enter(language);
+            assert_ne!(error_text("select a clip"), "select a clip");
+            assert_ne!(error_text("no track"), "no track");
+            let wrapped = error_text("bad parameters for `track.new`: `name` required");
+            assert!(wrapped.contains("`track.new`") && wrapped.contains("`name`"), "{wrapped}");
+            assert!(!wrapped.contains("bad parameters") && !wrapped.contains("required"), "{wrapped}");
+            let ratio = error_text("stretch ratio 12.500 is outside 0.1..10");
+            assert!(ratio.contains("12,500"), "{ratio}");
+            assert_eq!(error_text("some unknown library failure"), "some unknown library failure");
+        }
     }
 
     #[test]
     fn positional_templates_fill_in_order() {
         assert_eq!(format_positional("{} of {}", &[Arg::new(&1), Arg::new(&"two")]), "1 of two");
         assert_eq!(format_positional("no fields", &[Arg::new(&1)]), "no fields");
+    }
+
+    #[test]
+    fn swedish_errors_preserve_the_file_name_and_clip_count() {
+        let _scope = enter(Language::Swedish);
+        for (count, expected) in [("1 clip", "klipp"), ("3 clips", "3 klipp")] {
+            let message = format!("`take.wav` is used by {count} on the timeline; pass `with_clips: true` to remove them too");
+            let translated = error_text(&message);
+            assert!(translated.contains("`take.wav`") && translated.contains("`with_clips: true`"), "{translated}");
+            assert!(translated.contains(expected) && !translated.contains("on the timeline"), "{translated}");
+        }
     }
 
     #[test]
@@ -435,10 +488,12 @@ mod tests {
     }
 
     #[test]
-    fn portuguese_numbers_use_a_decimal_comma_only_with_a_precision() {
-        let _scope = enter(Language::PortugueseBrazil);
-        assert_eq!(format_positional("{:.1} dB", &[Arg::new(&-6.04_f64)]), "-6,0 dB");
-        assert_eq!(format_positional("{}", &[Arg::new(&"v1.2")]), "v1.2");
+    fn portuguese_and_swedish_numbers_use_a_decimal_comma_only_with_a_precision() {
+        for language in [Language::PortugueseBrazil, Language::Swedish] {
+            let _scope = enter(language);
+            assert_eq!(format_positional("{:.1} dB", &[Arg::new(&-6.04_f64)]), "-6,0 dB");
+            assert_eq!(format_positional("{}", &[Arg::new(&"v1.2")]), "v1.2");
+        }
         let _english = enter(Language::English);
         assert_eq!(format_positional("{:.1}", &[Arg::new(&2.5_f64)]), "2.5");
     }
@@ -461,8 +516,7 @@ mod tests {
     }
 
     /// Every `"source" => "translation"` pair of the catalog, read from its source file.
-    fn catalog_entries() -> Vec<(String, String)> {
-        let text = include_str!("../locales/pt-BR/mod.rs");
+    fn catalog_entries(text: &str) -> Vec<(String, String)> {
         let mut lines = text.lines().map(str::trim);
         let mut entries = Vec::new();
         while let Some(line) = lines.next() {
@@ -495,20 +549,24 @@ mod tests {
 
     #[test]
     fn catalog_entries_are_parsed_and_unique() {
-        let entries = catalog_entries();
-        assert!(entries.len() > 1000, "parsed only {} catalog entries", entries.len());
-        let mut keys: Vec<&str> = entries.iter().map(|(key, _)| key.as_str()).collect();
-        keys.sort_unstable();
-        let before = keys.len();
-        keys.dedup();
-        assert_eq!(before, keys.len(), "duplicate catalog keys");
+        for (language, catalog) in CATALOGS {
+            let entries = catalog_entries(catalog);
+            assert!(entries.len() > 1000, "parsed only {} {} catalog entries", entries.len(), language.id());
+            let mut keys: Vec<&str> = entries.iter().map(|(key, _)| key.as_str()).collect();
+            keys.sort_unstable();
+            let before = keys.len();
+            keys.dedup();
+            assert_eq!(before, keys.len(), "duplicate {} catalog keys", language.id());
+        }
     }
 
     #[test]
     fn catalog_translations_keep_the_english_placeholders() {
-        for (source, translation) in catalog_entries() {
-            assert_eq!(placeholders(&source), placeholders(&translation), "placeholders differ for {source:?}");
-            assert_eq!(super::pt_br::translate(&source), Some(translation.as_str()), "lookup differs for {source:?}");
+        for (language, catalog) in CATALOGS {
+            for (source, translation) in catalog_entries(catalog) {
+                assert_eq!(placeholders(&source), placeholders(&translation), "{} placeholders differ for {source:?}", language.id());
+                assert_eq!(language.translation(&source), Some(translation.as_str()), "{} lookup differs for {source:?}", language.id());
+            }
         }
     }
 
@@ -535,10 +593,12 @@ mod tests {
                     for marker in ["localization::text(\"", "localized_format!(\""] {
                         for (at, _) in text.match_indices(marker) {
                             let start = at + marker.len() - 1;
-                            if let Some((source, _)) = literal(&text[start..])
-                                && super::pt_br::translate(&source).is_none()
-                            {
-                                missing.push(format!("{}: {source:?}", path.display()));
+                            if let Some((source, _)) = literal(&text[start..]) {
+                                for (language, _) in CATALOGS {
+                                    if language.translation(&source).is_none() {
+                                        missing.push(format!("{}: {}: {source:?}", path.display(), language.id()));
+                                    }
+                                }
                             }
                         }
                     }
@@ -547,6 +607,6 @@ mod tests {
         }
         let mut missing = Vec::new();
         visit(&std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src"), &mut missing);
-        assert!(missing.is_empty(), "strings without a pt-BR entry:\n{}", missing.join("\n"));
+        assert!(missing.is_empty(), "strings without a catalog entry:\n{}", missing.join("\n"));
     }
 }

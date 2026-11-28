@@ -643,7 +643,8 @@ pub fn run_ui_command(app: &mut SoundApp, id: &str, p: &Value) -> Option<Result<
                 return Some(Ok(json!({"language": app.ui.language.id()})));
             };
             let Some(language) = crate::localization::Language::parse(tag) else {
-                return Some(Err(format!("unknown language `{tag}` (en or pt-BR)")));
+                let supported = crate::localization::Language::ALL.map(|language| language.id()).join(", ");
+                return Some(Err(format!("unknown language `{tag}` ({supported})")));
             };
             app.ui.language = language;
             json!({"language": language.id()})

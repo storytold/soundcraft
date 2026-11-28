@@ -1,16 +1,16 @@
 # Localization parity
 
-> **Last reviewed:** 2026-11-13 · **Last updated:** 2026-11-13 · **Change:** minor (pt-BR catalog completed: all fixed UI strings translated and covered by tests; native-speaker review, CJK/RTL font fallbacks and RTL script shaping still pending) · **Target:** Avid Pro Tools Ultimate 2026.4.1
+> **Last reviewed:** 2026-11-13 · **Last updated:** 2026-11-28 · **Change:** minor (Swedish added to the interface and catalog tests) · **Target:** Avid Pro Tools Ultimate 2026.4.1
 
-SoundCraft defaults to English and supports selecting Brazilian Portuguese. The pt-BR catalog
-covers all fixed UI strings found in the current source: command labels, menus, Appearance,
+SoundCraft defaults to English and offers Brazilian Portuguese and Swedish. Both catalogs
+cover all fixed UI strings found in the current source: command labels, menus, Appearance,
 About/Credits, Audio Health, Playback Engine, System Usage, Workspace, plugin parameter and display
 names, dialogs and buttons, tooltips (including those localized inside buttons and toggles),
 accessibility names, the Edit-window status bar, the remove-session question and formatted
 messages. Engine errors are matched against catalog templates at display time by
 `localization::error_text`. Values built at run time (file, track and device names), engine command
-parameter documentation and third-party plugin names stay as they are, and the catalog has not been
-independently or native-speaker reviewed. Pro Tools ships its UI in **8 languages** (bundle
+parameter documentation and third-party plugin names stay as they are. Both catalogs await
+native-speaker review. Pro Tools ships its UI in **8 languages** (bundle
 `.lproj` folders: English, German, Spanish, French, Japanese, Korean, Simplified Chinese,
 Traditional Chinese).
 
@@ -31,7 +31,8 @@ Language setting), PR #141 (bundled multilingual font fallbacks), issue #67 (Ukr
 | Hindi | hi | 0 (0 %) | ❌ | ❌ no Devanagari font or shaping | no | none | 8–15 | ❌ |
 | Arabic | ar | 0 (0 %) | ❌ | ❌ no RTL layout, no shaping | no | none | 15–25 | ❌ |
 | French | fr | 0 (0 %) — PR #143 pending | ❌ | Latin ✅ | no | none | 3–5 | ✅ |
-|| Portuguese (Brazil) | pt-BR | ✅ 100 % of fixed UI strings: menus, dialogs, buttons, tooltips, accessibility names, status bar, formatted messages and engine errors; catalog tests pass | 🟡 partial | Latin ✅ | no (native review pending) | full | 0–4 | ❌ |
+| Portuguese (Brazil) | pt-BR | ✅ 100 % of fixed UI strings: menus, dialogs, buttons, tooltips, accessibility names, status bar, formatted messages and engine errors; catalog tests pass | 🟡 partial | Latin ✅ | no (native review pending) | full | 0–4 | ❌ |
+| Swedish | sv | All cataloged UI strings and engine errors | Menus, dialogs, tooltips and accessibility labels | Latin | Pending | Full catalog | — | ❌ |
 | Indonesian | id | 0 (0 %) | ❌ | Latin ✅ | no | none | 3–5 | ❌ |
 | Japanese | ja | 0 (0 %) | ❌ | ❌ no CJK font fallback, no IME testing | no | none | 6–10 | ✅ |
 | German | de | 0 (0 %) | ❌ | Latin ✅ | no | none | 3–5 | ✅ |
@@ -45,18 +46,19 @@ Per-language hours exclude the shared catalog and script work above.
 ## Usage
 
 - Pick the language in Appearance ▸ Language, or run the `ui.language` command with
-  `{"language": "pt-BR"}` (or `"en"`); with no parameter it reports the current language.
+  `{"language": "sv"}`, `{"language": "pt-BR"}` or `{"language": "en"}`. With no parameter it reports the current language.
   Example: `soundcraft-cli run --demo --cmd 'ui.language={"language":"pt-BR"}'`.
 - The choice is a global preference saved with the UI state (like the theme); recalling a saved
   window configuration does not change it.
 - Strings missing from the catalog fall back to English. Add one with a `"English text" => "translated text"`
-  arm in `crates/ui-egui/locales/pt-BR/mod.rs`; tests check placeholder parity, duplicates and that every
+  arm in `crates/ui-egui/locales/<language>/mod.rs`; tests check placeholder parity, duplicates and that every
   string passed to `text` / `localized_format!` has an entry.
 
 ## Revision history
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-11-28 | minor | Added the Swedish interface and engine error translations. Catalog coverage and placeholder checks apply to both supported translations. |
 | 2026-11-13 | minor | Completed the pt-BR catalog: tooltips passed to buttons and toggles, `Not available yet.`, the send hover help, `no instrument`, the search placeholders, the Edit-window status bar (bit depth, track count, undo, ms/frame), the remove-session question and the transport/sample-rate readouts; engine errors now reach the status line through `error_text` |
 | 2026-11-05 | minor | Added persisted language selection, the `ui.language` command, English fallback and a pt-BR catalog (menus, dialogs, tooltips, accessibility text, formatted messages); added a Usage section and catalog tests |
 | 2026-10-10 | major | Created: English only, no catalog; the twelve key languages at 0 %; Pro Tools' 8 languages listed from its bundle |

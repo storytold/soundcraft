@@ -1782,6 +1782,7 @@ fn menu_translate(source: &str) -> Option<&'static str> {
         "Enable Track Notes Dialog" => "Ativar o diálogo de notas da pista",
         "English" => "Inglês",
         "Portuguese (Brazil)" => "Português (Brasil)",
+        "Swedish" => "Sueco",
         "key:Space" => "Espaço",
         "key:Up" => "Cima",
         "key:Down" => "Baixo",
@@ -2070,8 +2071,10 @@ fn menu_translate(source: &str) -> Option<&'static str> {
         "Send {which} to {name}: {db} dB\nClick for the send fader · drag vertically to adjust · Shift-drag for fine control · Alt-click for 0 dB · right-click for options" => {
             "Envio {which} para {name}: {db} dB\nClique para abrir o fader do envio · arraste na vertical para ajustar · Shift-arraste para controle fino · Alt-clique para 0 dB · clique com o botão direito para opções"
         }
-        "1 {what}" => "1 {what}",
-        "{n} {what}s" => "{n} {what}s",
+        "1 clip" => "1 clipe",
+        "{n} clips" => "{n} clipes",
+        "1 file" => "1 arquivo",
+        "{n} files" => "{n} arquivos",
         "the clip \"{name}\"" => "o clipe \"{name}\"",
         "the file \"{name}\"" => "o arquivo \"{name}\"",
         "{clips} and {files}" => "{clips} e {files}",
@@ -2086,21 +2089,6 @@ fn menu_translate(source: &str) -> Option<&'static str> {
         " The files stay on disk." => " Os arquivos permanecem no disco.",
         _ => return error_translation(source),
     })
-}
-
-macro_rules! error_templates {
-    ($($source:literal => $translation:literal,)*) => {
-        fn error_translation(source: &str) -> Option<&'static str> {
-            match source {
-                $($source => Some($translation),)*
-                _ => None,
-            }
-        }
-
-        /// Engine error messages with `{name}` placeholders standing for the values they embed. The
-        /// UI matches a message against these templates and fills the translation with the values.
-        pub(super) const ERROR_TEMPLATES: &[(&str, &str)] = &[$(($source, $translation)),*];
-    };
 }
 
 error_templates! {
@@ -2192,7 +2180,8 @@ error_templates! {
     "`{name}` has no parameter(s): {list}" => "`{name}` não tem o(s) parâmetro(s): {list}",
     "`{name}` is not a Video track" => "`{name}` não é uma pista de vídeo",
     "`{name}` is not a built-in instrument" => "`{name}` não é um instrumento interno",
-    "`{name}` is used by {n} clip{plural} on the timeline; pass `with_clips: true` to remove them too" => "`{name}` é usado por {n} clipe{plural} na linha do tempo; passe `with_clips: true` para removê-los também",
+    "`{name}` is used by 1 clip on the timeline; pass `with_clips: true` to remove them too" => "`{name}` é usado por 1 clipe na linha do tempo; passe `with_clips: true` para removê-lo também",
+    "`{name}` is used by {n} clips on the timeline; pass `with_clips: true` to remove them too" => "`{name}` é usado por {n} clipes na linha do tempo; passe `with_clips: true` para removê-los também",
     "a bus named `{name}` exists" => "já existe um bus chamado `{name}`",
     "a group named `{name}` already exists" => "já existe um grupo chamado `{name}`",
     "a group needs at least one track" => "um grupo precisa de pelo menos uma pista",
