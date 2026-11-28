@@ -161,7 +161,9 @@ pub(super) fn feed_meter(d: &mut MeterDisplay, peak: [f32; 2], gr: f32, dt: f32)
         if let Some(x) = d.level.get_mut(c) {
             *x = if nv < 1e-5 { 0.0 } else { nv };
         }
-        if v >= d.hold.get(c).copied().unwrap_or(0.0) {
+        // Only a signal holds: silence meeting a hold of 0 would restart the shared hold time
+        // every frame and keep the other channel's hold up for good.
+        if v > 0.0 && v >= d.hold.get(c).copied().unwrap_or(0.0) {
             if let Some(h) = d.hold.get_mut(c) {
                 *h = v;
             }
@@ -218,7 +220,7 @@ mod meter_tests {
     /// Runs the UI's meter loop for `secs` at 60 frames a second, polling at 20 Hz as the Edit
     /// window does; `blocks(prev, now)` says whether a block (with `peak`) arrived since the
     /// previous poll.
-    fn run(secs: f64, peak: f32, blocks: impl Fn(f64, f64) -> bool) -> (MeterDisplay, f32) {
+    fn run(secs: f64, peak: [f32; 2], blocks: impl Fn(f64, f64) -> bool) -> (MeterDisplay, f32) {
         let t = TrackId(1);
         let mut snap = MeterSnapshot::default();
         let mut d = MeterDisplay::default();
@@ -230,8 +232,8 @@ mod meter_tests {
                 let fresh = blocks(last_poll.max(-1e-9), now);
                 if fresh {
                     let m = snap.tracks.entry(t).or_insert_with(StripMeter::default);
-                    m.peak = [peak; 2];
-                    m.peaks = vec![peak; 2];
+                    m.peak = peak;
+                    m.peaks = peak.to_vec();
                 }
                 age_meters(&mut snap, fresh, now, &mut last_block);
                 last_poll = now;
@@ -249,7 +251,15 @@ mod meter_tests {
     #[test]
     fn meters_fall_to_silence_when_the_device_stops_calling_back() {
         // Blocks come for a second, then the device is switched off: no callback ever again.
-        let (d, _) = run(6.0, 0.4, |_, now| now < 1.0);
+        let (d, _) = run(6.0, [0.4; 2], |_, now| now < 1.0);
+        assert!(d.level == [0.0; 2] && d.hold == [0.0; 2], "the meter still reads {d:?}");
+    }
+
+    /// A silent channel does not keep the other channel's peak hold up: 0.0 meets a hold of 0.0
+    /// every frame, which must not restart the shared hold time.
+    #[test]
+    fn a_silent_channel_does_not_keep_the_other_channels_peak_hold() {
+        let (d, _) = run(6.0, [0.4, 0.0], |_, now| now < 1.0);
         assert!(d.level == [0.0; 2] && d.hold == [0.0; 2], "the meter still reads {d:?}");
     }
 
@@ -258,7 +268,7 @@ mod meter_tests {
         // 8192 frames at 44.1 kHz: one block every 186 ms, several polls without one.
         let period = 8192.0 / 44_100.0;
         assert!(period + 1.0 / 20.0 < METER_STALE_SECS);
-        let (d, lowest) = run(3.0, 0.4, |prev, now| (now / period).floor() > (prev / period).floor());
+        let (d, lowest) = run(3.0, [0.4; 2], |prev, now| (now / period).floor() > (prev / period).floor());
         assert!(lowest >= 0.4 && d.level[0] >= 0.4, "the meter dropped to {lowest} between callbacks");
     }
 }
