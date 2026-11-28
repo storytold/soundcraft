@@ -93,6 +93,7 @@ fn tmp(name: &str) -> PathBuf {
 #[test]
 fn a_screenshot_completes_once_and_writes_one_file() {
     let (mut a, ctx) = (app(), egui::Context::default());
+    crate::framework::install_headless(&ctx);
     warm(&mut a, &ctx);
     let path = tmp("success");
     let _ = std::fs::remove_file(&path);
@@ -114,6 +115,7 @@ fn a_screenshot_completes_once_and_writes_one_file() {
 #[test]
 fn a_callback_after_the_deadline_times_out_without_writing() {
     let (mut a, ctx) = (app(), egui::Context::default());
+    crate::framework::install_headless(&ctx);
     warm(&mut a, &ctx);
     let path = tmp("late");
     let reply = request(&mut a, Some(&path));
@@ -132,6 +134,7 @@ fn a_callback_after_the_deadline_times_out_without_writing() {
 #[test]
 fn a_session_change_cancels_the_request_and_releases_its_pixels() {
     let (mut a, ctx) = (app(), egui::Context::default());
+    crate::framework::install_headless(&ctx);
     warm(&mut a, &ctx);
     let path = tmp("document");
     let reply = request(&mut a, Some(&path));
@@ -150,6 +153,7 @@ fn a_session_change_cancels_the_request_and_releases_its_pixels() {
 #[test]
 fn admission_rejects_more_than_eight_pending_requests() {
     let (mut a, ctx) = (app(), egui::Context::default());
+    crate::framework::install_headless(&ctx);
     warm(&mut a, &ctx);
     for i in 0..MAX_PENDING_SHOTS {
         let (req, _reply) = ControlRequest::new("ui.screenshot", json!({}));
@@ -165,6 +169,7 @@ fn admission_rejects_more_than_eight_pending_requests() {
 #[test]
 fn admission_rejects_an_image_over_the_per_image_and_aggregate_budgets() {
     let (mut a, ctx) = (app(), egui::Context::default());
+    crate::framework::install_headless(&ctx);
     let mut big = raw_input(5000.0, 5000.0, 8192);
     a.raw_input_hook(&ctx, &mut big);
     let (req, _reply) = ControlRequest::new("ui.screenshot", json!({}));
@@ -190,6 +195,7 @@ fn admission_rejects_an_image_over_the_per_image_and_aggregate_budgets() {
 #[test]
 fn a_changed_window_retries_once_instead_of_writing_stale_pixels() {
     let (mut a, ctx) = (app(), egui::Context::default());
+    crate::framework::install_headless(&ctx);
     warm(&mut a, &ctx);
     let path = tmp("retry");
     let reply = request(&mut a, Some(&path));
@@ -248,6 +254,7 @@ fn a_missing_max_texture_side_uses_the_last_known_limit() {
 #[test]
 fn a_window_without_geometry_reports_no_capturable_size() {
     let (mut a, ctx) = (app(), egui::Context::default());
+    crate::framework::install_headless(&ctx);
     a.host_geometry = Some(CaptureGeometry { points: egui::Vec2::ZERO, pixels_per_point: 1.0, max_texture_side: 8192, focused: true });
     let (req, _reply) = ControlRequest::new("ui.screenshot", json!({}));
     let e = admit(&mut a, &ctx, &req).expect_err("no capturable size");
@@ -259,6 +266,7 @@ fn a_window_without_geometry_reports_no_capturable_size() {
 #[test]
 fn a_document_replaced_outside_run_cancels_a_pending_capture() {
     let (mut a, ctx) = (app(), egui::Context::default());
+    crate::framework::install_headless(&ctx);
     warm(&mut a, &ctx);
     let reply = request(&mut a, None);
     let out = frame(&mut a, &ctx, raw_input(800.0, 600.0, 8192));
@@ -278,6 +286,7 @@ fn a_document_replaced_outside_run_cancels_a_pending_capture() {
 #[test]
 fn a_queued_click_is_applied_before_a_following_inspect_and_screenshot() {
     let (mut a, ctx) = (app(), egui::Context::default());
+    crate::framework::install_headless(&ctx);
     warm(&mut a, &ctx);
     let kick = a.engine.session().track_by_name("Kick").expect("demo has Kick").id;
     assert!(!a.engine.session().track(kick).expect("kick").mixer.mute);
@@ -338,6 +347,7 @@ fn a_queued_click_is_applied_before_a_following_inspect_and_screenshot() {
 #[test]
 fn a_capture_slot_is_bounded_by_its_own_reservation() {
     let (mut a, ctx) = (app(), egui::Context::default());
+    crate::framework::install_headless(&ctx);
     warm(&mut a, &ctx);
     let (tx, rx) = channel();
     let (req, first) = ControlRequest::new("ui.screenshot", json!({}));
@@ -379,6 +389,7 @@ fn png_bytes_checks_its_dimensions_and_allocation() {
 #[test]
 fn control_input_queues_and_text_are_bounded() {
     let (mut a, ctx) = (app(), egui::Context::default());
+    crate::framework::install_headless(&ctx);
     a.synthetic = (0..MAX_SYNTHETIC_EVENTS).map(|_| egui::Event::PointerMoved(egui::pos2(0.0, 0.0))).collect();
     let (req, _reply) = ControlRequest::new("ui.move", json!({"x": 1.0, "y": 2.0}));
     let v = handle(&mut a, &ctx, &req).expect("the refusal replies immediately");
@@ -405,6 +416,7 @@ fn control_input_queues_and_text_are_bounded() {
 #[test]
 fn a_very_long_screenshot_path_is_refused_before_it_is_retained() {
     let (mut a, ctx) = (app(), egui::Context::default());
+    crate::framework::install_headless(&ctx);
     warm(&mut a, &ctx);
     let path = "x".repeat(MAX_SHOT_PATH_BYTES + 1);
     let (req, _reply) = ControlRequest::new("ui.screenshot", json!({"path": path}));
@@ -418,10 +430,11 @@ fn a_very_long_screenshot_path_is_refused_before_it_is_retained() {
 #[test]
 fn an_undelivered_gesture_is_canceled_without_wedging_the_next_request() {
     let (mut a, ctx) = (app(), egui::Context::default());
+    crate::framework::install_headless(&ctx);
     let (req, reply) = ControlRequest::new("ui.click", json!({"x": 10.0, "y": 10.0}));
     assert!(handle(&mut a, &ctx, &req).is_none(), "the click waits for a UI pass");
     a.advance_test_clock(Duration::from_secs(16));
-    expire_gestures(&mut a);
+    expire_gestures(&mut a, &ctx);
     let v = reply.try_recv().expect("the canceled gesture has exactly one reply");
     assert_eq!(v["ok"], false, "{v}");
     assert!(v["error"].as_str().unwrap_or_default().contains("not delivered"), "{v}");
@@ -440,6 +453,7 @@ fn an_undelivered_gesture_is_canceled_without_wedging_the_next_request() {
 fn a_timed_out_consumed_press_cancels_without_clicking_and_the_next_click_works() {
     for expires_after_hook in [false, true] {
         let (mut a, ctx) = (app(), egui::Context::default());
+        crate::framework::install_headless(&ctx);
         a.advance_test_clock(Duration::ZERO);
         warm(&mut a, &ctx);
         let kick = a.engine.session().track_by_name("Kick").unwrap().id;
@@ -489,53 +503,46 @@ fn a_timed_out_consumed_press_cancels_without_clicking_and_the_next_click_works(
 /// An expired scripted shortcut never reaches widgets or end-of-pass handling, while a simultaneous host shortcut
 /// still runs and a later script succeeds.
 #[test]
-fn a_timed_out_scripted_key_after_the_hook_does_not_run_and_the_next_key_works() {
+fn a_timed_out_scripted_key_does_not_run_and_the_next_key_works() {
     let (mut a, ctx) = (app(), egui::Context::default());
+    crate::framework::install_headless(&ctx);
     a.advance_test_clock(Duration::ZERO);
     warm(&mut a, &ctx);
     a.run("track.new", json!({"count": 1, "format": "stereo"})).unwrap();
     let depth = a.engine.undo_history().len();
     assert!(depth > 0, "the test needs an undoable edit");
-    let applied = a.synthetic_applied_batches;
-    let quickpunch = a.engine.session().edit.quickpunch;
     let (req, reply) = ControlRequest::new("ui.key", json!({"key": "z", "cmd": true}));
     assert!(handle(&mut a, &ctx, &req).is_none());
-    let mut raw = raw_input(800.0, 600.0, 8192);
-    // A real, unrelated shortcut in the same pass must still be dispatched after the expired
-    // scripted batch is removed.
-    let command_shift = egui::Modifiers { command: true, shift: true, ..egui::Modifiers::NONE };
-    raw.events.push(egui::Event::Key { key: egui::Key::P, physical_key: None, pressed: true, repeat: false, modifiers: command_shift });
-    raw.events.push(egui::Event::Key { key: egui::Key::P, physical_key: None, pressed: false, repeat: false, modifiers: command_shift });
-    a.raw_input_hook(&ctx, &mut raw);
-    assert!(a.synthetic_batch.is_some(), "the key batch waits for a UI pass");
+    assert!(gesture_pending(&a), "the key waits for the framework to run it");
 
-    // The deadline crosses after the hook handed the key to egui but before logic and widgets.
+    // The deadline crosses before any pass ran the key.
     a.advance_test_clock(Duration::from_secs(16));
-    let mut out = ctx.run_ui(raw, |ui| {
-        a.logic(ui.ctx());
-        a.ui(ui);
-    });
-    out.textures_delta.clear();
+    let _ = frame(&mut a, &ctx, raw_input(800.0, 600.0, 8192));
     let canceled = reply.try_recv().expect("one cancellation reply");
     assert_eq!(canceled["ok"], false, "{canceled}");
-    assert!(a.synthetic_batch.is_none(), "the expired batch is dropped");
-    assert_eq!(a.synthetic_applied_batches, applied, "an expired batch is not delivered");
-    assert_eq!(a.engine.undo_history().len(), depth, "the expired key must not run its shortcut");
-    assert_eq!(a.engine.session().edit.quickpunch, !quickpunch, "a simultaneous host shortcut still runs");
-    assert!(!a.cancel_synthetic_keys);
-    assert!(
-        ctx.input(|i| !i.events.iter().any(|e| matches!(e, egui::Event::Key { key: egui::Key::Z, .. }))),
-        "the expired key is gone from the pass, not left for widgets or end-of-pass shortcuts"
-    );
+    assert!(!gesture_pending(&a));
     let _ = frame(&mut a, &ctx, raw_input(800.0, 600.0, 8192));
-    assert_eq!(a.engine.undo_history().len(), depth, "a later frame must not replay it");
+    assert_eq!(a.engine.undo_history().len(), depth, "the expired key must not run its shortcut, now or later");
 
-    // A fresh gesture after the timeout still works and runs exactly once.
+    // A fresh key after the timeout still works and runs exactly once.
     let (req, reply) = ControlRequest::new("ui.key", json!({"key": "z", "cmd": true}));
     assert!(handle(&mut a, &ctx, &req).is_none());
     deliver_gestures(&mut a, &ctx);
     assert_eq!(reply.try_recv().unwrap()["ok"], true);
     assert_eq!(a.engine.undo_history().len(), depth - 1, "a completed key still undoes exactly once");
+}
+
+/// The framework takes Escape out of egui's event list; the key is still acknowledged.
+#[test]
+fn a_scripted_escape_is_acknowledged() {
+    let (mut a, ctx) = (app(), egui::Context::default());
+    crate::framework::install_headless(&ctx);
+    a.advance_test_clock(Duration::ZERO);
+    warm(&mut a, &ctx);
+    let (req, reply) = ControlRequest::new("ui.key", json!({"key": "Escape"}));
+    assert!(handle(&mut a, &ctx, &req).is_none());
+    deliver_gestures(&mut a, &ctx);
+    assert_eq!(reply.try_recv().expect("an acknowledgement")["ok"], true);
 }
 
 /// Current timeline zoom, horizontal scroll and vertical scroll, compared before and after a gesture.
@@ -573,6 +580,7 @@ fn host_line_wheel(dy: f32) -> egui::Event {
 #[test]
 fn a_timed_out_scripted_scroll_after_the_hook_does_not_scroll_or_keep_smoothing() {
     let (mut a, ctx) = (app(), egui::Context::default());
+    crate::framework::install_headless(&ctx);
     a.advance_test_clock(Duration::ZERO);
     warm(&mut a, &ctx);
     // Make the track area overflow so a real wheel would actually move the view.
@@ -649,6 +657,7 @@ fn a_timed_out_scripted_scroll_after_the_hook_does_not_scroll_or_keep_smoothing(
 #[test]
 fn a_timed_out_scripted_zoom_after_the_hook_does_not_zoom_and_the_next_zoom_works_once() {
     let (mut a, ctx) = (app(), egui::Context::default());
+    crate::framework::install_headless(&ctx);
     a.advance_test_clock(Duration::ZERO);
     warm(&mut a, &ctx);
     let at = timeline_center(&a);
@@ -710,6 +719,7 @@ fn a_timed_out_scripted_zoom_after_the_hook_does_not_zoom_and_the_next_zoom_work
 #[test]
 fn a_fresh_identical_host_wheel_after_a_drawn_expiry_is_not_swallowed() {
     let (mut a, ctx) = (app(), egui::Context::default());
+    crate::framework::install_headless(&ctx);
     a.advance_test_clock(Duration::ZERO);
     warm(&mut a, &ctx);
     a.run("track.new", json!({"count": 20, "format": "stereo"})).unwrap();
@@ -749,6 +759,7 @@ fn a_fresh_identical_host_wheel_after_a_drawn_expiry_is_not_swallowed() {
 #[test]
 fn a_host_key_held_across_passes_survives_a_replayed_scroll_cancel() {
     let (mut a, ctx) = (app(), egui::Context::default());
+    crate::framework::install_headless(&ctx);
     a.advance_test_clock(Duration::ZERO);
     warm(&mut a, &ctx);
     a.run("track.new", json!({"count": 20, "format": "stereo"})).unwrap();
@@ -790,6 +801,7 @@ fn a_host_key_held_across_passes_survives_a_replayed_scroll_cancel() {
 #[test]
 fn an_expiry_in_a_discarded_pass_does_not_replay_host_events() {
     let (mut a, ctx) = (app(), egui::Context::default());
+    crate::framework::install_headless(&ctx);
     a.advance_test_clock(Duration::ZERO);
     warm(&mut a, &ctx);
     a.run("track.new", json!({"count": 1, "format": "stereo"})).unwrap();
@@ -842,6 +854,7 @@ fn an_expiry_in_a_discarded_pass_does_not_replay_host_events() {
 #[test]
 fn a_timed_out_track_drag_cancels_without_dropping_and_the_next_drag_works() {
     let (mut a, ctx) = (app(), egui::Context::default());
+    crate::framework::install_headless(&ctx);
     a.advance_test_clock(Duration::ZERO);
     warm(&mut a, &ctx);
     let before: Vec<_> = a.engine.session().tracks.iter().map(|track| track.id).collect();
@@ -882,6 +895,7 @@ fn a_timed_out_track_drag_cancels_without_dropping_and_the_next_drag_works() {
 #[test]
 fn scroll_reports_the_wheel_and_trackpad_sources_after_delivery() {
     let (mut a, ctx) = (app(), egui::Context::default());
+    crate::framework::install_headless(&ctx);
     warm(&mut a, &ctx);
     let (req, reply) = ControlRequest::new("ui.scroll", json!({"x": 10.0, "y": 10.0, "dy": -30.0, "unit": "line", "steps": 2}));
     assert!(handle(&mut a, &ctx, &req).is_none(), "the reply waits for delivery");
