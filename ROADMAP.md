@@ -98,7 +98,7 @@ Weights and evidence per row: [target-app-parity.md](docs/target-app-parity.md#f
 | Korean | ko | none | 0 % |
 | Vietnamese | vi | none | 0 % |
 
-Other languages shipped: 0 complete. Brazilian Portuguese covers the fixed UI strings (100 %), with native-speaker review, CJK/RTL font fallbacks and script shaping still pending. Detail: [localization-parity.md](docs/localization-parity.md).
+Other languages shipped: 0 complete. Brazilian Portuguese covers the fixed UI strings (100 %), with native-speaker review, CJK/RTL font fallbacks and script shaping still pending. Finnish (`fi`, not one of Pro Tools' languages) covers the same strings. Detail: [localization-parity.md](docs/localization-parity.md).
 
 ## Upcoming
 
@@ -189,6 +189,7 @@ mutated and truncated movies. Field reports from the first public week are track
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-11-16 | trivial | Languages: Finnish (`fi`) catalog added for the fixed UI strings. Estimates unchanged |
 | 2026-11-14 | minor | Strict external-WAV AAF import with bounded property caching; remaining interchange work and readiness estimates unchanged |
 | 2026-11-09 | trivial | Progress log: Frequency Shifter plugin; readiness estimates unchanged |
 | 2026-11-08 | trivial | Command-click breakpoint/control priority and insertion affordance; active-tool drags retained; readiness estimates unchanged |

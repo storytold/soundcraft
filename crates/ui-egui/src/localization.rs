@@ -3,6 +3,9 @@
 #[path = "../locales/pt-BR/mod.rs"]
 mod pt_br;
 
+#[path = "../locales/fi/mod.rs"]
+mod fi;
+
 use std::cell::Cell;
 
 thread_local! {
@@ -17,17 +20,20 @@ pub enum Language {
     English,
     #[serde(rename = "pt-BR")]
     PortugueseBrazil,
+    #[serde(rename = "fi")]
+    Finnish,
 }
 
 impl Language {
     /// All supported languages, in the order they are shown in the language menu.
-    pub const ALL: [Self; 2] = [Self::English, Self::PortugueseBrazil];
+    pub const ALL: [Self; 3] = [Self::English, Self::PortugueseBrazil, Self::Finnish];
 
     /// Stable language tag used in preferences and control commands.
     pub const fn id(self) -> &'static str {
         match self {
             Self::English => "en",
             Self::PortugueseBrazil => "pt-BR",
+            Self::Finnish => "fi",
         }
     }
 
@@ -36,6 +42,7 @@ impl Language {
         match self {
             Self::English => "English",
             Self::PortugueseBrazil => "Portuguese (Brazil)",
+            Self::Finnish => "Finnish",
         }
     }
 
@@ -47,7 +54,7 @@ impl Language {
     pub fn localize_decimal(self, number: &str) -> String {
         match self {
             Self::English => number.to_owned(),
-            Self::PortugueseBrazil => number.replace('.', ","),
+            Self::PortugueseBrazil | Self::Finnish => number.replace('.', ","),
         }
     }
 
@@ -56,6 +63,7 @@ impl Language {
         match self {
             Self::English => source,
             Self::PortugueseBrazil => pt_br::translate(source).unwrap_or(source),
+            Self::Finnish => fi::translate(source).unwrap_or(source),
         }
     }
 }
@@ -89,6 +97,7 @@ fn error_text_in(language: Language, message: &str, depth: usize) -> String {
     let templates: &[(&str, &str)] = match language {
         Language::English => &[],
         Language::PortugueseBrazil => pt_br::ERROR_TEMPLATES,
+        Language::Finnish => fi::ERROR_TEMPLATES,
     };
     let mut best: Option<(usize, &str, Vec<(String, String)>)> = None;
     for (template, translation) in templates {
@@ -389,6 +398,37 @@ mod tests {
     }
 
     #[test]
+    fn finnish_catalog_covers_every_menu_label() {
+        for path in include_str!("../../engine/catalog/menus.txt").lines() {
+            for label in path.split(" > ").map(str::trim).filter(|label| !label.is_empty()) {
+                assert!(super::fi::translate(label).is_some(), "missing fi menu label: {label}");
+            }
+        }
+    }
+
+    #[test]
+    fn finnish_is_selectable_and_translates_errors_with_their_values() {
+        assert_eq!(Language::parse(" FI "), Some(Language::Finnish));
+        assert_ne!(Language::Finnish.text("Appearance"), "Appearance");
+        assert_eq!(Language::Finnish.text("A source string with no catalog entry"), "A source string with no catalog entry");
+        let _scope = enter(Language::Finnish);
+        assert_ne!(error_text("no track"), "no track");
+        let wrapped = error_text("bad parameters for `track.new`: `name` required");
+        assert!(wrapped.contains("`track.new`") && wrapped.contains("`name`"), "{wrapped}");
+        assert!(!wrapped.contains("bad parameters") && !wrapped.contains("required"), "{wrapped}");
+        let ratio = error_text("stretch ratio 12.500 is outside 0.1..10");
+        assert!(ratio.contains("12,500"), "{ratio}");
+        // One clip and several clips both read as Finnish, with no English plural ending.
+        for n in [1, 3] {
+            let s = if n == 1 { "" } else { "s" };
+            let used = error_text(&format!("`a.wav` is used by {n} clip{s} on the timeline; pass `with_clips: true` to remove them too"));
+            assert!(used.contains(&format!("{n} aikajanan klipissä;")), "{used}");
+        }
+        // A value that is just "s" (a track named `s`, say) stays as it is.
+        assert!(error_text("bad parameters for `track.rename`: s").contains(": s"));
+    }
+
+    #[test]
     fn engine_errors_are_translated_with_their_values() {
         assert_eq!(error_text("select a clip"), "select a clip");
         let _scope = enter(Language::PortugueseBrazil);
@@ -460,9 +500,15 @@ mod tests {
         None
     }
 
-    /// Every `"source" => "translation"` pair of the catalog, read from its source file.
-    fn catalog_entries() -> Vec<(String, String)> {
-        let text = include_str!("../locales/pt-BR/mod.rs");
+    /// Each catalog: its tag, its source file and its lookup.
+    type Lookup = fn(&str) -> Option<&'static str>;
+    const CATALOGS: [(&str, &str, Lookup); 2] = [
+        ("pt-BR", include_str!("../locales/pt-BR/mod.rs"), super::pt_br::translate),
+        ("fi", include_str!("../locales/fi/mod.rs"), super::fi::translate),
+    ];
+
+    /// Every `"source" => "translation"` pair of a catalog, read from its source file.
+    fn catalog_entries(text: &str) -> Vec<(String, String)> {
         let mut lines = text.lines().map(str::trim);
         let mut entries = Vec::new();
         while let Some(line) = lines.next() {
@@ -495,20 +541,24 @@ mod tests {
 
     #[test]
     fn catalog_entries_are_parsed_and_unique() {
-        let entries = catalog_entries();
-        assert!(entries.len() > 1000, "parsed only {} catalog entries", entries.len());
-        let mut keys: Vec<&str> = entries.iter().map(|(key, _)| key.as_str()).collect();
-        keys.sort_unstable();
-        let before = keys.len();
-        keys.dedup();
-        assert_eq!(before, keys.len(), "duplicate catalog keys");
+        for (tag, text, _) in CATALOGS {
+            let entries = catalog_entries(text);
+            assert!(entries.len() > 1000, "{tag}: parsed only {} catalog entries", entries.len());
+            let mut keys: Vec<&str> = entries.iter().map(|(key, _)| key.as_str()).collect();
+            keys.sort_unstable();
+            let before = keys.len();
+            keys.dedup();
+            assert_eq!(before, keys.len(), "{tag}: duplicate catalog keys");
+        }
     }
 
     #[test]
     fn catalog_translations_keep_the_english_placeholders() {
-        for (source, translation) in catalog_entries() {
-            assert_eq!(placeholders(&source), placeholders(&translation), "placeholders differ for {source:?}");
-            assert_eq!(super::pt_br::translate(&source), Some(translation.as_str()), "lookup differs for {source:?}");
+        for (tag, text, translate) in CATALOGS {
+            for (source, translation) in catalog_entries(text) {
+                assert_eq!(placeholders(&source), placeholders(&translation), "{tag}: placeholders differ for {source:?}");
+                assert_eq!(translate(&source), Some(translation.as_str()), "{tag}: lookup differs for {source:?}");
+            }
         }
     }
 
@@ -525,10 +575,12 @@ mod tests {
                     for marker in ["localization::text(\"", "localized_format!(\""] {
                         for (at, _) in text.match_indices(marker) {
                             let start = at + marker.len() - 1;
-                            if let Some((source, _)) = literal(&text[start..])
-                                && super::pt_br::translate(&source).is_none()
-                            {
-                                missing.push(format!("{}: {source:?}", path.display()));
+                            if let Some((source, _)) = literal(&text[start..]) {
+                                for (tag, _, translate) in CATALOGS {
+                                    if translate(&source).is_none() {
+                                        missing.push(format!("{tag} {}: {source:?}", path.display()));
+                                    }
+                                }
                             }
                         }
                     }
@@ -537,6 +589,6 @@ mod tests {
         }
         let mut missing = Vec::new();
         visit(&std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src"), &mut missing);
-        assert!(missing.is_empty(), "strings without a pt-BR entry:\n{}", missing.join("\n"));
+        assert!(missing.is_empty(), "strings without a catalog entry:\n{}", missing.join("\n"));
     }
 }

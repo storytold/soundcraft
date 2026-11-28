@@ -1763,6 +1763,7 @@ fn menu_translate(source: &str) -> Option<&'static str> {
         "Enable Track Notes Dialog" => "Ativar o diálogo de notas da pista",
         "English" => "Inglês",
         "Portuguese (Brazil)" => "Português (Brasil)",
+        "Finnish" => "Finlandês",
         "key:Space" => "Espaço",
         "key:Up" => "Cima",
         "key:Down" => "Baixo",
