@@ -40,6 +40,8 @@ pub struct Vst3Plugin {
     /// of an `f64`, or [`SYNCED`]). `set_param` may run on the audio thread, so it never calls the
     /// controller; the state reader, which already does, hands them over first.
     unsynced: Arc<[AtomicU64]>,
+    /// Parameters explicitly modified by the host/session (re-sent on `prepare` after reactivation).
+    dirty: Vec<bool>,
     /// Pending notes, kept sorted by time. Never grows past `EVENT_CAP`.
     notes: Vec<NoteEvent>,
     /// The parameter each MIDI controller drives (see `Instance::midi_mapping`).
@@ -89,6 +91,7 @@ impl Vst3Plugin {
             values: Vec::with_capacity(ids.len()),
             pending: Vec::with_capacity(ids.len().min(PARAM_QUEUE_CAP)),
             unsynced: ids.iter().map(|_| AtomicU64::new(SYNCED)).collect(),
+            dirty: vec![false; ids.len()],
             notes: Vec::with_capacity(EVENT_CAP),
             midi_map: Vec::new(),
             controls: Vec::with_capacity(EVENT_CAP),
@@ -161,6 +164,7 @@ impl Vst3Plugin {
             }
         }
         self.pending.clear();
+        self.dirty.fill(false);
         for u in self.unsynced.iter() {
             u.store(SYNCED, Ordering::Relaxed);
         }
@@ -250,9 +254,16 @@ impl Plugin for Vst3Plugin {
                 self.latency = 0;
             }
         }
-        // Re-send every value so a re-activated plugin matches the session.
+        // Re-send only parameters explicitly changed by the session/user so a re-activated plugin
+        // keeps its own patch state instead of having early/0 readings pushed back.
         self.pending.clear();
-        for i in 0..self.ids.len().min(PARAM_QUEUE_CAP) {
+        for (i, &is_dirty) in self.dirty.iter().enumerate() {
+            if !is_dirty {
+                continue;
+            }
+            if self.pending.len() >= PARAM_QUEUE_CAP {
+                break;
+            }
             if let (Some(&id), Some(n)) = (self.ids.get(i), self.values.get(i).and_then(|&v| self.normalized_from_plain(i, v))) {
                 self.pending.push((id, n));
             }
@@ -279,6 +290,9 @@ impl Plugin for Vst3Plugin {
         let v = pi.clamp(value);
         if let Some(slot) = self.values.get_mut(i) {
             *slot = v;
+        }
+        if let Some(d) = self.dirty.get_mut(i) {
+            *d = true;
         }
         let Some(n) = self.normalized_from_plain(i, v) else { return true };
         if let Some(u) = self.unsynced.get(i) {
