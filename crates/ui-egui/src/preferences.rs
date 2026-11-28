@@ -1026,7 +1026,7 @@ fn control_ui(ui: &mut egui::Ui, page: PreferencesPage, section: &str, index: us
             });
         }
         Control::SendsDefault => {
-            craft_ui::ComboBox::new(id, label("Sends Default to")).selected_text(crate::localization::text(draft.sends_default.label())).show_ui(
+            egui::ComboBox::new(id, label("Sends Default to")).selected_text(crate::localization::text(draft.sends_default.label())).show_ui(
                 ui,
                 |ui| {
                     for level in SendsDefault::ALL {
