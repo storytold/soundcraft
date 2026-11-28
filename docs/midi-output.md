@@ -4,8 +4,9 @@ MIDI and instrument tracks can play their MIDI clips to a hardware synth, a soun
 another program through a MIDI output port.
 
 **Where it works.** Linux (ALSA sequencer), macOS (CoreMIDI) and Windows (WinMM). It has been
-played on macOS, to a hardware synth through a USB MIDI interface and to the IAC bus; on Linux
-and Windows the code builds but has not been tried with a device yet. There is no MIDI output on
+played on macOS, to a hardware synth through a USB MIDI interface and to the IAC bus, and on
+Windows, to a virtual port and to a TASCAM Model 12 over USB; on Linux the code builds but has
+not been tried with a device yet. There is no MIDI output on
 FreeBSD or in the web version: the selector says so.
 
 ## 1. Choose an output
