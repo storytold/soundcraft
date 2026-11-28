@@ -15,14 +15,15 @@ fn strip_silence_dialog() -> (Harness<'static, SoundApp>, TrackId, Vec<(i64, i64
     let before = app.engine.session().track(track).unwrap().clips().iter().map(|c| (c.start, c.end())).collect();
     menus::invoke_menu(&mut app, "edit.strip_silence", "Edit > Strip Silence");
     assert_eq!(app.dialogs.open_name(), Some("strip_silence"));
-    let mut h = Harness::builder().with_size(vec2(1600.0, 1000.0)).build_ui_state(
-        |ui, app: &mut SoundApp| {
-            let ctx = ui.ctx().clone();
-            app.logic(&ctx);
-            app.ui(ui);
-        },
-        app,
-    );
+    let mut h =
+        Harness::builder().with_context_setup(soundcraft_ui_egui::framework::install_headless).with_size(vec2(1600.0, 1000.0)).build_ui_state(
+            |ui, app: &mut SoundApp| {
+                let ctx = ui.ctx().clone();
+                app.logic(&ctx);
+                app.ui(ui);
+            },
+            app,
+        );
     h.run_steps(3);
     (h, track, before)
 }
@@ -122,7 +123,7 @@ fn enter_right_after_switching_between_strip_silence_and_rename_presses_the_new_
 #[test]
 fn strip_silence_strip_removes_the_silence() {
     let (mut h, track, before) = strip_silence_dialog();
-    h.get_by_role_and_label(Role::Button, "Strip").click();
+    h.get_by_role_and_label(Role::Button, "Strip Silence").click();
     h.run_steps(2);
     assert_eq!(h.state().dialogs.open_name(), None);
     let strip = clips(&h, track);
@@ -166,7 +167,7 @@ fn strip_silence_opens_with_the_values_escape_closed_it_with() {
 fn strip_silence_opens_with_the_values_strip_used() {
     let (mut h, _, _) = strip_silence_dialog();
     set_values(&mut h, CHANGED);
-    h.get_by_role_and_label(Role::Button, "Strip").click();
+    h.get_by_role_and_label(Role::Button, "Strip Silence").click();
     h.run_steps(2);
     assert_eq!(reopen(&mut h), CHANGED);
 }

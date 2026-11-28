@@ -502,15 +502,22 @@ fn coalesce_vca(e: &mut Engine, p: &Value) -> Result<Value> {
 }
 
 fn designate_target(e: &mut Engine, p: &Value) -> Result<Value> {
-    let tracks = tracks_required(e, "track.designate_target_playlist", p)?;
-    let idx = p.get("index").and_then(Value::as_u64);
+    let id = "track.designate_target_playlist";
+    let tracks = tracks_required(e, id, p)?;
+    let index = match p.get("index") {
+        None | Some(Value::Null) => None,
+        Some(value) => {
+            let index = value.as_u64().ok_or_else(|| bad(id, "`index` must be a nonnegative integer"))?;
+            Some(usize::try_from(index).map_err(|_| bad(id, "no such playlist"))?)
+        }
+    };
     let s = e.session_mut();
     let mut out = Vec::new();
     for t in &tracks {
         let Some(tr) = s.track(*t) else { continue };
-        let i = idx.map_or(tr.active_playlist, |x| usize::try_from(x).unwrap_or(usize::MAX));
+        let i = index.unwrap_or(tr.active_playlist);
         if i >= tr.playlists.len() {
-            return Err(bad("track.designate_target_playlist", "no such playlist"));
+            return Err(bad(id, "no such playlist"));
         }
         s.edit.values.insert(format!("playlist.target.{}", t.0), i as f64);
         out.push(json!({"track": t, "target": i}));
@@ -726,11 +733,19 @@ mod tests {
         e.execute("track.playlist_new", &json!({})).unwrap();
         e.execute("track.designate_target_playlist", &json!({})).unwrap();
         e.execute("track.playlist_select", &json!({"index": 0})).unwrap();
+        let kick = e.session().track_by_name("Kick").unwrap().id;
+        for index in [json!(-1), json!("1"), json!(1.5), json!(u64::MAX)] {
+            assert!(e.execute("track.designate_target_playlist", &json!({"index": index})).is_err(), "{index}");
+            assert_eq!(target_playlist(e.session(), kick), Some(1), "{index} must leave the target unchanged");
+        }
         e.execute("track.show_target_playlist", &json!({})).unwrap();
         assert_eq!(e.session().track_by_name("Kick").unwrap().active_playlist, 1);
         e.execute("track.toggle_recent_playlist", &json!({})).unwrap();
         assert_eq!(e.session().track_by_name("Kick").unwrap().active_playlist, 0);
         e.execute("track.toggle_recent_playlist", &json!({})).unwrap();
         assert_eq!(e.session().track_by_name("Kick").unwrap().active_playlist, 1);
+        e.execute("track.playlist_select", &json!({"index": 0})).unwrap();
+        e.execute("track.designate_target_playlist", &json!({"index": null})).unwrap();
+        assert_eq!(target_playlist(e.session(), kick), Some(0));
     }
 }

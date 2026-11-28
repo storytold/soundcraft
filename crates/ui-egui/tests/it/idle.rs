@@ -15,6 +15,7 @@ fn pass(ctx: &egui::Context, app: &mut SoundApp, shown: bool) -> Duration {
 #[test]
 fn only_a_shown_window_animates_and_a_hidden_one_wakes_once_a_second() {
     let ctx = egui::Context::default();
+    soundcraft_ui_egui::framework::install_headless(&ctx);
     let mut app = SoundApp::new(soundcraft_engine::demo::demo_engine(), None, Services::default());
     for _ in 0..3 {
         pass(&ctx, &mut app, true);

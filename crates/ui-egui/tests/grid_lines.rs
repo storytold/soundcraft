@@ -28,6 +28,7 @@ fn near(a: [i32; 3], b: Color32) -> bool {
 fn grid_lines_are_drawn_over_clips_while_shown() {
     let mut app = SoundApp::new(soundcraft_engine::demo::demo_engine(), None, Services::default());
     let ctx = egui::Context::default();
+    soundcraft_ui_egui::framework::install_headless(&ctx);
     for theme in ["dark", "light"] {
         for shown in [true, false] {
             app.run("ui.theme", json!({"mode": theme})).unwrap();
@@ -76,6 +77,7 @@ fn grid_lines_are_drawn_over_clips_while_shown() {
 fn clips_markers_grid_draws_a_line_at_a_memory_location() {
     let mut app = SoundApp::new(soundcraft_engine::demo::demo_engine(), None, Services::default());
     let ctx = egui::Context::default();
+    soundcraft_ui_egui::framework::install_headless(&ctx);
     let kick = app.engine.session().track_by_name("Kick").unwrap();
     let clip = &kick.clips()[0];
     let marker = clip.start + clip.length / 3;
@@ -133,6 +135,7 @@ fn clips_markers_lines_refresh_across_lanes_and_hidden_open_folders() {
     s.edit.grid_lines = true;
     let mut app = SoundApp::new(engine, None, Services::default());
     let ctx = egui::Context::default();
+    soundcraft_ui_egui::framework::install_headless(&ctx);
 
     for (start, marker, scroll, zoom) in [(1_200, 9_000, 0, 20.0), (3_000, 11_000, 0, 20.0), (3_000, 11_000, 1_000, 40.0)] {
         let s = app.engine.session_mut();
