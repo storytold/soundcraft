@@ -15,22 +15,21 @@ pub(super) fn transport_window(app: &mut SoundApp, ctx: &egui::Context) {
             let flags = app.engine.session().edit.flags.clone();
             let expanded = flags.contains("view.transport.expanded");
             ui.horizontal(|ui| {
-                for (icon, cmd) in [
-                    ("rtz", "transport.rtz"),
-                    ("rewind", "transport.rewind"),
-                    ("stop", "transport.stop"),
-                    ("play", "transport.play"),
-                    ("ffwd", "transport.fast_forward"),
-                    ("end", "transport.go_to_end"),
-                    ("record", "transport.record"),
+                // The names are the Edit toolbar's tooltips, so both transports read the same.
+                for (icon, cmd, name) in [
+                    ("rtz", "transport.rtz", "Return to Zero (Home)"),
+                    ("rewind", "transport.rewind", "Rewind"),
+                    ("stop", "transport.stop", "Stop (Space)"),
+                    ("play", "transport.play", "Play (Space)"),
+                    ("ffwd", "transport.fast_forward", "Fast Forward"),
+                    ("end", "transport.go_to_end", "Go to End (End)"),
+                    ("record", "transport.record", "Record (F12 or Cmd+Space)"),
                 ] {
-                    let resp = crate::widgets::icon_button(
-                        ui,
-                        vec2(34.0, 26.0),
-                        icon,
-                        (cmd == "transport.play" && app.is_playing()) || (cmd == "transport.record" && app.engine.transport.recording),
-                        cmd,
-                    );
+                    let resp = match cmd {
+                        "transport.play" => crate::widgets::icon_button(ui, vec2(34.0, 26.0), icon, app.is_playing(), name),
+                        "transport.record" => crate::widgets::icon_button(ui, vec2(34.0, 26.0), icon, app.engine.transport.recording, name),
+                        _ => crate::widgets::icon_action(ui, vec2(34.0, 26.0), icon, name),
+                    };
                     if cmd == "transport.record"
                         && let Some(why) = app.record_hint()
                     {

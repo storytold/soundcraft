@@ -9,8 +9,10 @@ use super::{
 /// name and the remaining track controls.
 pub(super) fn track_header(app: &mut SoundApp, ui: &mut Ui, track: &Track, head: Rect, selected: bool, head_bg: Color32) {
     let id = track.id;
-    // Click on header background selects the track.
-    let bg = ui.interact(head, ui.scope_id().with(("hdr", id.0)), Sense::click());
+    // Click on header background selects the track. Pointer only: the name plate is the header's
+    // keyboard and screen-reader stop for the same selection.
+    let bg = ui.interact(head, ui.scope_id().with(("hdr", id.0)), Sense::CLICK);
+    crate::widgets::expose_as_container(&bg);
     if bg.clicked() {
         click_track(app, id, ui.input(|i| i.modifiers), in_edit_window);
     }
@@ -35,7 +37,9 @@ pub(super) fn track_header(app: &mut SoundApp, ui: &mut Ui, track: &Track, head:
 /// resize edge, which stay on top of it.
 fn color_strip(app: &mut SoundApp, ui: &mut Ui, id: TrackId, head: Rect) {
     let strip = Rect::from_min_size(head.min, vec2(STRIP_W, head.height()));
-    let resp = ui.interact(strip, ui.scope_id().with(("color_strip", id.0)), Sense::click());
+    // Pointer only, as the header background: the colours are also in the Color Palette window.
+    let resp = ui.interact(strip, ui.scope_id().with(("color_strip", id.0)), Sense::CLICK);
+    crate::widgets::expose_as_container(&resp);
     let mods = ui.input(|i| i.modifiers);
     let selected = app.engine.session().edit.selected_tracks.contains(&id);
     if resp.double_clicked() {
@@ -54,7 +58,9 @@ fn color_strip(app: &mut SoundApp, ui: &mut Ui, id: TrackId, head: Rect) {
 fn resize_edge(app: &mut SoundApp, ui: &mut Ui, track: &Track, head: Rect) {
     let id = track.id;
     let edge = Rect::from_min_max(pos2(head.min.x, head.max.y - 4.0), pos2(head.max.x, head.max.y + 2.0));
-    let eresp = ui.interact(edge, ui.scope_id().with(("hedge", id.0)), Sense::drag());
+    // Pointer only: the context menu's Track Height sets the same heights from the keyboard.
+    let eresp = ui.interact(edge, ui.scope_id().with(("hedge", id.0)), Sense::DRAG);
+    crate::widgets::expose_as_container(&eresp);
     if eresp.hovered() || eresp.dragged() {
         ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeVertical);
     }
@@ -94,16 +100,26 @@ fn strip_buttons(app: &mut SoundApp, ui: &mut Ui, track: &Track, head: Rect) {
     ui.painter().circle_filled(round.center(), 5.0, shade(strip, if rresp.hovered() { 0.6 } else { 0.45 }));
     arrow(ui.painter(), round.center(), !track.is_folder() || track.folder_open, ink);
     if track.is_folder() {
+        crate::widgets::expose_button(&rresp, &crate::localized_format!("{} for {}", crate::localization::text("Folder"), track.name));
+        let open = track.folder_open;
+        rresp.ctx.accesskit_node_builder(rresp.id, |b| b.set_expanded(open));
         if rresp.on_hover_text(crate::localization::text(if track.folder_open { "Close folder" } else { "Open folder" })).clicked() {
             let _ = app.run("track.folder_toggle", json!({"track": id.0}));
         }
     } else {
+        crate::widgets::expose_menu_button(&rresp, &crate::localized_format!("{} for {}", crate::localization::text("Track options"), track.name));
         egui::Popup::menu(&rresp.on_hover_text(crate::localization::text("Track options"))).show(|ui| track_context_menu(app, ui, id));
     }
     if h >= 40.0 && track.kind.has_playlist() {
         let ar = at(3.0, h - 12.0, 9.0, 9.0);
         let aresp = ui.interact(ar, ui.scope_id().with(("auto_lane", id.0)), Sense::click());
         let showing = AutoParam::parse(&track.view).is_some();
+        // One name in both states, with the state reported, rather than a name that flips.
+        crate::widgets::expose_toggle(
+            &aresp,
+            &crate::localized_format!("{} for {}", crate::localization::text("Automation lane"), track.name),
+            showing,
+        );
         ui.painter().rect_filled(ar, 1.5, shade(strip, if aresp.hovered() || showing { 0.6 } else { 0.45 }));
         let (a, b) = (ar.min + vec2(2.5, 2.5), ar.max - vec2(2.5, 2.5));
         ui.painter().line_segment([a, b], Stroke::new(1.0, ink));
@@ -146,6 +162,9 @@ fn name_plate(app: &mut SoundApp, ui: &mut Ui, track: &Track, head: Rect, select
         if overflows { (pos2(name_r.min.x + 1.5, name_r.center().y), Align2::LEFT_CENTER) } else { (name_r.center(), Align2::CENTER_CENTER) };
     ui.painter().with_clip_rect(name_r).text(text_pos, align, &shown_name, font, name_color);
     let mut nresp = ui.interact(name_r, ui.scope_id().with(("name", id.0)), Sense::click_and_drag());
+    // The track's stop for screen readers, and whether it is selected, as the Tracks list reports it. The
+    // name starts with the shown name; "track" tells it apart from the Tracks list's row of the same name.
+    crate::widgets::expose_toggle(&nresp, &crate::localized_format!("{} track", shown_name), selected);
     if overflows {
         nresp = nresp.on_hover_ui(|ui| {
             ui.label(&shown_name);
@@ -197,6 +216,7 @@ fn playlist_menu(app: &mut SoundApp, ui: &mut Ui, track: &Track, head: Rect, hea
     let at = |x: f32, y: f32, w: f32, h: f32| Rect::from_min_size(pos2(head.min.x + x, head.min.y + y), vec2(w, h));
     let pl_r = at(114.0, 1.0, 11.0, 14.5);
     let presp = ui.interact(pl_r, ui.scope_id().with(("pl", id.0)), Sense::click());
+    crate::widgets::expose_menu_button(&presp, &crate::localized_format!("{} for {}", crate::localization::text("Playlists"), track.name));
     ui.painter().rect_filled(pl_r, 1.5, shade(head_bg, if presp.hovered() { -0.2 } else { -0.35 }));
     arrow(ui.painter(), pos2(pl_r.center().x, pl_r.min.y + 5.75), true, t.text);
     egui::Popup::menu(&presp.on_hover_text(crate::localization::text("Playlists"))).show(|ui| {
@@ -306,6 +326,11 @@ fn voice_row(app: &mut SoundApp, ui: &mut Ui, track: &Track, head: Rect) {
         if matches!(track.kind, TrackKind::Audio | TrackKind::Instrument | TrackKind::Aux) {
             let r = at(17.0, 57.0, 13.0, 17.0);
             let resp = ui.interact(r, ui.scope_id().with(("freeze", id.0)), Sense::click());
+            crate::widgets::expose_toggle(
+                &resp,
+                &crate::localized_format!("{} for {}", crate::localization::text("Freeze"), track.name),
+                track.frozen,
+            );
             raised_key(ui.painter(), r, if track.frozen { t.slot_bypassed } else { t.slot_face }, resp.hovered());
             for a in [0.0f32, 60.0, 120.0] {
                 let d = vec2(a.to_radians().sin(), a.to_radians().cos()) * 3.5;
