@@ -242,7 +242,7 @@ impl Recorder {
     pub fn open_with(audio: &crate::AudioConfig) -> Result<Recorder, String> {
         use cpal::traits::{DeviceTrait, StreamTrait};
         let host = crate::devices::host(audio);
-        let (device, pinned_default) = crate::devices::device(&host, audio.input.as_deref(), false).ok_or("no audio input device")?;
+        let (device, pinned_default) = crate::devices::device(&host, audio.input.as_deref(), false, true).ok_or("no audio input device")?;
         let name = crate::devices::device_name(&device).unwrap_or_else(|| "Input".into());
         // At the chosen rate when the device offers it, so input and output run together: the
         // best format first, then the most channels.

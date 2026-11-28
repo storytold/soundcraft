@@ -229,18 +229,23 @@ pub(crate) fn host(cfg: &AudioConfig) -> cpal::Host {
         })
 }
 
-/// The named output (or input) device of `host`, else its default device (see
+/// The named output (or input) device of `host`, else, when `fall_back`, its default device (see
 /// [`default_to_open`] for the WASAPI default), and whether it is the system default opened as
 /// the device that is the default now, whose stream is not told when the default moves to another
-/// device (see [`pins_the_default`]).
-pub(crate) fn device(host: &cpal::Host, name: Option<&str>, output: bool) -> Option<(cpal::Device, bool)> {
+/// device (see [`pins_the_default`]). A device that must open by its name (`fall_back` false)
+/// that is not listed gives `None`, without the default being looked up.
+pub(crate) fn device(host: &cpal::Host, name: Option<&str>, output: bool, fall_back: bool) -> Option<(cpal::Device, bool)> {
     if let Some(want) = name {
         let found = if output { host.output_devices().ok() } else { host.input_devices().ok() }
             .and_then(|mut ds| ds.find(|d| device_name(d).as_deref() == Some(want)));
         if let Some(found) = found {
             return Some((found, false));
         }
-        log::warn!("audio device `{want}` is not available; using the default");
+        if !fall_back {
+            log::warn!("audio device `{want}` is not listed");
+            return None;
+        }
+        log::warn!("audio device `{want}` is not listed; using the system default");
     }
     let default = if output { host.default_output_device() } else { host.default_input_device() };
     let system = host.id().name();
@@ -493,8 +498,10 @@ mod tests {
         assert_eq!(host(&cfg).id(), cpal::default_host().id());
         // No device with this name exists: the default (or none, on a machine without audio).
         let h = cpal::default_host();
-        let fallback = device(&h, Some("No Such Device 1234"), true).and_then(|(d, _)| device_name(&d));
+        let fallback = device(&h, Some("No Such Device 1234"), true, true).and_then(|(d, _)| device_name(&d));
         assert_eq!(fallback, h.default_output_device().as_ref().and_then(device_name));
+        // A device that must open by its name opens nothing in its place.
+        assert!(device(&h, Some("No Such Device 1234"), true, false).is_none());
     }
 
     #[test]

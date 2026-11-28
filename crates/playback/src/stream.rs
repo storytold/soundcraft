@@ -111,10 +111,12 @@ pub(crate) fn open_device(
 ) -> Result<(cpal::Device, cpal::StreamConfig, cpal::SampleFormat, String, &'static str, bool), String> {
     use cpal::traits::DeviceTrait;
     let host = devices::host(cfg);
-    let (device, pinned) = devices::device(&host, required_output.or(cfg.output.as_deref()), true).ok_or_else(|| "no output device".to_string())?;
+    let unavailable = |required: &str| format!("The requested audio output {required} is unavailable");
+    let (device, pinned) = devices::device(&host, required_output.or(cfg.output.as_deref()), true, required_output.is_none())
+        .ok_or_else(|| required_output.map_or_else(|| "no output device".to_string(), unavailable))?;
     let name = devices::device_name(&device).unwrap_or_else(|| "Audio device".into());
     if not_the_required_output(required_output, cfg.system.as_deref(), &name, host.id().name()) {
-        return Err(format!("The requested audio output {} is unavailable", required_output.unwrap_or_default()));
+        return Err(unavailable(required_output.unwrap_or_default()));
     }
     // Prefer a config at the chosen (else session) rate; else the device default (we resample).
     let want_ch = want_ch.max(2);
@@ -151,8 +153,9 @@ pub(crate) fn open_device(
 
 /// Whether the output a device lookup found (`name`, on audio system `host`) is not the one that
 /// must open by its name (`required`, on the audio system `system` when one is chosen). The
-/// lookup falls back to the system default when the named device is not listed, which then is
-/// another device; `required` is `None` when any device will do (the system default chosen).
+/// lookup does not fall back to the system default for a required device, but the audio system
+/// falls back to the default one when the chosen one is not available, which may list a device of
+/// the same name; `required` is `None` when any device will do (the system default chosen).
 pub(crate) fn not_the_required_output(required: Option<&str>, system: Option<&str>, name: &str, host: &str) -> bool {
     required.is_some_and(|required| name != required || system.is_some_and(|system| !host.eq_ignore_ascii_case(system)))
 }
