@@ -1100,6 +1100,8 @@ mod tests {
         assert_eq!(app.engine.revision, revision);
         let prefs = serde_json::to_string(&app.ui).unwrap();
         app.run("session.new", json!({"name":"Next"})).unwrap();
+        assert_eq!(app.run("setup.midi_beat_clock", json!({})).unwrap()["ports"], ports, "a new session keeps the ports");
+        // Saved with the preferences and read back.
         app.ui = serde_json::from_str(&prefs).unwrap();
         assert_eq!(app.run("setup.midi_beat_clock", json!({})).unwrap()["ports"], ports);
         assert!(app.run("setup.midi_beat_clock", json!({"destination":"A".repeat(1025)})).is_err());
