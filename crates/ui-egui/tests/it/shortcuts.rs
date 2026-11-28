@@ -240,6 +240,7 @@ fn delete_with_the_midi_editor_behind_another_tab_clears_the_edit_selection() {
     let end: i64 = 48_000 * 600;
     app.run("edit.select", json!({"tracks": ["Keys"], "start": 0, "end": end})).unwrap();
     let ctx = egui::Context::default();
+    soundcraft_ui_egui::framework::install_headless(&ctx);
     for _ in 0..6 {
         app_frame(&ctx, &mut app, vec![]);
     }
@@ -270,6 +271,7 @@ fn delete_right_after_a_tab_covers_the_midi_editor_clears_the_edit_selection() {
     let end: i64 = 48_000 * 600;
     app.run("edit.select", json!({"tracks": ["Keys"], "start": 0, "end": end})).unwrap();
     let ctx = egui::Context::default();
+    soundcraft_ui_egui::framework::install_headless(&ctx);
     for _ in 0..6 {
         app_frame(&ctx, &mut app, vec![]);
     }
