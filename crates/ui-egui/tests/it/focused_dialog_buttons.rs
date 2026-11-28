@@ -79,6 +79,25 @@ fn enter_on_a_focused_browse_browses_without_pressing_ok() {
 }
 
 #[test]
+fn midi_export_browses_for_a_new_file() {
+    let picked = "picked/New Song.mid";
+    let services = Services {
+        pick_open: Some(Box::new(|_, _| panic!("export opened the input file picker"))),
+        pick_save: Some(Box::new(move |cmd, path| {
+            assert_eq!(cmd, "file.export_midi");
+            assert_eq!(path.extension().and_then(|ext| ext.to_str()), Some("mid"));
+            Some(PathBuf::from(picked))
+        })),
+        ..Services::default()
+    };
+    let mut app = SoundApp::new(soundcraft_engine::demo::demo_engine(), None, services);
+    assert!(app.dialogs.open_for_command(&app.engine, "file.export_midi"));
+    let mut h = harness(app);
+    enter_on(&mut h, "Browse…");
+    assert!(matches!(&h.state().dialogs.open, Some(Dialog::PathPrompt { path, .. }) if path == picked));
+}
+
+#[test]
 fn enter_on_a_focused_browse_in_bounce_mix_does_not_bounce() {
     let picked = "picked/Mix.flac";
     let services = Services { pick_save: Some(Box::new(move |_, _| Some(PathBuf::from(picked)))), ..Services::default() };

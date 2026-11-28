@@ -172,6 +172,7 @@ fn services() -> Services {
         })),
         pick_save: Some(Box::new(|purpose: &str, path: &std::path::Path| {
             let mut d = match purpose {
+                "file.export_midi" => rfd::FileDialog::new().add_filter("MIDI", &["mid", "midi", "smf"]),
                 "file.bounce_mix" => rfd::FileDialog::new().add_filter("Audio", craft_audio::ENCODE_EXTENSIONS),
                 _ => rfd::FileDialog::new().add_filter("SoundCraft Session", &["scraft"]),
             };

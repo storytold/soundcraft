@@ -346,6 +346,7 @@ fn path_prompt_form(app: &mut SoundApp, ui: &mut egui::Ui, cmd: &str, path: &mut
     let mut picked = None;
     // Import Audio picks several files at once; every other open dialog takes one.
     let multi = cmd == "file.import_audio" && app.services.pick_open_many.is_some();
+    let save = matches!(cmd, "session.save_as" | "session.save_copy" | "file.export_midi");
     if multi
         && let Some(pick) = &app.services.pick_open_many
         && ui.button(crate::localization::text("Browse…")).clicked()
@@ -363,8 +364,7 @@ fn path_prompt_form(app: &mut SoundApp, ui: &mut egui::Ui, cmd: &str, path: &mut
     }
     if let Some(pick) = &app.services.pick_open
         && !multi
-        && cmd != "session.save_as"
-        && cmd != "session.save_copy"
+        && !save
         && key != "dir"
         && ui.button(crate::localization::text("Browse…")).clicked()
         && let Some(p) = pick(cmd, &[])
@@ -379,7 +379,7 @@ fn path_prompt_form(app: &mut SoundApp, ui: &mut egui::Ui, cmd: &str, path: &mut
         picked = Some(p);
     }
     if let Some(pick) = &app.services.pick_save
-        && (cmd == "session.save_as" || cmd == "session.save_copy")
+        && save
         && ui.button(crate::localization::text("Browse…")).clicked()
         && let Some(p) = pick(cmd, std::path::Path::new(path.as_str()))
     {
