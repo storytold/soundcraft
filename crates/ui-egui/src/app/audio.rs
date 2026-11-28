@@ -44,6 +44,10 @@ impl SoundApp {
                 if let Some(p) = &self.player {
                     p.set_input(std::sync::Arc::clone(&r.monitor));
                 }
+                // A take from another microphone than expected is only noticed afterwards: say so.
+                if r.fell_back {
+                    self.ui.status = crate::localized_format!("Recording from “{name}”: the default audio input did not open.", name = r.device_name);
+                }
                 self.recorder = Some(r);
             }
             Err(e) => {

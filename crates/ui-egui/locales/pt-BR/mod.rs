@@ -1294,6 +1294,7 @@ fn menu_translate(source: &str) -> Option<&'static str> {
         "Reconnect it, then use Reconnect audio device in Setup › Playback Engine." => {
             "Reconecte-o e use Reconectar dispositivo de áudio em Configurar › Mecanismo de reprodução."
         }
+        "Recording from “{name}”: the default audio input did not open." => "Gravando de “{name}”: a entrada de áudio padrão não abriu.",
         "Recording stopped: {cause} The take is kept up to there. {then}" => "Gravação interrompida: {cause} A gravação foi mantida até aqui. {then}",
         "Recording stopped: {what} The take is kept up to there. {then}" => "Gravação interrompida: {what} A gravação foi mantida até aqui. {then}",
         "Remove configuration" => "Remover configuração",

@@ -143,6 +143,10 @@ pub struct Recorder {
     #[cfg(not(target_os = "freebsd"))]
     _stream: Option<cpal::Stream>,
     pub device_name: String,
+    /// True when the system default input would not open and this is a fallback input (another
+    /// device than the user expects, which the app says, since a take from the wrong
+    /// microphone is only noticed afterwards).
+    pub fell_back: bool,
     pub sample_rate: u32,
     pub channels: usize,
     /// The take writer, and what each track's take holds so far.
@@ -222,6 +226,67 @@ fn pick_input_config(configs: &[cpal::SupportedStreamConfigRange], rate: u32) ->
         .map(|(_, _, config)| config)
 }
 
+/// The input configuration for `device`: at the chosen rate when the device offers it, so input
+/// and output run together (the best format first, then the most channels), else the device's
+/// default input configuration in a format the callbacks decode.
+#[cfg(not(target_os = "freebsd"))]
+fn input_config(device: &cpal::Device, audio: &crate::AudioConfig) -> Result<(cpal::SupportedStreamConfig, cpal::SampleFormat), String> {
+    use cpal::traits::DeviceTrait;
+    let configs: Vec<cpal::SupportedStreamConfigRange> = device.supported_input_configs().map(|configs| configs.collect()).unwrap_or_default();
+    let at_rate = audio.sample_rate.and_then(|r| pick_input_config(&configs, r));
+    let cfg = match at_rate {
+        Some(c) => c,
+        None => {
+            let d = device.default_input_config().map_err(|e| e.to_string())?;
+            // cpal 0.18's default can name a format these callbacks do not decode (I24, F64);
+            // open the same rate and channels in a format they do.
+            if crate::devices::format_rank(d.sample_format()).is_some() {
+                d
+            } else {
+                crate::devices::supported_format_config(&configs, d.sample_rate(), d.channels())
+                    .ok_or_else(|| format!("unsupported input sample format {:?}", d.sample_format()))?
+            }
+        }
+    };
+    let format = cfg.sample_format();
+    if crate::devices::format_rank(format).is_none() {
+        return Err(format!("unsupported input sample format {format:?}"));
+    }
+    Ok((cfg, format))
+}
+
+/// An input stream (not yet started) on `device` with its capture ring and monitor, at the chosen
+/// buffer size first and, if the device refuses it, its default.
+#[cfg(not(target_os = "freebsd"))]
+fn open_input(
+    device: &cpal::Device,
+    audio: &crate::AudioConfig,
+    cfg: &cpal::SupportedStreamConfig,
+    format: cpal::SampleFormat,
+) -> Result<(cpal::Stream, Arc<Shared>, Arc<InputRing>, cpal::StreamConfig), String> {
+    let mut config = cfg.config();
+    config.buffer_size = crate::devices::buffer_size(audio.buffer_size, cfg.buffer_size());
+    let channels = usize::from(config.channels).max(1);
+    let ring = CaptureRing::new((config.sample_rate as usize).saturating_mul(channels * RING_SECONDS).min(1 << 25));
+    let shared = Arc::new(Shared::new(ring));
+    let monitor = InputRing::new(usize::from(config.channels), config.sample_rate);
+    let build = |config: cpal::StreamConfig| match format {
+        cpal::SampleFormat::I32 => build_input::<i32>(device, config, &shared, &monitor),
+        cpal::SampleFormat::I16 => build_input::<i16>(device, config, &shared, &monitor),
+        _ => build_input::<f32>(device, config, &shared, &monitor),
+    };
+    let stream = match build(config) {
+        Ok(s) => s,
+        Err(e) if config.buffer_size != cpal::BufferSize::Default => {
+            log::warn!("cannot open the input with buffer {:?}: {e}; using the device default", config.buffer_size);
+            config.buffer_size = cpal::BufferSize::Default;
+            build(config).map_err(|e| e.to_string())?
+        }
+        Err(e) => return Err(e.to_string()),
+    };
+    Ok((stream, shared, monitor, config))
+}
+
 impl Recorder {
     /// Open the default input device. Errors when there is none (the caller shows a message).
     pub fn open() -> Result<Recorder, String> {
@@ -230,59 +295,46 @@ impl Recorder {
 
     /// Open the input device `audio` chooses (else the default) at its chosen rate and buffer
     /// size when the device offers them, else at the device's defaults. Integer devices (ASIO
-    /// drivers usually are) are converted to f32.
+    /// drivers usually are) are converted to f32. When the system default will not open, the
+    /// fallback inputs are tried as for playback (see [`crate::devices::fallback_devices`]) and
+    /// [`Recorder::fell_back`] is set; a chosen device has none. The error is the first device's.
     #[cfg(not(target_os = "freebsd"))]
     pub fn open_with(audio: &crate::AudioConfig) -> Result<Recorder, String> {
-        use cpal::traits::{DeviceTrait, StreamTrait};
-        let host = crate::devices::host(audio);
-        let device = crate::devices::device(&host, audio.input.as_deref(), false).ok_or("no audio input device")?;
+        use cpal::traits::StreamTrait;
+        let (candidates, is_default) = crate::devices::candidates(audio, false);
+        let (i, device, (stream, shared, monitor, config)) = crate::stream::first_open(
+            candidates,
+            |device| {
+                input_config(device, audio).inspect_err(|e| {
+                    log::warn!("cannot open audio input {}: {e}", crate::devices::device_name(device).unwrap_or_default());
+                })
+            },
+            |device, (cfg, format)| {
+                let opened = open_input(device, audio, cfg, *format).and_then(|opened| opened.0.play().map(|()| opened).map_err(|e| e.to_string()));
+                opened.inspect_err(|e| {
+                    log::warn!("cannot start audio input {}: {e}", crate::devices::device_name(device).unwrap_or_default());
+                })
+            },
+            "no audio input device",
+        )?;
         let name = crate::devices::device_name(&device).unwrap_or_else(|| "Input".into());
-        // At the chosen rate when the device offers it, so input and output run together: the
-        // best format first, then the most channels.
-        let configs: Vec<cpal::SupportedStreamConfigRange> = device.supported_input_configs().map(|configs| configs.collect()).unwrap_or_default();
-        let at_rate = audio.sample_rate.and_then(|r| pick_input_config(&configs, r));
-        let cfg = match at_rate {
-            Some(c) => c,
-            None => {
-                let d = device.default_input_config().map_err(|e| e.to_string())?;
-                // cpal 0.18's default can name a format these callbacks do not decode (I24, F64);
-                // open the same rate and channels in a format they do.
-                if crate::devices::format_rank(d.sample_format()).is_some() {
-                    d
-                } else {
-                    crate::devices::supported_format_config(&configs, d.sample_rate(), d.channels())
-                        .ok_or_else(|| format!("unsupported input sample format {:?}", d.sample_format()))?
-                }
-            }
-        };
-        let format = cfg.sample_format();
-        if crate::devices::format_rank(format).is_none() {
-            return Err(format!("unsupported input sample format {format:?}"));
+        let fell_back = i > 0 && is_default;
+        if fell_back {
+            log::warn!("the default audio input did not open; recording from {name} instead");
         }
-        let mut config = cfg.config();
-        config.buffer_size = crate::devices::buffer_size(audio.buffer_size, cfg.buffer_size());
         let channels = usize::from(config.channels).max(1);
-        let ring = CaptureRing::new((config.sample_rate as usize).saturating_mul(channels * RING_SECONDS).min(1 << 25));
-        let shared = Arc::new(Shared::new(ring));
-        let monitor = InputRing::new(usize::from(config.channels), config.sample_rate);
-        let build = |config: cpal::StreamConfig| match format {
-            cpal::SampleFormat::I32 => build_input::<i32>(&device, config, &shared, &monitor),
-            cpal::SampleFormat::I16 => build_input::<i16>(&device, config, &shared, &monitor),
-            _ => build_input::<f32>(&device, config, &shared, &monitor),
-        };
-        // The chosen buffer size first; if the device refuses it, its default.
-        let stream = match build(config) {
-            Ok(s) => s,
-            Err(e) if config.buffer_size != cpal::BufferSize::Default => {
-                log::warn!("cannot open the input with buffer {:?}: {e}; using the device default", config.buffer_size);
-                config.buffer_size = cpal::BufferSize::Default;
-                build(config).map_err(|e| e.to_string())?
-            }
-            Err(e) => return Err(e.to_string()),
-        };
-        stream.play().map_err(|e| e.to_string())?;
         let seen = (0, Instant::now());
-        Ok(Recorder { monitor, shared, _stream: Some(stream), device_name: name, sample_rate: config.sample_rate, channels, writer: None, seen })
+        Ok(Recorder {
+            monitor,
+            shared,
+            _stream: Some(stream),
+            device_name: name,
+            fell_back,
+            sample_rate: config.sample_rate,
+            channels,
+            writer: None,
+            seen,
+        })
     }
 
     #[cfg(target_os = "freebsd")]
@@ -586,6 +638,7 @@ mod tests {
             #[cfg(not(target_os = "freebsd"))]
             _stream: None,
             device_name: "Mic In".into(),
+            fell_back: false,
             sample_rate: 48_000,
             channels: 1,
             writer: None,
