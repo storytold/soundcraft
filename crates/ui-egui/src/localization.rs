@@ -2,6 +2,8 @@
 
 #[path = "../locales/pt-BR/mod.rs"]
 mod pt_br;
+#[path = "../locales/ru/mod.rs"]
+mod ru;
 
 use std::cell::Cell;
 
@@ -17,17 +19,20 @@ pub enum Language {
     English,
     #[serde(rename = "pt-BR")]
     PortugueseBrazil,
+    #[serde(rename = "ru")]
+    Russian,
 }
 
 impl Language {
     /// All supported languages, in the order they are shown in the language menu.
-    pub const ALL: [Self; 2] = [Self::English, Self::PortugueseBrazil];
+    pub const ALL: [Self; 3] = [Self::English, Self::PortugueseBrazil, Self::Russian];
 
     /// Stable language tag used in preferences and control commands.
     pub const fn id(self) -> &'static str {
         match self {
             Self::English => "en",
             Self::PortugueseBrazil => "pt-BR",
+            Self::Russian => "ru",
         }
     }
 
@@ -36,6 +41,7 @@ impl Language {
         match self {
             Self::English => "English",
             Self::PortugueseBrazil => "Portuguese (Brazil)",
+            Self::Russian => "Russian",
         }
     }
 
@@ -47,7 +53,7 @@ impl Language {
     pub fn localize_decimal(self, number: &str) -> String {
         match self {
             Self::English => number.to_owned(),
-            Self::PortugueseBrazil => number.replace('.', ","),
+            Self::PortugueseBrazil | Self::Russian => number.replace('.', ","),
         }
     }
 
@@ -56,6 +62,7 @@ impl Language {
         match self {
             Self::English => source,
             Self::PortugueseBrazil => pt_br::translate(source).unwrap_or(source),
+            Self::Russian => ru::translate(source).unwrap_or(source),
         }
     }
 }
@@ -89,6 +96,7 @@ fn error_text_in(language: Language, message: &str, depth: usize) -> String {
     let templates: &[(&str, &str)] = match language {
         Language::English => &[],
         Language::PortugueseBrazil => pt_br::ERROR_TEMPLATES,
+        Language::Russian => ru::ERROR_TEMPLATES,
     };
     let mut best: Option<(usize, &str, Vec<(String, String)>)> = None;
     for (template, translation) in templates {
@@ -354,6 +362,7 @@ mod tests {
             assert_eq!(decoded, language);
         }
         assert_eq!(Language::parse(" PT-br "), Some(Language::PortugueseBrazil));
+        assert_eq!(Language::parse("ru"), Some(Language::Russian));
         assert_eq!(Language::parse("fr"), None);
     }
 
@@ -361,6 +370,8 @@ mod tests {
     fn language_translations_fall_back_to_the_english_source() {
         assert_ne!(Language::PortugueseBrazil.text("Appearance"), "Appearance");
         assert_eq!(Language::PortugueseBrazil.text("A source string with no catalog entry"), "A source string with no catalog entry");
+        assert_ne!(Language::Russian.text("Appearance"), "Appearance");
+        assert_eq!(Language::Russian.text("A source string with no catalog entry"), "A source string with no catalog entry");
         assert_eq!(Language::English.text("Appearance"), "Appearance");
     }
 
@@ -509,6 +520,51 @@ mod tests {
         for (source, translation) in catalog_entries() {
             assert_eq!(placeholders(&source), placeholders(&translation), "placeholders differ for {source:?}");
             assert_eq!(super::pt_br::translate(&source), Some(translation.as_str()), "lookup differs for {source:?}");
+        }
+    }
+
+    fn russian_catalog_entries() -> Vec<(String, String)> {
+        let text = include_str!("../locales/ru/mod.rs");
+        let mut lines = text.lines().map(str::trim);
+        let mut entries = Vec::new();
+        while let Some(line) = lines.next() {
+            let Some((key, rest)) = literal(line) else { continue };
+            let Some(rest) = rest.trim_start().strip_prefix("=>") else { continue };
+            let rest = rest.trim();
+            let value =
+                if rest.starts_with('{') { lines.next().and_then(|next| literal(next).map(|(v, _)| v)) } else { literal(rest).map(|(v, _)| v) };
+            if let Some(value) = value {
+                entries.push((key, value));
+            }
+        }
+        entries
+    }
+
+    #[test]
+    fn russian_catalog_entries_are_parsed_and_unique() {
+        let entries = russian_catalog_entries();
+        assert!(entries.len() > 1000, "parsed only {} Russian catalog entries", entries.len());
+        let mut keys: Vec<&str> = entries.iter().map(|(key, _)| key.as_str()).collect();
+        keys.sort_unstable();
+        let before = keys.len();
+        keys.dedup();
+        assert_eq!(before, keys.len(), "duplicate Russian catalog keys");
+    }
+
+    #[test]
+    fn russian_catalog_translations_keep_the_english_placeholders() {
+        for (source, translation) in russian_catalog_entries() {
+            assert_eq!(placeholders(&source), placeholders(&translation), "placeholders differ for {source:?}");
+            assert_eq!(super::ru::translate(&source), Some(translation.as_str()), "lookup differs for {source:?}");
+        }
+    }
+
+    #[test]
+    fn russian_catalog_covers_every_menu_label() {
+        for path in include_str!("../../engine/catalog/menus.txt").lines() {
+            for label in path.split(" > ").map(str::trim).filter(|label| !label.is_empty()) {
+                assert!(super::ru::translate(label).is_some(), "missing ru menu label: {label}");
+            }
         }
     }
 

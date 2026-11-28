@@ -1,4 +1,5 @@
 <?xml version="1.0" encoding="UTF-8"?>
+<!-- Translated strings in this file may be used under its CC0-1.0 metadata license. -->
 <!-- AppStream metadata (software centres, Flathub). Template: package.sh and the Flatpak
      manifest substitute @VERSION@ and @DATE@ from Cargo.toml and the build date. -->
 <component type="desktop-application">
@@ -7,6 +8,7 @@
   <project_license>MIT OR Apache-2.0</project_license>
   <name>SoundCraft</name>
   <summary>Record, edit and mix audio and MIDI</summary>
+  <summary xml:lang="ru">Запись, редактирование и сведение аудио и MIDI</summary>
   <developer id="ai.storyteller">
     <name>Learning Machines LLC</name>
   </developer>
@@ -15,12 +17,22 @@
       SoundCraft is an open-source, native digital audio workstation. Record, edit and mix
       multitrack audio and MIDI in Edit and Mix windows that work the way studio engineers expect.
     </p>
+    <p xml:lang="ru">
+      SoundCraft — открытая нативная цифровая звуковая рабочая станция. Записывайте,
+      редактируйте и сводите многодорожечное аудио и MIDI в окнах «Правка» и «Микшер»,
+      которые работают так, как привыкли звукорежиссёры.
+    </p>
     <ul>
       <li>Non-destructive clip editing with fades, playlists, grids and markers</li>
+      <li xml:lang="ru">Неразрушающее редактирование клипов с фейдами, плейлистами, сетками и маркерами</li>
       <li>A mixer with inserts, sends, buses, automation and metering</li>
+      <li xml:lang="ru">Микшер с инсертами, посылами, шинами, автоматизацией и индикаторами уровня</li>
       <li>Built-in EQ, dynamics, reverb, delay, modulation and instruments</li>
+      <li xml:lang="ru">Встроенные эквалайзер, обработка динамики, реверберация, задержка, модуляция и инструменты</li>
       <li>Imports WAV, AIFF, FLAC, MP3 and MIDI; bounces to disk</li>
+      <li xml:lang="ru">Импорт WAV, AIFF, FLAC, MP3 и MIDI; сведение в файл</li>
       <li>A headless command line and an MCP server for scripting and agents</li>
+      <li xml:lang="ru">Командная строка без окна и сервер MCP для сценариев и агентов</li>
     </ul>
   </description>
   <launchable type="desktop-id">ai.storyteller.soundcraft.desktop</launchable>
@@ -36,14 +48,20 @@
   </categories>
   <keywords>
     <keyword>daw</keyword>
+    <keyword xml:lang="ru">daw</keyword>
     <keyword>audio</keyword>
+    <keyword xml:lang="ru">аудио</keyword>
     <keyword>mixer</keyword>
+    <keyword xml:lang="ru">микшер</keyword>
     <keyword>recording</keyword>
+    <keyword xml:lang="ru">запись</keyword>
     <keyword>midi</keyword>
+    <keyword xml:lang="ru">midi</keyword>
   </keywords>
   <screenshots>
     <screenshot type="default">
       <caption>Mixer with channel strips, sends, faders and an equalizer</caption>
+      <caption xml:lang="ru">Микшер с канальными линейками, посылами, фейдерами и эквалайзером</caption>
       <image type="source" width="2400" height="1500">https://raw.githubusercontent.com/storytold/soundcraft/main/docs/images/mix.png</image>
     </screenshot>
   </screenshots>
