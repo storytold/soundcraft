@@ -441,6 +441,12 @@ pub fn recall_configuration(app: &mut SoundApp, saved: &Value) -> Result<(), Str
     let mut st = serde_json::from_value::<crate::UiState>(saved).map_err(|error| error.to_string())?;
     crate::docking::validate(&st.docking).and_then(|()| crate::docking::validate_mix(&st.mix_docking))?;
     st.configurations = app.ui.configurations.clone();
+    // Setup › Peripherals is an app preference, not part of a layout: a recall that replaced it
+    // would leave the open surface link and its MIDI input reservation behind.
+    #[cfg(windows)]
+    {
+        st.hui = app.ui.hui.clone();
+    }
     st.theme = app.ui.theme;
     // Language is a global preference like the theme: recalling a configuration keeps the current one.
     st.language = app.ui.language;

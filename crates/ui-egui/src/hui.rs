@@ -984,6 +984,21 @@ mod tests {
         (app, TrackId(track), packets)
     }
 
+    /// Window Configurations hold window layouts and display settings (Pro Tools Reference Guide,
+    /// "Window Configurations"), not Setup › Peripherals: recalling one saved without a surface,
+    /// or with another, keeps the surface and its link.
+    #[test]
+    fn configuration_recall_keeps_the_control_surface() {
+        let (mut app, _, _) = test_app();
+        let other = Ports { protocol: Protocol::Hui, input: "Other".into(), ..Ports::default() };
+        for saved in [None, Some(other)] {
+            let saved = serde_json::to_value(crate::UiState { hui: saved, ..crate::UiState::default() }).unwrap();
+            crate::windows::recall_configuration(&mut app, &saved).unwrap();
+            assert_eq!(app.ui.hui, Some(Ports { protocol: Protocol::Mcu, ..Ports::default() }));
+            assert!(app.hui.link.is_some(), "the open link still matches the settings");
+        }
+    }
+
     #[test]
     fn mcu_connect_and_reconnect_clear_latched_indicators_once() {
         let (mut app, track, _) = test_app();
