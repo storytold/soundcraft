@@ -1,7 +1,8 @@
 //! The latency the audio backend reports for each open stream: how long after an output callback
 //! its first frame is heard, and how long before an input callback its first frame was captured.
 //! Both come from cpal's callback timestamps (ASIO: the driver's output and input latencies;
-//! WASAPI and Core Audio: the device position and stream latency).
+//! WASAPI: the device position and stream latency; Core Audio: the I/O buffer plus the device
+//! latency and safety offset).
 
 use std::sync::atomic::{AtomicU64, Ordering::Relaxed};
 use std::time::Duration;
@@ -52,8 +53,8 @@ impl ReportedLatency {
 }
 
 /// A report as the window and the commands show it: a zero report is what a backend gives when it
-/// does not know (seen with a Windows virtual input), so it is shown as not reported. Take
-/// placement still uses it as given.
+/// does not know (seen with a Windows virtual input), so it is shown as not reported.
+/// `Player::output_latency` and `Recorder::input_latency` still return it as given.
 pub fn shown(latency: Option<Duration>) -> Option<Duration> {
     latency.filter(|l| !l.is_zero())
 }
