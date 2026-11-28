@@ -325,6 +325,9 @@ mod tests {
         doc.pool.remove(SourceId(900));
         check(&saved, &doc, false, "decoded audio removed");
         let mut doc = saved.clone();
+        doc.room_tone = Some(soundcraft_model::RoomTone { source: SourceId(900), offset: 0, length: 10, gain_db: 0.0 });
+        check(&saved, &doc, false, "session room tone");
+        let mut doc = saved.clone();
         doc.folder = Some(std::path::PathBuf::from("session"));
         check(&saved, &doc, false, "session folder");
         let mut doc = saved.clone();

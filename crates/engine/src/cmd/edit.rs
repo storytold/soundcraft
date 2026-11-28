@@ -259,7 +259,9 @@ fn cut_copy(e: &mut Engine, p: &Value, cut: bool, id: &str) -> Result<Value> {
     let follow = e.session().edit.automation_follows_edit;
     for t in &tracks {
         // Cut carries only what it removes; a locked clip stays where it is (see `ops::take_range`).
-        cb.tracks.push(if cut { ops::take_range(e.session(), *t, range) } else { ops::copy_range(e.session(), *t, range) });
+        let s = e.session();
+        let clips = if cut { ops::take_range(s, *t, range) } else { ops::copy_range(s, *t, range) };
+        cb.push_clips(s, range.start, clips);
         let lanes = e
             .session()
             .track(*t)
@@ -1209,9 +1211,9 @@ mod tests {
         let (mut e, t, at) = keys();
         let s = e.session_mut();
         let cc = soundcraft_midi::CtrlEvent { tick: 0, channel: 0, kind: soundcraft_midi::CtrlKind::Cc(1), value: 64 };
-        let a = soundcraft_midi::Sequence { notes: vec![note(0, 1, 60), note(3, 2, 62), note(5, 1, 63)], ctrls: vec![], sysex: vec![] };
-        let b = soundcraft_midi::Sequence { notes: vec![note(0, 1, 64)], ctrls: vec![], sysex: vec![] };
-        let c = soundcraft_midi::Sequence { notes: vec![note(1, 1, 65)], ctrls: vec![cc], sysex: vec![] };
+        let a = soundcraft_midi::Sequence { notes: vec![note(0, 1, 60), note(3, 2, 62), note(5, 1, 63)], ..Default::default() };
+        let b = soundcraft_midi::Sequence { notes: vec![note(0, 1, 64)], ..Default::default() };
+        let c = soundcraft_midi::Sequence { notes: vec![note(1, 1, 65)], ctrls: vec![cc], ..Default::default() };
         for (start, end, seq, muted) in [(0, 4, a, false), (6, 8, b, true), (8, 12, c, false)] {
             let id = s.new_clip_id();
             let mut clip = Clip::midi(id, "Keys", at(start), at(end) - at(start), seq);

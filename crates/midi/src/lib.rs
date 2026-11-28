@@ -14,8 +14,8 @@ pub mod ops;
 mod rng;
 
 pub use craft_midi::{
-    CtrlEvent, CtrlKind, LenientRead, MAX_EVENTS, MAX_TRACKS, MidiError, Note, PPQ, Sequence, Smf, SmfTrack, SysExEvent, read_smf, read_smf_lenient,
-    write_smf,
+    CtrlEvent, CtrlKind, LenientRead, MAX_EVENTS, MAX_SYSEX_BYTES, MAX_TRACKS, MidiError, Note, PPQ, Sequence, Smf, SmfTrack, SysExEvent, read_smf,
+    read_smf_lenient, write_smf,
 };
 pub use names::{gm_drum_name, gm_program_name, note_name};
 pub use rng::XorShift;

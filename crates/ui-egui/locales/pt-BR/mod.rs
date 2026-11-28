@@ -2093,6 +2093,7 @@ error_templates! {
     "internal error in `{c}`: {why}" => "erro interno em `{c}`: {why}",
     "stop recording first" => "pare a gravação primeiro",
     "journal entry cap" => "limite de entradas do diário atingido",
+    "MIDI file exceeds a limit of {events} events, {tracks} tracks, or {bytes} bytes of SysEx payload" => "O arquivo MIDI excede um dos limites: {events} eventos, {tracks} pistas ou {bytes} bytes de dados SysEx",
     "MIDI file: more than {n} meter changes" => "arquivo MIDI: mais de {n} mudanças de compasso",
     "MIDI file: more than {n} tempo changes" => "arquivo MIDI: mais de {n} mudanças de andamento",
     "MIDI file: more than {n} tracks" => "arquivo MIDI: mais de {n} pistas",

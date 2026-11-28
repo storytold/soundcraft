@@ -48,13 +48,18 @@ pub fn split_clip(clip: &Clip, at: Samples, new_id: ClipId, t: TimeCtx<'_>) -> O
         let boundary = t.ticks(at) - t.ticks(clip.start);
         ls.notes.retain(|n| n.start < boundary);
         ls.ctrls.retain(|c| c.tick < boundary);
+        ls.sysex.retain(|e| e.tick < boundary);
         rs.notes.retain(|n| n.start >= boundary);
         rs.ctrls.retain(|c| c.tick >= boundary);
+        rs.sysex.retain(|e| e.tick >= boundary);
         for n in &mut rs.notes {
             n.start -= boundary;
         }
         for c in &mut rs.ctrls {
             c.tick -= boundary;
+        }
+        for e in &mut rs.sysex {
+            e.tick -= boundary;
         }
     }
     Some((left, right))
@@ -69,11 +74,15 @@ fn rebase_midi_start(clip: &mut Clip, old_start: Samples, t: TimeCtx<'_>) {
         }
         sequence.notes.retain(|n| n.start >= delta);
         sequence.ctrls.retain(|c| c.tick >= delta);
+        sequence.sysex.retain(|e| e.tick >= delta);
         for n in &mut sequence.notes {
             n.start -= delta;
         }
         for c in &mut sequence.ctrls {
             c.tick -= delta;
+        }
+        for e in &mut sequence.sysex {
+            e.tick -= delta;
         }
     }
 }
@@ -322,6 +331,10 @@ pub fn consolidate_midi(s: &mut Session, track: TrackId, range: Range) -> bool {
             for mut c in sequence.ctrls.into_iter().filter(|c| (0..len).contains(&c.tick)) {
                 c.tick += at;
                 merged.ctrls.push(c);
+            }
+            for mut e in sequence.sysex.into_iter().filter(|e| (0..len).contains(&e.tick)) {
+                e.tick += at;
+                merged.sysex.push(e);
             }
         }
     }

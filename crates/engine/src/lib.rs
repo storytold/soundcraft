@@ -112,6 +112,9 @@ pub struct TransportStatus {
 pub struct Clipboard {
     pub length: Samples,
     pub tracks: Vec<Vec<Clip>>,
+    /// Visible duration at copy time. An ordinary paste keeps the underlying clip's trim handles,
+    /// whereas merging materializes only its selected MIDI events, even after a tempo change.
+    pub midi_tick_lengths: std::collections::BTreeMap<soundcraft_model::ClipId, i64>,
     pub automation: Vec<Vec<soundcraft_model::AutomationLane>>,
     /// Copy Special › Clip Gain: per track, (offset from the copied range start, dB) breakpoints.
     pub clip_gain: Vec<Vec<(Samples, f32)>>,
@@ -130,6 +133,19 @@ pub struct Clipboard {
 }
 
 impl Clipboard {
+    /// Store one track of range-relative clips and capture the source tempo before a paste.
+    pub(crate) fn push_clips(&mut self, session: &Session, range_start: Samples, clips: Vec<Clip>) {
+        for clip in &clips {
+            if matches!(clip.content, soundcraft_model::ClipContent::Midi { .. }) {
+                let start = range_start.saturating_add(clip.start);
+                let end = start.saturating_add(clip.length);
+                let ticks = |at| session.tempo.samples_to_ticks(at, session.sample_rate);
+                self.midi_tick_lengths.insert(clip.id, ticks(end).saturating_sub(ticks(start)));
+            }
+        }
+        self.tracks.push(clips);
+    }
+
     /// An empty clipboard for material copied from `range`.
     pub fn of_range(s: &Session, range: soundcraft_time::Range) -> Clipboard {
         let line = s.grid_line_at_or_before(range.start);

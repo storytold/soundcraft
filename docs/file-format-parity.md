@@ -1,6 +1,6 @@
 # File-format parity
 
-> **Last reviewed:** 2026-11-14 · **Last updated:** 2026-11-14 · **Change:** minor (strict external-WAV AAF import; previously minor: audio formats come from craft-audio) · **Target:** Avid Pro Tools Ultimate 2026.4.1
+> **Last reviewed:** 2026-11-14 · **Last updated:** 2026-11-18 · **Change:** minor (retain SMF SysEx packets across import, sessions and export) · **Target:** Avid Pro Tools Ultimate 2026.4.1
 
 Every format Pro Tools reads or writes, and ours. The Pro Tools list comes from the document types
 its bundle declares (`CFBundleDocumentTypes` in Info.plist: names only, nothing else read) and its
@@ -58,6 +58,14 @@ Legend: ✅ supported and tested · 🟡 partial · ❌ missing · — not appli
 | MusicXML (to Sibelius) | export | — | ✅ | `file.export_sibelius`, `score.rs` |
 | Printable score | print | — | ✅ (SVG) | |
 
+SMF `F0` and `F7` SysEx packets retain their payload, packet type and tick when imported,
+saved/reopened in a session and exported to MIDI, including setup tracks containing only
+SysEx. Split, trim, merge and consolidate preserve their clip-relative timing. Payload is
+limited to 16 MiB across one MIDI file; an oversized import is refused before changing the
+session. SysEx is retained for interchange, **not yet forwarded to instruments on playback**;
+the import command reports that limitation when such packets are present. This does not
+complete MIDI or XG playback parity.
+
 ## Video
 
 | Format | Pro Tools | Read | Write | Tests / notes |
@@ -81,6 +89,7 @@ Legend: ✅ supported and tested · 🟡 partial · ❌ missing · — not appli
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-11-18 | minor | Retain SMF SysEx packets through MIDI import/export and session saves, including SysEx-only tracks; playback forwarding remains unsupported |
 | 2026-11-14 | minor | Strict external-WAV AAF import with editable clips, relink and timecode mapping; export and the wider AAF/OMF feature set remain unsupported; readiness estimate unchanged |
 | 2026-11-11 | minor | Audio formats come from `craft-audio` (craft-libs); `crates/audio-io` is gone. New on import: Opus, AC-3/E-AC-3, `.mov`/`.mka` audio; AAC, ALAC and MP2 no longer go through symphonia; `.aifc` is a writable name |
 | 2026-11-02 | trivial | WAV bounces (mix and stems) write a `bext` TimeReference: session timecode start plus bounce start (#1296) |

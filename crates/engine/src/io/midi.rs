@@ -22,7 +22,11 @@ pub(super) const MAX_MIDI_TRACKS: usize = 512;
 pub fn import_midi_bytes(e: &mut Engine, bytes: &[u8], at: Samples, tempo_map: bool) -> Result<Vec<TrackId>> {
     let smf = match soundcraft_midi::read_smf(bytes) {
         Ok(smf) => smf,
-        Err(err @ (soundcraft_midi::MidiError::TooManyEvents(_) | soundcraft_midi::MidiError::TooManyTracks(_))) => {
+        Err(
+            err @ (soundcraft_midi::MidiError::TooManyEvents(_)
+            | soundcraft_midi::MidiError::TooManyTracks(_)
+            | soundcraft_midi::MidiError::SysExTooLarge(_)),
+        ) => {
             return Err(EngineError::Io(err.to_string()));
         }
         Err(_) => {
@@ -30,9 +34,10 @@ pub fn import_midi_bytes(e: &mut Engine, bytes: &[u8], at: Samples, tempo_map: b
             // The strict reader stops at the first damage, so a limit further on shows only here.
             if read.over_limit {
                 return Err(EngineError::Io(format!(
-                    "MIDI file: more than {} events or {} tracks",
+                    "MIDI file exceeds a limit of {} events, {} tracks, or {} bytes of SysEx payload",
                     soundcraft_midi::MAX_EVENTS,
-                    soundcraft_midi::MAX_TRACKS
+                    soundcraft_midi::MAX_TRACKS,
+                    soundcraft_midi::MAX_SYSEX_BYTES
                 )));
             }
             for warning in &read.warnings {
@@ -50,7 +55,8 @@ pub fn import_midi_bytes(e: &mut Engine, bytes: &[u8], at: Samples, tempo_map: b
             return Err(EngineError::Io(format!("MIDI file: more than {MAX_MIDI_TEMPOS} tempo changes")));
         }
     }
-    let tracks_to_import = smf.tracks.iter().filter(|tr| !tr.sequence.notes.is_empty() || !tr.sequence.ctrls.is_empty()).count();
+    let tracks_to_import =
+        smf.tracks.iter().filter(|tr| !tr.sequence.notes.is_empty() || !tr.sequence.ctrls.is_empty() || !tr.sequence.sysex.is_empty()).count();
     if tracks_to_import > MAX_MIDI_TRACKS {
         return Err(EngineError::Io(format!("MIDI file: more than {MAX_MIDI_TRACKS} tracks")));
     }
@@ -72,12 +78,13 @@ pub fn import_midi_bytes(e: &mut Engine, bytes: &[u8], at: Samples, tempo_map: b
     let base_tick = tempo.samples_to_ticks(at, s.sample_rate);
     let mut clips = Vec::new();
     for (i, tr) in smf.tracks.iter().enumerate() {
-        if tr.sequence.notes.is_empty() && tr.sequence.ctrls.is_empty() {
+        if tr.sequence.notes.is_empty() && tr.sequence.ctrls.is_empty() && tr.sequence.sysex.is_empty() {
             continue;
         }
         // A controller on the clip's last tick would not play, so the clip runs one tick past the last one.
         let past_ctrls = tr.sequence.ctrls.iter().map(|c| c.tick.saturating_add(1)).max().unwrap_or(0);
-        let end_tick = base_tick.saturating_add(tr.sequence.end_tick().max(past_ctrls).max(1));
+        let past_sysex = tr.sequence.sysex.iter().map(|e| e.tick.saturating_add(1)).max().unwrap_or(0);
+        let end_tick = base_tick.saturating_add(tr.sequence.end_tick().max(past_ctrls).max(past_sysex).max(1));
         let len = tempo.tick_to_samples(end_tick, s.sample_rate).saturating_sub(at);
         if len > s.sample_rate.samples(86_400.0) {
             return Err(EngineError::Io(format!("MIDI track {}: longer than 24 hours", i + 1)));
@@ -125,8 +132,14 @@ pub fn export_midi(e: &Engine, only: Option<&[TrackId]>) -> Result<Vec<u8>> {
         for c in t.clips() {
             if let ClipContent::Midi { sequence } = &c.content {
                 let base = s.tempo.samples_to_ticks(c.start, s.sample_rate);
-                // Only what plays: notes starting inside the clip, cut at its end.
+                // Only what plays: notes starting inside the clip (cut at its end), and the
+                // controllers and SysEx inside it.
                 let clip_end = s.tempo.samples_to_ticks(c.end(), s.sample_rate);
+                for event in sequence.sysex.iter().filter(|event| event.tick.saturating_add(base) < clip_end) {
+                    let mut event = event.clone();
+                    event.tick = event.tick.saturating_add(base);
+                    seq.sysex.push(event);
+                }
                 for n in sequence.notes.iter().filter(|n| n.start.saturating_add(base) < clip_end) {
                     let mut n = *n;
                     n.start = n.start.saturating_add(base);
