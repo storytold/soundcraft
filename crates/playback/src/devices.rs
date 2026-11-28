@@ -127,17 +127,18 @@ pub(crate) fn stream_lost(e: &cpal::Error) -> bool {
 /// cpal 0.18 ranks `I24` (and `F64`) above `I16` when it picks a default configuration, so a
 /// default alone can name a format the callbacks do not decode; this looks for the same rate in a
 /// format [`FORMATS`] holds. The exact channel count is preferred; when the device offers none in
-/// a usable format at that rate (for example only an 8-channel F32 stream), the closest available
-/// channel count is used instead. Both callbacks fold or copy channels, so a wider or narrower
-/// device stream is better than falling back to the silent clock. Callers pass a requested count
-/// of at least 2 for output; input may ask for mono.
+/// a usable format at that rate (for example only an 8-channel F32 stream), the fallback takes the
+/// best usable format first, then the closest channel count (more channels break the tie). Both
+/// callbacks fold or copy channels, so a wider or narrower device stream is better than falling
+/// back to the silent clock. Callers pass a requested count of at least 2 for output; input may
+/// ask for mono.
 pub(crate) fn supported_format_config(
     configs: &[cpal::SupportedStreamConfigRange],
     sample_rate: u32,
     channels: u16,
 ) -> Option<cpal::SupportedStreamConfig> {
     let usable = || configs.iter().filter(|c| c.contains_rate(sample_rate)).filter_map(|c| format_rank(c.sample_format()).map(|rank| (rank, c)));
-    // Exact count first, then the nearest count (more channels breaks the tie).
+    // Exact count first; otherwise the best format, then the nearest count (more channels break the tie).
     let exact = usable().filter(|(_, c)| c.channels() == channels).min_by_key(|(rank, _)| *rank);
     let best = exact.or_else(|| {
         usable().min_by_key(|(rank, c)| {
