@@ -53,7 +53,7 @@ pub fn start() {
                     let engine = if query().contains("empty") { Engine::default() } else { soundcraft_engine::demo::demo_engine() };
                     let player = soundcraft_playback::Player::new(Arc::new(engine.session().clone()));
                     let app = SoundApp::new(engine, Some(player), Services::default());
-                    Ok(Box::new(WebShell { app, inbox: Rc::default(), samples: Rc::default() }))
+                    Ok(Box::new(WebShell { app, inbox: Rc::default(), samples: Rc::default(), document_title: String::new() }))
                 }),
             )
             .await;
@@ -129,6 +129,7 @@ struct WebShell {
     app: SoundApp,
     inbox: Inbox,
     samples: SampleInbox,
+    document_title: String,
 }
 
 impl WebShell {
@@ -183,6 +184,16 @@ impl WebShell {
         }
     }
 
+    fn sync_document_title(&mut self) {
+        let title = self.app.window_title();
+        if title != self.document_title {
+            self.document_title = title.clone();
+            if let Some(document) = web_sys::window().and_then(|w| w.document()) {
+                document.set_title(&title);
+            }
+        }
+    }
+
     fn handle(&mut self, purpose: Purpose, name: String, bytes: Vec<u8>) {
         let _language = localization::enter(self.app.ui.language);
         let e = &mut self.app.engine;
@@ -223,6 +234,7 @@ impl eframe::App for WebShell {
             self.app.load_sample_bytes(&read, bytes);
         }
         self.app.logic(ctx);
+        self.sync_document_title();
         // A prompt opened during this frame becomes a picker on the next one.
         self.take_path_prompt(ctx);
         self.app.close_path(ctx);

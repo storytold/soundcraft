@@ -144,6 +144,19 @@ impl SoundApp {
         self
     }
 
+    /// The window title naming the open document and marking unsaved changes. The document is the
+    /// opened file's name once the session has a path; the session name is the unsaved fallback.
+    pub fn window_title(&self) -> String {
+        let name = self
+            .engine
+            .path
+            .as_deref()
+            .and_then(|p| std::path::Path::new(p).file_name())
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_else(|| self.engine.session().name.clone());
+        format!("{name}{} — SoundCraft", if self.engine.is_dirty() { " •" } else { "" })
+    }
+
     /// Per-frame logic: control channel, transport, document sync.
     ///
     /// eframe calls this once per layout pass and also on logic-only ticks while hidden. Consumed

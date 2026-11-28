@@ -1712,3 +1712,20 @@ fn assert_history_unchanged(
     assert_eq!(app.engine.undo_history(), history);
     assert_eq!(&app.engine.journal, journal);
 }
+
+#[test]
+fn window_title_names_the_document_and_marks_unsaved_changes() {
+    let mut app = SoundApp::new(soundcraft_engine::Engine::default(), None, crate::Services::default());
+    app.engine.session_mut().name = "Song".into();
+    app.engine.mark_clean();
+    assert_eq!(app.window_title(), "Song — SoundCraft", "an unsaved session uses its session name");
+    app.run("track.new", json!({})).unwrap();
+    assert_eq!(app.window_title(), "Song • — SoundCraft");
+    // Once opened from a file, the title names that file, even when the session stored inside it
+    // has a different name (#809); a rename (Save As) replaces it.
+    app.engine.path = Some(std::env::temp_dir().join("Concert.scraft").to_string_lossy().into_owned());
+    app.engine.mark_clean();
+    assert_eq!(app.window_title(), "Concert.scraft — SoundCraft");
+    app.engine.path = Some(std::env::temp_dir().join("Rehearsal.scraft").to_string_lossy().into_owned());
+    assert_eq!(app.window_title(), "Rehearsal.scraft — SoundCraft");
+}
