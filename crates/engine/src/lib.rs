@@ -18,6 +18,7 @@ pub mod feature_names;
 pub mod file_access;
 pub mod inspect;
 pub mod io;
+pub mod no_input;
 pub mod score;
 
 use serde_json::{Value, json};
@@ -220,8 +221,9 @@ impl Default for Engine {
 }
 
 impl Engine {
-    pub fn new(session: Session) -> Self {
+    pub fn new(mut session: Session) -> Self {
         install_panic_hook();
+        no_input::upgrade_legacy_inputs(&mut session);
         let doc = Arc::new(session);
         Engine {
             saved: Arc::clone(&doc),
@@ -296,8 +298,10 @@ impl Engine {
         &mut Arc::make_mut(&mut self.doc).edit.zoom
     }
 
-    /// Replace the whole document (open / new); clears history.
-    pub fn replace_session(&mut self, s: Session) {
+    /// Replace the whole document (open / new); clears history. A session saved before "no
+    /// input" existed is upgraded ([`no_input::upgrade_legacy_inputs`]).
+    pub fn replace_session(&mut self, mut s: Session) {
+        no_input::upgrade_legacy_inputs(&mut s);
         self.transport = TransportStatus { position: s.edit.selection.start.max(0), ..TransportStatus::default() };
         self.transport_requests.clear();
         self.transport_requests.push(TransportRequest::ResetSession);

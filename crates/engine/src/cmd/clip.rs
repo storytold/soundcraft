@@ -162,7 +162,11 @@ pub fn specs() -> Vec<CommandSpec> {
                 let t = match track {
                     Some(t) if s.track(t).is_some_and(|x| x.kind == soundcraft_model::TrackKind::Audio) => t,
                     Some(_) => return Err(bad("clip.place_source", "audio files go on audio tracks")),
-                    None => s.add_track(soundcraft_model::TrackKind::Audio, soundcraft_model::ChannelFormat::for_channels(chans.min(2)), Some(&name)),
+                    None => {
+                        let t =
+                            s.add_track(soundcraft_model::TrackKind::Audio, soundcraft_model::ChannelFormat::for_channels(chans.min(2)), Some(&name));
+                        crate::no_input::assign_first_input(s, t)
+                    }
                 };
                 let (sh, len) = (s.edit.edit_mode == soundcraft_model::EditMode::Shuffle, frames.max(1));
                 let at = if sh { crate::edit::shuffle_slot(s, t, at, &[]) } else { at };
@@ -301,7 +305,7 @@ const MAX_LOOPS: i64 = 1000;
 
 fn loop_clips(e: &mut Engine, p: &Value) -> Result<Value> {
     let ids = clip_ids_param(e, p);
-    let count = i64_or(p, "count", 4).clamp(1, 512);
+    let count = i64_or(p, "count", 4).clamp(1, MAX_LOOPS);
     let total = position_param(e, "clip.loop", p, "length")?;
     let fill = p.get("fill").and_then(Value::as_bool).unwrap_or(false);
     let s = e.session_mut();

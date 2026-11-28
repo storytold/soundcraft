@@ -54,7 +54,7 @@ fn rename_names_the_clips_strip_silence_leaves() {
     click(&mut h, "OK");
     assert_eq!(h.state().dialogs.open_name(), Some("strip_silence"), "OK goes back to Strip Silence");
     assert_eq!(h.state().dialogs.strip_names, sfx());
-    click(&mut h, "Strip");
+    click(&mut h, "Strip Silence");
     assert_eq!(h.state().dialogs.open_name(), None);
     let names: Vec<String> = h.state().engine.session().track(track).unwrap().clips().iter().map(|c| c.name.clone()).collect();
     assert!(names.len() > 1);

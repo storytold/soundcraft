@@ -698,6 +698,31 @@ fn an_insert_that_puts_out_nan_is_taken_out_until_the_next_reset() {
     assert_eq!(eng.meters[&a].plugin_failures.count, 2);
 }
 
+/// A plugin that fails again after its one reset retry stays failed for the session, instead of
+/// oscillating the track's latency (and its delay-line reallocations) on every stop/seek (#919).
+#[test]
+fn a_repeatedly_failing_insert_gets_only_one_reset_retry() {
+    let (mut s, a) = session_with_dc(0.5, 48_000);
+    let _b = add_dc_track(&mut s, 0.5, 48_000);
+    s.track_mut(a).unwrap().mixer.inserts[2] = Some(Insert::new("clap:test.nan"));
+    let mut eng = MixEngine::new(48_000.0, 512);
+    eng.set_external_instances(true);
+    let both = render_block(&mut eng, &s, 0);
+    eng.adopt(nan(a, 2, 1));
+    let only_b = render_block(&mut eng, &s, 512);
+    assert!((only_b - both / 2.0).abs() < 1e-6, "{only_b} vs {both}");
+    // While failed it passes the track's audio through, dry.
+    assert_eq!(render_block(&mut eng, &s, 1024), both);
+    // The first reset grants the single retry; it fails again.
+    eng.reset();
+    assert_eq!(render_block(&mut eng, &s, 1536), only_b);
+    assert_eq!(eng.meters[&a].plugin_failures.count, 2);
+    // A later reset does not retry it again: the block stays dry and the count does not move.
+    eng.reset();
+    assert_eq!(render_block(&mut eng, &s, 2048), both);
+    assert_eq!(eng.meters[&a].plugin_failures.count, 2);
+}
+
 #[test]
 fn nan_from_an_instrument_or_a_master_insert_is_contained() {
     let mut s = synth_session(-6.0);
@@ -1118,6 +1143,7 @@ fn a_hosted_instruments_latency_is_compensated() {
 #[test]
 fn input_monitoring_replaces_clips() {
     let (mut s, t) = session_with_dc(0.5, 4800);
+    s.track_mut(t).unwrap().mixer.input = Route::Hardware("In 1".into());
     let mut eng = MixEngine::new(48_000.0, 512);
     eng.input = vec![vec![0.25; 512]];
     let mut out = vec![vec![0.0; 512]; 2];
@@ -1134,6 +1160,23 @@ fn input_monitoring_replaces_clips() {
     s.track_mut(t).unwrap().mixer.input_monitor = false;
     eng.render(&s, 1024, 512, &mut out);
     assert!(out[0][100].abs() < 1e-6, "stopped, unmonitored: silence");
+}
+
+/// A track whose input is "no input" (`Route::None`) hears nothing, not hardware input 1.
+#[test]
+fn a_track_with_no_input_monitors_nothing() {
+    let (mut s, t) = session_with_dc(0.0, 4800);
+    let mut eng = MixEngine::new(48_000.0, 512);
+    eng.input = vec![vec![0.25; 512], vec![0.5; 512]];
+    eng.monitor_only = true;
+    let mut out = vec![vec![0.0; 512]; 2];
+    s.track_mut(t).unwrap().mixer.input_monitor = true;
+    s.track_mut(t).unwrap().mixer.input = Route::None;
+    eng.render(&s, 0, 512, &mut out);
+    assert!(out.iter().all(|c| c.iter().all(|x| *x == 0.0)), "no input: silence, not In 1");
+    s.track_mut(t).unwrap().mixer.input = Route::Hardware("In 2".into());
+    eng.render(&s, 512, 512, &mut out);
+    assert!((out[0][100] - 0.5 * std::f32::consts::FRAC_1_SQRT_2).abs() < 1e-3, "In 2 is heard: {}", out[0][100]);
 }
 
 #[test]
