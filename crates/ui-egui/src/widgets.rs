@@ -252,6 +252,35 @@ pub fn close_button(ui: &mut Ui, label: &str) -> Response {
         .on_hover_text(label)
 }
 
+/// Gives a hand-painted click area the push-button role and `name`, so screen readers hear a named
+/// button instead of an unnamed object of unknown type. `name` is already translated.
+pub fn expose_button(resp: &Response, name: &str) {
+    resp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, resp.enabled(), name));
+}
+
+/// Gives a hand-painted on/off control the toggle-button role, `name` and its pressed state.
+pub fn expose_toggle(resp: &Response, name: &str, on: bool) {
+    resp.widget_info(|| egui::WidgetInfo::selected(egui::Role::Button, resp.enabled(), on, name));
+}
+
+/// Gives a hand-painted control that opens a menu the button role, `name` and a menu popup.
+pub fn expose_menu_button(resp: &Response, name: &str) {
+    expose_button(resp, name);
+    resp.ctx.accesskit_node_builder(resp.id, |b| b.set_has_popup(egui::accesskit::HasPopup::Menu));
+}
+
+/// Reports a button that runs an action (and stays up) as a push button. The shared icon and text
+/// buttons always report a pressed state, which screen readers announce as a toggle button.
+pub fn as_push_button(resp: Response) -> Response {
+    resp.ctx.accesskit_node_builder(resp.id, |b| b.clear_toggled());
+    resp
+}
+
+/// An icon button that runs an action and has no on/off state, such as Zoom In or Rewind.
+pub fn icon_action(ui: &mut Ui, size: egui::Vec2, icon: &str, tip: &str) -> Response {
+    as_push_button(icon_button(ui, size, icon, false, tip))
+}
+
 /// Square text toggle used for S / M / I / record etc.
 pub fn text_toggle(ui: &mut Ui, size: egui::Vec2, text: &str, on: bool, on_color: Color32, tip: &str) -> Response {
     let t = Tokens::current();
