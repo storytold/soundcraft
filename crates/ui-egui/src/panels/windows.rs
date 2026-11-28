@@ -596,6 +596,14 @@ fn midi_inputs(app: &mut SoundApp, ui: &mut egui::Ui) {
 /// What the Playback Engine says when a change made elsewhere replaced its unapplied edits.
 const REPLACED_EDITS: &str = "The audio settings were changed outside this window; your unapplied changes were replaced.";
 
+/// Drop the replacement notice from the status line when it is still this notice, so a later edit
+/// or closing the window does not leave it there. Leave any other status message alone.
+fn clear_replaced_edits_status(app: &mut SoundApp) {
+    if app.ui.status == crate::localization::text(REPLACED_EDITS) {
+        app.ui.status.clear();
+    }
+}
+
 /// Setup › Playback Engine / Hardware: choose the audio system, devices, rate and buffer size.
 pub fn playback_engine(app: &mut SoundApp, ctx: &egui::Context) {
     let mut open = app.ui.show_playback_engine;
@@ -607,6 +615,7 @@ pub fn playback_engine(app: &mut SoundApp, ctx: &egui::Context) {
     let replaced_id = egui::Id::unique("audio_draft_replaced");
     if !open {
         // Closed from the menu or by command: unapplied edits go, as with the close button.
+        clear_replaced_edits_status(app);
         ctx.data_mut(|d| {
             d.remove_temp::<(AudioConfig, AudioConfig)>(draft_id);
             d.remove_temp::<bool>(replaced_id);
@@ -689,6 +698,7 @@ pub fn playback_engine(app: &mut SoundApp, ctx: &egui::Context) {
         if draft != app.ui.audio {
             // A new edit: the replaced ones are no longer the news.
             ui.ctx().data_mut(|d| d.remove_temp::<bool>(replaced_id));
+            clear_replaced_edits_status(app);
         } else if ui.ctx().data(|d| d.get_temp::<bool>(replaced_id)).unwrap_or(false) {
             ui.label(egui::RichText::new(crate::localization::text(REPLACED_EDITS)).color(ui.visuals().warn_fg_color));
         }
@@ -751,6 +761,7 @@ pub fn playback_engine(app: &mut SoundApp, ctx: &egui::Context) {
         ctx.data_mut(|d| d.insert_temp(draft_id, (app.ui.audio.clone(), draft)));
     } else {
         // Closing discards unapplied edits and the device list (re-read on the next open).
+        clear_replaced_edits_status(app);
         ctx.data_mut(|d| {
             d.remove_temp::<(AudioConfig, AudioConfig)>(draft_id);
             d.remove_temp::<bool>(replaced_id);

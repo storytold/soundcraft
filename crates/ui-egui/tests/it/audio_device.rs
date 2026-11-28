@@ -192,6 +192,17 @@ fn the_playback_engine_says_when_a_command_replaces_its_unapplied_edits() {
     edit_buffer(&mut h, 512);
     h.run_steps(2);
     assert!(h.query_by_label(NOTE).is_none(), "a new edit: the note goes");
+    assert!(!h.state().ui.status.contains(NOTE), "and the status line too: {}", h.state().ui.status);
+
+    // Closing also clears the status line.
+    let mut h = playback_engine_harness(256);
+    edit_buffer(&mut h, 128);
+    h.state_mut().ui.audio.buffer_size = Some(1024);
+    h.run_steps(3);
+    assert!(h.state().ui.status.contains(NOTE), "the status line says it: {}", h.state().ui.status);
+    h.state_mut().ui.show_playback_engine = false;
+    h.run_steps(2);
+    assert!(!h.state().ui.status.contains(NOTE), "closing clears the status line: {}", h.state().ui.status);
 
     // A change made elsewhere with no unapplied edit replaces nothing, so nothing is said.
     let mut h = playback_engine_harness(256);
