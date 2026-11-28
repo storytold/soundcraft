@@ -61,8 +61,9 @@ When you close a gap, delete its entry (or shrink it) in the same PR, and bump t
   them. Paths on ADAT outputs 17–18 and 21–22 (past the 16-channel main) play at the track's level.
   The assignment survives save and reopen. With a 2-channel output device, I/O Setup marks the
   path Unavailable and playback goes on. The opt-in `asio` build opens every ASIO output too
-  (USB outputs 1–10 of a TASCAM Model 12 each returned on their own USB input). Other hosts open
-  only the main mix's width, so a path there must fit within it.
+  (with #1634, which a TASCAM Model 12's packed 24-bit format needs, its USB outputs 1–10 each
+  returned on their own USB input). Other hosts open only the main mix's width, so a path there
+  must fit within it.
 - **Done (2026-11-25):** Track input selectors use the selected device's usable recording width.
   Track output selectors list every further pair of the device's outputs by its default path name
   (Out 3-4 to Out 29-30 on a 30-output RME UFX); choosing one, or naming it in `track.output`,
