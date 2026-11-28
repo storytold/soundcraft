@@ -675,7 +675,8 @@ impl LiveNotes {
 
     /// Play the block's events that `t` listens to, after [`Self::reconcile`]. `own` is the
     /// track's MIDI output: an echo of the clip output ([`LiveMidi::echo`]) that came back from
-    /// that device on that channel is the track's own playback and is not played again.
+    /// that device on that channel is the track's own playback and is not played again, except
+    /// a Note-Off or pedal up that ends what an owner holds.
     pub(crate) fn play(
         &mut self,
         t: &Track,
@@ -689,7 +690,11 @@ impl LiveNotes {
         for e in events {
             let channel = e.channel();
             let name = ports.and_then(|p| p.name(e.port));
-            if !input.accepts(name, channel) || (e.echo && own_echo(own, name, channel)) {
+            // The track's own playback is not played again. A release still reaches the owner:
+            // the note or pedal it ends may be held from before the output moved to this device
+            // and channel, and only takes effect where an owner holds it.
+            let release = matches!((e.status & 0xF0, e.data1 & 0x7F, e.data2 & 0x7F), (0x80, _, _) | (0x90, _, 0) | (0xB0, 64, 0..=63));
+            if !input.accepts(name, channel) || (e.echo && !release && own_echo(own, name, channel)) {
                 continue;
             }
             let at = usize::try_from(e.offset).unwrap_or(0).min(frames.saturating_sub(1));
@@ -823,6 +828,28 @@ mod tests {
         assert_eq!(heard(Some(MidiOutput { device: "Synth", channel: 2 }), &[echo(0x92)]), [(true, 60)], "another device's output");
         assert_eq!(heard(None, &[echo(0x92)]), [(true, 60)]);
         assert_eq!(heard(Some(own), &[ev(syn, 0x92, 60, 100)]), [(true, 60)], "input that is no echo plays");
+    }
+
+    #[test]
+    fn a_held_echo_ends_on_its_note_off_after_the_track_output_moved_to_its_device() {
+        let ports = MidiPorts::default();
+        let syn = ports.assign("SYN");
+        let mut s = soundcraft_model::Session::default();
+        let id = s.add_track(soundcraft_model::TrackKind::Instrument, soundcraft_model::ChannelFormat::Stereo, None);
+        let t = s.track(id).unwrap();
+        let echo = |status, data2| LiveMidi { echo: true, ..ev(syn, status, 60, data2) };
+        let mut live = LiveNotes::default();
+        let mut heard = |own: MidiOutput<'_>, events: &[LiveMidi]| {
+            let mut log = Log::default();
+            live.play(t, Some(own), &mut log, events, Some(&ports), 512);
+            log.0
+        };
+        // Another track's playback, back from SYN on channel 3: this track plays it.
+        assert_eq!(heard(MidiOutput { device: "Synth", channel: 2 }, &[echo(0x92, 100)]), [(true, 60)]);
+        // Its output moves to SYN channel 3: the Note-Off of the note it holds still ends it.
+        let own = MidiOutput { device: "SYN", channel: 2 };
+        assert_eq!(heard(own, &[echo(0x82, 0)]), [(false, 60)]);
+        assert!(heard(own, &[echo(0x92, 100), echo(0x82, 0)]).is_empty(), "its own playback is still not played");
     }
 
     #[test]
