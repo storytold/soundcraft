@@ -79,7 +79,15 @@ pub fn specs() -> Vec<CommandSpec> {
         cmd!("track.height_down", "Decrease Track Height", [], Some("Ctrl+Down"), "{tracks?} — one preset shorter", has_selection, |e, p| {
             height_step(e, p, false)
         }),
-        cmd!("track.view", "Track View", [], None, "{tracks?, view: waveform|blocks|notes|volume|pan|mute|<automation id>}", has_selection, view),
+        cmd!(
+            "track.view",
+            "Track View",
+            [],
+            None,
+            "{tracks?, view: waveform|blocks|notes|clips|volume|pan|mute|<automation id>}",
+            has_selection,
+            view
+        ),
         cmd!("track.hide", "Hide Track", [], None, "{tracks?, hidden?: bool}", has_selection, |e, p| flag(
             e,
             p,
@@ -899,6 +907,8 @@ fn height_step(e: &mut Engine, p: &Value, taller: bool) -> Result<Value> {
 fn view(e: &mut Engine, p: &Value) -> Result<Value> {
     let tracks = tracks_required(e, "track.view", p)?;
     let v = str_param(p, "view").ok_or_else(|| bad("track.view", "`view` required"))?.to_string();
+    // `clips` is the name Pro Tools uses for the view stored as `regions`.
+    let v = if v == "clips" { "regions".to_string() } else { v };
     let ok = matches!(v.as_str(), "waveform" | "blocks" | "notes" | "regions" | "clip_gain" | "playlists")
         || soundcraft_model::AutoParam::parse(&v).is_some();
     if !ok {
@@ -1097,6 +1107,15 @@ mod tests {
         assert_eq!(MidiInput::of(&set(text)), MidiInput { device: Some("Launchkey MK3:MIDI 1"), channel: Some(9) });
         // "none" takes the choice away: all devices, all channels.
         assert_eq!(MidiInput::of(&set("none")), MidiInput::default());
+    }
+
+    #[test]
+    fn view_accepts_clips_as_an_alias_for_regions() {
+        let mut e = crate::demo::demo_engine();
+        let keys = e.session().track_by_name("Keys").map(|t| t.id.0).unwrap();
+        e.execute("track.view", &json!({"tracks": [keys], "view": "clips"})).unwrap();
+        assert_eq!(e.session().track(soundcraft_model::TrackId(keys)).unwrap().view, "regions", "the alias stores the stored id");
+        assert!(e.execute("track.view", &json!({"tracks": [keys], "view": "not-a-view"})).is_err(), "an unknown view still fails");
     }
 
     #[test]

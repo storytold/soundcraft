@@ -396,3 +396,23 @@ fn a_track_on_a_surround_output_keeps_a_text_only_pan() {
     assert_eq!(kick(&h).mixer.pan, [0.5]);
     assert_eq!(undo_steps(&h), before);
 }
+
+/// #1834: the track view menu shows names, not stored ids; picking Clips stores `regions`.
+#[test]
+fn the_view_menu_names_views_and_clips_stores_regions() {
+    let (mut h, id, _row) = harness("Keys", "medium", "view.edit_io");
+    let sel = h.get_by_label("Track view for Keys").rect().center();
+    click(&mut h, sel);
+    let popup = popup_rect(&h);
+    for name in ["Blocks", "Clips", "Notes", "Volume", "Pan", "Mute"] {
+        assert!(h.query_all_by_label(name).any(|n| popup.contains(n.rect().center())), "missing `{name}` in the view menu");
+    }
+    for raw in ["blocks", "regions", "notes", "clip_gain"] {
+        assert!(h.query_all_by_label(raw).all(|n| !popup.contains(n.rect().center())), "a raw id `{raw}` shows in the view menu");
+    }
+    h.query_all_by_label("Clips").find(|n| popup.contains(n.rect().center())).expect("no Clips item").click();
+    for _ in 0..4 {
+        step(&mut h);
+    }
+    assert_eq!(h.state().engine.session().track(id).unwrap().view, "regions", "picking Clips stores the stored id");
+}
