@@ -1,6 +1,6 @@
 use super::*;
 use craft_audio::AudioBuffer;
-use soundcraft_model::{ChannelFormat, Clip, SourceAudio, SourceId, TrackKind};
+use soundcraft_model::{ChannelFormat, Clip, Route, SourceAudio, SourceId, TrackKind};
 use soundcraft_time::Range;
 use std::sync::Arc;
 
@@ -517,4 +517,58 @@ fn live_input_states_of_restored_tracks_start_disabled() {
     let mixer = &e.session().track(c).unwrap().mixer;
     assert!(!mixer.record_arm && !mixer.input_monitor);
     assert!(e.session().track(b).unwrap().mixer.input_monitor);
+}
+
+/// Pro Tools sends go to output paths as well as busses (Reference Guide, Sends, printed
+/// p. 1468–1469 and "Send Path Selector Choices", p. 1474): `mix.send` with `output` names the main
+/// path, a named output path, or an interface pair by its default name ("Out 9-10"), which makes
+/// that path as `track.output` does. One undo takes back the send and the path it made; a renamed
+/// path keeps its sends; the session saves and reopens them.
+#[test]
+fn a_send_targets_an_output_path() {
+    let mut e = Engine::default();
+    e.execute("track.new", &json!({"name": "Vox", "format": "mono"})).unwrap();
+    let sends = |e: &Engine| e.session().track_by_name("Vox").unwrap().mixer.sends.clone();
+    let r = e.execute("mix.send", &json!({"track": "Vox", "slot": 0, "output": "out 9-10", "level_db": -6.0})).unwrap();
+    assert_eq!(r["slot"], 0);
+    let send = sends(&e)[0].clone().expect("send A");
+    assert_eq!(send.target, Route::Hardware("Out 9-10".into()));
+    assert_eq!(send.level_db, -6.0);
+    let path = e.session().outputs.iter().find(|path| path.name == "Out 9-10").expect("the pair's path is made");
+    assert_eq!((path.first_channel, path.format), (8, ChannelFormat::Stereo));
+    assert!(e.session().busses.is_empty(), "no bus is made for an output");
+
+    e.execute("edit.undo", &json!({})).unwrap();
+    assert!(sends(&e)[0].is_none());
+    assert_eq!(e.session().outputs.len(), 1, "one undo takes back the send and its path");
+    e.execute("edit.redo", &json!({})).unwrap();
+    assert_eq!(sends(&e)[0].as_ref().map(|send| send.target.clone()), Some(Route::Hardware("Out 9-10".into())));
+
+    // The main path, by its name or as `main`; re-targeting keeps the level.
+    for main in ["Out 1-2", "main"] {
+        e.execute("mix.send", &json!({"track": "Vox", "slot": 1, "output": main})).unwrap();
+        assert_eq!(sends(&e)[1].as_ref().map(|send| send.target.clone()), Some(Route::Main), "{main}");
+    }
+    e.execute("setup.io", &json!({"action": "create_output", "name": "Cue", "format": "mono", "first_channel": 4})).unwrap();
+    e.execute("mix.send", &json!({"track": "Vox", "slot": 0, "output": "CUE"})).unwrap();
+    let send = sends(&e)[0].clone().unwrap();
+    assert_eq!((send.target, send.level_db), (Route::Hardware("Cue".into()), -6.0));
+    assert!(e.execute("mix.send", &json!({"track": "Vox", "slot": 2, "output": "Nowhere"})).is_err());
+    assert!(e.execute("mix.send", &json!({"track": "Vox", "slot": 2, "output": "Out 4-5"})).is_err(), "not an interface pair");
+    assert!(e.execute("mix.send", &json!({"track": "Vox", "slot": 2})).is_err(), "a bus or an output is required");
+
+    e.execute("setup.io", &json!({"action": "rename_output", "name": "Cue", "new_name": "Phones"})).unwrap();
+    assert_eq!(sends(&e)[0].as_ref().map(|send| send.target.clone()), Some(Route::Hardware("Phones".into())));
+
+    let dir = std::env::temp_dir().join(format!("sc-send-output-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("sends.scraft");
+    crate::io::save_session(&mut e, &path.to_string_lossy()).unwrap();
+    let mut reopened = Engine::default();
+    reopened.execute("session.open", &json!({"path": path.to_string_lossy()})).unwrap();
+    let vox = reopened.session().track_by_name("Vox").unwrap().mixer.sends.clone();
+    assert_eq!(vox[0].as_ref().map(|send| send.target.clone()), Some(Route::Hardware("Phones".into())));
+    assert_eq!(vox[1].as_ref().map(|send| send.target.clone()), Some(Route::Main));
+    assert!(reopened.session().outputs.iter().any(|path| path.name == "Phones" && path.first_channel == 4));
+    let _ = std::fs::remove_dir_all(&dir);
 }
