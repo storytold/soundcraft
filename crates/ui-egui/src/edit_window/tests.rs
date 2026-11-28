@@ -594,6 +594,50 @@ fn a_quick_drag_from_a_clip_edge_trims_it() {
 }
 
 #[test]
+fn trim_cursor_distinguishes_full_source_edges_from_trimmed_edges() {
+    use craft_audio::AudioBuffer;
+    use egui::CursorIcon;
+    use soundcraft_model::{ChannelFormat, FileFormat, TrackKind};
+
+    let mut engine = soundcraft_engine::Engine::default();
+    let s = engine.session_mut();
+    let track = s.add_track(TrackKind::Audio, ChannelFormat::Mono, None);
+    let audio = AudioBuffer { sample_rate: s.sample_rate.hz(), channels: vec![vec![0.0; 96_000]] };
+    let source = soundcraft_engine::io::add_source(s, "Source", audio, None, FileFormat::Wav);
+    let id = s.new_clip_id();
+    soundcraft_engine::edit::place_clip(s, track, Clip::audio(id, "Source", source, 0, 48_000, 96_000));
+    s.edit.zoom.samples_per_px = 480.0;
+    engine.execute("edit.tool", &json!({"tool": "trim"})).unwrap();
+    engine.execute("edit.mode", &json!({"mode": "slip"})).unwrap();
+    let mut h = harness_with(engine);
+
+    let cursors = |h: &mut Harness<SoundApp>| {
+        let s = h.state().engine.session();
+        let tl = timeline(h);
+        let (track, clip) = s.find_clip(id).unwrap();
+        let lane = lane_rect(s.track(track).unwrap(), row(h, 0), tl);
+        let y = lane.min.y + lane.height() * 0.75;
+        let edges = [pos2(x_of(s, tl, clip.start) + 2.0, y), pos2(x_of(s, tl, clip.end()) - 2.0, y)];
+        edges.map(|edge| {
+            h.hover_at(edge);
+            h.step();
+            h.output().platform_output.cursor_icon
+        })
+    };
+    assert_eq!(cursors(&mut h), [CursorIcon::ResizeEast, CursorIcon::ResizeWest]);
+
+    // On a six-point-wide clip the two edge hit areas overlap.
+    h.state_mut().engine.session_mut().edit.zoom.samples_per_px = 16_000.0;
+    h.run_steps(2);
+    assert_eq!(cursors(&mut h), [CursorIcon::ResizeEast, CursorIcon::ResizeWest]);
+
+    h.state_mut().engine.session_mut().edit.zoom.samples_per_px = 480.0;
+    h.state_mut().engine.execute("edit.trim_clip", &json!({"clip": id.0, "start": 72000, "end": 120000})).unwrap();
+    h.run_steps(2);
+    assert_eq!(cursors(&mut h), [CursorIcon::ResizeHorizontal; 2]);
+}
+
+#[test]
 fn a_quick_clip_drag_keeps_the_clip_under_the_pointer() {
     let mut h = smart_demo();
     let tl = timeline(&h);
