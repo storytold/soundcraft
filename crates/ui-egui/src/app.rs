@@ -116,6 +116,7 @@ impl SoundApp {
             framework_dialogs: craft_ui::dialog::DialogHost::new(),
             framework_host: crate::framework::host(),
             sim: None,
+            resume_at: None,
             record_hint: None,
             quit_requested: false,
             arrange_request: false,
