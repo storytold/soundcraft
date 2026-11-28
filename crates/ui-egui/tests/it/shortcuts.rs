@@ -225,3 +225,52 @@ fn a_midi_editor_behind_another_tab_leaves_the_arrows_to_the_edit_window() {
     let (x, middle) = x_and_middle(&app, clip.start);
     assert!((x - middle).abs() < 1.0, "Left: the clip start at {x}, the middle at {middle}");
 }
+
+#[test]
+fn pro_tools_shift_keys_bypass_inserts_and_mute_sends() {
+    for os in [OperatingSystem::Mac, OperatingSystem::Windows, OperatingSystem::Nix] {
+        let mut app = SoundApp::new(soundcraft_engine::demo::demo_engine(), None, Services::default());
+        app.engine.execute("edit.select", &json!({"tracks": ["Snare"]})).unwrap();
+        let ctx = egui::Context::default();
+        ctx.set_os(os);
+        for (key, id) in [
+            (Key::A, "track.bypass_inserts"),
+            (Key::Num2, "track.bypass_inserts_ae"),
+            (Key::Num3, "track.bypass_inserts_fj"),
+            (Key::E, "track.bypass_eq"),
+            (Key::C, "track.bypass_dynamics"),
+            (Key::V, "track.bypass_reverb"),
+            (Key::D, "track.bypass_delay"),
+            (Key::W, "track.bypass_modulation"),
+            (Key::Q, "track.mute_sends"),
+            (Key::Num4, "track.mute_sends_ae"),
+            (Key::Num5, "track.mute_sends_fj"),
+        ] {
+            let before = app.engine.journal.len();
+            press(&ctx, &mut app, key, Modifiers::SHIFT);
+            assert_eq!(app.engine.journal.len(), before + 1, "{os:?} Shift+{key:?}: {}", app.ui.status);
+            assert_eq!(app.engine.journal.back().unwrap().0, id, "{os:?} Shift+{key:?}");
+        }
+        let muted = |app: &SoundApp| app.engine.session().track_by_name("Snare").unwrap().mixer.sends[0].as_ref().is_some_and(|s| s.mute);
+        let was = muted(&app);
+        press(&ctx, &mut app, Key::Q, Modifiers::SHIFT);
+        assert_ne!(muted(&app), was, "{os:?}");
+        press(&ctx, &mut app, Key::Q, Modifiers::SHIFT);
+        assert_eq!(muted(&app), was, "{os:?}: a second Shift+Q unmutes");
+
+        // The keys reach the right inserts, not just the right command ids: Kick has an EQ then a compressor.
+        app.engine.execute("edit.select", &json!({"tracks": ["Kick"]})).unwrap();
+        let bypassed = |app: &SoundApp| -> Vec<bool> {
+            app.engine.session().track_by_name("Kick").unwrap().mixer.inserts.iter().take(2).map(|i| i.as_ref().unwrap().bypass).collect()
+        };
+        let before = bypassed(&app);
+        press(&ctx, &mut app, Key::E, Modifiers::SHIFT);
+        let after_eq = bypassed(&app);
+        assert_ne!(after_eq[0], before[0], "{os:?}: Shift+E flips the EQ");
+        assert_eq!(after_eq[1], before[1], "{os:?}: Shift+E leaves the compressor");
+        press(&ctx, &mut app, Key::C, Modifiers::SHIFT);
+        let after_dyn = bypassed(&app);
+        assert_ne!(after_dyn[1], before[1], "{os:?}: Shift+C flips the compressor");
+        assert_eq!(after_dyn[0], after_eq[0], "{os:?}: Shift+C leaves the EQ");
+    }
+}
