@@ -138,6 +138,7 @@ impl SoundApp {
             "dialog": self.dialogs.open_name(),
             "frame_ms": self.frame_ms,
             "audio_device": self.player.as_ref().map(|p| p.device_name.clone()),
+            "audio_lost": self.lost_audio.as_ref().map(|l| json!({"output": l.output, "input": l.input})),
             "midi_inputs": self.midi_inputs.as_ref().map(|m| m.ports().iter().map(|p| json!({"name": p.name, "enabled": p.enabled, "open": p.open})).collect::<Vec<_>>()),
             "midi_events": self.midi_inputs.as_ref().map(|m| m.feed().activity().0),
             "midi_events_dropped": self.midi_inputs.as_ref().map(|m| m.feed().dropped()),

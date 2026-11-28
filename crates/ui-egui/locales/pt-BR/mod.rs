@@ -198,6 +198,7 @@ pub(super) fn translate(source: &str) -> Option<&'static str> {
         "Quantize to the grid" => "Quantizar para a grade",
         "Quit" => "Sair",
         "Recall" => "Recuperar",
+        "Reconnect" => "Reconectar",
         "Reconnect audio device" => "Reconectar dispositivo de áudio",
         "Record (F12 or Cmd+Space)" => "Gravar (F12 ou Cmd+Espaço)",
         "Recover" => "Recuperar",
@@ -1029,6 +1030,7 @@ fn menu_translate(source: &str) -> Option<&'static str> {
         "Assign Send" => "Atribuir envio",
         "Assign to VCA" => "Atribuir ao VCA",
         "Audio Device" => "Dispositivo de áudio",
+        "Reconnect Audio Device" => "Reconectar dispositivo de áudio",
         "AudioSuite Process" => "Processar no AudioSuite",
         "Auto Rename..." => "Renomear automaticamente...",
         "Automation Mode" => "Modo de automação",
@@ -1240,9 +1242,6 @@ fn menu_translate(source: &str) -> Option<&'static str> {
         "CLIPS" => "CLIPES",
         "COMMENTS" => "COMENTÁRIOS",
         "Change" => "Alterar",
-        "Check the audio device, then use Reconnect audio device in Setup › Playback Engine." => {
-            "Verifique o dispositivo de áudio e use Reconectar dispositivo de áudio em Configurar › Mecanismo de reprodução."
-        }
         "Check the disk, then record again." => "Verifique o disco e grave novamente.",
         "Chords" => "Acordes",
         "Clips" => "Clipes",
@@ -1294,6 +1293,45 @@ fn menu_translate(source: &str) -> Option<&'static str> {
         "Reconnect it, then use Reconnect audio device in Setup › Playback Engine." => {
             "Reconecte-o e use Reconectar dispositivo de áudio em Configurar › Mecanismo de reprodução."
         }
+        "Reconnect opened no audio device: SoundCraft runs on a silent clock." => {
+            "Reconectar não abriu nenhum dispositivo de áudio: o SoundCraft funciona com um relógio silencioso."
+        }
+        "Reconnected to “{name}”." => "Reconectado a “{name}”.",
+        "“{name}” is unavailable: SoundCraft runs on a silent clock and reconnects it when it is back, or use Reconnect." => {
+            "“{name}” está indisponível: o SoundCraft funciona com um relógio silencioso e o reconecta quando ele voltar, ou use Reconectar."
+        }
+        "“{name}” is unavailable: SoundCraft reconnects it when it is back, or use Reconnect." => {
+            "“{name}” está indisponível: o SoundCraft o reconecta quando ele voltar, ou use Reconectar."
+        }
+        "SoundCraft reconnects it when it is back, or use Reconnect." => "O SoundCraft o reconecta quando ele voltar, ou use Reconectar.",
+        "“{name}” is back." => "“{name}” voltou.",
+        "“{name}” is back: SoundCraft reconnected it." => "“{name}” voltou: o SoundCraft o reconectou.",
+        "“{name}” stopped: another app or the system changed its settings (such as the sample rate)." => {
+            "“{name}” parou: outro aplicativo ou o sistema mudou suas configurações (como a taxa de amostragem)."
+        }
+        "SoundCraft reopens it, or use Reconnect." => "O SoundCraft o reabre, ou use Reconectar.",
+        "SoundCraft reopened “{name}” after its settings changed." => "O SoundCraft reabriu “{name}” depois que suas configurações mudaram.",
+        "SoundCraft could not reopen “{name}” after its settings changed. Use Reconnect to try again." => {
+            "O SoundCraft não conseguiu reabrir “{name}” depois que suas configurações mudaram. Use Reconectar para tentar de novo."
+        }
+        "“{name}” is back, but SoundCraft could not open it. Use Reconnect to try again." => {
+            "“{name}” voltou, mas o SoundCraft não conseguiu abri-lo. Use Reconectar para tentar de novo."
+        }
+        "“{name}” stopped: the device went away or its settings changed." => "“{name}” parou: o dispositivo saiu ou suas configurações mudaram.",
+        "SoundCraft reopens it when it is available, or use Reconnect." => "O SoundCraft o reabre quando estiver disponível, ou use Reconectar.",
+        "SoundCraft reopened “{name}”." => "O SoundCraft reabriu “{name}”.",
+        "SoundCraft could not reopen “{name}”. Use Reconnect to try again." => {
+            "O SoundCraft não conseguiu reabrir “{name}”. Use Reconectar para tentar de novo."
+        }
+        "“{name}” is unavailable." => "“{name}” está indisponível.",
+        "SoundCraft reopens the system default output, or use Reconnect." => "O SoundCraft reabre a saída padrão do sistema, ou use Reconectar.",
+        "SoundCraft reopens the system default input, or use Reconnect." => "O SoundCraft reabre a entrada padrão do sistema, ou use Reconectar.",
+        "SoundCraft opened the system default output, “{name}”." => "O SoundCraft abriu a saída padrão do sistema, “{name}”.",
+        "SoundCraft could not open the system default output. Use Reconnect to try again." => {
+            "O SoundCraft não conseguiu abrir a saída padrão do sistema. Use Reconectar para tentar de novo."
+        }
+        "The system default input is available again." => "A entrada padrão do sistema está disponível de novo.",
+        "SoundCraft follows the system default input, now “{name}”." => "O SoundCraft segue a entrada padrão do sistema, agora “{name}”.",
         "Recording stopped: {cause} The take is kept up to there. {then}" => "Gravação interrompida: {cause} A gravação foi mantida até aqui. {then}",
         "Recording stopped: {what} The take is kept up to there. {then}" => "Gravação interrompida: {what} A gravação foi mantida até aqui. {then}",
         "Remove configuration" => "Remover configuração",
@@ -1340,6 +1378,11 @@ fn menu_translate(source: &str) -> Option<&'static str> {
         "silent clock" => "relógio silencioso",
         "stop recording before changing the audio device" => "pare a gravação antes de alterar o dispositivo de áudio",
         "stopped asking for audio" => "parou de solicitar áudio",
+        "“{name}” stopped asking for audio." => "“{name}” parou de solicitar áudio.",
+        "“{name}” stopped asking for audio again after Reconnect." => "“{name}” parou de solicitar áudio de novo depois de Reconectar.",
+        "Unplug the interface and plug it back in (or switch it off and on), then use Reconnect audio device in Setup › Playback Engine." => {
+            "Desconecte a interface e conecte-a de novo (ou desligue-a e ligue-a), depois use Reconectar dispositivo de áudio em Configurar › Mecanismo de reprodução."
+        }
         "the audio engine hit an internal error (see the log)" => "o mecanismo de áudio encontrou um erro interno (veja o registro)",
         "Equal Power" => "Potência igual",
         "Exponential" => "Exponencial",
@@ -1528,6 +1571,12 @@ fn menu_translate(source: &str) -> Option<&'static str> {
         "{sr} Hz{note}" => "{sr} Hz{note}",
         "Autosave failed: {e}" => "Falha ao salvar automaticamente: {e}",
         "Bounced {} (peak {:.1} dBFS, {:.1} LUFS)" => "Bounce concluído: {} (pico {:.1} dBFS, {:.1} LUFS)",
+        "Cannot play: “{name}” is not running. Use Reconnect audio device in Setup › Playback Engine." => {
+            "Não foi possível reproduzir: “{name}” não está em execução. Use Reconectar dispositivo de áudio em Configurar › Mecanismo de reprodução."
+        }
+        "Cannot record: “{name}” is not running. Use Reconnect audio device in Setup › Playback Engine." => {
+            "Não foi possível gravar: “{name}” não está em execução. Use Reconectar dispositivo de áudio em Configurar › Mecanismo de reprodução."
+        }
         "Cannot record: {err}" => "Não foi possível gravar: {err}",
         "Cannot record: no MIDI input device is connected (Setup > Playback Engine lists them)" => {
             "Não foi possível gravar: nenhum dispositivo de entrada MIDI está conectado (Configuração > Mecanismo de reprodução mostra a lista)"

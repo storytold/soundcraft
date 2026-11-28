@@ -60,9 +60,9 @@ use callback::{AudioState, Fault, Side, take_meter_snapshot};
 use callback::{STALL, copy_meter_snapshot};
 #[cfg(not(target_arch = "wasm32"))]
 use callback::{guarded_block, stalled};
-#[cfg(test)]
-use stream::pick_output_config;
 use stream::{Opened, build_output, first_started, open_device, start_stream};
+#[cfg(test)]
+use stream::{not_the_required_output, pick_output_config};
 
 /// Meter values for the UI: the highest peak (and gain reduction) of every block rendered since
 /// the UI last took them with [`Player::take_meters`]. The audio thread renders blocks faster than
@@ -159,6 +159,19 @@ pub enum OutputTrouble {
     Stalled,
 }
 
+/// Why the output stream was lost ([`OutputTrouble::Gone`]), as far as the audio system says.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OutputLoss {
+    /// The device went away (unplugged, switched off). Core Audio only: its alive listener.
+    Left,
+    /// The device stayed and the system invalidated the stream, as when another app changes its
+    /// sample rate. Core Audio only: its sample-rate listener (observed on an RME UFX).
+    SettingsChanged,
+    /// The audio system's error does not say which of the two happened (every system other than
+    /// Core Audio; see [`devices::output_loss`]).
+    Unknown,
+}
+
 /// The transport and audio device.
 pub struct Player {
     shared: Arc<Shared>,
@@ -180,6 +193,13 @@ pub struct Player {
     pub device_buffer: Option<u32>,
     /// True when no audio device could be opened (silent clock).
     pub silent: bool,
+    /// The audio system (cpal host name) the output opened on; empty for the silent clock.
+    system: &'static str,
+    /// The system default was opened as the device that was the default then (WASAPI when its
+    /// default handle cannot open): the stream is not told when the default moves to another
+    /// device, so the app watches the default and reopens (see
+    /// [`devices::default_names`]).
+    pub pinned_default: bool,
 }
 
 impl Player {
@@ -191,7 +211,19 @@ impl Player {
     /// Open the output device `cfg` chooses (system, device, rate, buffer size), falling back to the
     /// defaults for whatever is unavailable. Never fails: without a device it runs a silent clock.
     pub fn with_config(session: Arc<Session>, cfg: &AudioConfig) -> Player {
-        let p = Player::open(Arc::clone(&session), cfg);
+        Self::open_configured(session, cfg, None)
+    }
+
+    /// Reconnect the named physical output (one the user chose by name; with the system default
+    /// chosen, the app reopens with [`Player::with_config`] instead). If it is still unavailable,
+    /// use the silent clock rather than another device. An explicit device change belongs to
+    /// Setup > Playback Engine.
+    pub fn reconnect_output(session: Arc<Session>, cfg: &AudioConfig, name: &str) -> Player {
+        Self::open_configured(session, cfg, Some(name))
+    }
+
+    fn open_configured(session: Arc<Session>, cfg: &AudioConfig, required_output: Option<&str>) -> Player {
+        let p = Player::open(Arc::clone(&session), cfg, required_output);
         p.side().return_old_sessions(&p.tx);
         // Hand the initial session's third-party plugins over.
         p.update_session(session);
@@ -211,6 +243,13 @@ impl Player {
         self.fault.trouble(stalled)
     }
 
+    /// Why the output stream was lost: the device went away, its settings changed, or (on every
+    /// audio system other than Core Audio) unknown. Read it once [`Player::trouble`] reported
+    /// [`OutputTrouble::Gone`].
+    pub fn output_loss(&self) -> OutputLoss {
+        devices::output_loss(self.system, self.fault.left.load(Ordering::Relaxed))
+    }
+
     fn side(&self) -> std::sync::MutexGuard<'_, Side> {
         self.side.lock().unwrap_or_else(PoisonError::into_inner)
     }
@@ -218,7 +257,7 @@ impl Player {
     /// Open the output device for `session`, trying the requested buffer size before the device default, then build
     /// the shared player state. If no configuration starts or the device cannot open, fall back to a silent clock at
     /// the session rate.
-    fn open(session: Arc<Session>, cfg: &AudioConfig) -> Player {
+    fn open(session: Arc<Session>, cfg: &AudioConfig, required_output: Option<&str>) -> Player {
         let shared = Arc::new(Shared {
             position: AtomicI64::new(0),
             playing: AtomicBool::new(false),
@@ -233,8 +272,8 @@ impl Player {
             side.gone_tracks(&session);
             Mutex::new(side)
         };
-        match open_device(want, want_ch, cfg) {
-            Ok((device, config, format, name)) => {
+        match open_device(want, want_ch, cfg, required_output) {
+            Ok((device, config, format, name, system, pinned_default)) => {
                 // The chosen buffer size first; if the device refuses it, its default.
                 let mut attempts = vec![config];
                 if config.buffer_size != cpal::BufferSize::Default {
@@ -283,6 +322,8 @@ impl Player {
                             device_channels: config.channels,
                             device_buffer: buffer,
                             silent: false,
+                            system,
+                            pinned_default,
                         }
                     }
                     None => {
@@ -360,6 +401,8 @@ impl Player {
             device_channels: 0,
             device_buffer: None,
             silent: true,
+            system: "",
+            pinned_default: false,
         }
     }
 
@@ -383,6 +426,8 @@ impl Player {
             device_channels: 0,
             device_buffer: None,
             silent: true,
+            system: "",
+            pinned_default: false,
         }
     }
 
@@ -474,11 +519,49 @@ impl Player {
         self.side().editors.get_mut(&(track, slot))?.value_text(id, value)
     }
 
-    /// Start playback at `from`, stopping at `end`, or looping `looped`.
-    pub fn play(&self, from: Samples, end: Option<Samples>, looped: Option<Range>) {
+    /// Start playback at `from`, stopping at `end`, or looping `looped`. Returns false, and does
+    /// not start, while the output is [lost](Player::lost): nothing would advance the playhead.
+    pub fn play(&self, from: Samples, end: Option<Samples>, looped: Option<Range>) -> bool {
+        if self.lost() {
+            return false;
+        }
         self.shared.position.store(from, Ordering::Relaxed);
         self.shared.playing.store(true, Ordering::Relaxed);
         let _ = self.tx.send(Cmd::Play { from, end, looped });
+        true
+    }
+
+    /// A player on the silent clock whose output `name` is already lost (or, with `stalled`, has
+    /// reported that it stopped asking for audio), for tests of what the UI refuses on such an
+    /// output. Not for use outside tests.
+    #[doc(hidden)]
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn lost_for_tests(session: Arc<Session>, name: &str, stalled: bool) -> Player {
+        let shared = Arc::new(Shared {
+            position: AtomicI64::new(0),
+            playing: AtomicBool::new(false),
+            speed: AtomicU32::new(1000),
+            meters: Mutex::new(MeterSnapshot::default()),
+        });
+        let (tx, rx) = channel();
+        let (gtx, grx) = channel();
+        let side = Mutex::new(Side::new(session.sample_rate.as_f64() as f32, grx));
+        let mut p = Player::silent_clock_with(shared, tx, rx, session, side, gtx);
+        p.device_name = name.into();
+        p.silent = false;
+        if stalled {
+            let _ = p.fault.trouble(true);
+        } else {
+            p.fault.gone.store(true, Ordering::Relaxed);
+        }
+        p
+    }
+
+    /// True while the output cannot play until the device is reopened: its stream was lost, the
+    /// device stopped asking for audio, or the engine hit an internal error. Unlike
+    /// [`Player::trouble`], it keeps answering after the problem has been reported.
+    pub fn lost(&self) -> bool {
+        self.fault.lost()
     }
 
     /// Feed live input (from a `record::Recorder`) into the mix for input monitoring.

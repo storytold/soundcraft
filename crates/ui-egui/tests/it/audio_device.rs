@@ -101,3 +101,13 @@ fn playback_engine_applies_the_same_device_choice_as_the_audio_command() {
     assert!(app.ui.show_playback_engine, "the menu still opens the Playback Engine window");
     assert_eq!(app.ui.audio, cfg, "opening the window does not change the device");
 }
+
+#[test]
+fn reconnect_audio_reopens_the_devices_and_says_what_opened() {
+    let mut app = new_app();
+    app.ui.status = "Playback stopped: “UFX” is unavailable".into();
+    let r = app.run("ui.reconnect_audio", json!({})).unwrap();
+    assert!(r["device"].is_object(), "{r}");
+    assert_eq!(r["status"], json!(app.ui.status));
+    assert!(!app.ui.status.contains("unavailable"), "the old message is replaced: {}", app.ui.status);
+}

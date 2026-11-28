@@ -109,11 +109,59 @@ pub fn audio_systems() -> Vec<AudioSystem> {
         .collect()
 }
 
+/// A device [`devices_present`] looks for.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Wanted<'a> {
+    /// Nothing is waited for: counts as present.
+    Nothing,
+    /// The device of this name, one the user chose.
+    Named(&'a str),
+    /// The system default device, whichever it is now: present when the system has one.
+    Default,
+}
+
+/// Whether the audio system `system` (the default one for `None`) lists the output and the input
+/// device wanted. It reads the device list and opens nothing, so it can be polled from a
+/// background thread while a device that went away is waited for (cpal does not expose Core
+/// Audio's device-list notification). An audio system that is not available lists nothing.
+pub fn devices_present(system: Option<&str>, output: Wanted<'_>, input: Wanted<'_>) -> (bool, bool) {
+    let Some(host) = host_named(system) else { return (output == Wanted::Nothing, input == Wanted::Nothing) };
+    let named = |want: &str, d: &cpal::Device| device_name(d).as_deref() == Some(want);
+    let out = match output {
+        Wanted::Nothing => true,
+        Wanted::Named(want) => host.output_devices().is_ok_and(|mut ds| ds.any(|d| named(want, &d))),
+        Wanted::Default => host.default_output_device().is_some(),
+    };
+    let inp = match input {
+        Wanted::Nothing => true,
+        Wanted::Named(want) => host.input_devices().is_ok_and(|mut ds| ds.any(|d| named(want, &d))),
+        Wanted::Default => host.default_input_device().is_some(),
+    };
+    (out, inp)
+}
+
+/// The audio system `system` (the default one for `None`), if it is available.
+fn host_named(system: Option<&str>) -> Option<cpal::Host> {
+    match system {
+        Some(want) => cpal::available_hosts().into_iter().find(|id| id.name().eq_ignore_ascii_case(want)).and_then(|id| cpal::host_from_id(id).ok()),
+        None => Some(cpal::default_host()),
+    }
+}
+
+/// The names of the system default output and input of audio system `system` (the default one
+/// for `None`), `None` where there is none. It reads the names and opens nothing (on WASAPI, the
+/// default endpoint's property store), and lists no devices, so it can be polled from a
+/// background thread while a stream pinned to the default is open (see [`pins_the_default`]).
+pub fn default_names(system: Option<&str>) -> (Option<String>, Option<String>) {
+    let Some(host) = host_named(system) else { return (None, None) };
+    (host.default_output_device().as_ref().and_then(device_name), host.default_input_device().as_ref().and_then(device_name))
+}
+
 /// True when a cpal error means the stream is dead and only a rebuild can restore audio. cpal 0.18
 /// reports every operation through one [`cpal::Error`]: `DeviceNotAvailable` means the device went
 /// away, and `StreamInvalidated` explicitly requires the stream to be rebuilt. SoundCraft has no
-/// in-place rebuild, so both map to the existing actionable "reconnect audio device" trouble
-/// instead of leaving a dead stream silently logging. A rerouted default device
+/// in-place rebuild, so both mark the output lost (see [`output_loss`] for what the UI then
+/// reopens, or Reconnect) instead of leaving a dead stream silently logging. A rerouted default device
 /// (`DeviceChanged`) keeps playing, and an xrun is transient, so neither is a lost stream.
 /// `HostUnavailable`, `DeviceBusy` and `BackendError` stay log-only until their retry/rebuild
 /// policies exist.
@@ -121,6 +169,25 @@ pub(crate) fn stream_lost(e: &cpal::Error) -> bool {
     // ErrorKind is non-exhaustive; an equality test avoids a wildcard match arm.
     let kind = e.kind();
     kind == cpal::ErrorKind::DeviceNotAvailable || kind == cpal::ErrorKind::StreamInvalidated
+}
+
+/// Why an output stream was lost under audio system `system`, from whether its error was
+/// `DeviceNotAvailable` (`left`) or `StreamInvalidated`. Only Core Audio's errors say which
+/// happened: cpal 0.18.2 reports `DeviceNotAvailable` from the device's alive listener and
+/// `StreamInvalidated` from its sample-rate listener (observed on an RME UFX when another app
+/// changed its rate). Elsewhere the kinds do not tell (read in cpal 0.18.2, not observed):
+/// WASAPI reports a format change by another app as `DeviceNotAvailable`
+/// (`AUDCLNT_E_DEVICE_INVALIDATED`) and a switch of the default device, which an unplug can
+/// cause, as `StreamInvalidated`; an ASIO driver's reset request, sent on an unplug, is
+/// `StreamInvalidated`; ALSA was not checked. So every other system gets
+/// [`crate::OutputLoss::Unknown`]. Either way the device is reopened once it is listed again (by
+/// its name when the user chose it, else the system default; see the app's `watch_replug`).
+pub(crate) fn output_loss(system: &str, left: bool) -> crate::OutputLoss {
+    match (system, left) {
+        ("CoreAudio", true) => crate::OutputLoss::Left,
+        ("CoreAudio", false) => crate::OutputLoss::SettingsChanged,
+        _ => crate::OutputLoss::Unknown,
+    }
 }
 
 /// The device's configuration at `sample_rate` in the best sample format these streams convert.
@@ -162,17 +229,92 @@ pub(crate) fn host(cfg: &AudioConfig) -> cpal::Host {
         })
 }
 
-/// The named output (or input) device of `host`, else its default device.
-pub(crate) fn device(host: &cpal::Host, name: Option<&str>, output: bool) -> Option<cpal::Device> {
+/// The named output (or input) device of `host`, else, when `fall_back`, its default device (see
+/// [`default_to_open`] for the WASAPI default), and whether it is the system default opened as
+/// the device that is the default now, whose stream is not told when the default moves to another
+/// device (see [`pins_the_default`]). A device that must open by its name (`fall_back` false)
+/// that is not listed gives `None`, without the default being looked up.
+pub(crate) fn device(host: &cpal::Host, name: Option<&str>, output: bool, fall_back: bool) -> Option<(cpal::Device, bool)> {
     if let Some(want) = name {
         let found = if output { host.output_devices().ok() } else { host.input_devices().ok() }
             .and_then(|mut ds| ds.find(|d| device_name(d).as_deref() == Some(want)));
-        if found.is_some() {
-            return found;
+        if let Some(found) = found {
+            return Some((found, false));
         }
-        log::warn!("audio device `{want}` is not available; using the default");
+        if !fall_back {
+            log::warn!("audio device `{want}` is not listed");
+            return None;
+        }
+        log::warn!("audio device `{want}` is not listed; using the system default");
     }
-    if output { host.default_output_device() } else { host.default_input_device() }
+    let default = if output { host.default_output_device() } else { host.default_input_device() };
+    let system = host.id().name();
+    let (device, listed) = default_to_open(
+        system,
+        default,
+        // Reading the default configuration activates the audio client; cpal keeps it for the
+        // stream that opens next, so the check opens nothing twice.
+        |d| if output { d.default_output_config().is_ok() } else { d.default_input_config().is_ok() },
+        |d| {
+            let id = d.id().ok()?;
+            let mut listed = if output { host.output_devices().ok() } else { host.input_devices().ok() }?;
+            listed.find(|l| l.id().ok().as_ref() == Some(&id))
+        },
+    )?;
+    Some((device, pins_the_default(system, output, listed)))
+}
+
+/// The system default device to open on audio system `system`: `default`, unless it is a handle
+/// of its own that cannot open (`opens`), in which case the device listed as the current default
+/// (`listed`) opens instead, if there is one; with whether it did.
+///
+/// Only WASAPI's default is such a handle. cpal 0.18.2 activates it through
+/// `ActivateAudioInterfaceAsync`, which completes on a Windows worker thread, and gives its
+/// stream a default-device listener; a listed device is activated directly on the calling thread
+/// (`IMMDevice::Activate`) and has no listener. After a device a default stream followed went
+/// away, the default handle can fail for the rest of the process with `RPC_E_CHANGED_MODE`
+/// (observed on Windows with a Model 12 unplugged; cpal's listener, on a device's removal, sets
+/// up COM as single-threaded on the Windows thread that called it, which is the inferred cause).
+/// On that Windows machine a switch of the default alone (to the Model 12) also left the default
+/// handle failing. The listed device still opens, so the default is followed by opening it by its
+/// identity. Such a stream is not told when the default moves to another device: the app watches
+/// the default's name and reopens it (see [`pins_the_default`]).
+///
+/// Elsewhere the default is the device itself: it is returned unchecked.
+pub(crate) fn default_to_open<D>(
+    system: &str,
+    default: Option<D>,
+    opens: impl FnOnce(&D) -> bool,
+    listed: impl FnOnce(&D) -> Option<D>,
+) -> Option<(D, bool)> {
+    let default = default?;
+    if system != "WASAPI" || opens(&default) {
+        return Some((default, false));
+    }
+    match listed(&default) {
+        Some(d) => {
+            log::warn!("the system default audio device cannot open as the default; opening the device that is the default now");
+            Some((d, true))
+        }
+        None => Some((default, false)),
+    }
+}
+
+/// Whether the system default output (or input), opened on audio system `system` (`listed`:
+/// WASAPI opened the device listed as the default, see [`default_to_open`]), is pinned to the
+/// device that was the default then: its stream is not told when the default moves, so the app
+/// watches the default's name ([`default_names`]) and reopens on the new one. Read in cpal 0.18.2:
+/// WASAPI's default handle has a default-device listener, a listed device none; Core Audio opens
+/// the default output as its default-output unit, which follows the default, but the default
+/// input as the device that is the default (no listener). ASIO has no system default (cpal takes
+/// the first driver), and ALSA's default is its `default` device, which stays that device; other
+/// systems were not checked and are left as they were.
+pub(crate) fn pins_the_default(system: &str, output: bool, listed: bool) -> bool {
+    match system {
+        "WASAPI" => listed,
+        "CoreAudio" => !output,
+        _ => false,
+    }
 }
 
 /// The buffer to request: the chosen size when the device's range allows it, else the default.
@@ -262,6 +404,72 @@ mod tests {
         }
     }
 
+    /// Which lost-output cause each audio system reports. Core Audio's mapping was observed
+    /// (another app's rate change gave `StreamInvalidated` on an RME UFX); elsewhere the error
+    /// kinds do not say which happened (cpal 0.18.2: WASAPI reports a format change as
+    /// `DeviceNotAvailable` and a default-device switch as `StreamInvalidated`; an ASIO reset
+    /// request is `StreamInvalidated`), so the cause is unknown.
+    #[test]
+    fn the_cause_of_a_lost_output_is_told_only_on_core_audio() {
+        assert_eq!(output_loss("CoreAudio", true), crate::OutputLoss::Left);
+        assert_eq!(output_loss("CoreAudio", false), crate::OutputLoss::SettingsChanged);
+        for system in ["WASAPI", "ASIO", "ALSA", "JACK", ""] {
+            for left in [true, false] {
+                assert_eq!(output_loss(system, left), crate::OutputLoss::Unknown, "{system}, left: {left}");
+            }
+        }
+    }
+
+    #[test]
+    fn a_wasapi_default_that_cannot_open_is_opened_as_the_listed_device() {
+        // On WASAPI the default is a handle of its own; when it cannot open, the device listed
+        // as the current default opens instead.
+        let opened = default_to_open("WASAPI", Some("default handle"), |_| false, |_| Some("listed default"));
+        assert_eq!(opened, Some(("listed default", true)));
+        // The default handle that opens is kept, so a later default switch is still reported.
+        let opened = default_to_open("WASAPI", Some("default handle"), |_| true, |_| Some("listed default"));
+        assert_eq!(opened, Some(("default handle", false)));
+        // Nothing listed under the default: the default handle, whose open then says why.
+        assert_eq!(default_to_open("WASAPI", Some("default handle"), |_| false, |_| None), Some(("default handle", false)));
+        assert_eq!(default_to_open("WASAPI", None::<&str>, |_| false, |_| Some("listed default")), None);
+    }
+
+    /// Which default streams are pinned to the device that was the default when they opened, and
+    /// so need the app to follow the default (read in cpal 0.18.2): WASAPI's when it opened the
+    /// listed device, and Core Audio's input; Core Audio's default output follows by itself.
+    #[test]
+    fn only_a_default_opened_as_a_device_is_pinned_to_it() {
+        assert!(pins_the_default("WASAPI", true, true));
+        assert!(pins_the_default("WASAPI", false, true));
+        assert!(!pins_the_default("WASAPI", true, false), "the default handle has its listener");
+        assert!(pins_the_default("CoreAudio", false, false), "the default input is the device itself");
+        assert!(!pins_the_default("CoreAudio", true, false), "the default-output unit follows the default");
+        for system in ["ASIO", "ALSA", "JACK"] {
+            for output in [true, false] {
+                assert!(!pins_the_default(system, output, false), "{system}");
+            }
+        }
+    }
+
+    #[test]
+    fn a_default_is_only_checked_where_it_is_a_handle_of_its_own() {
+        // Elsewhere the default is the device itself: nothing is opened twice or looked up again.
+        for system in ["CoreAudio", "ALSA", "ASIO", "JACK"] {
+            let checked = std::cell::Cell::new(false);
+            let opened = default_to_open(
+                system,
+                Some("default"),
+                |_| {
+                    checked.set(true);
+                    false
+                },
+                |_| Some("listed"),
+            );
+            assert_eq!(opened, Some(("default", false)), "{system}");
+            assert!(!checked.get(), "{system}");
+        }
+    }
+
     #[test]
     fn buffer_sizes_follow_the_device_range() {
         let r = cpal::SupportedBufferSize::Range { min: 64, max: 1024 };
@@ -290,8 +498,10 @@ mod tests {
         assert_eq!(host(&cfg).id(), cpal::default_host().id());
         // No device with this name exists: the default (or none, on a machine without audio).
         let h = cpal::default_host();
-        let fallback = device(&h, Some("No Such Device 1234"), true).as_ref().and_then(device_name);
+        let fallback = device(&h, Some("No Such Device 1234"), true, true).and_then(|(d, _)| device_name(&d));
         assert_eq!(fallback, h.default_output_device().as_ref().and_then(device_name));
+        // A device that must open by its name opens nothing in its place.
+        assert!(device(&h, Some("No Such Device 1234"), true, false).is_none());
     }
 
     #[test]

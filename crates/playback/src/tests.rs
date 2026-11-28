@@ -57,6 +57,25 @@ fn range(channels: u16, min: u32, max: u32, format: cpal::SampleFormat) -> cpal:
     cpal::SupportedStreamConfigRange::new(channels, min, max, cpal::SupportedBufferSize::Range { min: 64, max: 1024 }, format)
 }
 
+/// An output Reconnect must open by its name opens only as that device, on the chosen audio
+/// system: the lookup's fallback to the system default (another device) is refused, so the
+/// silent clock runs instead. With the system default chosen, whatever the default is now opens.
+#[test]
+fn a_required_output_is_not_replaced_by_the_system_default() {
+    // (required by name, audio system chosen, device the lookup found, its audio system, refused)
+    for (required, system, found, host, refused) in [
+        (Some("Model 12"), Some("WASAPI"), "Speakers (Realtek(R) Audio)", "WASAPI", true),
+        (Some("Fireface UFX (23693403)"), None, "MacBook Pro Speakers", "CoreAudio", true),
+        (Some("Model 12"), Some("WASAPI"), "Model 12", "WASAPI", false),
+        (Some("Model 12"), Some("wasapi"), "Model 12", "WASAPI", false),
+        (Some("Model 12"), Some("ASIO"), "Model 12", "WASAPI", true),
+        (None, Some("WASAPI"), "Speakers (Realtek(R) Audio)", "WASAPI", false),
+        (None, None, "MacBook Pro Speakers", "CoreAudio", false),
+    ] {
+        assert_eq!(not_the_required_output(required, system, found, host), refused, "required {required:?} on {system:?}, found {found} on {host}");
+    }
+}
+
 /// Rates are tried in order, so a stale configured rate falls through to the session rate; when no requested rate
 /// is offered the caller uses the device default and resamples.
 #[test]
@@ -277,6 +296,99 @@ fn a_lost_or_stalled_device_is_reported_once() {
     let fault = Fault::default();
     fault.gone.store(true, Ordering::Relaxed);
     assert_eq!((fault.trouble(false), fault.trouble(true)), (Some(OutputTrouble::Gone), None));
+}
+
+/// A device unplugged while playing can stop asking for audio before the audio system reports
+/// it gone. The later loss is still reported, so the UI waits for the device to come back, and
+/// is reported once.
+#[test]
+fn a_device_lost_after_it_stalled_is_reported_as_gone() {
+    let fault = Fault::default();
+    assert_eq!(fault.trouble(true), Some(OutputTrouble::Stalled));
+    assert_eq!(fault.trouble(true), None, "the same stall is told once");
+    fault.gone.store(true, Ordering::Relaxed);
+    assert_eq!(fault.trouble(false), Some(OutputTrouble::Gone));
+    assert_eq!((fault.trouble(false), fault.trouble(true)), (None, None), "and the loss once");
+}
+
+/// A player on the silent clock, which needs no audio device.
+fn silent_player() -> Player {
+    let shared = Arc::new(Shared {
+        position: AtomicI64::new(0),
+        playing: AtomicBool::new(false),
+        speed: AtomicU32::new(1000),
+        meters: Mutex::new(MeterSnapshot::default()),
+    });
+    let (tx, rx) = channel();
+    let (gtx, grx) = channel();
+    Player::silent_clock(shared, tx, rx, 48_000, Mutex::new(Side::new(48_000.0, grx)), gtx)
+}
+
+#[test]
+fn a_lost_output_refuses_play_even_after_the_loss_was_reported() {
+    let p = silent_player();
+    assert!(!p.lost());
+    assert!(p.play(0, None, None));
+    assert!(p.is_playing());
+    p.stop();
+    p.fault.gone.store(true, Ordering::Relaxed);
+    assert_eq!(p.trouble(), Some(OutputTrouble::Gone));
+    assert_eq!(p.trouble(), None, "reported once");
+    assert!(p.lost(), "still lost after it was reported");
+    assert!(!p.play(0, None, None), "a lost output does not start");
+    assert!(!p.is_playing(), "the transport must not sit at a playhead nothing advances");
+}
+
+/// An output that stopped asking for audio (seen on Windows right after a Model 12 replug) is
+/// as unusable as a lost one: once the stall is reported, Play is refused until a reconnect,
+/// instead of a transport stuck at 0 and a take of nothing.
+#[test]
+fn a_stalled_output_stays_lost_after_the_stall_was_reported() {
+    let fault = Fault::default();
+    assert!(!fault.lost());
+    assert_eq!(fault.trouble(true), Some(OutputTrouble::Stalled));
+    assert!(fault.lost(), "a stalled output cannot play");
+    assert_eq!(fault.trouble(false), None, "reported once");
+    assert!(fault.lost(), "still lost once the transport stopped and the stall is no longer measured");
+}
+
+#[test]
+fn a_player_made_lost_or_stalled_for_tests_refuses_play() {
+    let session = Arc::new(soundcraft_model::Session::default());
+    for stalled in [false, true] {
+        let p = Player::lost_for_tests(Arc::clone(&session), "UFX", stalled);
+        assert!(p.lost());
+        assert!(!p.play(0, None, None));
+        assert_eq!(p.device_name, "UFX");
+    }
+}
+
+#[test]
+fn an_output_whose_engine_failed_refuses_play() {
+    let p = silent_player();
+    let mut out = [0.0f32; 8];
+    guarded_block(&p.fault, &p.shared, &mut out, |_| std::panic::panic_any("a bug in the mix"));
+    assert!(p.lost());
+    assert!(!p.play(0, None, None));
+    assert!(!p.is_playing());
+}
+
+#[test]
+fn a_lost_stream_says_whether_the_device_left() {
+    // Core Audio: unplugged (the device is no longer alive).
+    let unplugged = Fault::default();
+    stream::lose_stream(&unplugged, &cpal::Error::new(cpal::ErrorKind::DeviceNotAvailable));
+    assert_eq!(unplugged.trouble(false), Some(OutputTrouble::Gone));
+    assert!(unplugged.left.load(Ordering::Relaxed));
+    // Core Audio: another app changed the device's sample rate; the device stayed.
+    let changed = Fault::default();
+    stream::lose_stream(&changed, &cpal::Error::new(cpal::ErrorKind::StreamInvalidated));
+    assert_eq!(changed.trouble(false), Some(OutputTrouble::Gone));
+    assert!(!changed.left.load(Ordering::Relaxed), "the stream was invalidated, the device did not leave");
+    // An xrun loses nothing.
+    let xrun = Fault::default();
+    stream::lose_stream(&xrun, &cpal::Error::new(cpal::ErrorKind::Xrun));
+    assert_eq!(xrun.trouble(false), None);
 }
 
 #[test]

@@ -145,6 +145,13 @@ pub struct Recorder {
     pub device_name: String,
     pub sample_rate: u32,
     pub channels: usize,
+    /// The audio system (cpal host name) the input opened on.
+    system: &'static str,
+    /// The system default was opened as the device that was the default then (Core Audio's
+    /// default input; WASAPI when its default handle cannot open): the stream is not told when
+    /// the default moves to another device, so the app watches the default and reopens (see
+    /// [`crate::devices::default_names`]).
+    pub pinned_default: bool,
     /// The take writer, and what each track's take holds so far.
     writer: Option<(std::thread::JoinHandle<Takes>, Vec<(TrackId, Arc<Mutex<LiveTake>>)>)>,
     /// The callback count last seen, and since when.
@@ -235,7 +242,7 @@ impl Recorder {
     pub fn open_with(audio: &crate::AudioConfig) -> Result<Recorder, String> {
         use cpal::traits::{DeviceTrait, StreamTrait};
         let host = crate::devices::host(audio);
-        let device = crate::devices::device(&host, audio.input.as_deref(), false).ok_or("no audio input device")?;
+        let (device, pinned_default) = crate::devices::device(&host, audio.input.as_deref(), false, true).ok_or("no audio input device")?;
         let name = crate::devices::device_name(&device).unwrap_or_else(|| "Input".into());
         // At the chosen rate when the device offers it, so input and output run together: the
         // best format first, then the most channels.
@@ -282,7 +289,19 @@ impl Recorder {
         };
         stream.play().map_err(|e| e.to_string())?;
         let seen = (0, Instant::now());
-        Ok(Recorder { monitor, shared, _stream: Some(stream), device_name: name, sample_rate: config.sample_rate, channels, writer: None, seen })
+        let system = host.id().name();
+        Ok(Recorder {
+            monitor,
+            shared,
+            _stream: Some(stream),
+            device_name: name,
+            sample_rate: config.sample_rate,
+            channels,
+            system,
+            pinned_default,
+            writer: None,
+            seen,
+        })
     }
 
     #[cfg(target_os = "freebsd")]
@@ -330,7 +349,7 @@ impl Recorder {
         }
         let name = &self.device_name;
         match self.shared.fault.load(Ordering::Relaxed) {
-            GONE => return Some(Trouble::Device(format!("“{name}” is unavailable"))),
+            GONE => return Some(Trouble::Device(format!("“{name}” is unavailable."))),
             BROKEN => return Some(Trouble::Device("the audio input hit an internal error (see the log)".into())),
             _ => {}
         }
@@ -339,6 +358,20 @@ impl Recorder {
             self.seen = (beats, Instant::now());
         }
         (self.seen.1.elapsed() >= STALL).then(|| Trouble::Device(format!("“{name}” stopped sending audio")))
+    }
+
+    /// True when the input device went away (its stream reported it unavailable), as opposed to
+    /// stalling or hitting a bug: it can be reopened once the device is back.
+    pub fn gone(&self) -> bool {
+        self.shared.fault.load(Ordering::Relaxed) == GONE
+    }
+
+    /// Why the input stream was lost ([`Recorder::gone`]), as far as the audio system says. The
+    /// input keeps no `DeviceNotAvailable` flag of its own: on Core Audio it is said to have left
+    /// (`Left`, as it always was), on every other audio system the cause is `Unknown`, as for an
+    /// output there (see [`crate::devices::output_loss`]).
+    pub fn loss(&self) -> crate::OutputLoss {
+        crate::devices::output_loss(self.system, true)
     }
 
     /// Input the current take has lost to a slow disk so far, in milliseconds.
@@ -588,6 +621,8 @@ mod tests {
             device_name: "Mic In".into(),
             sample_rate: 48_000,
             channels: 1,
+            system: "CoreAudio",
+            pinned_default: false,
             writer: None,
             seen: (0, Instant::now()),
         }
@@ -613,9 +648,12 @@ mod tests {
         shared.guarded(|| ran = true);
         assert!(!ran);
         assert_eq!(r.trouble(), Some(Trouble::Device("the audio input hit an internal error (see the log)".into())));
+        assert!(!r.gone(), "a broken input is not one that went away");
         let gone = Arc::new(Shared::new(CaptureRing::new(64)));
         gone.fault.store(GONE, Ordering::Relaxed);
-        assert_eq!(recorder(&gone).trouble(), Some(Trouble::Device("“Mic In” is unavailable".into())));
+        let mut away = recorder(&gone);
+        assert_eq!(away.trouble(), Some(Trouble::Device("“Mic In” is unavailable.".into())));
+        assert!(away.gone(), "an input that went away can be reopened when it is back");
     }
 
     #[test]

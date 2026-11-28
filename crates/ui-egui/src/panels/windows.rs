@@ -454,15 +454,44 @@ pub fn recall_configuration(app: &mut SoundApp, saved: &Value) -> Result<(), Str
     Ok(())
 }
 
-/// The audio systems as last enumerated (enumerating probes devices: done when the window opens
-/// and on Refresh, not every frame).
-fn audio_systems(ctx: &egui::Context, refresh: bool) -> Arc<Vec<AudioSystem>> {
+/// The audio devices SoundCraft has open (output and input names) and whether one is lost: when
+/// this changes, the Playback Engine reads the device list again (see [`audio_systems`]).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+struct OpenAudio {
+    output: Option<String>,
+    input: Option<String>,
+    lost: bool,
+}
+
+impl OpenAudio {
+    fn of(app: &SoundApp) -> Self {
+        OpenAudio {
+            output: app.player.as_ref().map(|p| p.device_name.clone()),
+            input: app.recorder.as_ref().map(|r| r.device_name.clone()),
+            lost: app.offers_reconnect(),
+        }
+    }
+}
+
+/// The audio systems as last enumerated. Enumerating probes devices, so it is done when the window
+/// opens, on Refresh, and when the devices SoundCraft has open change (one was lost, reopened, or
+/// a default followed to another device), not every frame: the Default entries then name the
+/// current system defaults.
+fn audio_systems(ctx: &egui::Context, refresh: bool, open: &OpenAudio) -> Arc<Vec<AudioSystem>> {
+    systems_read(ctx, refresh, open, soundcraft_playback::devices::audio_systems)
+}
+
+/// [`audio_systems`] with the enumeration `read` passed in.
+fn systems_read(ctx: &egui::Context, refresh: bool, open: &OpenAudio, read: impl FnOnce() -> Vec<AudioSystem>) -> Arc<Vec<AudioSystem>> {
     let id = egui::Id::unique("audio_systems");
-    if !refresh && let Some(s) = ctx.data(|d| d.get_temp::<Arc<Vec<AudioSystem>>>(id)) {
+    if !refresh
+        && let Some((seen, s)) = ctx.data(|d| d.get_temp::<(OpenAudio, Arc<Vec<AudioSystem>>)>(id))
+        && seen == *open
+    {
         return s;
     }
-    let s = Arc::new(soundcraft_playback::devices::audio_systems());
-    ctx.data_mut(|d| d.insert_temp(id, Arc::clone(&s)));
+    let s = Arc::new(read());
+    ctx.data_mut(|d| d.insert_temp(id, (open.clone(), Arc::clone(&s))));
     s
 }
 
@@ -602,7 +631,8 @@ pub fn playback_engine(app: &mut SoundApp, ctx: &egui::Context) {
     let mut draft = ctx.data(|d| d.get_temp::<AudioConfig>(draft_id)).unwrap_or_else(|| app.ui.audio.clone());
     let mut refresh = false;
     let mut apply = false;
-    let systems = audio_systems(ctx, false);
+    let open_audio = OpenAudio::of(app);
+    let systems = audio_systems(ctx, false, &open_audio);
     win(ctx, &mut open, "Playback Engine", vec2(460.0, 360.0), |ui| {
         let t = Tokens::current();
         egui::Grid::new("pe").num_columns(2).spacing(vec2(12.0, 6.0)).show(ui, |ui| {
@@ -697,13 +727,13 @@ pub fn playback_engine(app: &mut SoundApp, ctx: &egui::Context) {
             let _ = app.run("options.delay_compensation", json!({"value": dc}));
         }
         if ui.button(crate::localization::text("Reconnect audio device")).clicked() {
-            app.reconnect_audio();
+            let _ = app.run("ui.reconnect_audio", json!({}));
         }
         ui.separator();
         midi_inputs(app, ui);
     });
     if refresh {
-        audio_systems(ctx, true);
+        audio_systems(ctx, true, &open_audio);
     }
     if apply && let Err(e) = app.apply_audio_config(draft.clone()) {
         app.ui.status = e;
@@ -714,7 +744,7 @@ pub fn playback_engine(app: &mut SoundApp, ctx: &egui::Context) {
         // Closing discards unapplied edits and the device list (re-read on the next open).
         ctx.data_mut(|d| {
             d.remove_temp::<AudioConfig>(draft_id);
-            d.remove_temp::<Arc<Vec<AudioSystem>>>(egui::Id::unique("audio_systems"));
+            d.remove_temp::<(OpenAudio, Arc<Vec<AudioSystem>>)>(egui::Id::unique("audio_systems"));
         });
     }
     app.ui.show_playback_engine = open;
@@ -745,14 +775,28 @@ pub fn audio_device_command(app: &mut SoundApp, p: &serde_json::Value) -> Result
     if changed {
         app.apply_audio_config(cfg)?;
     }
-    let device = app.player.as_ref().map(|pl| {
-        json!({"name": pl.device_name, "sample_rate": pl.device_rate, "channels": pl.device_channels, "buffer_size": pl.device_buffer, "silent": pl.silent})
-    });
+    let device = open_device(app);
     let mut out = json!({"config": app.ui.audio, "device": device});
     if p.get("list").and_then(Value::as_bool).unwrap_or(false) {
         out["systems"] = json!(soundcraft_playback::devices::audio_systems());
     }
     Ok(out)
+}
+
+/// The open output device, as `ui.audio_device` and `ui.reconnect_audio` return it.
+fn open_device(app: &SoundApp) -> Option<serde_json::Value> {
+    app.player.as_ref().map(|pl| {
+        json!({"name": pl.device_name, "sample_rate": pl.device_rate, "channels": pl.device_channels, "buffer_size": pl.device_buffer, "silent": pl.silent})
+    })
+}
+
+/// `ui.reconnect_audio`: reopens the audio devices with the current choice, as Reconnect audio
+/// device does (a take in progress is kept). Returns the open device and the status line, which
+/// says what opened.
+pub fn reconnect_audio_command(app: &mut SoundApp) -> Result<serde_json::Value, String> {
+    app.reconnect_audio();
+    let device = open_device(app);
+    Ok(json!({"device": device, "status": app.ui.status}))
 }
 
 /// Programmatic `setup.playback_engine` / `setup.hardware`. `device` is the output name and
@@ -976,5 +1020,48 @@ mod audio_health_tests {
         let mut output = ctx.run_ui(egui::RawInput::default(), |ui| audio_health(&mut app, ui.ctx()));
         output.textures_delta.clear();
         assert!(app.audio_health_report.is_some());
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod device_list_tests {
+    use super::*;
+
+    fn wasapi(default_input: &str) -> Vec<AudioSystem> {
+        let input = |name: &str| DeviceInfo {
+            name: name.into(),
+            is_default: name == default_input,
+            max_channels: 2,
+            sample_rates: vec![48_000],
+            buffer_min: None,
+            buffer_max: None,
+        };
+        vec![AudioSystem { name: "WASAPI".into(), is_default: true, outputs: Vec::new(), inputs: vec![input("Mic (Model 12)"), input("Webcam 4")] }]
+    }
+
+    fn default_input(systems: &[AudioSystem]) -> Option<&str> {
+        systems[0].inputs.iter().find(|d| d.is_default).map(|d| d.name.as_str())
+    }
+
+    /// The Playback Engine's Default entries name the system default as listed: once SoundCraft
+    /// reopens a lost default on another device, the list is read again, so the entry does not
+    /// keep naming the device that went away (seen on Windows for the input), while an unchanged
+    /// set of open devices keeps the list read before (reading probes every device).
+    #[test]
+    fn the_device_list_is_read_again_when_soundcraft_reopens_a_device_elsewhere() {
+        let ctx = egui::Context::default();
+        let before = OpenAudio { output: Some("Speakers (Model 12)".into()), input: Some("Mic (Model 12)".into()), lost: false };
+        let first = systems_read(&ctx, false, &before, || wasapi("Mic (Model 12)"));
+        assert_eq!(default_input(&first), Some("Mic (Model 12)"));
+        let mut reads = 0;
+        systems_read(&ctx, false, &before, || {
+            reads += 1;
+            wasapi("Mic (Model 12)")
+        });
+        assert_eq!(reads, 0, "nothing changed: the list read before is kept");
+        let after = OpenAudio { output: Some("ET322QK".into()), input: Some("Webcam 4".into()), lost: false };
+        let now = systems_read(&ctx, false, &after, || wasapi("Webcam 4"));
+        assert_eq!(default_input(&now), Some("Webcam 4"));
     }
 }

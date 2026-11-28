@@ -11,27 +11,59 @@ use soundcraft_model::TrackKind;
 pub(crate) struct Fault {
     /// A block panicked: output stays silent from then on.
     failed: AtomicBool,
-    /// The device went away or the stream was invalidated: only a reconnect can restore audio.
+    /// The device went away or the stream was invalidated: the UI reopens it once the device (or,
+    /// with the system default chosen, any default) is listed again, or on Reconnect.
     pub(crate) gone: AtomicBool,
+    /// The error was `DeviceNotAvailable`, as opposed to `StreamInvalidated`. On Core Audio that
+    /// tells a device that went away from a stream invalidated while the device stayed (another
+    /// app changed its sample rate); elsewhere it does not (see [`crate::devices::output_loss`]).
+    pub(crate) left: AtomicBool,
+    /// The device stopped asking for audio while playing (reported as `Stalled`): only a
+    /// reconnect can restore audio (unlike a lost stream, nothing is waited for). Kept on every audio system, from one
+    /// observation: on Windows (WASAPI, a Model 12 just replugged) Play was accepted after the
+    /// stall with the position stuck at 0. Also seen after a Windows sleep and wake (Model 12):
+    /// the output stalled, and again after each Reconnect until the interface was replugged (see
+    /// the UI's `STALLED_AGAIN`).
+    stalled: AtomicBool,
     /// Blocks so far, to tell a device that stopped asking for audio.
     pub(crate) beats: std::sync::atomic::AtomicU64,
-    /// The UI has been told.
-    reported: AtomicBool,
+    /// The most serious trouble the UI has been told (0: none; see [`severity`]).
+    reported: std::sync::atomic::AtomicU8,
 }
 
 impl Fault {
-    /// What stopped the output, once.
+    /// True while the output cannot play: a block panicked, the stream was lost, or the device
+    /// stopped asking for audio. Unlike [`Fault::trouble`], it keeps answering after the UI has
+    /// been told.
+    pub(crate) fn lost(&self) -> bool {
+        self.failed.load(Ordering::Relaxed) || self.gone.load(Ordering::Relaxed) || self.stalled.load(Ordering::Relaxed)
+    }
+
+    /// What stopped the output, once. A more serious trouble found later is told too: a device
+    /// unplugged while playing can stall before the audio system reports it gone, and only the
+    /// loss lets the UI reopen it when it is back.
     pub(crate) fn trouble(&self, stalled: bool) -> Option<OutputTrouble> {
         let trouble = if self.failed.load(Ordering::Relaxed) {
             OutputTrouble::Bug
         } else if self.gone.load(Ordering::Relaxed) {
             OutputTrouble::Gone
-        } else if stalled {
+        } else if stalled || self.stalled.load(Ordering::Relaxed) {
+            // Kept: the stall is measured only while playing, and the transport stops on it.
+            self.stalled.store(true, Ordering::Relaxed);
             OutputTrouble::Stalled
         } else {
             return None;
         };
-        (!self.reported.swap(true, Ordering::Relaxed)).then_some(trouble)
+        (self.reported.fetch_max(severity(trouble), Ordering::Relaxed) < severity(trouble)).then_some(trouble)
+    }
+}
+
+/// How serious `trouble` is, in the order [`Fault::trouble`] checks it.
+fn severity(trouble: OutputTrouble) -> u8 {
+    match trouble {
+        OutputTrouble::Stalled => 1,
+        OutputTrouble::Gone => 2,
+        OutputTrouble::Bug => 3,
     }
 }
 

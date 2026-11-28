@@ -13,6 +13,18 @@ pub(crate) fn start_stream(stream: &impl cpal::traits::StreamTrait) -> bool {
     }
 }
 
+/// Mark the output lost when `e` means the stream is dead (see [`devices::stream_lost`]), noting
+/// whether the error was `DeviceNotAvailable` (what that means depends on the audio system, see
+/// [`devices::output_loss`]).
+pub(crate) fn lose_stream(fault: &Fault, e: &cpal::Error) {
+    if devices::stream_lost(e) {
+        if e.kind() == cpal::ErrorKind::DeviceNotAvailable {
+            fault.left.store(true, Ordering::Relaxed);
+        }
+        fault.gone.store(true, Ordering::Relaxed);
+    }
+}
+
 /// A built output stream and the channels and fault flag its callback shares with the player.
 pub(crate) struct Opened {
     pub(crate) stream: cpal::Stream,
@@ -74,12 +86,11 @@ where
         move |e: cpal::Error| {
             mark_audio_thread();
             // cpal 0.18 uses one error type for every operation. A device that went away, or a
-            // stream that must be rebuilt (`StreamInvalidated`), stops playback until the user
-            // reconnects; a rerouted default device (`DeviceChanged`) keeps playing on the new
-            // route, and an xrun is transient, so neither counts as losing the stream.
-            if devices::stream_lost(&e) {
-                gone.gone.store(true, Ordering::Relaxed);
-            }
+            // stream that must be rebuilt (`StreamInvalidated`), stops playback until the stream is
+            // reopened: by the app once the device is listed (again), or by Reconnect; a rerouted
+            // default device (`DeviceChanged`) keeps playing on the new route, and an xrun is
+            // transient, so neither counts as losing the stream.
+            lose_stream(&gone, &e);
             log::warn!("audio stream error: {e}");
         },
         None,
@@ -89,16 +100,24 @@ where
 /// Open the output device `cfg` chooses (else the default) at the chosen rate (else the session
 /// rate) if possible, in the best sample format it offers (f32, else 32- or 16-bit integers),
 /// with as many channels as it offers up to `want_ch` (at least stereo when available), and the
-/// chosen buffer size when the device allows it.
+/// chosen buffer size when the device allows it. With `required_output`, that device or none:
+/// an error rather than the system default when it is not to be found (see
+/// [`not_the_required_output`]).
 pub(crate) fn open_device(
     want_rate: u32,
     want_ch: u16,
     cfg: &AudioConfig,
-) -> Result<(cpal::Device, cpal::StreamConfig, cpal::SampleFormat, String), String> {
+    required_output: Option<&str>,
+) -> Result<(cpal::Device, cpal::StreamConfig, cpal::SampleFormat, String, &'static str, bool), String> {
     use cpal::traits::DeviceTrait;
     let host = devices::host(cfg);
-    let device = devices::device(&host, cfg.output.as_deref(), true).ok_or_else(|| "no output device".to_string())?;
+    let unavailable = |required: &str| format!("The requested audio output {required} is unavailable");
+    let (device, pinned) = devices::device(&host, required_output.or(cfg.output.as_deref()), true, required_output.is_none())
+        .ok_or_else(|| required_output.map_or_else(|| "no output device".to_string(), unavailable))?;
     let name = devices::device_name(&device).unwrap_or_else(|| "Audio device".into());
+    if not_the_required_output(required_output, cfg.system.as_deref(), &name, host.id().name()) {
+        return Err(unavailable(required_output.unwrap_or_default()));
+    }
     // Prefer a config at the chosen (else session) rate; else the device default (we resample).
     let want_ch = want_ch.max(2);
     let rates: Vec<u32> = cfg.sample_rate.into_iter().chain(Some(want_rate)).collect();
@@ -129,7 +148,16 @@ pub(crate) fn open_device(
             (stream_config, c.sample_format())
         }
     };
-    Ok((device, config, format, name))
+    Ok((device, config, format, name, host.id().name(), pinned))
+}
+
+/// Whether the output a device lookup found (`name`, on audio system `host`) is not the one that
+/// must open by its name (`required`, on the audio system `system` when one is chosen). The
+/// lookup does not fall back to the system default for a required device, but the audio system
+/// falls back to the default one when the chosen one is not available, which may list a device of
+/// the same name; `required` is `None` when any device will do (the system default chosen).
+pub(crate) fn not_the_required_output(required: Option<&str>, system: Option<&str>, name: &str, host: &str) -> bool {
+    required.is_some_and(|required| name != required || system.is_some_and(|system| !host.eq_ignore_ascii_case(system)))
 }
 
 /// Pick the output configuration for the first requested rate the device offers (the configured
