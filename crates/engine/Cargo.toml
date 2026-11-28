@@ -33,6 +33,7 @@ winsafe = { version = "0.0.29", features = ["kernel"] }
 
 [dev-dependencies]
 cfb.workspace = true
+craft-aaf.workspace = true
 proptest.workspace = true
 zip.workspace = true
 

@@ -218,6 +218,7 @@ pub(super) fn translate(source: &str) -> Option<&'static str> {
             "Renderizações e processos do AudioSuite são concluídos antes de retornar."
         }
         "Reopen the audio devices with these settings" => "Reabrir os dispositivos de áudio com estas configurações",
+        "Report a problem" => "Relatar um problema",
         "Reset" => "Redefinir",
         "Reverse the order" => "Inverter a ordem",
         "Revert" => "Reverter",
@@ -288,6 +289,7 @@ pub(super) fn translate(source: &str) -> Option<&'static str> {
         "Transpose" => "Transpor",
         "Unknown label" => "Rótulo desconhecido",
         "Update check is not supported in the web browser." => "A verificação de atualizações não é compatível com o navegador.",
+        "Updated by ArtCraft Launcher." => "Atualizado pelo ArtCraft Launcher.",
         "Use" => "Usar",
         "User presets need the desktop app." => "As predefinições do usuário exigem o aplicativo para desktop.",
         "Uses the edit selection." => "Usa a seleção de edição.",

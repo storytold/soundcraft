@@ -27,6 +27,15 @@ fn invoke(dir: &Path, args: &[&str]) -> Output {
 }
 
 #[test]
+fn script_accepts_a_leading_utf8_bom() {
+    let dir = Scratch::new();
+    std::fs::write(dir.0.join("bom.txt"), "\u{feff}track.new {\"name\":\"BOM\",\"count\":1,\"format\":\"stereo\"}\n").unwrap();
+    let output = invoke(&dir.0, &["script", "bom.txt"]);
+    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+    assert!(String::from_utf8_lossy(&output.stdout).contains("track.new:"));
+}
+
+#[test]
 fn keep_going_runs_later_commands_and_finishes_but_reports_failure() {
     let dir = Scratch::new();
     std::fs::write(

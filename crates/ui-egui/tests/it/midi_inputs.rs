@@ -20,13 +20,14 @@ fn harness(disabled: &[&str]) -> Harness<'static, SoundApp> {
     app.midi_inputs = Some(MidiInputs::with_port_names(names(disabled), names(&["Keys", "Drum Pad"])));
     app.ui.midi_inputs_off = names(disabled);
     app.ui.show_playback_engine = true;
-    let mut h = Harness::builder().with_size(vec2(1600.0, 1000.0)).build_ui_state(
-        |ui, app: &mut SoundApp| {
-            app.logic(&ui.ctx().clone());
-            app.ui(ui);
-        },
-        app,
-    );
+    let mut h =
+        Harness::builder().with_context_setup(soundcraft_ui_egui::framework::install_headless).with_size(vec2(1600.0, 1000.0)).build_ui_state(
+            |ui, app: &mut SoundApp| {
+                app.logic(&ui.ctx().clone());
+                app.ui(ui);
+            },
+            app,
+        );
     h.run_steps(3);
     h
 }
