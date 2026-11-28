@@ -162,7 +162,11 @@ pub fn specs() -> Vec<CommandSpec> {
                 let t = match track {
                     Some(t) if s.track(t).is_some_and(|x| x.kind == soundcraft_model::TrackKind::Audio) => t,
                     Some(_) => return Err(bad("clip.place_source", "audio files go on audio tracks")),
-                    None => s.add_track(soundcraft_model::TrackKind::Audio, soundcraft_model::ChannelFormat::for_channels(chans.min(2)), Some(&name)),
+                    None => {
+                        let t =
+                            s.add_track(soundcraft_model::TrackKind::Audio, soundcraft_model::ChannelFormat::for_channels(chans.min(2)), Some(&name));
+                        crate::no_input::assign_first_input(s, t)
+                    }
                 };
                 let (sh, len) = (s.edit.edit_mode == soundcraft_model::EditMode::Shuffle, frames.max(1));
                 let at = if sh { crate::edit::shuffle_slot(s, t, at, &[]) } else { at };

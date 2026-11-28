@@ -669,6 +669,18 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    #[test]
+    fn a_channel_the_device_does_not_have_is_recorded_as_digital_silence() {
+        // A track with no input records `usize::MAX`, a channel no device has.
+        let dir = std::env::temp_dir().join(format!("soundcraft-silent-take-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let mut take = TakeWriter::create(TrackId(1), vec![usize::MAX, 0], dir.join("Vox_01.wav"), 48_000, ONE_FILE).unwrap();
+        take.write(&[0.25; 200], 2);
+        take.write_header();
+        assert_eq!(decode(&dir.join("Vox_01.wav")), vec![vec![0.0; 100], vec![0.25; 100]]);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// Files of 100 stereo or 200 mono frames: blocks that straddle a file's end are split there.
     #[test]
     fn a_take_that_fills_its_file_goes_on_in_the_next() {
