@@ -98,8 +98,16 @@ pub fn specs() -> Vec<CommandSpec> {
         )),
         cmd!("track.commit", "Commit...", ["Track"], Some("Alt+Shift+C"), "{tracks?}", has_selection, commit),
         cmd!("track.bounce", "Bounce...", ["Track"], Some("Cmd+Alt+Shift+B"), "{tracks?}", has_selection, commit),
-        cmd!("track.bypass_inserts", "All", ["Track", "Bypass Inserts"], None, "{tracks?, bypass?: bool}", has_selection, bypass_inserts),
-        cmd!("track.mute_sends", "All", ["Track", "Mute Sends"], None, "{tracks?, mute?: bool}", has_selection, mute_sends),
+        cmd!("track.bypass_inserts", "All", ["Track", "Bypass Inserts"], Some("Shift+A"), "{tracks?, bypass?: bool}", has_selection, bypass_inserts),
+        cmd!(
+            "track.mute_sends",
+            "All",
+            ["Track", "Mute Sends"],
+            Some("Shift+Q"),
+            "{tracks?, mute?: bool} (toggles when omitted)",
+            has_selection,
+            |e, p| super::track_more::mute_sends_where(e, p, 0, 10)
+        ),
         cmd!(noundo "track.set_record_to_input_only", "Set Record Tracks to Input Only", ["Track"], Some("Alt+K"), "{}", always, |e, _| {
             let s = e.runtime_session_mut();
             let mut n = 0;
@@ -292,6 +300,7 @@ fn new_track_row(e: &mut Engine, p: &Value) -> Result<Vec<TrackId>> {
     let mut ids = Vec::new();
     for _ in 0..count {
         let id = s.add_track(kind, format, name.as_deref());
+        crate::no_input::assign_first_input(s, id);
         if let Some(t) = s.track_mut(id) {
             if let Some(tb) = ticks {
                 t.ticks_timebase = tb;
@@ -466,6 +475,7 @@ fn split_mono(e: &mut Engine, p: &Value) -> Result<Value> {
                 _ => format!("{}", ch + 1),
             };
             let id = s.add_track(TrackKind::Audio, ChannelFormat::Mono, Some(&format!("{}.{suffix}", src.name)));
+            crate::no_input::assign_first_input(s, id);
             let mut clips = src.clips().to_vec();
             for c in &mut clips {
                 c.id = s.new_clip_id();
@@ -950,20 +960,6 @@ fn bypass_inserts(e: &mut Engine, p: &Value) -> Result<Value> {
         }
     }
     Ok(json!({"bypass": target}))
-}
-
-fn mute_sends(e: &mut Engine, p: &Value) -> Result<Value> {
-    let tracks = tracks_required(e, "track.mute_sends", p)?;
-    let s = e.session_mut();
-    let target = p.get("mute").and_then(Value::as_bool).unwrap_or(true);
-    for t in &tracks {
-        if let Some(tr) = s.track_mut(*t) {
-            for snd in tr.mixer.sends.iter_mut().flatten() {
-                snd.mute = target;
-            }
-        }
-    }
-    Ok(json!({"mute": target}))
 }
 
 fn create_click(e: &mut Engine, _: &Value) -> Result<Value> {

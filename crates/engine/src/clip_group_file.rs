@@ -168,7 +168,8 @@ pub fn import(e: &mut Engine, path: &str, first: Option<TrackId>, at: Samples) -
                     .unwrap_or(2);
                 let kind = if audio_lane { soundcraft_model::TrackKind::Audio } else { soundcraft_model::TrackKind::Midi };
                 let fmt = if channels == 1 { soundcraft_model::ChannelFormat::Mono } else { soundcraft_model::ChannelFormat::Stereo };
-                s.add_track(kind, fmt, Some("Clip Group"))
+                let t = s.add_track(kind, fmt, Some("Clip Group"));
+                crate::no_input::assign_first_input(s, t)
             }
         };
         let mut prepared = Vec::new();

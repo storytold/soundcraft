@@ -175,6 +175,62 @@ pub(crate) fn device(host: &cpal::Host, name: Option<&str>, output: bool) -> Opt
     if output { host.default_output_device() } else { host.default_input_device() }
 }
 
+/// Why the device does not run at the chosen buffer size, when it does not. `running` is the
+/// size the open stream reports it runs at, when it reports one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BufferNote {
+    /// The size is outside the range the driver reports; the device runs at its default buffer.
+    /// A range of one size (a shared-mode WASAPI device reports only its period) means the device
+    /// runs only at that size.
+    OutsideRange { min: u32, max: u32, running: Option<u32> },
+    /// The driver refused the size although it reports no range, or one that holds the size; the
+    /// device runs at its default buffer.
+    Refused { want: u32, running: Option<u32> },
+    /// The device took the size, but the open stream runs at another one (a host may round a
+    /// fixed size to one the hardware supports).
+    Rounded { want: u32, running: u32 },
+}
+
+impl BufferNote {
+    /// The note in English (the reply's `buffer_note`, and the key of the window's translation).
+    pub fn english(&self) -> String {
+        match *self {
+            BufferNote::OutsideRange { min, max, .. } if min == max => format!("The device runs only at {min} samples."),
+            BufferNote::OutsideRange { min, max, running: Some(n) } => {
+                format!("The device allows {min}–{max} samples; it runs at its default buffer, {n} samples.")
+            }
+            BufferNote::OutsideRange { min, max, running: None } => format!("The device allows {min}–{max} samples; it runs at its default buffer."),
+            BufferNote::Refused { want, running: Some(n) } => {
+                format!("The device did not take {want} samples; it runs at its default buffer, {n} samples.")
+            }
+            BufferNote::Refused { want, running: None } => format!("The device did not take {want} samples; it runs at its default buffer."),
+            BufferNote::Rounded { want, running } => format!("The device runs at {running} samples, not {want}."),
+        }
+    }
+}
+
+/// The note for a chosen buffer (`want`) the device did not take (`used`, `None` for its
+/// default), or took but runs at another size, given the range its driver reports and the size
+/// the open stream runs at.
+pub fn buffer_note(want: Option<u32>, used: Option<u32>, range: Option<(u32, u32)>, running: Option<u32>) -> Option<BufferNote> {
+    let want = want?;
+    if used == Some(want) {
+        return running.filter(|&n| n != want).map(|running| BufferNote::Rounded { want, running });
+    }
+    Some(match range {
+        Some((min, max)) if !(min..=max).contains(&want) => BufferNote::OutsideRange { min, max, running },
+        _ => BufferNote::Refused { want, running },
+    })
+}
+
+/// The range a driver reports, if it reports one.
+pub(crate) fn buffer_range(supported: &cpal::SupportedBufferSize) -> Option<(u32, u32)> {
+    match supported {
+        cpal::SupportedBufferSize::Range { min, max } => Some((*min, *max)),
+        cpal::SupportedBufferSize::Unknown => None,
+    }
+}
+
 /// The buffer to request: the chosen size when the device's range allows it, else the default.
 pub(crate) fn buffer_size(want: Option<u32>, supported: &cpal::SupportedBufferSize) -> cpal::BufferSize {
     match (want, supported) {
@@ -189,6 +245,55 @@ pub(crate) fn buffer_size(want: Option<u32>, supported: &cpal::SupportedBufferSi
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A buffer the driver does not take is said, not silently replaced (#1757).
+    #[test]
+    fn a_buffer_the_device_did_not_take_gets_a_note() {
+        // The RME UFX on Core Audio allows 15..=3072 frames (measured); 4096 opens at its default.
+        assert_eq!(buffer_note(Some(4096), None, Some((15, 3072)), None), Some(BufferNote::OutsideRange { min: 15, max: 3072, running: None }));
+        assert_eq!(
+            BufferNote::OutsideRange { min: 15, max: 3072, running: None }.english(),
+            "The device allows 15–3072 samples; it runs at its default buffer."
+        );
+        // The driver gave no range and refused the size.
+        assert_eq!(buffer_note(Some(100), None, None, None), Some(BufferNote::Refused { want: 100, running: None }));
+        // A size within the reported range that still failed is refused, not outside the range.
+        assert_eq!(buffer_note(Some(256), None, Some((15, 3072)), None), Some(BufferNote::Refused { want: 256, running: None }));
+        // Taken as asked, or nothing asked: no note.
+        assert_eq!(buffer_note(Some(256), Some(256), Some((15, 3072)), Some(256)), None);
+        assert_eq!(buffer_note(None, None, Some((15, 3072)), Some(512)), None);
+    }
+
+    /// The note says the size the device runs at, when the stream reports it.
+    #[test]
+    fn the_note_says_the_buffer_the_device_runs_at() {
+        let note = buffer_note(Some(4096), None, Some((15, 3072)), Some(512)).unwrap();
+        assert_eq!(note, BufferNote::OutsideRange { min: 15, max: 3072, running: Some(512) });
+        assert_eq!(note.english(), "The device allows 15–3072 samples; it runs at its default buffer, 512 samples.");
+        let refused = buffer_note(Some(100), None, None, Some(480)).unwrap();
+        assert_eq!(refused.english(), "The device did not take 100 samples; it runs at its default buffer, 480 samples.");
+    }
+
+    /// A fixed size the device opened with can still run at another size (cpal: "the host may
+    /// round to hardware-supported values"); the note names the size it runs at.
+    #[test]
+    fn a_size_the_device_took_but_runs_differently_gets_a_note() {
+        let note = buffer_note(Some(100), Some(100), Some((15, 3072)), Some(128)).unwrap();
+        assert_eq!(note, BufferNote::Rounded { want: 100, running: 128 });
+        assert_eq!(note.english(), "The device runs at 128 samples, not 100.");
+        assert_eq!(buffer_note(Some(100), Some(100), Some((15, 3072)), Some(100)), None, "runs as asked");
+        assert_eq!(buffer_note(Some(100), Some(100), Some((15, 3072)), None), None, "no running size reported");
+    }
+
+    /// A shared-mode WASAPI device reports one size (its period, 480 frames at 48 kHz on the
+    /// Windows test machine), so the range has a single value.
+    #[test]
+    fn a_device_with_one_buffer_size_is_said_to_run_only_at_it() {
+        let note = buffer_note(Some(256), None, Some((480, 480)), Some(480)).unwrap();
+        assert_eq!(note, BufferNote::OutsideRange { min: 480, max: 480, running: Some(480) });
+        assert_eq!(note.english(), "The device runs only at 480 samples.");
+        assert_eq!(buffer_note(Some(256), None, Some((480, 480)), None).unwrap().english(), "The device runs only at 480 samples.");
+    }
 
     #[test]
     fn config_round_trips_and_tolerates_missing_fields() {
