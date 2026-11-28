@@ -249,7 +249,7 @@ fn pro_tools_shift_keys_bypass_inserts_and_mute_sends() {
             let before = app.engine.journal.len();
             press(&ctx, &mut app, key, Modifiers::SHIFT);
             assert_eq!(app.engine.journal.len(), before + 1, "{os:?} Shift+{key:?}: {}", app.ui.status);
-            assert_eq!(app.engine.journal.last().unwrap().0, id, "{os:?} Shift+{key:?}");
+            assert_eq!(app.engine.journal.back().unwrap().0, id, "{os:?} Shift+{key:?}");
         }
         let muted = |app: &SoundApp| app.engine.session().track_by_name("Snare").unwrap().mixer.sends[0].as_ref().is_some_and(|s| s.mute);
         let was = muted(&app);
@@ -257,5 +257,20 @@ fn pro_tools_shift_keys_bypass_inserts_and_mute_sends() {
         assert_ne!(muted(&app), was, "{os:?}");
         press(&ctx, &mut app, Key::Q, Modifiers::SHIFT);
         assert_eq!(muted(&app), was, "{os:?}: a second Shift+Q unmutes");
+
+        // The keys reach the right inserts, not just the right command ids: Kick has an EQ then a compressor.
+        app.engine.execute("edit.select", &json!({"tracks": ["Kick"]})).unwrap();
+        let bypassed = |app: &SoundApp| -> Vec<bool> {
+            app.engine.session().track_by_name("Kick").unwrap().mixer.inserts.iter().take(2).map(|i| i.as_ref().unwrap().bypass).collect()
+        };
+        let before = bypassed(&app);
+        press(&ctx, &mut app, Key::E, Modifiers::SHIFT);
+        let after_eq = bypassed(&app);
+        assert_ne!(after_eq[0], before[0], "{os:?}: Shift+E flips the EQ");
+        assert_eq!(after_eq[1], before[1], "{os:?}: Shift+E leaves the compressor");
+        press(&ctx, &mut app, Key::C, Modifiers::SHIFT);
+        let after_dyn = bypassed(&app);
+        assert_ne!(after_dyn[1], before[1], "{os:?}: Shift+C flips the compressor");
+        assert_eq!(after_dyn[0], after_eq[0], "{os:?}: Shift+C leaves the EQ");
     }
 }
