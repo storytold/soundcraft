@@ -2065,6 +2065,11 @@ fn menu_translate(source: &str) -> Option<&'static str> {
         " {n} of the files are used by {users}" => " {n} dos arquivos são usados por {users}",
         " The file stays on disk." => " O arquivo permanece no disco.",
         " The files stay on disk." => " Os arquivos permanecem no disco.",
+        "Unloop" => "Desativar loop",
+        "Flatten" => "Consolidar",
+        "Remove deletes the loop iterations and keeps the source clip. Flatten keeps each loop iteration as its own clip." => {
+            "Remover exclui as iterações do loop e mantém o clipe de origem. Consolidar mantém cada iteração do loop como um clipe próprio."
+        }
         _ => return error_translation(source),
     })
 }
