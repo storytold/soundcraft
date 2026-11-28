@@ -10,7 +10,10 @@
 //! - "Fixture Synth" (`Instrument|Synth`): a single-component instrument (the component is also
 //!   its edit controller). No audio input, one stereo output, one event input; every output
 //!   sample is the velocity of the held note (sample-accurate), 0 when none. Poly pressure, and
-//!   MIDI CC 7 through `IMidiMapping` (hidden parameter 1), set it to their value too.
+//!   MIDI CC 7 through `IMidiMapping` (hidden parameter 1), set it to their value too. On channel
+//!   1, Program Change (controller 130) maps to the hidden Program Change parameter 2000 with 8
+//!   programs: each sets the output to 10 + 7 × its normalized value, and the last one outputs the
+//!   project time instead (samples on the left channel, quarter notes on the right).
 //! - "Fixture Wide 16x64", "Fixture Wide 32 buses", "Fixture Wide 65 buses", "Fixture Wide 65
 //!   channels" (`Fx`): effects advertising wide layouts (16 buses of 64 channels, 32 and 65 buses
 //!   of 2 channels, one bus of 65 channels per direction), through `getBusInfo` only. `process` writes 1.0 into every channel
@@ -431,6 +434,7 @@ impl IEditControllerTrait for GainController {
 
 struct Synth {
     level: AtomicU32,
+    context_output: AtomicBool,
     _live: Live,
 }
 
@@ -440,11 +444,12 @@ impl Class for Synth {
 
 /// The synth's hidden parameter that MIDI CC 7 drives.
 const VOLUME_PARAM: ParamID = 1;
+const PROGRAM_PARAM: ParamID = 2000;
 
 impl IMidiMappingTrait for Synth {
     unsafe fn getMidiControllerAssignment(&self, bus: i32, channel: i16, ctrl: CtrlNumber, id: *mut ParamID) -> tresult {
-        if bus == 0 && channel == 0 && ctrl == 7 {
-            unsafe { *id = VOLUME_PARAM };
+        if bus == 0 && channel == 0 && (ctrl == 7 || ctrl == 130) {
+            unsafe { *id = if ctrl == 130 { PROGRAM_PARAM } else { VOLUME_PARAM } };
             kResultOk
         } else {
             kResultFalse
@@ -553,19 +558,29 @@ impl IAudioProcessorTrait for Synth {
                 }
             }
         }
-        let mut volume = None;
+        let mut points = Vec::new();
         if let Some(changes) = unsafe { ComRef::from_raw(d.inputParameterChanges) } {
             for i in 0..unsafe { changes.getParameterCount() } {
-                let Some(q) = (unsafe { ComRef::from_raw(changes.getParameterData(i)) }) else { continue };
-                let (mut at, mut v) = (0i32, 0f64);
-                if unsafe { q.getParameterId() } == VOLUME_PARAM && unsafe { q.getPoint(0, &mut at, &mut v) } == kResultOk {
-                    volume = Some((at.max(0) as usize, v as f32));
+                let Some(queue) = (unsafe { ComRef::from_raw(changes.getParameterData(i)) }) else { continue };
+                let id = unsafe { queue.getParameterId() };
+                if !matches!(id, VOLUME_PARAM | PROGRAM_PARAM) {
+                    continue;
+                }
+                for point in 0..unsafe { queue.getPointCount() } {
+                    let (mut at, mut value) = (0, 0.0);
+                    if unsafe { queue.getPoint(point, &mut at, &mut value) } == kResultOk {
+                        points.push((at.max(0) as usize, id, value));
+                    }
                 }
             }
         }
+        points.sort_by_key(|&(at, _, _)| at);
+        let mut points = points.into_iter().peekable();
+        let context = unsafe { d.processContext.as_ref() }.map(|c| [c.projectTimeSamples as f32, c.projectTimeMusic as f32]);
         let outs = unsafe { channels(&*d.outputs, frames) };
         let mut level = f32::from_bits(self.level.load(Ordering::Relaxed));
-        let mut out = vec![0.0f32; frames];
+        let mut context_output = self.context_output.load(Ordering::Relaxed);
+        let mut out = vec![[0.0f32; 2]; frames];
         for (i, o) in out.iter_mut().enumerate() {
             for e in events.iter().filter(|e| e.sampleOffset as usize == i) {
                 if e.r#type == Event_::EventTypes_::kNoteOnEvent as u16 {
@@ -576,16 +591,23 @@ impl IAudioProcessorTrait for Synth {
                     level = unsafe { e.__field0.polyPressure.pressure };
                 }
             }
-            if let Some((at, v)) = volume
-                && at == i
-            {
-                level = v;
+            while let Some((_, id, value)) = points.next_if(|&(at, _, _)| at == i) {
+                if id == PROGRAM_PARAM {
+                    // The last test program exposes the process context on the stereo output.
+                    context_output = value == 1.0;
+                    level = 10.0 + value as f32 * 7.0;
+                } else {
+                    level = value as f32;
+                }
             }
-            *o = level;
+            *o = context.filter(|_| context_output).unwrap_or([level; 2]);
         }
         self.level.store(level.to_bits(), Ordering::Relaxed);
-        for ch in outs {
-            ch.copy_from_slice(&out);
+        self.context_output.store(context_output, Ordering::Relaxed);
+        for (index, ch) in outs.into_iter().enumerate() {
+            for (sample, frame) in ch.iter_mut().zip(&out) {
+                *sample = frame.get(index).copied().unwrap_or(0.0);
+            }
         }
         kResultOk
     }
@@ -605,10 +627,18 @@ impl IEditControllerTrait for Synth {
         kResultOk
     }
     unsafe fn getParameterCount(&self) -> i32 {
-        0
+        1
     }
-    unsafe fn getParameterInfo(&self, _index: i32, _info: *mut ParameterInfo) -> tresult {
-        kInvalidArgument
+    unsafe fn getParameterInfo(&self, index: i32, info: *mut ParameterInfo) -> tresult {
+        if index != 0 {
+            return kInvalidArgument;
+        }
+        let info = unsafe { &mut *info };
+        info.id = PROGRAM_PARAM;
+        copy_c16("Program", &mut info.title);
+        info.stepCount = 7;
+        info.flags = ParameterInfo_::ParameterFlags_::kIsProgramChange | ParameterInfo_::ParameterFlags_::kIsHidden;
+        kResultOk
     }
     unsafe fn getParamStringByValue(&self, _id: u32, _n: f64, _s: *mut String128) -> tresult {
         kInvalidArgument
@@ -791,7 +821,8 @@ impl IPluginFactoryTrait for Factory {
             })
             .to_com_ptr::<FUnknown>()
         } else if cid == SYNTH_CID {
-            ComWrapper::new(Synth { level: AtomicU32::new(0), _live: Live::new(&OBJECTS) }).to_com_ptr::<FUnknown>()
+            ComWrapper::new(Synth { level: AtomicU32::new(0), context_output: AtomicBool::new(false), _live: Live::new(&OBJECTS) })
+                .to_com_ptr::<FUnknown>()
         } else if let Some((buses, channels)) = [(WIDE16_CID, (16, 64)), (WIDE32_CID, (32, 2)), (WIDE65B_CID, (65, 2)), (WIDE65_CID, (1, 65))]
             .into_iter()
             .find_map(|(c, layout)| (c == cid).then_some(layout))

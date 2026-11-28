@@ -108,6 +108,14 @@ fn ok(r: sb::tresult) -> bool {
 /// VST3's numbers for the MIDI controllers that aren't CCs.
 pub(crate) const AFTERTOUCH: usize = sv::ControllerNumbers_::kAfterTouch as usize;
 pub(crate) const PITCH_BEND: usize = sv::ControllerNumbers_::kPitchBend as usize;
+pub(crate) const PROGRAM_CHANGE: usize = sv::ControllerNumbers_::kCtrlProgramChange as usize;
+
+pub(crate) const MAP_STRIDE: usize = PROGRAM_CHANGE + 1;
+pub(crate) const MIDI_CHANNELS: usize = 16;
+
+pub(crate) fn map_index(channel: usize, controller: usize) -> Option<usize> {
+    (channel < MIDI_CHANNELS && controller < MAP_STRIDE).then(|| channel * MAP_STRIDE + controller)
+}
 
 /// The platform host window for plugin views.
 #[cfg(target_os = "macos")]
@@ -138,6 +146,15 @@ mod window;
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn controller_mapping_uses_the_full_stride_on_every_channel() {
+        assert_eq!(super::map_index(1, 0), Some(131));
+        assert_eq!(super::map_index(15, super::PROGRAM_CHANGE), Some(2095));
+        assert_eq!(super::map_index(16, 0), None);
+        assert_eq!(super::map_index(0, 131), None);
+    }
+
     use super::*;
     use sv::{IAttributeListTrait as _, IMessageTrait as _};
 
@@ -206,14 +223,61 @@ mod tests {
             bar_start: 3.0,
             ..Transport::default()
         };
-        apply_transport(&mut c, &t);
+        apply_transport(&mut c, &t, 0);
         let playing = kPlaying as u32;
         assert_eq!(c.state & playing, playing);
         assert_eq!(c.state & kRecording as u32, 0);
         assert_eq!((c.tempo, c.timeSigNumerator, c.timeSigDenominator), (90.0, 3, 4));
         assert_eq!((c.projectTimeSamples, c.projectTimeMusic, c.barPositionMusic), (96_000, 3.5, 3.0));
-        apply_transport(&mut c, &Transport { playing: false, ..t });
+        apply_transport(&mut c, &Transport { playing: false, ..t }, 0);
         assert_eq!(c.state & playing, 0);
+    }
+
+    #[test]
+    fn sub_block_transport_crosses_a_bar_without_accumulating_offsets() {
+        // SAFETY: ProcessContext is plain data and all-zero is valid.
+        let mut c: sv::ProcessContext = unsafe { std::mem::zeroed() };
+        c.sampleRate = 48_000.0;
+        let t = Transport {
+            playing: true,
+            tempo: 120.0,
+            numerator: 4,
+            denominator: 4,
+            samples: 48_000,
+            quarters: 3.9,
+            bar_start: 0.0,
+            ..Transport::default()
+        };
+        apply_transport(&mut c, &t, 4_800);
+        assert_eq!(c.projectTimeSamples, 52_800);
+        assert!((c.projectTimeMusic - 4.1).abs() < 1e-12);
+        assert_eq!(c.barPositionMusic, 4.0);
+        apply_transport(&mut c, &t, 9_600);
+        assert_eq!(c.projectTimeSamples, 57_600);
+        assert!((c.projectTimeMusic - 4.3).abs() < 1e-12);
+        assert_eq!(c.barPositionMusic, 4.0);
+    }
+
+    #[test]
+    fn stopped_sub_blocks_keep_the_project_position_fixed() {
+        // SAFETY: ProcessContext is plain data and all-zero is valid.
+        let mut c: sv::ProcessContext = unsafe { std::mem::zeroed() };
+        c.sampleRate = 48_000.0;
+        let t = Transport {
+            playing: false,
+            tempo: 120.0,
+            numerator: 4,
+            denominator: 4,
+            samples: 48_000,
+            quarters: 3.9,
+            bar_start: 0.0,
+            ..Transport::default()
+        };
+        for offset in [0, 4_800, 9_600] {
+            apply_transport(&mut c, &t, offset);
+            assert_eq!((c.projectTimeSamples, c.projectTimeMusic, c.barPositionMusic), (48_000, 3.9, 0.0));
+            assert_eq!(c.state & sv::ProcessContext_::StatesAndFlags_::kPlaying as u32, 0);
+        }
     }
 
     #[test]

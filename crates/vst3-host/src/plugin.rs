@@ -1,6 +1,9 @@
 //! `Vst3Plugin`: a loaded VST3 instance behind the safe `soundcraft_dsp::Plugin` trait.
 
-use crate::ffi::{AFTERTOUCH, BusBuffers, EVENT_CAP, EditorLink, HostContext, Instance, NoteEvent, PARAM_QUEUE_CAP, PITCH_BEND, ProcessInput};
+use crate::ffi::{
+    AFTERTOUCH, BusBuffers, EVENT_CAP, EditorLink, HostContext, Instance, MIDI_CHANNELS, NoteEvent, PARAM_QUEUE_CAP, PITCH_BEND, PROGRAM_CHANGE,
+    ProcessInput, map_index,
+};
 use soundcraft_dsp::{Plugin, PluginEditor, PluginInfo, Transport, Unit};
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -44,8 +47,12 @@ pub struct Vst3Plugin {
     notes: Vec<NoteEvent>,
     /// The parameter each MIDI controller drives (see `Instance::midi_mapping`).
     midi_map: Vec<Option<u32>>,
-    /// Controller points for the next block: (time, param id, normalized value). Bounded.
-    controls: Vec<(u32, u32, f64)>,
+    program_ids: [Option<u32>; MIDI_CHANNELS],
+    program_steps: [i32; MIDI_CHANNELS],
+    program_times: Vec<u32>,
+    /// Controller points for the next block: (time, param id, normalized value, arrival order),
+    /// sorted by time and then arrival. Bounded.
+    controls: Vec<(u32, u32, f64, usize)>,
     inputs: BusBuffers,
     outputs: BusBuffers,
     has_input: bool,
@@ -91,6 +98,9 @@ impl Vst3Plugin {
             unsynced: ids.iter().map(|_| AtomicU64::new(SYNCED)).collect(),
             notes: Vec::with_capacity(EVENT_CAP),
             midi_map: Vec::new(),
+            program_ids: [None; MIDI_CHANNELS],
+            program_steps: [127; MIDI_CHANNELS],
+            program_times: Vec::with_capacity(EVENT_CAP),
             controls: Vec::with_capacity(EVENT_CAP),
             inputs: BusBuffers::new(&[], 0),
             outputs: BusBuffers::new(&[], 0),
@@ -244,6 +254,15 @@ impl Plugin for Vst3Plugin {
                 self.latency = self.inst.latency() as usize;
                 self.tail = self.inst.tail() as usize;
                 self.midi_map = self.inst.midi_mapping();
+                self.program_ids =
+                    std::array::from_fn(|channel| map_index(channel, PROGRAM_CHANGE).and_then(|i| self.midi_map.get(i).copied().flatten()));
+                let params = self.inst.params();
+                self.program_steps = self.program_ids.map(|id| {
+                    id.and_then(|id| params.iter().find(|param| param.id == id))
+                        .map(|param| param.step_count)
+                        .filter(|&steps| steps > 0)
+                        .unwrap_or(127)
+                });
             }
             Err(e) => {
                 log::warn!("{}: {e}", self.info.id);
@@ -318,30 +337,45 @@ impl Plugin for Vst3Plugin {
         for c in &mut self.controls {
             c.0 = c.0.min(last);
         }
+        // Retain arrival order at equal offsets (including bank messages before Program).
+        self.controls.sort_unstable_by_key(|&(time, _, _, order)| (time, order));
+        self.program_times.clear();
+        self.program_times.extend(self.controls.iter().filter(|(_, id, _, _)| self.program_ids.contains(&Some(*id))).map(|&(time, _, _, _)| time));
+        self.program_times.dedup();
+        let mut program_times = self.program_times.iter().copied().peekable();
+        let mut note_start = 0;
+        let mut control_start = 0;
         let mut start = 0usize;
         while start < frames {
-            let n = (frames - start).min(self.max_block);
+            let mut n = (frames - start).min(self.max_block);
+            // A parameter queue holds one point per id. Preserve distinct program offsets.
+            while program_times.next_if(|&time| time as usize <= start).is_some() {}
+            if let Some(&time) = program_times.peek() {
+                n = n.min(time as usize - start);
+            }
             let end = u32::try_from(start + n).unwrap_or(u32::MAX);
             // Feed the main input bus (mono sources fill every bus channel).
             if self.has_input {
                 feed_input(&mut self.inputs, 0, io, ch, (start, n));
             }
-            let k = self.notes.iter().position(|e| e.time() >= end).unwrap_or(self.notes.len());
+            let note_end = note_start + self.notes.get(note_start..).unwrap_or(&[]).partition_point(|event| event.time() < end);
+            let control_end = control_start + self.controls.get(control_start..).unwrap_or(&[]).partition_point(|event| event.0 < end);
             let offset = u32::try_from(start).unwrap_or(u32::MAX);
-            let notes = self.notes.get(..k).unwrap_or(&[]);
+            let notes = self.notes.get(note_start..note_end).unwrap_or(&[]);
             let r = self.inst.process(ProcessInput {
                 frames: n,
                 inputs: &mut self.inputs,
                 outputs: &mut self.outputs,
                 params: &self.pending,
-                controls: &self.controls,
+                controls: self.controls.get(control_start..control_end).unwrap_or(&[]),
                 notes,
                 offset,
                 project_time: self.position,
                 transport: self.transport.as_ref(),
             });
             self.pending.clear();
-            self.notes.drain(..k);
+            note_start = note_end;
+            control_start = control_end;
             self.position = self.position.saturating_add(i64::try_from(n).unwrap_or(0));
             match r {
                 Ok(()) if self.has_output => {
@@ -352,6 +386,7 @@ impl Plugin for Vst3Plugin {
             }
             start += n;
         }
+        self.notes.clear();
         self.controls.clear();
     }
 
@@ -392,20 +427,25 @@ impl Plugin for Vst3Plugin {
     fn midi(&mut self, offset: usize, msg: [u8; 3]) {
         let time = u32::try_from(offset).unwrap_or(u32::MAX);
         let [_, d1, d2] = msg.map(|b| b & 0x7F);
+        let channel = usize::from(msg[0] & 0x0F);
         let (ctrl, value) = match msg[0] & 0xF0 {
             0xB0 => (usize::from(d1), f64::from(d2) / 127.0),
             0xD0 => (AFTERTOUCH, f64::from(d1) / 127.0),
             0xE0 => (PITCH_BEND, f64::from(u16::from(d2) << 7 | u16::from(d1)) / 16383.0),
+            0xC0 => {
+                let steps = self.program_steps.get(channel).copied().unwrap_or(127);
+                (PROGRAM_CHANGE, f64::from(i32::from(d1).min(steps)) / f64::from(steps))
+            }
             0xA0 if self.event_input => {
                 self.push_note(NoteEvent::Pressure { time, key: d1, pressure: f32::from(d2) / 127.0 });
                 return;
             }
             _ => return,
         };
-        if let Some(&Some(id)) = self.midi_map.get(ctrl)
+        if let Some(id) = map_index(channel, ctrl).and_then(|i| self.midi_map.get(i).copied().flatten())
             && self.controls.len() < self.controls.capacity()
         {
-            self.controls.push((time, id, value));
+            self.controls.push((time, id, value, self.controls.len()));
         }
     }
 

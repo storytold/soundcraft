@@ -4,8 +4,8 @@ use super::module::Bundle;
 use super::process::{BusBuffers, EventList, MemoryStream, NoteEvent, ParamChanges};
 use super::{
     Arc, ComPtr, ComWrapper, EVENT_CAP, IAudioProcessorTrait, IComponentTrait, IConnectionPointTrait, IEditControllerTrait, IMidiMappingTrait,
-    IPluginBaseTrait, MAX_BUS_CHANNELS, MAX_BUSES, MAX_PARAMS, MAX_STATE_BYTES, Mutex, Ordering, PARAM_QUEUE_CAP, PITCH_BEND, STATE_MAGIC, Transport,
-    Vst3Error, ok, read_c16, sb, sv,
+    IPluginBaseTrait, MAP_STRIDE, MAX_BUS_CHANNELS, MAX_BUSES, MAX_PARAMS, MAX_STATE_BYTES, MIDI_CHANNELS, Mutex, Ordering, PARAM_QUEUE_CAP,
+    STATE_MAGIC, Transport, Vst3Error, ok, read_c16, sb, sv,
 };
 
 // ---- instances -----------------------------------------------------------------------------
@@ -40,7 +40,7 @@ fn dir_name(dir: sv::BusDirections) -> &'static str {
     if dir == sv::BusDirections_::kInput { "input" } else { "output" }
 }
 
-pub(super) fn apply_transport(c: &mut sv::ProcessContext, t: &Transport) {
+pub(super) fn apply_transport(c: &mut sv::ProcessContext, t: &Transport, offset: u32) {
     use sv::ProcessContext_::StatesAndFlags_::{
         kBarPositionValid, kContTimeValid, kPlaying, kProjectTimeMusicValid, kRecording, kTempoValid, kTimeSigValid,
     };
@@ -58,9 +58,23 @@ pub(super) fn apply_transport(c: &mut sv::ProcessContext, t: &Transport) {
     c.tempo = t.tempo;
     c.timeSigNumerator = i32::try_from(t.numerator).unwrap_or(4);
     c.timeSigDenominator = i32::try_from(t.denominator).unwrap_or(4);
-    c.projectTimeSamples = t.samples;
-    c.projectTimeMusic = t.quarters;
+    // Stopped callbacks still process live instruments, but consume no project timeline.
+    let offset = if t.playing { offset } else { 0 };
+    // `t` describes the original host block. Program changes and max-block limits may split it;
+    // use the absolute offset into that block, never the context left by the preceding sub-block.
+    let delta = if offset > 0 && c.sampleRate.is_finite() && c.sampleRate > 0.0 && t.tempo.is_finite() {
+        f64::from(offset) / c.sampleRate * t.tempo / 60.0
+    } else {
+        0.0
+    };
+    c.projectTimeSamples = t.samples.saturating_add(i64::from(offset));
+    c.projectTimeMusic = t.quarters + delta;
     c.barPositionMusic = t.bar_start;
+    let bar_length = 4.0 * f64::from(t.numerator) / f64::from(t.denominator);
+    let bars = (c.projectTimeMusic - t.bar_start) / bar_length;
+    if offset > 0 && bar_length.is_finite() && bar_length > 0.0 && bars.is_finite() {
+        c.barPositionMusic += bars.floor().max(0.0) * bar_length;
+    }
 }
 
 /// A live plugin: component + audio processor (+ edit controller) and the host objects.
@@ -218,16 +232,17 @@ impl Instance {
         v.is_finite().then(|| v.clamp(0.0, 1.0))
     }
 
-    /// The parameter each MIDI controller drives on channel 1 (`IMidiMapping`), indexed by VST3's
-    /// controller numbers: CCs 0–127, then [`AFTERTOUCH`] and [`PITCH_BEND`]. Main thread only.
+    /// The parameter each MIDI controller drives (`IMidiMapping`), channel-major and indexed by VST3's
+    /// controller numbers: CCs 0–127, aftertouch, pitch bend and Program Change. Main thread only.
     pub fn midi_mapping(&self) -> Vec<Option<u32>> {
         let Some(m) = self.controller.as_ref().and_then(|c| c.cast::<sv::IMidiMapping>()) else { return Vec::new() };
-        (0..=PITCH_BEND)
-            .map(|n| {
+        (0..MIDI_CHANNELS as i16)
+            .flat_map(|channel| (0..MAP_STRIDE).map(move |n| (channel, n)))
+            .map(|(channel, n)| {
                 let mut id: sv::ParamID = 0;
                 let n = i16::try_from(n).unwrap_or(0);
                 // SAFETY: valid mapping interface on the main thread; `id` is a local.
-                ok(unsafe { m.getMidiControllerAssignment(0, 0, n, &mut id) }).then_some(id)
+                ok(unsafe { m.getMidiControllerAssignment(0, channel, n, &mut id) }).then_some(id)
             })
             .collect()
     }
@@ -430,7 +445,7 @@ impl Instance {
         for &(id, v) in params.iter().take(PARAM_QUEUE_CAP) {
             self.in_params.set(id, 0, v.clamp(0.0, 1.0));
         }
-        for &(time, id, v) in controls {
+        for &(time, id, v, _) in controls {
             if let Some(at) = time.checked_sub(offset).filter(|&t| (t as usize) < frames) {
                 self.in_params.set(id, i32::try_from(at).unwrap_or(0), v.clamp(0.0, 1.0));
             }
@@ -450,7 +465,7 @@ impl Instance {
         outputs.refresh();
         self.context.continousTimeSamples = project_time;
         match transport {
-            Some(t) => apply_transport(&mut self.context, t),
+            Some(t) => apply_transport(&mut self.context, t, offset),
             None => self.context.projectTimeSamples = project_time,
         }
         let mut data = sv::ProcessData {
@@ -481,7 +496,7 @@ pub(crate) struct ProcessInput<'a> {
     pub inputs: &'a mut BusBuffers,
     pub outputs: &'a mut BusBuffers,
     pub params: &'a [(u32, f64)],
-    pub controls: &'a [(u32, u32, f64)],
+    pub controls: &'a [(u32, u32, f64, usize)],
     pub notes: &'a [NoteEvent],
     pub offset: u32,
     pub project_time: i64,
