@@ -1034,6 +1034,39 @@ fn delay_compensation_aligns_an_aux_return_on_a_named_output() {
 
 /// A track routed to a path that shares a physical channel with an aux-fed path waits for the aux
 /// returns too, even through a chain of overlapping paths; with no aux latency nothing is delayed.
+/// The overlap closure runs on every block: a chain of paths each overlapping the next, listed
+/// from the far end, still takes one look at each path, not a pass per link (#1768 review).
+#[test]
+fn the_overlap_closure_looks_at_each_path_once() {
+    use std::cell::Cell;
+    let n = 512;
+    // Path 0 is the main mix at [0, 2); path i (from 1) is stereo at channel n + 1 - i, so path n
+    // at [1, 3) links to the main mix and each earlier path to the next.
+    let range = |i: usize| if i == 0 { Some(0..2) } else { Some(n + 1 - i..n + 3 - i) };
+    let looks = Cell::new(0usize);
+    let mut paths = vec![0];
+    crate::Overlaps::default().close(
+        n + 1,
+        |i| {
+            looks.set(looks.get() + 1);
+            range(i)
+        },
+        &mut paths,
+    );
+    paths.sort_unstable();
+    assert_eq!(paths, (0..=n).collect::<Vec<_>>(), "the whole chain joins");
+    assert!(looks.get() <= 2 * (n + 1), "{} range lookups for {} paths", looks.get(), n + 1);
+    // Paths that only touch (end == start) share no channel; a path without a range links none.
+    let range = |i: usize| [Some(0..2), Some(2..4), None, Some(1..3), Some(5..5)][i].clone();
+    let mut paths = vec![0];
+    crate::Overlaps::default().close(5, range, &mut paths);
+    paths.sort_unstable();
+    assert_eq!(paths, [0, 1, 3], "1 joins through 3");
+    let mut paths = vec![1];
+    crate::Overlaps::default().close(2, range, &mut paths);
+    assert_eq!(paths, [1], "touching is not sharing");
+}
+
 #[test]
 fn delay_compensation_aligns_overlapping_named_outputs() {
     let mut s = Session::default();

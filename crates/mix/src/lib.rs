@@ -160,6 +160,8 @@ pub struct MixEngine {
     /// directly or through other paths: what is routed to one waits for the master faders' inserts
     /// as well, as the main mix does.
     main_outputs: Vec<usize>,
+    /// Scratch space for the two closures above.
+    overlaps: Overlaps,
     /// Latency of the master faders' inserts.
     master_latency: usize,
     aux_latency: usize,
@@ -215,6 +217,7 @@ impl MixEngine {
             aux_fed: Vec::new(),
             aux_fed_outputs: Vec::new(),
             main_outputs: Vec::new(),
+            overlaps: Overlaps::default(),
             master_latency: 0,
             aux_latency: 0,
             input: Vec::new(),
@@ -554,7 +557,7 @@ impl MixEngine {
             let main_first = main_first_channel(s, self.device_channels);
             if !s.outputs.is_empty() {
                 self.main_outputs.push(0);
-                close_overlaps(s, main_first, self.device_channels, &mut self.main_outputs);
+                close_overlaps(s, main_first, self.device_channels, &mut self.main_outputs, &mut self.overlaps);
                 self.main_outputs.retain(|&i| i != 0);
                 self.aux_fed_outputs.push(0);
             }
@@ -573,7 +576,7 @@ impl MixEngine {
             }
             // Paths that share a physical channel sum there, so a path overlapping a waiting one
             // waits as well.
-            close_overlaps(s, main_first, self.device_channels, &mut self.aux_fed_outputs);
+            close_overlaps(s, main_first, self.device_channels, &mut self.aux_fed_outputs, &mut self.overlaps);
         }
         for (i, st) in work.iter_mut() {
             let Some(t) = s.tracks.get(*i) else { continue };
@@ -833,19 +836,57 @@ fn path_channels(s: &Session, i: usize, main_first: usize, channels: usize) -> O
 /// Add to `paths` (indices into `Session::outputs`) every path that shares a physical channel
 /// with one of them on a device of `channels` outputs, directly or through a chain of such paths:
 /// they sum there. A path that does not fit the device plays nothing, so it links no others.
-fn close_overlaps(s: &Session, main_first: usize, channels: usize, paths: &mut Vec<usize>) {
-    loop {
-        let before = paths.len();
-        for i in 0..s.outputs.len() {
-            let Some(a) = path_channels(s, i, main_first, channels) else { continue };
-            if !paths.contains(&i)
-                && paths.iter().any(|&j| path_channels(s, j, main_first, channels).is_some_and(|b| a.start < b.end && b.start < a.end))
-            {
-                paths.push(i);
+fn close_overlaps(s: &Session, main_first: usize, channels: usize, paths: &mut Vec<usize>, scratch: &mut Overlaps) {
+    scratch.close(s.outputs.len(), |i| path_channels(s, i, main_first, channels), paths);
+}
+
+/// Scratch space for [`close_overlaps`], kept between blocks so it does not allocate once grown.
+#[derive(Default)]
+pub(crate) struct Overlaps {
+    /// Each path with a range, as (start, end, path), sorted by where it starts.
+    spans: Vec<(usize, usize, usize)>,
+    /// Per path: whether it is in `paths` already.
+    member: Vec<bool>,
+}
+
+impl Overlaps {
+    /// Add to `paths` every one of the `n` paths whose `range` overlaps one of them, directly or
+    /// through a chain of overlapping paths; a path without a range links none. Paths that
+    /// overlap that way are the runs of the ranges sorted by start in which each starts before
+    /// the run so far ends, so one sort and two sweeps find them.
+    pub(crate) fn close(&mut self, n: usize, range: impl Fn(usize) -> Option<std::ops::Range<usize>>, paths: &mut Vec<usize>) {
+        self.spans.clear();
+        self.spans.extend((0..n).filter_map(|i| range(i).map(|r| (r.start, r.end, i))));
+        // An empty range before a longer one at the same start, which it does not overlap.
+        self.spans.sort_unstable();
+        self.member.clear();
+        self.member.resize(n, false);
+        for &i in paths.iter() {
+            if let Some(m) = self.member.get_mut(i) {
+                *m = true;
             }
         }
-        if paths.len() == before {
-            break;
+        let mut run = 0;
+        while run < self.spans.len() {
+            // The run that starts here, and whether one of its paths is in `paths`.
+            let (mut end, mut joined, mut next) = (0, false, run);
+            while let Some(&(start, stop, i)) = self.spans.get(next) {
+                if next > run && start >= end {
+                    break;
+                }
+                end = end.max(stop);
+                joined |= self.member.get(i).copied().unwrap_or(false);
+                next += 1;
+            }
+            if joined {
+                for &(_, _, i) in self.spans.get(run..next).unwrap_or(&[]) {
+                    if let Some(m) = self.member.get_mut(i).filter(|m| !**m) {
+                        *m = true;
+                        paths.push(i);
+                    }
+                }
+            }
+            run = next;
         }
     }
 }
