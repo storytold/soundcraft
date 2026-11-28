@@ -16,7 +16,7 @@ When you close a gap, delete its entry (or shrink it) in the same PR, and bump t
 | # | Gap | Dimension | Doc | Est. (h) |
 |---|---|---|---|---:|
 | G-01 | **Alpha blocker.** No channel routing or duplex low-latency path (device, rate and buffer choice done; ASIO opt-in) | Hardware | [hardware-parity.md](hardware-parity.md) | 15–25 |
-| G-02 | **Alpha blocker.** MIDI devices: input works (checked on Linux; on macOS through the IAC bus), tracks play to external MIDI ports and MIDI Thru plays a keyboard through to them (checked on macOS); no clock or loop/merge recording | Hardware / MIDI | [hardware-parity.md](hardware-parity.md) | 6–12 |
+| G-02 | **Alpha blocker.** MIDI devices: input works (checked on Linux; on macOS through the IAC bus), tracks play to external MIDI ports (checked on macOS and Windows) and MIDI Thru plays a keyboard through to them (checked on macOS); no clock or loop/merge recording | Hardware / MIDI | [hardware-parity.md](hardware-parity.md) | 6–12 |
 | G-03 | **Alpha blocker.** Session exchange remains incomplete (strict external-WAV AAF import only; no AAF/OMF export, OMF import or `.ptx`) | File formats | [file-format-parity.md](file-format-parity.md) | 50–90 |
 | G-04 | Open correctness bugs in features counted as done (~25 issues) | Stability | this file | 25–40 |
 | G-05 | (Entitlement part: alpha blocker for the mix row) Third-party VST3s blocked in the signed macOS build; AU editors missing | Ecosystem | [plugin-parity.md](plugin-parity.md) | 10–15 |
@@ -84,7 +84,8 @@ When you close a gap, delete its entry (or shrink it) in the same PR, and bump t
   and chase the arriving track; a missing port reads "unavailable" on the selector and in the
   status line, with its tracks named, and an unplugged port is noticed and reopened. User guide:
   [midi-output.md](midi-output.md). Played on macOS to a Kurzweil PC1X through a Roland UM-ONE and
-  to the IAC bus; **not yet on Linux or Windows**.
+  to the IAC bus, and on Windows to a virtual port and a TASCAM Model 12 over USB; **not yet on
+  Linux**.
 - **Done (2026-11-26):** MIDI Thru to external gear: record-enabled and input-monitored MIDI and
   instrument tracks send what their MIDI input takes to their MIDI output port, on the output
   channel, as soon as it arrives (the input threads wake the output worker; no offsets, no delay

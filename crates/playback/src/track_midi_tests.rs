@@ -275,9 +275,10 @@ fn a_dense_clip_loses_no_note_off() {
     let mut wire = Wire::new();
     run(&mut enc, &s, rolling(base, 1, 0), Duration::ZERO, Duration::from_millis(100), &mut wire);
     assert_eq!(note_ons(&wire).len(), 400);
-    // Overlapping notes on one key reach the device as one Note-Off, when the last one ends.
+    // A key struck again while held is let go first, so every Note-On has its Note-Off; the
+    // last one goes out when the last note on the key ends.
     let offs: Vec<_> = wire.iter().filter(|(_, m)| m[0] == 0x80).collect();
-    assert_eq!(offs.len(), 128, "one Note-Off per key");
+    assert_eq!(offs.len(), 400, "one Note-Off per Note-On");
     let last_end = offs.iter().map(|(at, _)| *at).max().unwrap();
     assert_eq!(last_end, rolling(base, 1, 0).instant_for(((96 + 3) * TICK) as f64));
 }
@@ -530,7 +531,33 @@ fn a_key_struck_by_more_than_255_overlapping_notes_ends_with_its_last_holder() {
     let mut wire = Wire::new();
     run(&mut enc, &s, rolling(base, 1, 0), Duration::ZERO, Duration::from_millis(300), &mut wire);
     let offs: Vec<_> = wire.iter().filter(|(_, m)| m[0] == 0x80 && m[1] == 60).map(|(at, _)| *at).collect();
-    assert_eq!(offs.len(), 1, "one Note-Off, when the last of the 300 notes ends");
+    assert_eq!(offs.len(), 300, "each strike after the first lets the key go first, and the last note ends it");
     let last_end = Duration::from_secs_f64((399 * TICK) as f64 / 48_000.);
-    assert!(offs[0] >= base + last_end - Duration::from_millis(1), "{:?}", offs[0] - base);
+    let last = *offs.last().unwrap();
+    assert!(last >= base + last_end - Duration::from_millis(1), "{:?}", last - base);
+    assert!(
+        offs[..299].iter().all(|&at| at < base + last_end - Duration::from_millis(1)),
+        "the earlier Note-Offs are the retriggers, before the last note ends"
+    );
+}
+
+#[test]
+fn a_key_struck_again_while_held_is_let_go_before_the_new_note_on() {
+    // Two notes overlap on one key: the second strikes while the first still holds it. The
+    // device hears Note-Off then Note-On at the second strike, nothing when the first note
+    // ends, and the last Note-Off when the second ends (one Note-Off per Note-On, MIDI 1.0).
+    let base = Instant::now();
+    let mut s = session();
+    add_track(&mut s, TrackKind::Midi, vec![note(60, 100, 0, 960), note(60, 90, 480, 960)], vec![], "DIN", 2);
+    let b = rolling(base, 1, 0);
+    let mut enc = TrackMidi::new("DIN");
+    let mut wire = Wire::new();
+    run(&mut enc, &s, b, Duration::ZERO, Duration::from_millis(1100), &mut wire);
+    let keys: Vec<_> = wire.iter().filter(|(_, m)| m[0] & 0xf0 == 0x80 || m[0] & 0xf0 == 0x90).collect();
+    let at = |tick: i64| b.instant_for((tick * TICK) as f64);
+    assert_eq!(
+        keys.iter().map(|(t, m)| (*t, m.clone())).collect::<Vec<_>>(),
+        [(at(0), vec![0x92, 60, 100]), (at(480), vec![0x82, 60, 0]), (at(480), vec![0x92, 60, 90]), (at(1440), vec![0x82, 60, 0]),],
+        "{wire:?}"
+    );
 }
