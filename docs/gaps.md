@@ -1,6 +1,6 @@
 # Where SoundCraft falls short of Pro Tools
 
-> **Last reviewed:** 2026-11-14 · **Last updated:** 2026-11-23 · **Change:** trivial (G-04: Number of Loops accepts up to 1,000; crossfade remains open; previously minor: G-06: recording to disk is done (#84, long takes #888); streaming sources remain; previously minor: G-02 shrunk: MIDI input devices work; G-03: strict external-WAV AAF import; previously minor: G-05: plugin editors on Linux/X11; previously trivial: G-09: the pt-BR catalog now covers helper-passed tooltips, the status bar, the remove-session prompt and engine error text; G-08: Frequency Shifter, 28 processors; G-04: volume automation read at every sample, #1354; G-01: `setup.playback_engine` applies the device buffer in the desktop app; G-04: Clip Looping crossfade and loop count) · **Target:** Avid Pro Tools Ultimate 2026.4.1
+> **Last reviewed:** 2026-11-14 · **Last updated:** 2026-11-26 · **Change:** minor (G-02: MIDI loop and merge recording are done; output and clock remain; previously trivial: G-04: Number of Loops accepts up to 1,000; crossfade remains open; previously minor: G-06: recording to disk is done (#84, long takes #888); streaming sources remain; previously minor: G-02 shrunk: MIDI input devices work; G-03: strict external-WAV AAF import; previously minor: G-05: plugin editors on Linux/X11; previously trivial: G-09: the pt-BR catalog now covers helper-passed tooltips, the status bar, the remove-session prompt and engine error text; G-08: Frequency Shifter, 28 processors; G-04: volume automation read at every sample, #1354; G-01: `setup.playback_engine` applies the device buffer in the desktop app; G-04: Clip Looping crossfade and loop count) · **Target:** Avid Pro Tools Ultimate 2026.4.1
 
 Every known shortfall, one entry each, ranked by how much it stops a Pro Tools user from doing
 real work in SoundCraft. This is the work list: pick from the top. Rows marked **alpha blocker**
@@ -16,7 +16,7 @@ When you close a gap, delete its entry (or shrink it) in the same PR, and bump t
 | # | Gap | Dimension | Doc | Est. (h) |
 |---|---|---|---|---:|
 | G-01 | **Alpha blocker.** No channel routing or duplex low-latency path (device, rate and buffer choice done; ASIO opt-in) | Hardware | [hardware-parity.md](hardware-parity.md) | 15–25 |
-| G-02 | **Alpha blocker.** MIDI devices: input works (checked on Linux only); no output, clock or loop/merge recording | Hardware / MIDI | [hardware-parity.md](hardware-parity.md) | 12–22 |
+| G-02 | **Alpha blocker.** MIDI devices: input works (checked on Linux); loop and merge recording work (checked on macOS and Windows with scripted MIDI; Linux type-checked only); no output or clock | Hardware / MIDI | [hardware-parity.md](hardware-parity.md) | 6–14 |
 | G-03 | **Alpha blocker.** Session exchange remains incomplete (strict external-WAV AAF import only; no AAF/OMF export, OMF import or `.ptx`) | File formats | [file-format-parity.md](file-format-parity.md) | 50–90 |
 | G-04 | Open correctness bugs in features counted as done (~25 issues) | Stability | this file | 25–40 |
 | G-05 | (Entitlement part: alpha blocker for the mix row) Third-party VST3s blocked in the signed macOS build; AU editors missing | Ecosystem | [plugin-parity.md](plugin-parity.md) | 10–15 |
@@ -74,13 +74,20 @@ When you close a gap, delete its entry (or shrink it) in the same PR, and bump t
   preferences. User guide: [midi-input.md](midi-input.md). On Linux, live play was checked with
   a hardware keyboard (Akai MPK mini 3) and recording with a virtual one;
   **not yet on macOS or Windows** (type-checked only).
+- **Done (2026-11-26):** MIDI loop and merge recording: MIDI Merge merges a pass into the clips
+  already on the track, Loop Playback loops a MIDI-only pass with each round merged or replacing,
+  Loop Record makes a take per round with new material on numbered playlists, and MIDI Merge
+  Release Mode (Latch, Latch Until Next Event) is a preference. Guide:
+  [midi-input.md](midi-input.md#5-loop-and-merge-recording). Checked on macOS and Windows with a
+  scripted virtual MIDI source; Linux type-checked only. Not yet: Replace that keeps
+  existing clip boundaries (p.819), barline-snapped clips (p.818), Wait for Note, Input Quantize
+  on live takes, record cancel, the Matches menu for takes.
 - **Missing:** MIDI output (external synths, MIDI tracks without an instrument), MIDI clock/MTC
-  out, loop and merge recording (a MIDI take replaces what it covers; a loop pass piles every
-  pass into one clip), audition from the MIDI editor (`midi_editor.rs:288`), MIDI
+  out, audition from the MIDI editor (`midi_editor.rs:288`), MIDI
   input on FreeBSD and the web. `setup.midi_input_devices` and `setup.midi_studio` still only
   store names in the session; the real device switches are app preferences.
 - **Impact:** you can play and record a keyboard, not drive hardware synths or sync other gear.
-- **Estimate:** ≈ 12–22 h (output tracks and thru, clock out, merge/loop takes, controller path).
+- **Estimate:** ≈ 6–14 h (output tracks and thru, clock out, controller path).
 
 ### G-03. Session interchange with Pro Tools
 
@@ -252,6 +259,7 @@ missing. Out of scope unless the owner decides otherwise.
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-11-26 | minor | G-02: MIDI loop and merge recording (MIDI Merge, Loop Playback merge, Loop Record takes, release modes); 12–22 → 6–14 h |
 | 2026-11-23 | trivial | G-04: Clip Looping Number of Loops accepts up to 1,000; crossfade remains open; estimates unchanged |
 | 2026-11-14 | minor | G-03: strict external-WAV AAF import with bounded property caching; AAF/OMF export, OMF import and `.ptx` remain; estimates unchanged |
 | 2026-11-13 | trivial | G-09: the pt-BR catalog now covers tooltips localized inside buttons and toggles, the Edit-window status bar, the remove-session question, the send help text and engine errors shown in the status line; estimates unchanged |

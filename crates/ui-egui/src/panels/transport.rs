@@ -24,6 +24,9 @@ pub(super) fn transport_window(app: &mut SoundApp, ctx: &egui::Context) {
                     ("end", "transport.go_to_end"),
                     ("record", "transport.record"),
                 ] {
+                    let mode = if cmd == "transport.record" { app.record_mode() } else { None };
+                    // Loop Record shows a loop symbol on the Record button (Reference Guide p.771).
+                    let icon = if mode.is_some() { "record_loop" } else { icon };
                     let resp = crate::widgets::icon_button(
                         ui,
                         vec2(34.0, 26.0),
@@ -31,6 +34,7 @@ pub(super) fn transport_window(app: &mut SoundApp, ctx: &egui::Context) {
                         (cmd == "transport.play" && app.is_playing()) || (cmd == "transport.record" && app.engine.transport.recording),
                         cmd,
                     );
+                    let resp = crate::widgets::record_mode_hint(resp, mode);
                     if cmd == "transport.record"
                         && let Some(why) = app.record_hint()
                     {
@@ -73,6 +77,7 @@ pub(super) fn transport_window(app: &mut SoundApp, ctx: &egui::Context) {
                 });
             }
             if flags.contains("view.transport.midi_controls") || expanded {
+                let loop_pass = app.record_mode().is_some();
                 let (click, countoff, merge, loop_rec, prepost) = {
                     let e = &app.engine.session().edit;
                     (e.click, e.countoff, e.midi_merge, e.loop_record, e.pre_post_roll)
@@ -85,8 +90,36 @@ pub(super) fn transport_window(app: &mut SoundApp, ctx: &egui::Context) {
                         ("Loop Rec", loop_rec, "options.loop_record"),
                         ("Pre/Post", prepost, "options.pre_post_roll"),
                     ] {
-                        if ui.selectable_label(on, crate::localization::text(label)).clicked() {
+                        // In Loop Record mode MIDI Merge has no effect, and the button is dimmed
+                        // (Reference Guide p.813): for a Loop Record pass, and when stopped for
+                        // the pass Record would start. A punch-in while playing records as a
+                        // normal pass, where MIDI Merge counts (`SoundApp::record_mode`).
+                        let dimmed = cmd == "options.midi_merge" && loop_pass;
+                        let r = ui.add_enabled(!dimmed, egui::Button::selectable(on, crate::localization::text(label)));
+                        let r = if cmd != "options.midi_merge" {
+                            r
+                        } else if dimmed {
+                            r.on_disabled_hover_text(merge_tip("No effect while Loop Record is on"))
+                        } else {
+                            r.on_hover_text(merge_tip(MERGE_OR_REPLACE))
+                        };
+                        if r.clicked() {
                             let _ = app.run(cmd, json!({}));
+                        }
+                        if cmd == "options.midi_merge" {
+                            // Right-click: MIDI Merge Release mode (p.814). Dimmed too, as the mode
+                            // is a preference for later passes: a container menu opens on a
+                            // right-click over a disabled widget, which a plain one does not see.
+                            let current = app.ui.midi_merge_release;
+                            r.container_context_menu(|ui| {
+                                ui.label(crate::localization::text("MIDI Merge Release Mode"));
+                                for mode in soundcraft_engine::io::MergeRelease::ALL {
+                                    if ui.radio(current == mode, crate::localization::text(mode.label())).clicked() {
+                                        let _ = app.run("ui.midi_merge_release", json!({"mode": mode.id()}));
+                                        ui.close();
+                                    }
+                                }
+                            });
                         }
                     }
                 });
@@ -121,4 +154,13 @@ pub(super) fn big_counter(app: &mut SoundApp, ctx: &egui::Context) {
             ui.painter().text(r.center(), Align2::CENTER_CENTER, txt, mono((r.height() * 0.6).clamp(20.0, 120.0)), t.counter_text);
         });
     app.ui.show_big_counter = open;
+}
+
+/// What the MIDI Merge button switches (Reference Guide p.813).
+const MERGE_OR_REPLACE: &str =
+    "On (Merge): recorded MIDI is merged with the MIDI already on the track.\nOff (Replace): recorded MIDI replaces the MIDI in the recorded range.";
+
+/// The MIDI Merge button's tooltip: `first`, then where the release mode is chosen (p.814).
+fn merge_tip(first: &str) -> String {
+    format!("{}\n{}", crate::localization::text(first), crate::localization::text("Right-click to choose the MIDI Merge Release Mode."))
 }

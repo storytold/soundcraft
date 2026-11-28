@@ -1202,6 +1202,13 @@ fn menu_translate(source: &str) -> Option<&'static str> {
         "{v} {unit}" => "{v} {unit}",
         "Loop Rec" => "Gravação em loop",
         "MIDI Merge" => "Mesclagem MIDI",
+        "No effect while Loop Record is on" => "Sem efeito enquanto a gravação em loop estiver ativada",
+        "On (Merge): recorded MIDI is merged with the MIDI already on the track.\nOff (Replace): recorded MIDI replaces the MIDI in the recorded range." => {
+            "Ligado (Mesclar): o MIDI gravado é mesclado ao MIDI que já está na faixa.\nDesligado (Substituir): o MIDI gravado substitui o MIDI no intervalo gravado."
+        }
+        "Right-click to choose the MIDI Merge Release Mode." => "Clique com o botão direito para escolher o modo de liberação da mesclagem MIDI.",
+        "Loop Record mode" => "Modo de gravação em loop",
+        "MIDI Recording" => "Gravação MIDI",
         "Pre/Post" => "Pré/Pós",
         "0.5 seconds" => "0,5 segundos",
         "Path" => "Caminho",

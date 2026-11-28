@@ -227,6 +227,10 @@ impl AudioState {
                     // The pass has begun here: its start is no longer waited for.
                     if r && let Some(feed) = &self.midi {
                         self.midi_started = self.playing && feed.begin_pending();
+                        // Begun after this callback took the MIDI in: it starts here.
+                        if self.midi_started && feed.pass_started_at().is_none() {
+                            feed.pass_starts_at(self.pos);
+                        }
                         feed.pass_begun();
                     }
                     // The UI thread waits for this pass before it builds the clips. It is told
@@ -333,7 +337,8 @@ impl AudioState {
     /// ([`midi::MidiFeed::record_until`], asked for every entry); the rest is played like any
     /// live input. Of a pass the UI has begun during playback whose command has not been read
     /// yet, what arrived since it began is written down already
-    /// ([`midi::MidiFeed::record_from`]).
+    /// ([`midi::MidiFeed::record_from`]), and so are the rounds a playing loop went since then;
+    /// where the playhead stood when it began is told ([`midi::MidiFeed::pass_started_at`]).
     ///
     /// Recording and playing are separate from here on. While a pass runs, each event is written
     /// to the take now, at the position it arrived at (the position of this callback less the
@@ -422,6 +427,28 @@ impl AudioState {
             until: pass.until,
             stopped: pass.stopped,
         };
+        // A pass begun while the loop plays, whose start command is only read now: the loop may
+        // have gone round since it began, while no rounds were counted for it. Those rounds are
+        // the take's too, so that what was played before them stays in the round it was played
+        // in (and inside the loop) instead of being taken for something played before the loop
+        // start.
+        // Where the playhead stood when the pass began (inside the loop) is told to the UI: the
+        // first round of a pass punched into a loop covers only from there, and the UI's own
+        // playhead lags behind this one, by a round when the loop went round just before Record.
+        if pass.begun && !pass.running && feed.begin_pending() {
+            let mut began = pass.pos.saturating_sub(take_frames(feed.record_from()));
+            if let Some(l) = pass.looped
+                && began < l.start
+            {
+                let len = l.len().max(1);
+                let rounds = l.start.saturating_sub(began).saturating_add(len - 1) / len;
+                take.wraps = take.wraps.saturating_add(u8::try_from(rounds).unwrap_or(u8::MAX));
+                began = began.saturating_add(rounds.saturating_mul(len));
+            }
+            if pass.playing {
+                feed.pass_starts_at(began);
+            }
+        }
         // The lost ports whose mark is not in the take yet. Each goes in where its loss was.
         let mut marks = if record { input_lost } else { 0 };
         let mut unplayed = 0u64;

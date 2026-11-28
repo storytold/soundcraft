@@ -189,6 +189,9 @@ pub struct MidiFeed {
     /// Where the audio thread's playhead stood when it finished `stop_pass`.
     stop_at: AtomicI64,
     stop_pass: AtomicU64,
+    /// Where the audio thread's playhead stood when the pass last begun began
+    /// ([`Self::pass_started_at`]); `i64::MIN` until it has told.
+    start_at: AtomicI64,
     /// A clock set by a test in place of the real one (`i64::MIN`: the real one).
     #[cfg(test)]
     test_clock: AtomicI64,
@@ -218,6 +221,7 @@ impl Default for MidiFeed {
             overflow_at: (0..64).map(|_| AtomicI64::new(i64::MIN)).collect(),
             stop_at: AtomicI64::new(0),
             stop_pass: AtomicU64::new(0),
+            start_at: AtomicI64::new(i64::MIN),
             #[cfg(test)]
             test_clock: AtomicI64::new(i64::MIN),
         }
@@ -445,6 +449,8 @@ impl MidiFeed {
     /// While the transport is already running, what arrives from here on belongs to the pass,
     /// also when the audio thread takes it in before it reads that command.
     pub fn begin_pass(&self) {
+        // Where the last pass began is no longer this one's.
+        self.start_at.store(i64::MIN, Ordering::Release);
         // The time first: whoever sees the pass as begun also sees when.
         self.pass_begin.store(self.now(), Ordering::Release);
         self.begin_pending.store(true, Ordering::Release);
@@ -455,6 +461,21 @@ impl MidiFeed {
     /// the audio thread takes it in after it has read the start command.
     pub(crate) fn record_from(&self) -> i64 {
         self.pass_begin.load(Ordering::Acquire)
+    }
+
+    /// Audio thread: the pass begun during playback began with the playhead at `at` (in the
+    /// round of a playing loop that the take's first round is).
+    pub(crate) fn pass_starts_at(&self, at: Samples) {
+        self.start_at.store(at, Ordering::Release);
+    }
+
+    /// Where the audio engine's playhead stood when the last pass begun during playback began
+    /// ([`Self::begin_pass`]), as the positions in its take count: the UI's own playhead may lag
+    /// behind it, by as much as a round of a loop that went round just before. `None` until the
+    /// audio thread has seen that pass.
+    pub fn pass_started_at(&self) -> Option<Samples> {
+        let at = self.start_at.load(Ordering::Acquire);
+        (at != i64::MIN).then_some(at)
     }
 
     /// Audio thread: whether a pass was begun whose start command has not been read yet.

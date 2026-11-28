@@ -121,9 +121,11 @@ struct PreferencesDraft {
     theme: ThemeMode,
     reduce_visual_effects: ReduceVisualEffects,
     undo_levels: usize,
+    midi_merge_release: soundcraft_engine::io::MergeRelease,
     theme_edited: bool,
     reduce_visual_effects_edited: bool,
     undo_levels_edited: bool,
+    midi_merge_release_edited: bool,
 }
 
 impl PreferencesDraft {
@@ -133,9 +135,11 @@ impl PreferencesDraft {
             theme: app.ui.theme,
             reduce_visual_effects: app.ui.reduce_visual_effects,
             undo_levels: app.ui.undo_levels,
+            midi_merge_release: app.ui.midi_merge_release,
             theme_edited: false,
             reduce_visual_effects_edited: false,
             undo_levels_edited: false,
+            midi_merge_release_edited: false,
         }
     }
 
@@ -150,6 +154,9 @@ impl PreferencesDraft {
         if !self.undo_levels_edited {
             self.undo_levels = app.ui.undo_levels;
         }
+        if !self.midi_merge_release_edited {
+            self.midi_merge_release = app.ui.midi_merge_release;
+        }
     }
 
     /// Remembers which values the user changed during the current UI frame.
@@ -157,6 +164,7 @@ impl PreferencesDraft {
         self.theme_edited |= self.theme != before.theme;
         self.reduce_visual_effects_edited |= self.reduce_visual_effects != before.reduce_visual_effects;
         self.undo_levels_edited |= self.undo_levels != before.undo_levels;
+        self.midi_merge_release_edited |= self.midi_merge_release != before.midi_merge_release;
     }
 }
 
@@ -189,6 +197,7 @@ enum Control {
     Theme,
     ReduceVisualEffects,
     UndoLevels,
+    MidiMergeRelease,
 }
 
 impl Control {
@@ -204,6 +213,7 @@ impl Control {
             Self::Theme => "UI Theme",
             Self::ReduceVisualEffects => "Reduce Visual Effects",
             Self::UndoLevels => "Levels of Undo",
+            Self::MidiMergeRelease => "MIDI Merge Release Mode",
         }
     }
 
@@ -218,6 +228,10 @@ impl Control {
             Self::Radios(label, values) => format!("{} {}", both(label), values.iter().map(|value| both(value)).collect::<Vec<_>>().join(" ")),
             Self::ReduceVisualEffects => {
                 let modes = ReduceVisualEffects::ALL.map(|mode| both(mode.label())).join(" ");
+                format!("{} {modes}", both(self.label()))
+            }
+            Self::MidiMergeRelease => {
+                let modes = soundcraft_engine::io::MergeRelease::ALL.map(|mode| both(mode.label())).join(" ");
                 format!("{} {modes}", both(self.label()))
             }
             _ => both(self.label()),
@@ -621,7 +635,7 @@ const MIDI: &[Section] = &[
             Control::Value("Pencil Resolution for Controller Data", "30 ms"),
             Control::Value("Global MIDI Playback Offset", "0 samples"),
             Control::Choice("Double-Clicking a MIDI Clip Opens", "Docked MIDI Editor"),
-            Control::Choice("MIDI Merge Release Mode", "Latch Until Next Event"),
+            Control::MidiMergeRelease,
         ],
     },
     Section { title: "Note Display", controls: &[Control::Radios("Middle C", &["C3", "C4", "MIDI Note 60"])] },
@@ -814,6 +828,7 @@ pub fn show(app: &mut SoundApp, ctx: &egui::Context) {
             let _ = app.run("ui.theme", json!({"mode": draft.theme.id()}));
             let _ = app.run("ui.reduce_visual_effects", json!({"mode": draft.reduce_visual_effects.id()}));
             let _ = app.run("ui.undo_levels", json!({"levels": draft.undo_levels}));
+            let _ = app.run("ui.midi_merge_release", json!({"mode": draft.midi_merge_release.id()}));
             open = false;
             app.preferences.discard_draft();
         }
@@ -961,6 +976,15 @@ fn control_ui(ui: &mut egui::Ui, page: PreferencesPage, section: &str, index: us
                 ui.label(label("Levels of Undo"));
                 ui.add(egui::DragValue::new(&mut draft.undo_levels).range(1..=64));
             });
+        }
+        Control::MidiMergeRelease => {
+            egui::ComboBox::new(id, label("MIDI Merge Release Mode"))
+                .selected_text(crate::localization::text(draft.midi_merge_release.label()))
+                .show_ui(ui, |ui| {
+                    for mode in soundcraft_engine::io::MergeRelease::ALL {
+                        ui.selectable_value(&mut draft.midi_merge_release, mode, crate::localization::text(mode.label()));
+                    }
+                });
         }
         Control::Check(text) => {
             let mut value = false;
@@ -1134,10 +1158,29 @@ mod tests {
         assert!(app.run("ui.theme", json!({"mode": ThemeMode::Light.id()})).is_ok());
         assert!(app.run("ui.reduce_visual_effects", json!({"mode": "playback"})).is_ok());
         assert!(app.run("ui.undo_levels", json!({"levels": 32})).is_ok());
+        assert!(app.run("ui.midi_merge_release", json!({"mode": "latch"})).is_ok());
+        assert_eq!(app.ui.midi_merge_release, soundcraft_engine::io::MergeRelease::Latch);
         assert_eq!(app.ui.theme, ThemeMode::Light);
         assert_eq!(app.ui.reduce_visual_effects, ReduceVisualEffects::Playback);
         assert_eq!((app.ui.undo_levels, app.engine.history_limit), (32, 32));
         assert!(!app.engine.is_dirty());
+    }
+
+    /// MIDI Merge Release Mode is a live control on the MIDI page, applied with OK.
+    #[test]
+    fn midi_merge_release_mode_is_chosen_on_the_midi_page() {
+        let mut harness = preferences_harness(egui::vec2(1280.0, 1000.0));
+        harness.state_mut().ui.preferences_page = PreferencesPage::Midi;
+        harness.run_steps(4);
+        harness.get_by_label("MIDI Merge Release Mode").click();
+        harness.run_steps(2);
+        harness.get_by_label("Latch").click();
+        harness.run_steps(2);
+        assert_eq!(harness.state().ui.midi_merge_release, soundcraft_engine::io::MergeRelease::default(), "not before OK");
+        harness.get_by_label("OK").click();
+        harness.run_steps(2);
+        assert_eq!(harness.state().ui.midi_merge_release, soundcraft_engine::io::MergeRelease::Latch);
+        assert!(!harness.state().engine.is_dirty(), "a per-machine preference, not a session edit");
     }
 
     /// An unchanged open draft follows newer scripted values instead of restoring stale ones.
@@ -1186,6 +1229,7 @@ mod tests {
     fn live_preferences_reject_or_clamp_hostile_values() {
         let mut app = SoundApp::new(Engine::default(), None, crate::Services::default());
         assert!(app.run("ui.reduce_visual_effects", json!({"mode": "sometimes"})).is_err());
+        assert!(app.run("ui.midi_merge_release", json!({"mode": "touch"})).is_err());
         assert_eq!(app.run("ui.undo_levels", json!({"levels": 10_000})).unwrap()["levels"], 64);
     }
 
@@ -1325,6 +1369,20 @@ mod tests {
             app.ui.undo_levels = requested;
             crate::windows::recall_configuration(&mut app, &saved).unwrap();
             assert_eq!((app.ui.undo_levels, app.engine.history_limit), (expected, expected));
+        }
+    }
+
+    /// MIDI Merge Release Mode is a per-machine preference: recalling a layout keeps the live one.
+    #[test]
+    fn configuration_recall_keeps_the_midi_merge_release_mode() {
+        use soundcraft_engine::io::MergeRelease;
+        for (saved_mode, live) in [(MergeRelease::Latch, MergeRelease::LatchUntilNextEvent), (MergeRelease::LatchUntilNextEvent, MergeRelease::Latch)]
+        {
+            let saved = serde_json::to_value(crate::UiState { midi_merge_release: saved_mode, ..Default::default() }).unwrap();
+            let mut app = SoundApp::new(Engine::default(), None, crate::Services::default());
+            app.ui.midi_merge_release = live;
+            crate::windows::recall_configuration(&mut app, &saved).unwrap();
+            assert_eq!(app.ui.midi_merge_release, live);
         }
     }
 

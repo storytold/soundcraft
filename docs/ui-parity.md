@@ -1,6 +1,6 @@
 # UI parity
 
-> **Last reviewed:** 2026-10-25 · **Last updated:** 2026-10-27 · **Change:** minor (Cancel Zoom Toggle; Tracks and Groups and Clips in dock columns; Alt-click returns a plugin parameter to its default) · **Target:** Avid Pro Tools Ultimate 2026.4.1
+> **Last reviewed:** 2026-10-25 · **Last updated:** 2026-11-26 · **Change:** minor (Loop Record shown on the Record buttons; MIDI Merge help; previously minor: MIDI Merge honoured by recording; Cancel Zoom Toggle; Tracks and Groups and Clips in dock columns; Alt-click returns a plugin parameter to its default) · **Target:** Avid Pro Tools Ultimate 2026.4.1
 
 How SoundCraft feels in the hands of a Pro Tools user: tools, modes, modifiers, shortcuts,
 windows, meters. Measured from `crates/model/src/session.rs` (tools, modes), the command
@@ -24,7 +24,7 @@ Legend: ✅ matches · 🟡 partial · ❌ missing.
 | Zoom Toggle | 🟡 | E (Commands focus) and the button zoom to the edit selection with Fit To Window heights and back; Alt+Shift+E and Alt-click cancel it and keep the view. The Zoom Toggle preferences (Vertical Zoom, Horizontal Zoom, Track Height, Track View, Separate Grid Settings When Zoomed In, Zoom Toggle Follows Edit Selection, Remove Range Selection After Zooming In) are not present |
 | Keyboard focus modes (Commands, Clip List, Groups) | 🟡 | Commands focus single-key editing ✅; list focus partial |
 | Link timeline/edit, link track/edit, Tab to transient, insertion follows playback | ✅ | |
-| Mirrored MIDI, MIDI merge, layered editing | 🟡 | Stored and partly honoured |
+| Mirrored MIDI, MIDI merge, layered editing | 🟡 | MIDI Merge is honoured by recording, with its release modes in Preferences › MIDI and on the button's right-click menu, and dimmed while a Loop Record pass runs or Record would start one (its tooltip explains Merge and Replace; the right-click menu stays available when dimmed); Loop Record puts a loop symbol on the Record buttons and names the mode in their tooltip ([midi-input.md](midi-input.md#5-loop-and-merge-recording)); mirrored MIDI and layered editing are stored and partly honoured |
 
 ## Keyboard and mouse
 
@@ -70,6 +70,8 @@ Legend: ✅ matches · 🟡 partial · ❌ missing.
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-11-26 | minor | MIDI Merge row: Loop Record symbol and tooltip on the Record buttons, MIDI Merge tooltip, release-mode menu on the dimmed button, Undo MIDI Recording. Readiness estimate unchanged |
+| 2026-11-26 | minor | MIDI Merge row: honoured by recording, release modes, dimmed in Loop Record. Readiness estimate unchanged |
 | 2026-10-27 | minor | Clip Effects gain supports Alt/Option-click reset to 0 dB and Ctrl/Cmd fine adjustment. Readiness estimate unchanged |
 | 2026-10-25 | minor | Zoom Toggle row: Alt+Shift+E and Alt-click cancel Zoom Toggle and keep the view. Readiness estimate unchanged |
 | 2026-10-25 | minor | Edit and Mix windows: Tracks and Groups and Clips in full-height dock columns. Readiness estimate unchanged |

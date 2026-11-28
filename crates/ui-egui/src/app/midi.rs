@@ -2,7 +2,7 @@
 //! record pass into MIDI clips.
 
 use super::{Range, Samples, SoundApp, json};
-use soundcraft_engine::io::{MidiPass, MidiTakeEvent};
+use soundcraft_engine::io::{MidiPass, MidiRecordStyle, MidiTakeEvent};
 use soundcraft_playback::midi::MidiInputs;
 
 impl SoundApp {
@@ -36,6 +36,8 @@ impl SoundApp {
         self.midi_take.clear();
         self.midi_take_lost = 0;
         self.midi_take_inputs = soundcraft_engine::io::midi_record_inputs(&self.engine);
+        self.midi_take_merge = vec![self.engine.session().edit.midi_merge];
+        self.midi_take_counted = 0;
         // From here on what is played belongs to the pass (punching in while playing: also what
         // the audio engine takes in before it hears of the pass).
         if let Some(m) = &self.midi_inputs {
@@ -85,17 +87,39 @@ impl SoundApp {
         self.midi_inputs.as_ref()?.feed().stopped_at(pass?)
     }
 
+    /// Where the audio engine's playhead stood when the pass last begun during playback began
+    /// (`MidiFeed::pass_started_at`): the punch-in point as the take counts it. `None` when the
+    /// audio engine did not say, or there is no MIDI input.
+    pub(crate) fn midi_pass_started_at(&self) -> Option<Samples> {
+        self.midi_inputs.as_ref()?.feed().pass_started_at()
+    }
+
     /// Turn the MIDI played during the pass into clips on the MIDI and instrument tracks that
     /// were record-enabled when it started, and on those only: the same tracks the end of the
     /// pass waited for ([`Self::end_midi_pass`]). `with_audio`: audio takes of this pass already
     /// made its undo step. `confirmed`: the audio engine said it had written down everything
     /// played up to the stop ([`Self::await_midi_capture`]). `pass`: whether it was a loop pass,
     /// and where that stopped inside the loop; keys still down end there. Returns how many
-    /// clips, and what to tell the user when the take is not complete.
-    pub(crate) fn finish_midi_take(&mut self, range: Range, with_audio: bool, confirmed: bool, pass: MidiPass) -> (usize, Option<String>) {
+    /// clips, and what to tell the user when the take is not complete. `loop_record`: the pass
+    /// ran in Loop Record mode, which makes a take of every round played in; otherwise MIDI Merge
+    /// decides, round by round, whether what was played is merged or replaces the range.
+    /// `punched_in`: where a pass punched in while a loop played started; its first round covers
+    /// only from there.
+    pub(crate) fn finish_midi_take(
+        &mut self,
+        range: Range,
+        with_audio: bool,
+        confirmed: bool,
+        (pass, loop_record, punched_in): (MidiPass, bool, Option<Samples>),
+    ) -> (usize, Option<String>) {
         let Some(m) = &self.midi_inputs else { return (0, None) };
-        let feed = m.feed();
+        let feed = std::sync::Arc::clone(m.feed());
         feed.take_recorded(&mut self.midi_take);
+        // The round under way ends at the stop, with MIDI Merge as it is now (it may have been
+        // switched after the last frame looked); the rounds that went by since then keep the
+        // state it had at that frame.
+        self.follow_midi_merge();
+        let merge = std::mem::take(&mut self.midi_take_merge);
         // Events the audio thread could not hand over (this thread fell behind).
         let uncollected = self.midi_take_lost.saturating_add(u64::from(feed.take_recorded_lost()));
         self.midi_take_lost = 0;
@@ -121,8 +145,9 @@ impl SoundApp {
             .collect();
         let pass = pass_with_known_stop(pass, uncollected);
         let inputs = std::mem::take(&mut self.midi_take_inputs);
-        let take = soundcraft_engine::io::add_midi_recording_from(&mut self.engine, range, pass, &events, &devices, &inputs, with_audio);
-        (take.clips.len(), midi_take_problem(take.gaps, uncollected, confirmed))
+        let style = MidiRecordStyle { loop_record, merge, release: self.ui.midi_merge_release, same_pass: with_audio, punched_in };
+        let take = soundcraft_engine::io::add_midi_recording_with(&mut self.engine, range, pass, &events, &devices, &inputs, &style);
+        (take.clips.len() + take.merged.len(), midi_take_problem(take.gaps, uncollected, confirmed))
     }
 
     /// Open the MIDI inputs once, hand them to the audio engine, and keep following devices that
@@ -150,9 +175,21 @@ impl SoundApp {
                         self.midi_take_lost = self.midi_take_lost.saturating_add((self.midi_take.len() - most) as u64);
                         self.midi_take.truncate(most);
                     }
+                    self.follow_midi_merge();
                 }
             }
         }
+    }
+
+    /// MIDI Merge can be switched while recording (Reference Guide p.813): the round under way
+    /// takes the state it has now ([`note_merge`]), counting the rounds the take entries collected
+    /// since the last look went through.
+    fn follow_midi_merge(&mut self) {
+        let counted = self.midi_take_counted.min(self.midi_take.len());
+        let wraps = self.midi_take[counted..].iter().filter(|e| e.is_wrap()).count();
+        self.midi_take_counted = self.midi_take.len();
+        let on = self.engine.session().edit.midi_merge;
+        note_merge(&mut self.midi_take_merge, wraps, on);
     }
 
     /// Use or ignore a MIDI input port. Remembered in the UI prefs.
@@ -163,6 +200,18 @@ impl SoundApp {
         }
         // The session's own record of the devices in use follows the switch.
         let _ = self.run("setup.midi_input_devices", json!({ if on { "enable" } else { "disable" }: [name] }));
+    }
+}
+
+/// MIDI Merge in the rounds of a pass (`rounds`, one entry per round so far): `wraps` more rounds
+/// began since the last look, and it is `on` now. A round that went by between two looks keeps
+/// the state of the round before it; the round under way takes `on`.
+fn note_merge(rounds: &mut Vec<bool>, wraps: usize, on: bool) {
+    let last = rounds.last().copied().unwrap_or(on);
+    rounds.extend(std::iter::repeat_n(last, wraps));
+    match rounds.last_mut() {
+        Some(r) => *r = on,
+        None => rounds.push(on),
     }
 }
 
@@ -231,7 +280,54 @@ fn midi_take_problem(gaps: usize, uncollected: u64, confirmed: bool) -> Option<S
 
 #[cfg(test)]
 mod tests {
-    use super::{MidiPass, Range, midi_pass_waits, midi_take_problem, midi_take_span, pass_stop, pass_with_known_stop};
+    use super::{MidiPass, Range, midi_pass_waits, midi_take_problem, midi_take_span, note_merge, pass_stop, pass_with_known_stop};
+
+    #[test]
+    fn the_round_under_way_takes_midi_merge_as_it_is_now() {
+        // The pass started with MIDI Merge off.
+        let mut rounds = vec![false];
+        note_merge(&mut rounds, 0, true);
+        assert_eq!(rounds, [true], "switched on during the first round: that round merges");
+        note_merge(&mut rounds, 2, false);
+        assert_eq!(rounds, [true, true, false], "a round that went by unseen keeps the state before it");
+        note_merge(&mut rounds, 0, false);
+        assert_eq!(rounds, [true, true, false]);
+    }
+
+    #[test]
+    fn midi_merge_switched_after_the_last_frame_of_a_pass_applies_to_its_last_round() {
+        use soundcraft_engine::io::{MidiTakeEvent, add_midi_recording};
+        use soundcraft_model::ClipContent;
+        use soundcraft_playback::midi::{MidiInputs, RecordedMidi};
+        let mut app = super::SoundApp::new(soundcraft_engine::Engine::default(), None, crate::Services::default());
+        app.midi_inputs = Some(MidiInputs::with_port_names(Vec::new(), vec!["Keys".into()]));
+        let t = app.engine.execute("track.new", &serde_json::json!({"name": "Keys", "kind": "instrument"})).unwrap()["tracks"][0].as_u64().unwrap();
+        app.engine.execute("track.input", &serde_json::json!({"tracks": [t], "input": "none"})).unwrap();
+        app.engine.execute("mix.record_arm", &serde_json::json!({"tracks": [t], "value": true})).unwrap();
+        let range = Range::new(0, 48_000);
+        let note = |at, status, pitch| MidiTakeEvent { at, device: 0, status, data1: pitch, data2: 100 };
+        add_midi_recording(&mut app.engine, range, &[note(0, 0x90, 50), note(12_000, 0x80, 50)], &[], false);
+        // The pass starts with MIDI Merge off; it is switched on after the last frame that looked,
+        // and the pass stops before the next one.
+        app.engine.session_mut().edit.midi_merge = false;
+        app.begin_midi_take();
+        app.midi_take.extend([
+            RecordedMidi { at: 24_000, port: 0, status: 0x90, data1: 62, data2: 100 },
+            RecordedMidi { at: 36_000, port: 0, status: 0x80, data1: 62, data2: 0 },
+        ]);
+        app.engine.session_mut().edit.midi_merge = true;
+        app.finish_midi_take(range, false, true, (MidiPass::Linear, false, None));
+        let track = app.engine.session().track(soundcraft_model::TrackId(t)).unwrap();
+        let pitches: Vec<Vec<u8>> = track
+            .clips()
+            .iter()
+            .map(|c| match &c.content {
+                ClipContent::Midi { sequence } => sequence.notes.iter().map(|n| n.pitch).collect(),
+                _ => Vec::new(),
+            })
+            .collect();
+        assert_eq!(pitches, [vec![50, 62]], "merged into the clip there, as the button said at Stop");
+    }
 
     #[test]
     fn the_stop_of_a_loop_pass_is_not_used_when_entries_of_the_take_went_missing() {

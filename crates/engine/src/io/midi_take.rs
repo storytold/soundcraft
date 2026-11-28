@@ -5,6 +5,8 @@ use soundcraft_midi::{CtrlEvent, CtrlKind, Note, Sequence};
 use soundcraft_model::{ClipId, MidiInput, Route};
 use std::collections::HashMap;
 
+mod merge;
+
 /// A MIDI message played during a record pass, at its timeline position; or, with the status
 /// [`MidiTakeEvent::LOST`], the point where the input queues dropped events; or, with
 /// [`MidiTakeEvent::WRAP`], the point where loop recording went back to the start of the loop.
@@ -51,8 +53,12 @@ pub enum MidiPass {
 /// What a record pass made of the MIDI that was played.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct MidiTake {
-    /// The clips made, one per track that received something.
+    /// The clips made: one per track that received something, or, as the record mode says
+    /// ([`MidiRecordStyle`]), a take per round of Loop Record or the clips that fill the gaps
+    /// between the clips merged into.
     pub clips: Vec<ClipId>,
+    /// Clips that were on the tracks already and that MIDI Merge recorded into.
+    pub merged: Vec<ClipId>,
     /// Places within the pass where input was dropped ([`MidiTakeEvent::LOST`]): the take is
     /// incomplete when this is not zero.
     pub gaps: usize,
@@ -93,7 +99,39 @@ fn lost_covers(lost: u8, device: u8) -> bool {
 /// goes round ([`MidiTakeEvent::WRAP`]) is two notes: to the end of the loop, and from its start;
 /// that holds for a key still down when the pass stops too ([`MidiPass::Loop`]). In a pass that
 /// did not loop ([`MidiPass::Linear`]) nothing is read as the loop going round.
+#[cfg(test)]
 fn midi_take_sequence(s: &Session, input: &MidiInput<'_>, range: Range, pass: MidiPass, events: &[MidiTakeEvent], devices: &[String]) -> Sequence {
+    midi_take_rounds(s, input, range, pass, events, devices, false).into_iter().next().map(|r| r.seq).unwrap_or_default()
+}
+
+/// What one round of a record pass recorded on a track ([`midi_take_rounds`]).
+#[derive(Debug, Clone, Default, PartialEq)]
+struct RoundTake {
+    /// In ticks from the start of the range.
+    seq: Sequence,
+    /// Whether the track received new material in this round: a note played or a controller
+    /// moved. The part of a key held over from the round before, a lone release or dropped
+    /// input are not new material (Pro Tools makes a Loop Record take "when new MIDI material is
+    /// received", Reference Guide p.826).
+    fresh: bool,
+}
+
+/// [`midi_take_sequence`], round by round. With `split` and a loop pass whose rounds are marked,
+/// each round of the loop is a take of its own: a note belongs to the round of its key press
+/// ("Note Ons can never precede the beginning of a clip", Reference Guide p.819), a key held into
+/// the next rounds sounds on in them from the loop start, and a controller belongs to the round it
+/// was moved in. Otherwise (and for any other pass) everything is in one take, laid out as
+/// [`midi_take_sequence`] says.
+fn midi_take_rounds(
+    s: &Session,
+    input: &MidiInput<'_>,
+    range: Range,
+    pass: MidiPass,
+    events: &[MidiTakeEvent],
+    devices: &[String],
+    split: bool,
+) -> Vec<RoundTake> {
+    let split = split && matches!(pass, MidiPass::Loop { marked: true, .. });
     let sr = s.sample_rate;
     let base = s.tempo.samples_to_ticks(range.start, sr);
     let tick = |at: Samples| s.tempo.samples_to_ticks(at, sr).saturating_sub(base).max(0);
@@ -104,7 +142,15 @@ fn midi_take_sequence(s: &Session, input: &MidiInput<'_>, range: Range, pass: Mi
     // The last tick a note can start at and still be played: a key pressed within the last
     // samples of the range may round to the tick of its end, where the clip no longer plays.
     let last_start = end_tick.saturating_sub(1).max(0);
-    let mut seq = Sequence::default();
+    let mut takes = vec![RoundTake::default()];
+    // The take a round goes into: its own when split, else the one take.
+    let slot = |takes: &mut Vec<RoundTake>, round: u32| -> usize {
+        let i = if split { usize::try_from(round).unwrap_or(usize::MAX) } else { 0 };
+        if takes.len() <= i {
+            takes.resize_with(i + 1, RoundTake::default);
+        }
+        i
+    };
     // The round of the loop being played: it goes up at every `WRAP`.
     let mut round = 0u32;
     // Keys down: (device, channel, pitch) -> (start tick, velocity, round, the sample the key was
@@ -112,7 +158,7 @@ fn midi_take_sequence(s: &Session, input: &MidiInput<'_>, range: Range, pass: Mi
     // their samples: two positions a few samples apart may share a tick, and a press in the
     // last samples of the range starts its note a tick earlier so that it plays.
     let mut down: HashMap<(u8, u8, u8), (i64, u8, u32, Samples)> = HashMap::new();
-    let close = |seq: &mut Sequence,
+    let close = |takes: &mut Vec<RoundTake>,
                  (_, channel, pitch): (u8, u8, u8),
                  (start, velocity, since, pressed): (i64, u8, u32, Samples),
                  end: i64,
@@ -132,9 +178,27 @@ fn midi_take_sequence(s: &Session, input: &MidiInput<'_>, range: Range, pass: Mi
         // entries of one round when its rounds are marked: a release stamped before its
         // press ends the note at the press (a note is at least a tick long).
         if !looped || (rounds == 0 && (end_at >= pressed || !inferred)) {
-            seq.notes.push(note(start, end, release));
+            let i = slot(takes, since);
+            takes[i].seq.notes.push(note(start, end, release));
             return;
         }
+        if split {
+            // Each round its own take: the key sounds from its press to the end of the loop, over
+            // the whole loop in the rounds it was held through, and from the loop start to its
+            // release in the round it was let go in.
+            let i = slot(takes, since);
+            takes[i].seq.notes.push(note(start, end_tick, 64));
+            for r in since.saturating_add(1)..round {
+                let i = slot(takes, r);
+                takes[i].seq.notes.push(note(0, end_tick, 64));
+            }
+            if end > 0 {
+                let i = slot(takes, round);
+                takes[i].seq.notes.push(note(0, end, release));
+            }
+            return;
+        }
+        let seq = &mut takes[0].seq;
         // The pass went round between the key press and the release (loop recording goes back to
         // the start of the loop): the capture said so, or the release is earlier on the timeline
         // than the press. The note is held to the end of the pass and goes on from its start, as
@@ -160,7 +224,7 @@ fn midi_take_sequence(s: &Session, input: &MidiInput<'_>, range: Range, pass: Mi
             let ended: Vec<(u8, u8, u8)> = down.keys().copied().filter(|k| lost_covers(e.device, k.0)).collect();
             for key in ended {
                 if let Some(open) = down.remove(&key) {
-                    close(&mut seq, key, open, at, 64, round, e.at);
+                    close(&mut takes, key, open, at, 64, round, e.at);
                 }
             }
             continue;
@@ -172,24 +236,33 @@ fn midi_take_sequence(s: &Session, input: &MidiInput<'_>, range: Range, pass: Mi
         let key = (e.device, channel, d1);
         // Like a note start, a controller in the last samples of the range stays where it plays.
         let ctrl = |kind, value| CtrlEvent { tick: at.min(last_start), channel, kind, value };
-        match e.status & 0xF0 {
+        let moved = match e.status & 0xF0 {
             0x90 if d2 > 0 => {
                 // The same key again without a release: the first note ends here.
                 if let Some(open) = down.insert(key, (at.min(last_start), d2, round, e.at)) {
-                    close(&mut seq, key, open, at, 64, round, e.at);
+                    close(&mut takes, key, open, at, 64, round, e.at);
                 }
+                let i = slot(&mut takes, round);
+                takes[i].fresh = true;
+                None
             }
             0x80 | 0x90 => {
                 if let Some(open) = down.remove(&key) {
-                    close(&mut seq, key, open, at, if e.status & 0xF0 == 0x80 { d2 } else { 64 }, round, e.at);
+                    close(&mut takes, key, open, at, if e.status & 0xF0 == 0x80 { d2 } else { 64 }, round, e.at);
                 }
+                None
             }
-            0xA0 => seq.ctrls.push(ctrl(CtrlKind::PolyPressure(d1), i32::from(d2))),
-            0xB0 => seq.ctrls.push(ctrl(CtrlKind::Cc(d1), i32::from(d2))),
-            0xC0 => seq.ctrls.push(ctrl(CtrlKind::Program, i32::from(d1))),
-            0xD0 => seq.ctrls.push(ctrl(CtrlKind::ChannelPressure, i32::from(d1))),
-            0xE0 => seq.ctrls.push(ctrl(CtrlKind::PitchBend, (i32::from(d2) << 7 | i32::from(d1)) - 8192)),
-            _ => {}
+            0xA0 => Some(ctrl(CtrlKind::PolyPressure(d1), i32::from(d2))),
+            0xB0 => Some(ctrl(CtrlKind::Cc(d1), i32::from(d2))),
+            0xC0 => Some(ctrl(CtrlKind::Program, i32::from(d1))),
+            0xD0 => Some(ctrl(CtrlKind::ChannelPressure, i32::from(d1))),
+            0xE0 => Some(ctrl(CtrlKind::PitchBend, (i32::from(d2) << 7 | i32::from(d1)) - 8192)),
+            _ => None,
+        };
+        if let Some(c) = moved {
+            let i = slot(&mut takes, round);
+            takes[i].seq.ctrls.push(c);
+            takes[i].fresh = true;
         }
     }
     // Still down when the pass stopped. A loop pass stops somewhere inside the loop: the keys end
@@ -203,10 +276,14 @@ fn midi_take_sequence(s: &Session, input: &MidiInput<'_>, range: Range, pass: Mi
         _ => None,
     };
     for (key, open) in down {
-        close(&mut seq, key, open, stop_at.map_or(end_tick, tick), 64, round, stop_at.unwrap_or(range.end));
+        close(&mut takes, key, open, stop_at.map_or(end_tick, tick), 64, round, stop_at.unwrap_or(range.end));
     }
-    seq.sort();
-    seq
+    // The round the pass stopped in is there even when nothing was played in it.
+    slot(&mut takes, round);
+    for t in &mut takes {
+        t.seq.sort();
+    }
+    takes
 }
 
 /// Most events of one MIDI record pass that are kept.
@@ -215,8 +292,9 @@ pub const MAX_MIDI_TAKE_EVENTS: usize = 1 << 20;
 /// Turn the MIDI played during a record pass that went once over `range` into a clip on every
 /// MIDI and instrument track that is record-enabled now, each taking the events of its MIDI input
 /// (device and channel). `devices` names the devices by [`MidiTakeEvent::device`]. A track that
-/// received nothing gets no clip. One undo step ("Record"); with `same_pass` the clips join the
-/// step the audio takes of this pass already made. The result says where input was dropped
+/// received nothing gets no clip. One undo step ("MIDI Recording", as Pro Tools names it, Reference
+/// Guide p.820); with `same_pass` the clips join the step the audio takes of this pass already
+/// made ("Record"). The result says where input was dropped
 /// during the pass.
 pub fn add_midi_recording(e: &mut Engine, range: Range, events: &[MidiTakeEvent], devices: &[String], same_pass: bool) -> MidiTake {
     let inputs = midi_record_inputs(e);
@@ -246,6 +324,123 @@ pub fn add_midi_recording_from(
     inputs: &[(TrackId, Route)],
     same_pass: bool,
 ) -> MidiTake {
+    record_midi(e, range, pass, events, devices, inputs, Write::Piled { same_pass })
+}
+
+/// How MIDI Merge Release mode writes controllers recorded in MIDI Merge mode (Reference Guide
+/// p.814, p.176). It applies to the continuous controllers: control changes, pitch bend and
+/// channel (mono) aftertouch, the kinds Pro Tools lists as continuous controller events
+/// (p.1042–1043). Program changes and polyphonic aftertouch are merged as they are.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MergeRelease {
+    /// "Continues writing the last value until the next event even if you are still recording":
+    /// the existing events of a controller are replaced from the first to the last value played,
+    /// and after that the existing ones play on.
+    #[default]
+    LatchUntilNextEvent,
+    /// "Continues writing the last value. Any existing events are overwritten until you stop
+    /// recording": from the first value played to the stop. In a loop pass the later rounds go
+    /// on writing the last value over the whole loop.
+    Latch,
+}
+
+impl MergeRelease {
+    pub const ALL: [Self; 2] = [Self::Latch, Self::LatchUntilNextEvent];
+
+    /// The text shown for the mode.
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Latch => "Latch",
+            Self::LatchUntilNextEvent => "Latch Until Next Event",
+        }
+    }
+
+    /// The command and settings identifier of the mode.
+    pub const fn id(self) -> &'static str {
+        match self {
+            Self::Latch => "latch",
+            Self::LatchUntilNextEvent => "latch_until_next_event",
+        }
+    }
+
+    /// The mode an identifier names.
+    pub fn parse(id: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|m| m.id() == id)
+    }
+}
+
+/// How the MIDI of a record pass is written into the tracks: the record mode it ran in.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct MidiRecordStyle {
+    /// Loop Record: every round of the loop in which a track received new material is a take of
+    /// its own, the length of the loop, replacing what the loop covers without deleting it: the
+    /// first on the track's playlist, each further one on a new playlist that becomes the
+    /// track's. MIDI Merge has no effect (Reference Guide p.774, p.813, p.825–826).
+    pub loop_record: bool,
+    /// MIDI Merge, round by round of the pass (one entry for a pass that did not loop): on, what
+    /// was played is merged into the MIDI already on the track; off, it replaces what the range
+    /// covers. A round past the last entry has the last entry's state; none at all is off.
+    pub merge: Vec<bool>,
+    /// How merged controllers are written.
+    pub release: MergeRelease,
+    /// The pass also recorded audio, whose takes already made its undo step: the MIDI joins it.
+    pub same_pass: bool,
+    /// Where a pass punched in while the loop was playing started (where the audio engine's
+    /// playhead stood when it began): its first round covers only from there, so a replacing
+    /// first round leaves what lies before the punch-in point. Should the point be the UI's own
+    /// playhead instead (used when the audio engine did not say), which may lag behind, the round
+    /// starts no later than the first thing it recorded.
+    pub punched_in: Option<Samples>,
+}
+
+impl MidiRecordStyle {
+    /// Whether MIDI Merge was on in `round`.
+    fn merges(&self, round: usize) -> bool {
+        !self.loop_record && self.merge.get(round).or(self.merge.last()).copied().unwrap_or(false)
+    }
+}
+
+/// [`add_midi_recording_from`], recorded as `style` says ([`MidiRecordStyle`]). A loop pass is
+/// taken round by round: with MIDI Merge each round is merged into the track in turn, so what
+/// was played in a round counts as already there for the next (drum machine style loop
+/// recording, Reference Guide p.824–825). Without it the last round that received new material
+/// replaces the range, and a round with nothing new played changes nothing ("each subsequent take
+/// destructively replaces the previous take", p.824). The pass is one undo step, with every take
+/// and playlist it made.
+pub fn add_midi_recording_with(
+    e: &mut Engine,
+    range: Range,
+    pass: MidiPass,
+    events: &[MidiTakeEvent],
+    devices: &[String],
+    inputs: &[(TrackId, Route)],
+    style: &MidiRecordStyle,
+) -> MidiTake {
+    record_midi(e, range, pass, events, devices, inputs, Write::Styled(style))
+}
+
+/// How [`record_midi`] writes a pass.
+enum Write<'a> {
+    /// Every round of the pass in one clip that replaces the range ([`add_midi_recording_from`]).
+    Piled { same_pass: bool },
+    /// As the record mode says ([`add_midi_recording_with`]).
+    Styled(&'a MidiRecordStyle),
+}
+
+fn record_midi(
+    e: &mut Engine,
+    range: Range,
+    pass: MidiPass,
+    events: &[MidiTakeEvent],
+    devices: &[String],
+    inputs: &[(TrackId, Route)],
+    write: Write<'_>,
+) -> MidiTake {
+    let (style, same_pass) = match write {
+        Write::Piled { same_pass } => (None, same_pass),
+        Write::Styled(style) => (Some(style), style.same_pass),
+    };
     let before = e.session_arc();
     let mut out = MidiTake::default();
     if range.len() <= 0 {
@@ -254,27 +449,151 @@ pub fn add_midi_recording_from(
     out.gaps =
         events.iter().take(MAX_MIDI_TAKE_EVENTS).filter(|ev| ev.status == MidiTakeEvent::LOST && ev.at >= range.start && ev.at < range.end).count()
             + usize::from(events.len() > MAX_MIDI_TAKE_EVENTS);
-    let takes: Vec<(TrackId, String, Sequence)> = {
+    let takes: Vec<(TrackId, String, Vec<RoundTake>)> = {
         let s = e.session();
         s.tracks
             .iter()
             .filter_map(|t| {
                 let (_, route) = inputs.iter().find(|(id, _)| *id == t.id)?;
-                Some((t.id, t.name.clone(), midi_take_sequence(s, &MidiInput::of(route), range, pass, events, devices)))
+                Some((t.id, t.name.clone(), midi_take_rounds(s, &MidiInput::of(route), range, pass, events, devices, style.is_some())))
             })
-            .filter(|(_, _, seq)| !seq.notes.is_empty() || !seq.ctrls.is_empty())
             .collect()
     };
-    for (tid, name, seq) in takes {
-        let s = e.session_mut();
-        let cid = s.new_clip_id();
-        crate::edit::place_clip(s, tid, Clip::midi(cid, name, range.start, range.len(), seq));
-        out.clips.push(cid);
-    }
-    if !out.clips.is_empty() && !same_pass {
-        e.push_undo("Record", before);
+    let changed = match style {
+        None => {
+            for (tid, name, rounds) in takes {
+                let Some(seq) = rounds.into_iter().next().map(|r| r.seq).filter(|q| !q.notes.is_empty() || !q.ctrls.is_empty()) else { continue };
+                let s = e.session_mut();
+                let cid = s.new_clip_id();
+                crate::edit::place_clip(s, tid, Clip::midi(cid, name, range.start, range.len(), seq));
+                out.clips.push(cid);
+            }
+            !out.clips.is_empty()
+        }
+        Some(style) => {
+            let stop = match pass {
+                MidiPass::Loop { stopped: Some(at), .. } if events.len() <= MAX_MIDI_TAKE_EVENTS => at.clamp(range.start, range.end),
+                _ => range.end,
+            };
+            let mut changed = false;
+            for (tid, name, rounds) in takes {
+                let s = e.session_mut();
+                changed |= if style.loop_record && rounds.len() > 1 {
+                    place_round_takes(s, tid, &name, range, &rounds, &mut out)
+                } else {
+                    write_rounds(s, tid, &name, (range, stop), &rounds, style, &mut out)
+                };
+            }
+            changed
+        }
+    };
+    if changed && !same_pass {
+        e.push_undo("MIDI Recording", before);
     }
     out
+}
+
+/// Loop Record: a take of the loop's length for every round in which the track received new
+/// material, the first on the track's playlist, each further one on a new playlist named after
+/// the track and numbered, which becomes the track's (as audio loop recording lays out its
+/// passes). Whether any was made.
+fn place_round_takes(s: &mut Session, tid: TrackId, name: &str, range: Range, rounds: &[RoundTake], out: &mut MidiTake) -> bool {
+    let mut first = true;
+    for r in rounds.iter().filter(|r| r.fresh) {
+        if !first && let Some(t) = s.track_mut(tid) {
+            t.playlists.push(soundcraft_model::Playlist::new(format!("{}.{:02}", t.name, t.playlists.len() + 1)));
+            t.active_playlist = t.playlists.len() - 1;
+        }
+        first = false;
+        let cid = s.new_clip_id();
+        crate::edit::place_clip(s, tid, Clip::midi(cid, name, range.start, range.len(), r.seq.clone()));
+        out.clips.push(cid);
+    }
+    !first
+}
+
+/// The rounds of a pass written one after another, each merged or replacing as MIDI Merge was
+/// in it ([`MidiRecordStyle::merges`]). `stop` is where the pass stopped: the last round ends
+/// there. The clips made and merged into are added to `out`. Whether the track changed.
+fn write_rounds(
+    s: &mut Session,
+    tid: TrackId,
+    name: &str,
+    (range, stop): (Range, Samples),
+    rounds: &[RoundTake],
+    style: &MidiRecordStyle,
+    out: &mut MidiTake,
+) -> bool {
+    let looped = rounds.len() > 1;
+    let mut latch = merge::Latch::new(style.release);
+    let mut changed = false;
+    // This track's clips: those of the tracks written before it stay in `out` as they are.
+    let (mut clips, mut merged) = (Vec::new(), Vec::new());
+    for (i, r) in rounds.iter().enumerate() {
+        let last = i + 1 == rounds.len();
+        let empty = r.seq.notes.is_empty() && r.seq.ctrls.is_empty();
+        // The last round of a loop pass ends at the stop, the first one too when the pass stopped
+        // before the loop went round. A round stopped at its very start covered nothing and
+        // changes nothing.
+        let until = if last { stop } else { range.end };
+        if until <= range.start {
+            continue;
+        }
+        if style.merges(i) {
+            let (made, into) = merge::merge_take(s, tid, name, range, until, &r.seq, &mut latch);
+            changed |= !made.is_empty() || !into.is_empty();
+            clips.extend(made);
+            for m in into {
+                if !merged.contains(&m) {
+                    merged.push(m);
+                }
+            }
+        } else if !empty && (r.fresh || !looped) {
+            // A last loop round cut short by Stop replaces only what it covered: what was there
+            // after the stop stays (Replace overwrites "within the record range", Reference Guide
+            // p.823–824). A Loop Record take is the loop's length (p.826).
+            let end = if style.loop_record { range.end } else { until };
+            // A first round punched in while the loop played covers only from the punch-in
+            // point: what lies before it was not recorded over and stays (p.819). That point is
+            // where the audio engine began the pass; should it be the UI's playhead instead,
+            // which may lag behind (even by a round), the round starts no later than the first
+            // thing it recorded.
+            let start = match style.punched_in {
+                Some(at) if i == 0 && !style.loop_record => {
+                    let first = r.seq.notes.iter().map(|n| n.start).chain(r.seq.ctrls.iter().map(|c| c.tick)).min();
+                    let base = s.tempo.samples_to_ticks(range.start, s.sample_rate);
+                    let first = first.map_or(at, |t| s.tempo.tick_to_samples(base.saturating_add(t), s.sample_rate));
+                    at.min(first).clamp(range.start, end)
+                }
+                _ => range.start,
+            };
+            if end <= start {
+                continue;
+            }
+            let shift = s.tempo.samples_to_ticks(start, s.sample_rate) - s.tempo.samples_to_ticks(range.start, s.sample_rate);
+            let mut seq = r.seq.clone();
+            if shift > 0 {
+                for n in &mut seq.notes {
+                    n.start = (n.start - shift).max(0);
+                }
+                for c in &mut seq.ctrls {
+                    c.tick = (c.tick - shift).max(0);
+                }
+            }
+            latch = merge::Latch::new(style.release);
+            let cid = s.new_clip_id();
+            crate::edit::place_clip(s, tid, Clip::midi(cid, name, start, end - start, seq));
+            clips.push(cid);
+            changed = true;
+        }
+    }
+    // A later round may have replaced what an earlier one made or merged into.
+    let alive = |id: &ClipId| s.track(tid).is_some_and(|t| t.clips().iter().any(|c| c.id == *id));
+    clips.retain(alive);
+    merged.retain(|id| alive(id) && !clips.contains(id));
+    out.clips.extend(clips);
+    out.merged.extend(merged);
+    changed
 }
 
 #[cfg(test)]
@@ -689,10 +1008,10 @@ mod tests {
         let range = Range::new(0, 48_000);
         let events = [ev(100, 0, 0x90, 60, 100), ev(200, 0, 0x80, 60, 0)];
         let clips = |e: &Engine| e.session().track(t).unwrap().clips().len();
-        // On its own the take is one undo step called Record.
+        // On its own the take is one undo step called MIDI Recording (p.820).
         let before = e.undo_label().map(str::to_string);
         assert_eq!(add_midi_recording(&mut e, range, &events, &[], false).clips.len(), 1);
-        assert_eq!(e.undo_label(), Some("Record"));
+        assert_eq!(e.undo_label(), Some("MIDI Recording"));
         e.run("edit.undo").unwrap();
         assert_eq!((clips(&e), e.undo_label().map(str::to_string)), (0, before.clone()));
         // With audio takes of the same pass, it adds no step of its own: theirs covers it.
@@ -738,5 +1057,454 @@ mod tests {
         let take = add_midi_recording(&mut e, range, &events, &[], false);
         assert_eq!((take.clips.len(), take.gaps), (1, 1), "the cut is reported");
         assert_eq!(notes_of(&sequence(&e, t, range)).iter().map(|n| n.1).collect::<Vec<_>>(), [60]);
+    }
+
+    fn style(loop_record: bool, merge: &[bool], release: MergeRelease) -> MidiRecordStyle {
+        MidiRecordStyle { loop_record, merge: merge.to_vec(), release, same_pass: false, punched_in: None }
+    }
+
+    /// Record `events` on every record-enabled track as `style` says.
+    fn record(e: &mut Engine, range: Range, pass: MidiPass, events: &[MidiTakeEvent], style: &MidiRecordStyle) -> MidiTake {
+        let inputs = midi_record_inputs(e);
+        add_midi_recording_with(e, range, pass, events, &[], &inputs, style)
+    }
+
+    fn midi_of(c: &Clip) -> &Sequence {
+        let ClipContent::Midi { sequence } = &c.content else { panic!("not a MIDI clip") };
+        sequence
+    }
+
+    /// The pitches of the notes in every clip of the track's playlist, clip by clip.
+    fn pitches(e: &Engine, t: TrackId) -> Vec<Vec<u8>> {
+        e.session().track(t).unwrap().clips().iter().map(|c| midi_of(c).notes.iter().map(|n| n.pitch).collect()).collect()
+    }
+
+    const Q: Samples = 24_000;
+    const LOOP: Range = Range { start: 0, end: 4 * Q };
+    const WRAP: MidiTakeEvent = MidiTakeEvent { at: 4 * Q, device: u8::MAX, status: MidiTakeEvent::WRAP, data1: 0, data2: 0 };
+
+    #[test]
+    fn loop_record_makes_a_take_for_each_round_that_received_new_material() {
+        let mut e = Engine::default();
+        let t = armed(&mut e, "Keys", "none");
+        let events = [
+            ev(Q, 0, 0x90, 60, 100), // round 1: a note…
+            ev(2 * Q, 0, 0x80, 60, 0),
+            ev(3 * Q, 0, 0x90, 67, 100), // …and a key held into round 2
+            WRAP,
+            ev(Q, 0, 0x80, 67, 0), // round 2: only the release of that key
+            WRAP,
+            ev(Q, 0, 0x90, 64, 100), // round 3: another note
+            ev(2 * Q, 0, 0x80, 64, 0),
+            WRAP,
+            ev(Q / 2, 0, 0xB0, 1, 90), // round 4, stopped half way: a controller only
+        ];
+        let pass = MidiPass::Loop { stopped: Some(2 * Q), marked: true };
+        let before = e.undo_label().map(str::to_string);
+        for merge in [false, true] {
+            // MIDI Merge has no effect in Loop Record (Reference Guide p.813).
+            let take = record(&mut e, LOOP, pass, &events, &style(true, &[merge], MergeRelease::default()));
+            assert_eq!(take.clips.len(), 3, "rounds 1, 3 and 4; round 2 played nothing new");
+            let track = e.session().track(t).unwrap();
+            let names: Vec<&str> = track.playlists.iter().map(|p| p.name.as_str()).collect();
+            assert_eq!(names.len(), 3, "{names:?}");
+            assert!(names[1].starts_with("Keys.") && names[2].starts_with("Keys.") && names[1] != names[2], "{names:?}");
+            assert_eq!(track.active_playlist, 2, "the last take is the track's");
+            let takes: Vec<&Clip> = track.playlists.iter().flat_map(|p| p.clips.iter()).collect();
+            assert!(takes.iter().all(|c| c.range() == LOOP), "every take is the loop");
+            let notes: Vec<Vec<u8>> = takes.iter().map(|c| midi_of(c).notes.iter().map(|n| n.pitch).collect()).collect();
+            // Round 1 holds its note and the part of the key held to the loop end; the part held
+            // into round 2 made no take of its own.
+            assert_eq!(notes, [vec![60, 67], vec![64], vec![]]);
+            assert_eq!(midi_of(takes[2]).ctrls.len(), 1);
+            // One undo step takes back every take and playlist of the pass.
+            assert_eq!(e.undo_label(), Some("MIDI Recording"));
+            e.run("edit.undo").unwrap();
+            let track = e.session().track(t).unwrap();
+            assert_eq!((track.playlists.len(), track.clips().len()), (1, 0));
+            assert_eq!(e.undo_label().map(str::to_string), before);
+        }
+    }
+
+    #[test]
+    fn a_loop_record_take_replaces_what_the_loop_covers_and_each_track_counts_its_own_input() {
+        let mut e = Engine::default();
+        let a = armed(&mut e, "A", "MIDI:*:A");
+        let b = armed(&mut e, "B", "MIDI:*:B");
+        let devices = ["A".to_string(), "B".to_string()];
+        // Something on A's playlist already.
+        add_midi_recording(&mut e, LOOP, &[ev(0, 0, 0x90, 50, 100), ev(Q, 0, 0x80, 50, 0)], &devices, false);
+        assert_eq!(e.session().track(a).unwrap().clips().len(), 1);
+        let events = [ev(Q, 1, 0x90, 60, 100), ev(2 * Q, 1, 0x80, 60, 0), WRAP, ev(Q, 0, 0x90, 62, 100), ev(2 * Q, 0, 0x80, 62, 0)];
+        let inputs = midi_record_inputs(&e);
+        let pass = MidiPass::Loop { stopped: Some(3 * Q), marked: true };
+        let take = add_midi_recording_with(&mut e, LOOP, pass, &events, &devices, &inputs, &style(true, &[], MergeRelease::default()));
+        assert_eq!(take.clips.len(), 2);
+        // A got material in round 2 only: one take, on its own playlist, in place of what was
+        // there; B in round 1 only.
+        assert_eq!(pitches(&e, a), [vec![62]]);
+        assert_eq!(pitches(&e, b), [vec![60]]);
+        assert_eq!((e.session().track(a).unwrap().playlists.len(), e.session().track(b).unwrap().playlists.len()), (1, 1));
+    }
+
+    #[test]
+    fn a_replace_round_cut_short_by_stop_keeps_what_the_earlier_round_played_after_the_stop() {
+        let mut e = Engine::default();
+        let t = armed(&mut e, "Keys", "none");
+        let events = [
+            ev(Q / 2, 0, 0x90, 60, 100), // round 1: early and late notes
+            ev(Q, 0, 0x80, 60, 0),
+            ev(3 * Q, 0, 0x90, 72, 100),
+            ev(3 * Q + Q / 4, 0, 0x80, 72, 0),
+            WRAP,
+            ev(Q / 2, 0, 0x90, 62, 100), // round 2, stopped at 1.5 Q: one note
+            ev(Q, 0, 0x80, 62, 0),
+        ];
+        let stop = Q + Q / 2;
+        let pass = MidiPass::Loop { stopped: Some(stop), marked: true };
+        record(&mut e, LOOP, pass, &events, &style(false, &[false], MergeRelease::default()));
+        let track = e.session().track(t).unwrap();
+        let clips: Vec<(Samples, Samples, Vec<u8>)> =
+            track.clips().iter().map(|c| (c.start, c.range().end, midi_of(c).notes.iter().map(|n| n.pitch).collect())).collect();
+        // Round 2 replaces the loop up to the stop; round 1's late note, after the stop, stays.
+        assert_eq!(clips, [(0, stop, vec![62]), (stop, LOOP.end, vec![72])]);
+        // Stopped at the wrap itself: the new round covered nothing and changes nothing.
+        e.run("edit.undo").unwrap();
+        let mut at_wrap = events[..5].to_vec();
+        at_wrap.push(ev(0, 0, 0xB0, 1, 9));
+        record(&mut e, LOOP, MidiPass::Loop { stopped: Some(0), marked: true }, &at_wrap, &style(false, &[false], MergeRelease::default()));
+        assert_eq!(pitches(&e, t), [vec![60, 72]]);
+    }
+
+    #[test]
+    fn loop_playback_with_midi_merge_layers_the_rounds_in_one_clip() {
+        let mut e = Engine::default();
+        let t = armed(&mut e, "Drums", "none");
+        let events = [
+            ev(0, 0, 0x99, 42, 100), // hi-hats in round 1
+            ev(Q / 4, 0, 0x89, 42, 0),
+            ev(2 * Q, 0, 0x99, 42, 100),
+            ev(2 * Q + Q / 4, 0, 0x89, 42, 0),
+            WRAP,
+            ev(Q, 0, 0x99, 36, 100), // the kick in round 2
+            ev(Q + Q / 4, 0, 0x89, 36, 0),
+        ];
+        let pass = MidiPass::Loop { stopped: Some(2 * Q), marked: true };
+        let take = record(&mut e, LOOP, pass, &events, &style(false, &[true], MergeRelease::default()));
+        assert_eq!(take.clips.len(), 1);
+        let mut got = pitches(&e, t);
+        got[0].sort_unstable();
+        assert_eq!(got, [vec![36, 42, 42]], "both rounds, one clip");
+        // Without MIDI Merge the last round that played something replaces the earlier ones; a
+        // round with nothing new played changes nothing.
+        e.run("edit.undo").unwrap();
+        let mut silent_last = events.to_vec();
+        silent_last.push(WRAP);
+        record(&mut e, LOOP, pass, &silent_last, &style(false, &[false], MergeRelease::default()));
+        assert_eq!(pitches(&e, t), [vec![36]]);
+        // MIDI Merge switched on during round 2: round 2 is merged into round 1.
+        e.run("edit.undo").unwrap();
+        record(&mut e, LOOP, pass, &silent_last, &style(false, &[false, true], MergeRelease::default()));
+        let mut got = pitches(&e, t);
+        got[0].sort_unstable();
+        assert_eq!(got, [vec![36, 42, 42]]);
+    }
+
+    #[test]
+    fn a_key_held_over_the_loop_point_in_merge_mode_covers_the_loop_once() {
+        let mut e = Engine::default();
+        let t = armed(&mut e, "Keys", "none");
+        // Pressed in round 1 at three quarters, released in round 3 at one quarter.
+        let events = [ev(3 * Q, 0, 0x90, 60, 100), WRAP, WRAP, ev(Q, 0, 0x80, 60, 0)];
+        record(&mut e, LOOP, MidiPass::Loop { stopped: Some(2 * Q), marked: true }, &events, &style(false, &[true], MergeRelease::default()));
+        let clip = e.session().track(t).unwrap().clips()[0].clone();
+        let mut spans: Vec<(i64, i64)> = midi_of(&clip).notes.iter().map(|n| (n.start, n.end())).collect();
+        spans.sort_unstable();
+        assert_eq!(spans, [(0, 2880), (2880, 3840)], "no two notes of the key overlap");
+    }
+
+    /// A track with one MIDI clip over the first two quarters: notes C4 and E4 and a ramp of
+    /// controller 1, controller 7 and pitch bend events.
+    fn with_a_clip(e: &mut Engine) -> (TrackId, ClipId) {
+        let t = armed(e, "Keys", "none");
+        let mut events = vec![ev(0, 0, 0x90, 60, 100), ev(Q, 0, 0x80, 60, 0), ev(Q, 0, 0x90, 64, 100), ev(2 * Q - 1, 0, 0x80, 64, 0)];
+        for i in 0..8u8 {
+            let at = i64::from(i) * Q / 4;
+            events.extend([ev(at, 0, 0xB0, 1, i * 16), ev(at, 0, 0xE0, 0, 64 + i), ev(at, 0, 0xB0, 7, 100)]);
+        }
+        add_midi_recording(e, Range::new(0, 2 * Q), &events, &[], false);
+        let host = e.session().track(t).unwrap().clips()[0].id;
+        (t, host)
+    }
+
+    #[test]
+    fn midi_merge_writes_into_the_clips_there_and_fills_only_the_gaps() {
+        let mut e = Engine::default();
+        let (t, host) = with_a_clip(&mut e);
+        let before = e.session().track(t).unwrap().clips()[0].clone();
+        // A punch from the second quarter to the fourth: a note inside the clip, one after it.
+        let range = Range::new(Q, 4 * Q);
+        let events =
+            [ev(Q + Q / 2, 0, 0x90, 72, 100), ev(Q + Q / 2 + 100, 0, 0x80, 72, 0), ev(3 * Q, 0, 0x90, 74, 100), ev(3 * Q + 100, 0, 0x80, 74, 0)];
+        let take = record(&mut e, range, MidiPass::Linear, &events, &style(false, &[true], MergeRelease::default()));
+        assert_eq!(take.merged, [host]);
+        let clips = e.session().track(t).unwrap().clips().to_vec();
+        assert_eq!(clips.len(), 2);
+        assert_eq!((clips[0].id, clips[0].range()), (host, before.range()), "the clip keeps its place and length");
+        assert_eq!(clips[1].range(), Range::new(2 * Q, 4 * Q), "the new clip fills the gap and nothing else");
+        assert_eq!(take.clips, [clips[1].id]);
+        assert_eq!(pitches(&e, t), [vec![60, 64, 72], vec![74]], "what was there plays on");
+        // Note positions inside the clip are counted from its start.
+        assert_eq!(midi_of(&clips[0]).notes.iter().find(|n| n.pitch == 72).map(|n| n.start), Some(1440));
+        e.run("edit.undo").unwrap();
+        assert_eq!(e.session().track(t).unwrap().clips(), [before]);
+    }
+
+    #[test]
+    fn a_new_note_on_a_key_that_is_sounding_ends_the_earlier_one() {
+        let mut e = Engine::default();
+        let (t, _) = with_a_clip(&mut e);
+        // C4 sounds over the first quarter; it is played again half way through it.
+        let events = [ev(Q / 2, 0, 0x90, 60, 90), ev(Q, 0, 0x80, 60, 0)];
+        record(&mut e, Range::new(0, 2 * Q), MidiPass::Linear, &events, &style(false, &[true], MergeRelease::default()));
+        let clip = e.session().track(t).unwrap().clips()[0].clone();
+        let c4: Vec<(i64, i64, u8)> = midi_of(&clip).notes.iter().filter(|n| n.pitch == 60).map(|n| (n.start, n.end(), n.velocity)).collect();
+        assert_eq!(c4, [(0, 480, 100), (480, 960, 90)]);
+    }
+
+    #[test]
+    fn the_release_mode_decides_how_far_new_controller_values_replace_the_old() {
+        // New values of controller 1 and pitch bend from the first eighth to the second quarter
+        // of a punch over the whole clip; controller 7 and a program change are not played over.
+        let events = [ev(Q / 2, 0, 0xB0, 1, 5), ev(Q, 0, 0xB0, 1, 6), ev(Q / 2, 0, 0xE0, 0, 0), ev(Q, 0, 0xE0, 0, 1), ev(Q, 0, 0xC0, 9, 0)];
+        let range = Range::new(0, 2 * Q);
+        let run = |release| {
+            let mut e = Engine::default();
+            let (t, _) = with_a_clip(&mut e);
+            record(&mut e, range, MidiPass::Linear, &events, &style(false, &[true], release));
+            let clip = e.session().track(t).unwrap().clips()[0].clone();
+            midi_of(&clip).ctrls.clone()
+        };
+        let ticks = |ctrls: &[CtrlEvent], kind: CtrlKind| ctrls.iter().filter(|c| c.kind == kind).map(|c| c.tick).collect::<Vec<_>>();
+        // Latch Until Next Event: the old values between the first and last new value give way;
+        // after it the old ramp plays on.
+        let lune = run(MergeRelease::LatchUntilNextEvent);
+        assert_eq!(ticks(&lune, CtrlKind::Cc(1)), [0, 240, 480, 960, 1200, 1440, 1680]);
+        assert_eq!(ticks(&lune, CtrlKind::PitchBend), ticks(&lune, CtrlKind::Cc(1)), "pitch bend is a continuous controller too");
+        // Latch: from the first new value to the stop.
+        let latch = run(MergeRelease::Latch);
+        assert_eq!(ticks(&latch, CtrlKind::Cc(1)), [0, 240, 480, 960]);
+        assert_eq!(ticks(&latch, CtrlKind::PitchBend), [0, 240, 480, 960]);
+        for ctrls in [&lune, &latch] {
+            assert_eq!(ticks(ctrls, CtrlKind::Cc(7)).len(), 8, "a controller not played over is kept");
+            assert_eq!(ticks(ctrls, CtrlKind::Program), [960], "a program change is merged as it is");
+        }
+    }
+
+    #[test]
+    fn latch_goes_on_writing_the_last_value_over_the_later_rounds_of_a_loop() {
+        let mut e = Engine::default();
+        let t = armed(&mut e, "Keys", "none");
+        // Controller 1 moved in round 1 only; round 2 plays a note.
+        let events = [ev(Q, 0, 0xB0, 1, 10), ev(2 * Q, 0, 0xB0, 1, 20), WRAP, ev(Q / 2, 0, 0x90, 60, 100), ev(Q, 0, 0x80, 60, 0)];
+        let pass = MidiPass::Loop { stopped: Some(3 * Q), marked: true };
+        let cc1 = |e: &Engine| {
+            let clip = e.session().track(t).unwrap().clips()[0].clone();
+            midi_of(&clip).ctrls.iter().filter(|c| c.kind == CtrlKind::Cc(1)).map(|c| (c.tick, c.value)).collect::<Vec<_>>()
+        };
+        record(&mut e, LOOP, pass, &events, &style(false, &[true], MergeRelease::Latch));
+        assert_eq!(cc1(&e), [(0, 20)], "round 2 holds the last value over the whole loop");
+        e.run("edit.undo").unwrap();
+        record(&mut e, LOOP, pass, &events, &style(false, &[true], MergeRelease::LatchUntilNextEvent));
+        assert_eq!(cc1(&e), [(960, 10), (1920, 20)], "round 2 leaves round 1's values alone");
+    }
+
+    #[test]
+    fn an_edit_locked_clip_is_not_merged_into() {
+        let mut e = Engine::default();
+        let (t, host) = with_a_clip(&mut e);
+        e.session_mut().find_clip_mut(host).unwrap().edit_locked = true;
+        let before = e.session().track(t).unwrap().clips()[0].clone();
+        let events = [ev(Q / 2, 0, 0x90, 72, 100), ev(Q, 0, 0x80, 72, 0)];
+        let take = record(&mut e, Range::new(0, 2 * Q), MidiPass::Linear, &events, &style(false, &[true], MergeRelease::default()));
+        assert!(take.merged.is_empty());
+        let clips = e.session().track(t).unwrap().clips().to_vec();
+        assert!(clips.contains(&before), "the locked clip is as it was");
+        assert_eq!(take.clips.len(), 1, "what was played is in a new clip over it");
+    }
+
+    #[test]
+    fn without_midi_merge_a_pass_in_a_line_replaces_the_range_as_before() {
+        let mut e = Engine::default();
+        let (t, _) = with_a_clip(&mut e);
+        let events = [ev(Q / 2, 0, 0x90, 72, 100), ev(Q, 0, 0x80, 72, 0)];
+        let take = record(&mut e, Range::new(0, 2 * Q), MidiPass::Linear, &events, &style(false, &[false], MergeRelease::default()));
+        assert!(take.merged.is_empty());
+        assert_eq!(pitches(&e, t), [vec![72]]);
+    }
+
+    #[test]
+    fn a_first_loop_round_stopped_before_the_wrap_replaces_only_up_to_the_stop() {
+        let mut e = Engine::default();
+        let t = armed(&mut e, "Keys", "none");
+        // On the track already: a note early in the loop and one late in it.
+        add_midi_recording(
+            &mut e,
+            LOOP,
+            &[ev(Q / 4, 0, 0x90, 50, 100), ev(Q / 2, 0, 0x80, 50, 0), ev(3 * Q, 0, 0x90, 72, 100), ev(3 * Q + Q / 4, 0, 0x80, 72, 0)],
+            &[],
+            false,
+        );
+        // Loop Playback, MIDI Merge off: stopped half way through the second quarter of round 1.
+        let events = [ev(Q / 2, 0, 0x90, 62, 100), ev(Q, 0, 0x80, 62, 0)];
+        let stop = Q + Q / 2;
+        let pass = MidiPass::Loop { stopped: Some(stop), marked: true };
+        record(&mut e, LOOP, pass, &events, &style(false, &[false], MergeRelease::default()));
+        let spans = |e: &Engine| -> Vec<(Samples, Samples, Vec<u8>)> {
+            e.session()
+                .track(t)
+                .unwrap()
+                .clips()
+                .iter()
+                .map(|c| (c.start, c.range().end, midi_of(c).notes.iter().map(|n| n.pitch).collect()))
+                .collect()
+        };
+        assert_eq!(spans(&e), [(0, stop, vec![62]), (stop, LOOP.end, vec![72])], "the note after the stop stays");
+        // A Loop Record take is the loop's length however early the pass stopped.
+        e.run("edit.undo").unwrap();
+        record(&mut e, LOOP, pass, &events, &style(true, &[], MergeRelease::default()));
+        assert_eq!(spans(&e), [(0, LOOP.end, vec![62])]);
+    }
+
+    #[test]
+    fn each_track_keeps_its_clips_in_the_result_when_several_record() {
+        let mut e = Engine::default();
+        armed(&mut e, "A", "MIDI:*:A");
+        armed(&mut e, "B", "MIDI:*:B");
+        let devices = ["A".to_string(), "B".to_string()];
+        let events = [ev(0, 0, 0x90, 60, 100), ev(Q, 0, 0x80, 60, 0), ev(0, 1, 0x90, 62, 100), ev(Q, 1, 0x80, 62, 0)];
+        let inputs = midi_record_inputs(&e);
+        for merge in [false, true] {
+            let take =
+                add_midi_recording_with(&mut e, LOOP, MidiPass::Linear, &events, &devices, &inputs, &style(false, &[merge], MergeRelease::default()));
+            assert_eq!(take.clips.len() + take.merged.len(), 2, "one clip on each track (merge: {merge})");
+        }
+    }
+
+    #[test]
+    fn a_loop_round_stopped_at_its_wrap_does_not_latch_over_the_loop_start() {
+        let mut e = Engine::default();
+        let t = armed(&mut e, "Keys", "none");
+        // Round 1 moves controller 1 at the loop start and half way; the pass stops at the wrap.
+        let events = [ev(0, 0, 0xB0, 1, 5), ev(2 * Q, 0, 0xB0, 1, 20), WRAP];
+        record(&mut e, LOOP, MidiPass::Loop { stopped: Some(0), marked: true }, &events, &style(false, &[true], MergeRelease::Latch));
+        let clip = e.session().track(t).unwrap().clips()[0].clone();
+        let cc1: Vec<(i64, i32)> = midi_of(&clip).ctrls.iter().filter(|c| c.kind == CtrlKind::Cc(1)).map(|c| (c.tick, c.value)).collect();
+        assert_eq!(cc1, [(0, 5), (1920, 20)]);
+    }
+
+    #[test]
+    fn a_clip_whose_controllers_give_way_counts_as_merged_into() {
+        let mut e = Engine::default();
+        let t = armed(&mut e, "Keys", "none");
+        // Two clips side by side, each with a controller 1 value.
+        add_midi_recording(&mut e, Range::new(0, Q), &[ev(Q / 2, 0, 0xB0, 1, 40)], &[], false);
+        add_midi_recording(&mut e, Range::new(Q, 2 * Q), &[ev(Q + Q / 2, 0, 0xB0, 1, 50)], &[], false);
+        let ids: Vec<ClipId> = e.session().track(t).unwrap().clips().iter().map(|c| c.id).collect();
+        // Latch: one new value in the first clip writes over the second clip's to the stop.
+        let take = record(&mut e, Range::new(0, 2 * Q), MidiPass::Linear, &[ev(Q / 4, 0, 0xB0, 1, 9)], &style(false, &[true], MergeRelease::Latch));
+        assert!(midi_of(&e.session().track(t).unwrap().clips()[1]).ctrls.is_empty());
+        let mut merged = take.merged.clone();
+        merged.sort_unstable();
+        assert_eq!(merged, ids);
+    }
+
+    #[test]
+    fn a_merged_pass_of_one_tick_keeps_its_controller() {
+        let mut e = Engine::default();
+        let t = armed(&mut e, "Keys", "none");
+        let take = record(&mut e, Range::new(0, 1), MidiPass::Linear, &[ev(0, 0, 0xB0, 1, 9)], &style(false, &[true], MergeRelease::default()));
+        assert_eq!(take.clips.len(), 1);
+        assert_eq!(midi_of(&e.session().track(t).unwrap().clips()[0]).ctrls.len(), 1);
+    }
+
+    #[test]
+    fn a_clip_shorter_than_a_tick_still_receives_what_is_merged_into_it() {
+        let mut e = Engine::default();
+        let t = armed(&mut e, "Keys", "none");
+        let merge = style(false, &[true], MergeRelease::default());
+        record(&mut e, Range::new(0, 1), MidiPass::Linear, &[ev(0, 0, 0xB0, 1, 9)], &merge);
+        let take = record(&mut e, Range::new(0, 1), MidiPass::Linear, &[ev(0, 0, 0xB0, 1, 30)], &merge);
+        assert!(take.clips.is_empty());
+        let clips = e.session().track(t).unwrap().clips();
+        assert_eq!(clips.len(), 1);
+        assert_eq!(midi_of(&clips[0]).ctrls.iter().map(|c| c.value).collect::<Vec<_>>(), [30]);
+    }
+
+    #[test]
+    fn a_note_played_at_the_start_of_a_clip_shorter_than_a_tick_goes_where_it_can_sound_whole() {
+        // Playback ends a note at its clip's end: in a clip shorter than a tick, a note would
+        // hardly sound. The controller stays in that clip; the note goes into the gap after it.
+        let mut e = Engine::default();
+        let t = armed(&mut e, "Keys", "none");
+        let merge = style(false, &[true], MergeRelease::default());
+        record(&mut e, Range::new(0, 1), MidiPass::Linear, &[ev(0, 0, 0xB0, 1, 9)], &merge);
+        let events = [ev(0, 0, 0xB0, 1, 30), ev(0, 0, 0x90, 60, 100), ev(Q / 2, 0, 0x80, 60, 0)];
+        record(&mut e, Range::new(0, Q), MidiPass::Linear, &events, &merge);
+        let clips: Vec<(Samples, Samples, Vec<(u8, i64, i64)>, Vec<i32>)> = e
+            .session()
+            .track(t)
+            .unwrap()
+            .clips()
+            .iter()
+            .map(|c| {
+                let m = midi_of(c);
+                (c.start, c.range().end, m.notes.iter().map(|n| (n.pitch, n.start, n.length)).collect(), m.ctrls.iter().map(|c| c.value).collect())
+            })
+            .collect();
+        assert_eq!(clips, [(0, 1, vec![], vec![30]), (1, Q, vec![(60, 0, 480)], vec![])]);
+    }
+
+    #[test]
+    fn a_replacing_pass_punched_into_a_playing_loop_leaves_what_lies_before_the_punch_in() {
+        let mut e = Engine::default();
+        let t = armed(&mut e, "Keys", "none");
+        add_midi_recording(
+            &mut e,
+            LOOP,
+            &[ev(Q / 4, 0, 0x90, 50, 100), ev(Q / 2, 0, 0x80, 50, 0), ev(3 * Q, 0, 0x90, 72, 100), ev(3 * Q + Q / 4, 0, 0x80, 72, 0)],
+            &[],
+            false,
+        );
+        // Record pressed at the third quarter of the playing loop; stopped in that round.
+        let events = [ev(2 * Q + Q / 4, 0, 0x90, 74, 100), ev(2 * Q + Q / 2, 0, 0x80, 74, 0)];
+        let stop = 2 * Q + 3 * Q / 4;
+        let style = MidiRecordStyle { punched_in: Some(2 * Q), ..style(false, &[false], MergeRelease::default()) };
+        record(&mut e, LOOP, MidiPass::Loop { stopped: Some(stop), marked: true }, &events, &style);
+        let track = e.session().track(t).unwrap();
+        let clips: Vec<(Samples, Samples, Vec<(u8, i64)>)> =
+            track.clips().iter().map(|c| (c.start, c.range().end, midi_of(c).notes.iter().map(|n| (n.pitch, n.start)).collect())).collect();
+        assert_eq!(clips, [(0, 2 * Q, vec![(50, 240)]), (2 * Q, stop, vec![(74, 240)]), (stop, LOOP.end, vec![(72, 240)])]);
+        // A later round played the whole loop over: it replaces all of it.
+        e.run("edit.undo").unwrap();
+        let events =
+            [ev(2 * Q + Q / 4, 0, 0x90, 74, 100), ev(2 * Q + Q / 2, 0, 0x80, 74, 0), WRAP, ev(Q / 4, 0, 0x90, 76, 100), ev(Q / 2, 0, 0x80, 76, 0)];
+        record(&mut e, LOOP, MidiPass::Loop { stopped: None, marked: true }, &events, &style);
+        assert_eq!(pitches(&e, t), [vec![76]]);
+    }
+
+    #[test]
+    fn a_punched_in_round_keeps_what_it_recorded_before_the_punch_in_point_the_ui_saw() {
+        // The UI read the playhead a moment before the audio engine began the pass (here: before
+        // the loop went round on it): what the round recorded lies before that point.
+        let mut e = Engine::default();
+        let t = armed(&mut e, "Keys", "none");
+        let events = [ev(Q / 4, 0, 0x90, 74, 100), ev(Q / 2, 0, 0x80, 74, 0)];
+        let style = MidiRecordStyle { punched_in: Some(3 * Q), ..style(false, &[false], MergeRelease::default()) };
+        record(&mut e, LOOP, MidiPass::Loop { stopped: Some(Q), marked: true }, &events, &style);
+        let track = e.session().track(t).unwrap();
+        let clips: Vec<(Samples, Samples, Vec<(u8, i64)>)> =
+            track.clips().iter().map(|c| (c.start, c.range().end, midi_of(c).notes.iter().map(|n| (n.pitch, n.start)).collect())).collect();
+        assert_eq!(clips, [(Q / 4, Q, vec![(74, 0)])]);
     }
 }

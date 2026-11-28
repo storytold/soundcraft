@@ -54,6 +54,25 @@ Time Shift here is the incumbent's offline pitch-and-time process, which our `ti
 
 Other offline items already have descriptive names. Multiple legacy entries mapping to the same processor appear once per menu category. Every historical catalog path remains invokable. The catalog remains an observed interoperability/parity record; it is not used verbatim for rendered labels. Changing `lofi`'s display name does not change its id, parameters or audio implementation.
 
+## Name checks (standards/naming.md rule 4)
+
+2026-11-26, MIDI loop and merge recording (G-02). The labels that became live controls were
+checked against Avid's trademark list (the 2025-11-18 archive copy of
+avid.com/legal/trademarks-and-other-notices; the live page refused the fetch), a US register search
+(Trademarkia; Justia and uspto.report refused the fetch; the WIPO Global Brand Database was not
+searched), and descriptive use by unrelated products. Finding nothing does not mean a name is free.
+
+| Label | Avid list | Register | Descriptive use by others | Decision |
+| --- | --- | --- | --- | --- |
+| MIDI Merge | not listed | no "MIDI MERGE" mark | Kenton "MIDI Merge boxes", Cubase "MIDI Merge Options", Logic "Merge" for MIDI recording, retail "MIDI Merge" category | kept (common) |
+| Latch | not listed | live LATCH marks only outside audio software | automation mode in Studio One, Logic Pro, REAPER, Sequoia; Cubase "Auto-Latch" | kept (common) |
+| MIDI Merge Release Mode | not listed | none found | none found | kept: plain description built from the two words above; matches the Pro Tools guide users follow (p.814) |
+| Latch Until Next Event | not listed | none found | none found as a label | kept: plain description; matches the Pro Tools guide (p.814) |
+
+The last two are unclear under rule 5 only in that no other product was found using them. They are
+kept so a user following the target's documentation finds the setting; the owner can rename them
+(ids and the stored value `latch_until_next_event` would stay).
+
 ## Product-name decision
 
 Deferred by the owner. The SoundCraft product name remains unchanged; this work only changes feature labels.

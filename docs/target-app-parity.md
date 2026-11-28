@@ -1,6 +1,6 @@
 # Target-app parity: SoundCraft vs Avid Pro Tools
 
-> **Last reviewed:** 2026-11-14 · **Last updated:** 2026-11-14 · **Change:** minor (Performance row: recording is to disk (#84, #888); scores unchanged; previously minor: strict external-WAV AAF import; previously trivial: Frequency Shifter: 28 built-in processors; G-09/localization: pt-BR catalog; readiness estimates unchanged) · **Target:** Avid Pro Tools Ultimate 2026.4.1 (bundle 26.4.1.179, macOS)
+> **Last reviewed:** 2026-11-14 · **Last updated:** 2026-11-26 · **Change:** minor (Recording row: MIDI loop and merge recording; MIDI row: device input works; scores unchanged; previously minor: Performance row: recording is to disk (#84, #888); scores unchanged; previously minor: strict external-WAV AAF import; previously trivial: Frequency Shifter: 28 built-in processors; G-09/localization: pt-BR catalog; readiness estimates unchanged) · **Target:** Avid Pro Tools Ultimate 2026.4.1 (bundle 26.4.1.179, macOS)
 
 The authoritative assessment of how close SoundCraft is to Pro Tools. [`ROADMAP.md`](../ROADMAP.md)
 summarizes it, [`gaps.md`](gaps.md) itemizes every shortfall, and the per-dimension docs go deeper:
@@ -177,13 +177,13 @@ Weights by what Pro Tools users actually spend time on. **Breadth** = the featur
 
 | Area | Weight | Breadth | Ready | Remaining (h) | What's there / what's missing |
 |---|---:|---:|---:|---:|---|
-| Recording and monitoring | 12 % | 75 % | **40 %** | 40–60 | Punch in/out, QuickPunch-style punch on the fly, pre/post-roll, loop record into playlists, input monitoring through the strip, autosave/recovery. Missing: input/output device choice, buffer size, duplex low-latency path, record straight to disk (#84 open), per-channel hardware input routing, TrackPunch/destructive punch beyond flags, monitoring opt-out (#42) |
+| Recording and monitoring | 12 % | 75 % | **40 %** | 40–60 | Punch in/out, QuickPunch-style punch on the fly, pre/post-roll, loop record into playlists, MIDI loop and merge recording (MIDI Merge, Loop Record takes per round), input monitoring through the strip, autosave/recovery. Missing: input/output device choice, buffer size, duplex low-latency path, per-channel hardware input routing, TrackPunch/destructive punch beyond flags, monitoring opt-out (#42) |
 | Editing | 15 % | 92 % | **65 %** | 40–60 | Slip/Shuffle/Spot/Grid, every Edit menu command, fades/crossfades, playlists and comping, clip groups, nudge, Tab to transient, separate/heal/consolidate/strip silence. Open bugs: #3, #5 (Multitool handles), #140 (Heal shortcut), #86, #91, #92; no batch fade presets, no field-recorder workflows |
 | Mixing and routing | 12 % | 85 % | **60 %** | 35–50 | Faders, pan, sends, busses, aux, masters, VCAs, folders, 10 inserts, PDC, solo modes, I/O Setup. Missing: sidechain inputs, hardware-channel I/O mapping, bus/AFL/PFL paths verified, HEAT; bugs #59, #103 |
 | Automation | 7 % | 80 % | **55 %** | 20–30 | Lanes for volume/pan/mute/sends/plugin params, trim, Write/Touch/Latch, glide/thin/coalesce. Missing: surround-pan and object automation, Touch/Latch prime and preview modes, automation on control surfaces; bug #104 |
 | Built-in plugins and AudioSuite | 8 % | 40 % | **35 %** | 80–120 | 28 processors + 3 instruments covering every AudioSuite category; Pro Tools bundles roughly three times as many plugins plus virtual instruments. No fidelity comparison, generic parameter UIs (#139). See [plugin-parity.md](plugin-parity.md) |
 | Third-party plugin hosting | 8 % | 70 % | **45 %** | 40–60 | CLAP, VST3, AU: audio, params, latency, notes, state, presets, off-thread lifecycle, CLAP floating GUIs, VST3 editors on macOS. Missing: AU editors, VST3 editors on Windows/Linux, sidechain buses, ARA, out-of-process sandboxing, macOS library-validation entitlement (#153, #149). AAX cannot be hosted (Avid SDK licence, PACE signing) |
-| MIDI and instruments | 8 % | 70 % | **30 %** | 50–80 | Piano roll, event list, step input, quantize/transpose, real-time properties, SMF import/export. Missing: **any MIDI device input/output** (no keyboard recording, no external synths, no MIDI clock/MTC out), MIDI learn, instrument depth (no piano, organ or wavetable instrument), bug #98 |
+| MIDI and instruments | 8 % | 70 % | **30 %** | 50–80 | Piano roll, event list, step input, quantize/transpose, real-time properties, SMF import/export. Missing: **MIDI device output** (no external synths, no MIDI clock/MTC out; keyboard input and recording work, G-02), MIDI learn, instrument depth (no piano, organ or wavetable instrument), bug #98 |
 | Score and notation | 2 % | 60 % | **35 %** | 20–30 | Grand-staff Score Editor, MusicXML export, printable SVG. Missing: notation editing depth (tuplets, articulations, lyrics, parts layout) |
 | Elastic Audio, TCE, Beat Detective, pitch | 5 % | 70 % | **35 %** | 40–60 | Pitch-preserving warp on Elastic tracks, TCE, conform to tempo, Beat Detective and Identify Beat, audio-to-MIDI. Missing: per-algorithm choice (polyphonic/rhythmic/monophonic/varispeed/X-Form), warp markers UI depth, Elastic Pitch, quality vs Pro Tools unmeasured |
 | Surround and immersive | 5 % | 55 % | **35 %** | 50–80 | Formats stereo → 9.1.6 and Ambisonics, surround panner, fold-down, multichannel bounce, object/bed routing. Missing: Dolby Atmos renderer integration and ADM BWF, MPEG-H (new in 2026.4), binaural/headphone monitoring, surround automation; bug #89 |
@@ -245,6 +245,7 @@ serializes more, because it needs hands-on testing.
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-11-26 | minor | Recording row: MIDI loop and merge recording (MIDI Merge, Loop Playback merge, Loop Record takes, release modes); recording to disk taken off its missing list (#84 merged); MIDI row: device input and recording taken off its missing list; readiness estimates unchanged |
 | 2026-11-14 | minor | Strict external-WAV AAF import added to format, interchange and alpha-gate evidence; readiness estimates unchanged |
 | 2026-11-09 | trivial | Built-in plugin counts: 28 processors + 3 instruments with the Frequency Shifter. Percentages unchanged |
 | 2026-11-05 | trivial | Localization row: English plus a near-complete pt-BR catalog for fixed UI strings (PR #1346), not native-reviewed. Percentages and hours unchanged |

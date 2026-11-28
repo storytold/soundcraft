@@ -230,6 +230,18 @@ pub fn icon_button(ui: &mut Ui, size: egui::Vec2, icon: &str, on: bool, tip: &st
     resp.on_hover_text(tip)
 }
 
+/// Names the record mode at a Record button: a tooltip line and the button's accessible
+/// description, so the loop symbol drawn on it is not the only sign (Reference Guide p.771).
+pub fn record_mode_hint(resp: Response, mode: Option<&str>) -> Response {
+    let Some(mode) = mode else { return resp };
+    let mode = crate::localization::text(mode);
+    let _ = resp.ctx.accesskit_node_builder(resp.id, |node| {
+        let described = node.description().map_or_else(|| mode.to_owned(), |tip| format!("{tip}\n{mode}"));
+        node.set_description(described);
+    });
+    resp.on_hover_text(mode)
+}
+
 /// A compact close/delete button whose cross is painted, not typeset.
 ///
 /// U+2715 is missing from egui 0.37's bundled proportional face (and from the shared fallback set

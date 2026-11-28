@@ -82,6 +82,7 @@ pub const UI_COMMANDS: &[(&str, &str, &str, Option<&str>)] = &[
     ("ui.theme", "Appearance", "", None),
     ("ui.reduce_visual_effects", "Reduce Visual Effects", "", None),
     ("ui.undo_levels", "Levels of Undo", "", None),
+    ("ui.midi_merge_release", "MIDI Merge Release Mode", "", None),
 ];
 
 /// Extra catalog mappings handled by the UI layer.
@@ -848,6 +849,15 @@ pub fn run_ui_command(app: &mut SoundApp, id: &str, p: &Value) -> Option<Result<
                 app.engine.set_history_limit(app.ui.undo_levels);
             }
             json!({"levels": app.ui.undo_levels})
+        }
+        "ui.midi_merge_release" => {
+            if let Some(mode) = p.get("mode").and_then(Value::as_str) {
+                let Some(mode) = soundcraft_engine::io::MergeRelease::parse(mode) else {
+                    return Some(Err(format!("unknown MIDI Merge release mode `{mode}` (latch or latch_until_next_event)")));
+                };
+                app.ui.midi_merge_release = mode;
+            }
+            json!({"mode": app.ui.midi_merge_release.id()})
         }
         "ui.set" => match serde_json::to_value(&app.ui) {
             Ok(mut cur) => {

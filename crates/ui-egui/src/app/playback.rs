@@ -24,6 +24,22 @@ impl SoundApp {
         (fresh && !self.engine.session().tracks.iter().any(|t| t.mixer.record_arm)).then_some(why)
     }
 
+    /// The record mode the Record buttons show, by its Pro Tools name, or `None` in Normal mode,
+    /// which shows nothing (Reference Guide p.771). Loop Record is the only other mode drawn yet.
+    /// It is shown for a pass that loop-records and, when stopped, for the pass Record would
+    /// start. Record pressed while playing punches in, and a punch-in pass records as a normal
+    /// pass even when Loop Record is on and a loop plays ("Looping playback does not enable loop
+    /// recording", p.753; audio records it in a line too).
+    pub(crate) fn record_mode(&self) -> Option<&'static str> {
+        let t = &self.engine.transport;
+        let looping = if t.recording {
+            self.take_plan.as_ref().is_some_and(|p| p.pass.is_some())
+        } else {
+            !t.playing && self.engine.session().edit.loop_record
+        };
+        looping.then_some("Loop Record mode")
+    }
+
     /// Current transport position (playhead while playing, else the edit insertion).
     pub fn position(&self) -> Samples {
         if self.engine.transport.playing { self.engine.transport.position } else { self.engine.session().edit.selection.start }
@@ -160,6 +176,14 @@ impl SoundApp {
             self.punch = None;
             self.start_play(sel.start, None, Some(sel));
             self.plan_recording(takes, Some(sel.len()));
+        } else if let Some(from) = midi_loop_pass(&e, audio_tracks) {
+            // Loop Playback with only MIDI to record: the selection loops, after the pre-roll,
+            // for loop recording in MIDI Merge mode (Reference Guide p.824–825). The MIDI is taken
+            // round by round over the loop that plays (`play_loop`).
+            self.record_start = from;
+            self.punch = None;
+            self.start_play(from, None, Some(sel));
+            self.plan_recording(takes, None);
         } else {
             // Record into the selection when there is one (punch), with pre/post-roll if enabled;
             // the take is trimmed back to the punch range afterwards.
@@ -279,7 +303,13 @@ impl SoundApp {
         // keys still down are held to the end of the loop (the take is reported as incomplete).
         let (midi_range, midi_kind) =
             super::midi::midi_take_span(midi_loop, plan.punch, self.record_start, stopped_at, self.midi_pass_stopped_at(midi_pass));
-        let (midi_clips, midi_problem) = self.finish_midi_take(midi_range, !ids.is_empty(), midi_confirmed, midi_kind);
+        // A pass punched in while a loop played: its first round starts at the punch-in point,
+        // where the audio engine's playhead stood when the pass began. The UI's own playhead, read
+        // when Record was pressed, may lag behind it (by a whole round when the loop went round
+        // just before); it is used only when the audio engine did not say.
+        let punched_in = (plan.pass.is_none() && midi_loop.is_some()).then(|| self.midi_pass_started_at().unwrap_or(self.record_start));
+        let (midi_clips, midi_problem) =
+            self.finish_midi_take(midi_range, !ids.is_empty(), midi_confirmed, (midi_kind, plan.pass.is_some(), punched_in));
         self.ui.status = if plan.pass.is_some() && midi_clips == 0 {
             crate::localized_format!("Loop-recorded {} take(s)", ids.len() / tracks)
         } else if ids.is_empty() && midi_clips == 0 {
@@ -549,9 +579,53 @@ impl SoundApp {
     }
 }
 
+/// Where a record pass started from stop plays from when it loops for MIDI: Loop Playback is on,
+/// Loop Record is not, the selection is one the transport loops, and no audio track records
+/// (`audio`). Pro Tools records audio in a line whatever Loop Playback says ("Pro Tools ignores
+/// Loop Playback when recording", Reference Guide p.801), and its MIDI loop recording steps say to
+/// record-enable no audio track (p.825). `None` for a pass in a line.
+fn midi_loop_pass(e: &soundcraft_model::EditState, audio: bool) -> Option<Samples> {
+    let sel = e.selection;
+    let pre = if e.pre_post_roll { e.pre_roll } else { 0 };
+    (e.loop_playback && !e.loop_record && !audio && !sel.is_empty() && soundcraft_playback::loops(sel)).then(|| (sel.start - pre).max(0))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn loop_playback_loops_a_pass_that_records_only_midi() {
+        let mut e = soundcraft_model::EditState { loop_playback: true, ..Default::default() };
+        e.selection = Range::new(96_000, 288_000);
+        assert_eq!(midi_loop_pass(&e, false), Some(96_000));
+        e.pre_post_roll = true;
+        e.pre_roll = 48_000;
+        assert_eq!(midi_loop_pass(&e, false), Some(48_000), "after the pre-roll");
+        assert_eq!(midi_loop_pass(&e, true), None, "an audio track records: in a line");
+        e.loop_playback = false;
+        assert_eq!(midi_loop_pass(&e, false), None);
+        e.loop_playback = true;
+        e.selection = Range::point(96_000);
+        assert_eq!(midi_loop_pass(&e, false), None, "nothing to loop");
+    }
+
+    #[test]
+    fn the_record_buttons_name_loop_record_only_for_a_pass_that_loop_records() {
+        let mut app = SoundApp::new(soundcraft_engine::Engine::default(), None, crate::Services::default());
+        app.engine.session_mut().edit.loop_record = true;
+        assert_eq!(app.record_mode(), Some("Loop Record mode"), "stopped: Record starts a Loop Record pass");
+        // Playing: Record punches in, which records in Normal mode (Loop Playback does not enable
+        // loop recording, Reference Guide p.753).
+        app.engine.transport.playing = true;
+        assert_eq!(app.record_mode(), None);
+        app.engine.transport.recording = true;
+        let plan = |pass| soundcraft_engine::io::Recording { start: 0, pass, punch: None, rate: 0, takes: Vec::new() };
+        app.take_plan = Some(plan(None));
+        assert_eq!(app.record_mode(), None, "a punch-in pass is not a Loop Record pass");
+        app.take_plan = Some(plan(Some(96_000)));
+        assert_eq!(app.record_mode(), Some("Loop Record mode"));
+    }
 
     #[test]
     fn the_fallback_take_folder_is_made_once_under_the_temporary_folder() {
