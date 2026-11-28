@@ -337,9 +337,10 @@ pub struct SoundApp {
     midi_take: Vec<soundcraft_playback::midi::RecordedMidi>,
     /// Recorded MIDI events of the current pass that were dropped before they got here.
     midi_take_lost: u64,
-    /// The MIDI input each record-enabled track had when the current pass started: the pass
-    /// records from it even if the track is switched to another device meanwhile.
-    midi_take_inputs: Vec<(TrackId, soundcraft_model::Route)>,
+    /// The MIDI input and output each record-enabled track had when the current pass started:
+    /// the pass records from that input even if the track is switched to another device
+    /// meanwhile, and leaves out the echoes of that output.
+    midi_take_inputs: Vec<soundcraft_engine::io::MidiRecordInput>,
     /// The loop the transport is playing round, when it was started with one.
     play_loop: Option<Range>,
     /// Input this take lost to a slow disk, as last reported (ms).

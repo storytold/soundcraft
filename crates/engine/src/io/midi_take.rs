@@ -18,8 +18,9 @@ pub struct MidiTakeEvent {
     pub data1: u8,
     pub data2: u8,
     /// What SoundCraft's own clip output sent to this device came back on its input
-    /// ([`soundcraft_mix::LiveMidi::echo`]): not recorded on a track whose MIDI output is that
-    /// device and channel (it is that track's own playback), recorded on the others.
+    /// ([`soundcraft_mix::LiveMidi::echo`]): not recorded on a track whose MIDI output was that
+    /// device and channel when the pass started (it is that track's own playback), recorded on
+    /// the others.
     pub echo: bool,
 }
 
@@ -236,17 +237,38 @@ pub fn add_midi_recording(e: &mut Engine, range: Range, events: &[MidiTakeEvent]
     add_midi_recording_from(e, range, MidiPass::Linear, events, devices, &inputs, same_pass)
 }
 
-/// The MIDI inputs of the record-enabled MIDI and instrument tracks, to keep from the start of a
-/// record pass and hand to [`add_midi_recording_from`] at its end.
-pub fn midi_record_inputs(e: &Engine) -> Vec<(TrackId, Route)> {
-    e.session().tracks.iter().filter(|t| records_midi_on(t)).map(|t| (t.id, t.mixer.input.clone())).collect()
+/// A record-enabled MIDI or instrument track as a record pass starts: the MIDI input it records
+/// and the MIDI output it plays to then.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MidiRecordInput {
+    pub track: TrackId,
+    pub input: Route,
+    /// Device and channel; an echo from them is the track's own playback.
+    pub output: Option<(String, u8)>,
+}
+
+/// The MIDI inputs and outputs of the record-enabled MIDI and instrument tracks, to keep from the
+/// start of a record pass and hand to [`add_midi_recording_from`] at its end.
+pub fn midi_record_inputs(e: &Engine) -> Vec<MidiRecordInput> {
+    let s = e.session();
+    s.tracks
+        .iter()
+        .filter(|t| records_midi_on(t))
+        .map(|t| MidiRecordInput {
+            track: t.id,
+            input: t.mixer.input.clone(),
+            output: MidiOutput::of(&s.edit, t.id).map(|o| (o.device.to_owned(), o.channel)),
+        })
+        .collect()
 }
 
 /// [`add_midi_recording`] for the tracks that were in record when the pass started, with the MIDI
-/// inputs they had then (`inputs`, from [`midi_record_inputs`]), and for a pass that went over
-/// `range` as `pass` says. What a pass records is settled when it starts: a track listed takes
-/// the events of that input for the whole pass, so changing its device or channel while recording
-/// does not throw away what it already recorded, and neither does taking it out of record. A
+/// inputs and outputs they had then (`inputs`, from [`midi_record_inputs`]), and for a pass that
+/// went over `range` as `pass` says. What a pass records is settled when it starts: a track listed
+/// takes the events of that input for the whole pass, so changing its device or channel while
+/// recording does not throw away what it already recorded, and neither does taking it out of
+/// record. An echo is left out of the take of the track whose output it came from as the pass
+/// started; moving a track's output during the pass leaves that unchanged. A
 /// track that is not listed gets nothing, also when it was record-enabled during the pass: it
 /// would get what was played before that, and the caller that waits for the end of the take
 /// decides whether to wait by this same list.
@@ -256,7 +278,7 @@ pub fn add_midi_recording_from(
     pass: MidiPass,
     events: &[MidiTakeEvent],
     devices: &[String],
-    inputs: &[(TrackId, Route)],
+    inputs: &[MidiRecordInput],
     same_pass: bool,
 ) -> MidiTake {
     let before = e.session_arc();
@@ -272,12 +294,9 @@ pub fn add_midi_recording_from(
         s.tracks
             .iter()
             .filter_map(|t| {
-                let (_, route) = inputs.iter().find(|(id, _)| *id == t.id)?;
-                Some((
-                    t.id,
-                    t.name.clone(),
-                    midi_take_sequence(s, &MidiInput::of(route), MidiOutput::of(&s.edit, t.id), range, pass, events, devices),
-                ))
+                let rec = inputs.iter().find(|r| r.track == t.id)?;
+                let own = rec.output.as_ref().map(|(device, channel)| MidiOutput { device, channel: *channel });
+                Some((t.id, t.name.clone(), midi_take_sequence(s, &MidiInput::of(&rec.input), own, range, pass, events, devices)))
             })
             .filter(|(_, _, seq)| !seq.notes.is_empty() || !seq.ctrls.is_empty())
             .collect()
@@ -346,6 +365,29 @@ mod tests {
         let pitches = |t| sequence(&e, t, range).notes.iter().map(|n| (n.channel, n.pitch)).collect::<Vec<_>>();
         assert_eq!(pitches(keys), [(0, 60), (0, 67)], "its own playback is not recorded over its clips again");
         assert_eq!(pitches(copy), [(2, 64), (0, 67)], "another track records the loop back");
+    }
+
+    #[test]
+    fn the_echo_check_uses_the_outputs_the_tracks_had_when_the_pass_started() {
+        // "Keys" played to SYN on channel 3 when the pass started; during the pass it moves to
+        // Synth, and "Other" moves onto SYN channel 3. The echoes on SYN channel 3 are still the
+        // playback of "Keys": it leaves them out, and "Other" records them.
+        let mut e = Engine::default();
+        let keys = armed(&mut e, "Keys", "MIDI:*:SYN");
+        let other = armed(&mut e, "Other", "MIDI:*:SYN");
+        e.execute("track.midi_output", &json!({"tracks": [keys.0], "output": "MIDI:3:SYN"})).unwrap();
+        e.execute("track.midi_output", &json!({"tracks": [other.0], "output": "MIDI:1:Synth"})).unwrap();
+        let inputs = midi_record_inputs(&e);
+        e.execute("track.midi_output", &json!({"tracks": [keys.0], "output": "MIDI:3:Synth"})).unwrap();
+        e.execute("track.midi_output", &json!({"tracks": [other.0], "output": "MIDI:3:SYN"})).unwrap();
+        let echo = |at, status, data1, data2| MidiTakeEvent { echo: true, ..ev(at, 1, status, data1, data2) };
+        let events = [echo(50_000, 0x92, 64, 90), echo(70_000, 0x82, 64, 0)];
+        let devices = ["KB".to_string(), "SYN".to_string()];
+        let range = Range::new(48_000, 96_000);
+        add_midi_recording_from(&mut e, range, MidiPass::Linear, &events, &devices, &inputs, false);
+        assert!(e.session().track(keys).unwrap().clips().is_empty(), "its own playback is not recorded");
+        let pitches = sequence(&e, other, range).notes.iter().map(|n| (n.channel, n.pitch)).collect::<Vec<_>>();
+        assert_eq!(pitches, [(2, 64)], "another track's playback is recorded");
     }
 
     #[test]
