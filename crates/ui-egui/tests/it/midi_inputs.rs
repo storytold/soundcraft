@@ -133,6 +133,18 @@ fn recording_harness() -> (Harness<'static, SoundApp>, u64, u64) {
     (h, synth, vox)
 }
 
+/// A take needs a running audio engine, even a MIDI-only one. No device is opened here, and
+/// until this is called the app has no engine, so an audio pass is refused on any machine.
+fn start_engine(h: &mut Harness<'_, SoundApp>) {
+    let session = h.state().engine.session_arc();
+    // Reconnecting an output that does not exist runs the silent clock on every host.
+    let config = soundcraft_playback::AudioConfig::default();
+    let player = soundcraft_playback::Player::reconnect_output(session, &config, "SoundCraft test: no audio output");
+    assert!(player.silent, "the harness must not open a host audio device");
+    h.state_mut().player = Some(player);
+    h.run_steps(2);
+}
+
 fn arm(h: &mut Harness<'_, SoundApp>, track: u64, on: bool) {
     h.state_mut().run("mix.record_arm", serde_json::json!({"tracks": [track], "value": on})).unwrap();
     h.run_steps(2);
@@ -141,6 +153,7 @@ fn arm(h: &mut Harness<'_, SoundApp>, track: u64, on: bool) {
 #[test]
 fn a_pass_with_only_midi_tracks_starts_without_an_audio_input() {
     let (mut h, synth, _) = recording_harness();
+    start_engine(&mut h);
     arm(&mut h, synth, true);
     assert!(h.state().recorder.is_none(), "arming an instrument track does not open the audio input");
     h.get_by_label("transport.record").click();
@@ -163,6 +176,7 @@ fn a_mixed_pass_whose_audio_cannot_be_recorded_is_refused_with_the_reason() {
     assert!(status.starts_with("Cannot record: ") && status.contains("no audio input device"), "{status}");
     // Without the audio track in record, the same pass starts.
     arm(&mut h, vox, false);
+    start_engine(&mut h);
     h.get_by_label("transport.record").click();
     h.run_steps(3);
     assert!(h.state().engine.transport.recording, "{}", h.state().ui.status);
@@ -179,6 +193,7 @@ fn an_inactive_record_enabled_audio_track_does_not_stop_a_midi_pass() {
     h.run_steps(2);
     let s = h.state().engine.session();
     assert!(s.tracks.iter().any(|t| t.id.0 == vox && t.inactive && t.mixer.record_arm), "inactive and still record-enabled");
+    start_engine(&mut h);
     h.get_by_label("transport.record").click();
     h.run_steps(3);
     assert!(h.state().engine.transport.recording, "{}", h.state().ui.status);
@@ -211,6 +226,7 @@ fn a_midi_pass_does_not_start_while_the_previous_one_is_unconfirmed() {
     assert!(feed.pass_owed() && !feed.captured(pass), "the attempt did not clear the pending pass");
     // Once nothing is owed, the MIDI pass starts.
     arm(&mut h, vox, false);
+    start_engine(&mut h);
     arm(&mut h, synth, true);
     feed.forgive_passes();
     h.get_by_label("transport.record").click();

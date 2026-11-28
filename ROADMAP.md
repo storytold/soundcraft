@@ -105,7 +105,7 @@ Other languages shipped: 0 complete. Brazilian Portuguese covers the fixed UI st
 Ranked; the alpha gate, the alpha checklist and the beta plan are in [docs/roadmap.md](docs/roadmap.md).
 
 1. **Alpha blocker:** audio interfaces: device and buffer-size choice, duplex stream, ASIO (G-01). 35–55 h.
-2. **Alpha blocker:** MIDI devices: keyboard input, live play and recording are in (checked on Linux only; macOS and Windows type-checked, none on FreeBSD or the web); output, clock and loop/merge recording remain (G-02). 12–22 h.
+2. **Alpha blocker:** MIDI devices: keyboard input, live play and recording are in (checked on Linux only; macOS and Windows type-checked, none on FreeBSD or the web); tracks play to external MIDI ports (checked on macOS); thru to gear and loop/merge recording remain (G-02). Beat Clock output is available (G-11). 8–15 h.
 3. **Alpha blocker:** complete AAF/OMF interchange (G-03): strict external-WAV AAF import works; AAF export and OMF import/export remain. 50–90 h.
 4. macOS plugin entitlement (#153), then AU editors and embedded CLAP editors on macOS (G-05). 1 h for the entitlement (needed for the mix row), then 10–15 h.
 5. Land the open bug-fix PRs and clear the correctness backlog (G-04). 15–25 h.
@@ -124,6 +124,8 @@ mutated and truncated movies. Field reports from the first public week are track
 
 ## Progress log
 
+- **2026-11-20 (G-11):** MIDI Beat Clock output follows session tempo with per-port sample offsets.
+- **G-11 MIDI Time Code:** Generate timecode or chase forward playback with a configurable freewheel policy.
 - **2026-11-18 (MIDI input):** MIDI input devices: keyboards play record-enabled and input-monitored MIDI and instrument tracks live and are recorded into MIDI clips, with a device and channel choice per track. The device switches are in the MIDI inputs section of Setup › Playback Engine (Setup › MIDI › MIDI Input Devices opens the same window) and are kept in the app preferences, per computer, not in the session. Controllers, pitch bend and aftertouch reach the instrument live; a pitch held on two devices or channels sounds until both release it; a full input queue releases the notes of its device and marks the take incomplete. On Linux, live play was checked with a hardware keyboard (Akai MPK mini 3) and recording with a virtual one; macOS and Windows are type-checked only, and there is no MIDI input on FreeBSD or the web. Guide: `docs/midi-input.md`. No readiness percentage change until that is measured.
 - **2026-11-14:** AAF import supports a strict CompositionMob SourceClip/Filler subset with external mono/stereo PCM WAV media, editable clips and handles, relink and absolute or relative timecode mapping. The reader shares cached object properties, caps retained property data at 128 MiB and rejects duplicate local references before expansion. AAF export, OMF and `.ptx` remain missing. No readiness percentage change.
 - **2026-11-09:** A built-in Frequency Shifter (`freq_shifter`) moves every frequency in the signal by the same number of hertz, from 0.01 Hz to 5 kHz: up, down, both ways at once, or down on the left and up on the right of a stereo track. The unwanted sideband stays at least 100 dB down from 20 Hz to 20 Hz below Nyquist at 44.1 to 96 kHz. Feedback sends the output round again for a trail of further shifts, Mix blends in the dry signal, and every change glides without a click. No readiness percentage change.

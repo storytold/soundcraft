@@ -396,6 +396,8 @@ fn main() -> eframe::Result {
             app.preset_dir = env.config_dir.as_ref().map(|d| d.join("Presets"));
             app.extra.ui_scale = prefs.ui_scale;
             app.ui = prefs;
+            // A settings recovery notice must survive the Nightly health message below.
+            let recovered_settings = std::mem::take(&mut app.ui.status);
             // The Nightly window has no control server: no inherited port, no stable token file.
             if let Some(port) = control_port.filter(|_| !launch_profile::current().is_nightly()) {
                 let rx = control_server::start(port, cc.egui_ctx.clone());
@@ -413,8 +415,21 @@ fn main() -> eframe::Result {
             {
                 app.services.at_exit = Some(Box::new(finish_at_exit));
             }
+            let mut settings_notice = std::mem::take(&mut app.ui.status);
+            if !recovered_settings.is_empty() {
+                if !settings_notice.is_empty() {
+                    settings_notice.push(' ');
+                }
+                settings_notice.push_str(&recovered_settings);
+            }
             for f in &files {
                 dialogs::open_path(&mut app, f);
+            }
+            if !settings_notice.is_empty() {
+                if !app.ui.status.is_empty() {
+                    app.ui.status.push(' ');
+                }
+                app.ui.status.push_str(&settings_notice);
             }
             // If the system menu bar cannot be built, keep the egui menu bar rather than fail to start.
             #[cfg(target_os = "macos")]

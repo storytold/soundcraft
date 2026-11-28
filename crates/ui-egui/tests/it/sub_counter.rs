@@ -75,3 +75,23 @@ fn the_sub_counter_menu_changes_its_format() {
     assert_eq!(r.app.engine.session().edit.sub_counter, Some(TimeFormat::MinSecs));
     assert_eq!(r.app.engine.session().edit.main_counter, main, "the Main counter keeps its format");
 }
+
+#[test]
+fn the_main_counter_rejects_a_label_before_session_start() {
+    let mut rig = Rig::new();
+    rig.app.run("view.main_counter", serde_json::json!({"format":"timecode"})).unwrap();
+    rig.app.run("edit.select", serde_json::json!({"start":48_000,"end":96_000})).unwrap();
+    rig.frames(2);
+    let selection = rig.app.engine.session().edit.selection;
+    let sub = rig.text("Sub").expect("sub-counter is visible");
+    let main = sub + vec2(65.0, -30.0);
+    rig.click(main);
+    let entry = rig.text("Enter position…").expect("the main counter offers position entry");
+    rig.click(entry);
+    let modifiers = Modifiers { ctrl: true, command: true, ..Default::default() };
+    rig.frame(vec![Event::Key { key: egui::Key::A, physical_key: None, pressed: true, repeat: false, modifiers }, Event::Text("00:00:20:00".into())]);
+    let ok = rig.text("OK").unwrap();
+    rig.click(ok);
+    assert_eq!(rig.app.engine.session().edit.selection, selection);
+    assert!(rig.app.ui.status.contains("01:00:00:00"), "{}", rig.app.ui.status);
+}

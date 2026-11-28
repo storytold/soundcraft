@@ -351,7 +351,7 @@ fn exports_the_selected_clips_and_refuses_an_empty_selection() {
 fn midi_engine() -> Engine {
     use soundcraft_midi::{CtrlEvent, CtrlKind, Note, Sequence};
     use soundcraft_model::{ChannelFormat, Clip, TrackKind};
-    let mut s = Session::default();
+    let mut s = soundcraft_model::Session::default();
     let keys = s.add_track(TrackKind::Midi, ChannelFormat::Mono, Some("Keys"));
     let drums = s.add_track(TrackKind::Midi, ChannelFormat::Mono, Some("Drums"));
     let _audio = s.add_track(TrackKind::Audio, ChannelFormat::Mono, Some("Room"));

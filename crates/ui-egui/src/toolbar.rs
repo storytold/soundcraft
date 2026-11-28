@@ -281,7 +281,12 @@ fn counters(app: &mut SoundApp, ui: &mut Ui) {
     for (i, (label, val)) in rows.iter().enumerate() {
         let y = r.min.y + 10.0 + i as f32 * 13.0;
         ui.painter().text(pos2(r.min.x + 214.0, y), Align2::RIGHT_CENTER, crate::localization::text(label), regular(11.0), t.counter_label);
-        ui.painter().text(pos2(r.max.x - 8.0, y), Align2::RIGHT_CENTER, val, mono(11.0), t.counter_text);
+        let text_rect = ui.painter().text(pos2(r.max.x - 8.0, y), Align2::RIGHT_CENTER, val, mono(11.0), t.counter_text);
+        if let Some(field) = [crate::dialogs::CounterField::SelectionStart, crate::dialogs::CounterField::SelectionEnd].get(i)
+            && ui.interact(text_rect, ui.scope_id().with(("selection_counter", i)), Sense::click()).clicked()
+        {
+            field.open(app);
+        }
     }
     // Sub counter row.
     let y = r.max.y - 11.0;
@@ -307,6 +312,9 @@ fn counters(app: &mut SoundApp, ui: &mut Ui) {
 /// `view.sub_counter`) with it.
 fn format_menu(app: &mut SoundApp, resp: &egui::Response, current: TimeFormat, command: &str) {
     egui::Popup::menu(resp).show(|ui| {
+        if command == "view.main_counter" && ui.button(crate::localization::text("Enter position…")).clicked() {
+            crate::dialogs::CounterField::Position.open(app);
+        }
         for f in TimeFormat::ALL {
             if ui.selectable_label(current == f, crate::localization::text(f.label())).clicked() {
                 let _ = app.run(command, json!({"format": f.id()}));

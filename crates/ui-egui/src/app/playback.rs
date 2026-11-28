@@ -32,7 +32,11 @@ impl SoundApp {
     fn start_play(&mut self, from: Samples, end: Option<Samples>, looped: Option<Range>) {
         if let Some(p) = &self.player {
             p.update_session(self.engine.session_arc());
-            p.play(from, end, looped);
+            if self.mtc_chasing && end.is_none() && looped.is_none() {
+                p.play_chasing_mtc(from);
+            } else {
+                p.play(from, end, looped);
+            }
         } else {
             self.sim = Some((from, end, looped));
         }
@@ -92,6 +96,10 @@ impl SoundApp {
     }
 
     fn start_recording(&mut self) {
+        if self.mtc_online {
+            self.ui.status = crate::localization::text("Take MTC chase offline before recording").into();
+            return;
+        }
         let armed = self.engine.session().tracks.iter().any(|t| t.mixer.record_arm);
         if !armed {
             let why = if self.engine.session().tracks.is_empty() {
@@ -130,6 +138,12 @@ impl SoundApp {
                 }
             }
         } else if midi_ready {
+            if self.player.is_none() {
+                self.ui.status =
+                    crate::localization::text("Cannot record MIDI: open an audio output in Setup > Playback Engine to start the audio engine.")
+                        .into();
+                return;
+            }
             // MIDI alone makes a pass.
             Vec::new()
         } else {
@@ -441,7 +455,11 @@ impl SoundApp {
                     if self.is_playing() {
                         // Playing on from `at` drops the end and loop of the earlier selection.
                         if let Some(p) = &self.player {
-                            p.play(at, None, None);
+                            if self.mtc_chasing {
+                                p.play_chasing_mtc(at);
+                            } else {
+                                p.play(at, None, None);
+                            }
                         }
                         if let Some(sim) = &mut self.sim {
                             *sim = (at, None, None);
@@ -469,10 +487,13 @@ impl SoundApp {
                     }
                 }
                 TransportRequest::Locate(at) => {
+                    // A stopped player still owns the Beat Clock and timecode outputs. Move its
+                    // cursor too, so a stopped locate announces the new position (one SPP, one
+                    // MTC full frame) without starting playback.
+                    if let Some(p) = &self.player {
+                        p.locate(at);
+                    }
                     if self.is_playing() {
-                        if let Some(p) = &self.player {
-                            p.locate(at);
-                        }
                         if let Some(sim) = &mut self.sim {
                             sim.0 = at;
                         }
@@ -491,7 +512,14 @@ impl SoundApp {
                     self.play_from_selection();
                 }
                 TransportRequest::Scrub(at) => self.engine.transport.position = at,
-                TransportRequest::AllNotesOff => {}
+                // The external MIDI output ports get a Note-Off per held note, then sustain up,
+                // All Notes Off and All Sound Off on every channel. (Instrument plug-ins release
+                // their notes on Stop and on a locate.)
+                TransportRequest::AllNotesOff => {
+                    if let Some(p) = &self.player {
+                        p.midi_output_panic();
+                    }
+                }
             }
         }
         // Read back the position.
@@ -561,5 +589,19 @@ mod tests {
         assert!(a.is_dir());
         assert_eq!(app.fallback_take_dir().unwrap(), a, "the same folder for the rest of the run");
         let _ = std::fs::remove_dir_all(&a);
+    }
+
+    #[test]
+    fn stopped_locate_reaches_the_playback_cursor_that_drives_beat_clock() {
+        // Beat Clock announces a stopped locate with one SPP from the player's cursor.
+        let engine = soundcraft_engine::Engine::default();
+        let player = soundcraft_playback::Player::new(engine.session_arc());
+        let mut app = SoundApp::new(engine, Some(player), crate::Services::default());
+        app.run("transport.locate", serde_json::json!({"at": 240_000})).unwrap();
+        app.handle_transport(0.);
+        let player = app.player.as_ref().unwrap();
+        assert!(!player.is_playing());
+        assert_eq!(player.position(), 240_000);
+        assert_eq!(app.position(), 240_000);
     }
 }

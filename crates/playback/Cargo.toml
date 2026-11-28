@@ -22,9 +22,13 @@ cpal.workspace = true
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 cpal = { workspace = true, features = ["wasm-bindgen"] }
 
-# MIDI devices (ALSA sequencer, CoreMIDI, WinMM). Elsewhere there is no MIDI input (midi.rs).
+# MIDI devices (ALSA sequencer, CoreMIDI, WinMM). Elsewhere there is no MIDI input (midi.rs) or
+# output (sync_output.rs).
 [target.'cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))'.dependencies]
 midir.workspace = true
+craft-midi-sync.workspace = true
+# Raises the MIDI output worker's scheduling priority where the host allows it.
+thread-priority = "3.1.1"
 
 [features]
 # ASIO on Windows (cpal's ASIO host). Off by default: building it downloads Steinberg's ASIO SDK
@@ -33,6 +37,7 @@ asio = ["cpal/asio"]
 
 [dev-dependencies]
 serde_json.workspace = true
+soundcraft-midi.workspace = true
 
 [lints]
 workspace = true

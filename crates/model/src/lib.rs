@@ -6,6 +6,10 @@
 
 pub use craft_scraft_format::*;
 
+mod midi_beat_clock;
 mod midi_input;
+mod midi_output;
 
+pub use midi_beat_clock::MidiBeatClock;
 pub use midi_input::MidiInput;
+pub use midi_output::MidiOutput;

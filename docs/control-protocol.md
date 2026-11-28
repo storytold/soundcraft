@@ -43,7 +43,7 @@ Errors: `{"id": 1, "ok": false, "error": "bad parameters for `mix.volume`: no tr
 | `engine.commands` | `{filter?}` | Every command: id, label, menu path, shortcut, params doc, enabled + reason. Includes UI-layer commands (`window.*`). |
 | `engine.parity` | `{}` | Parity report against the incumbent's menu catalog. |
 | `session.inspect` | `{detail?: "summary"|"full"}` | The document: tracks, clips (with times), inserts (+params when full), sends, routing, automation, markers, groups, busses, sources (`loaded` true when decoded audio is in the pool), selection, zoom (`samples_per_px`, `scroll`), transport, undo label. |
-| `ui.inspect` | `{}` | UI state (`window`, panels, dialogs), window size, playing/position, audio device, MIDI inputs (`midi_inputs`: name, enabled, open; `midi_events`: messages received so far; `midi_events_dropped`: messages a full input queue dropped), and `edit_layout` (timeline rect and every track row's rect, for clicking). |
+| `ui.inspect` | `{}` | UI state (`window`, panels, dialogs), window size, playing/position, audio device, MIDI inputs (`midi_inputs`: name, enabled, open; `midi_events`: messages received so far; `midi_events_dropped`: messages a full input queue dropped), MIDI outputs (see [MIDI output](#midi-output)), and `edit_layout` (timeline rect and every track row's rect, for clicking). |
 | `ui.set` | any `UiState` fields | e.g. `{"window": "Mix", "narrow_mix": true}`. |
 | `ui.menu.list` | `{}` | Every catalog menu path and the command that implements it (or null). |
 | `ui.menu.invoke` | `{path}` or `{id}` | Like clicking the menu item: may open its dialog (e.g. `"Track > New..."`). |
@@ -94,6 +94,36 @@ System to Dark, or on Linux to the desktop's portal setting when one is availabl
 `view.scroll_into_view {"track":"Bass"}` (a track id or name; without it, the first selected
 track) brings the track to the top of the Edit window and the left of the Mix window, the same as
 Scroll Into View in the track name menu. A window not on screen catches up when it is next shown.
+
+## MIDI output
+
+MIDI and instrument tracks play their clips to one MIDI output port and channel each
+([midi-output.md](midi-output.md)). The choice is saved in the session and is undoable:
+
+```json
+{"id": 7, "method": "engine.execute", "params": {"command": "track.midi_output", "params": {"tracks": ["Synth"], "output": "MIDI:1:UM-ONE"}}}
+{"id": 7, "ok": true, "result": {"outputs": [{"track": 3, "output": "MIDI:1:UM-ONE"}]}}
+```
+
+`output` is `MIDI:<channel 1-16>:<port>` or `none`. A missing `output`, channel 0 or 17, `*`, an
+empty port name, or a track that is not a MIDI or instrument track is an error that names the
+value, and nothing changes. A port that is unavailable (not listed) is accepted: the track keeps it and
+the selector reads "(unavailable)". Port names are the labels `ui.inspect` lists in
+`midi_output_ports`; two ports with one name are "DIN" and "DIN (2)".
+
+- `ui.midi_output_compensation {value?: bool}` reads or sets the app preference that delays the
+  output by the audio output latency and the mixer's plug-in delay (on by default).
+- `event.all_notes_off` also releases every sounding note on the MIDI output ports, then sends
+  sustain pedal up, All Notes Off and All Sound Off on all 16 channels.
+- `event.midi_track_offsets` moves the external output as it moves the instrument.
+- `ui.inspect` adds `midi_output_ports` (`{"Ok": [labels]}`, or `{"Err": why}` where there is no
+  MIDI output), `midi_outputs` (each routed track: `track`, `name`, `output`, `connected`, null
+  while the port list is unknown), `midi_output_error` (every failing port, joined with "; ") and
+  `midi_output_status` (the output worker's diagnostics: messages `sent`, lateness percentiles in
+  microseconds, the output lead and, per port, `connected`, and for each kind of output on it
+  `notes_enabled`, `beat_clock_enabled`, `mtc_enabled` with `notes_total_us`,
+  `beat_clock_total_us`, `mtc_total_us`, the delay applied); `setup.midi_sync_status` returns the
+  same diagnostics.
 
 ## Panel docking
 

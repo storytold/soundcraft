@@ -213,15 +213,114 @@ pub struct Engine {
     imports: Vec<io::DecodedImport>,
 }
 
+/// Create a fresh project at 01:00:00:00. Loaded session documents retain their own start.
+pub(crate) fn new_session(name: impl Into<String>, sr: soundcraft_time::SampleRate) -> Session {
+    let mut session = Session::new(name, sr);
+    let hour = soundcraft_time::Timecode { negative: false, hours: 1, minutes: 0, seconds: 0, frames: 0 };
+    session.timecode_start = hour.to_samples(session.frame_rate, sr);
+    session
+}
+
+const MTC_FREEWHEEL: &str = "midi.mtc.freewheel_mode=";
+
+/// Recover malformed fields independently before accepting the project for chase.
+fn migrate_mtc_settings(s: &mut Session) -> Vec<String> {
+    let mut notes = Vec::new();
+    let frames_key = "midi.mtc.freewheel_frames";
+    if let Some(frames) = s.edit.values.get_mut(frames_key)
+        && (!(4.0..=40.0).contains(frames) || frames.fract() != 0.)
+    {
+        notes.push(format!("The session's Freewheel frames value ({frames_key} = {frames}) was out of range and was reset to 8."));
+        *frames = 8.;
+    }
+
+    let mut modes = s.edit.flags.iter().filter_map(|flag| flag.strip_prefix(MTC_FREEWHEEL));
+    let mode = modes.next();
+    let has_mode = mode.is_some();
+    if let Some(mode) = mode
+        && (!matches!(mode, "none" | "frames" | "jam_sync") || modes.next().is_some())
+    {
+        notes.push(format!("The session's Freewheel mode (midi.mtc.freewheel_mode = {mode:.80}) was invalid or ambiguous and was reset to Frames."));
+        s.edit.flags.retain(|flag| !flag.starts_with(MTC_FREEWHEEL));
+        s.edit.flags.insert(format!("{MTC_FREEWHEEL}frames"));
+    }
+    if s.edit.flags.remove("midi.mtc.jam_sync") && !has_mode {
+        s.edit.flags.insert(format!("{MTC_FREEWHEEL}jam_sync"));
+    }
+
+    let limit = s.sample_rate.samples(3600.);
+    let external_key = "sync.external_offset";
+    if let Some(offset) = s.edit.values.get_mut(external_key)
+        && (!offset.is_finite() || offset.fract() != 0. || offset.abs() > limit as f64)
+    {
+        notes.push(format!("The session's External Timecode Offset ({external_key} = {offset} samples) was invalid and was reset to 0."));
+        *offset = 0.;
+    }
+    let legacy_key = "midi.mtc.external_offset_frames";
+    let Some(&frames) = s.edit.values.get(legacy_key) else { return notes };
+    // Convert only bounded integral frame counts and apply the final limit in samples,
+    // as Session Setup does for fractional frame rates.
+    let samples = (frames.fract() == 0. && frames.abs() <= 5_184_000.)
+        .then(|| s.frame_rate.samples_at_frame(frames as i64, s.sample_rate))
+        .filter(|samples| samples.unsigned_abs() <= limit as u64);
+    let Some(samples) = samples.map(|samples| samples as f64) else {
+        notes.push(format!("The session's legacy reader offset ({legacy_key} = {frames} frames) was invalid and was reset to 0."));
+        s.edit.values.remove(legacy_key);
+        return notes;
+    };
+    let existing = s.edit.value(external_key, 0.);
+    if existing != 0. && samples != 0. && existing != samples {
+        notes.push("The session has conflicting timecode offsets. Chase uses the External Timecode Offset.".into());
+    } else {
+        if existing == 0. {
+            s.edit.values.insert(external_key.into(), samples);
+        }
+        s.edit.values.remove(legacy_key);
+        notes.push("Migrated the MTC reader offset to External Timecode Offset.".into());
+    }
+    notes
+}
+
 impl Default for Engine {
     fn default() -> Self {
-        Engine::new(Session::default())
+        Engine::new(new_session("Untitled", soundcraft_time::SampleRate::HZ_48000))
     }
 }
 
 impl Engine {
-    pub fn new(session: Session) -> Self {
+    /// Number of missing timecode frames tolerated before the chase reader reports loss.
+    pub fn mtc_freewheel_frames(&self) -> u8 {
+        self.session().edit.value("midi.mtc.freewheel_frames", 8.).clamp(4., 40.) as u8
+    }
+
+    /// Keep rolling through timecode loss in this session.
+    pub fn mtc_jam_sync(&self) -> bool {
+        self.mtc_freewheel_mode() == "jam_sync"
+    }
+
+    pub fn has_conflicting_timecode_offsets(&self) -> bool {
+        let s = self.session();
+        let old = s.edit.value("midi.mtc.external_offset_frames", 0.) as i64;
+        let external = s.edit.value("sync.external_offset", 0.) as i64;
+        old != 0 && external != 0 && external != s.frame_rate.samples_at_frame(old, s.sample_rate)
+    }
+
+    pub fn mtc_freewheel_mode(&self) -> &'static str {
+        self.session()
+            .edit
+            .flags
+            .iter()
+            .find_map(|flag| match flag.strip_prefix(MTC_FREEWHEEL) {
+                Some("jam_sync") => Some("jam_sync"),
+                Some("none") => Some("none"),
+                _ => None,
+            })
+            .unwrap_or("frames")
+    }
+
+    pub fn new(mut session: Session) -> Self {
         install_panic_hook();
+        let messages = migrate_mtc_settings(&mut session);
         let doc = Arc::new(session);
         Engine {
             saved: Arc::clone(&doc),
@@ -239,7 +338,7 @@ impl Engine {
             dirty_at: Cell::new((0, false)),
             merge_key: None,
             merge_hold: None,
-            messages: Vec::new(),
+            messages,
             last_selection: None,
             imports: Vec::new(),
         }
@@ -297,7 +396,10 @@ impl Engine {
     }
 
     /// Replace the whole document (open / new); clears history.
-    pub fn replace_session(&mut self, s: Session) {
+    pub fn replace_session(&mut self, mut s: Session) {
+        for note in migrate_mtc_settings(&mut s) {
+            self.message(note);
+        }
         self.transport = TransportStatus { position: s.edit.selection.start.max(0), ..TransportStatus::default() };
         self.transport_requests.clear();
         self.transport_requests.push(TransportRequest::ResetSession);

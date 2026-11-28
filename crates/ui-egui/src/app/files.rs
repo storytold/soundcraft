@@ -5,6 +5,11 @@ impl SoundApp {
     /// as bytes). Screenshot requests admitted for the old document must never receive the new
     /// one's pixels, so every replacement path bumps the epoch.
     pub(crate) fn document_replaced(&mut self) {
+        if self.engine.has_conflicting_timecode_offsets() {
+            self.ui.status =
+                crate::localization::text("The session has conflicting timecode offsets. Chase uses the External Timecode Offset.").to_owned();
+        }
+        self.sync_migration_pending = true;
         self.doc_epoch = self.doc_epoch.wrapping_add(1);
         // Note indices and gestures belong to the old session's clips (#443); every document
         // replacement (run, Recover, a session the browser read) goes through here.
@@ -127,6 +132,7 @@ impl SoundApp {
         match soundcraft_engine::autosave::recover(&mut self.engine, left) {
             Ok(missing) => {
                 self.document_replaced();
+                let offset_warning = self.engine.has_conflicting_timecode_offsets().then(|| self.ui.status.clone());
                 if self.write_autosave() {
                     soundcraft_engine::autosave::discard(left);
                 }
@@ -138,6 +144,10 @@ impl SoundApp {
                         n = n
                     ),
                 };
+                if let Some(warning) = offset_warning {
+                    self.ui.status.push(' ');
+                    self.ui.status.push_str(&warning);
+                }
             }
             Err(e) => self.ui.status = crate::localized_format!("Couldn't recover “{name}”: {e}", name = left.name, e = e),
         }

@@ -204,6 +204,22 @@ pub(super) fn translate(source: &str) -> Option<&'static str> {
         "Recover Unsaved Work" => "Recuperar trabalho não salvo",
         "Reduce motion" => "Reduzir animações",
         "Refresh devices" => "Atualizar dispositivos",
+        "Enable MIDI Beat Clock" => "Ativar o clock de batida MIDI",
+        "Copy diagnostics" => "Copiar diagnóstico",
+        "No MIDI output devices found" => "Nenhum dispositivo de saída MIDI encontrado",
+        "Offset (samples)" => "Deslocamento (amostras)",
+        "The saved MIDI output is unavailable." => "A saída MIDI salva não está disponível.",
+        "Limited by the audio output lead ({lead} ms)" => "Limitado pela antecipação da saída de áudio ({lead} ms)",
+        "Audio output “{name}” is unavailable. Reconnect it in Playback Engine when stopped." => {
+            "A saída de áudio “{name}” não está disponível. Reconecte-a no Mecanismo de reprodução com o transporte parado."
+        }
+        "Audio output timing is unavailable. Compensated MIDI outputs need a valid measurement." => {
+            "A temporização da saída de áudio não está disponível. As saídas MIDI compensadas precisam de uma medição válida."
+        }
+        "Stop playback or recording before reconnecting this output." => "Pare a reprodução ou a gravação antes de reconectar esta saída.",
+        "Include the reported audio output lead and the mixer's compensated plug-in delay." => {
+            "Incluir a antecipação informada da saída de áudio e o atraso de plug-in compensado do mixer."
+        }
         "Refresh Report" => "Atualizar relatório",
         "Remove from Folder" => "Remover da pasta",
         "Remove send" => "Remover envio",
@@ -279,6 +295,28 @@ pub(super) fn translate(source: &str) -> Option<&'static str> {
         "Time Scale" => "Escala de tempo",
         "Timecode burn-in" => "Sobreposição de timecode",
         "Timecode Rate" => "Taxa de timecode",
+        "External Timecode Offset" => "Deslocamento externo de timecode",
+        "Session Start" => "Início da sessão",
+        "Freewheel" => "Roda livre",
+        "Freewheel (frames)" => "Roda livre (quadros)",
+        "No timecode received" => "Nenhum timecode recebido",
+        "Received timecode" => "Timecode recebido",
+        "Use received position" => "Usar a posição recebida",
+        "When changing the session start" => "Ao alterar o início da sessão",
+        "MTC Generator Port" => "Porta do gerador de MTC",
+        "MTC Reader Port" => "Porta do leitor de MTC",
+        "Online (chase MTC)" => "Conectado (seguir MTC)",
+        "Online" => "Conectado",
+        "Gen MTC" => "Gerar MTC",
+        "Enter position…" => "Inserir posição…",
+        "Receiving {incoming} fps; session is {session} fps" => "Recebendo {incoming} qps; a sessão está em {session} qps",
+        "Take MTC chase offline before recording" => "Desconecte o seguimento de MTC antes de gravar",
+        "The session has conflicting timecode offsets. Chase uses the External Timecode Offset." => {
+            "A sessão tem deslocamentos de timecode conflitantes. O seguimento usa o deslocamento externo de timecode."
+        }
+        "Cannot record MIDI: open an audio output in Setup > Playback Engine to start the audio engine." => {
+            "Não é possível gravar MIDI: abra uma saída de áudio em Configuração > Mecanismo de reprodução para iniciar o mecanismo de áudio."
+        }
         "Title" => "Título",
         "Track Color" => "Cor da faixa",
         "Track Height" => "Altura da faixa",
@@ -1170,6 +1208,8 @@ fn menu_translate(source: &str) -> Option<&'static str> {
         "Track Comments" => "Comentários da faixa",
         "Track Input" => "Entrada da faixa",
         "Track Output" => "Saída da faixa",
+        "Track MIDI Output" => "Saída MIDI da faixa",
+        "Delay Compensation for External MIDI Notes" => "Compensação de atraso para notas MIDI externas",
         "Track Timebase" => "Base de tempo da faixa",
         "Track View" => "Visualização da faixa",
         "Transport Status" => "Status do transporte",
@@ -1549,7 +1589,22 @@ fn menu_translate(source: &str) -> Option<&'static str> {
         "MIDI input" => "Entrada MIDI",
         "All devices" => "Todos os dispositivos",
         "No MIDI input device found" => "Nenhum dispositivo de entrada MIDI encontrado",
-        "{name} (not connected)" => "{name} (não conectado)",
+        "{name} (unavailable)" => "{name} (indisponível)",
+        "MIDI output" => "Saída MIDI",
+        "No MIDI output" => "Sem saída MIDI",
+        "No MIDI output port found" => "Nenhuma porta de saída MIDI encontrada",
+        "{n} (in use)" => "{n} (em uso)",
+        "MIDI output for {}" => "Saída MIDI de {}",
+        "MIDI output: {output}" => "Saída MIDI: {output}",
+        "Delay MIDI and instrument tracks' external MIDI output by the audio output latency and the mixer's plug-in delay, so it sounds with the audio." => {
+            "Atrasa a saída MIDI externa das faixas MIDI e de instrumento pela latência da saída de áudio e pelo atraso dos plug-ins do mixer, para que soe junto com o áudio."
+        }
+        "MIDI output is not delay-compensated: the audio device reports no output timing." => {
+            "A saída MIDI não tem compensação de atraso: o dispositivo de áudio não informa a temporização da saída."
+        }
+        "The audio driver stopped reporting output timing. Compensated MIDI outputs use the last measured lead ({ms} ms)." => {
+            "O driver de áudio parou de informar a temporização da saída. As saídas MIDI compensadas usam a última antecipação medida ({ms} ms)."
+        }
         "Click to add a MIDI clip to {name} at the insertion point." => "Clique para adicionar um clipe MIDI a {name} no ponto de inserção.",
         "Could not open {path}: {e}" => "Não foi possível abrir {path}: {e}",
         "Couldn't recover “{name}”: {e}" => "Não foi possível recuperar “{name}”: {e}",
@@ -2085,6 +2140,9 @@ macro_rules! error_templates {
 }
 
 error_templates! {
+    "MIDI output {name} unavailable" => "Saída MIDI {name} indisponível",
+    "MIDI output {name} unavailable for {tracks}" => "Saída MIDI {name} indisponível para {tracks}",
+    "MIDI output is not available on this system" => "A saída MIDI não está disponível neste sistema",
     "{path} is not valid Unicode" => "{path} não é Unicode válido",
     "unknown command `{c}`" => "comando desconhecido `{c}`",
     "`{c}` is not available: {why}" => "`{c}` não está disponível: {why}",

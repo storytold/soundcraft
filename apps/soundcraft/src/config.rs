@@ -120,10 +120,115 @@ fn read_ui(path: &std::path::Path, recover_docking: bool) -> Result<Option<sound
             }
         }
     }
-    let state: soundcraft_ui_egui::UiState = serde_json::from_value(saved).map_err(|error| format!("Settings could not be restored: {error}"))?;
+    let mut resets = Vec::new();
+    if let Some(fields) = saved.as_object_mut() {
+        recover_sync_settings(fields, &mut resets);
+    }
+    let mut state: soundcraft_ui_egui::UiState = serde_json::from_value(saved).map_err(|error| format!("Settings could not be restored: {error}"))?;
     docking::validate(&state.docking)?;
     docking::validate_mix(&state.mix_docking)?;
+    if !resets.is_empty() {
+        let label = state.language.text("A MIDI sync setting could not be read and was reset");
+        state.status = format!("{label}: {}", resets.join(", "));
+    }
     Ok(Some(state))
+}
+
+/// Drop only invalid workstation synchronization fields. Serde defaults fill each removed
+/// field, leaving unrelated preferences and other members of the same port intact.
+fn recover_sync_settings(fields: &mut serde_json::Map<String, serde_json::Value>, resets: &mut Vec<String>) {
+    use serde_json::Value;
+    use soundcraft_ui_egui::midi_sync::{Compensation, MAX_SYNC_PORTS, MidiSyncPort, valid_port, valid_saved_offset};
+
+    reset_invalid(fields, "gen_mtc", "gen_mtc", Value::is_boolean, resets);
+    for port in ["mtc_input_port", "mtc_output_port"] {
+        reset_invalid(fields, port, port, |v| v.is_null() || v.as_str().is_some_and(valid_port), resets);
+    }
+    reset_invalid(fields, "midi_sync", "midi_sync", Value::is_object, resets);
+    let mtc_output_port = fields.get("mtc_output_port").and_then(Value::as_str).map(str::to_owned);
+    let Some(sync) = fields.get_mut("midi_sync").and_then(Value::as_object_mut) else { return };
+    reset_invalid(sync, "enabled", "midi_sync.enabled", Value::is_boolean, resets);
+    reset_invalid(sync, "configured", "midi_sync.configured", Value::is_boolean, resets);
+    reset_invalid(sync, "compensation", "midi_sync.compensation", Value::is_object, resets);
+    if let Some(compensation) = sync.get_mut("compensation").and_then(Value::as_object_mut) {
+        compensation.retain(|key, value| {
+            let valid = serde_json::from_value::<Compensation>(serde_json::json!({(key):value})).is_ok();
+            if !valid {
+                record_reset(resets, &format!("midi_sync.compensation.{key}"));
+            }
+            valid
+        });
+    }
+    reset_invalid(sync, "ports", "midi_sync.ports", Value::is_object, resets);
+    if let Some(ports) = sync.get_mut("ports").and_then(Value::as_object_mut) {
+        let mut kept = 0;
+        ports.retain(|name, value| {
+            if !valid_port(name) || kept == MAX_SYNC_PORTS {
+                record_reset(resets, "midi_sync.ports (invalid name or too many ports)");
+                return false;
+            }
+            let Some(port) = value.as_object_mut() else {
+                record_reset(resets, &format!("midi_sync.ports.{name}"));
+                return false;
+            };
+            kept += 1;
+            port.retain(|key, value| {
+                let valid = serde_json::from_value::<MidiSyncPort>(serde_json::json!({(key):value}))
+                    .is_ok_and(|port| valid_saved_offset(port.offset_samples));
+                if !valid {
+                    record_reset(resets, &format!("midi_sync.ports.{name}.{key}"));
+                }
+                valid
+            });
+            true
+        });
+    }
+    // Bindings for retained routes come first, so unused entries cannot crowd out a route's
+    // saved physical identity. Unused bindings keep only the remaining slots.
+    // A zero-offset MTC-only destination has an identity without occupying a calibration slot.
+    let mut routed: std::collections::BTreeSet<String> =
+        sync.get("ports").and_then(Value::as_object).map(|ports| ports.keys().cloned().collect()).unwrap_or_default();
+    routed.extend(mtc_output_port);
+    reset_invalid(sync, "port_ids", "midi_sync.port_ids", Value::is_object, resets);
+    if let Some(ids) = sync.get_mut("port_ids").and_then(Value::as_object_mut) {
+        let valid = |name: &str, value: &Value| valid_port(name) && value.as_str().is_some_and(valid_port);
+        let bound = ids.iter().filter(|(name, value)| routed.contains(*name) && valid(name, value)).count();
+        let mut spare = MAX_SYNC_PORTS.saturating_sub(bound);
+        ids.retain(|name, value| {
+            let keep = valid(name, value)
+                && (routed.contains(name) || {
+                    let free = spare > 0;
+                    spare = spare.saturating_sub(1);
+                    free
+                });
+            if !keep {
+                record_reset(resets, &format!("midi_sync.port_ids.{name}"));
+            }
+            keep
+        });
+    }
+}
+
+fn reset_invalid(
+    fields: &mut serde_json::Map<String, serde_json::Value>,
+    key: &str,
+    path: &str,
+    valid: impl FnOnce(&serde_json::Value) -> bool,
+    resets: &mut Vec<String>,
+) {
+    if fields.get(key).is_some_and(|value| !valid(value)) {
+        fields.remove(key);
+        record_reset(resets, path);
+    }
+}
+
+fn record_reset(resets: &mut Vec<String>, path: &str) {
+    // A corrupt file can have thousands of invalid entries. Keep the status line readable.
+    match resets.len() {
+        0..8 => resets.push(path.chars().take(160).collect()),
+        8 => resets.push("…".into()),
+        _ => {}
+    }
 }
 
 const MAX_UI_BYTES: u64 = 4 * 1024 * 1024;
@@ -164,6 +269,99 @@ pub fn save_ui(path: &std::path::Path, ui: &soundcraft_ui_egui::UiState) -> Resu
 #[cfg(test)]
 mod config_tests {
     use super::*;
+
+    #[test]
+    fn midi_sync_pref_recovers_bad_fields_preserving_the_workstation_and_reporting_paths() {
+        let path = std::env::temp_dir().join(format!("soundcraft-sync-recovery-{}.json", std::process::id()));
+        let state = soundcraft_ui_egui::UiState::default();
+        let mut saved = serde_json::to_value(&state).unwrap();
+        saved["theme"] = serde_json::to_value(soundcraft_ui_egui::theme::ThemeMode::Light).unwrap();
+        saved["audio"]["output"] = "Stage mix".into();
+        saved["midi_sync"] = serde_json::json!({"enabled":true, "ports":{
+            "Keys":{"enabled":true,"offset_samples":"bad"},
+            "Rack":{"enabled":false,"offset_samples":-42}
+        }, "compensation":{"beat_clock":false,"mtc":"bad","notes":true}});
+        std::fs::write(&path, serde_json::to_vec(&saved).unwrap()).unwrap();
+        let ui = load_ui(&path).unwrap().unwrap();
+        assert_eq!(ui.theme, soundcraft_ui_egui::theme::ThemeMode::Light);
+        assert_eq!(ui.audio.output.as_deref(), Some("Stage mix"));
+        assert!(ui.midi_sync.enabled);
+        assert!(ui.midi_sync.ports["Keys"].enabled);
+        assert_eq!(ui.midi_sync.ports["Keys"].offset_samples, 0);
+        assert_eq!(ui.midi_sync.ports["Rack"].offset_samples, -42);
+        assert!(!ui.midi_sync.compensation.beat_clock && ui.midi_sync.compensation.mtc && ui.midi_sync.compensation.notes);
+        assert!(ui.status.contains("ports.Keys.offset_samples") && ui.status.contains("compensation.mtc"), "{}", ui.status);
+        save_ui(&path, &ui).unwrap();
+        let reloaded = load_ui(&path).unwrap().unwrap();
+        assert!(reloaded.status.is_empty());
+        assert_eq!(reloaded.midi_sync, ui.midi_sync);
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn midi_sync_pref_recovery_validates_each_saved_identity_and_preserves_known_fields() {
+        let mut saved = serde_json::json!({"midi_sync":{
+            "ports":{"Keys":{"enabled":true,"offset_samples":10000001,"newer_field":true}},
+            "port_ids":{"Good":"driver-id","Broken":42," ":"bad name"}
+        }});
+        let mut resets = Vec::new();
+        recover_sync_settings(saved.as_object_mut().unwrap(), &mut resets);
+        assert_eq!(saved["midi_sync"]["port_ids"], serde_json::json!({"Good":"driver-id"}));
+        assert_eq!(saved["midi_sync"]["ports"]["Keys"], serde_json::json!({"enabled":true}));
+        assert_eq!(resets.len(), 4);
+    }
+
+    #[test]
+    fn midi_sync_pref_reload_keeps_the_uncalibrated_mtc_only_identity_beyond_256_calibrations() {
+        use soundcraft_ui_egui::midi_sync::{MAX_SYNC_PORTS, MidiSyncPort};
+        let path = std::env::temp_dir().join(format!("soundcraft-mtc-only-id-{}.json", std::process::id()));
+        let mut ui = soundcraft_ui_egui::UiState::default();
+        for i in 0..MAX_SYNC_PORTS {
+            let name = format!("Port {i}");
+            ui.midi_sync.ports.insert(name.clone(), MidiSyncPort { enabled: false, offset_samples: 1 });
+            ui.midi_sync.port_ids.insert(name, format!("physical-{i}"));
+        }
+        ui.mtc_output_port = Some("Z-last".into());
+        ui.midi_sync.port_ids.insert("Z-last".into(), "mtc-only-id".into());
+        save_ui(&path, &ui).unwrap();
+        let reopened = load_ui(&path).unwrap().unwrap();
+        assert_eq!(reopened.mtc_output_port, ui.mtc_output_port);
+        assert_eq!(reopened.midi_sync, ui.midi_sync);
+        assert!(reopened.status.is_empty());
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn mtc_bad_workstation_fields_recover_independently_and_report_each_bad_value() {
+        let path = std::env::temp_dir().join(format!("soundcraft-mtc-pref-recovery-{}.json", std::process::id()));
+        for (field, bad) in
+            [("gen_mtc", serde_json::json!("on")), ("mtc_input_port", serde_json::json!("  ")), ("mtc_output_port", serde_json::json!(5))]
+        {
+            let mut saved = serde_json::json!({"gen_mtc":true,"mtc_input_port":"Reader","mtc_output_port":"Generator","midi_sync":{"enabled":true}});
+            saved[field] = bad;
+            std::fs::write(&path, serde_json::to_vec(&saved).unwrap()).unwrap();
+            let restored = load_ui(&path).unwrap().unwrap();
+            assert!(restored.midi_sync.enabled);
+            assert_eq!(restored.gen_mtc, field != "gen_mtc");
+            assert_eq!(restored.mtc_input_port.as_deref(), (field != "mtc_input_port").then_some("Reader"));
+            assert_eq!(restored.mtc_output_port.as_deref(), (field != "mtc_output_port").then_some("Generator"));
+            assert!(restored.status.contains(field), "{}", restored.status);
+        }
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn midi_sync_pref_recovery_keeps_a_retained_route_binding_ahead_of_unused_ones() {
+        let unused: serde_json::Map<_, _> = (0..300).map(|i| (format!("A unused {i:03}"), serde_json::json!("spare-id"))).collect();
+        let mut ids = unused;
+        ids.insert("Z".into(), "z-id".into());
+        let mut saved = serde_json::json!({"midi_sync":{"ports":{"Z":{"enabled":true}},"port_ids":ids}});
+        let mut resets = Vec::new();
+        recover_sync_settings(saved.as_object_mut().unwrap(), &mut resets);
+        let kept = saved["midi_sync"]["port_ids"].as_object().unwrap();
+        assert_eq!(kept["Z"], "z-id");
+        assert!(kept.len() <= soundcraft_ui_egui::midi_sync::MAX_SYNC_PORTS);
+    }
 
     #[test]
     fn native_file_reload_preserves_edit_mix_and_hidden_floating_panels() {

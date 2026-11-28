@@ -46,7 +46,7 @@ pub(crate) const INCOMING: usize = 1024;
 const RECORDED: usize = 16_384;
 
 /// A fixed-size queue of stamped events for one reader and one writer at a time. Lock-free.
-struct Ring {
+pub(crate) struct Ring {
     stamps: Vec<AtomicI64>,
     events: Vec<AtomicU32>,
     write: AtomicUsize,
@@ -54,7 +54,7 @@ struct Ring {
 }
 
 impl Ring {
-    fn new(capacity: usize) -> Ring {
+    pub(crate) fn new(capacity: usize) -> Ring {
         let n = capacity.next_power_of_two();
         Ring {
             stamps: (0..n).map(|_| AtomicI64::new(0)).collect(),
@@ -65,7 +65,7 @@ impl Ring {
     }
 
     /// False when full (the event is dropped).
-    fn push(&self, stamp: i64, event: u32) -> bool {
+    pub(crate) fn push(&self, stamp: i64, event: u32) -> bool {
         let n = self.events.len();
         let w = self.write.load(Ordering::Relaxed);
         if w.wrapping_sub(self.read.load(Ordering::Acquire)) >= n {
@@ -78,10 +78,14 @@ impl Ring {
         true
     }
 
-    fn pop(&self) -> Option<(i64, u32)> {
+    pub(crate) fn pop(&self) -> Option<(i64, u32)> {
+        self.pop_until(self.write.load(Ordering::Acquire))
+    }
+
+    fn pop_until(&self, end: usize) -> Option<(i64, u32)> {
         let n = self.events.len();
         let r = self.read.load(Ordering::Relaxed);
-        if r == self.write.load(Ordering::Acquire) {
+        if r == end {
             return None;
         }
         let out = (self.stamps.get(r % n)?.load(Ordering::Relaxed), self.events.get(r % n)?.load(Ordering::Relaxed));
@@ -144,15 +148,27 @@ fn lost_entry(port: u8) -> u32 {
     pack(&LiveMidi { offset: 0, port, status: RecordedMidi::LOST, data1: 0, data2: 0 })
 }
 
+pub(crate) type TransportWaker = Arc<dyn Fn(crate::mtc_input::ChaseEvent) + Send + Sync>;
+
 /// The path of MIDI events from the device threads to the audio thread, and of recorded events
 /// from the audio thread to the UI.
 pub struct MidiFeed {
+    mtc: Mutex<crate::mtc_input::Reader>,
+    sync_wake: Mutex<Option<TransportWaker>>,
+    mtc_online: AtomicBool,
+    mtc_relocates: AtomicU64,
+    mtc_wake: std::sync::OnceLock<Box<dyn Fn() + Send + Sync>>,
     ports: Arc<MidiPorts>,
     incoming: Ring,
     /// Device threads write one at a time. Holds the ports ([`midi_port_bit`]) whose loss from
     /// a full queue is not written into the queue yet.
     writers: Mutex<u64>,
     recorded: Ring,
+    /// Only accepted takes are visible to the UI. The audio writer may stage a punch-in
+    /// in this same ring while its start command is pending.
+    recorded_visible: AtomicUsize,
+    pending_lost: AtomicU32,
+    pending_gap: AtomicBool,
     /// When the feed was made. Not on the web: there is no MIDI input there, and no clock in std.
     #[cfg(not(target_arch = "wasm32"))]
     epoch: Instant,
@@ -197,10 +213,18 @@ pub struct MidiFeed {
 impl Default for MidiFeed {
     fn default() -> Self {
         MidiFeed {
+            mtc: Mutex::default(),
+            mtc_wake: Default::default(),
+            sync_wake: Mutex::default(),
+            mtc_online: false.into(),
+            mtc_relocates: 0.into(),
             ports: Arc::new(MidiPorts::default()),
             incoming: Ring::new(INCOMING),
             writers: Mutex::new(0),
             recorded: Ring::new(RECORDED),
+            recorded_visible: AtomicUsize::new(0),
+            pending_lost: AtomicU32::new(0),
+            pending_gap: AtomicBool::new(false),
             #[cfg(not(target_arch = "wasm32"))]
             epoch: Instant::now(),
             connected: AtomicUsize::new(0),
@@ -269,16 +293,104 @@ impl MidiFeed {
     /// bytes are masked to 7 bits, and bytes past the message are ignored. Nothing downstream
     /// (the engine, instruments, the recorded take) sees anything else.
     pub fn receive(&self, port: u8, bytes: &[u8]) {
-        self.receive_from(None, port, bytes);
+        self.receive_from(None, port, bytes, self.now());
     }
 
     /// [`Self::receive`] for a connection that can be shut off: once `open` is false
     /// ([`Self::close_port`]) the message is discarded.
     pub fn receive_while_open(&self, open: &AtomicBool, port: u8, bytes: &[u8]) {
-        self.receive_from(Some(open), port, bytes);
+        self.receive_from(Some(open), port, bytes, self.now());
     }
 
-    fn receive_from(&self, open: Option<&AtomicBool>, port: u8, bytes: &[u8]) {
+    /// Register the host wakeup once per feed. Idle chase requires no repaint timer.
+    pub fn set_mtc_wakeup(&self, make: impl FnOnce() -> Box<dyn Fn() + Send + Sync>) {
+        self.mtc_wake.get_or_init(make);
+    }
+    #[cfg(any(target_os = "windows", target_os = "macos", target_os = "linux"))]
+    pub(crate) fn set_sync_waker(&self, wake: TransportWaker) {
+        *self.sync_wake.lock().unwrap_or_else(PoisonError::into_inner) = Some(wake);
+    }
+    fn wake_mtc_output(&self, reader: &crate::mtc_input::Reader) {
+        if let Some(event) = reader.pending
+            && let Some(wake) = self.sync_wake.lock().unwrap_or_else(PoisonError::into_inner).as_ref()
+        {
+            wake(event);
+        }
+    }
+    fn wake_mtc_host(&self) {
+        if let Some(wake) = self.mtc_wake.get() {
+            wake();
+        }
+    }
+
+    /// Select one currently open port for chase. Switching it discards queued positions.
+    pub fn set_mtc_source(&self, source: Option<u8>) {
+        let mut reader = self.mtc.lock().unwrap_or_else(PoisonError::into_inner);
+        if reader.source != source {
+            reader.reset(source);
+            self.mtc_online.store(source.is_some(), Ordering::Release);
+        }
+    }
+
+    pub fn set_mtc_options(&self, rate: soundcraft_time::FrameRate, freewheel_frames: u8, jam_sync: bool, external_offset_samples: i64) {
+        let mut r = self.mtc.lock().unwrap_or_else(PoisonError::into_inner);
+        r.set_options(crate::mtc_input::Options {
+            rate,
+            freewheel: if freewheel_frames == 0 { 0 } else { freewheel_frames.clamp(4, 40) },
+            jam: jam_sync,
+            offset: external_offset_samples,
+        });
+    }
+    pub fn mtc_input_status(&self) -> (Option<crate::mtc_input::Position>, Option<crate::mtc_input::RateMismatch>) {
+        self.mtc.lock().unwrap_or_else(PoisonError::into_inner).incoming_status()
+    }
+    pub fn mtc_diagnostics(&self) -> crate::mtc_input::ChaseStats {
+        let mut result = self.mtc.lock().unwrap_or_else(PoisonError::into_inner).diagnostics_at(self.now());
+        result.hard_relocates = self.mtc_relocates.load(Ordering::Relaxed);
+        result
+    }
+    pub(crate) fn mtc_relocated(&self) {
+        self.mtc_relocates.fetch_add(1, Ordering::Relaxed);
+    }
+    pub(crate) fn mtc_online(&self) -> bool {
+        self.mtc_online.load(Ordering::Acquire)
+    }
+    /// True while quarter frames are arriving or the reader is rolling/freewheeling.
+    /// A concurrent input transition also defers device recovery until the next UI poll.
+    pub fn mtc_transport_active(&self) -> bool {
+        self.mtc.try_lock().map_or(true, |reader| reader.transport_in_motion(self.now()))
+    }
+    // A contended MIDI callback leaves the audio transport untouched for one block.
+    pub(crate) fn tracking_mtc(&self) -> Option<(crate::mtc_input::Tracking, i64)> {
+        let mut reader = self.mtc.try_lock().ok()?;
+        Some((reader.tracking(self.now()), reader.options.offset))
+    }
+
+    pub fn take_mtc(&self) -> Option<crate::mtc_input::ChaseEvent> {
+        self.take_mtc_with_lock().map(|(event, _)| event)
+    }
+
+    pub fn take_mtc_with_lock(&self) -> Option<(crate::mtc_input::ChaseEvent, u64)> {
+        let mut reader = self.mtc.lock().unwrap_or_else(PoisonError::into_inner);
+        reader.take(self.now()).map(|event| (event, reader.stats.locks))
+    }
+
+    pub(crate) fn is_mtc_lock(&self, lock: u64) -> bool {
+        self.mtc.try_lock().is_ok_and(|reader| reader.stats.locks == lock)
+    }
+
+    fn receive_from(&self, open: Option<&AtomicBool>, port: u8, bytes: &[u8], at_us: i64) {
+        // The selected MTC reader frames messages across callbacks and ignores interleaved
+        // real-time bytes. Channel recording still handles the original port message below.
+        if self.mtc_online() {
+            let arrival = self.now();
+            let mut reader = self.mtc.lock().unwrap_or_else(PoisonError::into_inner);
+            if reader.source == Some(port) && open.is_none_or(|gate| gate.load(Ordering::Acquire)) && reader.receive(bytes, at_us, arrival) {
+                self.wake_mtc_output(&reader);
+                drop(reader);
+                self.wake_mtc_host();
+            }
+        }
         let Some(&status) = bytes.first().filter(|s| (0x80..0xF0).contains(*s)) else { return };
         // Program change and channel pressure have one data byte, the rest two.
         let needs = if matches!(status & 0xF0, 0xC0 | 0xD0) { 2 } else { 3 };
@@ -294,6 +406,8 @@ impl MidiFeed {
             if open.is_some_and(|o| !o.load(Ordering::Acquire)) {
                 return;
             }
+            // Synchronization uses the wire timestamp. Recording is ordered against
+            // take boundaries under this writer lock, including a delayed native callback.
             let now = self.now();
             // Losses from a full queue go into the queue first, where they happened: ahead of
             // the first event that fits again. Each mark carries the time its port's events
@@ -329,15 +443,34 @@ impl MidiFeed {
     /// its device thread delivers from now on is discarded. Dropping the connection afterwards
     /// may or may not wait for that thread (the system decides): it no longer matters.
     pub fn close_port(&self, open: &AtomicBool, port: u8) {
-        let _writers = self.writers.lock().unwrap_or_else(PoisonError::into_inner);
-        open.store(false, Ordering::Release);
-        self.port_lost(port);
+        let notify = {
+            let _writers = self.writers.lock().unwrap_or_else(PoisonError::into_inner);
+            open.store(false, Ordering::Release);
+            self.mark_port_lost(port)
+        };
+        if notify {
+            self.wake_mtc_host();
+        }
     }
 
     /// Events of `port` did not (or will not) reach the audio thread: it releases what the port
     /// holds. Called when the queue is full and when a port closes.
     pub fn port_lost(&self, port: u8) {
+        if self.mark_port_lost(port) {
+            self.wake_mtc_host();
+        }
+    }
+
+    fn mark_port_lost(&self, port: u8) -> bool {
         self.port_lost_at(port, self.now());
+        let mut reader = self.mtc.lock().unwrap_or_else(PoisonError::into_inner);
+        if reader.source == Some(port) {
+            reader.loss();
+            self.wake_mtc_output(&reader);
+            true
+        } else {
+            false
+        }
     }
 
     /// [`Self::port_lost`] at the time `now`.
@@ -428,16 +561,21 @@ impl MidiFeed {
     /// Put a recorded entry in the queue to the UI thread. One that does not fit is counted, and
     /// the next that fits is preceded by a [`RecordedMidi::LOST`] for all ports.
     fn record_entry(&self, at: Samples, entry: u32) {
-        if self.record_gap.load(Ordering::Relaxed) {
+        let pending = self.begin_pending();
+        let (gap, losses) = if pending { (&self.pending_gap, &self.pending_lost) } else { (&self.record_gap, &self.recorded_lost) };
+        if gap.load(Ordering::Relaxed) {
             if !self.recorded.push(at, lost_entry(u8::MAX)) {
-                self.recorded_lost.fetch_add(1, Ordering::Relaxed);
+                losses.fetch_add(1, Ordering::Relaxed);
                 return;
             }
-            self.record_gap.store(false, Ordering::Relaxed);
+            gap.store(false, Ordering::Relaxed);
         }
         if !self.recorded.push(at, entry) {
-            self.recorded_lost.fetch_add(1, Ordering::Relaxed);
-            self.record_gap.store(true, Ordering::Relaxed);
+            losses.fetch_add(1, Ordering::Relaxed);
+            gap.store(true, Ordering::Relaxed);
+        }
+        if !pending {
+            self.recorded_visible.store(self.recorded.write.load(Ordering::Relaxed), Ordering::Release);
         }
     }
 
@@ -463,8 +601,22 @@ impl MidiFeed {
     }
 
     /// Audio thread: the command that starts the pass was read.
-    pub(crate) fn pass_begun(&self) {
-        self.begin_pending.store(false, Ordering::Release);
+    pub(crate) fn finish_pending_start(&self, accepted: bool) {
+        if !self.begin_pending.swap(false, Ordering::AcqRel) {
+            return;
+        }
+        let losses = self.pending_lost.swap(0, Ordering::Relaxed);
+        let gap = self.pending_gap.swap(false, Ordering::Relaxed);
+        if accepted {
+            self.recorded_lost.fetch_add(losses, Ordering::Relaxed);
+            // The take starts here: a gap left by the end of the previous take does not belong to
+            // it. Its loss stays counted in `recorded_lost`.
+            self.record_gap.store(gap, Ordering::Relaxed);
+            self.recorded_visible.store(self.recorded.write.load(Ordering::Relaxed), Ordering::Release);
+        } else {
+            // No consumer has seen the tentative suffix. Rewind only the producer cursor.
+            self.recorded.write.store(self.recorded_visible.load(Ordering::Relaxed), Ordering::Relaxed);
+        }
     }
 
     /// UI thread: a record pass ends. Returns its number, to stop the recording with
@@ -552,7 +704,8 @@ impl MidiFeed {
 
     /// UI thread: move the recorded events so far to the end of `out`.
     pub fn take_recorded(&self, out: &mut Vec<RecordedMidi>) {
-        while let Some((at, e)) = self.recorded.pop() {
+        let end = self.recorded_visible.load(Ordering::Acquire);
+        while let Some((at, e)) = self.recorded.pop_until(end) {
             let e = unpack(e);
             out.push(RecordedMidi { at, port: e.port, status: e.status, data1: e.data1, data2: e.data2 });
         }
@@ -888,14 +1041,26 @@ mod backend {
 
     fn connect(name: &str, port: &MidiInputPort, feed: &Arc<MidiFeed>) -> Result<(Gate, MidiInputConnection<()>), String> {
         let mut input = MidiInput::new(CLIENT).map_err(|e| e.to_string())?;
-        // Clock, SysEx and active sensing are not used; do not wake up for them.
-        input.ignore(Ignore::All);
+        // Quarter-frame and full-frame SysEx carry MTC. The feed routes them separately from notes and controllers.
+        input.ignore(Ignore::ActiveSense);
         let index = feed.ports().assign(name);
         let feed = Arc::clone(feed);
         let gate: Gate = Arc::new(AtomicBool::new(true));
         let open = Arc::clone(&gate);
-        let connection =
-            input.connect(port, "in", move |_, bytes, ()| feed.receive_while_open(&open, index, bytes), ()).map_err(|e| e.to_string())?;
+        let connection = input
+            .connect(
+                port,
+                "in",
+                {
+                    let mut timeline = crate::sync_input::DriverTime::default();
+                    move |stamp, bytes, ()| {
+                        let at_us = timeline.map(stamp, feed.now());
+                        feed.receive_from(Some(&open), index, bytes, at_us);
+                    }
+                },
+                (),
+            )
+            .map_err(|e| e.to_string())?;
         Ok((gate, connection))
     }
 }
@@ -920,6 +1085,31 @@ mod backend {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn review_channel_event_stamp_follows_the_recording_cutoff() {
+        let feed = MidiFeed::default();
+        feed.set_clock(250);
+        feed.receive_from(None, 0, &[0x90, 64, 100], 90);
+        assert_eq!(feed.next().unwrap().0, 250, "queue publication is after the cutoff even if the driver timestamp is older");
+    }
+
+    #[test]
+    fn review_closing_mtc_port_calls_host_wakeup_outside_the_writer_lock() {
+        let feed = Arc::new(MidiFeed::default());
+        feed.set_mtc_source(Some(2));
+        let weak = Arc::downgrade(&feed);
+        let notified = Arc::new(AtomicBool::new(false));
+        let observed = notified.clone();
+        feed.set_mtc_wakeup(|| {
+            Box::new(move || {
+                assert!(weak.upgrade().unwrap().hold_writers().is_some());
+                observed.store(true, Ordering::Relaxed);
+            })
+        });
+        feed.close_port(&AtomicBool::new(true), 2);
+        assert!(notified.load(Ordering::Relaxed));
+    }
 
     #[test]
     fn port_names_lose_addresses_and_repeated_client_names() {
@@ -1169,6 +1359,26 @@ mod tests {
         assert_eq!(std::iter::from_fn(|| f.next()).count(), INCOMING);
         f.receive(2, &[0x90, 61, 100]);
         assert_eq!((f.dropped(), f.take_lost()), (3, 0), "the queue works again");
+    }
+
+    #[test]
+    fn a_gap_at_the_end_of_one_take_does_not_cut_a_note_in_the_next() {
+        let f = MidiFeed::default();
+        let e = LiveMidi { offset: 0, port: 1, status: 0x90, data1: 60, data2: 100 };
+        for at in 0..RECORDED.next_power_of_two() + 1 {
+            f.record(at as i64, &e);
+        }
+        let mut out = Vec::new();
+        f.take_recorded(&mut out);
+        assert_eq!(f.take_recorded_lost(), 1);
+        // The next take's first note arrives while its start is still tentative.
+        f.begin_pass();
+        f.record(500, &LiveMidi { data1: 64, ..e });
+        f.finish_pending_start(true);
+        f.record(600, &LiveMidi { status: 0x80, data1: 64, ..e });
+        out.clear();
+        f.take_recorded(&mut out);
+        assert_eq!(out.iter().map(|r| (r.at, r.status)).collect::<Vec<_>>(), [(500, 0x90), (600, 0x80)]);
     }
 
     #[test]

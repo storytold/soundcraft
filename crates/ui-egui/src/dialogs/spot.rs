@@ -86,6 +86,18 @@ impl Spot {
         }
     }
 
+    pub(super) fn timecode_error(&self, s: &Session) -> Option<String> {
+        if self.format != TimeFormat::Timecode {
+            return None;
+        }
+        let position = (0..3).filter(|&field| self.editable(field)).map(|field| self.value(field)).find(|&value| value < 0)?;
+        Some(crate::localized_format!(
+            "{value} is before the session start ({start})",
+            value = s.format_position(position, self.format),
+            start = s.format_position(0, self.format)
+        ))
+    }
+
     /// The command OK runs; None when nothing would change.
     pub fn command(&self, s: &Session) -> Option<(String, Value)> {
         Some(match &self.target {
@@ -181,4 +193,30 @@ fn select_all(ui: &Ui, id: Id, text: &str) {
     let mut state = TextEdit::load_state(ui.ctx(), id).unwrap_or_default();
     state.cursor.set_char_range(Some(egui::text::CCursorRange::two(egui::text::CCursor::default(), egui::text::CCursor::new(text.chars().count()))));
     state.store(ui.ctx(), id);
+}
+
+#[cfg(test)]
+mod timecode_tests {
+    use super::*;
+    #[test]
+    fn spot_rejects_a_timecode_before_session_start() {
+        let mut e = soundcraft_engine::demo::demo_engine();
+        let s = e.session_mut();
+        s.timecode_start = s.sample_rate.samples(3600.);
+        s.edit.main_counter = TimeFormat::Timecode;
+        let clip = s.tracks.iter().filter_map(|t| t.playlist()).flat_map(|p| &p.clips).next().unwrap().id;
+        let old = s.find_clip(clip).unwrap().1.start;
+        let mut trim = Spot::trim(s, clip, false, old + 1).unwrap();
+        trim.set(2, s.parse_position("00:59:59:00", TimeFormat::Timecode).unwrap());
+        assert!(trim.timecode_error(s).unwrap().contains("01:00:00:00"));
+        let mut d = Spot::clips(s, vec![clip], None, 0).unwrap();
+        d.set(0, s.parse_position("00:59:59:00", TimeFormat::Timecode).unwrap());
+        assert!(d.timecode_error(s).unwrap().contains("01:00:00:00"));
+        assert_eq!(s.find_clip(clip).unwrap().1.start, old);
+        d.set(0, s.parse_position("01:00:01:00", TimeFormat::Timecode).unwrap());
+        assert!(d.timecode_error(s).is_none());
+        let (cmd, p) = d.command(s).unwrap();
+        e.execute(&cmd, &p).unwrap();
+        assert_eq!(e.session().find_clip(clip).unwrap().1.start, e.session().sample_rate.samples(1.));
+    }
 }

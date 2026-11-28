@@ -128,11 +128,15 @@ impl SoundApp {
     /// Open the MIDI inputs once, hand them to the audio engine, and keep following devices that
     /// are plugged in or removed. Collects what is played while recording.
     pub(crate) fn service_midi(&mut self, now: f64) {
-        let Some(p) = &self.player else { return };
+        if self.player.is_none() && !self.mtc_online && !self.ui.show_playback_engine {
+            return;
+        }
         match &mut self.midi_inputs {
             None => {
                 let m = MidiInputs::open(self.ui.midi_inputs_off.clone());
-                p.set_midi(std::sync::Arc::clone(m.feed()));
+                if let Some(p) = &self.player {
+                    p.set_midi(std::sync::Arc::clone(m.feed()));
+                }
                 self.midi_inputs = Some(m);
                 self.midi_scan_at = now;
             }
