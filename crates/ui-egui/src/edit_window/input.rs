@@ -553,16 +553,27 @@ fn clip_context_menu(app: &mut SoundApp, ui: &mut Ui, clip: Option<ClipId>) {
         ("Bring to Front", "clip.bring_to_front"),
         ("Send to Back", "clip.send_to_back"),
     ] {
-        if ui.button(label).clicked() {
+        if menu_button(ui, label, cmd) {
             let _ = app.run(cmd, target.clone());
         }
     }
+    // Split and join act on the edit selection, as their Edit menu items do; each is offered only
+    // when it would change something there.
+    let edits = clip_edit_items(app.engine.session(), c);
+    if !edits.is_empty() {
+        ui.separator();
+        for (label, cmd) in edits {
+            if menu_button(ui, label, cmd) {
+                let _ = app.run(cmd, json!({}));
+            }
+        }
+    }
     ui.separator();
-    if ui.button(crate::localization::text("Rename...")).clicked() {
+    if menu_button(ui, "Rename...", "clip.rename") {
         let name = app.engine.session().find_clip(c).map(|(_, x)| x.name.clone()).unwrap_or_default();
         app.dialogs.open_rename_clip(c, &name);
     }
-    if ui.button(crate::localization::text("Delete")).clicked() {
+    if menu_button(ui, "Delete", "edit.clear") {
         let s = app.engine.session();
         let selected: Vec<u64> = s.edit.selected_clips.iter().map(|id| id.0).collect();
         let track: Vec<u64> = s.find_clip(c).map(|(t, _)| t.0).into_iter().collect();
@@ -577,6 +588,49 @@ fn clip_context_menu(app: &mut SoundApp, ui: &mut Ui, clip: Option<ClipId>) {
             let _ = app.run("edit.clear", json!({"clips": selected, "tracks": track, "start": 0}));
         }
     }
+}
+
+/// A clip menu item with its translated label and the shortcut of `cmd`, as the menu bar shows it.
+fn menu_button(ui: &mut Ui, label: &str, cmd: &str) -> bool {
+    let shortcut = crate::menus::shortcut_for(cmd).unwrap_or("");
+    let text = crate::shortcuts::display_shortcut(shortcut, ui.ctx().os().is_mac());
+    ui.add(egui::Button::new(crate::localization::text(label)).shortcut_text(text)).clicked()
+}
+
+/// The split and join commands the clip menu offers for a right-click on `clicked`: (label, command id). They act on
+/// the selected tracks and the selection range, so they are offered only when that selection reaches the clicked clip
+/// (an insertion point counts when it is inside the clip or on its edge), and each only when it would act there. Separate needs a cut point strictly inside a clip and no more
+/// than one clip in the selection on any track; Heal Separation needs a seam it would join; Consolidate needs a
+/// range that covers two or more clips on a track.
+pub(super) fn clip_edit_items(s: &Session, clicked: ClipId) -> Vec<(&'static str, &'static str)> {
+    let r = s.edit.selection;
+    let reached = if s.edit.selected_clips.is_empty() {
+        s.find_clip(clicked).is_some_and(|(t, c)| {
+            s.edit.selected_tracks.contains(&t) && if r.is_empty() { c.start <= r.start && r.start <= c.end() } else { c.range().overlaps(&r) }
+        })
+    } else {
+        s.edit.selected_clips.contains(&clicked)
+    };
+    if !reached {
+        return Vec::new();
+    }
+    let tracks: Vec<&Track> = s.tracks.iter().filter(|t| s.edit.selected_tracks.contains(&t.id)).collect();
+    let in_range = |t: &Track| t.clips().iter().filter(|c| if r.is_empty() { c.range().contains(r.start) } else { c.range().overlaps(&r) }).count();
+    let points: &[Samples] = if r.is_empty() { &[r.start] } else { &[r.start, r.end] };
+    // Separate leaves time- and edit-locked clips whole, so they offer no cut.
+    let cuts = |t: &Track| t.clips().iter().any(|c| !ops::locked(c) && points.iter().any(|&p| p > c.start && p < c.end()));
+    let mut items = Vec::new();
+    if tracks.iter().all(|t| in_range(t) <= 1) && tracks.iter().any(|t| cuts(t)) {
+        items.push(("Separate", "edit.separate"));
+    }
+    if tracks.iter().any(|t| ops::can_heal(s, t.id, ops::heal_range(r))) {
+        items.push(("Heal Separation", "edit.heal"));
+    }
+    // Consolidate refuses a range that holds a locked clip on any selected track.
+    if !r.is_empty() && tracks.iter().any(|t| in_range(t) >= 2) && !tracks.iter().any(|t| ops::holds_locked(s, t.id, r)) {
+        items.push(("Consolidate", "edit.consolidate"));
+    }
+    items
 }
 
 /// Whether `c` is part of the edit selection: one of the selected clips or, when no clip is selected, a clip on a

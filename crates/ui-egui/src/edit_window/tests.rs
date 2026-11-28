@@ -2377,3 +2377,50 @@ fn short_track_name_is_centered_and_long_name_is_left_aligned() {
     let first_center_x = first_pos.x + first_size.x * 0.5;
     assert!((first_center_x - (r0.min.x + 64.5)).abs() <= 0.1, "short name should be centered (center was at {first_center_x})");
 }
+
+/// The clip menu offers split and join only where they would act on the edit selection (storytold/soundcraft#1678).
+#[test]
+fn clip_menu_offers_split_and_join_by_selection() {
+    use soundcraft_model::{ChannelFormat, SourceId, TrackKind};
+    // One track: two clips from different files side by side, then two split pieces of one file.
+    let mut s = Session::default();
+    let t = s.add_track(TrackKind::Audio, ChannelFormat::Mono, None);
+    let mut ids = Vec::new();
+    for (src, offset, start) in [(1, 0, 0), (2, 0, 1_000), (3, 0, 5_000), (3, 1_000, 6_000)] {
+        let id = s.new_clip_id();
+        s.track_mut(t).and_then(Track::playlist_mut).unwrap().clips.push(Clip::audio(id, "c", SourceId(src), offset, start, 1_000));
+        ids.push(id);
+    }
+    let [a, b, c, d] = [ids[0], ids[1], ids[2], ids[3]];
+    let items = |s: &Session, clicked| super::input::clip_edit_items(s, clicked).into_iter().map(|(_, id)| id).collect::<Vec<_>>();
+    let select = |s: &mut Session, start, end| {
+        s.edit.selected_tracks = vec![t];
+        s.edit.selected_clips.clear();
+        s.edit.selection = Range::new(start, end);
+    };
+
+    // An insertion point inside a clip: split it, nothing to join.
+    select(&mut s, 500, 500);
+    assert_eq!(items(&s, a), vec!["edit.separate"]);
+    // A clip outside the selection gets none of them.
+    assert!(items(&s, b).is_empty());
+    // Separate leaves a locked clip whole, so the menu does not offer it there.
+    for lock in [(|c: &mut Clip| c.time_locked = true) as fn(&mut Clip), |c: &mut Clip| c.edit_locked = true] {
+        let mut locked = s.clone();
+        lock(&mut locked.track_mut(t).and_then(Track::playlist_mut).unwrap().clips[0]);
+        assert!(!items(&locked, a).contains(&"edit.separate"));
+    }
+    // A range over two clips from different files: Consolidate joins them; Heal cannot and Separate is hidden.
+    select(&mut s, 0, 2_000);
+    assert_eq!(items(&s, b), vec!["edit.consolidate"]);
+    // Consolidate refuses a range that holds a locked clip, so the menu does not offer it then.
+    for lock in [(|c: &mut Clip| c.time_locked = true) as fn(&mut Clip), |c: &mut Clip| c.edit_locked = true] {
+        let mut locked = s.clone();
+        lock(&mut locked.track_mut(t).and_then(Track::playlist_mut).unwrap().clips[0]);
+        assert!(!items(&locked, b).contains(&"edit.consolidate"));
+    }
+    // An insertion point on the seam of two pieces of one file: Heal joins them.
+    select(&mut s, 6_000, 6_000);
+    assert!(items(&s, d).contains(&"edit.heal"));
+    assert!(!items(&s, c).contains(&"edit.consolidate"));
+}

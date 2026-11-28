@@ -5,7 +5,7 @@
 
 use egui::{Event, Modifiers, PointerButton, pos2, vec2};
 use egui_kittest::Harness;
-use egui_kittest::kittest::Queryable;
+use egui_kittest::kittest::{NodeT, Queryable};
 use soundcraft_ui_egui::{Services, SoundApp};
 
 /// One UI frame, with queued synthetic pointer input applied first (as the control channel does).
@@ -67,7 +67,13 @@ fn kick_menu(h: &mut Harness<'_, SoundApp>, item: &str) {
         step(h);
     }
     // Ask the newly laid-out menu where the item is instead of pinning coordinates that change with egui's item metrics.
-    let at = h.get_by_label(item).rect().center();
+    // An item's name is its label followed by its shortcut, if it has one.
+    let at = h
+        .query_all_by_label_contains(item)
+        .find(|n| n.accesskit_node().label().is_some_and(|l| l.starts_with(item)))
+        .unwrap_or_else(|| panic!("no clip menu item named {item}"))
+        .rect()
+        .center();
     h.state_mut().synthetic.push(Event::PointerMoved(at));
     for _ in 0..10 {
         step(h);

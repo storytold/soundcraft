@@ -708,10 +708,7 @@ fn separate_at_transients(e: &mut Engine, p: &Value) -> Result<Value> {
 
 fn heal(e: &mut Engine, p: &Value) -> Result<Value> {
     let tracks = tracks_required(e, "edit.heal", p)?;
-    let mut r = range_param(e, "edit.heal", p)?;
-    if r.is_empty() {
-        r = soundcraft_time::Range::new(r.start - 1, r.start + 1);
-    }
+    let r = ops::heal_range(range_param(e, "edit.heal", p)?);
     let s = e.session_mut();
     let n: usize = tracks.iter().map(|t| ops::heal(s, *t, r)).sum();
     Ok(json!({"healed": n}))

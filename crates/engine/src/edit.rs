@@ -576,30 +576,52 @@ pub fn heal(s: &mut Session, track: TrackId, range: Range) -> usize {
     let mut out: Vec<Clip> = Vec::with_capacity(pl.clips.len());
     let mut healed = 0;
     for c in pl.clips.drain(..) {
-        if let Some(prev) = out.last_mut() {
-            let contiguous = c.start >= prev.end() && prev.end() >= range.start && c.start <= range.end;
-            let gap = if contiguous { c.start.saturating_sub(prev.end()) } else { 0 };
-            let same = match (&prev.content, &c.content) {
-                (ClipContent::Audio { source: a, offset: oa }, ClipContent::Audio { source: b, offset: ob }) => {
-                    a == b && oa.saturating_add(source_len(prev.length.saturating_add(gap), prev.stretch)) == *ob
-                }
-                _ => false,
-            };
-            let same_playback = prev.muted == c.muted && (prev.stretch - c.stretch).abs() < 1e-9 && (prev.gain_db - c.gain_db).abs() < 1e-6;
-            if contiguous && same && same_playback {
-                if !prev.gain_env.is_empty() || !c.gain_env.is_empty() {
-                    join_gain_env(prev, &c);
-                }
-                prev.length = c.end().saturating_sub(prev.start);
-                prev.fade_out = c.fade_out;
-                healed += 1;
-                continue;
+        if let Some(prev) = out.last_mut()
+            && heals_into(prev, &c, range)
+        {
+            if !prev.gain_env.is_empty() || !c.gain_env.is_empty() {
+                join_gain_env(prev, &c);
             }
+            prev.length = c.end().saturating_sub(prev.start);
+            prev.fade_out = c.fade_out;
+            healed += 1;
+            continue;
         }
         out.push(c);
     }
     pl.clips = out;
     healed
+}
+
+/// Whether [`heal`] would merge any clips of `track` inside `range`, without changing the session.
+pub fn can_heal(s: &Session, track: TrackId, range: Range) -> bool {
+    let Some(t) = s.track(track) else { return false };
+    let mut clips: Vec<&Clip> = t.clips().iter().collect();
+    clips.sort_by_key(|c| c.start);
+    clips.windows(2).any(|w| heals_into(w[0], w[1], range))
+}
+
+/// The range Heal Separation acts on for an edit selection: an insertion point widens to cover a
+/// seam that sits exactly on it.
+pub fn heal_range(r: Range) -> Range {
+    if r.is_empty() { Range::new(r.start - 1, r.start + 1) } else { r }
+}
+
+/// Whether `c`, the next clip after `prev`, continues the same file across a seam inside `range`
+/// and plays the same way, so Heal Separation joins them.
+fn heals_into(prev: &Clip, c: &Clip, range: Range) -> bool {
+    let contiguous = c.start >= prev.end() && prev.end() >= range.start && c.start <= range.end;
+    if !contiguous {
+        return false;
+    }
+    let gap = c.start.saturating_sub(prev.end());
+    let same = match (&prev.content, &c.content) {
+        (ClipContent::Audio { source: a, offset: oa }, ClipContent::Audio { source: b, offset: ob }) => {
+            a == b && oa.saturating_add(source_len(prev.length.saturating_add(gap), prev.stretch)) == *ob
+        }
+        _ => false,
+    };
+    same && prev.muted == c.muted && (prev.stretch - c.stretch).abs() < 1e-9 && (prev.gain_db - c.gain_db).abs() < 1e-6
 }
 
 /// Give `l` the gain envelope of `l` followed by `r`, which starts at or after where `l` ends, so
