@@ -68,13 +68,22 @@ pub fn specs() -> Vec<CommandSpec> {
             always,
             import_audio
         ),
-        cmd!("file.import_midi", "MIDI...", ["File", "Import"], Some("Cmd+Alt+I"), "{path, at?}", always, |e, p| {
-            let path = str_param(p, "path").ok_or_else(|| bad("file.import_midi", "`path` required"))?.to_string();
-            let at = position_param(e, "file.import_midi", p, "at")?.unwrap_or(0);
-            let bytes = crate::io::read_file(&path)?;
-            let tracks = crate::io::import_midi_bytes(e, &bytes, at, bool_or(p, "tempo_map", true))?;
-            Ok(json!({"tracks": tracks}))
-        }),
+        cmd!(
+            "file.import_midi",
+            "MIDI...",
+            ["File", "Import"],
+            Some("Cmd+Alt+I"),
+            "{path, at?, tempo_map?: true (false keeps the session's tempo and meter map)} — the result's `tempo_map_changed` says whether the file's tempo or meter changes replaced the session's",
+            always,
+            |e, p| {
+                let path = str_param(p, "path").ok_or_else(|| bad("file.import_midi", "`path` required"))?.to_string();
+                let at = position_param(e, "file.import_midi", p, "at")?.unwrap_or(0);
+                let bytes = crate::io::read_file(&path)?;
+                let before = e.session().tempo.clone();
+                let tracks = crate::io::import_midi_bytes(e, &bytes, at, bool_or(p, "tempo_map", true))?;
+                Ok(json!({"tracks": tracks, "tempo_map_changed": e.session().tempo != before}))
+            }
+        ),
         cmd!(
             "file.import_video",
             "Video...",
