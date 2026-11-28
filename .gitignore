@@ -10,3 +10,11 @@ plan/
 /craft-fonts/
 plans/
 .DS_Store
+
+__pycache__/
+
+# Checked out inside the workspace by the shared nightly workflows (craft-common-actions).
+/.nightly-tools
+/.nightly-input
+/craft-i18n
+/craft-fonts

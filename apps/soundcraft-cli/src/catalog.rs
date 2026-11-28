@@ -40,9 +40,12 @@ pub(crate) fn parity(args: &ParityArgs, out: &mut dyn Write) -> Result<(), CliEr
     for m in p["per_menu"].as_array().cloned().unwrap_or_default() {
         md.push_str(&format!("| {} | {} | {} |\n", m["menu"].as_str().unwrap_or(""), m["implemented"], m["total"]));
     }
+    md.push_str(&format!("\n{}\n", soundcraft_engine::catalog::headless_summary_line(&p)));
+    md.push_str("A leaf the engine implements is `headless: yes`: `soundcraft-cli` and the MCP server load that registry. The rest carry the hand mark from `HEADLESS` in `crates/engine/src/catalog.rs`, or `unknown`.\n");
     md.push_str("\n## Not yet implemented\n\n");
-    for m in p["missing"].as_array().cloned().unwrap_or_default() {
-        md.push_str(&format!("- {}\n", m.as_str().unwrap_or("")));
+    for m in p["headless_missing"].as_array().cloned().unwrap_or_default() {
+        let reach = m["reach"].as_str().map(|r| format!(", reach: {r} ({})", m["why"].as_str().unwrap_or(""))).unwrap_or_default();
+        md.push_str(&format!("- {}: headless: {}{reach}\n", m["path"].as_str().unwrap_or(""), m["headless"].as_str().unwrap_or("")));
     }
     if let Some(path) = &args.write {
         std::fs::write(path, &md).map_err(|source| CliError::File { path: path.clone(), source })?;

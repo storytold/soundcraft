@@ -484,7 +484,7 @@ fn chosen_device<'a>(devices: &'a [DeviceInfo], name: Option<&str>) -> Option<&'
 fn device_combo(ui: &mut egui::Ui, id: &str, name: &str, value: &mut Option<String>, devices: &[DeviceInfo]) {
     let default = devices.iter().find(|d| d.is_default).map_or_else(|| crate::localization::text("none").to_string(), |d| d.name.clone());
     let shown = value.clone().unwrap_or_else(|| crate::localized_format!("Default ({default})", default = default));
-    let combo = craft_ui::ComboBox::from_id_salt(id).width(300.0).selected_text(shown).show_ui(ui, |ui| {
+    let combo = egui::ComboBox::from_id_salt(id).width(300.0).selected_text(shown).show_ui(ui, |ui| {
         ui.selectable_value(value, None, crate::localized_format!("Default ({default})", default = default));
         for d in devices {
             ui.selectable_value(value, Some(d.name.clone()), format!("{} ({} ch)", d.name, d.max_channels));
@@ -499,7 +499,7 @@ fn number_combo(ui: &mut egui::Ui, id: &str, name: &str, value: &mut Option<u32>
         || crate::localization::text("Device default").to_string(),
         |v| crate::localized_format!("{v} {unit}", v = v, unit = crate::localization::text(unit)),
     );
-    let combo = craft_ui::ComboBox::from_id_salt(id).width(300.0).selected_text(shown).show_ui(ui, |ui| {
+    let combo = egui::ComboBox::from_id_salt(id).width(300.0).selected_text(shown).show_ui(ui, |ui| {
         ui.selectable_value(value, None, crate::localization::text("Device default"));
         for v in options {
             ui.selectable_value(value, Some(*v), crate::localized_format!("{v} {unit}", v = v, unit = crate::localization::text(unit)));
@@ -609,7 +609,7 @@ pub fn playback_engine(app: &mut SoundApp, ctx: &egui::Context) {
             let system_label = ui.label(crate::localization::text("Audio system"));
             let def = systems.iter().find(|s| s.is_default).map_or("none".to_string(), |s| s.name.clone());
             let shown = draft.system.clone().unwrap_or_else(|| crate::localized_format!("Default ({default})", default = def));
-            let system = craft_ui::ComboBox::from_id_salt("pe-system").width(300.0).selected_text(shown).show_ui(ui, |ui| {
+            let system = egui::ComboBox::from_id_salt("pe-system").width(300.0).selected_text(shown).show_ui(ui, |ui| {
                 let before = draft.system.clone();
                 ui.selectable_value(&mut draft.system, None, crate::localized_format!("Default ({default})", default = def));
                 for s in systems.iter() {
@@ -836,7 +836,7 @@ pub fn io_setup(app: &mut SoundApp, ctx: &egui::Context) {
         ui.horizontal(|ui| {
             let main_label = ui.label(crate::localization::text("Main output"));
             let format =
-                craft_ui::ComboBox::from_id_salt("main_output_format").selected_text(crate::localization::text(main.label())).show_ui(ui, |ui| {
+                egui::ComboBox::from_id_salt("main_output_format").selected_text(crate::localization::text(main.label())).show_ui(ui, |ui| {
                     for f in soundcraft_model::ChannelFormat::ALL.into_iter().filter(|f| (2..=16).contains(&f.channels())) {
                         if ui.selectable_label(f == main, crate::localization::text(f.label())).clicked() && f != main {
                             let _ = app.run("setup.main_format", json!({"format": f.label()}));

@@ -3,7 +3,7 @@
 # exports VERSION and NFPM_ARCH.
 #
 #   nfpm package -f packaging/linux/nfpm.yaml -p deb -t dist/release/
-name: soundcraft
+name: ${NFPM_NAME}
 arch: ${NFPM_ARCH}
 platform: linux
 version: ${VERSION}
@@ -60,19 +60,22 @@ overrides:
       - (pipewire-alsa or alsa-plugins-pulseaudio)
 
 contents:
-  - src: ${STAGE}/usr/bin/soundcraft
-    dst: /usr/bin/soundcraft
+  - src: ${STAGE}/usr/bin/${NFPM_BIN}
+    dst: /usr/bin/${NFPM_BIN}
     file_info: { mode: 0755 }
-  - src: ${STAGE}/usr/bin/soundcraft-cli
-    dst: /usr/bin/soundcraft-cli
+  - src: ${STAGE}/usr/bin/${NFPM_CLI}
+    dst: /usr/bin/${NFPM_CLI}
     file_info: { mode: 0755 }
+  - src: ${STAGE}/usr/lib/
+    dst: /usr/lib/
+    type: tree
   - src: ${STAGE}/usr/share/
     dst: /usr/share/
     type: tree
   # Debian's zsh reads vendor-completions, not /usr/share/zsh/site-functions as Fedora's and
   # openSUSE's do (its debian/rules sets --enable-additional-fpath).
-  - src: /usr/share/zsh/site-functions/_soundcraft-cli
-    dst: /usr/share/zsh/vendor-completions/_soundcraft-cli
+  - src: /usr/share/zsh/site-functions/_${NFPM_CLI}
+    dst: /usr/share/zsh/vendor-completions/_${NFPM_CLI}
     type: symlink
     packager: deb
 

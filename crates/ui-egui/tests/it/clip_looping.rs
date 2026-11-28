@@ -23,14 +23,15 @@ fn clip_looping_fills_up_to_the_next_clip() {
     assert_eq!(app.dialogs.open_name(), Some("clip_looping"));
     assert_eq!(app.engine.session().track(track).unwrap().clips().len(), before);
 
-    let mut h = Harness::builder().with_size(vec2(1600.0, 1000.0)).build_ui_state(
-        |ui, app: &mut SoundApp| {
-            let ctx = ui.ctx().clone();
-            app.logic(&ctx);
-            app.ui(ui);
-        },
-        app,
-    );
+    let mut h =
+        Harness::builder().with_context_setup(soundcraft_ui_egui::framework::install_headless).with_size(vec2(1600.0, 1000.0)).build_ui_state(
+            |ui, app: &mut SoundApp| {
+                let ctx = ui.ctx().clone();
+                app.logic(&ctx);
+                app.ui(ui);
+            },
+            app,
+        );
     h.run_steps(3);
     h.get_by_role_and_label(Role::RadioButton, "Loop Until End of Session or Next Clip").click();
     h.run_steps(2);
