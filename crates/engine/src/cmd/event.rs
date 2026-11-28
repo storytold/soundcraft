@@ -9,7 +9,7 @@ use soundcraft_time::TICKS_PER_QUARTER;
 
 pub fn specs() -> Vec<CommandSpec> {
     vec![
-        cmd!("event.tempo", "Tempo Change", [], None, "{bpm, at?: position (default session start)}", always, tempo),
+        cmd!("event.tempo", "Tempo Change", [], None, "{bpm, at? | start?: position (default session start)}", always, tempo),
         cmd!("event.tempo_remove", "Remove Tempo Change", [], None, "{at}", always, |e, p| {
             let at = position_param(e, "event.tempo_remove", p, "at")?.unwrap_or(0);
             let s = e.session_mut();
@@ -83,7 +83,15 @@ pub fn specs() -> Vec<CommandSpec> {
             e.transport_requests.push(crate::TransportRequest::AllNotesOff);
             Ok(json!({}))
         }),
-        cmd!("event.midi_note", "Add MIDI Note", [], None, "{clip, pitch, start_ticks, length_ticks, velocity?: 100}", has_selection, add_note),
+        cmd!(
+            "event.midi_note",
+            "Add MIDI Note",
+            [],
+            None,
+            "{clip, pitch, start_ticks, length_ticks, velocity?: 100, channel?: 0}",
+            has_selection,
+            add_note
+        ),
         cmd!(
             "markers.add",
             "New Memory Location",
@@ -93,9 +101,17 @@ pub fn specs() -> Vec<CommandSpec> {
             always,
             add_marker
         ),
-        cmd!("markers.delete", "Delete Memory Location", [], None, "{number | id}", always, delete_marker),
-        cmd!("markers.edit", "Edit Memory Location", [], None, "{number | id, name?, comments?, at?, color?: [r,g,b] | null}", always, edit_marker),
-        cmd!(noundo "markers.recall", "Recall Memory Location", [], Some("Period + n + Period"), "{number}", always, recall_marker),
+        cmd!("markers.delete", "Delete Memory Location", [], None, "{number | id | name}", always, delete_marker),
+        cmd!(
+            "markers.edit",
+            "Edit Memory Location",
+            [],
+            None,
+            "{number | id | name, name?, rename?: new name (when `name` picks the location), comments?, at?, color?: [r,g,b] | null}",
+            always,
+            edit_marker
+        ),
+        cmd!(noundo "markers.recall", "Recall Memory Location", [], Some("Period + n + Period"), "{number | id | name}", always, recall_marker),
         cmd!(noundo "markers.next", "Go to Next Marker", [], None, "{}", always, |e, _| step_marker(e, 1)),
         cmd!(noundo "markers.previous", "Go to Previous Marker", [], None, "{}", always, |e, _| step_marker(e, -1)),
     ]

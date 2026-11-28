@@ -30,17 +30,10 @@ pub fn specs() -> Vec<CommandSpec> {
     ]
 }
 
-/// Fields `mix.instrument` reads. Anything else (a parameter written beside `plugin`, say) used to
-/// be accepted and ignored, so a synth's settings looked set while the render never changed.
-const FIELDS: [&str; 4] = ["track", "tracks", "plugin", "params"];
-
+/// Sets an instrument track's instrument. A field its doc does not name (a parameter written beside
+/// `plugin`, say) is refused before this runs, as for every command (`cmd::keys`), so a synth's
+/// settings never look set while the render stays the same.
 fn set_instrument(e: &mut Engine, p: &Value) -> Result<Value> {
-    if let Some(k) = p.as_object().and_then(|o| o.keys().find(|k| !FIELDS.contains(&k.as_str()))) {
-        return Err(bad(
-            "mix.instrument",
-            format!("unknown field `{k}`: an instrument's parameters go in `params` ({{id: value}}), or one at a time in mix.instrument_param"),
-        ));
-    }
     let plugin = str_param(p, "plugin").ok_or_else(|| bad("mix.instrument", "`plugin` required"))?;
     let info = super::clap::plugin_info(plugin).ok_or_else(|| bad("mix.instrument", format!("unknown plugin `{plugin}`")))?;
     if !info.is_instrument {

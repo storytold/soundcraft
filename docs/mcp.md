@@ -111,6 +111,7 @@ Resources: `soundcraft://session` (full session JSON), `soundcraft://commands`.
 ## Conventions
 
 - Programmatic calls never open dialogs; empty params act on the current selection.
+- A command takes only the keys its params doc names. Any other key is an error that names it and lists the keys the command takes, so a misspelt key (`mix.send {db}` for `level_db`) never looks applied.
 - Positions: samples, `{"seconds": x}`, or `"bars_beats:5|1|000"`-style strings.
 - Tracks by name or id; clips by id.
 - Every command is undoable through `edit.undo` unless it is a query or a view setting.
