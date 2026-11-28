@@ -477,6 +477,50 @@ mod tests {
         let _ = std::fs::remove_dir_all(base);
     }
 
+    /// On a case-sensitive Windows directory `Work` and `work` are two folders: a root on one
+    /// doesn't grant the other, while a differently cased spelling of a name that is the same
+    /// folder (the ordinary, case-insensitive directories) is still accepted. Skipped, with a
+    /// note, where `fsutil` can't switch a directory to case-sensitive (it needs rights and the
+    /// NTFS volume's support).
+    #[cfg(windows)]
+    #[test]
+    fn windows_case_sensitive_directory_keeps_case_equal_folders_apart() {
+        let (base, _) = folders("case-sensitive");
+        let cs = base.join("cs");
+        std::fs::create_dir_all(&cs).unwrap();
+        let switched = std::process::Command::new("fsutil")
+            .args(["file", "setCaseSensitiveInfo"])
+            .arg(&cs)
+            .arg("enable")
+            .output()
+            .is_ok_and(|o| o.status.success());
+        if !switched {
+            eprintln!("skipped: cannot make {} case-sensitive", cs.display());
+            let _ = std::fs::remove_dir_all(base);
+            return;
+        }
+        for d in ["Work/sub", "work"] {
+            std::fs::create_dir_all(cs.join(d)).unwrap();
+        }
+        std::fs::write(cs.join("Work/a.scraft"), "x").unwrap();
+        std::fs::write(cs.join("work/secret.scraft"), "x").unwrap();
+        let roots = AutomationRoots::new(&[&cs.join("Work")], &[&cs.join("Work")]).unwrap().unwrap();
+        for access in [Access::Read, Access::Write] {
+            assert_eq!(roots.check(s(cs.join("Work/a.scraft")), access), Ok(()));
+            assert_eq!(roots.check(s(cs.join("Work/sub/New.scraft")), access), Ok(()));
+            // The other folder exists, and so does a name no folder has: both are outside.
+            for outside in ["work/secret.scraft", "work/new.scraft", "WORK/new.scraft"] {
+                let e = roots.check(s(cs.join(outside)), access).unwrap_err();
+                assert!(e.contains("outside the"), "{outside}: {e}");
+            }
+        }
+        // A root on the lower-case folder grants that one only.
+        let lower = AutomationRoots::new(&[&cs.join("work")], &[]).unwrap().unwrap();
+        assert_eq!(lower.check(s(cs.join("work/secret.scraft")), Access::Read), Ok(()));
+        assert!(lower.check(s(cs.join("Work/a.scraft")), Access::Read).is_err());
+        let _ = std::fs::remove_dir_all(base);
+    }
+
     #[test]
     fn scopes_nest_and_stay_on_their_thread() {
         let (base, roots) = folders("scopes");
