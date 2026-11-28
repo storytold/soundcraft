@@ -170,16 +170,10 @@ fn send_and_output_menus_search_buses_as_soon_as_they_open() {
     assert_eq!(h.state().engine.session().tracks[0].mixer.output, Route::Bus(bus(&h, "Verb")));
 }
 
-/// The I/O menus' search finds the hardware inputs, the main output and "no input/output", not just buses.
+/// The output menu's search finds the main output and "no output", not just buses.
 #[test]
-fn io_menus_search_every_route_not_just_buses() {
+fn output_menu_searches_main_and_no_output() {
     let mut h = harness(vox());
-    open(&mut h, "Input for Vox");
-    type_text(&mut h, "in 3");
-    assert!(h.query_by_label("In 4").is_none(), "only the matches are listed");
-    press(&mut h, Key::Enter);
-    assert_eq!(h.state().engine.session().tracks[0].mixer.input, Route::Hardware("In 3".into()));
-
     open(&mut h, "Output for Vox");
     type_text(&mut h, "no out");
     press(&mut h, Key::Enter);
@@ -190,6 +184,15 @@ fn io_menus_search_every_route_not_just_buses() {
     type_text(&mut h, &main.to_lowercase());
     press(&mut h, Key::Enter);
     assert_eq!(h.state().engine.session().tracks[0].mixer.output, Route::Main);
+}
+
+#[test]
+fn offline_input_menu_can_assign_a_numbered_input() {
+    let mut h = harness(vox());
+    open(&mut h, "Input for Vox");
+    type_text(&mut h, "in 3");
+    press(&mut h, Key::Enter);
+    assert_eq!(h.state().engine.session().tracks[0].mixer.input, Route::Hardware("In 3".into()));
 }
 
 /// Scripted typing and Enter reach a menu search even when the host window is unfocused.

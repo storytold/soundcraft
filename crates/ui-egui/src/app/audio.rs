@@ -1,6 +1,21 @@
 use super::{MeterDisplay, OutputTrouble, Player, SoundApp, Trouble};
 
 impl SoundApp {
+    pub(crate) fn available_input_channels(&self) -> usize {
+        self.recorder
+            .as_ref()
+            .map_or_else(|| self.player.as_ref().map_or(0, |player| player.input_channels(&self.ui.audio)), |recorder| recorder.channels)
+    }
+
+    /// The names of [`Self::available_input_channels`]: those of the open input, else of the
+    /// device it would open (read only on Core Audio on macOS; empty elsewhere).
+    pub(crate) fn available_input_channel_names(&self) -> Vec<String> {
+        self.recorder.as_ref().map_or_else(
+            || self.player.as_ref().map(|player| player.input_channel_names(&self.ui.audio)).unwrap_or_default(),
+            |recorder| recorder.channel_names.clone(),
+        )
+    }
+
     /// Whether the meters are live: while playing, and while armed or input-monitored tracks are heard.
     pub(crate) fn meters_live(&self) -> bool {
         self.engine.transport.playing

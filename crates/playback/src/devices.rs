@@ -71,6 +71,31 @@ pub(crate) fn device_name(d: &cpal::Device) -> Option<String> {
     d.description().ok().map(|description| description.name().to_owned())
 }
 
+/// The names `device` gives its first `channels` input or output channels ("Analog 1", "ADAT 3"),
+/// an empty string for a channel without one. cpal has no API for them; Core Audio names them
+/// per channel element, so they are read there. Other audio systems give none.
+pub(crate) fn channel_names(device: &cpal::Device, input: bool, channels: usize) -> Vec<String> {
+    #[cfg(target_os = "macos")]
+    if let Ok(id) = device.id()
+        && id.host() == cpal::HostId::CoreAudio
+    {
+        return soundcraft_au_host::device_channel_names(id.id(), input, channels);
+    }
+    let _ = (device, input, channels);
+    Vec::new()
+}
+
+/// `read()` (the names a device of audio system `system()` gives its channels) on Core Audio on
+/// macOS only (`os` is a `std::env::consts::OS` value), else none without calling it; off macOS
+/// `system` is not called either. Only Core Audio names channels (see [`channel_names`]); reading
+/// them for an input that is not open lists the input devices and probes the device's
+/// configurations on the UI thread, which on WASAPI, ALSA and the others would return no names.
+/// Output there is unchanged: no names, and the selectors' tooltips fall back to "Input" and
+/// "Output".
+pub(crate) fn names_where_given(os: &str, system: impl FnOnce() -> &'static str, read: impl FnOnce() -> Vec<String>) -> Vec<String> {
+    if os == "macos" && system() == "CoreAudio" { read() } else { Vec::new() }
+}
+
 /// Describe one cpal device as [`DeviceInfo`], or return `None` when its name or supported configurations cannot be
 /// read. Only formats the playback path can convert are considered.
 fn describe(d: &cpal::Device, default_name: Option<&str>, output: bool) -> Option<DeviceInfo> {
@@ -189,6 +214,40 @@ pub(crate) fn buffer_size(want: Option<u32>, supported: &cpal::SupportedBufferSi
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Channel names exist only on Core Audio on macOS, so elsewhere (WASAPI, ALSA, ...) the
+    /// device is not listed or probed to read none, on every hover of an input selector. The OS is
+    /// passed as a value, so every case runs wherever the tests run.
+    #[test]
+    fn channel_names_are_read_only_where_the_system_gives_them() {
+        let names = |os: &str, system: &'static str| {
+            let (asked, read) = (std::cell::Cell::new(false), std::cell::Cell::new(false));
+            let names = names_where_given(
+                os,
+                || {
+                    asked.set(true);
+                    system
+                },
+                || {
+                    read.set(true);
+                    vec!["Analog 1".to_owned()]
+                },
+            );
+            (names.is_empty(), asked.get(), read.get())
+        };
+        // Core Audio on macOS reads the device's names.
+        assert_eq!(names("macos", "CoreAudio"), (false, true, true));
+        // Another system on macOS: the system is asked, the device is not read.
+        for system in ["JACK", ""] {
+            assert_eq!(names("macos", system), (true, true, false), "macos, {system}");
+        }
+        // Off macOS neither the system nor the device is asked, whatever the system.
+        for os in ["windows", "linux", "freebsd"] {
+            for system in ["WASAPI", "ASIO", "ALSA", "JACK", "CoreAudio"] {
+                assert_eq!(names(os, system), (true, false, false), "{os}, {system}");
+            }
+        }
+    }
 
     #[test]
     fn config_round_trips_and_tolerates_missing_fields() {

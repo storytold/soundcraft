@@ -145,6 +145,9 @@ pub struct Recorder {
     pub device_name: String,
     pub sample_rate: u32,
     pub channels: usize,
+    /// The names the device gives these channels, read when it opened (see
+    /// [`crate::Player::input_channel_names`]).
+    pub channel_names: Vec<String>,
     /// The take writer, and what each track's take holds so far.
     writer: Option<(std::thread::JoinHandle<Takes>, Vec<(TrackId, Arc<Mutex<LiveTake>>)>)>,
     /// The callback count last seen, and since when.
@@ -222,6 +225,34 @@ fn pick_input_config(configs: &[cpal::SupportedStreamConfigRange], rate: u32) ->
         .map(|(_, _, config)| config)
 }
 
+/// The input device `audio` chooses, else the default.
+#[cfg(not(target_os = "freebsd"))]
+pub(crate) fn input_device(audio: &crate::AudioConfig) -> Result<cpal::Device, String> {
+    let host = crate::devices::host(audio);
+    crate::devices::device(&host, audio.input.as_deref(), false).ok_or_else(|| "no audio input device".to_string())
+}
+
+/// The input configuration the recorder opens, which the routing menu also uses for its width:
+/// at the chosen rate when the device offers it, so input and output run together (the best
+/// format first, then the most channels); else the device default in a format these callbacks
+/// decode.
+#[cfg(not(target_os = "freebsd"))]
+pub(crate) fn input_config(device: &cpal::Device, audio: &crate::AudioConfig) -> Result<cpal::SupportedStreamConfig, String> {
+    use cpal::traits::DeviceTrait;
+    let configs: Vec<cpal::SupportedStreamConfigRange> = device.supported_input_configs().map(|configs| configs.collect()).unwrap_or_default();
+    if let Some(config) = audio.sample_rate.and_then(|rate| pick_input_config(&configs, rate)) {
+        return Ok(config);
+    }
+    let default = device.default_input_config().map_err(|e| e.to_string())?;
+    if crate::devices::format_rank(default.sample_format()).is_some() {
+        return Ok(default);
+    }
+    // cpal 0.18's default can name a format these callbacks do not decode (I24, F64); open the
+    // same rate and channels in a format they do.
+    crate::devices::supported_format_config(&configs, default.sample_rate(), default.channels())
+        .ok_or_else(|| format!("unsupported input sample format {:?}", default.sample_format()))
+}
+
 impl Recorder {
     /// Open the default input device. Errors when there is none (the caller shows a message).
     pub fn open() -> Result<Recorder, String> {
@@ -233,32 +264,11 @@ impl Recorder {
     /// drivers usually are) are converted to f32.
     #[cfg(not(target_os = "freebsd"))]
     pub fn open_with(audio: &crate::AudioConfig) -> Result<Recorder, String> {
-        use cpal::traits::{DeviceTrait, StreamTrait};
-        let host = crate::devices::host(audio);
-        let device = crate::devices::device(&host, audio.input.as_deref(), false).ok_or("no audio input device")?;
+        use cpal::traits::StreamTrait;
+        let device = input_device(audio)?;
         let name = crate::devices::device_name(&device).unwrap_or_else(|| "Input".into());
-        // At the chosen rate when the device offers it, so input and output run together: the
-        // best format first, then the most channels.
-        let configs: Vec<cpal::SupportedStreamConfigRange> = device.supported_input_configs().map(|configs| configs.collect()).unwrap_or_default();
-        let at_rate = audio.sample_rate.and_then(|r| pick_input_config(&configs, r));
-        let cfg = match at_rate {
-            Some(c) => c,
-            None => {
-                let d = device.default_input_config().map_err(|e| e.to_string())?;
-                // cpal 0.18's default can name a format these callbacks do not decode (I24, F64);
-                // open the same rate and channels in a format they do.
-                if crate::devices::format_rank(d.sample_format()).is_some() {
-                    d
-                } else {
-                    crate::devices::supported_format_config(&configs, d.sample_rate(), d.channels())
-                        .ok_or_else(|| format!("unsupported input sample format {:?}", d.sample_format()))?
-                }
-            }
-        };
+        let cfg = input_config(&device, audio)?;
         let format = cfg.sample_format();
-        if crate::devices::format_rank(format).is_none() {
-            return Err(format!("unsupported input sample format {format:?}"));
-        }
         let mut config = cfg.config();
         config.buffer_size = crate::devices::buffer_size(audio.buffer_size, cfg.buffer_size());
         let channels = usize::from(config.channels).max(1);
@@ -280,9 +290,24 @@ impl Recorder {
             }
             Err(e) => return Err(e.to_string()),
         };
+        // Read the channel names before the stream starts: on Core Audio this lists every device
+        // and reads each channel's name, and a started input would fill the monitor ring all that
+        // time before the player reads it, a backlog that stays in the monitor path (two
+        // callbacks at 64 frames on an RME Fireface UFX). Elsewhere no names are read.
+        let channel_names = crate::devices::channel_names(&device, true, channels);
         stream.play().map_err(|e| e.to_string())?;
         let seen = (0, Instant::now());
-        Ok(Recorder { monitor, shared, _stream: Some(stream), device_name: name, sample_rate: config.sample_rate, channels, writer: None, seen })
+        Ok(Recorder {
+            monitor,
+            shared,
+            _stream: Some(stream),
+            device_name: name,
+            sample_rate: config.sample_rate,
+            channels,
+            channel_names,
+            writer: None,
+            seen,
+        })
     }
 
     #[cfg(target_os = "freebsd")]
@@ -588,6 +613,7 @@ mod tests {
             device_name: "Mic In".into(),
             sample_rate: 48_000,
             channels: 1,
+            channel_names: Vec::new(),
             writer: None,
             seen: (0, Instant::now()),
         }

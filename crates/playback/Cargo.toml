@@ -13,6 +13,8 @@ craft-audio.workspace = true
 soundcraft-model.workspace = true
 soundcraft-mix.workspace = true
 soundcraft-dsp.workspace = true
+# Core Audio channel names (devices.rs), read through its isolated FFI.
+soundcraft-au-host.workspace = true
 log.workspace = true
 serde.workspace = true
 

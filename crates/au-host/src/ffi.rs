@@ -958,6 +958,95 @@ impl Drop for Instance {
     }
 }
 
+/// `AudioObjectPropertyAddress`.
+#[repr(C)]
+struct PropertyAddress {
+    selector: u32,
+    scope: u32,
+    element: u32,
+}
+
+/// `kAudioObjectSystemObject`.
+const SYSTEM_OBJECT: u32 = 1;
+/// `kAudioHardwarePropertyDevices`.
+const PROP_DEVICES: u32 = u32::from_be_bytes(*b"dev#");
+/// `kAudioDevicePropertyDeviceUID`.
+const PROP_DEVICE_UID: u32 = u32::from_be_bytes(*b"uid ");
+/// `kAudioObjectPropertyElementName`.
+const PROP_ELEMENT_NAME: u32 = u32::from_be_bytes(*b"lchn");
+/// `kAudioObjectPropertyScopeGlobal`, `…ScopeInput` and `…ScopeOutput`.
+const HAL_SCOPE_GLOBAL: u32 = u32::from_be_bytes(*b"glob");
+const HAL_SCOPE_INPUT: u32 = u32::from_be_bytes(*b"inpt");
+const HAL_SCOPE_OUTPUT: u32 = u32::from_be_bytes(*b"outp");
+/// Most devices and channels read.
+const MAX_DEVICES: usize = 1024;
+const MAX_DEVICE_CHANNELS: usize = 1024;
+
+#[link(name = "CoreAudio", kind = "framework")]
+unsafe extern "C" {
+    fn AudioObjectGetPropertyDataSize(
+        object: u32,
+        address: *const PropertyAddress,
+        qualifier_size: u32,
+        qualifier: *const c_void,
+        size: *mut u32,
+    ) -> OSStatus;
+    fn AudioObjectGetPropertyData(
+        object: u32,
+        address: *const PropertyAddress,
+        qualifier_size: u32,
+        qualifier: *const c_void,
+        size: *mut u32,
+        data: *mut c_void,
+    ) -> OSStatus;
+}
+
+/// A CFString property of a Core Audio object (`None` when it cannot be read).
+fn hal_string(object: u32, selector: u32, scope: u32, element: u32) -> Option<String> {
+    let address = PropertyAddress { selector, scope, element };
+    let mut value: CFTypeRef = ptr::null();
+    let mut size = std::mem::size_of::<CFTypeRef>() as u32;
+    // SAFETY: the address and size are live locals, and `value` has room for the one CF
+    // reference these string properties write; it is ours to release (the create rule).
+    let status = unsafe { AudioObjectGetPropertyData(object, &address, 0, ptr::null(), &mut size, ptr::from_mut(&mut value).cast()) };
+    if status != 0 || value.is_null() {
+        return None;
+    }
+    let text = cf_string(value);
+    release(value);
+    Some(text)
+}
+
+/// The Core Audio device whose UID is `uid`.
+fn hal_device(uid: &str) -> Option<u32> {
+    let address = PropertyAddress { selector: PROP_DEVICES, scope: HAL_SCOPE_GLOBAL, element: 0 };
+    let mut size = 0u32;
+    // SAFETY: the address and size are live locals.
+    if unsafe { AudioObjectGetPropertyDataSize(SYSTEM_OBJECT, &address, 0, ptr::null(), &mut size) } != 0 {
+        return None;
+    }
+    let mut ids = vec![0u32; (size as usize / std::mem::size_of::<u32>()).min(MAX_DEVICES)];
+    let mut size = (ids.len() * std::mem::size_of::<u32>()) as u32;
+    // SAFETY: `ids` holds `size` bytes; Core Audio writes at most that many and reports how
+    // many it wrote.
+    if unsafe { AudioObjectGetPropertyData(SYSTEM_OBJECT, &address, 0, ptr::null(), &mut size, ids.as_mut_ptr().cast()) } != 0 {
+        return None;
+    }
+    ids.truncate(size as usize / std::mem::size_of::<u32>());
+    ids.into_iter().find(|id| hal_string(*id, PROP_DEVICE_UID, HAL_SCOPE_GLOBAL, 0).is_some_and(|u| u == uid))
+}
+
+/// The names a Core Audio device gives its first `channels` input or output channels
+/// (`kAudioObjectPropertyElementName` on elements 1…), an empty string for each channel without
+/// one. Empty when no device has the UID `uid`.
+pub fn device_channel_names(uid: &str, input: bool, channels: usize) -> Vec<String> {
+    let Some(device) = hal_device(uid) else {
+        return Vec::new();
+    };
+    let scope = if input { HAL_SCOPE_INPUT } else { HAL_SCOPE_OUTPUT };
+    (1..=channels.min(MAX_DEVICE_CHANNELS) as u32).map(|element| hal_string(device, PROP_ELEMENT_NAME, scope, element).unwrap_or_default()).collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -591,12 +591,13 @@ fn io_column(app: &mut SoundApp, ui: &mut Ui, track: &Track, r: Rect) {
         let input_name = crate::mix_window::input_name(app, track);
         let name = crate::localized_format!("Input for {}", track.name);
         let resp = header_selector(&ui, input, ui.scope_id().with(("in", id.0)), &input_name, t.text, true, &name);
-        crate::mix_window::route_popup(app, &resp.on_hover_text(crate::localization::text("Input")), id, true);
+        let tooltip = crate::mix_window::selector_tooltip(app, &ui, input, track, true, crate::localization::text("Input"));
+        crate::mix_window::route_popup(app, &resp.on_hover_text(tooltip), id, true);
     }
     if let Some(out) = row(21.0, 17.0) {
         let (sel, fader) = (out.with_max_x(out.max.x - 11.0), out.with_min_x(out.max.x - 11.0));
         let resp = ui.interact(sel, ui.scope_id().with(("out", id.0)), Sense::click());
-        let output_name = crate::mix_window::route_name(app, &track.mixer.output);
+        let output_name = crate::mix_window::output_name(app, &track.mixer.output);
         resp.widget_info(|| {
             let mut info = egui::WidgetInfo::labeled(egui::accesskit::Role::ComboBox, ui.is_enabled(), format!("Output for {}", track.name));
             info.current_text_value = Some(output_name.clone());
@@ -616,7 +617,8 @@ fn io_column(app: &mut SoundApp, ui: &mut Ui, track: &Track, r: Rect) {
         if shown {
             ui.painter().rect_stroke(fader.shrink(0.5), 1.0, Stroke::new(1.5, t.accent), StrokeKind::Inside);
         }
-        crate::mix_window::route_popup(app, &resp.on_hover_text(crate::localization::text("Output")), id, false);
+        let tooltip = crate::mix_window::selector_tooltip(app, &ui, sel, track, false, crate::localization::text("Output"));
+        crate::mix_window::route_popup(app, &resp.on_hover_text(tooltip), id, false);
         // As in Pro Tools, the fader button opens the track's Output window, not the Mix window (#1392).
         if fresp.on_hover_text(crate::localization::text("Output window")).clicked() {
             crate::mix_window::toggle_output_window(app, id);
