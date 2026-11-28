@@ -51,9 +51,9 @@ fn shared_panels_and_controls_follow_manual_and_live_system_appearance() {
             theme::apply(&ctx, light);
             let tokens = theme::Tokens::current();
             let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
-                widgets::icon_button(ui, vec2(38.0, 28.0), "loop", true, "Loop playback");
+                widgets::icon_button(ui, vec2(38.0, 28.0), "loop", true, "Loop playback", &[]);
                 widgets::rec_toggle(ui, vec2(30.0, 18.0), true, "Record enable");
-                ui.add_enabled_ui(false, |ui| widgets::icon_button(ui, vec2(38.0, 28.0), "loop", false, "Disabled loop"));
+                ui.add_enabled_ui(false, |ui| widgets::icon_button(ui, vec2(38.0, 28.0), "loop", false, "Disabled loop", &[]));
             });
             output.textures_delta.clear();
             for expected in [tokens.accent, tokens.rec] {
@@ -68,7 +68,7 @@ fn shared_panels_and_controls_follow_manual_and_live_system_appearance() {
                             ui.add_enabled_ui(enabled, |ui| {
                                 ui.horizontal(|ui| {
                                     for selected in [false, true] {
-                                        widgets::icon_button(ui, vec2(38.0, 28.0), "loop", selected, "Loop playback");
+                                        widgets::icon_button(ui, vec2(38.0, 28.0), "loop", selected, "Loop playback", &[]);
                                         widgets::rec_toggle(ui, vec2(30.0, 18.0), selected, "Record enable");
                                     }
                                 });

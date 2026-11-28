@@ -1,5 +1,6 @@
 //! Record with nothing to record on explains itself at the Record buttons.
 
+use egui::accesskit::Role;
 use egui::vec2;
 use egui_kittest::Harness;
 use egui_kittest::kittest::Queryable;
@@ -19,7 +20,7 @@ fn record_in_an_empty_session_shows_why_at_both_record_buttons() {
         );
     h.run_steps(5);
     assert_eq!(h.query_all_by_label_contains("Nothing to record on").count(), 0);
-    h.get_by_label("transport.record").click();
+    h.query_all_by_role_and_label(Role::Button, "Record").next().expect("a Record button").click();
     h.run_steps(3);
     assert!(!h.state().engine.transport.recording);
     assert_eq!(h.query_all_by_label_contains("Nothing to record on").count(), 2, "the toolbar's and the Transport window's");

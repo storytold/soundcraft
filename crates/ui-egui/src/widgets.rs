@@ -217,17 +217,51 @@ pub(crate) fn named_text_field(resp: egui::Response, name: &str) -> egui::Respon
     resp
 }
 
-/// A toolbar button with an icon; `on` draws the blue selected state.
-pub fn icon_button(ui: &mut Ui, size: egui::Vec2, icon: &str, on: bool, tip: &str) -> Response {
+/// A toolbar button with an icon; `on` draws the blue selected state. `label` is the untranslated
+/// name; `shortcuts` are registry-style keys ("Cmd+]"), shown in this platform's form in the tooltip
+/// and given to assistive technology apart from the name (see [`expose_shortcut`]).
+pub fn icon_button(ui: &mut Ui, size: egui::Vec2, icon: &str, on: bool, label: &str, shortcuts: &[&str]) -> Response {
     let t = Tokens::current();
-    let tip = crate::localization::text(tip);
+    let name = crate::localization::text(label);
     let style = button_style(t.accent, t.text, 3);
-    let resp = IconButton::new(tip, size, &style).selected(on).single_shape_frame().show(ui, |ui, r, tint| {
+    let resp = IconButton::new(name, size, &style).selected(on).single_shape_frame().show(ui, |ui, r, tint| {
         key_light(ui.painter(), r.shrink(1.0));
         let s = r.height().min(r.width()) * 0.78;
         icons::draw(ui.painter(), Rect::from_center_size(r.center(), vec2(s, s)), icon, tint);
     });
+    let tip = with_shortcut(&resp, name, shortcuts);
     resp.on_hover_text(tip)
+}
+
+/// `shortcuts` (registry-style, "Cmd+Shift+L") as this platform writes them: Ctrl for Cmd off macOS,
+/// key names translated, several joined with "or". `None` when there is none.
+pub fn platform_shortcut(ctx: &egui::Context, shortcuts: &[&str]) -> Option<String> {
+    let mac = ctx.os().is_mac();
+    let mut parts = shortcuts.iter().map(|s| crate::shortcuts::display_shortcut(s, mac)).filter(|s| !s.is_empty());
+    let first = parts.next()?;
+    Some(parts.fold(first, |a, b| crate::localized_format!("{a} or {b}", a = a, b = b)))
+}
+
+/// Gives a control its shortcut for assistive technology, apart from its name, so the name stays the
+/// label and the shortcut is said once. It goes in AccessKit's keyboard shortcut and in the
+/// description, because the AT-SPI and UI Automation adapters don't report keyboard shortcuts yet.
+pub fn expose_shortcut(resp: &Response, shortcut: &str) {
+    resp.ctx.accesskit_node_builder(resp.id, |b| {
+        b.set_keyboard_shortcut(shortcut);
+        b.set_description(shortcut);
+    });
+}
+
+/// Exposes `shortcuts` on `resp` and returns its tooltip: the translated `name`, then the shortcut in
+/// parentheses in this platform's form, "Zoom In (Ctrl+])".
+pub fn with_shortcut(resp: &Response, name: &str, shortcuts: &[&str]) -> String {
+    match platform_shortcut(&resp.ctx, shortcuts) {
+        Some(shortcut) => {
+            expose_shortcut(resp, &shortcut);
+            format!("{name} ({shortcut})")
+        }
+        None => name.to_owned(),
+    }
 }
 
 /// A compact close/delete button whose cross is painted, not typeset.
@@ -250,6 +284,35 @@ pub fn close_button(ui: &mut Ui, label: &str) -> Response {
     IconButton::new(label, size, &style)
         .show(ui, |ui, r, tint| icons::draw(ui.painter(), r.shrink(size.x * 0.28), "close", tint))
         .on_hover_text(label)
+}
+
+/// Gives a hand-painted click area the push-button role and `name`, so screen readers hear a named
+/// button instead of an unnamed object of unknown type. `name` is already translated.
+pub fn expose_button(resp: &Response, name: &str) {
+    resp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, resp.enabled(), name));
+}
+
+/// Gives a hand-painted on/off control the toggle-button role, `name` and its pressed state.
+pub fn expose_toggle(resp: &Response, name: &str, on: bool) {
+    resp.widget_info(|| egui::WidgetInfo::selected(egui::Role::Button, resp.enabled(), on, name));
+}
+
+/// Gives a hand-painted control that opens a menu the button role, `name` and a menu popup.
+pub fn expose_menu_button(resp: &Response, name: &str) {
+    expose_button(resp, name);
+    resp.ctx.accesskit_node_builder(resp.id, |b| b.set_has_popup(egui::accesskit::HasPopup::Menu));
+}
+
+/// Reports a button that runs an action (and stays up) as a push button. The shared icon and text
+/// buttons always report a pressed state, which screen readers announce as a toggle button.
+pub fn as_push_button(resp: Response) -> Response {
+    resp.ctx.accesskit_node_builder(resp.id, |b| b.clear_toggled());
+    resp
+}
+
+/// An icon button that runs an action and has no on/off state, such as Zoom In or Rewind.
+pub fn icon_action(ui: &mut Ui, size: egui::Vec2, icon: &str, label: &str, shortcuts: &[&str]) -> Response {
+    as_push_button(icon_button(ui, size, icon, false, label, shortcuts))
 }
 
 /// Square text toggle used for S / M / I / record etc.

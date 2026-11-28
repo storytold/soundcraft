@@ -52,7 +52,7 @@ fn move_float_close_reopen_reload_retains_transport_and_mixer_commands() {
     reloaded.state_mut().run("ui.dock", json!({"operation":"activate","panel":"tracks"})).unwrap();
     reloaded.run_steps(3);
     assert_eq!(reloaded.state().ui.docking.layout().panel_state(&Panel::Tracks), craft_behavior::dock::PanelState::Front);
-    reloaded.get_by_label("Trim (F6)").click();
+    reloaded.get_by_label("Trim").click();
     reloaded.run_steps(3);
     assert_eq!(reloaded.state().engine.session().edit.tool, soundcraft_model::Tool::Trim);
     assert!(!reloaded.state().engine.transport.playing);

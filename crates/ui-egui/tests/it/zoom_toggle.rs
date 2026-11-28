@@ -40,7 +40,7 @@ fn e_fits_the_selection_to_the_edit_window_and_the_button_goes_back() {
         assert_eq!(row[1], y0, "{os:?}");
         assert!((row[3] + 1.0 - y1).abs() < 1.0, "{os:?}: {row:?} in {y0}..{y1}");
 
-        h.get_by_label("Zoom Toggle (E)").click();
+        h.get_by_label("Zoom Toggle").click();
         h.run_steps(1);
         assert_eq!(view(h.state()), before, "{os:?}");
     }
@@ -67,13 +67,13 @@ fn alt_shift_e_and_an_alt_click_cancel_zoom_toggle_and_keep_the_zoomed_view() {
             h.run_steps(5);
             let view = |a: &SoundApp| (a.engine.session().edit.zoom, a.edit_layout.rows.clone(), a.edit_layout.scroll_y);
             let before = view(h.state());
-            h.get_by_label("Zoom Toggle (E)").click();
+            h.get_by_label("Zoom Toggle").click();
             h.run_steps(1);
             let zoomed = view(h.state());
             assert_ne!(zoomed, before, "{os:?}");
 
             if alt_click {
-                h.get_by_label("Zoom Toggle (E)").click_modifiers(Modifiers::ALT);
+                h.get_by_label("Zoom Toggle").click_modifiers(Modifiers::ALT);
             } else {
                 h.key_press_modifiers(Modifiers::ALT | Modifiers::SHIFT, Key::E);
             }
@@ -83,10 +83,10 @@ fn alt_shift_e_and_an_alt_click_cancel_zoom_toggle_and_keep_the_zoomed_view() {
             assert_eq!(view(h.state()), zoomed, "{os:?} {how} keeps the zoomed view");
 
             // The next toggle zooms in from here and goes back here, not to the view before the cancel.
-            h.get_by_label("Zoom Toggle (E)").click();
+            h.get_by_label("Zoom Toggle").click();
             h.run_steps(1);
             assert!(h.state().engine.session().edit.zoom_toggle.is_some(), "{os:?} {how}");
-            h.get_by_label("Zoom Toggle (E)").click();
+            h.get_by_label("Zoom Toggle").click();
             h.run_steps(1);
             assert_eq!(view(h.state()), zoomed, "{os:?} {how}");
         }

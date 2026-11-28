@@ -27,7 +27,7 @@ fn button_frame(ctx: &egui::Context, state: &mut ButtonState, events: Vec<Event>
                 if state.record {
                     widgets::rec_toggle(ui, vec2(38.0, 28.0), state.selected, state.label())
                 } else {
-                    widgets::icon_button(ui, vec2(38.0, 28.0), "loop", state.selected, state.label())
+                    widgets::icon_button(ui, vec2(38.0, 28.0), "loop", state.selected, state.label(), &[])
                 }
             })
             .inner;
@@ -114,13 +114,11 @@ fn toolbar_keyboard_activation_changes_tools_without_transport_or_marker_actions
             app,
         );
     h.run_steps(5);
-    h.get_by_label("Trim (F6)").click();
+    h.get_by_label("Trim").click();
     h.run_steps(3);
     assert_eq!(h.state().engine.session().edit.tool, soundcraft_model::Tool::Trim);
     let markers = h.state().engine.session().markers.len();
-    for (label, tool, key) in
-        [("Pencil (F10)", soundcraft_model::Tool::Pencil, Key::Enter), ("Grabber (F8)", soundcraft_model::Tool::Grabber, Key::Space)]
-    {
+    for (label, tool, key) in [("Pencil", soundcraft_model::Tool::Pencil, Key::Enter), ("Grabber", soundcraft_model::Tool::Grabber, Key::Space)] {
         h.get_by_label(label).focus();
         h.run_steps(2);
         assert!(h.get_by_label(label).is_focused());
@@ -195,8 +193,8 @@ fn shared_controls_visuals() {
                     ui.add_enabled_ui(enabled, |ui| {
                         ui.horizontal(|ui| {
                             for selected in [false, true] {
-                                rects.push(widgets::icon_button(ui, vec2(38.0, 28.0), "loop", selected, "Loop Playback").rect);
-                                rects.push(widgets::icon_button(ui, vec2(36.0, 26.0), "trim", selected, "Trim").rect);
+                                rects.push(widgets::icon_button(ui, vec2(38.0, 28.0), "loop", selected, "Loop Playback", &[]).rect);
+                                rects.push(widgets::icon_button(ui, vec2(36.0, 26.0), "trim", selected, "Trim", &[]).rect);
                                 rects.push(widgets::rec_toggle(ui, vec2(30.0, 18.0), selected, "Record enable").rect);
                             }
                         });
