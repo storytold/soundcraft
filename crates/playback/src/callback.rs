@@ -660,8 +660,14 @@ impl AudioState {
         let lead = self.shared.output_latency.get().unwrap_or_default().as_secs_f64() + into;
         let Some(at) = super::latency::shift(called, lead) else { return };
         let when = super::latency::Moment { at, clock: self.playback_clock.map(|p| p + into) };
-        // The next output frame: `read` frames into the pending block, which ends at `pos`.
-        let sample = self.pos as f64 - self.pending_len as f64 + self.read;
+        // The next output frame: `read` frames into the pending block, which ends at `pos`. Once
+        // that block is used up at the loop end, the next one starts at the loop start
+        // (`render_next`), so that is where the frame is.
+        let unread = self.read - self.pending_len as f64;
+        let sample = match self.looped {
+            Some(l) if unread >= 0.0 && self.pos >= l.end => l.start as f64 + unread,
+            _ => self.pos as f64 + unread,
+        };
         let heard = super::latency::Heard { sample, when, speed };
         self.shared.heard.record(heard, pass_started, &mut self.pending_pass);
         if let Some(n) = self.record_begun.take() {

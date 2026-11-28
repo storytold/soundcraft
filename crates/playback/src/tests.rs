@@ -410,6 +410,26 @@ fn a_punch_during_loop_playback_keeps_the_round_it_began_in() {
     assert!(later.at > want + Duration::from_millis(100), "{later:?}");
 }
 
+/// A callback that starts where the loop wraps outputs the loop start first, so that is the
+/// sample its stamp names, not the loop end (#1737 review).
+#[test]
+fn a_callback_at_the_loop_end_stamps_the_loop_start() {
+    use std::time::{Duration, Instant};
+    let (mut st, tx) = audio_output_state_and_commands(soundcraft_model::ChannelFormat::Stereo, vec![vec![0.0; 4_800]; 2]);
+    st.shared.output_latency.observe(Some(Duration::from_micros(6_750)));
+    tx.send(Cmd::Play { from: 0, end: None, looped: Some(Range::new(0, 1_024)) }).unwrap();
+    // 256 frames a callback at 48 kHz: four play the whole loop, the fifth starts at its start.
+    let t0 = Instant::now();
+    let at = |k: u32| t0 + Duration::from_micros(u64::from(k) * 16_000 / 3);
+    for k in 0..5 {
+        st.callback_at = Some(at(k));
+        st.fill(&mut [0.0; 512], 2);
+    }
+    let (heard, _) = st.shared.heard.heard_at(128.0, 48_000.0).unwrap();
+    let want = at(4) + Duration::from_micros(6_750) + Duration::from_secs_f64(128.0 / 48_000.0);
+    assert!(heard.at.max(want).duration_since(heard.at.min(want)) < Duration::from_micros(2), "{heard:?} vs {want:?}");
+}
+
 #[test]
 fn the_output_callback_notes_when_the_play_start_and_later_samples_are_heard() {
     use std::time::{Duration, Instant};
