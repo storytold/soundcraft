@@ -229,3 +229,19 @@ fn a_midi_pass_without_a_connected_device_says_so() {
     assert!(!h.state().engine.transport.recording);
     assert!(h.state().ui.status.contains("no MIDI input device is connected"), "{}", h.state().ui.status);
 }
+
+/// The MIDI inputs section speaks the interface's language, like the rest of the Playback Engine (#1751).
+#[test]
+fn the_midi_inputs_section_is_translated() {
+    let mut h = harness(&[]);
+    let shows = |h: &Harness<'_, SoundApp>, label: &str| h.query_all_by_label(label).count() > 0;
+    assert!(shows(&h, "MIDI inputs"), "English first");
+    h.state_mut().ui.language = soundcraft_ui_egui::localization::Language::PortugueseBrazil;
+    h.run_steps(3);
+    for shown in ["Entradas MIDI", "conectado", "Testar"] {
+        assert!(shows(&h, shown), "{shown} in pt-BR");
+    }
+    for english in ["MIDI inputs", "connected", "Test"] {
+        assert!(!shows(&h, english), "{english} left in English");
+    }
+}

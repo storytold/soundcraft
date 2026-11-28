@@ -325,6 +325,33 @@ pub(super) fn translate(source: &str) -> Option<&'static str> {
         }
         "No engine" => "Sem mecanismo de áudio",
         "default buffer" => "buffer padrão",
+        "MIDI inputs" => "Entradas MIDI",
+        "No audio engine, so MIDI devices are not opened." => "Sem mecanismo de áudio, os dispositivos MIDI não são abertos.",
+        "No MIDI input device found. Plug one in: it shows up here by itself." => {
+            "Nenhum dispositivo de entrada MIDI encontrado. Conecte um: ele aparece aqui sozinho."
+        }
+        "{} MIDI event(s) arrived faster than they could be played and were dropped; held notes of that device were released." => {
+            "{} evento(s) MIDI chegaram mais rápido do que podiam ser tocados e foram descartados; as notas sustentadas desse dispositivo foram liberadas."
+        }
+        "{} (message {} of all devices)" => "{} (mensagem {} de todos os dispositivos)",
+        "Play and record from this device" => "Tocar e gravar a partir deste dispositivo",
+        "connected" => "conectado",
+        "could not be opened" => "não pôde ser aberto",
+        "Test" => "Testar",
+        "Show what arrives from this device" => "Mostrar o que chega deste dispositivo",
+        "yes" => "sim",
+        "no" => "não",
+        "Enabled: {}, open: {}" => "Ativado: {}, aberto: {}",
+        "Last received: {}" => "Último recebido: {}",
+        "Last received: nothing yet" => "Último recebido: nada ainda",
+        "note {} on, velocity {}, channel {}" => "nota {} ligada, velocidade {}, canal {}",
+        "note {} off, channel {}" => "nota {} desligada, canal {}",
+        "aftertouch {} on note {}, channel {}" => "aftertouch {} na nota {}, canal {}",
+        "controller {} = {}, channel {}" => "controlador {} = {}, canal {}",
+        "program {}, channel {}" => "programa {}, canal {}",
+        "aftertouch {}, channel {}" => "aftertouch {}, canal {}",
+        "pitch bend {}, channel {}" => "pitch bend {}, canal {}",
+        "message {}" => "mensagem {}",
         "Bus name: {name}" => "Nome do bus: {name}",
         "Model" => "Modelo",
         "Version" => "Versão",
