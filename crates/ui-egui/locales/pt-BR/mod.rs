@@ -151,6 +151,16 @@ pub(super) fn translate(source: &str) -> Option<&'static str> {
         "Name:" => "Nome:",
         "new" => "novo",
         "New Bus" => "Novo bus",
+        "New Output" => "Nova saída",
+        "Restore the default output paths of the current device" => "Restaurar os caminhos de saída padrão do dispositivo atual",
+        "Default paths" => "Caminhos padrão",
+        "A pair becomes a path when a track output or send chooses it, or with Default" => {
+            "Um par vira caminho quando a saída ou um envio de uma faixa o escolhe, ou com Padrão"
+        }
+        "Output path name" => "Nome do caminho de saída",
+        "First channel" => "Primeiro canal",
+        "Unavailable" => "Indisponível",
+        "Playing from channel 1" => "Reproduzindo a partir do canal 1",
         "new bus..." => "novo bus...",
         "New Configuration…" => "Nova configuração…",
         "New Group…" => "Novo grupo…",
@@ -875,8 +885,9 @@ fn menu_translate(source: &str) -> Option<&'static str> {
         "no output" => "sem saída",
         "Out 1-2" => "Saída 1-2",
         "Bus" => "Bus",
-        "Search buses…" => "Pesquisar buses…",
+        "Search outputs and buses…" => "Buscar saídas e buses…",
         "In {}" => "Entrada {}",
+        "In {}-{}" => "Entradas {}-{}",
         "Read" => "Leitura",
         "Write" => "Gravação",
         "Touch" => "Toque",

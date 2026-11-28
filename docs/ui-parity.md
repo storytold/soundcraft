@@ -48,7 +48,7 @@ Legend: ✅ matches · 🟡 partial · ❌ missing.
 | MIDI Editor, Score Editor, Event List | 🟡 | Dock height bug fixed (#113); notation editing shallow |
 | Transport, Big Counter, Memory Locations, Automation, Video, Universe, Renderer, UI Customization | ✅ present | |
 | Workspace / sound browser with previews | ❌ | G-16 |
-| I/O Setup | 🟡 | Busses and paths; no hardware channel matrix (G-01) |
+| I/O Setup | 🟡 | Busses and output paths with format and first hardware channel; Default restores the device's default output paths; no input mapping (G-01) |
 | Preferences | 🟡 | Many settings stored, fewer honoured |
 | Window configurations, Tile/Cascade | 🟡 | Configurations ✅; Tile/Cascade in PR #151 |
 | Plugin windows | 🟡 | Generic parameter sliders; Pro Tools plugins have bespoke GUIs (#138 asks for skeuomorphic design); multi-page plugin views (#6); Alt/Option-click returns a parameter to its default |

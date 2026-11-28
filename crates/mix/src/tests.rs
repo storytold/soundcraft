@@ -987,6 +987,223 @@ fn delay_compensation_aligns_an_aux_insert() {
     assert_eq!(impulse_at(&zero[0]), impulse_at(&control[0]));
 }
 
+/// A track routed straight to a named output and an aux returning onto the same output line up,
+/// as they do on the main mix; with no aux latency nothing is delayed.
+#[test]
+fn delay_compensation_aligns_an_aux_return_on_a_named_output() {
+    let mut s = Session::default();
+    let n = 4096;
+    let mut imp = vec![0.0f32; n];
+    imp[1000] = 0.25;
+    s.pool.insert(SourceId(902), Arc::new(SourceAudio::new(AudioBuffer { sample_rate: 48_000, channels: vec![imp] })));
+    s.outputs.push(soundcraft_model::OutputPath { name: "Cue".into(), first_channel: 2, format: ChannelFormat::Mono });
+    let bus = s.add_bus("Cue Bus", ChannelFormat::Mono);
+    let aux = s.add_track(TrackKind::Aux, ChannelFormat::Mono, Some("Cue Return"));
+    s.track_mut(aux).unwrap().mixer.input = Route::Bus(bus);
+    s.track_mut(aux).unwrap().mixer.output = Route::Hardware("Cue".into());
+    for output in [Route::Hardware("cue".into()), Route::Bus(bus)] {
+        let t = s.add_track(TrackKind::Audio, ChannelFormat::Mono, None);
+        let cid = s.new_clip_id();
+        let tr = s.track_mut(t).unwrap();
+        tr.playlist_mut().unwrap().clips.push(Clip::audio(cid, "i", SourceId(902), 0, 0, n as i64));
+        tr.mixer.output = output;
+    }
+    let cue = |s: &Session| {
+        let mut mix = MixEngine::new(48_000.0, 512);
+        mix.set_hardware_channels(4);
+        let mut out = vec![vec![0.0f32; 512]; 2];
+        let mut cue = Vec::new();
+        for pos in (0..n).step_by(512) {
+            mix.render(s, pos as i64, 512, &mut out);
+            cue.extend_from_slice(&mix.hardware_output()[2][..512]);
+        }
+        cue
+    };
+    assert_eq!(impulse_at(&cue(&s)), vec![1000], "no aux latency: no extra delay");
+
+    let mut comp = Insert::new("compressor");
+    comp.params.insert("lookahead".into(), 5.0);
+    comp.params.insert("ratio".into(), 1.0);
+    s.track_mut(aux).unwrap().mixer.inserts[0] = Some(comp);
+    let latent = cue(&s);
+    let at = impulse_at(&latent);
+    assert_eq!(at.len(), 1, "the direct and aux signals must arrive together: {at:?}");
+    assert!(at[0] > 1000);
+    assert!(latent[at[0]] > 0.26, "both paths sum at one frame: {}", latent[at[0]]);
+}
+
+/// A track routed to a path that shares a physical channel with an aux-fed path waits for the aux
+/// returns too, even through a chain of overlapping paths; with no aux latency nothing is delayed.
+#[test]
+fn delay_compensation_aligns_overlapping_named_outputs() {
+    let mut s = Session::default();
+    let n = 4096;
+    let mut imp = vec![0.0f32; n];
+    imp[1000] = 0.25;
+    s.pool.insert(SourceId(903), Arc::new(SourceAudio::new(AudioBuffer { sample_rate: 48_000, channels: vec![imp] })));
+    s.outputs.push(soundcraft_model::OutputPath { name: "Cue".into(), first_channel: 2, format: ChannelFormat::Mono });
+    s.outputs.push(soundcraft_model::OutputPath { name: "Wide".into(), first_channel: 2, format: ChannelFormat::Stereo });
+    s.outputs.push(soundcraft_model::OutputPath { name: "Alias".into(), first_channel: 3, format: ChannelFormat::Mono });
+    let bus = s.add_bus("Cue Bus", ChannelFormat::Mono);
+    let aux = s.add_track(TrackKind::Aux, ChannelFormat::Mono, Some("Cue Return"));
+    s.track_mut(aux).unwrap().mixer.input = Route::Bus(bus);
+    s.track_mut(aux).unwrap().mixer.output = Route::Hardware("Cue".into());
+    for output in [Route::Hardware("Wide".into()), Route::Hardware("Alias".into()), Route::Bus(bus)] {
+        let t = s.add_track(TrackKind::Audio, ChannelFormat::Mono, None);
+        let cid = s.new_clip_id();
+        let tr = s.track_mut(t).unwrap();
+        tr.playlist_mut().unwrap().clips.push(Clip::audio(cid, "i", SourceId(903), 0, 0, n as i64));
+        tr.mixer.output = output;
+    }
+    // Channel 2 carries the aux return and the "Wide" track; channel 3 carries the "Wide" track
+    // and the "Alias" track, which overlaps "Wide" only.
+    let channels = |s: &Session| {
+        let mut mix = MixEngine::new(48_000.0, 512);
+        mix.set_hardware_channels(4);
+        let mut out = vec![vec![0.0f32; 512]; 2];
+        let (mut two, mut three) = (Vec::new(), Vec::new());
+        for pos in (0..n).step_by(512) {
+            mix.render(s, pos as i64, 512, &mut out);
+            two.extend_from_slice(&mix.hardware_output()[2][..512]);
+            three.extend_from_slice(&mix.hardware_output()[3][..512]);
+        }
+        (two, three)
+    };
+    let (two, three) = channels(&s);
+    assert_eq!(impulse_at(&two), vec![1000], "no aux latency: no extra delay");
+    assert_eq!(impulse_at(&three), vec![1000], "no aux latency: no extra delay");
+
+    let mut comp = Insert::new("compressor");
+    comp.params.insert("lookahead".into(), 5.0);
+    comp.params.insert("ratio".into(), 1.0);
+    s.track_mut(aux).unwrap().mixer.inserts[0] = Some(comp);
+    let (two, three) = channels(&s);
+    let at = impulse_at(&two);
+    assert_eq!(at.len(), 1, "the overlapping direct and aux signals must arrive together: {at:?}");
+    assert!(at[0] > 1000);
+    assert_eq!(impulse_at(&three), at, "a path chained through an overlap waits as well");
+}
+
+/// Tracks routed to `outputs` (one each) carrying an impulse at frame 1000 of a `n`-frame source.
+fn impulse_tracks(s: &mut Session, n: usize, src: u64, outputs: Vec<Route>) {
+    let mut imp = vec![0.0f32; n];
+    imp[1000] = 0.25;
+    s.pool.insert(SourceId(src), Arc::new(SourceAudio::new(AudioBuffer { sample_rate: 48_000, channels: vec![imp] })));
+    for output in outputs {
+        let t = s.add_track(TrackKind::Audio, ChannelFormat::Mono, None);
+        let cid = s.new_clip_id();
+        let tr = s.track_mut(t).unwrap();
+        tr.playlist_mut().unwrap().clips.push(Clip::audio(cid, "i", SourceId(src), 0, 0, n as i64));
+        tr.mixer.output = output;
+    }
+}
+
+/// Renders `n` frames on a device of `channels` outputs: the main mix's first channel, then each
+/// physical channel.
+fn render_device(s: &Session, n: usize, channels: usize) -> (Vec<f32>, Vec<Vec<f32>>) {
+    let mut mix = MixEngine::new(48_000.0, 512);
+    mix.set_hardware_channels(channels);
+    let mut out = vec![vec![0.0f32; 512]; 2];
+    let (mut main, mut physical) = (Vec::new(), vec![Vec::new(); channels]);
+    for pos in (0..n).step_by(512) {
+        mix.render(s, pos as i64, 512, &mut out);
+        main.extend_from_slice(&out[0][..512]);
+        for (dst, src) in physical.iter_mut().zip(mix.hardware_output()) {
+            dst.extend_from_slice(&src[..512]);
+        }
+    }
+    (main, physical)
+}
+
+fn lookahead() -> Insert {
+    let mut comp = Insert::new("compressor");
+    comp.params.insert("lookahead".into(), 5.0);
+    comp.params.insert("ratio".into(), 1.0);
+    comp
+}
+
+/// When the main mix's path does not fit the device, playback puts it on channel 0
+/// ([`main_first_channel`]): a path on channel 0 then shares its channel and waits for the aux
+/// returns as the main mix does.
+#[test]
+fn delay_compensation_uses_the_main_mix_channels_playback_uses() {
+    let mut s = Session::default();
+    let n = 4096;
+    s.outputs[0].first_channel = 2;
+    s.outputs.push(soundcraft_model::OutputPath { name: "Cue".into(), first_channel: 0, format: ChannelFormat::Mono });
+    let aux = s.add_track(TrackKind::Aux, ChannelFormat::Stereo, Some("Verb"));
+    s.track_mut(aux).unwrap().mixer.inserts[0] = Some(lookahead());
+    impulse_tracks(&mut s, n, 904, vec![Route::Main, Route::Hardware("Cue".into())]);
+    assert_eq!(main_first_channel(&s, 2), 0);
+    assert_eq!(main_first_channel(&s, 4), 2);
+
+    let (main, physical) = render_device(&s, n, 2);
+    let at = impulse_at(&main);
+    assert_eq!(at.len(), 1, "{at:?}");
+    assert!(at[0] > 1000);
+    assert_eq!(impulse_at(&physical[0]), at, "the cue path shares channel 0 with the main mix");
+
+    // On a device the main mix fits, it stays on channels 2-3 and the cue path does not wait.
+    let (main, physical) = render_device(&s, n, 4);
+    assert_eq!(impulse_at(&main), at);
+    assert_eq!(impulse_at(&physical[0]), vec![1000]);
+}
+
+/// A path that does not fit the device plays nothing, so it links no paths: one that overlaps it
+/// but not the main mix does not wait for the aux returns. Once it fits, it does.
+#[test]
+fn delay_compensation_skips_paths_that_do_not_fit_the_device() {
+    let mut s = Session::default();
+    let n = 4096;
+    s.outputs.push(soundcraft_model::OutputPath { name: "Wide".into(), first_channel: 1, format: ChannelFormat::Surround51 });
+    s.outputs.push(soundcraft_model::OutputPath { name: "Far".into(), first_channel: 3, format: ChannelFormat::Mono });
+    let aux = s.add_track(TrackKind::Aux, ChannelFormat::Stereo, Some("Verb"));
+    s.track_mut(aux).unwrap().mixer.inserts[0] = Some(lookahead());
+    impulse_tracks(&mut s, n, 906, vec![Route::Main, Route::Hardware("Far".into())]);
+
+    // "Wide" (channels 1-6) does not fit 4 channels.
+    let (main, physical) = render_device(&s, n, 4);
+    let at = impulse_at(&main);
+    assert_eq!(at.len(), 1, "{at:?}");
+    assert!(at[0] > 1000);
+    assert_eq!(impulse_at(&physical[3]), vec![1000], "no played path links the far path to the main mix");
+
+    // On 8 channels "Wide" plays and shares channel 1 with the main mix and channel 3 with "Far".
+    let (main, physical) = render_device(&s, n, 8);
+    assert_eq!(impulse_at(&main), at);
+    assert_eq!(impulse_at(&physical[3]), at, "a path chained through a played overlap waits");
+}
+
+/// A path that shares a channel with the main mix waits for the master faders' inserts too, both
+/// for tracks and for an aux routed to it; a path apart from the main mix does not.
+#[test]
+fn delay_compensation_lines_paths_on_the_main_channels_up_with_master_inserts() {
+    let mut s = Session::default();
+    let n = 4096;
+    s.outputs.push(soundcraft_model::OutputPath { name: "Cue".into(), first_channel: 0, format: ChannelFormat::Mono });
+    s.outputs.push(soundcraft_model::OutputPath { name: "Far".into(), first_channel: 3, format: ChannelFormat::Mono });
+    let bus = s.add_bus("Cue Bus", ChannelFormat::Mono);
+    let aux = s.add_track(TrackKind::Aux, ChannelFormat::Mono, Some("Cue Return"));
+    s.track_mut(aux).unwrap().mixer.input = Route::Bus(bus);
+    s.track_mut(aux).unwrap().mixer.output = Route::Hardware("Cue".into());
+    let master = s.add_track(TrackKind::Master, ChannelFormat::Stereo, None);
+    impulse_tracks(&mut s, n, 905, vec![Route::Main, Route::Hardware("Cue".into()), Route::Bus(bus), Route::Hardware("Far".into())]);
+
+    let (main, physical) = render_device(&s, n, 4);
+    assert_eq!(impulse_at(&main), vec![1000], "no master latency: no extra delay");
+    assert_eq!(impulse_at(&physical[0]), vec![1000]);
+    assert_eq!(impulse_at(&physical[3]), vec![1000]);
+
+    s.track_mut(master).unwrap().mixer.inserts[0] = Some(lookahead());
+    let (main, physical) = render_device(&s, n, 4);
+    let at = impulse_at(&main);
+    assert_eq!(at.len(), 1, "{at:?}");
+    assert!(at[0] > 1000);
+    assert_eq!(impulse_at(&physical[0]), at, "the cue track and the cue return line up with the main mix");
+    assert!(physical[0][at[0]] > 0.26, "both cue signals sum at one frame: {}", physical[0][at[0]]);
+    assert_eq!(impulse_at(&physical[3]), vec![1000], "a path apart from the main mix does not wait");
+}
+
 #[test]
 fn offline_renders_line_up_with_the_timeline_in_any_block_size() {
     let mut s = Session::default();
@@ -2159,4 +2376,71 @@ fn a_clip_volume_moved_earlier_by_the_track_delay_counts_as_set_when_a_device_go
     eng.midi_lost = midi_port_bit(0);
     render_block(&mut eng, &s, 1024);
     assert_eq!(std::mem::take(&mut *heard.lock().unwrap()), vec![(0, [0xB0, 121, 0]), (0, [0xB0, 7, 80])], "the clip's volume, not the default");
+}
+
+/// Pro Tools sends go to output paths as well as busses (Reference Guide, Sends, printed
+/// p. 1468–1469 and 1474): a send to a named output path sums into that path's hardware channels
+/// in the path's width (a mono send to a stereo path is panned; a mono path is fed as a mono bus
+/// is), and a send to the main path joins the main mix.
+#[test]
+fn a_send_to_an_output_path_sums_into_its_hardware_channels() {
+    let (mut s, t) = session_with_dc(0.5, 4800);
+    s.outputs.push(soundcraft_model::OutputPath { name: "Out 9-10".into(), first_channel: 8, format: ChannelFormat::Stereo });
+    s.outputs.push(soundcraft_model::OutputPath { name: "Cue".into(), first_channel: 4, format: ChannelFormat::Mono });
+    {
+        let tr = s.track_mut(t).unwrap();
+        tr.mixer.output = Route::None;
+        let mut pair = soundcraft_model::SendSlot::new(Route::Hardware("out 9-10".into()));
+        pair.level_db = 0.0;
+        tr.mixer.sends[0] = Some(pair);
+        let mut cue = soundcraft_model::SendSlot::new(Route::Hardware("Cue".into()));
+        cue.level_db = -6.0;
+        tr.mixer.sends[1] = Some(cue);
+    }
+    let render = |s: &Session| {
+        let mut mix = MixEngine::new(48_000.0, 512);
+        mix.set_hardware_channels(12);
+        let mut out = vec![vec![0.0f32; 512]; 2];
+        for pos in (0..2048).step_by(512) {
+            mix.clear_hardware_output(512);
+            mix.render(s, pos as i64, 512, &mut out);
+        }
+        (out, mix.hardware_output().iter().map(|channel| channel[100]).collect::<Vec<f32>>())
+    };
+    let (main, hw) = render(&s);
+    let centre = 0.5 * std::f32::consts::FRAC_1_SQRT_2;
+    assert!((hw[8] - centre).abs() < 1e-3 && (hw[9] - centre).abs() < 1e-3, "a centred mono send on Out 9-10: {hw:?}");
+    assert!((hw[4] - centre * db_to_gain(-6.0)).abs() < 1e-3, "the mono path takes the send as a mono bus does: {hw:?}");
+    for (channel, sample) in hw.iter().enumerate().filter(|(channel, _)| ![4, 8, 9].contains(channel)) {
+        assert!(sample.abs() < 1e-6, "channel {channel} stays silent: {hw:?}");
+    }
+    assert!(main[0][100].abs() < 1e-6, "the track's output is off, so the main mix is silent");
+
+    // The send's pan places a mono track on the pair, as on a stereo bus.
+    if let Some(Some(send)) = s.track_mut(t).unwrap().mixer.sends.get_mut(0) {
+        send.pan = -1.0;
+    }
+    let (_, hw) = render(&s);
+    assert!(hw[8] > 0.49 && hw[9].abs() < 1e-4, "hard left: {hw:?}");
+
+    // Muted, the send plays nothing; to the main path, it joins the main mix.
+    if let Some(Some(send)) = s.track_mut(t).unwrap().mixer.sends.get_mut(1) {
+        send.mute = true;
+    }
+    if let Some(Some(send)) = s.track_mut(t).unwrap().mixer.sends.get_mut(0) {
+        send.target = Route::Main;
+    }
+    let (main, hw) = render(&s);
+    assert!(hw.iter().all(|sample| sample.abs() < 1e-6), "{hw:?}");
+    assert!(main[0][100] > 0.49 && main[1][100].abs() < 1e-4, "the send to the main path plays on the main mix");
+
+    // A send to a path that does not fit the device is silent, as a track output there is.
+    if let Some(Some(send)) = s.track_mut(t).unwrap().mixer.sends.get_mut(0) {
+        send.target = Route::Hardware("Out 9-10".into());
+    }
+    let mut mix = MixEngine::new(48_000.0, 512);
+    mix.set_hardware_channels(8);
+    let mut out = vec![vec![0.0f32; 512]; 2];
+    mix.render(&s, 0, 512, &mut out);
+    assert!(mix.hardware_output().iter().all(|channel| channel[100].abs() < 1e-6));
 }

@@ -1,6 +1,6 @@
 # Hardware parity
 
-> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-11-18 · **Change:** minor (record to disk: done, #84 and #888, previously trivial: bounces of a bus fed by an aux compensate its latency, #246; previously minor: MIDI input devices, live play-through with controllers, and MIDI recording) · **Target:** Avid Pro Tools Ultimate 2026.4.1
+> **Last reviewed:** 2026-11-18 · **Last updated:** 2026-11-25 · **Change:** minor (named output paths to hardware channels, verified on Core Audio with an RME UFX; previously minor: record to disk: done, #84 and #888, previously trivial: bounces of a bus fed by an aux compensate its latency, #246; previously minor: MIDI input devices, live play-through with controllers, and MIDI recording) · **Target:** Avid Pro Tools Ultimate 2026.4.1
 
 A DAW is judged by how it drives audio interfaces, MIDI gear, control surfaces and sync. This is
 SoundCraft's weakest dimension. Ours is measured from `crates/playback` (cpal) and the absence of
@@ -20,7 +20,7 @@ Legend: ✅ works · 🟡 partial · ❌ missing.
 | Choose input device | ✅ | 🟡 Setup › Playback Engine (not yet verified on macOS) | ✅ (WASAPI, ASIO) | 🟡 (not yet verified) | ❌ no recording | ❌ |
 | Buffer size (32–2048) | ✅ | 🟡 device buffer when the driver allows it (not yet verified); mix in 512-sample blocks | 🟡 device buffer 16–8192 (verified 128 on ASIO, 256 on WASAPI); mix in 512-sample blocks | 🟡 (not yet verified) | 🟡 | ❌ |
 | Duplex stream on one clock | ✅ | ❌ separate input/output streams | ❌ | ❌ | ❌ | ❌ |
-| Hardware I/O mapping (I/O Setup to physical channels) | ✅ | 🟡 multichannel output in order; no per-channel map | 🟡 | 🟡 | 🟡 | ❌ |
+| Hardware I/O mapping (I/O Setup to physical channels) | ✅ | 🟡 named output paths; Core Audio opens every output (a path on outputs 3–4, ADAT outputs 17–22 and a live channel change verified on an RME UFX; Unavailable on a 2-channel device) | 🟡 named outputs limited to the opened main-mix width (WASAPI checked on a TASCAM Model 12) | 🟡 named outputs limited to the opened main-mix width; unverified | 🟡 named outputs limited to the opened main-mix width; unverified | ❌ |
 | Low-latency monitoring | ✅ | ❌ (`options.low_latency_monitoring` is a stored flag) | ❌ | ❌ | ❌ | ❌ |
 | Latency reporting and record offset compensation | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ |
 | Sample rate follows the session; resample when it can't | ✅ (switches device) | 🟡 resamples (input pitch bug fixed, #28) | 🟡 | 🟡 | 🟡 | 🟡 |
@@ -72,6 +72,7 @@ Legend: ✅ works · 🟡 partial · ❌ missing.
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-11-25 | minor | Named output paths route to hardware channels; Core Audio opens every output of an interface (verified on an RME UFX) |
 | 2026-11-18 | minor | MIDI input devices (`midir`): live play-through to record-enabled MIDI and instrument tracks (notes, pedal, controllers, pitch bend, aftertouch), MIDI recording into clips, per-track device and channel, device switches in Playback Engine; guide in `midi-input.md` |
 | 2026-10-30 | minor | Record to disk: takes are written to disk as they record (#84) and long takes continue in a new file (#888) |
 | 2026-10-13 | trivial | bounces of a bus fed by an aux compensate its latency (#246) |
