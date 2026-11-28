@@ -1,8 +1,10 @@
 name: SoundCraft unsigned nightly
 
-# Enabled for supervised manual runs by the reviewed manual actors only; no schedule yet.
-# A later explicit opt-in may add a cadence (and a reviewed dispatcher with it).
+# Runs automatically on the reviewed nightly schedule and for supervised manual runs
+# by the reviewed manual actors.
 on:
+  schedule:
+    - cron: '30 5 * * *'
   workflow_dispatch:
 
 permissions:
