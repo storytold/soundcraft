@@ -15,7 +15,8 @@ impl cpal::traits::StreamTrait for Fake {
     fn pause(&self) -> Result<(), cpal::Error> {
         Ok(())
     }
-    /// The fake stream has no clock and no fixed buffer; neither is used by these tests.
+    /// The fake stream reports 0 frames, which says nothing about a buffer (see
+    /// `a_stream_that_reports_no_buffer_size_has_no_running_buffer`).
     fn buffer_size(&self) -> Result<cpal::FrameCount, cpal::Error> {
         Ok(0)
     }
@@ -23,6 +24,12 @@ impl cpal::traits::StreamTrait for Fake {
     fn now(&self) -> cpal::StreamInstant {
         cpal::StreamInstant::from_nanos(0)
     }
+}
+
+#[test]
+fn a_stream_that_reports_no_buffer_size_has_no_running_buffer() {
+    // The fake reports 0 frames, which says nothing about the device.
+    assert_eq!(stream::running_buffer(&Fake { starts: true }), None);
 }
 
 #[test]
@@ -696,6 +703,7 @@ fn armed_tracks_are_heard_and_metered_after_playback_stops() {
     let mut s = soundcraft_model::Session::default();
     let t = s.add_track(TrackKind::Audio, ChannelFormat::Mono, None);
     s.track_mut(t).unwrap().mixer.record_arm = true;
+    s.track_mut(t).unwrap().mixer.input = soundcraft_model::Route::Hardware("In 1".into());
     let shared = Arc::new(Shared {
         position: AtomicI64::new(0),
         playing: AtomicBool::new(false),

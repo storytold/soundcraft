@@ -300,6 +300,7 @@ fn new_track_row(e: &mut Engine, p: &Value) -> Result<Vec<TrackId>> {
     let mut ids = Vec::new();
     for _ in 0..count {
         let id = s.add_track(kind, format, name.as_deref());
+        crate::no_input::assign_first_input(s, id);
         if let Some(t) = s.track_mut(id) {
             if let Some(tb) = ticks {
                 t.ticks_timebase = tb;
@@ -474,6 +475,7 @@ fn split_mono(e: &mut Engine, p: &Value) -> Result<Value> {
                 _ => format!("{}", ch + 1),
             };
             let id = s.add_track(TrackKind::Audio, ChannelFormat::Mono, Some(&format!("{}.{suffix}", src.name)));
+            crate::no_input::assign_first_input(s, id);
             let mut clips = src.clips().to_vec();
             for c in &mut clips {
                 c.id = s.new_clip_id();
