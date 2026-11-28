@@ -14,8 +14,9 @@
 //! - "Fixture Wide 16x64", "Fixture Wide 32 buses", "Fixture Wide 65 buses", "Fixture Wide 65
 //!   channels" (`Fx`): effects advertising wide layouts (16 buses of 64 channels, 32 and 65 buses
 //!   of 2 channels, one bus of 65 channels per direction), through `getBusInfo` only. `process` writes 1.0 into every channel
-//!   of output bus 0 when the host's buffers match the advertised layout, -1.0 when they do not.
-//!   Report 3 samples of latency.
+//!   of output bus 0 when the host's buffers match the advertised layout (2.0 when the host set it
+//!   up and runs it with `kOffline`), -1.0 when they do not or when `process` gets another
+//!   `processMode` than `setupProcessing` did. Report 3 samples of latency.
 //!
 //! The module checks the host's module lifecycle the way real plugins depend on it (see "module
 //! lifecycle" below) and aborts the process when it is broken.
@@ -25,7 +26,7 @@
 #![allow(non_snake_case, clippy::missing_safety_doc)]
 
 use std::ffi::{c_char, c_int, c_void};
-use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU32, AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI32, AtomicI64, AtomicU32, AtomicU64, AtomicUsize, Ordering};
 use vst3::Steinberg::Vst::*;
 use vst3::Steinberg::*;
 use vst3::{Class, ComRef, ComWrapper, uid};
@@ -640,6 +641,8 @@ impl IEditControllerTrait for Synth {
 struct Wide {
     buses: i32,
     channels: i32,
+    /// The `processMode` of the last `setupProcessing`.
+    mode: AtomicI32,
     _live: Live,
 }
 
@@ -704,7 +707,8 @@ impl IAudioProcessorTrait for Wide {
     unsafe fn getLatencySamples(&self) -> u32 {
         3
     }
-    unsafe fn setupProcessing(&self, _setup: *mut ProcessSetup) -> tresult {
+    unsafe fn setupProcessing(&self, setup: *mut ProcessSetup) -> tresult {
+        self.mode.store(unsafe { &*setup }.processMode, Ordering::Relaxed);
         kResultOk
     }
     unsafe fn setProcessing(&self, _state: TBool) -> tresult {
@@ -714,10 +718,11 @@ impl IAudioProcessorTrait for Wide {
         let d = unsafe { &*data };
         let fits =
             |bufs: *mut AudioBusBuffers, n: i32| n == self.buses && (0..n as usize).all(|i| unsafe { &*bufs.add(i) }.numChannels == self.channels);
-        let ok = fits(d.inputs, d.numInputs) && fits(d.outputs, d.numOutputs);
+        let ok = fits(d.inputs, d.numInputs) && fits(d.outputs, d.numOutputs) && d.processMode == self.mode.load(Ordering::Relaxed);
+        let fit = if d.processMode == ProcessModes_::kOffline as i32 { 2.0 } else { 1.0 };
         if d.numOutputs > 0 {
             for ch in unsafe { channels(&*d.outputs, d.numSamples.max(0) as usize) } {
-                ch.fill(if ok { 1.0 } else { -1.0 });
+                ch.fill(if ok { fit } else { -1.0 });
             }
         }
         kResultOk
@@ -791,7 +796,7 @@ impl IPluginFactoryTrait for Factory {
             .into_iter()
             .find_map(|(c, layout)| (c == cid).then_some(layout))
         {
-            ComWrapper::new(Wide { buses, channels, _live: Live::new(&OBJECTS) }).to_com_ptr::<FUnknown>()
+            ComWrapper::new(Wide { buses, channels, mode: AtomicI32::new(-1), _live: Live::new(&OBJECTS) }).to_com_ptr::<FUnknown>()
         } else {
             None
         };

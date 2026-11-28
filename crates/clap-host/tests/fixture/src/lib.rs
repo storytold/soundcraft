@@ -4,12 +4,13 @@
 //!   (stepped enum A/B/C), hidden param 9, latency 3 samples.
 //! - `org.soundcraft.test.synth`: instrument, stereo out, CLAP note port; outputs a constant equal
 //!   to the velocity of the held note (0 when none), switching at the event's sample offset. A
-//!   MIDI CC 7 (volume) sets the constant to its value / 127.
+//!   MIDI CC 7 (volume) sets the constant to its value / 127. `reset` leaves the note sounding.
 //!
 //! - `org.soundcraft.test.wide16`, `.wide17ports`, `.wide65ch`: effects advertising wide layouts
 //!   (16 ports of 64 channels, 17 ports of 2 channels, one port of 65 channels per direction).
 //!   `process` writes 1.0 into every output channel it was given when the host's buffers match the
-//!   advertised layout, -1.0 when they do not.
+//!   advertised layout (2.0 once the host set the offline render mode through `clap.render`), -1.0
+//!   when they do not.
 //!
 //! The gain plugin also implements `clap.state` (gain and mode as two little-endian f64s) and a
 //! floating-only `clap.gui` without a real window: showing it "edits" the gain to 0.25 in the GUI,
@@ -27,6 +28,7 @@ use clap_sys::ext::latency::*;
 use clap_sys::ext::log::*;
 use clap_sys::ext::note_ports::*;
 use clap_sys::ext::params::*;
+use clap_sys::ext::render::*;
 use clap_sys::factory::plugin_factory::*;
 use clap_sys::host::clap_host;
 use clap_sys::id::clap_id;
@@ -100,8 +102,12 @@ struct Fx {
     active: bool,
     processing: bool,
     gui_created: bool,
+    /// The thread that created the GUI (the host's main thread).
+    gui_thread: Option<std::thread::ThreadId>,
     gui_visible: bool,
     gui_edit_pending: bool,
+    /// `clap.render` set the offline mode (wide fixtures only).
+    offline: bool,
 }
 
 unsafe fn fx<'a>(p: *const clap_plugin) -> &'a mut Fx {
@@ -126,7 +132,10 @@ unsafe extern "C" fn init(p: *const clap_plugin) -> bool {
 }
 
 unsafe extern "C" fn destroy(p: *const clap_plugin) {
-    assert!(!unsafe { fx(p) }.gui_created, "plugin destroyed with its GUI alive");
+    let f = unsafe { fx(p) };
+    // A host destroying the plugin off the GUI's thread can't destroy the GUI there (clap.gui is
+    // main-thread only), so it may leave it; on the GUI's thread it must destroy it first.
+    assert!(!f.gui_created || f.gui_thread != Some(std::thread::current().id()), "plugin destroyed with its GUI alive");
     let data = unsafe { (*p).plugin_data } as *mut Fx;
     drop(unsafe { Box::from_raw(data) });
 }
@@ -157,9 +166,9 @@ unsafe extern "C" fn stop_processing(p: *const clap_plugin) {
     unsafe { fx(p) }.processing = false;
 }
 
-unsafe extern "C" fn reset(p: *const clap_plugin) {
-    unsafe { fx(p) }.level = 0.0;
-}
+/// Leaves the synth's note sounding. CLAP asks `reset` to kill voices, but some synths' doesn't
+/// (Surge XT's), so the host must send the releases itself.
+unsafe extern "C" fn reset(_p: *const clap_plugin) {}
 
 fn apply(f: &mut Fx, h: &clap_event_header) {
     if h.space_id != CLAP_CORE_EVENT_SPACE_ID {
@@ -189,8 +198,8 @@ fn apply(f: &mut Fx, h: &clap_event_header) {
     }
 }
 
-/// Fill every output channel with 1.0 when all ports have the wide layout, else -1.0.
-unsafe fn fill_wide(pr: &clap_process, ports: u32, channels: u32, n: usize) {
+/// Fill every output channel with `fit` when all ports have the wide layout, else -1.0.
+unsafe fn fill_wide(pr: &clap_process, ports: u32, channels: u32, n: usize, fit: f32) {
     let fits = |bufs: *const clap_audio_buffer, n: u32| {
         n == ports && (0..n as usize).all(|i| unsafe { &*bufs.add(i) }.channel_count == channels)
     };
@@ -200,7 +209,7 @@ unsafe fn fill_wide(pr: &clap_process, ports: u32, channels: u32, n: usize) {
         for c in 0..out.channel_count as usize {
             let o = unsafe { *out.data32.add(c) };
             for i in 0..n {
-                unsafe { *o.add(i) = if ok { 1.0 } else { -1.0 } };
+                unsafe { *o.add(i) = if ok { fit } else { -1.0 } };
             }
         }
     }
@@ -252,7 +261,7 @@ unsafe extern "C" fn process(p: *const clap_plugin, pr: *const clap_process) -> 
     let ev = unsafe { &*pr.in_events };
     let count = unsafe { (ev.size.unwrap())(pr.in_events) };
     if let Some((ports, channels)) = f.wide {
-        unsafe { fill_wide(pr, ports, channels, n) };
+        unsafe { fill_wide(pr, ports, channels, n, if f.offline { 2.0 } else { 1.0 }) };
         return CLAP_PROCESS_CONTINUE;
     }
     if pr.audio_outputs_count != 1 {
@@ -488,6 +497,7 @@ unsafe extern "C" fn gui_create(p: *const clap_plugin, _api: *const c_char, floa
     let f = unsafe { fx(p) };
     assert!(floating && !f.gui_created, "create");
     f.gui_created = true;
+    f.gui_thread = Some(std::thread::current().id());
     true
 }
 
@@ -543,6 +553,17 @@ static GUI: clap_plugin_gui = clap_plugin_gui {
     hide: Some(gui_hide),
 };
 
+unsafe extern "C" fn render_hard_realtime(_p: *const clap_plugin) -> bool {
+    false
+}
+
+unsafe extern "C" fn render_set(p: *const clap_plugin, mode: clap_plugin_render_mode) -> bool {
+    unsafe { fx(p) }.offline = mode == CLAP_RENDER_OFFLINE;
+    true
+}
+
+static RENDER: clap_plugin_render = clap_plugin_render { has_hard_realtime_requirement: Some(render_hard_realtime), set: Some(render_set) };
+
 unsafe extern "C" fn get_extension(p: *const clap_plugin, id: *const c_char) -> *const c_void {
     let id = unsafe { CStr::from_ptr(id) };
     let synth = unsafe { fx(p) }.synth;
@@ -558,6 +579,8 @@ unsafe extern "C" fn get_extension(p: *const clap_plugin, id: *const c_char) -> 
         &STATE as *const _ as *const c_void
     } else if id == CLAP_EXT_GUI && !synth {
         &GUI as *const _ as *const c_void
+    } else if id == CLAP_EXT_RENDER && unsafe { fx(p) }.wide.is_some() {
+        &RENDER as *const _ as *const c_void
     } else {
         std::ptr::null()
     }
@@ -621,8 +644,10 @@ unsafe extern "C" fn factory_create(_f: *const clap_plugin_factory, host: *const
         active: false,
         processing: false,
         gui_created: false,
+        gui_thread: None,
         gui_visible: false,
         gui_edit_pending: false,
+        offline: false,
     });
     let raw = Box::into_raw(b);
     unsafe {

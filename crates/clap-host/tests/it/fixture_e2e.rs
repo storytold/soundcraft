@@ -109,6 +109,48 @@ fn synth_plays_notes_at_their_offsets() {
     assert!(io[0][19].abs() < 1e-6 && (io[0][20] - 64.0 / 127.0).abs() < 1e-6, "controllers arrive as MIDI at their offset");
 }
 
+/// Renders one 64-frame stereo block of `p` and returns its left channel.
+fn render_block(p: &mut dyn soundcraft_dsp::Plugin) -> Vec<f32> {
+    let mut io = vec![vec![0.0f32; 64], vec![0.0f32; 64]];
+    p.process(&mut io, 64);
+    io.swap_remove(0)
+}
+
+/// Stop, Play and Locate run `all_notes_off` then `reset`: the releases reach a synth whose own
+/// reset leaves its voices sounding, and a later block is silent (#1464).
+#[test]
+fn reset_delivers_the_releases_of_held_notes() {
+    fixture_dir();
+    let mut p = soundcraft_clap_host::create(SYNTH).unwrap();
+    p.prepare(48_000.0, 64, 2);
+    let silent = |b: &[f32]| b.iter().all(|x| x.abs() < 1e-6);
+
+    // As the mix engine does on Stop: release the held note, then reset.
+    p.note_on(0, 60, 127);
+    assert!(render_block(p.as_mut()).iter().all(|&x| (x - 1.0).abs() < 1e-6), "the note sounds");
+    p.all_notes_off();
+    p.reset();
+    assert!(silent(&render_block(p.as_mut())), "all_notes_off's release was dropped by reset");
+
+    // A reset alone releases what is still held.
+    p.note_on(0, 61, 127);
+    render_block(p.as_mut());
+    p.reset();
+    assert!(silent(&render_block(p.as_mut())), "reset did not release the held note");
+
+    // A release queued for a block that never ran is still delivered.
+    p.note_on(0, 62, 127);
+    render_block(p.as_mut());
+    p.note_off(30, 62);
+    p.reset();
+    assert!(silent(&render_block(p.as_mut())), "the pending release was dropped by reset");
+
+    // A note-on queued for the position being left is dropped, not played after the reset.
+    p.note_on(10, 63, 127);
+    p.reset();
+    assert!(silent(&render_block(p.as_mut())), "a note-on from before the reset sounded");
+}
+
 #[test]
 fn layouts_beyond_the_host_limits_are_rejected_not_truncated() {
     fixture_dir();
@@ -127,6 +169,19 @@ fn layouts_beyond_the_host_limits_are_rejected_not_truncated() {
         let mut io = vec![vec![0.5f32; 64]; 2];
         p.process(&mut io, 64);
         assert!(io.iter().flatten().all(|&x| x == 0.5), "{id}: the plugin never ran: {:?}", &io[0][..4]);
+    }
+}
+
+#[test]
+fn offline_renders_set_the_render_mode() {
+    fixture_dir();
+    for (offline, want) in [(false, 1.0), (true, 2.0)] {
+        let mut p = soundcraft_clap_host::create("clap:org.soundcraft.test.wide16").unwrap();
+        p.set_offline(offline);
+        p.prepare(44_100.0, 64, 2);
+        let mut io = vec![vec![0.5f32; 64]; 2];
+        p.process(&mut io, 64);
+        assert!(io.iter().flatten().all(|&x| x == want), "offline {offline}: {:?}", &io[0][..4]);
     }
 }
 
@@ -202,14 +257,12 @@ fn state_reader_reads_while_another_thread_processes() {
 #[test]
 fn editors_refuse_to_open_off_the_main_thread() {
     fixture_dir();
-    // Test threads are never the process main thread.
+    // Test threads are never the process main thread, on any platform (#901).
     let mut p = soundcraft_clap_host::create(GAIN).unwrap();
     let mut ed = p.editor().expect("the gain fixture has clap.gui");
-    if cfg!(target_os = "macos") {
-        assert!(ed.open().unwrap_err().contains("main thread"));
-        assert!(p.open_editor().is_err());
-        assert!(!ed.is_open());
-    }
+    assert!(ed.open().unwrap_err().contains("main thread"));
+    assert!(p.open_editor().is_err());
+    assert!(!ed.is_open());
     ed.close();
     p.close_editor();
 }

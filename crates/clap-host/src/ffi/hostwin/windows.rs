@@ -1,3 +1,4 @@
+use clap_sys::ext::gui::clap_window_handle;
 use std::ffi::c_void;
 use std::sync::OnceLock;
 use windows_sys::Win32::Foundation::{HWND, LPARAM, LRESULT, RECT, WPARAM};
@@ -126,6 +127,10 @@ impl HostWindow {
     /// The `HWND` the plugin creates its child window in.
     pub fn parent(&self) -> *mut c_void {
         self.live().unwrap_or(std::ptr::null_mut())
+    }
+
+    pub fn handle(&self) -> clap_window_handle {
+        clap_window_handle { win32: self.parent() }
     }
 
     pub fn raise(&self) {

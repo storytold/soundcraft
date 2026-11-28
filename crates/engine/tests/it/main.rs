@@ -14,6 +14,7 @@ mod midi_offset;
 mod min_secs_with_timecode_counter;
 mod mix_required_params;
 mod new_track_rows;
+mod processing_keeps_crossfades;
 mod random_edits;
 mod recording;
 mod session_transport;

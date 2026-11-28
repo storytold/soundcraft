@@ -85,6 +85,52 @@ fn nice_step(spp: f64, sr: f64, min_px: f64) -> i64 {
     (3600.0 * sr) as i64
 }
 
+/// Selection markers are blue, or red while any track is record-armed.
+pub(super) fn selection_marker_colour(t: &Tokens, armed: bool) -> Color32 {
+    if armed { t.rec } else { t.accent }
+}
+
+/// How far a half of the selection arrow reaches out from its cut edge, in px.
+const ARROW_REACH: f32 = 10.0;
+
+/// Corner points of one half of the selection arrow, tip first: the whole arrow points down at
+/// `x`, a shaft on top and a head below with its tip at the foot of the ruler row, and is cut in
+/// two along its vertical axis. `outward` picks the half: -1 for the left one (a start), +1 for the
+/// right one (an end). Each half is a bar 4 px wide next to the cut and a wing 6 px further out from
+/// mid-height, whose slope runs back to the tip. Mirroring `outward` is the only difference between
+/// the halves, so they always fit together.
+pub(super) fn arrow_half(x: f32, row: Rect, outward: f32) -> [egui::Pos2; 5] {
+    let (top, bottom) = (row.min.y + 0.5, row.max.y - 0.5);
+    let (mid, bar, wing) = ((top + bottom) / 2.0, x + outward * 4.0, x + outward * ARROW_REACH);
+    [pos2(x, bottom), pos2(wing, mid), pos2(bar, mid), pos2(bar, top), pos2(x, top)]
+}
+
+/// The markers for a selection from `x0` to `x1`: the left half of the arrow at the start, the right
+/// half at the end, each filled and outlined. An empty selection (`x0 == x1`) joins them into the
+/// whole arrow on the insertion point, filled and outlined as one so no seam shows.
+pub(super) fn selection_markers(x0: f32, x1: f32, row: Rect, fill: Color32, outline: Color32) -> Vec<Shape> {
+    let (left, right) = (arrow_half(x0, row, -1.0), arrow_half(x1, row, 1.0));
+    let stroke = Stroke::new(1.0, outline);
+    // Each half is concave, so it is filled as the bar down to mid-height plus the wing's triangle.
+    if x0 == x1 {
+        vec![
+            Shape::convex_polygon(vec![left[3], right[3], right[2], left[2]], fill, Stroke::NONE),
+            Shape::convex_polygon(vec![left[1], right[1], left[0]], fill, Stroke::NONE),
+            Shape::closed_line(vec![right[0], right[1], right[2], right[3], left[3], left[2], left[1]], stroke),
+        ]
+    } else {
+        let mut shapes = Vec::new();
+        for half in [left, right] {
+            let [tip, wing, mid, top, cut] = half;
+            let seam = pos2(cut.x, mid.y);
+            shapes.push(Shape::convex_polygon(vec![cut, top, mid, seam], fill, Stroke::NONE));
+            shapes.push(Shape::convex_polygon(vec![wing, seam, tip], fill, Stroke::NONE));
+            shapes.push(Shape::closed_line(half.to_vec(), stroke));
+        }
+        shapes
+    }
+}
+
 /// Draw each enabled ruler and handle its clicks and double-clicks against the visible sample range.
 pub(super) fn draw_rulers(app: &mut SoundApp, ui: &mut Ui, area: Rect, tl: Rect, rulers: &[String]) {
     let t = Tokens::current();
@@ -92,6 +138,9 @@ pub(super) fn draw_rulers(app: &mut SoundApp, ui: &mut Ui, area: Rect, tl: Rect,
     ui.painter().rect_filled(area, 0.0, t.ruler_bg);
     let view = Range::new(sample_at(&s, tl, tl.min.x), sample_at(&s, tl, tl.max.x));
     let sr = s.sample_rate;
+    // The selection is marked in the main timebase ruler, or in the top one when that is hidden.
+    let main = rulers.iter().position(|id| TimeFormat::from_id(id) == Some(s.edit.main_counter)).unwrap_or(0);
+    let marker = selection_marker_colour(&t, s.tracks.iter().any(|track| track.mixer.record_arm));
     let mut y0 = area.min.y + 3.0;
     for (i, id) in rulers.iter().enumerate() {
         let h = ruler_height(id);
@@ -99,7 +148,13 @@ pub(super) fn draw_rulers(app: &mut SoundApp, ui: &mut Ui, area: Rect, tl: Rect,
         let lab = Rect::from_min_max(pos2(area.min.x, y0), pos2(area.min.x + HEADER_W, y0 + h));
         y0 += h;
         let painter = ui.painter().with_clip_rect(row);
-        ui.painter().text(pos2(lab.max.x - 12.0, lab.center().y), Align2::RIGHT_CENTER, ruler_label(id), bold(11.0), t.ruler_text);
+        ui.painter().text(
+            pos2(lab.max.x - 12.0, lab.center().y),
+            Align2::RIGHT_CENTER,
+            crate::localization::text(ruler_label(id)),
+            bold(11.0),
+            t.ruler_text,
+        );
         let fmt = TimeFormat::from_id(id);
         match id.as_str() {
             "tempo" => {
@@ -110,7 +165,7 @@ pub(super) fn draw_rulers(app: &mut SoundApp, ui: &mut Ui, area: Rect, tl: Rect,
                 {
                     let at = snap(&s, sample_at(&s, tl, p.x).max(0));
                     let bpm = s.tempo.tempo_at_tick(s.tempo.samples_to_ticks(at, sr));
-                    app.dialogs.open = Some(crate::dialogs::Dialog::TempoChange { at, bpm });
+                    app.dialogs.set(crate::dialogs::Dialog::TempoChange { at, bpm });
                 }
                 let mut last_label = f32::MIN;
                 for ev in s.tempo.tempos() {
@@ -151,7 +206,13 @@ pub(super) fn draw_rulers(app: &mut SoundApp, ui: &mut Ui, area: Rect, tl: Rect,
             "key" => {
                 painter.rect_filled(row, 0.0, Color32::from_rgb(64, 52, 88));
                 if s.key_signatures.is_empty() {
-                    painter.text(pos2(tl.min.x + 6.0, row.center().y), Align2::LEFT_CENTER, "C major", bold(11.0), Color32::from_rgb(220, 214, 236));
+                    painter.text(
+                        pos2(tl.min.x + 6.0, row.center().y),
+                        Align2::LEFT_CENTER,
+                        crate::localization::text("C major"),
+                        bold(11.0),
+                        Color32::from_rgb(220, 214, 236),
+                    );
                 }
                 for (at, k) in &s.key_signatures {
                     let x = x_of(&s, tl, *at);
@@ -222,7 +283,8 @@ pub(super) fn draw_rulers(app: &mut SoundApp, ui: &mut Ui, area: Rect, tl: Rect,
                     } else if resp.clicked()
                         && let Some(m) = hit
                     {
-                        let _ = app.run("markers.recall", json!({"number": m.number}));
+                        let command = if ui.input(|i| i.modifiers.alt) { "markers.delete" } else { "markers.recall" };
+                        let _ = app.run(command, json!({"number": m.number}));
                     }
                 }
             }
@@ -239,6 +301,17 @@ pub(super) fn draw_rulers(app: &mut SoundApp, ui: &mut Ui, area: Rect, tl: Rect,
                     }
                 }
             }
+        }
+        if i == main {
+            let sel = s.edit.selection;
+            let (x0, x1) = (x_of(&s, tl, sel.start), x_of(&s, tl, sel.end));
+            // The start's left half reaches out to the left of the timeline when the start is at its
+            // edge (a new session: insertion at 0, scroll 0), so the clip widens by that much, over
+            // the empty strip next to the ruler row only (never into the track headers below). A start
+            // scrolled out of view keeps the plain clip, so its half does not show in that strip.
+            let reach = if x0 >= tl.min.x { ARROW_REACH } else { 0.0 };
+            let markers = ui.painter().with_clip_rect(row.with_min_x(row.min.x - reach));
+            markers.extend(selection_markers(x0, x1, row, marker, t.text_dark));
         }
         if id == "min_secs" || id == "bars_beats" || id == "timecode" || id == "samples" || id == "feet_frames" {
             // Main timebase marker (blue tick like a selected ruler).
@@ -373,7 +446,7 @@ pub(super) fn column_titles(ui: &Ui, rulers: Rect, cols: &[Column]) {
     ui.painter().vline(end - 0.5, row.y_range(), line);
     for &(_, _, title, w) in cols {
         ui.painter().vline(x + 0.5, row.y_range(), line);
-        ui.painter().text(pos2(x + w / 2.0, row.center().y), Align2::CENTER_CENTER, title, bold(10.0), t.section_label);
+        ui.painter().text(pos2(x + w / 2.0, row.center().y), Align2::CENTER_CENTER, crate::localization::text(title), bold(10.0), t.section_label);
         x += w;
     }
 }
@@ -382,9 +455,9 @@ pub(super) fn column_titles(ui: &Ui, rulers: Rect, cols: &[Column]) {
 pub(super) fn views_button(app: &mut SoundApp, ui: &mut Ui, rulers: Rect) {
     let r = Rect::from_min_size(rulers.min + vec2(6.0, 5.0), vec2(50.0, 18.0));
     let mut child = ui.new_child(egui::UiBuilder::new().max_rect(r));
-    let resp = crate::widgets::selector_box(&mut child, r.width(), r.height(), "Views", Tokens::current().text);
-    resp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::ComboBox, child.is_enabled(), "Views"));
-    let resp = resp.on_hover_text("Columns beside the track headers: inserts, sends, I/O…");
+    let resp = crate::widgets::selector_box(&mut child, r.width(), r.height(), crate::localization::text("Views"), Tokens::current().text);
+    resp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::ComboBox, child.is_enabled(), crate::localization::text("Views")));
+    let resp = resp.on_hover_text(crate::localization::text("Columns beside the track headers: inserts, sends, I/O…"));
     egui::Popup::menu(&resp).close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside).show(|ui| {
         let shown = edit_columns(app.engine.session());
         for (id, label, _, _) in COLUMNS {
@@ -393,10 +466,10 @@ pub(super) fn views_button(app: &mut SoundApp, ui: &mut Ui, rulers: Rect) {
             }
         }
         ui.separator();
-        if ui.button("All").clicked() {
+        if ui.button(crate::localization::text("All")).clicked() {
             let _ = app.run("view.edit_all", json!({}));
         }
-        if ui.button("Minimal").clicked() {
+        if ui.button(crate::localization::text("Minimal")).clicked() {
             let _ = app.run("view.edit_minimal", json!({}));
         }
     });

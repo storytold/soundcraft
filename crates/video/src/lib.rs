@@ -14,24 +14,19 @@
 //!
 //! ## Origin
 //!
-//! [`bitstream`] and [`isobmff`] are re-exports of `craft_media::bitstream` and
-//! `craft_media::isobmff` from craft-libs (`storytold/craft-libs`, the shared crate FilmCraft uses
-//! too). The H.264 and ProRes code is a copy of the clean-room crates of our sibling app FilmCraft
-//! (`storytold/filmcraft`, same organisation, MIT OR Apache-2.0): `filmcraft-h264` → [`h264`]
-//! (without its test-only synthetic stream module), `filmcraft-prores` → [`prores`]. Only the
-//! module paths were changed; fixes found here should be offered back upstream. [`Movie`], the
-//! pixel conversion and the frame caches are SoundCraft's own.
+//! [`bitstream`] and [`isobmff`] are re-exports of `craft_media` from craft-libs. H.264 and ProRes
+//! are re-exports of the shared `craft_video` decoders. [`Movie`], Motion JPEG decoding, pixel
+//! conversion and frame caches are SoundCraft's own.
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
 // Codec code indexes fixed-size blocks; index loops read more clearly than iterator chains there.
 #![allow(clippy::needless_range_loop, clippy::too_many_arguments)]
 
 pub mod convert;
-pub mod h264;
 mod movie;
-pub mod prores;
 pub mod synth;
 
 pub use craft_media::{bitstream, isobmff};
+pub use craft_video::{h264::decode as h264, prores};
 
 pub use isobmff::ByteSource;
 pub use movie::{Frame, Movie, MovieInfo, SharedSource, fit_size};

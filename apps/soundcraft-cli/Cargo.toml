@@ -20,11 +20,12 @@ workspace = true
 [dependencies]
 soundcraft-engine.workspace = true
 soundcraft-automation.workspace = true
-soundcraft-audio-io.workspace = true
+craft-audio.workspace = true
 soundcraft-dsp.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
+log.workspace = true
 clap.workspace = true
 same-file.workspace = true
 

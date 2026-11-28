@@ -5,6 +5,7 @@ impl SoundApp {
     pub(crate) fn meters_live(&self) -> bool {
         self.engine.transport.playing
             || (self.recorder.is_some() && self.engine.session().tracks.iter().any(|t| t.mixer.input_monitor || t.mixer.record_arm))
+            || (self.midi_connected() && self.engine.session().tracks.iter().any(|t| t.kind.is_midi() && soundcraft_mix::midi_thru(t)))
     }
 
     /// Reopens the audio devices with `cfg` (Setup › Playback Engine › Apply), keeping the
@@ -13,7 +14,7 @@ impl SoundApp {
     /// then stays the configuration of the open device.
     pub fn apply_audio_config(&mut self, cfg: soundcraft_playback::AudioConfig) -> Result<(), String> {
         if self.engine.transport.recording {
-            return Err("stop recording before changing the audio device".into());
+            return Err(crate::localization::text("stop recording before changing the audio device").into());
         }
         self.ui.audio = cfg;
         let at = self.position();
@@ -27,6 +28,7 @@ impl SoundApp {
         self.recorder = None;
         self.recorder_failed = false;
         let player = soundcraft_playback::Player::with_config(self.engine.session_arc(), &self.ui.audio);
+        self.attach_midi(&player);
         player.locate(at);
         self.player = Some(player);
         Ok(())
@@ -46,7 +48,7 @@ impl SoundApp {
             }
             Err(e) => {
                 self.recorder_failed = true;
-                self.ui.status = format!("No audio input: {e}");
+                self.ui.status = crate::localized_format!("No audio input: {e}", e = e);
             }
         }
     }
@@ -58,24 +60,28 @@ impl SoundApp {
         let name = p.device_name.clone();
         let (cause, then) = match trouble {
             OutputTrouble::Bug => (
-                "the audio engine hit an internal error (see the log)".to_string(),
-                "Use Reconnect audio device in Setup › Playback Engine, or restart SoundCraft.",
+                crate::localization::text("the audio engine hit an internal error (see the log)").to_string(),
+                crate::localization::text("Use Reconnect audio device in Setup › Playback Engine, or restart SoundCraft."),
             ),
-            OutputTrouble::Gone => {
-                (format!("“{name}” is unavailable"), "Check the audio device, then use Reconnect audio device in Setup › Playback Engine.")
-            }
-            OutputTrouble::Stalled => (format!("“{name}” stopped asking for audio"), "Use Reconnect audio device in Setup › Playback Engine."),
+            OutputTrouble::Gone => (
+                format!("“{}” {}", name, crate::localization::text("is unavailable")),
+                crate::localization::text("Check the audio device, then use Reconnect audio device in Setup › Playback Engine."),
+            ),
+            OutputTrouble::Stalled => (
+                format!("“{}” {}", name, crate::localization::text("stopped asking for audio")),
+                crate::localization::text("Use Reconnect audio device in Setup › Playback Engine."),
+            ),
         };
         let (recording, playing) = (self.engine.transport.recording, self.engine.transport.playing);
         if recording || playing {
             self.stop_play();
         }
         self.ui.status = if recording {
-            format!("Recording stopped: {cause}. The take is kept up to there. {then}")
+            crate::localized_format!("Recording stopped: {cause} The take is kept up to there. {then}", cause = cause, then = then)
         } else if playing {
-            format!("Playback stopped: {cause}. {then}")
+            crate::localized_format!("Playback stopped: {cause} {then}", cause = cause, then = then)
         } else {
-            format!("Audio output: {cause}. {then}")
+            crate::localized_format!("Audio output: {cause} {then}", cause = cause, then = then)
         };
     }
 
@@ -88,7 +94,7 @@ impl SoundApp {
             let lost = r.lost_ms();
             if recording && lost > self.lost_shown {
                 self.lost_shown = lost;
-                self.ui.status = format!("The disk is too slow: this take has lost {lost} ms of input so far.");
+                self.ui.status = crate::localized_format!("The disk is too slow: this take has lost {lost} ms of input so far.", lost = lost);
             }
             return;
         };
@@ -99,14 +105,14 @@ impl SoundApp {
             Trouble::Device(what) => {
                 self.recorder = None;
                 self.recorder_failed = true;
-                (what, "Reconnect it, then use Reconnect audio device in Setup › Playback Engine.")
+                (what, crate::localization::text("Reconnect it, then use Reconnect audio device in Setup › Playback Engine."))
             }
-            Trouble::Disk(what) => (what, "Check the disk, then record again."),
+            Trouble::Disk(what) => (what, crate::localization::text("Check the disk, then record again.")),
         };
         self.ui.status = if recording {
-            format!("Recording stopped: {what}. The take is kept up to there. {then}")
+            crate::localized_format!("Recording stopped: {what} The take is kept up to there. {then}", what = what, then = then)
         } else {
-            format!("Audio input: {what}. {then}")
+            crate::localized_format!("Audio input: {what} {then}", what = what, then = then)
         };
     }
 
@@ -121,7 +127,9 @@ impl SoundApp {
         }
         self.recorder = None;
         self.recorder_failed = false;
-        self.player = Some(Player::with_config(self.engine.session_arc(), &self.ui.audio));
+        let player = Player::with_config(self.engine.session_arc(), &self.ui.audio);
+        self.attach_midi(&player);
+        self.player = Some(player);
     }
 }
 
@@ -150,4 +158,34 @@ pub(super) fn feed_meter(d: &mut MeterDisplay, peak: [f32; 2], gr: f32, dt: f32)
         d.hold = d.level;
     }
     d.gr = if gr > d.gr { gr } else { d.gr * fall };
+}
+
+/// Whether a track needs the audio input opened: an audio track (or an aux) that is
+/// record-enabled or input-monitored. A MIDI or instrument track listens to MIDI devices, so
+/// arming one does not open an audio device or complain that there is none.
+pub(super) fn wants_audio_input(s: &soundcraft_model::Session) -> bool {
+    s.tracks.iter().any(|t| !t.kind.is_midi() && (t.mixer.input_monitor || t.mixer.record_arm))
+}
+
+#[cfg(test)]
+mod audio_input_tests {
+    use super::wants_audio_input;
+    use soundcraft_model::{ChannelFormat, Session, TrackKind};
+
+    #[test]
+    fn only_audio_tracks_ask_for_the_audio_input() {
+        let mut s = Session::default();
+        let synth = s.add_track(TrackKind::Instrument, ChannelFormat::Stereo, None);
+        let midi = s.add_track(TrackKind::Midi, ChannelFormat::Stereo, None);
+        let vox = s.add_track(TrackKind::Audio, ChannelFormat::Mono, None);
+        assert!(!wants_audio_input(&s));
+        s.track_mut(synth).unwrap().mixer.record_arm = true;
+        s.track_mut(midi).unwrap().mixer.input_monitor = true;
+        assert!(!wants_audio_input(&s), "armed and monitored MIDI tracks listen to MIDI devices");
+        s.track_mut(vox).unwrap().mixer.input_monitor = true;
+        assert!(wants_audio_input(&s));
+        s.track_mut(vox).unwrap().mixer.input_monitor = false;
+        s.track_mut(vox).unwrap().mixer.record_arm = true;
+        assert!(wants_audio_input(&s));
+    }
 }

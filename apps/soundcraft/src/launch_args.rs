@@ -40,6 +40,14 @@ pub(crate) fn command() -> Command {
     LaunchArgs::command().mut_args(blank_env_is_unset)
 }
 
+/// The command line for the selected channel. A Nightly window never inherits the stable
+/// `SOUNDCRAFT_CONTROL_PORT` variable: its control server is not started and the Launcher owns
+/// its lifecycle, so only its file list is meaningful.
+pub(crate) fn command_for_profile(nightly: bool) -> Command {
+    let cmd = command();
+    if nightly { cmd.mut_arg("control", |arg| arg.env(None)) } else { cmd }
+}
+
 /// Parses the launch arguments (without the program name) with `cmd`, from [`command`]. macOS
 /// passes a process serial number (`-psn_…`) when an app is started from Finder on old versions:
 /// it is dropped first, unless it comes after `--`. A bad value from a variable is a usage error
