@@ -621,6 +621,18 @@ mod tests {
     }
 
     #[test]
+    fn undo_and_redo_keep_the_midi_thru_option() {
+        let mut e = crate::demo::demo_engine();
+        e.execute("track.new", &json!({"kind": "midi"})).unwrap();
+        e.execute("options.midi_thru", &json!({"value": false})).unwrap();
+        assert!(e.undo());
+        assert!(!soundcraft_mix::midi_thru_enabled(e.session()), "Undo does not switch MIDI Thru back on");
+        e.execute("options.midi_thru", &json!({"value": true})).unwrap();
+        assert!(e.redo());
+        assert!(soundcraft_mix::midi_thru_enabled(e.session()), "nor Redo off");
+    }
+
+    #[test]
     fn io_bus_lifecycle() {
         let mut e = crate::demo::demo_engine();
         e.execute("setup.io", &json!({"action": "create_bus", "name": "Drums"})).unwrap();
