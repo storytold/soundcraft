@@ -40,6 +40,30 @@ fn cmd_alt_brackets_zoom_waveforms_and_cmd_alt_digits_rate_clips() {
     }
 }
 
+/// #1268: Cmd+Alt+Ctrl+[ resets the waveform zoom on macOS; off macOS Control has no key of its
+/// own, so Ctrl+Alt+[ must still zoom out rather than reset.
+#[test]
+fn cmd_alt_ctrl_open_bracket_resets_waveform_zoom_on_macos_only() {
+    let (ctx, mut app) = rig(OperatingSystem::Mac);
+    let cmd_alt = Modifiers { alt: true, ..MAC_CMD };
+    press(&ctx, &mut app, Key::CloseBracket, cmd_alt);
+    press(&ctx, &mut app, Key::CloseBracket, cmd_alt);
+    assert_eq!(app.engine.session().edit.zoom.waveform_zoom, 4.0);
+    press(&ctx, &mut app, Key::OpenBracket, Modifiers { alt: true, ctrl: true, ..MAC_CMD });
+    assert_eq!(app.engine.session().edit.zoom.waveform_zoom, 1.0, "Cmd+Alt+Ctrl+[ resets");
+    for (os, cmd) in OSES {
+        if os == OperatingSystem::Mac {
+            continue;
+        }
+        let (ctx, mut app) = rig(os);
+        let ctrl_alt = Modifiers { alt: true, ..cmd };
+        press(&ctx, &mut app, Key::CloseBracket, ctrl_alt);
+        press(&ctx, &mut app, Key::CloseBracket, ctrl_alt);
+        press(&ctx, &mut app, Key::OpenBracket, ctrl_alt);
+        assert_eq!(app.engine.session().edit.zoom.waveform_zoom, 2.0, "{os:?}: Ctrl+Alt+[ zooms out one step; it cannot also be the Mac reset chord");
+    }
+}
+
 #[test]
 fn cmd_ctrl_digits_recall_zoom_presets_on_macos() {
     let (ctx, mut app) = rig(OperatingSystem::Mac);

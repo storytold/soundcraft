@@ -288,10 +288,15 @@ fn fixed_more(app: &mut SoundApp, key: Key, m: Modifiers, mac: bool) -> bool {
 
 /// The zoom keys [`fixed`] handles, shared with [`repeating_command`]: T / R zoom the timeline in / out
 /// (Commands Focus style) and the registry's "Cmd+Alt+[ / ]", which `parse` can't read, steps the waveform zoom.
+/// Cmd+Alt+Ctrl+[ resets it; off macOS Control has no key of its own, so that arm never matches there and
+/// Ctrl+Alt+[ stays zoom-out.
 fn zoom_key(key: Key, m: Modifiers, mac: bool) -> Option<(&'static str, serde_json::Value)> {
     let plain = !m.command && !m.alt && !m.ctrl && !m.shift;
     match key {
         Key::R | Key::T if plain => Some((if key == Key::T { "view.zoom_in" } else { "view.zoom_out" }, json!({}))),
+        Key::OpenBracket if mods_match(Modifiers::COMMAND | Modifiers::ALT | Modifiers::CTRL, m, mac) => {
+            Some(("view.waveform_zoom", json!({"value": 1.0})))
+        }
         Key::OpenBracket | Key::CloseBracket if mods_match(Modifiers::COMMAND | Modifiers::ALT, m, mac) => {
             Some(("view.waveform_zoom", json!({"factor": if key == Key::CloseBracket { 2.0 } else { 0.5 }})))
         }
