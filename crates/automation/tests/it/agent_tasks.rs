@@ -130,6 +130,26 @@ fn agent_builds_and_mixes_a_session() {
 }
 
 #[test]
+fn key_changes_are_visible_in_session_inspection() {
+    let mut s = Server::new(Headless::new(Engine::default()));
+    tool(
+        &mut s,
+        "batch",
+        json!({"calls": [
+            {"command": "event.add_key_change", "params": {"key": "D major", "at": 48000}},
+            {"command": "event.add_key_change", "params": {"key": "A minor"}},
+            {"command": "event.add_key_change", "params": {"key": "E minor", "at": 48000}},
+        ]}),
+    );
+
+    let expected = json!([{"at": 0, "key": "A minor"}, {"at": 48000, "key": "E minor"}]);
+    for detail in ["summary", "full"] {
+        let inspected = tool(&mut s, "inspect_session", json!({"detail": detail}));
+        assert_eq!(inspected["key_signatures"], expected);
+    }
+}
+
+#[test]
 fn errors_are_reported_not_panics() {
     let mut s = Server::new(Headless::new(Engine::default()));
     let r = rpc(&mut s, 1, "tools/call", json!({"name": "execute", "arguments": {"command": "mix.volume", "params": {"track": "Nope", "db": 0}}}));
