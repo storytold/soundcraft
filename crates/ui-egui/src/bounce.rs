@@ -70,7 +70,7 @@ fn slice() -> impl FnMut() -> bool {
 /// Shows how far the running bounce got, with Cancel (or Esc).
 pub fn show(app: &mut SoundApp, ctx: &egui::Context) {
     let Some(job) = &app.bounce else { return };
-    let mut cancel = ctx.input(|i| i.key_pressed(egui::Key::Escape));
+    let mut cancel = crate::framework::escape_pressed(ctx);
     egui::Modal::new(egui::Id::unique("bounce_progress")).show(ctx, |ui| {
         ui.spacing_mut().item_spacing = egui::vec2(8.0, 8.0);
         ui.set_width(320.0);

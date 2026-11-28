@@ -68,6 +68,7 @@ fn tracks(mode: &str, tool: &str, lanes: &[&[(i64, i64)]]) -> (SoundApp, egui::C
     e.execute("view.zoom_set", &json!({"samples_per_px": 400.0})).unwrap();
     let mut app = SoundApp::new(e, None, Services::default());
     let ctx = egui::Context::default();
+    soundcraft_ui_egui::framework::install_headless(&ctx);
     frame(&ctx, &mut app, vec![]);
     frame(&ctx, &mut app, vec![]);
     (app, ctx, tracks, ids)
@@ -251,14 +252,17 @@ fn toolbar_clicks_add_snap_to_grid_lock_shuffle_and_switch_grid_modes_despite_th
     let mut e = Engine::default();
     e.execute("edit.mode", &json!({"mode": "slip"})).unwrap();
     let app = SoundApp::new(e, None, Services::default());
-    let mut h = egui_kittest::Harness::builder().with_size(vec2(1600.0, 1000.0)).build_ui_state(
-        |ui, app: &mut SoundApp| {
-            let ctx = ui.ctx().clone();
-            app.logic(&ctx);
-            app.ui(ui);
-        },
-        app,
-    );
+    let mut h = egui_kittest::Harness::builder()
+        .with_context_setup(soundcraft_ui_egui::framework::install_headless)
+        .with_size(vec2(1600.0, 1000.0))
+        .build_ui_state(
+            |ui, app: &mut SoundApp| {
+                let ctx = ui.ctx().clone();
+                app.logic(&ctx);
+                app.ui(ui);
+            },
+            app,
+        );
     h.run_steps(3);
     let click = |h: &mut egui_kittest::Harness<'_, SoundApp>, label: &str, modifiers: Modifiers| {
         h.get_by_label(label).click_modifiers(modifiers);

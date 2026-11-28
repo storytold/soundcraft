@@ -27,8 +27,13 @@ pub(super) fn about(app: &mut SoundApp, ctx: &egui::Context) {
                 1 => crate::credits::contributors_ui(ui),
                 2 => crate::credits::models_ui(ui),
                 _ => {
-                    ui.label(egui::RichText::new(crate::localization::text("SoundCraft")).font(bold(22.0)));
-                    ui.label(crate::localized_format!("Version {}", env!("CARGO_PKG_VERSION")));
+                    let channel = crate::os_window::name_for(crate::os_window::identity());
+                    ui.label(egui::RichText::new(channel).font(bold(22.0)));
+                    ui.label(crate::localized_format!("Version {}", crate::build_version()));
+                    if crate::os_window::identity() == crate::os_window::LaunchIdentity::NightlyV1 {
+                        ui.label(crate::localization::text("Updated by ArtCraft Launcher."));
+                        ui.hyperlink_to(crate::localization::text("Report a problem"), "https://github.com/storytold/soundcraft/issues");
+                    }
                     ui.label(crate::localization::text("An open-source digital audio workstation from the ArtCraft team."));
                     ui.label(crate::localization::text("Dual-licensed MIT OR Apache-2.0. Made with Rust and egui."));
                     ui.hyperlink_to("getartcraft.com/apps/soundcraft", "https://getartcraft.com/apps/soundcraft");
