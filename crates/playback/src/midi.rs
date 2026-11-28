@@ -708,7 +708,8 @@ fn closed_ports<'a>(before: &'a [MidiPort], after: &'a [MidiPort]) -> impl Itera
 #[cfg(any(test, target_os = "linux", target_os = "macos", target_os = "windows"))]
 /// A port name without the parts that change between sessions or say things twice. ALSA names
 /// read `Client:Port name 28:0`: the address goes, and so does a client name the port repeats.
-fn tidy_port_name(raw: &str) -> String {
+/// The MIDI output list names its ports the same way (`sync_output::ports`).
+pub(crate) fn tidy_port_name(raw: &str) -> String {
     let mut s = raw.trim();
     if let Some((head, tail)) = s.rsplit_once(' ')
         && let Some((client, port)) = tail.split_once(':')

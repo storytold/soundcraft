@@ -35,7 +35,7 @@ pub(crate) fn midi_input_menu(app: &mut SoundApp, ui: &mut Ui, id: TrackId) {
         pick = Some((None, channel));
     }
     for (name, open) in &devices {
-        let text = if *open { name.clone() } else { crate::localized_format!("{name} (not connected)", name = name) };
+        let text = if *open { name.clone() } else { crate::localized_format!("{name} (unavailable)", name = name) };
         if ui.selectable_label(device.as_deref() == Some(name.as_str()), text).clicked() {
             pick = Some((Some(name.clone()), channel));
         }
@@ -66,6 +66,103 @@ pub(crate) fn midi_input_menu(app: &mut SoundApp, ui: &mut Ui, id: TrackId) {
         };
         let _ = app.run("track.input", json!({"track": id.0, "input": input}));
     }
+}
+
+/// The MIDI output selector of a MIDI or instrument track, as the Mix strip and the Edit
+/// window's I/O column draw it.
+pub(crate) struct MidiOutputSelector {
+    /// "UM-ONE ch 1", with "(unavailable)" when that port is missing, or "No MIDI output".
+    pub text: String,
+    /// The chosen port is unavailable: the selector takes the warning colour the Playback Engine
+    /// window gives a MIDI device that could not be opened, so it shows without opening the menu.
+    pub missing: bool,
+    /// The full text on hover, for a strip too narrow to show it: "MIDI output: Gone ch 3
+    /// (unavailable)".
+    pub tooltip: String,
+}
+
+pub(crate) fn midi_output_selector(app: &SoundApp, track: &Track) -> MidiOutputSelector {
+    let out = soundcraft_model::MidiOutput::of(&app.engine.session().edit, track.id);
+    let missing = out.is_some_and(|out| app.midi_output_missing(out.device) == Some(true));
+    let text = match out {
+        None => crate::localization::text("No MIDI output").to_string(),
+        Some(out) if missing => crate::localized_format!("{name} (unavailable)", name = out.label()),
+        Some(out) => out.label(),
+    };
+    let tooltip = if out.is_some() {
+        crate::localized_format!("MIDI output: {output}", output = text)
+    } else {
+        crate::localization::text("MIDI output").to_string()
+    };
+    MidiOutputSelector { text, missing, tooltip }
+}
+
+/// The MIDI output menu of a MIDI or instrument track: no output, or one port and one of its 16
+/// channels. A channel another track already plays to on that port says "in use".
+pub(crate) fn midi_output_menu(app: &mut SoundApp, ui: &mut Ui, id: TrackId) {
+    let session = app.engine.session_arc();
+    let now = soundcraft_model::MidiOutput::of(&session.edit, id);
+    let (device, channel) = (now.map(|o| o.device.to_string()), now.map(|o| o.channel));
+    let mut pick: Option<Option<(String, u8)>> = None;
+    let listed = app.midi_output_ports.clone();
+    let mut ports: Vec<(String, bool)> =
+        listed.as_ref().and_then(|l| l.as_ref().ok()).map(|l| l.iter().map(|n| (n.clone(), true)).collect()).unwrap_or_default();
+    // A port the track plays to stays in the list while it is unplugged.
+    if let Some(d) = &device
+        && !ports.iter().any(|(n, _)| n == d)
+    {
+        ports.push((d.clone(), false));
+    }
+    ui.strong(crate::localization::text("MIDI output"));
+    if ui.selectable_label(device.is_none(), crate::localization::text("No MIDI output")).clicked() {
+        pick = Some(None);
+    }
+    for (name, open) in &ports {
+        let text = if *open { name.clone() } else { crate::localized_format!("{name} (unavailable)", name = name) };
+        if ui.selectable_label(device.as_deref() == Some(name.as_str()), text).clicked() {
+            pick = Some(Some((name.clone(), channel.unwrap_or(0))));
+        }
+    }
+    match &listed {
+        Some(Err(why)) => {
+            ui.weak(crate::localization::error_text(why));
+        }
+        _ if ports.is_empty() => {
+            ui.weak(crate::localization::text("No MIDI output port found"));
+        }
+        _ => {}
+    }
+    ui.separator();
+    ui.strong(crate::localization::text("Channel"));
+    // Channels other tracks already play to on this port.
+    let used: Vec<u8> = soundcraft_model::MidiOutput::all(&session.edit)
+        .filter(|(t, out)| *t != id && Some(out.device) == device.as_deref() && session.track(*t).is_some_and(|t| t.kind.is_midi()))
+        .map(|(_, out)| out.channel)
+        .collect();
+    ui.add_enabled_ui(device.is_some(), |ui| {
+        egui::Grid::new(("midi-output-channel", id.0)).spacing(egui::vec2(2.0, 2.0)).show(ui, |ui| {
+            for ch in 0..16u8 {
+                let text = if used.contains(&ch) { crate::localized_format!("{n} (in use)", n = ch + 1) } else { format!("{:>2}", ch + 1) };
+                if ui.selectable_label(channel == Some(ch), text).clicked()
+                    && let Some(d) = &device
+                {
+                    pick = Some(Some((d.clone(), ch)));
+                }
+                if ch % 4 == 3 {
+                    ui.end_row();
+                }
+            }
+        });
+    });
+    if let Some(choice) = pick {
+        let output = choice.map_or_else(|| "none".to_string(), |(d, ch)| soundcraft_model::MidiOutput { device: &d, channel: ch }.route());
+        let _ = app.run("track.midi_output", json!({"track": id.0, "output": output}));
+    }
+}
+
+/// The MIDI output menu under `resp`.
+pub(crate) fn midi_output_popup(app: &mut SoundApp, resp: &egui::Response, id: TrackId) {
+    egui::Popup::menu(resp).close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside).show(|ui| midi_output_menu(app, ui, id));
 }
 
 pub(crate) fn input_name(app: &SoundApp, track: &Track) -> String {

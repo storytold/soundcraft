@@ -219,6 +219,15 @@ pub fn specs() -> Vec<CommandSpec> {
             |e, p| route(e, p, true)
         ),
         cmd!("track.output", "Track Output", [], None, "{tracks?, output: main|none|bus name}", has_selection, |e, p| route(e, p, false)),
+        cmd!(
+            "track.midi_output",
+            "Track MIDI Output",
+            [],
+            None,
+            "{tracks?, output: MIDI:<channel 1-16>:<device>|none} — MIDI and instrument tracks; a device that is unavailable (not listed) stays chosen",
+            has_selection,
+            midi_output
+        ),
         cmd!("track.timebase", "Track Timebase", [], None, "{tracks?, ticks: bool}", has_selection, |e, p| flag(
             e,
             p,
@@ -450,6 +459,10 @@ fn duplicate(e: &mut Engine, p: &Value) -> Result<Value> {
             nt.mixer.sends.iter_mut().for_each(|i| *i = None);
         }
         out.push(nt.id);
+        // The copy plays to the same MIDI output as the original.
+        if let Some(midi) = soundcraft_model::MidiOutput::of(&s.edit, t).map(|o| (o.device.to_string(), o.channel)) {
+            soundcraft_model::MidiOutput::store(&mut s.edit, nt.id, Some(soundcraft_model::MidiOutput { device: &midi.0, channel: midi.1 }));
+        }
         s.tracks.insert((idx + 1).min(s.tracks.len()), nt);
     }
     s.edit.selected_tracks = out.clone();
@@ -796,6 +809,9 @@ fn delete(e: &mut Engine, p: &Value) -> Result<Value> {
     }
     s.tracks.retain(|t| !tracks.contains(&t.id));
     s.edit.selected_tracks.retain(|t| !tracks.contains(t));
+    for t in &tracks {
+        soundcraft_model::MidiOutput::store(&mut s.edit, *t, None);
+    }
     for g in &mut s.groups {
         g.members.retain(|t| !tracks.contains(t));
     }
@@ -1047,9 +1063,90 @@ fn route(e: &mut Engine, p: &Value, input: bool) -> Result<Value> {
     Ok(json!({key: r}))
 }
 
+/// Longest MIDI output port label `track.midi_output` accepts.
+const MAX_MIDI_PORT_CHARS: usize = 256;
+
+/// Where MIDI and instrument tracks play their clips outside SoundCraft: one port and one
+/// channel (`MidiOutput`), or none. Every value is checked; a bad one changes nothing.
+fn midi_output(e: &mut Engine, p: &Value) -> Result<Value> {
+    use soundcraft_model::MidiOutput;
+    let id = "track.midi_output";
+    let tracks = tracks_required(e, id, p)?;
+    let value = p.get("output").ok_or_else(|| bad(id, "`output` required: MIDI:<channel 1-16>:<device> or none"))?;
+    let value = value.as_str().ok_or_else(|| bad(id, format!("`output` must be a string, not {value}")))?;
+    let output = if value == "none" {
+        None
+    } else {
+        let text = value.strip_prefix("MIDI:").ok_or_else(|| bad(id, format!("`{value}` is not MIDI:<channel 1-16>:<device> or none")))?;
+        let output = MidiOutput::parse(text).map_err(|e| bad(id, e))?;
+        if output.device.chars().count() > MAX_MIDI_PORT_CHARS {
+            return Err(bad(id, format!("the MIDI output device name is longer than {MAX_MIDI_PORT_CHARS} characters")));
+        }
+        Some(output)
+    };
+    let s = e.session_mut();
+    for t in &tracks {
+        let track = s.track(*t).ok_or_else(|| bad(id, format!("no track {}", t.0)))?;
+        if !track.kind.is_midi() {
+            return Err(bad(id, format!("{} is not a MIDI or instrument track", track.name)));
+        }
+    }
+    for t in &tracks {
+        MidiOutput::store(&mut s.edit, *t, output);
+    }
+    let outputs: Vec<Value> =
+        tracks.iter().map(|t| json!({"track": t, "output": MidiOutput::of(&s.edit, *t).map_or_else(|| "none".to_string(), |o| o.route())})).collect();
+    Ok(json!({"outputs": outputs}))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn midi_output_names_each_bad_value_and_survives_undo_duplicate_delete_and_save() {
+        use soundcraft_model::{MidiOutput, TrackId};
+        let mut e = Engine::default();
+        let keys = e.execute("track.new", &json!({"name": "Keys", "kind": "midi"})).unwrap()["tracks"][0].as_u64().unwrap();
+        let vox = e.execute("track.new", &json!({"name": "Vox", "format": "mono"})).unwrap()["tracks"][0].as_u64().unwrap();
+        // (output, what the error must name)
+        for (output, named) in [
+            (json!(null), "`output` required"),
+            (json!(3), "must be a string"),
+            (json!("MIDI:0:UM-ONE"), "`0`"),
+            (json!("MIDI:17:UM-ONE"), "`17`"),
+            (json!("MIDI:*:UM-ONE"), "`*`"),
+            (json!("MIDI:1:"), "must name one port"),
+            (json!("MIDI:1:*"), "must name one port"),
+            (json!("UM-ONE"), "`UM-ONE`"),
+            (json!(format!("MIDI:1:{}", "x".repeat(300))), "longer than"),
+        ] {
+            let mut p = json!({"tracks": [keys]});
+            if !output.is_null() {
+                p["output"] = output.clone();
+            }
+            let err = e.execute("track.midi_output", &p).unwrap_err().to_string();
+            assert!(err.contains(named), "{output}: {err}");
+        }
+        let err = e.execute("track.midi_output", &json!({"tracks": [keys, vox], "output": "MIDI:1:UM-ONE"})).unwrap_err().to_string();
+        assert!(err.contains("Vox"), "{err}");
+        assert!(MidiOutput::all(&e.session().edit).next().is_none(), "a rejected call changes nothing");
+        let done = e.execute("track.midi_output", &json!({"tracks": [keys], "output": "MIDI:10:UM-ONE"})).unwrap();
+        assert_eq!(done["outputs"][0]["output"], "MIDI:10:UM-ONE");
+        let routed = |e: &Engine, t: u64| MidiOutput::of(&e.session().edit, TrackId(t)).map(|o| o.route());
+        assert!(e.undo());
+        assert_eq!(routed(&e, keys), None);
+        assert!(e.redo());
+        assert_eq!(routed(&e, keys).as_deref(), Some("MIDI:10:UM-ONE"));
+        let copy = e.execute("track.duplicate", &json!({"tracks": [keys]})).unwrap()["tracks"][0].as_u64().unwrap();
+        assert_eq!(routed(&e, copy), routed(&e, keys), "a duplicate plays to the same output");
+        let reloaded = Session::from_json(&e.session().to_json().unwrap()).unwrap();
+        assert_eq!(MidiOutput::of(&reloaded.edit, TrackId(keys)).map(|o| o.route()).as_deref(), Some("MIDI:10:UM-ONE"));
+        e.execute("track.delete", &json!({"tracks": [copy]})).unwrap();
+        assert_eq!(routed(&e, copy), None, "a deleted track leaves no output behind");
+        e.execute("track.midi_output", &json!({"tracks": [keys], "output": "none"})).unwrap();
+        assert_eq!(routed(&e, keys), None);
+    }
 
     #[test]
     fn a_midi_input_is_kept_as_typed_and_never_becomes_a_bus() {

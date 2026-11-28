@@ -506,7 +506,14 @@ impl SoundApp {
                     self.play_from_selection();
                 }
                 TransportRequest::Scrub(at) => self.engine.transport.position = at,
-                TransportRequest::AllNotesOff => {}
+                // The external MIDI output ports get a Note-Off per held note, then sustain up,
+                // All Notes Off and All Sound Off on every channel. (Instrument plug-ins release
+                // their notes on Stop and on a locate.)
+                TransportRequest::AllNotesOff => {
+                    if let Some(p) = &self.player {
+                        p.midi_output_panic();
+                    }
+                }
             }
         }
         // Read back the position.

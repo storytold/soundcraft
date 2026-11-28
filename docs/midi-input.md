@@ -5,8 +5,10 @@ MIDI clips.
 
 **Where it works.** Linux (ALSA sequencer), macOS (CoreMIDI) and Windows (WinMM). It has been
 played and recorded on Linux only; on macOS and Windows the code builds but has not been tried
-with a device yet. There is no MIDI input on FreeBSD or in the web version. MIDI output, MIDI
-clock and loop or merge recording are not there yet (see [gaps.md](gaps.md), G-02).
+with a device yet. There is no MIDI input on FreeBSD or in the web version. To play external
+synths from MIDI and instrument tracks, see [midi-output.md](midi-output.md). MIDI Thru to
+external gear, MIDI clock and loop or merge recording are not there yet (see [gaps.md](gaps.md),
+G-02).
 
 ## 1. Switch a device on
 
@@ -36,7 +38,8 @@ input selector reads *All MIDI*.
 
 Click the track's input selector (in the Mix window, or the I/O column of the Edit window) to
 choose one device, one channel (1–16), or both. A device the track listens to stays in the list
-while it is unplugged, marked *not connected*.
+while it is unplugged, marked *unavailable*, the word the MIDI output selector and the audio
+device messages use too.
 
 Scripts and agents set the same thing with the `track.input` command. The input is written
 `MIDI:<channel>:<device>`, with `*` for all:

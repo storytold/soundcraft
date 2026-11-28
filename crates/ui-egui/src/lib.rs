@@ -28,6 +28,7 @@ pub mod icons;
 pub mod import;
 pub mod localization;
 pub mod menus;
+pub mod midi_sync;
 pub mod mix_window;
 pub mod os_window;
 pub mod palette;
@@ -151,6 +152,8 @@ pub struct UiState {
     pub undo_levels: usize,
     /// The audio device choice (Setup › Playback Engine), kept with the preferences: per machine.
     pub audio: soundcraft_playback::AudioConfig,
+    /// The MIDI output ports' native bindings and delay compensation, kept per machine.
+    pub midi_sync: midi_sync::MidiSync,
     /// The Mix window lives in its own native window (Window › Mix in Separate Window); the main
     /// window then always shows Edit.
     pub mix_separate: bool,
@@ -228,6 +231,7 @@ impl Default for UiState {
             reduce_visual_effects: preferences::ReduceVisualEffects::default(),
             undo_levels: 64,
             audio: soundcraft_playback::AudioConfig::default(),
+            midi_sync: Default::default(),
             mix_separate: false,
             show_io_setup: false,
             show_shortcuts: false,
@@ -318,6 +322,15 @@ pub struct SoundApp {
     pub midi_inputs: Option<soundcraft_playback::midi::MidiInputs>,
     /// When the MIDI ports were last looked for (app uptime, seconds).
     midi_scan_at: f64,
+    /// The MIDI output ports tracks can play to, once listed (an error where there are none to
+    /// list), and when they were last listed (app uptime, seconds).
+    pub midi_output_ports: Option<Result<Vec<String>, String>>,
+    midi_output_scan_at: f64,
+    /// The ports and compensation the audio engine's MIDI output last accepted.
+    applied_midi_output: Option<(Vec<String>, bool)>,
+    /// The MIDI output failure shown in the status line: the untranslated message, and the
+    /// text inserted for it in the language of that moment, which is what a later update removes.
+    last_midi_sync_error: Option<(String, String)>,
     /// MIDI played during the current record pass.
     midi_take: Vec<soundcraft_playback::midi::RecordedMidi>,
     /// Recorded MIDI events of the current pass that were dropped before they got here.

@@ -534,7 +534,12 @@ fn import_session_data(e: &mut Engine, p: &Value) -> Result<Value> {
     // The donor's Auto Rename schemes come along under new keys, shared as they were.
     let mut names: std::collections::BTreeMap<u64, u64> = Default::default();
     for mut tr in picked {
+        // The MIDI output lives in the donor's edit flags under its track id, not in the track.
+        let midi_output = soundcraft_model::MidiOutput::of(&other.edit, tr.id);
         tr.id = TrackId(s.alloc());
+        if midi_output.is_some() {
+            soundcraft_model::MidiOutput::store(&mut s.edit, tr.id, midi_output);
+        }
         tr.name = s.unique_track_name(&tr.name);
         tr.folder = None;
         tr.mixer.vca = None;
@@ -777,6 +782,29 @@ mod tests {
         let src = e.session().source(sample).unwrap();
         assert_eq!(src.name, "hit");
         assert!(e.session().pool.get(sample).is_some());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Like Pro Tools' Include Instrument/MIDI output (Reference Guide, "Track Data to Import"),
+    /// an imported track keeps the donor track's MIDI output; one without an output gets none.
+    #[test]
+    fn import_session_data_brings_the_tracks_midi_output() {
+        use soundcraft_model::MidiOutput;
+        let dir = std::env::temp_dir().join(format!("sc-import-midi-out-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut donor = Engine::default();
+        donor.execute("track.new", &json!({"count": 1, "name": "Synth", "kind": "midi"})).unwrap();
+        donor.execute("track.new", &json!({"count": 1, "name": "Keys", "kind": "instrument"})).unwrap();
+        donor.execute("track.midi_output", &json!({"tracks": ["Synth"], "output": "MIDI:3:DIN"})).unwrap();
+        let path = dir.join("donor.scraft").to_string_lossy().into_owned();
+        crate::io::save_session(&mut donor, &path).unwrap();
+        let mut e = crate::demo::demo_engine();
+        let r = e.execute("file.import_session_data", &json!({"path": path, "tracks": ["Synth", "Keys"]})).unwrap();
+        let ids: Vec<TrackId> = r["tracks"].as_array().unwrap().iter().map(|t| TrackId(t.as_u64().unwrap())).collect();
+        let s = e.session();
+        assert_eq!(MidiOutput::of(&s.edit, ids[0]), Some(MidiOutput { device: "DIN", channel: 2 }));
+        assert_eq!(MidiOutput::of(&s.edit, ids[1]), None);
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

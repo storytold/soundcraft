@@ -141,6 +141,10 @@ impl SoundApp {
             "midi_inputs": self.midi_inputs.as_ref().map(|m| m.ports().iter().map(|p| json!({"name": p.name, "enabled": p.enabled, "open": p.open})).collect::<Vec<_>>()),
             "midi_events": self.midi_inputs.as_ref().map(|m| m.feed().activity().0),
             "midi_events_dropped": self.midi_inputs.as_ref().map(|m| m.feed().dropped()),
+            "midi_output_ports": self.midi_output_ports,
+            "midi_outputs": self.midi_outputs_inspect(),
+            "midi_output_error": self.player.as_ref().and_then(|p| p.midi_output_error()),
+            "midi_output_status": self.player.as_ref().map(|p| p.midi_sync_status()),
             "status": self.ui.status,
         })
     }

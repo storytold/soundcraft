@@ -56,12 +56,29 @@ where
     let frame = channels.max(1);
     let mut scratch = vec![0.0f32; 8192 * frame];
     let chunk = scratch.len();
+    #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+    let mut stream_lead = super::sync_clock::StreamLead::default();
     let (failed, guard, gone) = (Arc::clone(fault), Arc::clone(shared), Arc::clone(fault));
     device.build_output_stream(
         config,
-        move |data: &mut [T], _: &cpal::OutputCallbackInfo| {
+        move |data: &mut [T], info: &cpal::OutputCallbackInfo| {
+            // When this buffer is heard, for the external MIDI outputs' presentation timeline.
+            #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+            let mut timing = {
+                let timestamp = info.timestamp();
+                stream_lead.observe(std::time::Instant::now(), timestamp.playback.checked_duration_since(timestamp.callback))
+            };
+            let _ = info;
             mark_audio_thread();
-            for out in data.chunks_mut(chunk) {
+            let frames = data.len() / frame;
+            for (index, out) in data.chunks_mut(chunk).enumerate() {
+                #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+                {
+                    timing.frame_offset = index * (chunk / frame);
+                    state.device_timing = Some(timing);
+                    state.device_buffer_frames = frames;
+                }
+                let _ = (frames, index);
                 let Some(s) = scratch.get_mut(..out.len()) else { return };
                 guarded_block(&failed, &guard, s, |d| state.fill(d, channels));
                 for (o, x) in out.iter_mut().zip(s.iter()) {

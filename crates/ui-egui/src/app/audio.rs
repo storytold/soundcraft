@@ -31,6 +31,8 @@ impl SoundApp {
         self.attach_midi(&player);
         player.locate(at);
         self.player = Some(player);
+        // The new engine's MIDI output starts with no ports.
+        self.applied_midi_output = None;
         Ok(())
     }
 
@@ -130,6 +132,8 @@ impl SoundApp {
         let player = reopen(&mut self.player, &self.ui.audio, || Player::with_config(self.engine.session_arc(), &self.ui.audio));
         self.attach_midi(&player);
         self.player = Some(player);
+        // The new engine's MIDI output starts with no ports.
+        self.applied_midi_output = None;
     }
 }
 
