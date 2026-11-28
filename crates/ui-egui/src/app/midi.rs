@@ -20,24 +20,12 @@ impl SoundApp {
     /// tracks whose input takes All devices, and are recorded on the record-enabled ones, as
     /// from a hardware keyboard (Pro Tools Reference Guide p.828).
     pub(crate) fn play_midi_keyboard(&mut self, down: Option<u8>, tapped: Option<u8>) {
-        let held = self.midi_keyboard_held;
-        if held != down {
-            if let Some(k) = held {
-                self.send_midi_keyboard([0x80, k, 0]);
-            }
-            if let Some(k) = down {
-                self.send_midi_keyboard([0x90, k, MIDI_KEYBOARD_VELOCITY]);
-            }
-            self.midi_keyboard_held = down;
-        } else if let (Some(k), None) = (tapped, held) {
-            self.send_midi_keyboard([0x90, k, MIDI_KEYBOARD_VELOCITY]);
-            self.send_midi_keyboard([0x80, k, 0]);
-        }
-    }
-
-    fn send_midi_keyboard(&self, bytes: [u8; 3]) {
+        let messages = midi_keyboard_messages(self.midi_keyboard_held, down, tapped);
+        self.midi_keyboard_held = down;
         if let Some(m) = &self.midi_inputs {
-            m.feed().receive_keyboard(&bytes);
+            for bytes in messages {
+                m.feed().receive_keyboard(&bytes);
+            }
         }
     }
 
@@ -202,6 +190,19 @@ impl SoundApp {
 /// The velocity of the notes the MIDI Keyboard window plays.
 const MIDI_KEYBOARD_VELOCITY: u8 = 100;
 
+/// What the MIDI Keyboard window sends, in order, when the key held goes from `held` to `down`
+/// with `tapped` clicked within the frame ([`SoundApp::play_midi_keyboard`]).
+fn midi_keyboard_messages(held: Option<u8>, down: Option<u8>, tapped: Option<u8>) -> Vec<[u8; 3]> {
+    let mut out = Vec::new();
+    if held != down {
+        out.extend(held.map(|k| [0x80, k, 0]));
+        out.extend(down.map(|k| [0x90, k, MIDI_KEYBOARD_VELOCITY]));
+    } else if let (Some(k), None) = (tapped, held) {
+        out.extend([[0x90, k, MIDI_KEYBOARD_VELOCITY], [0x80, k, 0]]);
+    }
+    out
+}
+
 /// Whether the end of a record pass waits for the audio engine's answer: there is an engine
 /// (without one nothing takes MIDI in), and `tracks` MIDI or instrument tracks were
 /// record-enabled when the pass started. How many devices are connected at Stop does not count.
@@ -267,7 +268,18 @@ fn midi_take_problem(gaps: usize, uncollected: u64, confirmed: bool) -> Option<S
 
 #[cfg(test)]
 mod tests {
-    use super::{MidiPass, Range, midi_pass_waits, midi_take_problem, midi_take_span, pass_stop, pass_with_known_stop};
+    use super::{MidiPass, Range, midi_keyboard_messages, midi_pass_waits, midi_take_problem, midi_take_span, pass_stop, pass_with_known_stop};
+
+    #[test]
+    fn the_midi_keyboard_ends_a_key_before_the_next_and_a_tap_plays_then_ends_it() {
+        let (on, off) = (|k| [0x90, k, 100], |k| [0x80, k, 0]);
+        assert_eq!(midi_keyboard_messages(None, Some(48), None), [on(48)]);
+        assert!(midi_keyboard_messages(Some(48), Some(48), None).is_empty(), "held");
+        assert_eq!(midi_keyboard_messages(Some(48), Some(50), None), [off(48), on(50)], "slid onto the next key");
+        assert_eq!(midi_keyboard_messages(Some(50), None, None), [off(50)]);
+        assert_eq!(midi_keyboard_messages(None, None, Some(48)), [on(48), off(48)], "pressed and let go within a frame");
+        assert!(midi_keyboard_messages(Some(48), Some(48), Some(48)).is_empty(), "a tap of the held key adds nothing");
+    }
 
     #[test]
     fn the_stop_of_a_loop_pass_is_not_used_when_entries_of_the_take_went_missing() {
