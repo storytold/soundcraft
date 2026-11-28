@@ -84,7 +84,8 @@ pub(crate) struct AudioState {
     /// this fill starts at (set by the output stream; `None` for the silent clock).
     pub(crate) callback_at: Option<std::time::Instant>,
     /// When that callback's first frame is heard, on the stream clock (see
-    /// [`super::latency::clock_seconds`]).
+    /// [`super::latency::clock_seconds`]); `None` where the output does not share its clock with
+    /// the input (see [`super::latency::shares_stream_clock`]).
     pub(crate) playback_clock: Option<f64>,
     pub(crate) chunk_offset: usize,
     /// A Play was read since the last fill: this fill starts the pass.
@@ -650,7 +651,8 @@ impl AudioState {
 
     /// Note when the first sample this fill outputs is heard: the device callback's time, plus the
     /// output latency the stream reports, plus where in the device buffer this fill starts; and
-    /// the same on the stream clock, from the callback's playback time.
+    /// the same on the stream clock where the output has one (see
+    /// [`super::latency::playback_clock`]).
     fn stamp_heard(&mut self, speed: f64) {
         let pass_started = std::mem::take(&mut self.pass_started);
         let Some(called) = self.callback_at.filter(|_| self.playing) else { return };

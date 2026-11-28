@@ -134,7 +134,8 @@ impl ClockCell {
 }
 
 /// A moment told two ways: by when an audio callback ran, moved by the latency its stream
-/// reports, and by the stream clock (see [`clock_seconds`]) as the backend stamped it.
+/// reports, and by the stream clock (see [`clock_seconds`]) as the backend stamped it (`None`
+/// where the input and output do not share one, see [`shares_stream_clock`]).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Moment {
     pub at: Instant,
