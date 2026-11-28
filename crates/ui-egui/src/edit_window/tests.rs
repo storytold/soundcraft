@@ -534,6 +534,23 @@ fn shift_and_cmd_click_on_track_names_extend_the_selection() {
     }
 }
 
+/// #1493: Alt-click on a track name selects every track, and on a selected track's name none, as in Pro Tools.
+#[test]
+fn alt_click_on_a_track_name_selects_or_deselects_every_track() {
+    let mut h = harness(4);
+    let ids = row_ids(&h);
+    let alt = egui::Modifiers::ALT;
+    let name = |h: &Harness<SoundApp>, i: usize| row(h, i).min + vec2(60.0, 10.0);
+    let at = name(&h, 1);
+    click_with(&mut h, at, egui::Modifiers::NONE);
+    let at = name(&h, 2);
+    click_with(&mut h, at, alt);
+    assert_eq!(h.state().engine.session().edit.selected_tracks, ids, "Alt-click on an unselected name selects every track");
+    let at = name(&h, 0);
+    click_with(&mut h, at, alt);
+    assert!(h.state().engine.session().edit.selected_tracks.is_empty(), "Alt-click on a selected name deselects every track");
+}
+
 /// #1254: double-clicking a track's colour strip selects the track and opens the Color Palette;
 /// a single click only selects it.
 #[test]

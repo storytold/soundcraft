@@ -31,13 +31,16 @@ pub(super) fn folder_depth(s: &Session, track: &Track) -> usize {
     depth
 }
 
-/// Pro Tools' track-name click: Shift adds the tracks up to the nearest selected one, Cmd/Ctrl adds or removes one.
+/// Pro Tools' track-name click: Alt selects every shown track, or none when the clicked one is selected; Shift adds
+/// the tracks up to the nearest selected one, Cmd/Ctrl adds or removes one.
 pub(crate) fn click_track(app: &mut SoundApp, id: TrackId, mods: egui::Modifiers, shown: impl Fn(&Session, &Track) -> bool) {
     let s = app.engine.session();
     let order: Vec<TrackId> = s.tracks.iter().filter(|t| shown(s, t)).map(|t| t.id).collect();
     let row = |t: &TrackId| order.iter().position(|o| o == t);
     let mut tracks = s.edit.selected_tracks.clone();
-    if mods.command {
+    if mods.alt {
+        tracks = if tracks.contains(&id) { Vec::new() } else { order.clone() };
+    } else if mods.command {
         if tracks.contains(&id) {
             tracks.retain(|t| *t != id);
         } else {
