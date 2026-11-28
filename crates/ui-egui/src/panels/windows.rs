@@ -593,14 +593,50 @@ fn midi_inputs(app: &mut SoundApp, ui: &mut egui::Ui) {
     ui.data_mut(|d| d.insert_temp(debug_id, debug));
 }
 
+/// What the Playback Engine says when a change made elsewhere replaced its unapplied edits.
+const REPLACED_EDITS: &str = "The audio settings were changed outside this window; your unapplied changes were replaced.";
+
+/// Drop the replacement notice from the status line when it is still this notice, so a later edit
+/// or closing the window does not leave it there. Leave any other status message alone.
+fn clear_replaced_edits_status(app: &mut SoundApp) {
+    if app.ui.status == crate::localization::text(REPLACED_EDITS) {
+        app.ui.status.clear();
+    }
+}
+
 /// Setup › Playback Engine / Hardware: choose the audio system, devices, rate and buffer size.
 pub fn playback_engine(app: &mut SoundApp, ctx: &egui::Context) {
     let mut open = app.ui.show_playback_engine;
+    // The window's unapplied edits, with the choice they started from. A choice changed elsewhere
+    // (`ui.audio_device`, `setup.playback_engine`) replaces them, so the window never shows, or
+    // applies, an earlier choice. A reconnect reopens the same choice and leaves them alone.
+    let draft_id = egui::Id::unique("audio_draft");
+    // Set while the window shows a choice made elsewhere that replaced its unapplied edits.
+    let replaced_id = egui::Id::unique("audio_draft_replaced");
     if !open {
+        // Closed from the menu or by command: unapplied edits go, as with the close button.
+        clear_replaced_edits_status(app);
+        ctx.data_mut(|d| {
+            d.remove_temp::<(AudioConfig, AudioConfig)>(draft_id);
+            d.remove_temp::<bool>(replaced_id);
+        });
         return;
     }
-    let draft_id = egui::Id::unique("audio_draft");
-    let mut draft = ctx.data(|d| d.get_temp::<AudioConfig>(draft_id)).unwrap_or_else(|| app.ui.audio.clone());
+    // Pro Tools' Playback Engine is modal, so nothing else changes the device under its edits
+    // (Reference Guide p. 109). This window is not: a change made elsewhere wins, and when it
+    // replaces unapplied edits the window and the status line say so.
+    let mut draft = match ctx.data(|d| d.get_temp::<(AudioConfig, AudioConfig)>(draft_id)) {
+        Some((from, draft)) if from == app.ui.audio => draft,
+        Some((from, draft)) => {
+            if draft != from && draft != app.ui.audio {
+                let note = crate::localization::text(REPLACED_EDITS);
+                app.ui.status = note.to_string();
+                ctx.data_mut(|d| d.insert_temp(replaced_id, true));
+            }
+            app.ui.audio.clone()
+        }
+        None => app.ui.audio.clone(),
+    };
     let mut refresh = false;
     let mut apply = false;
     let systems = audio_systems(ctx, false);
@@ -659,6 +695,13 @@ pub fn playback_engine(app: &mut SoundApp, ctx: &egui::Context) {
                 draft = app.ui.audio.clone();
             }
         });
+        if draft != app.ui.audio {
+            // A new edit: the replaced ones are no longer the news.
+            ui.ctx().data_mut(|d| d.remove_temp::<bool>(replaced_id));
+            clear_replaced_edits_status(app);
+        } else if ui.ctx().data(|d| d.get_temp::<bool>(replaced_id)).unwrap_or(false) {
+            ui.label(egui::RichText::new(crate::localization::text(REPLACED_EDITS)).color(ui.visuals().warn_fg_color));
+        }
         ui.separator();
         egui::Grid::new("pe-state").num_columns(2).show(ui, |ui| {
             ui.label(crate::localization::text("Output"));
@@ -715,11 +758,13 @@ pub fn playback_engine(app: &mut SoundApp, ctx: &egui::Context) {
         app.ui.status = e;
     }
     if open {
-        ctx.data_mut(|d| d.insert_temp(draft_id, draft));
+        ctx.data_mut(|d| d.insert_temp(draft_id, (app.ui.audio.clone(), draft)));
     } else {
         // Closing discards unapplied edits and the device list (re-read on the next open).
+        clear_replaced_edits_status(app);
         ctx.data_mut(|d| {
-            d.remove_temp::<AudioConfig>(draft_id);
+            d.remove_temp::<(AudioConfig, AudioConfig)>(draft_id);
+            d.remove_temp::<bool>(replaced_id);
             d.remove_temp::<Arc<Vec<AudioSystem>>>(egui::Id::unique("audio_systems"));
         });
     }
