@@ -253,6 +253,7 @@ pub(crate) fn track_context_menu(app: &mut SoundApp, ui: &mut Ui, id: TrackId) {
     {
         let _ = app.run("track.remove_from_folder", json!({"tracks": selection}));
     }
+    crate::track_presets::name_menu(app, ui, id, &selection);
     // Only the track clicked: the command has one target, and the selection stays as it is.
     if ui.button(crate::localization::text("Scroll Into View")).clicked() {
         let _ = app.run("view.scroll_into_view", json!({"track": id.0}));

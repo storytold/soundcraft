@@ -710,6 +710,19 @@ fn menu_translate(source: &str) -> Option<&'static str> {
         "Save Session As..." => "Salvar sessão como...",
         "Save Session Copy In..." => "Salvar cópia da sessão em...",
         "Save Track Preset..." => "Salvar predefinição de faixa...",
+        "Save Track Preset" => "Salvar predefinição de faixa",
+        "Recall Track Preset" => "Recuperar predefinição de faixa",
+        "Recall Track Preset from File..." => "Recuperar predefinição de faixa de um arquivo...",
+        "Track — Recall Track Preset from File" => "Faixa — Recuperar predefinição de faixa de um arquivo",
+        "Track presets need the desktop app" => "As predefinições de faixa exigem o aplicativo para desktop",
+        "No Track Presets" => "Nenhuma predefinição de faixa",
+        "Saved in {folder}" => "Salvo em {folder}",
+        "Couldn't create {folder}: {error}" => "Não foi possível criar {folder}: {error}",
+        "Created bus {bus}" => "Bus {bus} criado",
+        "Send {slot} left out: the preset doesn't say which bus it sends to" => {
+            "Envio {slot} omitido: a predefinição não diz para qual bus ele envia"
+        }
+        "Couldn't read {folder}: {error}" => "Não foi possível ler {folder}: {error}",
         "Scale..." => "Escala...",
         "Scene And Take" => "Cena e tomada",
         "Sci-Fi" => "Sci-Fi",
@@ -1082,7 +1095,6 @@ fn menu_translate(source: &str) -> Option<&'static str> {
         "List Plugins" => "Listar plugins",
         "List VST3 Plugins" => "Listar plugins VST3",
         "Load Sampler Sample" => "Carregar amostra do sampler",
-        "Load Track Preset" => "Carregar predefinição de faixa",
         "Locate" => "Localizar",
         "MIDI Editors to Back" => "Editores MIDI para trás",
         "MIDI Editors to Front" => "Editores MIDI para frente",

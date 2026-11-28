@@ -66,6 +66,7 @@ mod track_height;
 mod track_list;
 mod track_name_menu;
 mod track_preset_state;
+mod track_presets;
 mod trackpad;
 mod tracks_scroll_bar;
 mod waveform;

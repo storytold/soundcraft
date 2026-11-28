@@ -34,6 +34,11 @@ impl SoundApp {
                 if id == "view.zoom_toggle_cancel" && v["canceled"] == true {
                     self.edit_layout.forget_zoom_back();
                 }
+                if id == "track.load_preset"
+                    && let Some(note) = crate::track_presets::recall_note(&v)
+                {
+                    self.ui.status = note;
+                }
                 if id == "track.clear_clip_indicators" {
                     self.meters.values_mut().chain([&mut self.main_meter]).for_each(|m| m.clip = false);
                 }

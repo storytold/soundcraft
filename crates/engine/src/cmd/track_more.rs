@@ -58,13 +58,13 @@ pub fn specs() -> Vec<CommandSpec> {
             has_selection,
             extract_midi
         ),
-        cmd!(noundo "track.save_preset", "Save Track Preset...", ["Track"], None, "{path, track?} — writes the track's type, width, mixer, inserts, sends and instrument as JSON", has_selection, save_preset),
+        cmd!(noundo "track.save_preset", "Save Track Preset...", ["Track"], None, "{path, track?} — writes the track's type, width, mixer, inserts, sends (with their buses' names) and instrument as JSON", has_selection, save_preset),
         cmd!(
             "track.load_preset",
-            "Load Track Preset",
+            "Recall Track Preset",
             [],
             None,
-            "{path, tracks?} — applies a saved track preset's mixer, inserts, sends and instrument",
+            "{path, tracks?} — applies a saved track preset's mixer, inserts, sends and instrument. A send finds its bus by name; a bus the session doesn't have is made (`created_buses`); a bus send from a preset saved without bus names is left out (`skipped_sends`, its slots)",
             has_selection,
             load_preset
         ),
@@ -258,6 +258,11 @@ fn save_preset(e: &mut Engine, p: &Value) -> Result<Value> {
         "width": tr.format.label(),
         "color": tr.color,
         "mixer": tr.mixer,
+        // Bus ids are per session, so recall finds a send's bus by its name (or makes it).
+        "send_buses": tr.mixer.sends.iter().map(|send| match send.as_ref().map(|x| &x.target) {
+            Some(Route::Bus(b)) => e.session().bus(*b).map(|bus| json!({"name": bus.name, "format": bus.format.label()})),
+            _ => None,
+        }).collect::<Vec<_>>(),
         "instrument": tr.instrument,
         "elastic": tr.elastic,
         "comments": tr.comments,
@@ -282,6 +287,7 @@ fn load_preset(e: &mut Engine, p: &Value) -> Result<Value> {
     mixer.sanitize();
     let instrument: Option<Insert> = v.get("instrument").cloned().and_then(|x| serde_json::from_value(x).ok());
     let s = e.session_mut();
+    let (created, skipped) = match_send_buses(&mut mixer, v.get("send_buses"), s);
     for t in &tracks {
         if let Some(tr) = s.track_mut(*t) {
             // Routing and live input state are track-specific: a preset must not replace them.
@@ -301,7 +307,32 @@ fn load_preset(e: &mut Engine, p: &Value) -> Result<Value> {
             }
         }
     }
-    Ok(json!({"tracks": tracks}))
+    Ok(json!({"tracks": tracks, "created_buses": created, "skipped_sends": skipped}))
+}
+
+/// Points the preset's bus sends at this session's buses of the names it saved (`send_buses`, one
+/// `{name, format}` per send slot). As in Pro Tools, a bus the session doesn't have is made, in the
+/// saved format (stereo if unknown), and named in the first list. A bus send without a name (older
+/// presets, or a send whose bus was gone when saved) is dropped and its slot named in the second
+/// list.
+fn match_send_buses(mixer: &mut soundcraft_model::Mixer, saved: Option<&Value>, s: &mut Session) -> (Vec<String>, Vec<String>) {
+    let (mut created, mut skipped) = (Vec::new(), Vec::new());
+    // `Mixer::sanitize` has capped the sends at 10 slots, a..j.
+    for ((i, slot), letter) in mixer.sends.iter_mut().enumerate().zip('a'..) {
+        let Some(send) = slot.as_mut().filter(|x| matches!(x.target, Route::Bus(_))) else { continue };
+        let bus = saved.and_then(|b| b.get(i));
+        let Some(name) = bus.and_then(|b| b.get("name")).and_then(Value::as_str).map(str::trim).filter(|n| !n.is_empty()) else {
+            *slot = None;
+            skipped.push(letter.to_string());
+            continue;
+        };
+        if s.bus_by_name(name).is_none() {
+            created.push(name.to_string());
+        }
+        let format = bus.and_then(|b| b.get("format")).and_then(Value::as_str).and_then(ChannelFormat::from_id).unwrap_or(ChannelFormat::Stereo);
+        send.target = Route::Bus(s.add_bus(name, format));
+    }
+    (created, skipped)
 }
 
 fn bypass_where(e: &mut Engine, p: &Value, pick: fn(usize, Option<Category>) -> bool) -> Result<Value> {

@@ -1,6 +1,6 @@
 # Target-app parity: SoundCraft vs Avid Pro Tools
 
-> **Last reviewed:** 2026-11-14 · **Last updated:** 2026-11-14 · **Change:** minor (Performance row: recording is to disk (#84, #888); scores unchanged; previously minor: strict external-WAV AAF import; previously trivial: Frequency Shifter: 28 built-in processors; G-09/localization: pt-BR catalog; readiness estimates unchanged) · **Target:** Avid Pro Tools Ultimate 2026.4.1 (bundle 26.4.1.179, macOS)
+> **Last reviewed:** 2026-11-14 · **Last updated:** 2026-11-20 · **Change:** minor (track presets saved to and recalled from the Track Presets folder (#639); previously minor: Performance row: recording is to disk (#84, #888); scores unchanged; strict external-WAV AAF import; previously trivial: Frequency Shifter: 28 built-in processors; G-09/localization: pt-BR catalog; readiness estimates unchanged) · **Target:** Avid Pro Tools Ultimate 2026.4.1 (bundle 26.4.1.179, macOS)
 
 The authoritative assessment of how close SoundCraft is to Pro Tools. [`ROADMAP.md`](../ROADMAP.md)
 summarizes it, [`gaps.md`](gaps.md) itemizes every shortfall, and the per-dimension docs go deeper:
@@ -188,7 +188,7 @@ Weights by what Pro Tools users actually spend time on. **Breadth** = the featur
 | Elastic Audio, TCE, Beat Detective, pitch | 5 % | 70 % | **35 %** | 40–60 | Pitch-preserving warp on Elastic tracks, TCE, conform to tempo, Beat Detective and Identify Beat, audio-to-MIDI. Missing: per-algorithm choice (polyphonic/rhythmic/monophonic/varispeed/X-Form), warp markers UI depth, Elastic Pitch, quality vs Pro Tools unmeasured |
 | Surround and immersive | 5 % | 55 % | **35 %** | 50–80 | Formats stereo → 9.1.6 and Ambisonics, surround panner, fold-down, multichannel bounce, object/bed routing. Missing: Dolby Atmos renderer integration and ADM BWF, MPEG-H (new in 2026.4), binaural/headphone monitoring, surround automation; bug #89 |
 | Video and post | 5 % | 60 % | **40 %** | 40–60 | Video track, H.264/ProRes/MJPEG decoders, sync offset, relinking, timecode rulers. Missing: HEVC/DNx/AV1, video bounce/export, timecode sync to external machines, speech-to-text transcript, field-recorder/iXML conform |
-| Session, file management, interchange | 10 % | 55 % | **35 %** | 60–100 | `.scraft` + Audio Files, Save Copy In, Import Session Data, clip groups, session text export, audio-health report, strict external-WAV AAF import. Missing: `.ptx` read/write, AAF export, OMF import/export (#40), session templates, track presets, workspace/Soundbase browser, disk streaming of long sources, batch rename; bugs #86, #91, #136 |
+| Session, file management, interchange | 10 % | 55 % | **35 %** | 60–100 | `.scraft` + Audio Files, Save Copy In, Import Session Data, clip groups, track presets, session text export, audio-health report, strict external-WAV AAF import. Missing: `.ptx` read/write, AAF export, OMF import/export (#40), session templates, workspace/Soundbase browser, disk streaming of long sources, batch rename; bugs #86, #91, #136 |
 | Collaboration, cloud, Sketch, Splice | 2 % | 0 % | **0 %** | not estimated | Avid services; out of scope unless the owner decides otherwise |
 | Agent control (CLI, control channel, MCP) | 1 % | 100 % | **100 %** | 3 | Ahead of Pro Tools' scripting SDK; one open bug (#145) |
 | **Weighted** | 100 % | **~70 %** | **~45 %** | **~520–810** | |
@@ -245,6 +245,7 @@ serializes more, because it needs hands-on testing.
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-11-19 | minor | Session row: track presets saved to a Track Presets folder and recalled from the Track menu or a track name's menu (#639). Percentages unchanged |
 | 2026-11-14 | minor | Strict external-WAV AAF import added to format, interchange and alpha-gate evidence; readiness estimates unchanged |
 | 2026-11-09 | trivial | Built-in plugin counts: 28 processors + 3 instruments with the Frequency Shifter. Percentages unchanged |
 | 2026-11-05 | trivial | Localization row: English plus a near-complete pt-BR catalog for fixed UI strings (PR #1346), not native-reviewed. Percentages and hours unchanged |
