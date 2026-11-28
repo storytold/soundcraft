@@ -311,6 +311,9 @@ pub fn menu_bar(app: &mut SoundApp, ui: &mut egui::Ui) {
                                     if c.path == "Track > New..." {
                                         instrument_menu(app, ui);
                                     }
+                                    if c.path == "Track > Save Track Preset..." {
+                                        crate::track_presets::track_menu(app, ui);
+                                    }
                                 }
                                 if root.path == "AudioSuite" {
                                     ui.separator();
@@ -580,6 +583,16 @@ pub fn invoke_menu(app: &mut SoundApp, id: &str, path: &str) {
     if id == "audiosuite.process" {
         let p = params_for(path, id);
         app.ui.audiosuite = p.get("process").and_then(Value::as_str).map(str::to_string);
+        return;
+    }
+    if id == "track.save_preset"
+        && let Some(track) = app.engine.target_tracks().first().copied()
+        && crate::track_presets::open_save(app, track)
+    {
+        return;
+    }
+    if id == "track.load_preset" {
+        crate::track_presets::open_recall(app);
         return;
     }
     if wants_dialog(id) && app.dialogs.open_for_command(&app.engine, id) {

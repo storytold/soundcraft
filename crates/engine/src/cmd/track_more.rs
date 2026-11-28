@@ -6,7 +6,9 @@ use super::more_util::{activate_playlist, target_playlist, track_key};
 use crate::{Engine, EngineError, Result, cmd};
 use serde_json::{Value, json};
 use soundcraft_dsp::Category;
-use soundcraft_model::{AutoParam, AutomationLane, ChannelFormat, Clip, ClipContent, Insert, Route, Session, Track, TrackId, TrackKind};
+use soundcraft_model::{
+    AutoParam, AutomationLane, ChannelFormat, Clip, ClipContent, INSERT_SLOTS, Insert, Route, SEND_SLOTS, Session, Track, TrackId, TrackKind,
+};
 use soundcraft_time::Samples;
 
 /// Trim automation lives in a lane addressed past the last insert slot, so the mixer ignores it
@@ -58,13 +60,13 @@ pub fn specs() -> Vec<CommandSpec> {
             has_selection,
             extract_midi
         ),
-        cmd!(noundo "track.save_preset", "Save Track Preset...", ["Track"], None, "{path, track?} — writes the track's type, width, mixer, inserts, sends and instrument as JSON", has_selection, save_preset),
+        cmd!(noundo "track.save_preset", "Save Track Preset...", ["Track"], None, "{path, track?} — writes the track's type, width, mixer, inserts, sends (with their buses' names) and instrument as JSON", has_selection, save_preset),
         cmd!(
             "track.load_preset",
-            "Load Track Preset",
+            "Recall Track Preset",
             [],
             None,
-            "{path, tracks?} — applies a saved track preset's mixer, inserts, sends and instrument",
+            "{path, tracks?, only?: \"inserts\"|\"sends\"|null, from?: 0..9|a..j|null} — applies a saved track preset's mixer, inserts, sends and instrument; with `only`, just its inserts or sends, shifted to start at slot `from` (Recall Inserts / Recall Sends). A send finds its bus by name; a bus the session doesn't have is made (`created_buses`); a bus send from a preset saved without bus names is left out (`skipped_sends`, the track's slots)",
             has_selection,
             load_preset
         ),
@@ -258,6 +260,11 @@ fn save_preset(e: &mut Engine, p: &Value) -> Result<Value> {
         "width": tr.format.label(),
         "color": tr.color,
         "mixer": tr.mixer,
+        // Bus ids are per session, so recall finds a send's bus by its name (or makes it).
+        "send_buses": tr.mixer.sends.iter().map(|send| match send.as_ref().map(|x| &x.target) {
+            Some(Route::Bus(b)) => e.session().bus(*b).map(|bus| json!({"name": bus.name, "format": bus.format.label()})),
+            _ => None,
+        }).collect::<Vec<_>>(),
         "instrument": tr.instrument,
         "elastic": tr.elastic,
         "comments": tr.comments,
@@ -272,6 +279,21 @@ fn load_preset(e: &mut Engine, p: &Value) -> Result<Value> {
     let id = "track.load_preset";
     let path = str_param(p, "path").ok_or_else(|| bad(id, "`path` required"))?.to_string();
     let tracks = tracks_required(e, id, p)?;
+    // A selector that isn't one of the two strings is an error, never a whole-preset recall.
+    // `null` is the same as leaving it out.
+    let sends = match p.get("only") {
+        None | Some(Value::Null) => None,
+        Some(v) if v == "inserts" => Some(false),
+        Some(v) if v == "sends" => Some(true),
+        Some(_) => return Err(bad(id, "`only` must be \"inserts\" or \"sends\"")),
+    };
+    let from = match (p.get("from").filter(|v| !v.is_null()), sends) {
+        (None, _) => 0,
+        (Some(_), None) => return Err(bad(id, "`from` needs `only`")),
+        (Some(_), Some(sends)) => {
+            super::mix::slot_of(p, "from", if sends { SEND_SLOTS } else { INSERT_SLOTS }).ok_or_else(|| bad(id, "`from` must be 0..9 or a..j"))?
+        }
+    };
     let text = crate::io::read_text(&path)?;
     let v: Value = serde_json::from_str(&text).map_err(|err| EngineError::Io(format!("{path}: {err}")))?;
     if v.get("format").and_then(Value::as_str) != Some(PRESET_FORMAT) {
@@ -282,8 +304,21 @@ fn load_preset(e: &mut Engine, p: &Value) -> Result<Value> {
     mixer.sanitize();
     let instrument: Option<Insert> = v.get("instrument").cloned().and_then(|x| serde_json::from_value(x).ok());
     let s = e.session_mut();
+    // Recall Inserts leaves the sends, and their buses, alone.
+    let (created, skipped) = if sends == Some(false) { Default::default() } else { match_send_buses(&mut mixer, v.get("send_buses"), s, from) };
     for t in &tracks {
         if let Some(tr) = s.track_mut(*t) {
+            // Recall Inserts / Recall Sends, as in Pro Tools: the preset's slot A lands on `from`, B
+            // on the next, and so on. An empty preset slot leaves the track's slot alone; whatever
+            // would land past slot J is dropped.
+            if let Some(sends) = sends {
+                if sends {
+                    shift_slots(&mixer.sends, &mut tr.mixer.sends, from);
+                } else {
+                    shift_slots(&mixer.inserts, &mut tr.mixer.inserts, from);
+                }
+                continue;
+            }
             // Routing and live input state are track-specific: a preset must not replace them.
             let keep =
                 (tr.mixer.input.clone(), tr.mixer.output.clone(), tr.mixer.vca, tr.mixer.record_arm, tr.mixer.input_monitor, tr.mixer.pan.clone());
@@ -301,7 +336,41 @@ fn load_preset(e: &mut Engine, p: &Value) -> Result<Value> {
             }
         }
     }
-    Ok(json!({"tracks": tracks}))
+    Ok(json!({"tracks": tracks, "created_buses": created, "skipped_sends": skipped}))
+}
+
+/// Points the preset's bus sends at this session's buses of the names it saved (`send_buses`, one
+/// `{name, format}` per send slot). As in Pro Tools, a bus the session doesn't have is made, in the
+/// saved format (stereo if unknown), and named in the first list. A bus send without a name (older
+/// presets, or a send whose bus was gone when saved) is dropped and its slot named in the second
+/// list, by the track slot it would have landed on: preset slot `i` lands on `i + from` (Recall
+/// Sends). A send that would land past slot J is dropped by the recall, so its bus isn't made.
+fn match_send_buses(mixer: &mut soundcraft_model::Mixer, saved: Option<&Value>, s: &mut Session, from: usize) -> (Vec<String>, Vec<String>) {
+    let (mut created, mut skipped) = (Vec::new(), Vec::new());
+    for (i, slot) in mixer.sends.iter_mut().enumerate() {
+        let Some(letter) = i.checked_add(from).filter(|d| *d < SEND_SLOTS).and_then(|d| ('a'..).nth(d)) else { continue };
+        let Some(send) = slot.as_mut().filter(|x| matches!(x.target, Route::Bus(_))) else { continue };
+        let bus = saved.and_then(|b| b.get(i));
+        let Some(name) = bus.and_then(|b| b.get("name")).and_then(Value::as_str).map(str::trim).filter(|n| !n.is_empty()) else {
+            *slot = None;
+            skipped.push(letter.to_string());
+            continue;
+        };
+        if s.bus_by_name(name).is_none() {
+            created.push(name.to_string());
+        }
+        let format = bus.and_then(|b| b.get("format")).and_then(Value::as_str).and_then(ChannelFormat::from_id).unwrap_or(ChannelFormat::Stereo);
+        send.target = Route::Bus(s.add_bus(name, format));
+    }
+    (created, skipped)
+}
+
+fn shift_slots<T: Clone>(preset: &[Option<T>], track: &mut [Option<T>], from: usize) {
+    for (slot, x) in track.iter_mut().skip(from).zip(preset) {
+        if x.is_some() {
+            slot.clone_from(x);
+        }
+    }
 }
 
 fn bypass_where(e: &mut Engine, p: &Value, pick: fn(usize, Option<Category>) -> bool) -> Result<Value> {

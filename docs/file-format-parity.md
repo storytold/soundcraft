@@ -1,6 +1,6 @@
 # File-format parity
 
-> **Last reviewed:** 2026-11-14 · **Last updated:** 2026-11-14 · **Change:** minor (strict external-WAV AAF import; previously minor: audio formats come from craft-audio) · **Target:** Avid Pro Tools Ultimate 2026.4.1
+> **Last reviewed:** 2026-11-14 · **Last updated:** 2026-11-23 · **Change:** minor (track presets: Recall Inserts / Recall Sends from an insert or send slot; a recalled send finds its bus by name, or makes it as Pro Tools does (#639); previously minor: track presets saved to and recalled from the Track Presets folder (#639), strict external-WAV AAF import; previously minor: audio formats come from craft-audio) · **Target:** Avid Pro Tools Ultimate 2026.4.1
 
 Every format Pro Tools reads or writes, and ours. The Pro Tools list comes from the document types
 its bundle declares (`CFBundleDocumentTypes` in Info.plist: names only, nothing else read) and its
@@ -27,7 +27,8 @@ Legend: ✅ supported and tested · 🟡 partial · ❌ missing · — not appli
 | Import Session Data (from another session) | Pro Tools sessions | 🟡 | — | From `.scraft` only |
 | Session info as text | export | — | ✅ | `file.export_session_text` |
 | Clip groups `.rgrp` / ours `.scgrp` | read/write | 🟡 | 🟡 | Our own `.scgrp` format; Pro Tools' clip-group files not read |
-| Track presets, fade presets, I/O settings, workspace, sync settings | read/write | ❌ | ❌ | Their equivalents don't exist yet (G-16) |
+| Track presets | read/write | 🟡 | 🟡 | Our own JSON presets, saved to a Track Presets folder and recalled from Track › Recall Track Preset or a track name's menu (#639); an insert or send slot's menu has Save Track Preset... and Recall Inserts / Recall Sends, which recall only the preset's inserts or sends, starting at that slot. A send is recalled onto the session's bus of the same name; as in Pro Tools, a bus the session doesn't have is made with the preset's name and format (said in the status line); Pro Tools' track preset files not read |
+| Fade presets, I/O settings, workspace, sync settings | read/write | ❌ | ❌ | Their equivalents don't exist yet (G-16) |
 
 ## Audio
 
@@ -81,6 +82,9 @@ Legend: ✅ supported and tested · 🟡 partial · ❌ missing · — not appli
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-11-23 | minor | Track presets: Recall Inserts / Recall Sends from an insert or send slot (#639). Readiness estimate unchanged |
+| 2026-11-23 | minor | Track presets: a recalled send finds its bus by name; a missing bus is made with the preset's name and format, as in Pro Tools, and the status line says so |
+| 2026-11-19 | minor | Track presets get their own row: saved to a Track Presets folder and recalled from the Track menu or a track name's menu (#639). Readiness estimate unchanged |
 | 2026-11-14 | minor | Strict external-WAV AAF import with editable clips, relink and timecode mapping; export and the wider AAF/OMF feature set remain unsupported; readiness estimate unchanged |
 | 2026-11-11 | minor | Audio formats come from `craft-audio` (craft-libs); `crates/audio-io` is gone. New on import: Opus, AC-3/E-AC-3, `.mov`/`.mka` audio; AAC, ALAC and MP2 no longer go through symphonia; `.aifc` is a writable name |
 | 2026-11-02 | trivial | WAV bounces (mix and stems) write a `bext` TimeReference: session timecode start plus bounce start (#1296) |

@@ -333,8 +333,9 @@ fn send_level_scale(ui: &mut Ui, db: f32) {
     ui.painter().line_segment([pos2(x, r.min.y), pos2(x, line_y + 3.0)], Stroke::new(2.0, t.counter_text));
 }
 
-/// The most height of the send menu's contents.
-const SEND_MENU_HEIGHT: f32 = 260.0;
+/// The most height of the send menu's contents, with room for the track preset items under the footer
+/// without shortening the bus list.
+const SEND_MENU_HEIGHT: f32 = 320.0;
 
 /// A menu under `field` that opens and closes on its clicks and closes on a click outside it: `header` stays at the
 /// top, `total_rows` rows of `row_height` scroll under it (only the rows in view are laid out) and `footer` stays under
@@ -396,10 +397,12 @@ fn header_footer_menu<H, R, F>(
 enum SendFooter {
     NewBus,
     RemoveSend,
+    Preset(crate::track_presets::SlotPick),
 }
 
 /// The send's destination menu: a title and the bus search on top, the matching buses in a list
-/// that scrolls, "new bus..." (and "Remove send" for an existing send) fixed under it.
+/// that scrolls, "new bus..." (and "Remove send" for an existing send) fixed under it, then Save
+/// Track Preset... and Recall Sends.
 /// `current` is the send's destination and its name, if the slot has a send.
 fn send_route_menu(app: &mut SoundApp, ui: &Ui, field: &egui::Response, id: TrackId, slot: usize, current: Option<(Route, String)>) {
     let which = (b'A' + slot as u8) as char;
@@ -453,7 +456,8 @@ fn send_route_menu(app: &mut SoundApp, ui: &Ui, field: &egui::Response, id: Trac
                 ui.close();
                 return Some(SendFooter::RemoveSend);
             }
-            None
+            ui.separator();
+            crate::track_presets::slot_items(ui, crate::track_presets::dir(app).as_deref(), true).map(SendFooter::Preset)
         },
     );
     let Some((picked, footer)) = shown else { return };
@@ -487,6 +491,7 @@ fn send_route_menu(app: &mut SoundApp, ui: &Ui, field: &egui::Response, id: Trac
         Some(SendFooter::RemoveSend) => {
             let _ = app.run("mix.send_remove", json!({"track": id.0, "slot": slot}));
         }
+        Some(SendFooter::Preset(pick)) => crate::track_presets::slot_pick(app, id, slot, true, pick),
         None => {}
     }
 }

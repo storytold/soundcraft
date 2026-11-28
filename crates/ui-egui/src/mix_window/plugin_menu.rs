@@ -17,8 +17,9 @@ pub fn plugin_menu(app: &mut SoundApp, ui: &mut Ui, id: TrackId, slot: usize, oc
         if ui.button(crate::localization::text("no insert")).clicked() {
             run_pick(app, ui, "mix.insert_remove", json!({"track": id.0, "slot": slot}));
         }
-        ui.separator();
     }
+    crate::track_presets::slot_menu(app, ui, id, slot, false);
+    ui.separator();
     let mut cats: Vec<soundcraft_dsp::Category> = Vec::new();
     for p in soundcraft_dsp::plugins() {
         if !p.is_instrument && !cats.contains(&p.category) {
