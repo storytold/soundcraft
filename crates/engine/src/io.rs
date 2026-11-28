@@ -1245,6 +1245,8 @@ pub(crate) fn read_aaf_plan(_: &str, _: &str, _: Option<&str>) -> Result<Value> 
 mod exclusive_tests {
     use super::*;
 
+    /// A fresh empty folder for one test; only the Unix link tests below use it.
+    #[cfg_attr(not(unix), allow(dead_code))]
     fn scratch(name: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!("soundcraft-io-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
