@@ -71,6 +71,54 @@ impl ReduceVisualEffects {
     }
 }
 
+/// The level a send made in the Mix window starts at (Mixing › Sends Default to).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum SendsDefault {
+    // Stored and set (`ui.set`) with the same ids as `ui.sends_default` takes.
+    #[default]
+    #[serde(rename = "-inf")]
+    NegativeInfinity,
+    #[serde(rename = "0")]
+    Unity,
+}
+
+impl SendsDefault {
+    pub const ALL: [Self; 2] = [Self::NegativeInfinity, Self::Unity];
+
+    /// Returns the text shown for this level in the preference selector.
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::NegativeInfinity => "−∞ dB",
+            Self::Unity => "0 dB",
+        }
+    }
+
+    /// Returns the stable command and persistence identifier for this level.
+    pub const fn id(self) -> &'static str {
+        match self {
+            Self::NegativeInfinity => "-inf",
+            Self::Unity => "0",
+        }
+    }
+
+    /// Parses a command or persistence identifier into a default send level.
+    pub fn parse(id: &str) -> Option<Self> {
+        match id {
+            "-inf" => Some(Self::NegativeInfinity),
+            "0" => Some(Self::Unity),
+            _ => None,
+        }
+    }
+
+    /// The send level in dB; −∞ is the mixer's -144 dB floor.
+    pub const fn level_db(self) -> f32 {
+        match self {
+            Self::NegativeInfinity => -144.0,
+            Self::Unity => 0.0,
+        }
+    }
+}
+
 impl PreferencesPage {
     pub const ALL: [Self; 9] = [
         Self::Display,
@@ -121,9 +169,11 @@ struct PreferencesDraft {
     theme: ThemeMode,
     reduce_visual_effects: ReduceVisualEffects,
     undo_levels: usize,
+    sends_default: SendsDefault,
     theme_edited: bool,
     reduce_visual_effects_edited: bool,
     undo_levels_edited: bool,
+    sends_default_edited: bool,
 }
 
 impl PreferencesDraft {
@@ -133,9 +183,11 @@ impl PreferencesDraft {
             theme: app.ui.theme,
             reduce_visual_effects: app.ui.reduce_visual_effects,
             undo_levels: app.ui.undo_levels,
+            sends_default: app.ui.sends_default,
             theme_edited: false,
             reduce_visual_effects_edited: false,
             undo_levels_edited: false,
+            sends_default_edited: false,
         }
     }
 
@@ -150,6 +202,9 @@ impl PreferencesDraft {
         if !self.undo_levels_edited {
             self.undo_levels = app.ui.undo_levels;
         }
+        if !self.sends_default_edited {
+            self.sends_default = app.ui.sends_default;
+        }
     }
 
     /// Remembers which values the user changed during the current UI frame.
@@ -157,6 +212,7 @@ impl PreferencesDraft {
         self.theme_edited |= self.theme != before.theme;
         self.reduce_visual_effects_edited |= self.reduce_visual_effects != before.reduce_visual_effects;
         self.undo_levels_edited |= self.undo_levels != before.undo_levels;
+        self.sends_default_edited |= self.sends_default != before.sends_default;
     }
 }
 
@@ -189,6 +245,7 @@ enum Control {
     Theme,
     ReduceVisualEffects,
     UndoLevels,
+    SendsDefault,
 }
 
 impl Control {
@@ -204,6 +261,7 @@ impl Control {
             Self::Theme => "UI Theme",
             Self::ReduceVisualEffects => "Reduce Visual Effects",
             Self::UndoLevels => "Levels of Undo",
+            Self::SendsDefault => "Sends Default to",
         }
     }
 
@@ -219,6 +277,10 @@ impl Control {
             Self::ReduceVisualEffects => {
                 let modes = ReduceVisualEffects::ALL.map(|mode| both(mode.label())).join(" ");
                 format!("{} {modes}", both(self.label()))
+            }
+            Self::SendsDefault => {
+                let levels = SendsDefault::ALL.map(|level| both(level.label())).join(" ");
+                format!("{} {levels}", both(self.label()))
             }
             _ => both(self.label()),
         }
@@ -432,7 +494,7 @@ const MIXING: &[Section] = &[
     Section {
         title: "Setup",
         controls: &[
-            Control::Value("Sends Default to", "−∞ dB"),
+            Control::SendsDefault,
             Control::Check("Send Pans Default to Follow Main Pan"),
             Control::Check("Use Absolute Pan Linking"),
             Control::Check("Allow Sends to Persist During Low-Latency Monitoring"),
@@ -814,6 +876,7 @@ pub fn show(app: &mut SoundApp, ctx: &egui::Context) {
             let _ = app.run("ui.theme", json!({"mode": draft.theme.id()}));
             let _ = app.run("ui.reduce_visual_effects", json!({"mode": draft.reduce_visual_effects.id()}));
             let _ = app.run("ui.undo_levels", json!({"levels": draft.undo_levels}));
+            let _ = app.run("ui.sends_default", json!({"level": draft.sends_default.id()}));
             open = false;
             app.preferences.discard_draft();
         }
@@ -962,6 +1025,16 @@ fn control_ui(ui: &mut egui::Ui, page: PreferencesPage, section: &str, index: us
                 ui.add(egui::DragValue::new(&mut draft.undo_levels).range(1..=64));
             });
         }
+        Control::SendsDefault => {
+            egui::ComboBox::new(id, label("Sends Default to")).selected_text(crate::localization::text(draft.sends_default.label())).show_ui(
+                ui,
+                |ui| {
+                    for level in SendsDefault::ALL {
+                        ui.selectable_value(&mut draft.sends_default, level, crate::localization::text(level.label()));
+                    }
+                },
+            );
+        }
         Control::Check(text) => {
             let mut value = false;
             ui.add_enabled(false, egui::Checkbox::new(&mut value, label(text)))
@@ -1103,6 +1176,16 @@ mod tests {
         assert!(!text_matches(&control.search_text(), "mixagem"));
     }
 
+    #[test]
+    fn sends_default_is_found_by_its_label_and_levels_in_both_languages() {
+        let _scope = crate::localization::enter(crate::localization::Language::PortugueseBrazil);
+        let text = Control::SendsDefault.search_text();
+        assert!(text_matches(&text, "sends default"), "English label");
+        assert!(text_matches(&text, crate::localization::Language::PortugueseBrazil.text("Sends Default to")), "pt-BR label");
+        assert!(text_matches(&text, "0 dB"), "a level");
+        assert!(!text_matches(&text, "mixagem"));
+    }
+
     /// Creates a complete application harness with Preferences already open.
     fn preferences_harness(size: egui::Vec2) -> Harness<'static, SoundApp> {
         let mut app = SoundApp::new(Engine::default(), None, crate::Services::default());
@@ -1134,9 +1217,11 @@ mod tests {
         assert!(app.run("ui.theme", json!({"mode": ThemeMode::Light.id()})).is_ok());
         assert!(app.run("ui.reduce_visual_effects", json!({"mode": "playback"})).is_ok());
         assert!(app.run("ui.undo_levels", json!({"levels": 32})).is_ok());
+        assert!(app.run("ui.sends_default", json!({"level": "0"})).is_ok());
         assert_eq!(app.ui.theme, ThemeMode::Light);
         assert_eq!(app.ui.reduce_visual_effects, ReduceVisualEffects::Playback);
         assert_eq!((app.ui.undo_levels, app.engine.history_limit), (32, 32));
+        assert_eq!(app.ui.sends_default, SendsDefault::Unity);
         assert!(!app.engine.is_dirty());
     }
 
@@ -1150,6 +1235,7 @@ mod tests {
             assert!(app.run("ui.theme", json!({"mode": ThemeMode::Light.id()})).is_ok());
             assert!(app.run("ui.reduce_visual_effects", json!({"mode": "always"})).is_ok());
             assert!(app.run("ui.undo_levels", json!({"levels": 17})).is_ok());
+            assert!(app.run("ui.sends_default", json!({"level": "0"})).is_ok());
         }
         harness.run_steps(2);
         harness.get_by_label("OK").click();
@@ -1159,6 +1245,7 @@ mod tests {
         assert_eq!(app.ui.theme, ThemeMode::Light);
         assert_eq!(app.ui.reduce_visual_effects, ReduceVisualEffects::Always);
         assert_eq!((app.ui.undo_levels, app.engine.history_limit), (17, 17));
+        assert_eq!(app.ui.sends_default, SendsDefault::Unity);
         assert!(!app.ui.show_preferences);
     }
 
@@ -1174,11 +1261,13 @@ mod tests {
         app.ui.theme = ThemeMode::System;
         app.ui.reduce_visual_effects = ReduceVisualEffects::Always;
         app.ui.undo_levels = 17;
+        app.ui.sends_default = SendsDefault::Unity;
         draft.sync_unedited_from_live(&app);
 
         assert_eq!(draft.theme, ThemeMode::Light);
         assert_eq!(draft.reduce_visual_effects, ReduceVisualEffects::Always);
         assert_eq!(draft.undo_levels, 17);
+        assert_eq!(draft.sends_default, SendsDefault::Unity);
     }
 
     /// Command inputs reject unknown modes and bound undo depth safely.
@@ -1359,6 +1448,25 @@ mod tests {
 
         assert!(!harness.state().ui.show_preferences);
         assert_eq!(harness.state().ui.theme, ThemeMode::Dark);
+    }
+
+    /// Choosing 0 dB for Sends Default to applies on OK and is discarded on Cancel (#1423).
+    #[test]
+    fn sends_default_choice_applies_on_ok_and_not_on_cancel() {
+        for (button, expected) in [("OK", SendsDefault::Unity), ("Cancel", SendsDefault::NegativeInfinity)] {
+            let mut harness = preferences_harness(egui::vec2(1280.0, 1000.0));
+            harness.state_mut().ui.preferences_page = PreferencesPage::Mixing;
+            harness.run_steps(4);
+            harness.get_by_value("−∞ dB").click();
+            harness.run_steps(2);
+            harness.get_by_label("0 dB").click();
+            harness.run_steps(2);
+            assert_eq!(harness.state().ui.sends_default, SendsDefault::NegativeInfinity, "staged until {button}");
+            harness.get_by_label(button).click();
+            harness.run_steps(2);
+            assert_eq!(harness.state().ui.sends_default, expected, "after {button}");
+            assert!(!harness.state().ui.show_preferences);
+        }
     }
 
     /// Escape closes an open choice popup before it can cancel the complete window.
