@@ -226,7 +226,7 @@ mod tests {
     #[test]
     fn a_default_format_the_streams_cannot_convert_uses_a_supported_one_at_the_same_rate() {
         let configs = [
-            range(2, 44_100, 48_000, cpal::SampleFormat::I24),
+            range(2, 44_100, 48_000, cpal::SampleFormat::F64),
             range(2, 44_100, 48_000, cpal::SampleFormat::I16),
             range(2, 44_100, 48_000, cpal::SampleFormat::F32),
             range(2, 96_000, 96_000, cpal::SampleFormat::F32),
