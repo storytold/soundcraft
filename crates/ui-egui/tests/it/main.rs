@@ -5,6 +5,7 @@
 
 mod appearance;
 mod audio_device;
+mod audio_load;
 mod auto_rename;
 mod bounce;
 mod bounce_dialog;
