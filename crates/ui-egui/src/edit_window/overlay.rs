@@ -1,8 +1,12 @@
+use super::clips::{ClipCut, ClipLane, draw_clip};
 use super::drag::drag_plan;
 use super::input::midi_clip_span;
-use super::layout::x_of;
+use super::layout::{lane_rect, x_of};
 use super::scroll::{FollowFrame, follow_update};
-use super::{Color32, Gesture, Rect, Samples, SoundApp, Stroke, StrokeKind, Tokens, TrackId, Ui, json, ops, pos2, rgb};
+use super::{Clip, Color32, Gesture, Rect, Samples, SoundApp, Stroke, StrokeKind, Tokens, TrackId, Ui, json, ops, pos2, rgb};
+
+/// How opaque a dragged clip's ghost is, so the grid and the clips under it show through.
+const GHOST_OPACITY: f32 = 0.5;
 
 /// The playback cursor is red only while recording; plain playback draws it in its own neutral
 /// grey, apart from the insertion colour of the edit cursor that stands beside it.
@@ -84,19 +88,42 @@ pub(super) fn overlay(app: &mut SoundApp, ui: &mut Ui, tl: Rect, area: Rect) {
         layout.last_follow_to = follow_to;
         scroll_to = follow_to;
     }
-    // Ghost of a clip move.
+    // Ghost of a clip move: each moving clip drawn faded where it would land (on the target
+    // track's row), with an outline; the clip itself stays drawn at its place until the drop.
     if let Some(Gesture::MoveClips { clips, delta, from_track, to_track, grab_at }) = &app.gesture
         && let plan = drag_plan(ui.ctx(), s, app.engine.revision, clips, (*from_track, *to_track), *grab_at)
         && let Some(dest) = &plan.dest
     {
-        for &(t, start, len) in &plan.moving {
+        // Crossfades can leave two clips on a track with the same span: each takes the next one not yet drawn, and
+        // like the drag only clips that are not locked. A playlist is sorted by start, so the span is found by search.
+        let selected: std::collections::HashSet<_> = clips.iter().copied().collect();
+        let mut drawn = std::collections::HashSet::new();
+        for &(t, was, len) in &plan.moving {
             let d = ops::lands(dest, t);
             let start = plan
                 .groups
                 .iter()
                 .find(|g| g.0 == d)
-                .map_or(start + delta, |(_, first, slots)| ops::nearest_slot(slots, first + delta) + (start - first));
+                .map_or(was + delta, |(_, first, slots)| ops::nearest_slot(slots, first + delta) + (was - first));
             if let Some((_, r)) = app.edit_layout.rows.iter().find(|(i, _)| *i == d.0) {
+                if let (Some(src), Some(dst)) = (s.track(t), s.track(d))
+                    && let at = src.clips().partition_point(|c| c.start < was)
+                    && let Some(clip) = src
+                        .clips()
+                        .get(at..)
+                        .into_iter()
+                        .flatten()
+                        .take_while(|c| c.start == was)
+                        .find(|c| c.length == len && !ops::locked(c) && selected.contains(&c.id) && !drawn.contains(&c.id))
+                {
+                    drawn.insert(clip.id);
+                    let lane = lane_rect(dst, Rect::from_min_max(pos2(tl.min.x, r[1]), pos2(tl.max.x, r[3])), tl);
+                    let mut ghost = painter.with_clip_rect(lane.intersect(area));
+                    ghost.multiply_opacity(GHOST_OPACITY);
+                    let moved = Clip { start, ..clip.clone() };
+                    let cl = ClipLane { app, painter: &ghost, s, track: src, sorted: false, tl, lane };
+                    draw_clip(&cl, &moved, ClipCut::default(), false);
+                }
                 let x0 = x_of(s, tl, start);
                 let x1 = x_of(s, tl, start + len);
                 painter.rect_stroke(
