@@ -94,3 +94,4 @@ For the crates you changed: `cargo fmt`, `cargo clippy -p <crate> --all-targets`
 - Interface language: `Setup > Appearance > Language` or the `ui.language` command (English by default); catalogs are checked for placeholder parity and unique keys.
 - Contributor credits: `docs/contributors.md`.
 - `plan/` is an optional gitignored notebook.
+- Before pushing a change to `apps/soundcraft-cli` or its launch flags, run the command-line scan CI runs (RFC-0018 section 3): with a checkout of storytold/craft-common-actions next to this repository, `ast-grep scan --config ../craft-common-actions/actions/ast-grep/shared/rfc-0018/sgconfig.yml <paths>` and the same with `rfc-0018-string-error`, where `<paths>` are the `paths` in `.github/workflows/ast-grep.yml`.
