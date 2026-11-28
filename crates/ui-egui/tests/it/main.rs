@@ -26,6 +26,7 @@ mod import_browse;
 mod key_families;
 mod long_menu_scroll;
 mod marker_rename;
+mod menu_bar_keys;
 mod menu_search;
 mod midi_double_click;
 mod midi_editor_keys;
