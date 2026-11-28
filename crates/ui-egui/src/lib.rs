@@ -47,7 +47,7 @@ use soundcraft_model::TrackId;
 use soundcraft_playback::record::Trouble;
 use soundcraft_playback::{OutputTrouble, Player};
 use soundcraft_time::{Range, Samples};
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::mpsc::Receiver;
 
 pub use control::ControlRequest;
@@ -360,6 +360,9 @@ pub struct SoundApp {
     /// peaks since the previous take. The only reader of the player's meters; windows read this.
     pub(crate) meter_snapshot: soundcraft_playback::MeterSnapshot,
     pub gesture: Option<Gesture>,
+    /// Tracks whose static fader value should remain visible while stopped. Playback clears
+    /// these so Read automation takes control again.
+    pub(crate) stopped_volume_overrides: HashSet<TrackId>,
     pub edit_layout: edit_window::EditLayout,
     pub midi: midi_editor::MidiEditorState,
     pub ops: ops_windows::OpsState,

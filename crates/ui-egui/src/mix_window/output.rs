@@ -3,7 +3,9 @@
 
 use super::routing::route_name;
 use super::sends::{Readout, editable_readout, parse_db, parse_pan};
-use super::{SoundApp, Tokens, TrackId, TrackKind, db_text, fader, json, pan_knob, pan_text, pos2, surround_panned, text_toggle, vec2};
+use super::{
+    SoundApp, Tokens, TrackId, TrackKind, db_text, fader, json, mixer_display_volume_db, pan_knob, pan_text, pos2, surround_panned, text_toggle, vec2,
+};
 
 /// Open the Output window on `track`, or close it when it already shows that track.
 pub(crate) fn toggle_output_window(app: &mut SoundApp, track: TrackId) {
@@ -103,10 +105,14 @@ fn output_window_contents(app: &mut SoundApp, ctx: &egui::Context) {
                     });
                 }
                 let (fr, _) = ui.allocate_exact_size(vec2(56.0, 220.0), egui::Sense::hover());
+                let display_db = mixer_display_volume_db(app, &track, id);
                 // Distinct from the strip's "<track> level", so a label query while the Mix window
                 // is open still picks one node.
-                if let Some(db) = fader(ui, fr, track.mixer.volume_db, ui.scope_id().with("output_fader"), &format!("{name} output level")) {
+                if let Some(db) = fader(ui, fr, display_db, ui.scope_id().with("output_fader"), &format!("{name} output level")) {
                     app.gesture = Some(crate::Gesture::Fader { track: id, start_db: track.mixer.volume_db });
+                    if !app.is_playing() {
+                        app.stopped_volume_overrides.insert(id);
+                    }
                     // The strip's merge key: one undo step for a drag, whichever fader it uses.
                     let _ = app.engine.execute_merged("mix.volume", &json!({"track": id.0, "db": db}), &format!("fader:{}", id.0));
                 }
@@ -118,13 +124,16 @@ fn output_window_contents(app: &mut SoundApp, ctx: &egui::Context) {
                     ui.scope_id().with(("output_volume_value", doc, id.0)),
                     Readout {
                         name: &format!("{name} output volume"),
-                        display: &db_text(track.mixer.volume_db),
-                        edit_initial: &format!("{:.1}", track.mixer.volume_db),
+                        display: &db_text(display_db),
+                        edit_initial: &format!("{display_db:.1}"),
                         parse: parse_db,
                         reset: 0.0,
                     },
                 );
                 if let Some(db) = typed {
+                    if !app.is_playing() {
+                        app.stopped_volume_overrides.insert(id);
+                    }
                     let _ = app.engine.execute_merged("mix.volume", &json!({"track": id.0, "db": db}), &format!("fader:{}", id.0));
                 }
             });

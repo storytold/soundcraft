@@ -523,8 +523,11 @@ pub fn fader(ui: &mut Ui, r: Rect, db: f32, id: egui::Id, name: &str) -> Option<
         return Some(0.0);
     }
     if resp.dragged() {
-        let fine = ui.input(|i| i.modifiers.command || i.modifiers.ctrl);
-        let dy = resp.drag_delta().y / slot.height() * if fine { 0.1 } else { 1.0 };
+        // `drag_delta` accumulates from the drag start. Apply only this frame's movement because
+        // `db` is already the value committed by the preceding frame; otherwise a held fader
+        // keeps reapplying the old movement and fights Touch/Latch automation.
+        let (dy, fine) = ui.input(|i| (i.pointer.delta().y, i.modifiers.command || i.modifiers.ctrl));
+        let dy = dy / slot.height() * if fine { 0.1 } else { 1.0 };
         let np = (pos - dy).clamp(0.0, 1.0);
         return Some(soundcraft_model::fader_pos_to_db(np).clamp(-144.0, 12.0));
     }
@@ -877,7 +880,7 @@ fn drag_toggle(ui: &Ui, resp: &Response, on: &mut bool) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{clip_gain_from_pos, clip_gain_to_pos};
-    use egui::{Event, Modifiers, PointerButton, Pos2};
+    use egui::{Event, Modifiers, PointerButton, Pos2, Rect, vec2};
     use egui_kittest::{Harness, kittest::Queryable};
 
     fn press(h: &mut Harness<'_, [bool; 4]>, pos: Pos2, pressed: bool) {
@@ -1012,6 +1015,33 @@ mod tests {
         for db in [-144.0, -90.0, -36.0, -12.5, 0.0, 6.0, 36.0] {
             assert!((clip_gain_from_pos(clip_gain_to_pos(db)) - db).abs() < 0.01, "{db}");
         }
+    }
+
+    /// A fader receives its updated value every frame. Its drag is therefore incremental: after
+    /// a pointer move, holding still must not apply that same movement again.
+    #[test]
+    fn holding_a_fader_still_does_not_reapply_the_drag_delta() {
+        let r = Rect::from_min_size(Pos2::new(20.0, 20.0), vec2(40.0, 240.0));
+        let mut h = Harness::new_ui_state(
+            move |ui, db: &mut f32| {
+                if let Some(next) = super::fader(ui, r, *db, egui::Id::unique("held fader"), "Level") {
+                    *db = next;
+                }
+            },
+            0.0,
+        );
+        h.run();
+        let at = h.get_by_role_and_label(egui::accesskit::Role::Slider, "Level").rect().center();
+        h.event(Event::PointerMoved(at));
+        h.run();
+        h.event(Event::PointerButton { pos: at, button: PointerButton::Primary, pressed: true, modifiers: Modifiers::NONE });
+        h.run_steps(2);
+        h.event(Event::PointerMoved(at + vec2(0.0, -20.0)));
+        h.run();
+        let after_move = *h.state();
+        assert!(after_move > 0.0, "the pointer movement changes the fader before it is held still");
+        h.run_steps(3);
+        assert_eq!(*h.state(), after_move, "a stationary held fader keeps its last value");
     }
 }
 

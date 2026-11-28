@@ -635,7 +635,8 @@ fn io_column(app: &mut SoundApp, ui: &mut Ui, track: &Track, r: Rect) {
         let pannable = !m.pan.is_empty() && track.kind != TrackKind::Vca && !crate::mix_window::surround_panned(app, track);
         let vol_row = Rect::from_x_y_ranges(vr.x_range(), vr.min.y + 1.5..=vr.min.y + 14.0).shrink2(vec2(1.5, 0.0));
         let pan_row = Rect::from_x_y_ranges(vr.x_range(), vr.min.y + 15.0..=vr.max.y - 1.5).shrink2(vec2(1.5, 0.0));
-        let vol_text = crate::widgets::db_text(m.volume_db);
+        let display_db = crate::mix_window::mixer_display_volume_db(app, track, id);
+        let vol_text = crate::widgets::db_text(display_db);
         let vol = readout_button(
             &ui,
             vol_row,
@@ -720,7 +721,7 @@ fn reset_pan(app: &mut SoundApp, track: &Track) {
 fn volume_fader(app: &mut SoundApp, ui: &mut Ui, track: &Track) {
     let t = Tokens::current();
     let id = track.id;
-    let db = track.mixer.volume_db;
+    let db = crate::mix_window::mixer_display_volume_db(app, track, id);
     let key = format!("fader:{}", id.0);
     let (well, _) = ui.allocate_exact_size(vec2(56.0, 16.0), Sense::hover());
     crate::widgets::inset(ui.painter(), well, t.counter_bg);
@@ -738,6 +739,9 @@ fn volume_fader(app: &mut SoundApp, ui: &mut Ui, track: &Track) {
         },
     );
     if let Some(db) = typed {
+        if !app.is_playing() {
+            app.stopped_volume_overrides.insert(id);
+        }
         let _ = app.engine.execute_merged("mix.volume", &json!({"track": id.0, "db": db}), &key);
     }
     ui.add_space(4.0);
@@ -745,6 +749,9 @@ fn volume_fader(app: &mut SoundApp, ui: &mut Ui, track: &Track) {
     let (slot, _) = ui.allocate_exact_size(vec2(56.0, 170.0), Sense::hover());
     if let Some(moved) = crate::widgets::fader(ui, slot, db, ui.scope_id().with(("io-fader", id.0)), &format!("{} level", track.name)) {
         app.gesture = Some(Gesture::Fader { track: id, start_db: db });
+        if !app.is_playing() {
+            app.stopped_volume_overrides.insert(id);
+        }
         let _ = app.engine.execute_merged("mix.volume", &json!({"track": id.0, "db": moved}), &key);
     }
 }
