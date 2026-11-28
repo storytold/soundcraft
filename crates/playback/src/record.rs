@@ -505,7 +505,8 @@ impl Recorder {
         (takes, problem.or(slow))
     }
 
-    /// Number of samples to place a take earlier when it started on one shared ASIO clock.
+    /// Number of samples to place a take earlier when it started on one shared ASIO clock; a
+    /// negative offset places it later.
     pub fn placement_offset(&self) -> Option<i64> {
         let clock = self.shared.clock.as_ref()?;
         let input = self.shared.first_capture.read()?;

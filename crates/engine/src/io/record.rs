@@ -11,7 +11,8 @@ pub struct Recording {
     pub start: Samples,
     pub pass: Option<Samples>,
     pub punch: Option<Range>,
-    /// Measured device and callback delay in session samples. Older recovery plans start at zero correction.
+    /// Measured device and callback delay in session samples: takes are placed this much earlier, or later when it is
+    /// negative. Older recovery plans start at zero correction.
     #[serde(default)]
     pub placement_offset: Samples,
     /// The input's sample rate, which the take files are written at.
