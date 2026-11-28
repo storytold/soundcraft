@@ -28,6 +28,7 @@ impl SoundApp {
         // The input reopens on the next record or monitor with the new choice.
         self.recorder = None;
         self.recorder_failed = false;
+        self.input_returned = false;
         // A device chosen here replaces any that went away, and what the status line said about
         // the devices before ("SoundCraft reopened …", a lost device) no longer holds.
         self.lost_audio = None;
@@ -54,12 +55,22 @@ impl SoundApp {
                 }
                 let name = r.device_name.clone();
                 self.recorder = Some(r);
+                self.input_returned = false;
                 self.input_opened(&name);
             }
-            Err(e) => {
-                self.recorder_failed = true;
-                self.ui.status = crate::localized_format!("No audio input: {e}", e = e);
-            }
+            Err(e) => self.input_failed(&e),
+        }
+    }
+
+    /// The input device did not open (`e` says why): it is not tried again until the audio
+    /// devices are reopened or the input comes back. An input that came back and fails here
+    /// keeps the Reconnect offer (`input_by_hand`); one that never opened offers nothing, which
+    /// would also stop following the system default (`watch_default`).
+    pub(super) fn input_failed(&mut self, e: &str) {
+        self.recorder_failed = true;
+        self.ui.status = crate::localized_format!("No audio input: {e}", e = e);
+        if std::mem::take(&mut self.input_returned) {
+            self.audio_lost().input_by_hand = true;
         }
     }
 

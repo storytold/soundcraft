@@ -307,6 +307,7 @@ impl SoundApp {
             self.reopen_audio(&cfg, required.as_deref());
             // An input still away opens again when it is back, not on the next record.
             self.recorder_failed = input_away;
+            self.input_returned = input;
             let opened = self.player.as_ref().filter(|p| !p.silent).map(|p| p.device_name.clone());
             if opened.as_deref() == Some(name.as_str()) {
                 if let Some(l) = &mut self.lost_audio {
@@ -353,6 +354,7 @@ impl SoundApp {
             // audio choice says: the device chosen by its name, else the current system default.
             self.recorder = None;
             self.recorder_failed = false;
+            self.input_returned = true;
             self.ui.status = if self.ui.audio.input.is_none() {
                 crate::localization::text("The system default input is available again.").to_string()
             } else {
@@ -437,6 +439,7 @@ impl SoundApp {
         // next use, but when it is back (`watch_replug`).
         let input_away = self.ui.audio.input.as_ref().and(self.lost_audio.as_ref().and_then(|l| l.input.clone()));
         self.recorder_failed = input_away.is_some();
+        self.input_returned = false;
         self.ui.status = reconnect_status(missing.as_deref(), opened.as_deref(), input_away.as_deref());
         if let Some(name) = missing {
             // Not to be found: waited for by its name, and reopened once it is back.
@@ -903,6 +906,47 @@ mod tests {
             std::thread::sleep(Duration::from_millis(5));
         }
         assert!(!app.recorder_failed, "the input that came back opens on its next use");
+    }
+
+    /// An input that came back but fails to open on its next use keeps the Reconnect offer, as
+    /// an output that came back and failed to reopen does: otherwise every later use is refused
+    /// with nothing on the status line to retry it.
+    #[test]
+    fn an_input_that_came_back_but_fails_to_open_keeps_the_reconnect_offer() {
+        let devices = Devices::default();
+        let mut app = app_on_away(&devices);
+        app.ui.audio.output = None;
+        app.audio_lost().away(AWAY.into(), false);
+        app.reconnect_audio();
+        devices.set(&[AWAY]);
+        let until = Instant::now() + Duration::from_secs(5);
+        while app.recorder_failed && Instant::now() < until {
+            app.watch_replug();
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert!(!app.recorder_failed, "the input that came back opens on its next use");
+        // Listed again, it still fails to open (the error `ensure_input` gets).
+        app.input_failed("the device is busy");
+        assert!(app.recorder.is_none() && app.recorder_failed);
+        assert!(app.offers_reconnect(), "the failed reopen leaves Reconnect on the status line");
+        assert!(app.lost_audio.as_ref().is_some_and(|l| l.input_by_hand));
+        // Opening it by hand later settles the offer (`input_opened`).
+        app.input_opened(AWAY);
+        assert!(!app.offers_reconnect());
+    }
+
+    /// An input that fails on its first use, with nothing lost before, is not a reopen: no
+    /// Reconnect offer, which would also stop following the system default.
+    #[test]
+    fn an_input_that_fails_on_its_first_use_offers_no_reconnect() {
+        let devices = Devices::default();
+        let mut app = app_on_away(&devices);
+        app.ui.audio.output = None;
+        app.lost_audio = None;
+        app.reconnect_audio();
+        app.input_failed("no audio input device");
+        assert!(app.recorder_failed);
+        assert!(!app.offers_reconnect());
     }
 
     /// Reconnect while an input is still away keeps waiting for it, so that it opens again once

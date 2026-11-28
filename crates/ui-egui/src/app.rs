@@ -44,6 +44,7 @@ impl SoundApp {
             record_start: 0,
             punch: None,
             recorder_failed: false,
+            input_returned: false,
             lost_audio: None,
             default_watch: DefaultWatch::new(),
             lost_refusal: None,

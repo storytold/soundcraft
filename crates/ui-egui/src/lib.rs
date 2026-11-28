@@ -312,6 +312,9 @@ pub struct SoundApp {
     /// Punch range to trim the take to (pre/post-roll recordings).
     punch: Option<Range>,
     recorder_failed: bool,
+    /// An input that went away is back and opens on its next use (`watch_replug`): if it fails
+    /// to open then, the status line offers Reconnect, as for an output that fails to reopen.
+    input_returned: bool,
     /// The audio devices need reopening, and those that went away are waited for.
     lost_audio: Option<app::LostAudio>,
     /// The system default, watched while the output or input open on it is pinned to the device
