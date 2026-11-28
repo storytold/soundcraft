@@ -75,12 +75,32 @@ impl IPlugFrameTrait for PlugFrame {
     unsafe fn resizeView(&self, view: *mut sb::IPlugView, new_size: *mut sb::ViewRect) -> sb::tresult {
         // SAFETY: in-pointer from the plugin (or null, handled).
         let Some(r) = (unsafe { new_size.as_mut() }) else { return sb::kInvalidArgument };
-        let (w, h) = rect_size(r);
-        window::resize(self.window.load(Ordering::Relaxed), w, h);
         // SAFETY: the plugin passes its own live view (or null, handled).
-        if let Some(v) = unsafe { vst3::ComRef::from_raw(view) } {
-            // SAFETY: valid view; `r` is the plugin's own writable rect.
-            unsafe { v.onSize(r) };
+        let Some(v) = (unsafe { vst3::ComRef::from_raw(view) }) else { return sb::kInvalidArgument };
+        // #1448: negotiate before touching the host. The request is capped at the work area's
+        // fit, then `checkSizeConstraint` writes the nearest size the view supports — the size
+        // the window is moved to and the size `onSize` is told, so both sides agree. A view
+        // that refuses the fitted size keeps everything as it was.
+        let (w, h) = rect_size(r);
+        let (fw, fh) = window::fit_client(w, h);
+        let mut fit = sb::ViewRect { left: r.left, top: r.top, right: r.left + fw as i32, bottom: r.top + fh as i32 };
+        // SAFETY: valid view; `fit` is writable and the plugin may adjust it in place.
+        if (fw, fh) != (w, h) && !ok(unsafe { v.checkSizeConstraint(&mut fit) }) {
+            return sb::kResultFalse;
+        }
+        let (tw, th) = rect_size(&fit);
+        let win = self.window.load(Ordering::Relaxed);
+        let before = window::client_size(win);
+        let (aw, ah) = window::resize(win, tw, th);
+        fit.right = fit.left + aw as i32;
+        fit.bottom = fit.top + ah as i32;
+        // SAFETY: valid view; `fit` is writable. A view that refuses the applied size gets its
+        // window restored, so the window and the view it holds stay the same size (#1448).
+        if !ok(unsafe { v.onSize(&mut fit) }) {
+            if let Some((bw, bh)) = before {
+                window::resize(win, bw, bh);
+            }
+            return sb::kResultFalse;
         }
         sb::kResultOk
     }
@@ -174,7 +194,21 @@ impl EditorLink {
         let mut r = sb::ViewRect { left: 0, top: 0, right: 400, bottom: 300 };
         // SAFETY: valid view; `r` is writable. On failure the default size stays.
         unsafe { view.getSize(&mut r) };
-        let (w, h) = rect_size(&r);
+        let (mut w, mut h) = rect_size(&r);
+        // #1448: a view too big for the monitor under the pointer gets the plugin's own nearest
+        // supported size; a view that cannot resize keeps its size — the window then opens with
+        // its title bar on-screen so every control stays reachable by dragging, never clipped.
+        let (fw, fh) = window::fit_client(w, h);
+        let mut negotiated = false;
+        if (fw, fh) != (w, h) && unsafe { view.canResize() } == sb::kResultTrue {
+            let mut fit = sb::ViewRect { left: r.left, top: r.top, right: r.left + fw as i32, bottom: r.top + fh as i32 };
+            // SAFETY: valid view; `fit` is writable and the plugin may adjust it in place.
+            if ok(unsafe { view.checkSizeConstraint(&mut fit) }) {
+                r = fit;
+                (w, h) = rect_size(&r);
+                negotiated = true;
+            }
+        }
         let win = window::HostWindow::new(title, w, h)?;
         let frame = ComWrapper::new(PlugFrame::new(win.raw()));
         if let Some(f) = frame.as_com_ref::<sb::IPlugFrame>() {
@@ -191,6 +225,10 @@ impl EditorLink {
             frame.run_loop.clear();
             win.close();
             return Err("the editor could not attach to its window".into());
+        }
+        if negotiated {
+            // SAFETY: valid, attached view; `r` is the size the plugin agreed to and got.
+            unsafe { view.onSize(&mut r) };
         }
         win.raise();
         g.view = Some(view);
@@ -494,5 +532,197 @@ mod tests {
                 }
             }
         }
+    }
+}
+
+/// Windows regressions for `resizeView`: a view that constrains every size to its supported
+/// minimum, and one that refuses `checkSizeConstraint` or `onSize` (#1448).
+#[cfg(all(test, windows))]
+mod win_tests {
+    use super::*;
+    use std::sync::atomic::{AtomicBool, AtomicU64};
+    use vst3::Steinberg::IPluginBaseTrait;
+
+    /// Serialises the window tests: the fake view's state and real windows are shared.
+    static GUARD: Mutex<()> = Mutex::new(());
+    static ONSIZE: AtomicU64 = AtomicU64::new(0);
+    static REFUSE_CONSTRAINT: AtomicBool = AtomicBool::new(false);
+    static REFUSE_SIZE: AtomicBool = AtomicBool::new(false);
+    /// The fake view's minimum size (`width << 32 | height`).
+    static MIN: AtomicU64 = AtomicU64::new(0);
+
+    /// A view with a supported-size contract: `checkSizeConstraint` never allows less than its
+    /// minimum and `onSize` can refuse outright.
+    struct ConstrainedView;
+
+    impl Class for ConstrainedView {
+        type Interfaces = (sb::IPlugView,);
+    }
+
+    impl IPluginBaseTrait for ConstrainedView {
+        unsafe fn initialize(&self, _context: *mut sb::FUnknown) -> sb::tresult {
+            sb::kResultOk
+        }
+
+        unsafe fn terminate(&self) -> sb::tresult {
+            sb::kResultOk
+        }
+    }
+
+    impl IPlugViewTrait for ConstrainedView {
+        unsafe fn isPlatformTypeSupported(&self, _type: sb::FIDString) -> sb::tresult {
+            sb::kResultTrue
+        }
+
+        unsafe fn attached(&self, _parent: *mut c_void, _type: sb::FIDString) -> sb::tresult {
+            sb::kResultOk
+        }
+
+        unsafe fn removed(&self) -> sb::tresult {
+            sb::kResultOk
+        }
+
+        unsafe fn onWheel(&self, _distance: f32) -> sb::tresult {
+            sb::kResultOk
+        }
+
+        unsafe fn onKeyDown(&self, _key: sb::char16, _key_code: sb::int16, _modifiers: sb::int16) -> sb::tresult {
+            sb::kResultOk
+        }
+
+        unsafe fn onKeyUp(&self, _key: sb::char16, _key_code: sb::int16, _modifiers: sb::int16) -> sb::tresult {
+            sb::kResultOk
+        }
+
+        unsafe fn getSize(&self, size: *mut sb::ViewRect) -> sb::tresult {
+            // SAFETY: the host's writable out-rect.
+            unsafe {
+                *size = sb::ViewRect { left: 0, top: 0, right: 400, bottom: 300 };
+            }
+            sb::kResultOk
+        }
+
+        unsafe fn onSize(&self, new_size: *mut sb::ViewRect) -> sb::tresult {
+            // SAFETY: the host's readable in-rect.
+            let r = unsafe { &*new_size };
+            ONSIZE.store((u64::from((r.right - r.left) as u32) << 32) | u64::from((r.bottom - r.top) as u32), Ordering::Relaxed);
+            if REFUSE_SIZE.load(Ordering::Relaxed) { sb::kResultFalse } else { sb::kResultOk }
+        }
+
+        unsafe fn onFocus(&self, _state: sb::TBool) -> sb::tresult {
+            sb::kResultOk
+        }
+
+        unsafe fn setFrame(&self, _frame: *mut sb::IPlugFrame) -> sb::tresult {
+            sb::kResultOk
+        }
+
+        unsafe fn canResize(&self) -> sb::tresult {
+            sb::kResultTrue
+        }
+
+        unsafe fn checkSizeConstraint(&self, rect: *mut sb::ViewRect) -> sb::tresult {
+            if REFUSE_CONSTRAINT.load(Ordering::Relaxed) {
+                return sb::kResultFalse;
+            }
+            // SAFETY: the host's writable in/out rect; the only supported size is written in place.
+            let r = unsafe { &mut *rect };
+            let min = MIN.load(Ordering::Relaxed);
+            if min != 0 {
+                let (mw, mh) = ((min >> 32) as i32, min as u32 as i32);
+                r.right = r.left + mw;
+                r.bottom = r.top + mh;
+            }
+            sb::kResultTrue
+        }
+    }
+
+    /// A frame on a real host window and a fake view, as the plugin would hand `resizeView`.
+    fn fixture() -> Result<(window::HostWindow, ComWrapper<PlugFrame>, ComWrapper<ConstrainedView>, *mut sb::IPlugView), String> {
+        let win = window::HostWindow::new("editor", 400.0, 300.0)?;
+        let frame = ComWrapper::new(PlugFrame::new(win.raw()));
+        let view = ComWrapper::new(ConstrainedView);
+        let ptr = view.as_com_ref::<sb::IPlugView>().ok_or_else(|| "the fake view exposes no IPlugView".to_string())?.as_ptr();
+        Ok((win, frame, view, ptr))
+    }
+
+    fn on_main(f: impl FnOnce() + Send + 'static) -> Result<(), String> {
+        std::thread::Builder::new()
+            .name("main".into())
+            .spawn(f)
+            .map_err(|e| e.to_string())?
+            .join()
+            .map_err(|_| "the test thread panicked".to_string())
+    }
+
+    fn reset() {
+        ONSIZE.store(0, Ordering::Relaxed);
+        REFUSE_CONSTRAINT.store(false, Ordering::Relaxed);
+        REFUSE_SIZE.store(false, Ordering::Relaxed);
+        MIN.store(0, Ordering::Relaxed);
+    }
+
+    /// An oversized request is negotiated to the view's supported size — a fixed-size editor's
+    /// only answer — and that size is applied to both the window and `onSize`, never the shrunk
+    /// work-area fit (#1448).
+    #[test]
+    fn a_resize_is_negotiated_before_the_window_moves() {
+        let _guard = GUARD.lock().unwrap_or_else(PoisonError::into_inner);
+        on_main(|| {
+            reset();
+            MIN.store((800u64 << 32) | 600, Ordering::Relaxed);
+            let (win, frame, view, ptr) = fixture().unwrap();
+            let mut r = sb::ViewRect { left: 0, top: 0, right: 9_000, bottom: 9_000 };
+            // SAFETY: `frame` and `view` are our own live objects; `r` is writable.
+            let result = unsafe { frame.resizeView(ptr, &mut r) };
+            assert_eq!(result, sb::kResultOk);
+            assert_eq!(ONSIZE.load(Ordering::Relaxed), (800u64 << 32) | 600, "onSize got the negotiated size");
+            assert_eq!(window::client_size(win.raw()), Some((800.0, 600.0)), "the window got it too");
+            drop((frame, view));
+            win.close();
+        })
+        .unwrap();
+    }
+
+    /// A view that refuses the constraint check gets `kResultFalse`: the window is untouched and
+    /// `onSize` is never called (#1448).
+    #[test]
+    fn a_refusing_view_keeps_its_window() {
+        let _guard = GUARD.lock().unwrap_or_else(PoisonError::into_inner);
+        on_main(|| {
+            reset();
+            REFUSE_CONSTRAINT.store(true, Ordering::Relaxed);
+            let (win, frame, view, ptr) = fixture().unwrap();
+            let mut r = sb::ViewRect { left: 0, top: 0, right: 9_000, bottom: 9_000 };
+            // SAFETY: as above.
+            let result = unsafe { frame.resizeView(ptr, &mut r) };
+            assert_eq!(result, sb::kResultFalse);
+            assert_eq!(ONSIZE.load(Ordering::Relaxed), 0, "onSize was not called");
+            assert_eq!(window::client_size(win.raw()), Some((400.0, 300.0)), "the window was untouched");
+            drop((frame, view));
+            win.close();
+        })
+        .unwrap();
+    }
+
+    /// A view that refuses `onSize` gets `kResultFalse` and the window is restored to what it
+    /// was, so the window and the view it holds stay the same size (#1448).
+    #[test]
+    fn a_refused_size_restores_the_window() {
+        let _guard = GUARD.lock().unwrap_or_else(PoisonError::into_inner);
+        on_main(|| {
+            reset();
+            REFUSE_SIZE.store(true, Ordering::Relaxed);
+            let (win, frame, view, ptr) = fixture().unwrap();
+            let mut r = sb::ViewRect { left: 0, top: 0, right: 700, bottom: 500 };
+            // SAFETY: as above.
+            let result = unsafe { frame.resizeView(ptr, &mut r) };
+            assert_eq!(result, sb::kResultFalse);
+            assert_eq!(ONSIZE.load(Ordering::Relaxed), (700u64 << 32) | 500, "the view was still asked");
+            assert_eq!(window::client_size(win.raw()), Some((400.0, 300.0)), "the window was restored");
+            drop((frame, view));
+            win.close();
+        })
+        .unwrap();
     }
 }

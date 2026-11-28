@@ -191,6 +191,23 @@ impl GuiLink {
                 (w, h) = (a.min(16_384), b.min(16_384));
             }
         }
+        // #1448: a GUI too big for the monitor under the pointer gets the plugin's own nearest
+        // supported size; one that cannot resize keeps its size — the window then opens with its
+        // title bar on-screen so every control stays reachable by dragging, never clipped.
+        let (fw, fh) = hostwin::fit_client(f64::from(w), f64::from(h));
+        let mut negotiated = false;
+        if (fw, fh) != (f64::from(w), f64::from(h))
+            && let (Some(can), Some(adjust)) = (vt.can_resize, vt.adjust_size)
+            // SAFETY: live plugin with a created GUI; both out-pointers are valid locals.
+            && unsafe { can(g.plugin) }
+        {
+            let (mut aw, mut ah) = (fw as u32, fh as u32);
+            // SAFETY: as above; `adjust` writes the nearest size the plugin supports.
+            if unsafe { adjust(g.plugin, &mut aw, &mut ah) } && aw > 0 && ah > 0 {
+                (w, h) = (aw.min(16_384), ah.min(16_384));
+                negotiated = true;
+            }
+        }
         let win = match hostwin::HostWindow::new(title, f64::from(w), f64::from(h)) {
             Ok(win) => win,
             Err(e) => {
@@ -205,6 +222,10 @@ impl GuiLink {
             win.close();
             GuiLink::destroy(g);
             return Err("the editor could not attach to its window".into());
+        }
+        if negotiated && let Some(f) = vt.set_size {
+            // SAFETY: live plugin with a parented embedded GUI; it is told the size it agreed to.
+            unsafe { f(g.plugin, w, h) };
         }
         g.window = Some(win);
         let shown = match vt.show {
@@ -292,10 +313,36 @@ impl GuiLink {
                 && let Some(win) = &g.window
             {
                 let (w, h) = ((resize >> 32) as u32, resize as u32);
-                hostwin::resize(win.raw(), f64::from(w), f64::from(h));
-                if let Some(f) = GuiLink::vt(&g).and_then(|v| v.set_size) {
-                    // SAFETY: live plugin with a created embedded GUI, main thread.
-                    unsafe { f(g.plugin, w, h) };
+                // #1448: negotiate before touching the window — a request that outgrows the work
+                // area becomes the plugin's nearest supported size (`adjust_size`), or the work-
+                // area fit when the plugin cannot say; a plugin that cannot resize keeps the
+                // window as it is. Only then is the window moved, to a size it keeps.
+                let (mut tw, mut th) = (f64::from(w), f64::from(h));
+                let vt = GuiLink::vt(&g);
+                let resizable = vt.and_then(|v| v.can_resize).is_some_and(|f| unsafe { f(g.plugin) });
+                if resizable {
+                    let (fw, fh) = hostwin::fit_client(tw, th);
+                    if (fw, fh) != (tw, th) {
+                        tw = fw;
+                        th = fh;
+                        if let Some(adj) = vt.and_then(|v| v.adjust_size) {
+                            let (mut aw, mut ah) = (fw as u32, fh as u32);
+                            // SAFETY: live plugin, main thread; `adj` writes the nearest size
+                            // the plugin supports into valid locals.
+                            if unsafe { adj(g.plugin, &mut aw, &mut ah) } && aw > 0 && ah > 0 {
+                                tw = f64::from(aw.min(16_384));
+                                th = f64::from(ah.min(16_384));
+                            }
+                        }
+                    }
+                    let before = hostwin::client_size(win.raw());
+                    let (aw, ah) = hostwin::resize(win.raw(), tw, th);
+                    let accepted = vt.and_then(|v| v.set_size).is_some_and(|f| unsafe { f(g.plugin, aw.max(0.0) as u32, ah.max(0.0) as u32) });
+                    if !accepted && let Some((bw, bh)) = before {
+                        // The plugin refused the size: restore the window to what it was, so the
+                        // window and the GUI it holds stay the same size.
+                        hostwin::resize(win.raw(), bw, bh);
+                    }
                 }
             }
             if g.window.as_ref().is_some_and(|w| !w.is_visible()) {
@@ -372,5 +419,156 @@ impl GuiLink {
                 }
             }
         }
+    }
+}
+
+/// Windows regressions for the resize request path: a constrained editor that rounds every size
+/// to its supported 800×500, and one that refuses `set_size` (#1448).
+#[cfg(all(test, windows))]
+mod tests {
+    use super::*;
+    use std::sync::atomic::{AtomicBool, AtomicU64};
+
+    /// Serialises the window tests: the fake editor's state and real windows are shared.
+    static GUARD: Mutex<()> = Mutex::new(());
+    static SET_SIZE: AtomicU64 = AtomicU64::new(0);
+    static RESIZABLE: AtomicBool = AtomicBool::new(true);
+    static ACCEPT: AtomicBool = AtomicBool::new(true);
+
+    unsafe extern "C" fn can_resize(_: *const clap_plugin) -> bool {
+        RESIZABLE.load(Ordering::Relaxed)
+    }
+
+    /// A constrained editor: whatever it is offered becomes its only supported size, 800×500.
+    unsafe extern "C" fn adjust_size(_: *const clap_plugin, w: *mut u32, h: *mut u32) -> bool {
+        // SAFETY: the host's out-pointers.
+        unsafe {
+            *w = 800;
+            *h = 500;
+        }
+        true
+    }
+
+    unsafe extern "C" fn set_size(_: *const clap_plugin, w: u32, h: u32) -> bool {
+        SET_SIZE.store((u64::from(w) << 32) | u64::from(h), Ordering::Relaxed);
+        ACCEPT.load(Ordering::Relaxed)
+    }
+
+    static GUI: clap_plugin_gui = clap_plugin_gui {
+        is_api_supported: None,
+        get_preferred_api: None,
+        create: None,
+        destroy: None,
+        set_scale: None,
+        get_size: None,
+        can_resize: Some(can_resize),
+        get_resize_hints: None,
+        adjust_size: Some(adjust_size),
+        set_size: Some(set_size),
+        set_parent: None,
+        set_transient: None,
+        suggest_title: None,
+        show: None,
+        hide: None,
+    };
+
+    static PLUGIN: clap_plugin = clap_plugin {
+        desc: std::ptr::null(),
+        plugin_data: std::ptr::null_mut(),
+        init: None,
+        destroy: None,
+        activate: None,
+        deactivate: None,
+        start_processing: None,
+        stop_processing: None,
+        reset: None,
+        process: None,
+        get_extension: None,
+        on_main_thread: None,
+    };
+
+    /// A link whose fake embedded editor is open and shown in a real host window of `w`×`h`.
+    fn editor_link(w: f64, h: f64) -> Result<GuiLink, String> {
+        let link = GuiLink::default();
+        let win = hostwin::HostWindow::new("editor", w, h)?;
+        win.raise();
+        let mut g = link.lock();
+        g.plugin = &PLUGIN;
+        g.gui = &GUI;
+        g.alive = true;
+        g.created = true;
+        g.visible = true;
+        g.window = Some(win);
+        drop(g);
+        Ok(link)
+    }
+
+    fn on_main(f: impl FnOnce() + Send + 'static) -> Result<(), String> {
+        std::thread::Builder::new()
+            .name("main".into())
+            .spawn(f)
+            .map_err(|e| e.to_string())?
+            .join()
+            .map_err(|_| "the test thread panicked".to_string())
+    }
+
+    /// An oversized request is negotiated to the editor's supported size and that size is
+    /// applied to both the window and `set_size` — never the shrunk work-area fit (#1448).
+    #[test]
+    fn a_resize_is_negotiated_before_the_window_moves() {
+        let _guard = GUARD.lock().unwrap_or_else(PoisonError::into_inner);
+        on_main(|| {
+            SET_SIZE.store(0, Ordering::Relaxed);
+            RESIZABLE.store(true, Ordering::Relaxed);
+            ACCEPT.store(true, Ordering::Relaxed);
+            let link = editor_link(400.0, 300.0).unwrap();
+            link.host.gui_resize.store((9_000u64 << 32) | 9_000, Ordering::Relaxed);
+            link.idle();
+            assert_eq!(SET_SIZE.load(Ordering::Relaxed), (800u64 << 32) | 500, "set_size got the negotiated size");
+            let win = link.lock().window.as_ref().unwrap().raw();
+            assert_eq!(hostwin::client_size(win), Some((800.0, 500.0)), "the window got it too");
+            link.close();
+        })
+        .unwrap();
+    }
+
+    /// When the editor refuses the negotiated size, the window is restored to what it was so the
+    /// window and the GUI it holds stay the same size (#1448).
+    #[test]
+    fn a_refused_resize_restores_the_window() {
+        let _guard = GUARD.lock().unwrap_or_else(PoisonError::into_inner);
+        on_main(|| {
+            SET_SIZE.store(0, Ordering::Relaxed);
+            RESIZABLE.store(true, Ordering::Relaxed);
+            ACCEPT.store(false, Ordering::Relaxed);
+            let link = editor_link(400.0, 300.0).unwrap();
+            link.host.gui_resize.store((9_000u64 << 32) | 9_000, Ordering::Relaxed);
+            link.idle();
+            assert_eq!(SET_SIZE.load(Ordering::Relaxed), (800u64 << 32) | 500, "the plugin was still asked");
+            let win = link.lock().window.as_ref().unwrap().raw();
+            assert_eq!(hostwin::client_size(win), Some((400.0, 300.0)), "the window was restored");
+            link.close();
+        })
+        .unwrap();
+    }
+
+    /// An editor that cannot resize gets its request refused: the window is untouched and
+    /// `set_size` is never called (#1448).
+    #[test]
+    fn an_unresizable_editor_keeps_its_window() {
+        let _guard = GUARD.lock().unwrap_or_else(PoisonError::into_inner);
+        on_main(|| {
+            SET_SIZE.store(0, Ordering::Relaxed);
+            RESIZABLE.store(false, Ordering::Relaxed);
+            ACCEPT.store(true, Ordering::Relaxed);
+            let link = editor_link(400.0, 300.0).unwrap();
+            link.host.gui_resize.store((700u64 << 32) | 500, Ordering::Relaxed);
+            link.idle();
+            assert_eq!(SET_SIZE.load(Ordering::Relaxed), 0);
+            let win = link.lock().window.as_ref().unwrap().raw();
+            assert_eq!(hostwin::client_size(win), Some((400.0, 300.0)));
+            link.close();
+        })
+        .unwrap();
     }
 }
