@@ -63,7 +63,7 @@ const MAX_BUSES: i32 = 64;
 /// Most channels per audio bus.
 const MAX_BUS_CHANNELS: u32 = 64;
 /// Capacity of the per-block event lists (preallocated: `process` never allocates).
-pub(crate) const EVENT_CAP: usize = 1024;
+pub(crate) const EVENT_CAP: usize = 4096;
 /// Most parameter queues per block (preallocated).
 pub(crate) const PARAM_QUEUE_CAP: usize = 1024;
 /// Largest plugin state we buffer (component or controller state).
@@ -268,7 +268,7 @@ mod tests {
             assert_ne!(q.getPoint(0, std::ptr::null_mut(), &mut v), sb::kResultOk);
         }
         let el = EventList::new(1);
-        let mut e = NoteEvent::On { time: 5, key: 60, velocity: 1.0 }.to_raw(2);
+        let mut e = NoteEvent::On { channel: 9, time: 5, key: 60, velocity: 1.0 }.to_raw(2);
         // SAFETY: as above.
         unsafe {
             assert_eq!(el.addEvent(&mut e), sb::kResultOk);
@@ -278,6 +278,7 @@ mod tests {
             assert_eq!(el.getEvent(0, &mut out), sb::kResultOk);
             assert_eq!(out.sampleOffset, 3);
             assert_eq!(out.__field0.noteOn.pitch, 60);
+            assert_eq!(out.__field0.noteOn.channel, 9);
             assert_ne!(el.getEvent(1, &mut out), sb::kResultOk);
         }
         let s = MemoryStream { inner: Mutex::new((Vec::new(), 0)) };

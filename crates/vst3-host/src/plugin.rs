@@ -13,6 +13,8 @@ const MAX_BLOCK: usize = 1 << 16;
 const MAX_CHANNELS: usize = 64;
 /// An `unsynced` slot with no value waiting (a NaN pattern, which `set_param` never stores).
 const SYNCED: u64 = u64::MAX;
+/// One release per MIDI channel/key, even when note-ons fill the remaining queue.
+const RELEASE_RESERVE: usize = 16 * 128;
 
 /// How a SoundCraft parameter value maps to the VST3 normalized value.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -40,8 +42,9 @@ pub struct Vst3Plugin {
     /// of an `f64`, or [`SYNCED`]). `set_param` may run on the audio thread, so it never calls the
     /// controller; the state reader, which already does, hands them over first.
     unsynced: Arc<[AtomicU64]>,
-    /// Pending notes, kept sorted by time. Never grows past `EVENT_CAP`.
+    /// Pending notes, sorted once before processing. Never grows past `EVENT_CAP`.
     notes: Vec<NoteEvent>,
+    note_order: Vec<(u32, usize)>,
     /// The parameter each MIDI controller drives (see `Instance::midi_mapping`).
     midi_map: Vec<Option<u32>>,
     /// Controller points for the next block: (time, param id, normalized value). Bounded.
@@ -51,7 +54,7 @@ pub struct Vst3Plugin {
     has_input: bool,
     has_output: bool,
     event_input: bool,
-    held: [bool; 128],
+    held: [[bool; 128]; 16],
     channels: usize,
     max_block: usize,
     latency: usize,
@@ -90,6 +93,7 @@ impl Vst3Plugin {
             pending: Vec::with_capacity(ids.len().min(PARAM_QUEUE_CAP)),
             unsynced: ids.iter().map(|_| AtomicU64::new(SYNCED)).collect(),
             notes: Vec::with_capacity(EVENT_CAP),
+            note_order: vec![(0, 0); EVENT_CAP],
             midi_map: Vec::new(),
             controls: Vec::with_capacity(EVENT_CAP),
             inputs: BusBuffers::new(&[], 0),
@@ -97,7 +101,7 @@ impl Vst3Plugin {
             has_input: false,
             has_output: false,
             event_input: false,
-            held: [false; 128],
+            held: [[false; 128]; 16],
             channels: 2,
             max_block: 0,
             latency: 0,
@@ -166,32 +170,47 @@ impl Vst3Plugin {
         }
     }
 
-    /// Inserts keeping the queue time-sorted; drops the event when the queue is full (never
-    /// allocates on the audio thread).
+    /// Queues an event if space is available. Processing sorts the queue by sample offset.
     fn push_note(&mut self, e: NoteEvent) {
-        push_sorted(&mut self.notes, e);
+        queue_note(&mut self.notes, e);
     }
 }
 
-fn push_sorted(notes: &mut Vec<NoteEvent>, e: NoteEvent) {
-    if notes.len() >= notes.capacity() {
-        return;
+/// Queues `e` if space is available, keeping `RELEASE_RESERVE` free for releases.
+fn queue_note(notes: &mut Vec<NoteEvent>, e: NoteEvent) {
+    let room = if matches!(e, NoteEvent::Off { .. }) { notes.capacity() } else { notes.capacity().saturating_sub(RELEASE_RESERVE) };
+    if notes.len() < room {
+        notes.push(e);
     }
-    let pos = notes.iter().rposition(|q| q.time() <= e.time()).map_or(0, |i| i + 1);
-    notes.insert(pos, e);
+}
+
+/// Keeps the pending releases (`keep_releases`) and adds one for every `held` key without one,
+/// at the start of the next block. At most 16 * 128 remain, so the queue never grows.
+fn release_held(notes: &mut Vec<NoteEvent>, held: &[[bool; 128]; 16]) {
+    let pending = keep_releases(notes);
+    for (channel, (held, pending)) in held.iter().zip(pending).enumerate() {
+        for (key, (&held, pending)) in held.iter().zip(pending).enumerate() {
+            if held && !pending {
+                notes.push(NoteEvent::Off { time: 0, channel: channel as u8, key: key as u8 });
+            }
+        }
+    }
 }
 
 /// Keeps only the pending releases, one per key and moved to the start of the next block, so at
-/// most 128 remain and `all_notes_off` always has room in the queue.
-fn keep_releases(notes: &mut Vec<NoteEvent>) {
-    let mut seen = [false; 128];
+/// most 16 * 128 remain and `all_notes_off` always has room in the queue.
+fn keep_releases(notes: &mut Vec<NoteEvent>) -> [[bool; 128]; 16] {
+    let mut seen = [[false; 128]; 16];
     notes.retain(|e| match *e {
-        NoteEvent::Off { key, .. } => seen.get_mut(usize::from(key)).is_some_and(|s| !std::mem::replace(s, true)),
+        NoteEvent::Off { channel, key, .. } => {
+            seen.get_mut(usize::from(channel)).and_then(|keys| keys.get_mut(usize::from(key))).is_some_and(|s| !std::mem::replace(s, true))
+        }
         _ => false,
     });
     for e in notes.iter_mut() {
         e.set_time(0);
     }
+    seen
 }
 
 /// Copy `n` frames from `start` of the host buffers into the plugin's input `port` (mono sources
@@ -267,10 +286,8 @@ impl Plugin for Vst3Plugin {
     fn reset(&mut self) {
         // Keep pending releases and release whatever is still held, so the processor's voices stop
         // on the next block instead of sounding on while the host forgets them.
-        keep_releases(&mut self.notes);
         self.controls.clear();
         self.all_notes_off();
-        self.held = [false; 128];
     }
 
     fn set_param(&mut self, id: &str, value: f32) -> bool {
@@ -309,6 +326,7 @@ impl Plugin for Vst3Plugin {
         if self.inst.host().latency_changed.swap(false, Ordering::Relaxed) {
             self.latency = self.inst.latency() as usize;
         }
+        soundcraft_dsp::sort_timed_events(&mut self.notes, &mut self.note_order, NoteEvent::time);
         let last = u32::try_from(frames - 1).unwrap_or(u32::MAX);
         for e in &mut self.notes {
             if e.time() > last {
@@ -340,6 +358,19 @@ impl Plugin for Vst3Plugin {
                 project_time: self.position,
                 transport: self.transport.as_ref(),
             });
+            // The processor can return an error after consuming a prefix of the block.
+            // Remember possible attacks and leave unconfirmed releases available for reset.
+            let complete = r.is_ok();
+            for event in notes {
+                let (channel, key, sounding) = match *event {
+                    NoteEvent::On { channel, key, .. } => (channel, key, true),
+                    NoteEvent::Off { channel, key, .. } if complete => (channel, key, false),
+                    _ => continue,
+                };
+                if let Some(held) = self.held.get_mut(usize::from(channel)).and_then(|keys| keys.get_mut(usize::from(key))) {
+                    *held = sounding;
+                }
+            }
             self.pending.clear();
             self.notes.drain(..k);
             self.position = self.position.saturating_add(i64::try_from(n).unwrap_or(0));
@@ -368,28 +399,31 @@ impl Plugin for Vst3Plugin {
     }
 
     fn note_on(&mut self, offset: usize, note: u8, velocity: u8) {
-        if note > 127 || !self.event_input {
+        self.note_on_channel(offset, 0, note, velocity);
+    }
+
+    fn note_on_channel(&mut self, offset: usize, channel: u8, note: u8, velocity: u8) {
+        if channel >= 16 || note > 127 || !self.event_input {
             return;
         }
         let time = u32::try_from(offset).unwrap_or(u32::MAX);
-        self.push_note(NoteEvent::On { time, key: note, velocity: f32::from(velocity.min(127)) / 127.0 });
-        if let Some(h) = self.held.get_mut(note as usize) {
-            *h = true;
-        }
+        self.push_note(NoteEvent::On { time, channel, key: note, velocity: f32::from(velocity.min(127)) / 127.0 });
     }
 
     fn note_off(&mut self, offset: usize, note: u8) {
-        if note > 127 || !self.event_input {
+        self.note_off_channel(offset, 0, note);
+    }
+
+    fn note_off_channel(&mut self, offset: usize, channel: u8, note: u8) {
+        if channel >= 16 || note > 127 || !self.event_input {
             return;
         }
         let time = u32::try_from(offset).unwrap_or(u32::MAX);
-        self.push_note(NoteEvent::Off { time, key: note });
-        if let Some(h) = self.held.get_mut(note as usize) {
-            *h = false;
-        }
+        self.push_note(NoteEvent::Off { time, channel, key: note });
     }
 
     fn midi(&mut self, offset: usize, msg: [u8; 3]) {
+        let channel = msg[0] & 0x0F;
         let time = u32::try_from(offset).unwrap_or(u32::MAX);
         let [_, d1, d2] = msg.map(|b| b & 0x7F);
         let (ctrl, value) = match msg[0] & 0xF0 {
@@ -397,12 +431,12 @@ impl Plugin for Vst3Plugin {
             0xD0 => (AFTERTOUCH, f64::from(d1) / 127.0),
             0xE0 => (PITCH_BEND, f64::from(u16::from(d2) << 7 | u16::from(d1)) / 16383.0),
             0xA0 if self.event_input => {
-                self.push_note(NoteEvent::Pressure { time, key: d1, pressure: f32::from(d2) / 127.0 });
+                self.push_note(NoteEvent::Pressure { time, channel, key: d1, pressure: f32::from(d2) / 127.0 });
                 return;
             }
             _ => return,
         };
-        if let Some(&Some(id)) = self.midi_map.get(ctrl)
+        if let Some(&Some(id)) = self.midi_map.get(usize::from(channel) * (PITCH_BEND + 1) + ctrl)
             && self.controls.len() < self.controls.capacity()
         {
             self.controls.push((time, id, value));
@@ -410,11 +444,7 @@ impl Plugin for Vst3Plugin {
     }
 
     fn all_notes_off(&mut self) {
-        for k in 0..128u8 {
-            if self.held.get(k as usize).copied().unwrap_or(false) {
-                self.note_off(0, k);
-            }
-        }
+        release_held(&mut self.notes, &self.held);
     }
 
     fn load_state(&mut self, data: &[u8]) -> bool {
@@ -559,19 +589,53 @@ impl PluginEditor for Vst3Editor {
 mod tests {
     use super::*;
 
-    /// A queue full of releases still has room to release every held key after a reset.
+    #[test]
+    fn reset_keeps_same_pitch_releases_on_each_channel() {
+        let mut notes = vec![
+            NoteEvent::Off { time: 3, channel: 0, key: 60 },
+            NoteEvent::Off { time: 4, channel: 9, key: 60 },
+            NoteEvent::Off { time: 5, channel: 9, key: 60 },
+        ];
+        keep_releases(&mut notes);
+        assert_eq!(notes, vec![NoteEvent::Off { time: 0, channel: 0, key: 60 }, NoteEvent::Off { time: 0, channel: 9, key: 60 }]);
+    }
+
+    #[test]
+    fn dense_descending_notes_keep_arrival_order_at_tied_offsets() {
+        let mut notes = Vec::with_capacity(EVENT_CAP);
+        for time in (0..EVENT_CAP as u32 / 2).rev() {
+            notes.push(NoteEvent::Off { channel: 9, time, key: 60 });
+            notes.push(NoteEvent::Off { channel: 0, time, key: 60 });
+        }
+        assert!(!notes.is_sorted_by_key(NoteEvent::time));
+        let mut order = vec![(0, 0); EVENT_CAP];
+        soundcraft_dsp::sort_timed_events(&mut notes, &mut order, NoteEvent::time);
+        for (time, pair) in notes.as_chunks::<2>().0.iter().enumerate() {
+            let time = time as u32;
+            assert_eq!(*pair, [NoteEvent::Off { channel: 9, time, key: 60 }, NoteEvent::Off { channel: 0, time, key: 60 }]);
+        }
+    }
+
+    /// A queue full of note-ons and releases still has room to release every held key on every
+    /// channel after a reset, without growing.
     #[test]
     fn reset_keeps_room_to_release_every_held_key() {
         let mut notes = Vec::with_capacity(EVENT_CAP);
         for i in 0..EVENT_CAP {
-            push_sorted(&mut notes, NoteEvent::Off { time: i as u32, key: (i % 4) as u8 });
+            let (channel, key) = ((i % 16) as u8, (i / 16 % 128) as u8);
+            queue_note(&mut notes, NoteEvent::On { channel, time: i as u32, key, velocity: 1.0 });
+            queue_note(&mut notes, NoteEvent::Off { channel, time: i as u32, key: (i % 4) as u8 });
         }
-        keep_releases(&mut notes);
-        for key in 0..128u8 {
-            push_sorted(&mut notes, NoteEvent::Off { time: 0, key });
-        }
-        for key in 0..128u8 {
-            assert!(notes.iter().any(|e| matches!(*e, NoteEvent::Off { key: k, .. } if k == key)), "key {key} was never released");
+        let capacity = notes.capacity();
+        assert_eq!(notes.len(), capacity, "the queue is full");
+        release_held(&mut notes, &[[true; 128]; 16]);
+        assert_eq!(notes.capacity(), capacity, "releasing never grows the queue");
+        assert!(notes.iter().all(|e| matches!(e, NoteEvent::Off { time: 0, .. })), "only releases, at the block start");
+        for channel in 0..16u8 {
+            for key in 0..128u8 {
+                let n = notes.iter().filter(|e| matches!(**e, NoteEvent::Off { channel: c, key: k, .. } if c == channel && k == key)).count();
+                assert_eq!(n, 1, "channel {channel} key {key} released {n} times");
+            }
         }
     }
 }
