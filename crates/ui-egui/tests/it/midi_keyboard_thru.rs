@@ -1,7 +1,7 @@
 //! The MIDI Keyboard window plays live, like a hardware keyboard: a key held down sends a Note-On
 //! into the MIDI input (port "MIDI Keyboard window", channel 1) and its release the Note-Off, so
-//! record-enabled and input-monitored tracks whose input is All devices play, thru and record it
-//! (Pro Tools Reference Guide p.828). With no MIDI or instrument track record-enabled a click still
+//! record-enabled and input-monitored tracks whose input is All devices play and thru it, and the
+//! record-enabled ones record it (Pro Tools Reference Guide p.828). With no MIDI or instrument track record-enabled a click still
 //! step-enters the note into the selected clip.
 use egui::{Event, Modifiers, PointerButton, Pos2, pos2, vec2};
 use egui_kittest::Harness;

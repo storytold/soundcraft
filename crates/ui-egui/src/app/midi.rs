@@ -16,9 +16,9 @@ impl SoundApp {
     /// and let go before the window saw it held). A key that is let go, or left for another,
     /// ends with a Note-Off before the next one starts. The notes go into the MIDI input as from
     /// a port of their own ([`soundcraft_playback::midi::KEYBOARD_PORT`], channel 1): they play
-    /// the instruments, thru to the MIDI outputs and are recorded on the record-enabled and
-    /// input-monitored tracks whose input takes All devices, as from a hardware keyboard (Pro
-    /// Tools Reference Guide p.828).
+    /// the instruments and thru to the MIDI outputs of the record-enabled and input-monitored
+    /// tracks whose input takes All devices, and are recorded on the record-enabled ones, as
+    /// from a hardware keyboard (Pro Tools Reference Guide p.828).
     pub(crate) fn play_midi_keyboard(&mut self, down: Option<u8>, tapped: Option<u8>) {
         let held = self.midi_keyboard_held;
         if held != down {

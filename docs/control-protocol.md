@@ -116,8 +116,8 @@ the selector reads "(unavailable)". Port names are the labels `ui.inspect` lists
 - `event.all_notes_off` also releases every sounding note on the MIDI output ports, then sends
   sustain pedal up, All Notes Off and All Sound Off on all 16 channels.
 - `event.midi_track_offsets` moves the external output as it moves the instrument.
-- `ui.inspect` adds `midi_output_ports` (`{"Ok": [labels]}`, or `{"Err": why}` where there is no
-  MIDI output), `midi_outputs` (each routed track: `track`, `name`, `output`, `connected`, null
+- `ui.inspect` adds `midi_output_ports` (`{"Ok": [labels]}`, `{"Err": why}` where there is no
+  MIDI output, or null while the port list is not known yet), `midi_outputs` (each routed track: `track`, `name`, `output`, `connected`, null
   while the port list is unknown), `midi_output_error` (every failing port, joined with "; ") and
   `midi_output_status` (the output worker's diagnostics: messages `sent`, lateness percentiles in
   microseconds, the output lead and, per port, `connected`, `notes_enabled` and

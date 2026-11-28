@@ -36,7 +36,7 @@ Legend: ✅ works · 🟡 partial · ❌ missing.
 | MIDI Thru, input filter | ✅ | 🟡 record-enabled and input-monitored MIDI/instrument tracks play the keyboard through their instrument and to their MIDI output port and channel, at once and without offsets ([midi-output.md](midi-output.md) section 5; notes, the sustain pedal, controllers, pitch bend, aftertouch and program changes); Options › MIDI Thru switches it, on by default; held notes end on disarm, routing changes, Stop and All MIDI Notes Off; echoes from a MIDI loop are dropped. Measured on macOS (IAC bus to a virtual port), not with hardware, Linux or Windows. No system exclusive or Real-Time Properties through thru; the input filter keeps the filtered kinds out of recordings |
 | MIDI Beat Clock out, MTC generate/chase | ✅ | ❌ |
 | MIDI learn / controller mapping | ✅ (via surfaces and plug-in maps) | ❌ |
-| Virtual MIDI keyboard | ✅ (MIDI Keyboard window) | 🟡 Window › MIDI Keyboard (Shift+K): clicked keys play, thru and record on record-enabled and input-monitored tracks whose input is All devices, or step-enter into the selected clip when no MIDI track is record-enabled; no computer-keyboard keys, octave or velocity keys |
+| Virtual MIDI keyboard | ✅ (MIDI Keyboard window) | 🟡 Window › MIDI Keyboard (Shift+K): clicked keys play and thru on record-enabled and input-monitored tracks whose input is All devices, and record on the record-enabled ones, or step-enter into the selected clip when no MIDI track is record-enabled; no computer-keyboard keys, octave or velocity keys |
 
 ## Control surfaces
 
