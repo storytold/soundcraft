@@ -90,8 +90,10 @@ plugins), and WebAudio in the browser.
   the default player. `NSMicrophoneUsageDescription` explains the recording prompt.
 - **Signing** goes inside-out with the hardened runtime and a secure timestamp. The executable is
   signed first, then the bundle. There's no `--deep` on the final signature. `entitlements.plist`
-  holds a single exception, `com.apple.security.device.audio-input`, without which the hardened
-  runtime blocks recording.
+  holds two exceptions: `com.apple.security.device.audio-input`, without which the hardened
+  runtime blocks recording, and `com.apple.security.cs.disable-library-validation`, without which
+  `dlopen` refuses every third-party VST3/CLAP bundle (signed by another Team ID). The CLI is signed
+  with the same entitlements because it hosts plugins too.
 - **Notarization:** the app is zipped and sent with `xcrun notarytool submit --wait`, then the
   ticket is stapled to the app. The app goes on a DMG (`hdiutil`, with an `Applications` link).
   The DMG is signed, notarized and stapled too.

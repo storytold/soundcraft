@@ -136,8 +136,10 @@ launch #142; Linux #45, #107.
 
 ### G-05. Plugin hosting on macOS
 
-- **Missing:** the `com.apple.security.cs.disable-library-validation` entitlement in the signed
-  build, so hardened runtime refuses third-party VST3 bundles (#153, #149). AU editor views
+- **Fixed (pending release):** the `com.apple.security.cs.disable-library-validation` entitlement
+  is now in `entitlements.plist` and applied to the app and the CLI (#153, #149); verify on a
+  signed build with `codesign -d --entitlements - SoundCraft.app` and a third-party VST3.
+- **Missing:** AU editor views
   (`crates/au-host/src/lib.rs` header: "Not hosted yet: Audio Unit editor views"). Embedded CLAP
   GUIs on macOS (#485). VST3 and embedded CLAP editors are hosted on Windows and Linux/X11.
 - **Estimate:** ≈ 10–15 h (entitlement ≈ 1 h; AU Cocoa views and embedded CLAP on macOS most of it).
