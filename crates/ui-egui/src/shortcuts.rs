@@ -206,7 +206,7 @@ fn fixed(app: &mut SoundApp, key: Key, m: Modifiers, mac: bool) -> bool {
                 // No MIDI target can consume the notes any more: drop the stale selection.
                 app.midi.selected.clear();
             }
-            if app.ui.show_midi_editor && !app.midi.selected.is_empty() {
+            if midi_editor_drawn(app) && !app.midi.selected.is_empty() {
                 return false;
             }
             let _ = app.run("edit.clear", json!({}));
@@ -509,6 +509,17 @@ fn centre_on_selection(app: &mut SoundApp, end: bool) -> bool {
     let at = if end { sel.end } else { sel.start };
     let _ = app.run("view.scroll", json!({"to": at.saturating_sub(soundcraft_time::to_samples(half)).max(0)}));
     true
+}
+
+/// Whether the MIDI editor's body was drawn on the last frame, and is still in front: docking
+/// records its rect only when it draws the body (shortcuts run before the panels draw), and a
+/// layout change since, such as a tab moved over it, has not redrawn the dock yet. Open behind
+/// another tab, its notes aren't on screen and its keys aren't read, so Delete is the Edit
+/// window's Clear there (#1627).
+fn midi_editor_drawn(app: &SoundApp) -> bool {
+    app.ui.show_midi_editor
+        && app.ui.docking.layout().panel_state(&crate::docking::Panel::Midi) == craft_behavior::dock::PanelState::Front
+        && app.docking_context.as_ref().is_some_and(|c| c.data(|d| d.get_temp::<egui::Rect>(egui::Id::unique("soundcraft-midi-body"))).is_some())
 }
 
 /// Whether the pointer is over the MIDI editor, whose piano roll moves the selected notes with the arrow keys.
