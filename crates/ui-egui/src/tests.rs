@@ -1712,3 +1712,20 @@ fn assert_history_unchanged(
     assert_eq!(app.engine.undo_history(), history);
     assert_eq!(&app.engine.journal, journal);
 }
+
+/// Shift+/ toggles Link Timeline and Edit Selection. On US and UK keyboards that press types ?, which
+/// egui reports as `Key::Questionmark` with Shift, not as `/`.
+#[test]
+fn shift_slash_links_timeline_and_edit_selection_on_a_us_keyboard() {
+    let (ctx, mut app) = app_for_keys();
+    let shift = egui::Modifiers { shift: true, ..egui::Modifiers::NONE };
+    let linked = app.engine.session().edit.link_timeline_edit;
+    for pressed in [true, false] {
+        key_pass(
+            &ctx,
+            &mut app,
+            vec![egui::Event::Key { key: egui::Key::Questionmark, physical_key: Some(egui::Key::Slash), pressed, repeat: false, modifiers: shift }],
+        );
+    }
+    assert_eq!(app.engine.session().edit.link_timeline_edit, !linked, "Shift+/ typed as ? toggles the link");
+}

@@ -49,6 +49,13 @@ fn mods_match(want: Modifiers, got: Modifiers, mac: bool) -> bool {
     want.command == got.command && want.shift == got.shift && want.alt == got.alt && ctrl
 }
 
+/// Whether a press of `got` is a registered shortcut's `want` key. A shortcut written with Shift and
+/// `/` (Link Timeline and Edit Selection's Shift+/) arrives as `?` where Shift+/ types `?` (US, UK and
+/// others), since egui reports the typed character; there it's still that shortcut.
+fn key_matches(want: Key, got: Key, mods: Modifiers) -> bool {
+    got == want || (want == Key::Slash && got == Key::Questionmark && mods.shift)
+}
+
 /// Cmd+Ctrl+S opens Search. Off macOS Ctrl+S is Save (Cmd+S), so Search is reached from the Window menu.
 fn search_chord(m: Modifiers, mac: bool) -> bool {
     mac && m.command && m.ctrl
@@ -111,7 +118,7 @@ pub fn handle(app: &mut SoundApp, ctx: &egui::Context) {
             }
             let _ = app.run(id, json!({}));
         } else if let Some(c) =
-            crate::menus::UI_COMMANDS.iter().find(|c| c.3.and_then(parse).is_some_and(|(m, k)| k == key && mods_match(m, mods, mac)))
+            crate::menus::UI_COMMANDS.iter().find(|c| c.3.and_then(parse).is_some_and(|(m, k)| key_matches(k, key, mods) && mods_match(m, mods, mac)))
         {
             let _ = app.run(c.0, json!({}));
         }
@@ -129,7 +136,7 @@ fn repeating_command(key: Key, mods: Modifiers, mac: bool) -> Option<(&'static s
 fn command_for(key: Key, mods: Modifiers, mac: bool) -> Option<&'static str> {
     soundcraft_engine::command_specs()
         .iter()
-        .find(|c| c.shortcut.and_then(parse).is_some_and(|(m, k)| k == key && mods_match(m, mods, mac)))
+        .find(|c| c.shortcut.and_then(parse).is_some_and(|(m, k)| key_matches(k, key, mods) && mods_match(m, mods, mac)))
         .map(|c| c.id)
 }
 
@@ -580,6 +587,24 @@ mod tests {
         assert_eq!(command_for(Key::K, Modifiers { shift: true, ..MAC_CMD }, true), Some("file.export_clips"));
         assert_eq!(command_for(Key::K, Modifiers { shift: true, ..PC_CTRL }, false), Some("file.export_clips"));
         assert!(crate::dialogs::takes_path("file.export_clips"));
+    }
+
+    /// Shift+/ arrives as ? where that press types ? (US, UK); it's still Link Timeline and Edit
+    /// Selection, and / typed with Shift (German Shift+7) still is too. A ? never reaches Cmd+/ or
+    /// Cmd+Alt+/, which don't ask for Shift, and a ? without Shift is nothing.
+    #[test]
+    fn shift_slash_matches_when_it_arrives_as_a_question_mark() {
+        for mac in [true, false] {
+            assert_eq!(command_for(Key::Questionmark, Modifiers::SHIFT, mac), Some("options.link_timeline_edit"));
+            assert_eq!(command_for(Key::Slash, Modifiers::SHIFT, mac), Some("options.link_timeline_edit"));
+            assert_eq!(command_for(Key::Questionmark, Modifiers::NONE, mac), None);
+        }
+        for (cmd, mac) in [(MAC_CMD, true), (PC_CTRL, false)] {
+            for alt in [false, true] {
+                let got = command_for(Key::Questionmark, Modifiers { shift: true, alt, ..cmd }, mac);
+                assert!(!matches!(got, Some("automation.write_to_current" | "automation.write_to_all")), "{got:?}");
+            }
+        }
     }
 
     fn app_with_selection() -> crate::SoundApp {
