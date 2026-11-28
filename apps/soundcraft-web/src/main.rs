@@ -6,7 +6,8 @@
 //! from this directory (output in `dist/web`).
 //!
 //! Differences from the desktop app:
-//! - no TCP control channel (browsers can't listen on sockets);
+//! - no TCP control channel (browsers can't listen on sockets); `window.soundcraft` (`api`) drives the
+//!   same control channel from the page instead;
 //! - no file system: File > Open Session…, Import > Audio…/MIDI… and files dropped on the page are
 //!   read as bytes through the browser's file picker; a session is saved as ONE bundle file
 //!   (`<name>.scraftz`: the `.scraft` and its `Audio Files/`), and every save or export arrives as a
@@ -18,6 +19,8 @@
 //! empty session instead of the demo.
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
 
+#[cfg(target_arch = "wasm32")]
+mod api;
 #[cfg(target_arch = "wasm32")]
 mod web;
 

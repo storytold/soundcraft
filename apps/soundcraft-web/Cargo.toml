@@ -17,6 +17,8 @@ path = "src/main.rs"
 soundcraft-engine = { workspace = true }
 craft-audio.workspace = true
 soundcraft-ui-egui.workspace = true
+# The page command API (storytold/craft-libs#413): window.soundcraft over the control channel.
+craft-web-api = { git = "https://github.com/storytold/craft-libs", rev = "2bfc45c49378effb801c6433758fb5aaa5d7808e", version = "0.1.0" }
 soundcraft-playback = { workspace = true }
 soundcraft-model = { workspace = true }
 egui = { workspace = true, features = ["default_fonts", "monochrome_emoji_fonts"] }
