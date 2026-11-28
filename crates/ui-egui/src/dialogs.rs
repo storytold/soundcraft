@@ -185,12 +185,7 @@ impl Dialogs {
             "track.new" => Dialog::NewTracks(new_tracks::NewTracks::default()),
             "session.new" => Dialog::NewSession { name: "Untitled".into(), sample_rate: 48_000, demo: false },
             "file.bounce_mix" => {
-                let dir = e
-                    .path
-                    .as_deref()
-                    .and_then(|p| std::path::Path::new(p).parent())
-                    .filter(|d| !d.as_os_str().is_empty())
-                    .map_or(home.clone(), |d| d.display().to_string());
+                let dir = bounce_dir(e, &home);
                 Dialog::Bounce {
                     path: format!("{dir}/{name} Bounce.wav"),
                     format: EncodeFormat::Wav,
@@ -307,6 +302,21 @@ fn clear_message(s: &Session, clips: &[ClipId], sources: &[SourceId]) -> Option<
         };
     }
     Some(text)
+}
+
+/// The folder holding the session file. A bare relative file name (`Song.scraft`) has an empty
+/// parent, which is the working directory (`./`), not no folder at all.
+fn session_folder(path: Option<&str>) -> Option<std::path::PathBuf> {
+    let parent = std::path::Path::new(path?).parent()?;
+    Some(if parent.as_os_str().is_empty() { std::path::PathBuf::from(".") } else { parent.to_path_buf() })
+}
+
+/// The folder a new bounce goes to: `<session dir>/Bounced Files` when the session is saved
+/// and has one, else the session's folder, else the default directory.
+fn bounce_dir(e: &Engine, home: &str) -> String {
+    let Some(dir) = session_folder(e.path.as_deref()) else { return home.to_string() };
+    let bounced = dir.join("Bounced Files");
+    if bounced.is_dir() { bounced.display().to_string() } else { dir.display().to_string() }
 }
 
 /// The file a bounce in `format` writes for the path in the form: the path itself when its
@@ -1419,5 +1429,32 @@ mod tests {
         assert_eq!(send(LoopBy::Length, "soon"), None);
         assert_eq!(send(LoopBy::Fill, "soon"), Some(json!({"fill": true})));
         assert!(soundcraft_engine::command_specs().iter().any(|c| c.id == "clip.loop"));
+    }
+
+    #[test]
+    fn bounce_defaults_to_the_sessions_bounced_files_folder() {
+        let dir = std::env::temp_dir().join(format!("soundcraft-bounce-dir-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("Bounced Files")).unwrap();
+        let mut app = SoundApp::new(Engine::default(), None, crate::Services::default());
+        app.engine.path = Some(dir.join("Song.scraft").to_string_lossy().into_owned());
+        assert!(app.dialogs.open_for_command(&app.engine, "file.bounce_mix"));
+        match &app.dialogs.open {
+            Some(Dialog::Bounce { path, .. }) => {
+                assert_eq!(std::path::Path::new(path).parent(), Some(dir.join("Bounced Files").as_path()));
+            }
+            other => panic!("unexpected dialog: {other:?}"),
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A saved bare relative file name (`Song.scraft`) sits in the working directory, so its
+    /// `Bounced Files` folder is found there rather than the dialog falling back to `home`.
+    #[test]
+    fn a_bare_relative_session_name_is_in_the_working_directory() {
+        assert_eq!(session_folder(Some("Song.scraft")), Some(std::path::PathBuf::from(".")));
+        assert_eq!(session_folder(Some("Album/Song.scraft")), Some(std::path::PathBuf::from("Album")));
+        assert_eq!(session_folder(Some("/tmp/Song.scraft")), Some(std::path::PathBuf::from("/tmp")));
+        assert_eq!(session_folder(None), None);
     }
 }
