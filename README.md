@@ -277,6 +277,8 @@ edit, mix and bounce work end to end, but choosing an audio interface and buffer
 recording MIDI from a controller and session interchange (AAF/OMF) are still missing, and those
 are the alpha checklist.
 
+Czech (`cs`) is available under `Setup › Appearance › Language` or through `ui.language` with `{"language":"cs"}`, with the same catalog coverage and tests as pt-BR (AI-assisted, skimmed by a native speaker, not reviewed line by line).
+
 **Translations:** the Brazilian Portuguese (`pt-BR`) catalog is **100 % complete** for every fixed
 UI string found in the current source — menus, dialogs and buttons, tooltips (including those
 localized inside buttons and toggles), accessibility names, the Edit-window status bar, the

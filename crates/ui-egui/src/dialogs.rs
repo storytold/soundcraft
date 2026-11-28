@@ -1339,6 +1339,25 @@ mod tests {
     }
 
     #[test]
+    fn clear_question_is_assembled_in_czech() {
+        let _scope = crate::localization::enter(crate::localization::Language::Czech);
+        let mut e = soundcraft_engine::demo::demo_engine();
+        let kick = e.session().sources.iter().find(|f| f.name == "Kick").map(|f| f.id).unwrap();
+        let kick_clips: Vec<ClipId> = e.session().clips_using(kick).map(|c| c.id).collect();
+        let message = |d: &Dialogs| match &d.open {
+            Some(Dialog::ClearClips { message, .. }) => message.clone(),
+            other => panic!("{other:?}"),
+        };
+        let mut d = Dialogs::default();
+        assert!(d.open_clear(&e, kick_clips, vec![kick]));
+        let combined = message(&d);
+        assert_eq!(combined, "Odebrat klip: 3 a soubor: 1 z relace?");
+        e.session_mut().sources.iter_mut().for_each(|f| f.unsaved = false);
+        assert!(d.open_clear(&e, vec![], vec![kick]));
+        assert_eq!(message(&d), "Odebrat soubor „Kick“ z relace? Použití: klipy na časové ose: 3; budou také odebrány. Soubor zůstane na disku.");
+    }
+
+    #[test]
     fn clear_always_asks_and_names_the_timeline_clips_that_go_too() {
         let mut e = soundcraft_engine::demo::demo_engine();
         let file = |e: &Engine, name: &str| e.session().sources.iter().find(|f| f.name == name).map(|f| f.id).unwrap();

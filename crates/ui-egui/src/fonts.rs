@@ -176,7 +176,8 @@ mod tests {
         // Status/menu text, transport/meter symbols, file/audio/search icons, music symbols and
         // platform key hints used by the UI. Close/delete controls paint a cross in `icons.rs`
         // instead of typesetting U+2715, which no bundled face covers in every family.
-        let glyphs = ["›", "v", "♩", "𝄞", "⌘", "📁", "🔊", "🔍", "⬆", "−", "∞"];
+        // Czech diacritics and quotation marks must work without system fonts too.
+        let glyphs = ["áčďéěíňóřšťúůýžÁČĎÉĚÍŇÓŘŠŤÚŮÝŽ„“…", "›", "v", "♩", "𝄞", "⌘", "📁", "🔊", "🔍", "⬆", "−", "∞"];
         for family in [FontFamily::Proportional, FontFamily::Monospace, FontFamily::Name("bold".into())] {
             let font = egui::FontId::new(13.0, family.clone());
             for glyph in glyphs {

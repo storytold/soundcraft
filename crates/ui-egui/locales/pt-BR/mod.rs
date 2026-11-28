@@ -1761,6 +1761,7 @@ fn menu_translate(source: &str) -> Option<&'static str> {
         "Enable GPU Processing" => "Ativar o processamento por GPU",
         "Enable Session File Auto Backup" => "Ativar o backup automático do arquivo da sessão",
         "Enable Track Notes Dialog" => "Ativar o diálogo de notas da pista",
+        "Czech" => "Tcheco",
         "English" => "Inglês",
         "Portuguese (Brazil)" => "Português (Brasil)",
         "key:Space" => "Espaço",

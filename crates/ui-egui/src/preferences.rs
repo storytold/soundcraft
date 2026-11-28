@@ -1065,42 +1065,46 @@ mod tests {
     }
 
     #[test]
-    fn every_preference_text_has_a_portuguese_translation() {
-        let mut missing = Vec::new();
-        let mut check = |text: &str| {
-            if !is_numeric(text) && !crate::localization::has_pt_br_entry(text) {
-                missing.push(text.to_owned());
-            }
-        };
-        for page in PreferencesPage::ALL {
-            check(page.label());
-            for section in page.sections() {
-                check(section.title);
-                for control in section.controls {
-                    check(control.label());
-                    match *control {
-                        Control::Choice(_, value) | Control::Value(_, value) => check(value),
-                        Control::ChoiceOptions(_, value, values) => {
-                            check(value);
-                            values.iter().for_each(|v| check(v));
+    fn every_preference_text_has_a_translation() {
+        for language in crate::localization::Language::ALL.into_iter().filter(|l| *l != crate::localization::Language::English) {
+            let mut missing = Vec::new();
+            let mut check = |text: &str| {
+                if !is_numeric(text) && !crate::localization::has_entry(language, text) {
+                    missing.push(text.to_owned());
+                }
+            };
+            for page in PreferencesPage::ALL {
+                check(page.label());
+                for section in page.sections() {
+                    check(section.title);
+                    for control in section.controls {
+                        check(control.label());
+                        match *control {
+                            Control::Choice(_, value) | Control::Value(_, value) => check(value),
+                            Control::ChoiceOptions(_, value, values) => {
+                                check(value);
+                                values.iter().for_each(|v| check(v));
+                            }
+                            Control::Radios(_, values) => values.iter().for_each(|v| check(v)),
+                            _ => {}
                         }
-                        Control::Radios(_, values) => values.iter().for_each(|v| check(v)),
-                        _ => {}
                     }
                 }
             }
+            // Names that are the same across languages are listed by the catalog as identity entries.
+            assert!(missing.is_empty(), "preference texts without a {language:?} entry: {missing:?}");
         }
-        // Names that are the same in both languages are listed by the catalog as identity entries.
-        assert!(missing.is_empty(), "preference texts without a pt-BR entry: {missing:?}");
     }
 
     #[test]
     fn preference_search_matches_both_languages() {
-        let _scope = crate::localization::enter(crate::localization::Language::PortugueseBrazil);
-        let control = Control::Check("Auto Backup");
-        assert!(text_matches(&control.search_text(), crate::localization::Language::PortugueseBrazil.text("Auto Backup")));
-        assert!(text_matches(&control.search_text(), "auto backup"));
-        assert!(!text_matches(&control.search_text(), "mixagem"));
+        for language in crate::localization::Language::ALL.into_iter().filter(|l| *l != crate::localization::Language::English) {
+            let _scope = crate::localization::enter(language);
+            let control = Control::Check("Auto Backup");
+            assert!(text_matches(&control.search_text(), language.text("Auto Backup")));
+            assert!(text_matches(&control.search_text(), "auto backup"));
+            assert!(!text_matches(&control.search_text(), "mixagem"));
+        }
     }
 
     /// Creates a complete application harness with Preferences already open.
